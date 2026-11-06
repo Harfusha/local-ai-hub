@@ -57,7 +57,12 @@ def lexical_precision_query(query: str) -> str:
 
 
 def default_search_mode(query: str) -> str:
-    """Pick agent search mode without weakening exact identifier queries."""
+    """Keep the direct repository service default exhaustive and lexical."""
+    return "lexical"
+
+
+def default_agent_search_mode(query: str) -> str:
+    """Use hybrid for natural language and lexical for symbol-bearing agent queries."""
     return "lexical" if prefers_lexical_precision(query) else "hybrid"
 
 

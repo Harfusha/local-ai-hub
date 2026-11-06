@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
 from pathlib import Path
 
 from local_ai_hub.repo_tools import RepositoryTools
@@ -305,15 +306,23 @@ def test_bounded_hybrid_candidates_do_not_let_many_early_lines_hide_install_docs
         ("docs/INSTALLATION.md", 2),
     ])
     tools = RepositoryTools({})
+
+    def bounded_ripgrep(_base, _terms, max_matches, *, candidate_paths=None, **_kwargs):
+        rows = candidate_rows
+        if candidate_paths is not None:
+            allowed = {path.relative_to(tmp_path).as_posix() for path in candidate_paths}
+            rows = [row for row in candidate_rows if row[0] in allowed]
+        return rows[:max_matches], False
+
     monkeypatch.setattr(
-        tools, "_ripgrep_candidates",
-        lambda _base, _terms, max_matches, **_kwargs: (candidate_rows[:max_matches], False),
+        tools, "_ripgrep_candidates", bounded_ripgrep,
     )
 
     result = tools.search(
         str(tmp_path),
         "Local AI Hub installation",
         candidate_query="Local AI Hub installation install setup getting started bootstrap",
+        candidate_paths=[*(f"a_noise/{index:02}.txt" for index in range(40)), "docs/INSTALLATION.md"],
         limit=10,
         exact_count=False,
         installation_intent_priority=True,
@@ -321,4 +330,32 @@ def test_bounded_hybrid_candidates_do_not_let_many_early_lines_hide_install_docs
 
     assert result["success"] is True
     assert result["results"][0]["path"] == "docs/INSTALLATION.md"
-    assert result["scanned_files"] == 41
+    assert result["scanned_files"] <= 64
+
+
+def test_project_search_caps_candidate_paths_and_reports_partial_coverage(tmp_path: Path, monkeypatch):
+    tools = RepositoryTools({})
+    project_paths = [tmp_path / f"module_{index:04}.py" for index in range(700)]
+    monkeypatch.setattr(
+        tools, "_iter_project_search_files",
+        lambda *_args, **_kwargs: iter(project_paths),
+    )
+    received_paths = []
+
+    def empty_ripgrep(_base, _terms, _max_matches, *, candidate_paths=None, **_kwargs):
+        received_paths.append(candidate_paths)
+        return [], False
+
+    monkeypatch.setattr(tools, "_ripgrep_candidates", empty_ripgrep)
+    settings = SimpleNamespace(exclude_paths=[], pinned_context=[], entry_points=[])
+
+    result = tools.search(
+        str(tmp_path), "natural installation setup", limit=10,
+        exact_count=False, project_settings=settings,
+    )
+
+    assert result["success"] is True
+    assert len(received_paths) == 1
+    assert len(received_paths[0]) == 320
+    assert result["truncated"] is True
+    assert "candidate_file_limit" in result["truncation_reasons"]

@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from local_ai_hub.search_modes import (
+    default_agent_search_mode,
     default_search_mode,
     expand_lexical_fallback_query,
     expand_semantic_query,
@@ -104,7 +105,144 @@ def test_hybrid_bounded_fallback_finds_matches_after_unrelated_path_prefix(tmp_p
     assert [row["path"] for row in result["results"]] == ["src/access.py"]
 
 
-def test_repository_search_defaults_to_hybrid_for_natural_language(monkeypatch):
+def test_hybrid_fallback_prioritizes_pinned_context_before_noisy_candidates(tmp_path, monkeypatch):
+    root = tmp_path / "repo"
+    noise = root / "aaa_noise"
+    docs = root / "docs"
+    noise.mkdir(parents=True)
+    docs.mkdir(parents=True)
+    (root / ".local-ai.toml").write_text(
+        'project_type = "python"\npinned_context = ["docs/INSTALLATION.md"]\n',
+        encoding="utf-8",
+    )
+    target = docs / "INSTALLATION.md"
+    target.write_text("Local AI Hub installation guide\n", encoding="utf-8")
+    for index in range(80):
+        (noise / f"file_{index:03d}.py").write_text(
+            "Local AI Hub agent\n", encoding="utf-8",
+        )
+
+    tools = RepositoryTools({})
+    tools.max_hits = 8
+    inventory_calls = []
+    monkeypatch.setattr(
+        tools, "_git_files", lambda _root: inventory_calls.append(True) or None,
+    )
+    service = object.__new__(LocalAIServices)
+    service.config = {
+        "server": {"state_dir": str(tmp_path / "state")},
+        "features": {"rag": True},
+    }
+    service.repo_tools = tools
+    service.learner = service.deterministic = service.code_index = None
+    service.preprocessor = service.evidence_store = None
+    service._repo_cache_state = lambda _root: {}
+    monkeypatch.setattr(
+        service, "_repo_rag_search",
+        lambda _root, _query, _top_k: ([], {"success": False, "reason": "embedding_backend"}),
+    )
+
+    result = service.repo_search(
+        str(root), "Local AI Hub installation", search_mode="hybrid", limit=5,
+    )
+
+    assert result["success"] is True
+    assert result["result_source"] == "lexical_fallback"
+    assert "docs/INSTALLATION.md" in {row["path"] for row in result["results"]}
+    assert inventory_calls == [True]
+
+
+def test_hybrid_fallback_uses_expansion_and_entry_points_for_code_index_queries(tmp_path, monkeypatch):
+    root = tmp_path / "repo"
+    noise = root / "src" / "aaa_noise"
+    source = root / "src" / "local_ai_hub"
+    noise.mkdir(parents=True)
+    source.mkdir(parents=True)
+    (root / ".local-ai.toml").write_text(
+        'project_type = "python"\nentry_points = ["src"]\n',
+        encoding="utf-8",
+    )
+    target = source / "code_index.py"
+    target.write_text(
+        "".join("code_index = True\n" for _ in range(20)) + "max_index_bytes = 512\n",
+        encoding="utf-8",
+    )
+    for index in range(300):
+        (noise / f"file_{index:03d}.py").write_text(
+            "max_index_bytes = 64\n", encoding="utf-8",
+        )
+
+    tools = RepositoryTools({})
+    tools.max_hits = 1
+    service = object.__new__(LocalAIServices)
+    service.config = {
+        "server": {"state_dir": str(tmp_path / "state")},
+        "features": {"rag": True},
+    }
+    service.repo_tools = tools
+    service.learner = service.deterministic = service.code_index = None
+    service.preprocessor = service.evidence_store = None
+    service._repo_cache_state = lambda _root: {}
+    monkeypatch.setattr(
+        service, "_repo_rag_search",
+        lambda _root, _query, _top_k: ([], {"success": False, "reason": "embedding_backend"}),
+    )
+
+    result = service.repo_search(
+        str(root), "Jak nastavit limit code indexu?", search_mode="hybrid", limit=5,
+    )
+
+    assert result["success"] is True
+    assert result["result_source"] == "lexical_fallback"
+    target_result = next(
+        row for row in result["results"]
+        if row["path"] == "src/local_ai_hub/code_index.py"
+    )
+    assert "max_index_bytes = 512" in target_result["text"]
+
+
+def test_hybrid_candidate_budget_scales_with_requested_page(tmp_path, monkeypatch):
+    root = tmp_path / "repo"
+    source = root / "src"
+    source.mkdir(parents=True)
+    (root / ".local-ai.toml").write_text(
+        'project_type = "python"\nentry_points = ["src"]\n',
+        encoding="utf-8",
+    )
+    (source / "setup.py").write_text("installation = True\n", encoding="utf-8")
+
+    tools = RepositoryTools({})
+    tools.max_hits = 160
+    budgets = []
+    monkeypatch.setattr(
+        tools, "_ripgrep_candidates",
+        lambda _base, _terms, max_matches, *, candidate_paths=None: (
+            budgets.append(max_matches) or [], False,
+        ),
+    )
+    service = object.__new__(LocalAIServices)
+    service.config = {
+        "server": {"state_dir": str(tmp_path / "state")},
+        "features": {"rag": True},
+    }
+    service.repo_tools = tools
+    service.learner = service.deterministic = service.code_index = None
+    service.preprocessor = service.evidence_store = None
+    service._repo_cache_state = lambda _root: {}
+    monkeypatch.setattr(
+        service, "_repo_rag_search",
+        lambda _root, _query, _top_k: ([], {"success": False, "reason": "embedding_backend"}),
+    )
+
+    service.repo_search(
+        str(root), "Local AI Hub installation", search_mode="hybrid", limit=10,
+    )
+
+    assert budgets
+    assert max(budgets) <= 81
+
+
+def test_repository_search_defaults_to_lexical_for_natural_language(monkeypatch):
     service = _service(monkeypatch, [{"path": "docs/semantic-only.md", "text": "semantic"}])
     rag_calls = []
     lexical_calls = []
@@ -124,9 +262,9 @@ def test_repository_search_defaults_to_hybrid_for_natural_language(monkeypatch):
 
     result = service.repo_search(".", "natural language query")
 
-    assert result["search_mode"] == "hybrid"
+    assert result["search_mode"] == "lexical"
     assert lexical_calls == ["natural language query"]
-    assert rag_calls == ["natural language query"]
+    assert rag_calls == []
 
 
 @pytest.mark.parametrize("query", ["repo_search", "C++"])
@@ -162,8 +300,8 @@ def test_repository_search_defaults_to_lexical_for_exact_identifiers(monkeypatch
     ("How do I find repo_search?", "lexical"),
     ("How do I train a dragon to parse violet_heron_20261106?", "lexical"),
 ])
-def test_default_search_mode_selects_agent_safe_mode(query, expected):
-    assert default_search_mode(query) == expected
+def test_default_agent_search_mode_selects_agent_safe_mode(query, expected):
+    assert default_agent_search_mode(query) == expected
 
 
 @pytest.mark.parametrize(("query", "expected"), [
@@ -907,7 +1045,10 @@ def test_hybrid_rag_unavailable_keeps_bounded_natural_query_page(monkeypatch):
     assert calls[0]["offset"] == 2
     assert calls[0]["limit"] == 1
     assert calls[0].get("candidate_paths") is None
-    assert calls[0].get("candidate_query") is None
+    candidate_query = calls[0].get("candidate_query")
+    assert isinstance(candidate_query, str)
+    assert candidate_query.startswith("Local AI Hub installation ")
+    assert "setup" in candidate_query
 
 
 def test_hybrid_degraded_empty_rag_candidates_use_bounded_lexical_page(monkeypatch):
@@ -946,7 +1087,10 @@ def test_hybrid_degraded_empty_rag_candidates_use_bounded_lexical_page(monkeypat
     assert calls[0]["limit"] == 1
     assert calls[0]["exact_count"] is False
     assert calls[0].get("candidate_paths") is None
-    assert calls[0].get("candidate_query") is None
+    candidate_query = calls[0].get("candidate_query")
+    assert isinstance(candidate_query, str)
+    assert candidate_query.startswith("Local AI Hub installation ")
+    assert "setup" in candidate_query
 
 
 def test_invalid_search_mode_rejects(monkeypatch):

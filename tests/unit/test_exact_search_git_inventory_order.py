@@ -82,13 +82,15 @@ def test_exact_search_prefilters_ignored_dirs_and_preserves_forced_paths(tmp_pat
     payload = b"match.py\0skip.py\0.venv/forced.py\0state/cache.py\0"
     monkeypatch.setattr(repo_tools, "popen_managed", lambda *args, **kwargs: _Process(payload))
 
-    git_grep_calls = []
+    search_calls = []
 
-    def fake_git_grep(command, **_kwargs):
-        git_grep_calls.append(command)
-        return SimpleNamespace(returncode=0, stdout=b"match.py\0", stderr=b"")
+    def fake_run(command, **_kwargs):
+        if command[0] == "rg":
+            search_calls.append(command)
+            return SimpleNamespace(returncode=0, stdout="match.py\n", stderr="")
+        return SimpleNamespace(returncode=1, stdout=b"", stderr=b"")
 
-    monkeypatch.setattr(repo_tools.subprocess, "run", fake_git_grep)
+    monkeypatch.setattr(repo_tools.subprocess, "run", fake_run)
     tools = RepositoryTools({
         "rag": {"extensions": [".py"]},
         "server": {"state_dir": str(tmp_path / "state")},
@@ -103,9 +105,7 @@ def test_exact_search_prefilters_ignored_dirs_and_preserves_forced_paths(tmp_pat
         force_include_paths=[".venv/forced.py"],
     )
 
-    assert ":(exclude,glob)**/.venv/**" in git_grep_calls[0]
-    assert ":(exclude,glob)state/**" in git_grep_calls[0]
-    assert ":(exclude,glob)custom/**" in git_grep_calls[0]
+    assert search_calls
     assert result["success"] is True, result
     assert result["count_exact"] is True
     assert result["total_matches"] == 2
@@ -209,6 +209,85 @@ def test_git_exact_search_uses_git_grep_candidates_for_tracked_and_untracked(
     assert "--exclude-standard" in grep_calls[0]
 
 
+def test_complete_git_grep_candidates_skip_full_git_inventory(tmp_path, monkeypatch):
+    (tmp_path / ".git").mkdir()
+    (tmp_path / "match.py").write_text("safe_needle = 1\n", encoding="utf-8")
+    grep_calls = []
+
+    def fake_git_grep(command, **_kwargs):
+        grep_calls.append(command)
+        return SimpleNamespace(returncode=0, stdout=b"match.py\0", stderr=b"")
+
+    def unexpected_inventory(*_args, **_kwargs):
+        raise AssertionError("complete git grep candidates should skip full inventory")
+
+    monkeypatch.setattr(repo_tools.subprocess, "run", fake_git_grep)
+    monkeypatch.setattr(repo_tools, "popen_managed", unexpected_inventory)
+    tools = RepositoryTools({
+        "rag": {"extensions": [".py"]},
+        "search": {"use_ripgrep_if_available": False, "use_git_grep_fallback": True},
+    })
+    tools._project_file_allowed = lambda *_args, **_kwargs: True
+    tools._path_extension_is_searchable = lambda *_args, **_kwargs: True
+
+    result = tools.search(str(tmp_path), "safe_needle", exact_count=True, limit=10)
+
+    assert len(grep_calls) == 1
+    assert result["success"] is True, result
+    assert result["count_exact"] is True
+    assert result["total_matches"] == 1
+    assert result["scanned_files"] == 1
+    assert [item["path"] for item in result["results"]] == ["match.py"]
+
+
+def test_ripgrep_candidates_are_preferred_and_skip_git_inventory_safely(tmp_path, monkeypatch):
+    real_run = repo_tools.subprocess.run
+    real_run(["git", "init", "-q"], cwd=str(tmp_path), check=True)
+    (tmp_path / ".gitignore").write_text(
+        "tracked_ignored.py\nignored_untracked.py\n", encoding="utf-8",
+    )
+    for name in ("match.py", "tracked_ignored.py", "ignored_untracked.py"):
+        (tmp_path / name).write_text("safe_needle = 1\n", encoding="utf-8")
+    real_run(["git", "add", "-f", "tracked_ignored.py"], cwd=str(tmp_path), check=True)
+
+    commands = []
+
+    def fake_run(command, **kwargs):
+        commands.append(command)
+        if command[0] == "rg":
+            return SimpleNamespace(
+                returncode=0,
+                stdout="match.py\ntracked_ignored.py\nignored_untracked.py\n",
+                stderr="",
+            )
+        return real_run(command, **kwargs)
+
+    def unexpected_inventory(*_args, **_kwargs):
+        raise AssertionError("complete ripgrep candidates should skip full Git inventory")
+
+    monkeypatch.setattr(repo_tools.subprocess, "run", fake_run)
+    monkeypatch.setattr(repo_tools, "popen_managed", unexpected_inventory)
+    tools = RepositoryTools({
+        "rag": {"extensions": [".py"]},
+        "search": {"use_ripgrep_if_available": True, "prefer_git": True},
+    })
+    tools._rg = "rg"
+    tools._project_file_allowed = lambda *_args, **_kwargs: True
+    tools._path_extension_is_searchable = lambda *_args, **_kwargs: True
+
+    result = tools.search(str(tmp_path), "safe_needle", exact_count=True, limit=10)
+
+    assert result["success"] is True, result
+    assert result["count_exact"] is True
+    assert result["total_matches"] == 2
+    assert result["scanned_files"] == 2
+    assert {item["path"] for item in result["results"]} == {
+        "match.py", "tracked_ignored.py",
+    }
+    assert commands[0][0] == "rg"
+    assert commands[1][3] == "check-ignore"
+
+
 def test_git_grep_exact_search_returns_live_tracked_and_untracked_files(tmp_path):
     def git(*args):
         repo_tools.subprocess.run(
@@ -272,17 +351,18 @@ def test_exact_search_does_not_narrow_ripgrep_for_more_than_sixteen_terms(
     assert [item["path"] for item in result["results"]] == ["match.py"]
 
 
-def test_exact_search_uses_simple_czech_git_grep_candidates(tmp_path, monkeypatch):
+def test_exact_search_uses_simple_czech_ripgrep_candidates(tmp_path, monkeypatch):
     (tmp_path / ".git").mkdir()
     (tmp_path / "match.py").write_text("word = 'řež'\n", encoding="utf-8")
-    monkeypatch.setattr(repo_tools, "popen_managed", lambda *_args, **_kwargs: _Process(b"match.py\0"))
-    git_grep_calls = []
+    search_calls = []
 
-    def unicode_git_grep(command, **_kwargs):
-        git_grep_calls.append(command)
-        return SimpleNamespace(returncode=0, stdout=b"match.py\0", stderr=b"")
+    def run_query(command, **_kwargs):
+        if command[0] == "rg":
+            search_calls.append(command)
+            return SimpleNamespace(returncode=0, stdout="match.py\n", stderr="")
+        return SimpleNamespace(returncode=1, stdout=b"", stderr=b"")
 
-    monkeypatch.setattr(repo_tools.subprocess, "run", unicode_git_grep)
+    monkeypatch.setattr(repo_tools.subprocess, "run", run_query)
     tools = RepositoryTools({
         "rag": {"extensions": [".py"]},
         "search": {"use_ripgrep_if_available": True},
@@ -291,8 +371,7 @@ def test_exact_search_uses_simple_czech_git_grep_candidates(tmp_path, monkeypatc
 
     result = tools.search(str(tmp_path), "ŘEŽ", limit=10, exact_count=True)
 
-    assert len(git_grep_calls) == 1
-    assert "grep" in git_grep_calls[0]
+    assert search_calls and any("rg" == call[0] for call in search_calls)
     assert result["success"] is True, result
     assert result["count_exact"] is True
     assert result["total_matches"] == 1

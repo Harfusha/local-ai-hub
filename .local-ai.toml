@@ -1,7 +1,7 @@
 # Local AI Hub project configuration
 project_type = "python"
 model_profile = "balanced"
-pinned_context = ["README.md", "defaults.toml"]
+pinned_context = ["README.md", "defaults.toml", "docs/INSTALLATION.md", "docs/CODE_INDEX.md"]
 entry_points = ["src", "tools"]
 exclude_paths = [
     ".pytest_cache/**",

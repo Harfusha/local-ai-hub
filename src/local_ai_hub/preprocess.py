@@ -88,8 +88,8 @@ def _ensure_file_refs_revision_tracking(con: sqlite3.Connection) -> None:
     if trigger_row is not None:
         trigger_sql = str(trigger_row[0] or "")
         if any(f"OLD.{column} IS NOT NEW.{column}" not in trigger_sql for column in update_columns):
-            # Rebuild only outdated derived triggers. Avoid unnecessary schema
-            # writes on every Hub start while upgrading old index databases.
+            # Upgrade only an outdated derived trigger; avoid schema writes on
+            # every Hub start when the stored invalidation contract is current.
             con.execute("DROP TRIGGER file_refs_revision_update")
     con.executescript(
         """
@@ -333,9 +333,8 @@ class ProjectPreprocessor:
         # once per batch after the short RepositoryTools TTL expires.
         self._hash_git_maps: dict[tuple[str, int], dict[str, str]] = {}
         self._hash_git_maps_lock = threading.RLock()
-        # Pruning the per-root code indexes is a consistency operation, not part
-        # of every bounded parse batch. Repeat it only after source-generation or
-        # path-policy changes invalidate the previously pruned view.
+        # Prune the per-root code index only when source inventory or path policy
+        # changes; reuse a revision-fenced allowlist across bounded parse batches.
         self._code_index_pruned_generations: set[tuple[Any, ...]] = set()
         self._deterministic_pruned_generations: set[tuple[str, int]] = set()
         self._missing_refs_checked_generations: set[tuple[str, int]] = set()
@@ -3359,14 +3358,18 @@ class ProjectPreprocessor:
                 ).fetchone()
                 source_revision = int(revision_row[0]) if revision_row is not None else 0
             except sqlite3.Error:
-                # Keep indexing available on an older or damaged derived DB; skip
-                # caching until the revision trigger table is available again.
+                # Older or damaged derived state has no usable revision fence;
+                # rebuild the allowlist and prune on each bounded pass.
                 source_revision = None
-            if source_revision is not None and allowed_cache_lock is not None and isinstance(allowed_cache, dict):
+            if allowed_cache_lock is not None and isinstance(allowed_cache, dict) and source_revision is not None:
                 with allowed_cache_lock:
                     cached = allowed_cache.get(root)
-                    if (cached is not None and cached[0] == int(row.get("generation", 0) or 0)
-                            and cached[1] == source_revision and cached[2] == settings):
+                    if (
+                        cached is not None
+                        and cached[0] == generation_key[1]
+                        and cached[1] == source_revision
+                        and cached[2] == settings
+                    ):
                         allowed = cached[3]
                         allowed_cache.pop(root, None)
                         allowed_cache[root] = cached
@@ -3389,20 +3392,24 @@ class ProjectPreprocessor:
                             size_bytes=int(row_ref["size"] or 0), path_policy=path_policy,
                         ):
                             allowed[path] = str(row_ref["content_hash"])
-                if source_revision is not None and allowed_cache_lock is not None and isinstance(allowed_cache, dict):
+                if (
+                    source_revision is not None
+                    and allowed_cache_lock is not None
+                    and isinstance(allowed_cache, dict)
+                ):
                     if len(allowed) <= 50_000:
                         with allowed_cache_lock:
                             allowed_cache.pop(root, None)
                             allowed_cache[root] = (
-                                int(row.get("generation", 0) or 0), source_revision, settings, allowed,
+                                generation_key[1], source_revision, settings, allowed,
                             )
                             while len(allowed_cache) > 4:
                                 allowed_cache.pop(next(iter(allowed_cache)))
                     else:
                         with allowed_cache_lock:
                             allowed_cache.pop(root, None)
-        prune_key = (root, generation_key[1], repr(settings), source_revision)
         pruned_generations = getattr(self, "_code_index_pruned_generations", set())
+        prune_key = (root, generation_key[1], repr(settings), source_revision)
         if source_revision is None or prune_key not in pruned_generations:
             prune_result = self.code_index.prune(root, allowed.keys())
             if not isinstance(prune_result, dict) or prune_result.get("success") is not True:

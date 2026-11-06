@@ -86,9 +86,15 @@ Both installation queries and `Jak omezit velikost code indexu?` missed their la
 
 The holdout synthetic benchmark (`python tools/benchmark_search_quality.py --repeats 3 --noise-files 100 --suite holdout`) scored recall@10 1.0 and MRR 1.0 over seven cases. Its precision@10 was 0.5 on two broad positive cases and 1.0 on the remaining positives and negative case; per-case median latencies were 37–44 ms and nearest-rank p95 values 42–96 ms. This synthetic result is separate from the real-repository failures above and does not establish general quality.
 
+### Hybrid fallback after candidate-priority changes — 2026-11-06
+
+Repeated the isolated real-repository benchmark with eight manually anchored queries, three requests per query, and service caching enabled. The fallback found every labeled file in the top 10 (8/8, MRR 0.844). Exact-symbol cases and both installation queries ranked first; the Czech code-index queries ranked their labeled files second and fourth. The search now prioritizes query-matching paths before checking access and limits the remaining lexical scan to at most 320 files for installation intent and 256 otherwise; omitted paths report `candidate_file_limit`, so the fallback does not claim full coverage. Across eight cold and sixteen warm samples, cold median/p95 were 787/1,501 ms and warm median/p95 were 111/185 ms. Against the pre-cap same-harness run, cold median/p95 fell from 2,141/3,893 ms (about 63%/61%). Four natural-language cases explicitly degraded because RAG was disabled; the reranker ran zero times. This improves the earlier fallback relevance and cold latency result but does not measure live RAG, reranking, HTTP/MCP, or the running Hub.
+
 ## Live Hub RAG check — 2026-11-06
 
 `local_ai_rag:list` reported 2,506 files and 20,592 chunks for this workspace. A live `Local AI Hub installation` query returned no candidates and explicitly reported `degraded=true`, `fallback=embedding_space_mismatch`, and `reindex_required=true` for index revision `f894d022ec08cc06964ebe62192df5fc8bd1cf7b5d9a982b51b3cf5dfc9b873f`. Two authorized index attempts returned retryable `gpu_reserved`. After the expired lease was reaped, a new 64-byte reservation fence appeared without lease metadata; Hub status then reported `gpu_admission_state=outcome_unknown`. This is an unavailable live-RAG measurement, not a relevance score. No reservation file was edited and no model was downloaded.
+
+The operator explicitly authorized the supported orphan-fence recovery. The authorized release marker was recorded without directly editing or deleting a reservation file. A subsequent Hub readiness check still reported `gpu_admission_state=outcome_unknown`, `vram_pressure=unknown`, and stale `sample_pending` telemetry, so CUDA indexing and reranking remain unmeasured and were not started.
 
 ## Synthetic vector-retrieval baseline — 2026-11-06
 

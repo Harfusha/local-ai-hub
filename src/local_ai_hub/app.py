@@ -8,6 +8,7 @@ import json
 import sqlite3
 import threading
 import time
+import traceback
 import zipfile
 from contextlib import ExitStack
 from concurrent.futures import CancelledError
@@ -380,6 +381,30 @@ class BundleValidationError(ValueError):
     """Raised when bundle validation or scope verification fails."""
 
 
+def _record_startup_prewarm_failure(debug_traces: Any, model: str, error: BaseException) -> str:
+    """Retain startup prewarm exception details only in opt-in local traces."""
+    if getattr(debug_traces, "enabled", False) is not True:
+        return ""
+    try:
+        trace_id = debug_traces.start(
+            kind="system",
+            action="startup_prewarm",
+            source="startup",
+            model=str(model),
+            initial_event=("prewarm_attempt_failed", {
+                "exception_type": type(error).__name__,
+                "exception_message": str(error),
+                "traceback": "".join(traceback.format_exception(error)),
+            }),
+        )
+        if trace_id:
+            debug_traces.finish(trace_id, state="failed")
+        return trace_id
+    except Exception:
+        # Diagnostics must never change startup or scheduler behavior.
+        return ""
+
+
 class LocalAIApp:
     vram_balancer: Any = None
     swarm: Any = None
@@ -600,6 +625,7 @@ class LocalAIApp:
                             return
                     except Exception as exc:
                         self.telemetry.record_error("prewarm", "startup_model", exc, recovered=True)
+                        _record_startup_prewarm_failure(self.debug_traces, str(model), exc)
                         self.logger.warning("prewarm attempt failed: %s", type(exc).__name__)
                     if not _prewarm_should_retry(self.scheduler):
                         self.logger.warning("prewarm stopped: GPU admission is unavailable or outcome is unknown")

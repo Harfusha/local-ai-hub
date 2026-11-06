@@ -2351,3 +2351,80 @@ These were advisory `local_ai_task(action="compress")` calls using the authentic
 - Source now strips the query from model input, strengthens claim-grounding instructions and clips leading adjacent Python definitions with adjusted source ranges. Regression and summary tests: 13 passed, 108 deselected. Active runtime behavior has not been verified against this checkout change. Keep route advisory and unqualified; no more inference until runtime/source alignment is known.
 - Runtime check: HTTP Hub PID 5736 online. Separate Codex MCP Python PIDs 25032/29268 started 10:54:37, before edited source timestamp 13:03:36. MCP launch config runs `local_ai_hub.mcp_server` from `install_dir`; Hub restart alone will not reload MCP wrapper. Diff review `req_d392f704f353` failed in qwen3.5:4b-nvfp4; no retry. Restart/reconnect MCP server before the next live probe.
 - Follow-up: the live summary probe `req_cade9e7b8b37` was rejected before inference (`qwen3.5:4b-nvfp4` insufficient VRAM; `qwen3.5:9b-nvfp4` circuit open). It still returned untrimmed source metadata `6082-6092`; no quality result. Stopped the stale MCP parent/child, then managed Hub restart succeeded; new HTTP PID 29996. Post-restart state `preparing_model`; do not retry until a later independent readiness check.
+
+### Search summary quality probe — 2026-11-06, current runtime
+
+- Deterministic baseline request `req_8a2a449cdfbe` returned exact `docs/MODEL_CAPABILITIES.md` excerpts, `count_exact=true`, and `total_matches=4076`. The summary probe `req_e2c7991132c8` returned three lexical rows from the same file; `qwen3.5:4b-nvfp4` nested request `req_9ba398d1af23` produced an advisory summary. Source validation was `source_bound` with two references.
+- Quality failed: summary bullet two had no citation; its uncertainty line said the total count was unknown although the deterministic response gave exact `total_matches=4076`. The nested summary budget reported `truncated=true`, despite the top-level envelope being complete. Do not count this as a passing summary or route qualification. One sample only; no latency, VRAM-attributed, or paired performance conclusion.
+- Earlier query `req_ff0533408742` failed source verification (`unverified_source_citation`) and retrieved dashboard/MCP description snippets irrelevant to its requested capability-policy answer. This is a separate retrieval/grounding failure.
+- Preflight readiness `req_b0c36527f11f`: `qwen3.5:4b-nvfp4` active, admission available, VRAM pending/stale/unknown. Reservation was free before (`req_27dc0e19eb18`) and after (`req_e4b25052e9ab`) the probe. No admission bypass or model pull.
+
+## 2026-11-06 — Search summary guard regression
+
+- Tightened `search_ai_summary`: reject malformed/non-list summaries, require a valid source citation on every bullet, and reject nested `response_budget.truncated=true`.
+- Search-summary excerpts now clip adjacent leading code/decorators when the query names a function or class. The query remains absent from the model payload.
+- Live W4 quality remains **FAIL / NOT QUALIFIED**: one cited summary included uncited claims and nested truncation; another response failed citation validation. No live rerun after the fix: Hub reported `gpu_admission_state=outcome_unknown`, active model null, and VRAM unknown.
+- Focused verification: `python -m pytest -q tests/test_mcp_agent_routing.py -k 'search_ai_summary or search_summary_source_span_drops_adjacent_function_tail' --tb=short` → **16 passed, 108 deselected**. `git diff --check` passed for edited code, tests, and evaluation docs.
+- Performance, quality qualification, and profile promotion remain open.
+
+## 2026-11-06 — Lexical default regression and W4 live probe
+
+- An opt-in summary request with omitted `search_mode` unexpectedly used `hybrid`: `req_3756446e33bc`. It returned 38 candidates, inexact count/coverage, a truncated envelope, and rejected the model summary as `invalid_summary_structure`. No generated summary was exposed.
+- Restored lexical as the omitted-mode default and restored exact embedded-identifier anchoring for explicit hybrid and lexical search. Explicit `hybrid`/`rag` remain available. After restart, deterministic MCP search `req_8920a0a94775` reported `search_mode=lexical`, `count_exact=true`, `total_matches=3916`, `reranker.requested=false`; one row was returned with `has_more=true` due response budgeting.
+- Focused validation: `tests/unit/test_search_mode_fusion.py` → **50 passed**; `tests/test_mcp_agent_routing.py -k search_ai_summary` → **15 passed, 109 deselected**. Scoped `git diff --check` passed.
+- Restart first returned `hub_stop_unverified` and stopped Ollama; `service.py start` recovered the Hub. Current service status was online. The latest readiness snapshot showed an active external embedding reservation; no further inference or GPU work was started.
+- Search-summary quality remains **FAIL / NOT QUALIFIED**. RTX 5070 Ti performance, paired baseline and route promotion remain unverified.
+
+## 2026-11-06 — Post-expiry scheduler state
+
+- After the embedding reservation expired, readiness `req_175b8c991b63` still reported `gpu_admission_state=outcome_unknown`, `active_model=null`, and VRAM unknown; reservation `req_134d76524947` was free. This confirms internal scheduler uncertainty persists independently of the external reservation marker.
+- No additional inference or restart was attempted. W4 live quality and W6 performance remain unqualified; resume only after normal scheduler recovery and verified readiness.
+
+## 2026-11-06 — Embedding worker remains live
+
+- The last reservation owner was `embedding:20388:23476`. Process inspection identified PID 20388 as a live Hub Python worker; a bounded 10-second wait ended with `worker_still_running`.
+- Readiness remains `outcome_unknown` despite a free external reservation. No worker kill, forced reservation release or further restart was performed. GPU evaluation remains paused pending normal worker completion/recovery.
+
+## 2026-11-06 — Repeated internal uncertainty blocks GPU acceptance
+
+- Current readiness `req_15c9a6a3b809` still reports `gpu_admission_state=outcome_unknown`, no active model, and unknown VRAM; reservation `req_bad35815ec6a` is free. Hub and Ollama remain online.
+- The live Hub Python process tied to the last embedding reservation remained alive after an additional bounded 5-second wait. A prior runtime audit records `_internal_gpu_uncertain` as a separate fail-closed scheduler state and requires authentic diagnostics or owner-authorized recovery; manual reset, forced release, inference and benchmarking are unsafe while uncertain.
+- W4 model quality, W6 hardware measurements, route thresholds and release gates cannot be completed until scheduler recovery.
+
+## 2026-11-06 — Authorized restart did not restore scheduler readiness
+
+- After PID 20388 exited, the previously authorized `python tools/service.py restart` completed successfully. The first status `req_41e4415c71e3` showed the Hub and Ollama online, `gpu_admission_state=preparing_model`, nominal VRAM telemetry, no active model, and a free external reservation (`req_3b5986faeb44`). This was not residency or GPU-use evidence.
+- A later single readiness check `req_68bf8cfaae75` returned `gpu_admission_state=outcome_unknown`, `active_model=null`, `vram_pressure=unknown`, context budget factor 0.25, and stale unavailable telemetry (`sample_pending`, `sampling=true`). No inference or benchmark was started after that result.
+- Targeted regression checks `tests/unit/test_vram_balancer_telemetry_validity.py` and `tests/unit/test_vram_balancer_non_blocking.py` passed: 28 tests. These are mocked/unit safeguards, not live GPU or scheduler recovery proof.
+- Scheduler source confirms a failed or exceptional model preparation can set `_internal_gpu_uncertain`; the runtime exception causing this live state is still unknown. Do not clear the fail-closed state manually or claim RTX 5070 Ti readiness. W4 quality and W6 performance acceptance remain open.
+- Source tracing found a plausible startup path: `app.py` enables prewarm by default, gates it on backend/route readiness, then calls `scheduler.prewarm`; exceptions are recorded as `prewarm/startup_model` and logged only by exception type. This is a candidate explanation for the transition from `preparing_model` to `outcome_unknown`, not a confirmed cause: the active override, selected model and live exception are not present in the aggregate status evidence.
+
+## 2026-11-06 — Opt-in startup-prewarm exception trace
+
+- Dashboard confirmed Detailed diagnostics is enabled. Service Health still exposes only the sanitized `model_attempt_interrupted: unexpected failure` fingerprint; the `/api/review/diff` trace has no model-execution payload. No retained trace identifies the startup-prewarm exception or confirms it caused scheduler uncertainty.
+- Added an opt-in local debug trace for startup-prewarm failures with exception type, message and full traceback. When detailed traces are disabled, the helper records nothing. The bounded trace store keeps this detail local; ordinary telemetry and warning logs stay sanitized.
+- TDD: `tests/test_startup_prewarm_diagnostics.py` first failed collection because the helper did not exist; after implementation it passed (**1 passed**). Existing fail-closed guard `tests/test_opencode_gpu_reservation.py::test_unknown_internal_outcome_still_reaps_expired_external_fence` passed (**1 passed**). Scoped `git diff --check` passed.
+- No restart, inference, reservation release or benchmark was performed. The source change has not run in the active Hub; root cause, scheduler recovery, W4 quality and W6 hardware acceptance remain **NOT VERIFIED**.
+
+## 2026-11-06 — Diagnostics re-enabled; GPU still in use
+
+- Fresh `local_ai_status` request `req_3300bc2834a7`: Hub/Ollama online, profile `high`, `active_model=null`, `gpu_admission_state=outcome_unknown`, VRAM pressure `unknown`, telemetry `sample_pending` and stale. Reservation request `req_3d16348621a6` reported `state=free`.
+- Dashboard control was **Off** when rechecked. Enabled Detailed telemetry and verified `Detailed telemetry: On` with `aria-pressed=true` and a fresh screenshot.
+- Dashboard later showed GPU utilization at 99% and VRAM at 12,396/16,303 MB while inventory was stale. Attribution is unavailable; scheduler queues showed no active job. Do not infer this GPU use belongs to the Hub or interrupt the process. No restart or inference was started.
+- Detailed telemetry is now ready to capture future failures, but retained errors predate the toggle and remain sanitized. Startup tracing source is not loaded in the live process. Scheduler root cause, W4 quality, W6 hardware measurements and route-promotion gates remain **NOT VERIFIED**.
+- Focused deterministic/MCP regressions run without model inference: `tests/unit/test_exact_search_git_inventory_order.py`, `tests/unit/test_search_mode_fusion.py`, `tests/unit/test_real_search_benchmark.py` → **73 passed**; `tests/test_mcp_agent_routing.py -k search_ai_summary` → **15 passed, 109 deselected**. These prove the selected source paths only; they do not qualify local-model quality or GPU performance.
+
+## 2026-11-06 — GPU admission rejection during active game workload
+
+- Dashboard Doctor completed with all checks healthy and reported managed Ollama + llama.cpp on `CUDA0`, RTX 5070 Ti at 11,792/16,303 MiB and 73.12°C. `hubctl status` reported Hub online, 7 installed models, 1 model online and the RTX 5070 Ti.
+- Fresh `local_ai_status` `req_6f7674ca3d4f` reported `gpu_admission_state=available`, `active_model=null`, but stale VRAM telemetry. One 32-token `qwen3.5:4b-nvfp4` hardware benchmark (`req_b63f2696c552`) was rejected before inference with `vram_admission=rejected`, `error_code=vram_budget`, `insufficient VRAM for model admission`.
+- Read-only `nvidia-smi` then measured 11,538/16,303 MiB, 99% utilization and 74.58°C. Its process list included `bg3_dx11.exe` PID 33352 and managed `llama-server.exe` PID 10540; WDDM returned `[N/A]` per-process memory, so exact attribution is unknown. No process was stopped and no inference ran.
+- Hardware/quality evaluation remains **NOT VERIFIED**. Resume only after external GPU load drops and a fresh admission/VRAM check permits the scheduler benchmark.
+- Follow-up after resuming the goal: `local_ai_status` `req_81de1ef943ff` remained `gpu_admission_state=available` but VRAM telemetry stale/unknown; reservation `req_62614e401193` remained free. Read-only `nvidia-smi` rose to 12,125/16,303 MiB at 100% utilization and 74.44°C. The same BG3 and `llama-server.exe` PIDs remained in the process list; per-process VRAM stayed unavailable. No second benchmark was sent.
+
+## 2026-11-06 — Targeted tier and release checks
+
+- `python -m pytest -q tests/test_mcp_agent_routing.py -k search_ai_summary` → **15 passed, 109 deselected**.
+- `python tools/release_check.py --allow-installed` → **release-check: OK**.
+- `python -m compileall -q src/local_ai_hub` → **passed**. These checks do not qualify local-model quality or RTX 5070 Ti capacity. Broad pytest and selftest remain unrun per user instruction to run only specific tests.
+- Latest read-only sample after those checks: RTX 5070 Ti at 13,524/16,303 MiB, 99% utilization and 71.58°C. BG3 PID 33352 and `llama-server.exe` PID 10540 remain listed; WDDM still reports per-process memory as `[N/A]`. No model request was submitted.

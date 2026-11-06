@@ -1343,7 +1343,7 @@ class RepositoryTools:
                 added_chars = len(relative) + 4
                 if added_chars + fixed_chars > 20_000:
                     return None, True
-                if current and (len(current) >= 192 or current_chars + added_chars + fixed_chars > 20_000):
+                if current and (len(current) >= 512 or current_chars + added_chars + fixed_chars > 20_000):
                     batches.append(current)
                     current = []
                     current_chars = 0
@@ -1653,8 +1653,12 @@ class RepositoryTools:
     def _iter_project_search_files(
         self, base: Path, project_settings: Any, max_depth: int,
         *, git_inventory: Any = _UNSET_GIT_INVENTORY,
+        candidate_limit: int | None = None,
+        candidate_priority_terms: Iterable[str] = (),
     ) -> Iterable[Path]:
         limit = max(1, min(int(self.max_files), 100_000))
+        if candidate_limit is not None:
+            limit = min(limit, max(1, int(candidate_limit)))
         _text, _binary, _forced, maximum = self._project_settings_values(project_settings)
         forced_paths = self._expand_project_force_paths(base, project_settings, limit)
         seen: set[str] = set()
@@ -1668,6 +1672,30 @@ class RepositoryTools:
             yield path
             if yielded >= limit:
                 return
+
+        pinned_context = getattr(project_settings, "pinned_context", ())
+        if isinstance(pinned_context, (list, tuple)):
+            for raw_path in pinned_context[:_MAX_PATH_CONTROLS]:
+                if not isinstance(raw_path, str) or not raw_path.strip():
+                    continue
+                relative_path = Path(raw_path.replace("\\", "/"))
+                if relative_path.is_absolute() or any(
+                    part in {"", ".", ".."} for part in relative_path.parts
+                ):
+                    continue
+                path = base / relative_path
+                key = str(path.resolve(strict=False))
+                # Pinned context improves candidate order, but does not bypass
+                # project access policy, extension checks, or symlink guards.
+                if key in seen or not self._project_file_allowed(
+                    base, path, project_settings,
+                ):
+                    continue
+                seen.add(key)
+                yielded += 1
+                yield path
+                if yielded >= limit:
+                    return
 
         git_files = (
             self._git_files(base)
@@ -1700,6 +1728,66 @@ class RepositoryTools:
                         break
             except (OSError, RuntimeError, ValueError):
                 pass
+
+        entry_points = getattr(project_settings, "entry_points", ())
+        entry_point_parts: list[tuple[str, ...]] = []
+        if isinstance(entry_points, (list, tuple)):
+            for raw_entry in entry_points[:_MAX_PATH_CONTROLS]:
+                if not isinstance(raw_entry, str) or not raw_entry.strip():
+                    continue
+                normalized_entry = raw_entry.replace("\\", "/").strip("/")
+                parts = tuple(part for part in normalized_entry.split("/") if part)
+                if (
+                    not parts or any(part in {".", ".."} for part in parts)
+                    or PureWindowsPath(normalized_entry).is_absolute()
+                    or PureWindowsPath(normalized_entry).drive
+                ):
+                    continue
+                entry_point_parts.append(parts)
+        if entry_point_parts and candidates:
+            priority_groups: list[list[Path]] = [[] for _ in entry_point_parts]
+            remaining_candidates: list[Path] = []
+            for candidate in candidates:
+                try:
+                    relative_parts = candidate.relative_to(base).parts
+                except ValueError:
+                    remaining_candidates.append(candidate)
+                    continue
+                matched_rank = next((
+                    rank for rank, prefix in enumerate(entry_point_parts)
+                    if relative_parts[:len(prefix)] == prefix
+                ), None)
+                if matched_rank is None:
+                    remaining_candidates.append(candidate)
+                else:
+                    priority_groups[matched_rank].append(candidate)
+            candidates = [
+                *[path for group in priority_groups for path in group],
+                *remaining_candidates,
+            ]
+
+        priority_terms = {
+            term.casefold() for term in candidate_priority_terms
+            if isinstance(term, str) and term
+        }
+        if candidate_limit is not None and priority_terms and candidates:
+            indexed = list(enumerate(candidates))
+
+            def path_term_rank(item: tuple[int, Path]) -> tuple[int, int]:
+                position, candidate = item
+                stem = candidate.stem.casefold()
+                overlap = sum(
+                    1 for term in priority_terms
+                    if stem == term
+                    or (len(term) >= 4 and stem.startswith(term))
+                    or (len(stem) >= 4 and term.startswith(stem))
+                )
+                return (-overlap, position)
+
+            candidates = [path for _position, path in sorted(indexed, key=path_term_rank)]
+
+        if candidate_limit is not None:
+            candidates = candidates[:max(0, limit - yielded)]
 
         for path in candidates:
             if yielded >= limit:
@@ -1834,6 +1922,8 @@ class RepositoryTools:
                 configured_state_relative = None
 
         matching_relpaths: set[str] | None = None
+        git_grep_candidates_authoritative = False
+        ripgrep_candidates_authoritative = False
         # Ripgrep uses simple Unicode folding. Restrict its candidate role to
         # queries whose lowercase/casefold mapping is one-to-one; Python still
         # verifies every candidate and computes exact counts.
@@ -1869,6 +1959,7 @@ class RepositoryTools:
             and self.prefer_git
             and (base / ".git").exists()
             and ripgrep_candidates_complete
+            and not (self.use_ripgrep and self._rg)
         ):
             git_grep_cmd = [
                 "git", "-C", str(base), "grep", "--files-with-matches",
@@ -1917,6 +2008,7 @@ class RepositoryTools:
                     **hidden_run_kwargs(),
                 )
                 if proc.returncode in (0, 1):
+                    git_grep_candidates_authoritative = True
                     matching_relpaths = set()
                     for raw_path in proc.stdout.split(b"\0"):
                         if not raw_path:
@@ -1940,7 +2032,7 @@ class RepositoryTools:
             rg_cmd = [
                 self._rg, "--glob-case-insensitive", "--files-with-matches", "--text",
                 "--fixed-strings", "--hidden", "--no-ignore",
-                "--no-messages", "-g", "!.git/**",
+                "-g", "!.git/**",
             ]
             if not case_sensitive_symbol_query:
                 rg_cmd.append("--ignore-case")
@@ -1996,7 +2088,9 @@ class RepositoryTools:
                     **hidden_run_kwargs(),
                 )
                 if proc.returncode in (0, 1):
-                    matching_relpaths = set()
+                    candidate_paths: set[str] = set()
+                    candidate_bytes = 0
+                    candidates_complete = not proc.stderr
                     for line in proc.stdout.splitlines():
                         raw_line = line.strip()
                         if not raw_line:
@@ -2009,17 +2103,85 @@ class RepositoryTools:
                                 rel_p = p.as_posix()
                                 if rel_p.startswith("./"):
                                     rel_p = rel_p[2:]
-                            matching_relpaths.add(rel_p)
-                        except (OSError, ValueError):
-                            continue
+                            candidate_bytes += len(rel_p.encode("utf-8", errors="surrogateescape"))
+                            candidate_paths.add(rel_p)
+                            if (
+                                len(candidate_paths) > MAX_EXACT_GIT_PATHS
+                                or candidate_bytes > MAX_EXACT_GIT_PATH_BYTES
+                            ):
+                                candidates_complete = False
+                                break
+                        except (OSError, RuntimeError, ValueError, UnicodeError):
+                            candidates_complete = False
+                            break
+                    if candidates_complete:
+                        matching_relpaths = candidate_paths
+                        ripgrep_candidates_authoritative = True
             except Exception:
                 matching_relpaths = None
+
+        if (
+            ripgrep_candidates_authoritative
+            and matching_relpaths is not None
+            and self.prefer_git
+            and (base / ".git").exists()
+        ):
+            if not matching_relpaths:
+                git_grep_candidates_authoritative = True
+            else:
+                try:
+                    ignore_input = b"".join(
+                        relative.encode("utf-8", errors="surrogateescape") + b"\0"
+                        for relative in sorted(matching_relpaths)
+                    )
+                    ignored = subprocess.run(
+                        ["git", "-C", str(base), "check-ignore", "--stdin", "-z"],
+                        input=ignore_input,
+                        capture_output=True,
+                        text=False,
+                        timeout=min(self.git_files_timeout, 10.0),
+                        check=False,
+                        cwd=str(base),
+                        **hidden_run_kwargs(text=False),
+                    )
+                    if ignored.returncode in (0, 1) and not ignored.stderr:
+                        ignored_relpaths = {
+                            Path(raw.decode("utf-8", errors="surrogateescape")).as_posix()
+                            for raw in ignored.stdout.split(b"\0")
+                            if raw
+                        }
+                        if ignored_relpaths.issubset(matching_relpaths):
+                            matching_relpaths.difference_update(ignored_relpaths)
+                            git_grep_candidates_authoritative = True
+                except Exception:
+                    pass
 
         def candidates() -> Iterable[Path]:
             if git_inventory is not _UNSET_GIT_INVENTORY and getattr(git_inventory, "complete", True) is False:
                 raise _IncompleteGitInventory(
                     f"Git inventory is truncated at the {file_cap}-file exact-search bound"
                 )
+
+            # A successful `git grep --files-with-matches --untracked
+            # --exclude-standard` pass is already an authoritative, bounded
+            # candidate set for this literal query. Re-reading every Git path
+            # just to intersect it repeats the expensive part of exact search.
+            # Exact Python matching below still reads, validates and counts each
+            # eligible current source before results are returned.
+            if git_grep_candidates_authoritative and matching_relpaths is not None:
+                forced_inventory: set[str] = set()
+                for forced_path in self._expand_project_force_paths(
+                    base, project_settings, file_cap, extra_patterns=force_patterns,
+                ):
+                    try:
+                        forced_inventory.add(forced_path.relative_to(base).as_posix())
+                    except (OSError, RuntimeError, ValueError):
+                        continue
+                for relative in sorted(matching_relpaths | forced_inventory):
+                    if time.monotonic() >= deadline:
+                        raise TimeoutError("exact repository search exceeded 60 seconds")
+                    yield base / relative
+                return
 
             if self.prefer_git and (base / ".git").exists():
                 process = popen_managed(
@@ -2487,18 +2649,39 @@ class RepositoryTools:
         install_intent = installation_intent_priority and bool(
             _intent_query_terms(query).intersection(_INSTALLATION_INTENT_TERMS)
         )
-        candidate_limit = max(1, self.max_hits * (8 if install_intent else 4))
+        candidate_limit = max(
+            64,
+            min(
+                self.max_hits * (8 if install_intent else 4),
+                limit * (8 if install_intent else 6),
+            ),
+        )
+        candidate_path_budget = max(256, min(512, candidate_limit * 4))
         candidate_engine = "python"
         project_candidates = None
+        priority_relpaths: set[str] = set()
         if project_settings is not None:
-            # Keep the project policy allowlist intact, but do not truncate it
-            # before searching. A path-sorted prefix can be filled by unrelated
-            # files and hide later lexical matches. `_iter_project_search_files`
-            # already applies the configured file bound and access policy;
-            # `_ripgrep_candidates` separately bounds returned matches and time.
+            # Bounded non-exact search can use the cached Git path inventory.
+            # Falling back to a fresh os.walk here repeatedly enumerates large
+            # ignored workspace trees before the ripgrep candidate cap applies.
+            candidate_inventory = (
+                _UNSET_GIT_INVENTORY if git_inventory is None else git_inventory
+            )
+            # Select query-name matches before the bounded inventory prefix.
+            # The iterator validates path policy and symlink safety on every
+            # selected path before ripgrep can read its contents.
+            if candidate_inventory is _UNSET_GIT_INVENTORY:
+                candidate_inventory = self._git_files(base)
             project_candidates = list(self._iter_project_search_files(
-                base, project_settings, 25, git_inventory=git_inventory,
+                base, project_settings, 25, git_inventory=candidate_inventory,
+                candidate_limit=candidate_path_budget + 16,
+                candidate_priority_terms=terms,
             ))
+            if (
+                isinstance(candidate_inventory, list)
+                and len(candidate_inventory) > candidate_path_budget
+            ) or len(project_candidates) >= candidate_path_budget:
+                truncation_reasons.append("candidate_file_limit")
         elif candidate_paths is not None:
             # This is an explicitly incomplete candidate set for hybrid search,
             # never a source of exact lexical counts or complete-coverage claims.
@@ -2508,9 +2691,80 @@ class RepositoryTools:
                 base, terms, candidate_limit + 1,
             )
         else:
-            candidates, accelerator_failed = self._ripgrep_candidates(
-                base, terms, candidate_limit + 1, candidate_paths=project_candidates,
-            )
+            candidate_budget = candidate_limit + 1
+            priority_terms = {term.casefold() for term in terms if isinstance(term, str) and term}
+            priority_candidates: list[Path] = []
+            remaining_candidates: list[Path] = []
+            for candidate in project_candidates:
+                try:
+                    path_stem = candidate.relative_to(base).stem.casefold()
+                except ValueError:
+                    remaining_candidates.append(candidate)
+                    continue
+                overlap = sum(
+                    1 for term in priority_terms
+                    if path_stem == term
+                    or (len(term) >= 4 and path_stem.startswith(term))
+                    or (len(path_stem) >= 4 and term.startswith(path_stem))
+                )
+                (priority_candidates if overlap else remaining_candidates).append(candidate)
+
+            priority_candidates.sort(key=lambda candidate: (
+                0 if candidate.relative_to(base).stem.casefold() in priority_terms else 1,
+                len(candidate.relative_to(base).stem),
+                candidate.as_posix().casefold(),
+            ))
+            priority_file_limit = max(4, min(16, self.max_hits))
+            remaining_candidates.extend(priority_candidates[priority_file_limit:])
+            priority_candidates = priority_candidates[:priority_file_limit]
+            # Ripgrep batches have a fixed command-size ceiling. Passing the
+            # entire repository inventory can spawn several expensive scans
+            # per natural query, even after enough candidates exist. Keep the
+            # prioritized files, then inspect a bounded inventory prefix; the
+            # explicit truncation flag prevents claiming complete coverage.
+            if len(remaining_candidates) > candidate_path_budget:
+                remaining_candidates = remaining_candidates[:candidate_path_budget]
+                if "candidate_file_limit" not in truncation_reasons:
+                    truncation_reasons.append("candidate_file_limit")
+            project_candidates = [*priority_candidates, *remaining_candidates]
+            priority_relpaths = {
+                candidate.relative_to(base).as_posix()
+                for candidate in priority_candidates
+            }
+
+            if priority_candidates:
+                priority_matches, priority_failed = self._ripgrep_candidates(
+                    base, terms, candidate_budget,
+                    candidate_paths=priority_candidates,
+                )
+            else:
+                priority_matches, priority_failed = None, False
+            if priority_matches is None:
+                candidates, accelerator_failed = self._ripgrep_candidates(
+                    base, terms, candidate_budget,
+                    candidate_paths=project_candidates,
+                )
+                accelerator_failed = accelerator_failed or priority_failed
+            else:
+                remaining_matches: list[tuple[str, int]] | None = []
+                remaining_failed = False
+                remaining_budget = candidate_budget - len(priority_matches)
+                if remaining_candidates and remaining_budget > 0:
+                    remaining_matches, remaining_failed = self._ripgrep_candidates(
+                        base, terms, remaining_budget,
+                        candidate_paths=remaining_candidates,
+                    )
+                if remaining_matches is None:
+                    candidates = priority_matches
+                    accelerator_failed = False
+                else:
+                    candidates = []
+                    seen_matches: set[tuple[str, int]] = set()
+                    for match in (*priority_matches, *remaining_matches):
+                        if match not in seen_matches:
+                            seen_matches.add(match)
+                            candidates.append(match)
+                    accelerator_failed = False
         accelerated = candidates is not None
         if accelerated:
             candidate_engine = "ripgrep"
@@ -2529,6 +2783,11 @@ class RepositoryTools:
             per_path_lines: dict[str, list[int]] = {}
             for rel, line_no in candidates:
                 per_path_lines.setdefault(rel, []).append(line_no)
+            # For a small set of query-matching filenames, inspect current
+            # content fully. Ripgrep's per-file cap can hide the specific term
+            # near the end of a source file behind repeated generic matches.
+            for rel in priority_relpaths:
+                per_path_lines.setdefault(rel, [])
             read_jobs: list[tuple[Any, Path]] = []
             for rel, line_numbers in per_path_lines.items():
                 resolved_info = self._resolve_under_base(base, rel)
@@ -2546,7 +2805,11 @@ class RepositoryTools:
                     continue
                 scanned += 1
                 path_lower = rel.lower()
-                for line_no in line_numbers:
+                source_lines = (
+                    range(1, len(lines) + 1)
+                    if rel in priority_relpaths else line_numbers
+                )
+                for line_no in source_lines:
                     idx = line_no - 1
                     if idx < 0 or idx >= len(lines): continue
                     low = lines[idx].lower()

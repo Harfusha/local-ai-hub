@@ -67,28 +67,43 @@ def run(root: Path, repeats: int, use_cache: bool = False, search_mode: str = "l
                 result = service.repo_search(str(root), case["query"], limit=10, search_mode=search_mode)
                 durations.append((time.perf_counter() - start) * 1000)
                 cache_hits.append(result.get("cache_hit"))
-                if not result.get("success"):
-                    raise RuntimeError(f"search failed: {result.get('error')}")
-            paths = list(dict.fromkeys(item["path"] for item in result["results"]))
+                if not isinstance(result, dict):
+                    raise TypeError("search result must be an object")
+            result_rows = result.get("results", [])
+            if not isinstance(result_rows, list):
+                result_rows = []
+            paths = list(dict.fromkeys(
+                item["path"] for item in result_rows
+                if isinstance(item, dict) and isinstance(item.get("path"), str)
+            ))
             rank = next((i for i, path in enumerate(paths, 1) if path == case["path"]), None)
             ordered = sorted(durations)
             p95_index = max(0, math.ceil(0.95 * len(ordered)) - 1)
             rows.append({"query": case["query"], "expected_path": case["path"], "rank": rank,
+                         "success": result.get("success") is True,
+                         "status_code": result.get("status_code"),
+                         "error": result.get("error"),
                          "paths": paths, "median_ms": statistics.median(durations), "p95_ms": ordered[p95_index], "samples_ms": durations,
                          "cache_hits": cache_hits, "terms": result.get("terms"),
                          "engine": result.get("engine"), "scanned_files": result.get("scanned_files"),
                          "total_matches": result.get("total_matches"), "truncated": result.get("truncated"),
+                         "coverage_complete": result.get("coverage_complete"),
+                         "index_state": result.get("index_state"),
+                         "index_coverage": result.get("index_coverage"),
                          "result_source": result.get("result_source"), "degraded": result.get("degraded"),
                          "degradation_reason": result.get("degradation_reason"),
+                         "reranker": result.get("reranker"),
                          "search_mode": result.get("search_mode"),
                          "top_results": [
                              {"path": item.get("path"), "score": item.get("score")}
-                             for item in result.get("results", [])[:10]
+                             for item in result_rows[:10]
                              if isinstance(item, dict)
                          ]})
         return {"scope": "real repository; isolated LocalAIServices.repo_search; optional backends disabled; labels are not exhaustive",
                 "cache_enabled": use_cache,
                 "search_mode": search_mode, "root": str(root), "repeats": repeats, "cases": rows,
+                "failed_cases": sum(not row["success"] for row in rows),
+                "degraded_cases": sum(row["degraded"] is True for row in rows),
                 "hit_rate_at_10": sum(row["rank"] is not None for row in rows) / len(rows),
                 "mean_reciprocal_rank": statistics.mean(1 / row["rank"] if row["rank"] else 0 for row in rows)}
 

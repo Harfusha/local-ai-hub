@@ -3341,7 +3341,7 @@ class LocalAIServices:
                     candidate_paths=lexical_candidate_paths,
                     candidate_query=(
                         candidate_query
-                        if query_expansion_applied and getattr(self, "preprocessor", None) is not None
+                        if query_expansion_applied
                         else None
                     ),
                     installation_intent_priority=(
@@ -3412,7 +3412,7 @@ class LocalAIServices:
                 candidate_paths=lexical_candidate_paths,
                 candidate_query=(
                     candidate_query
-                    if query_expansion_applied and getattr(self, "preprocessor", None) is not None
+                    if query_expansion_applied
                     else None
                 ),
                 installation_intent_priority=(
@@ -3708,9 +3708,10 @@ class LocalAIServices:
                 "error": "enriched search is disabled (features.enriched_search=false)",
             }
         symbol_like_query = prefers_lexical_precision(query)
-        # Search itself is case-insensitive and whitespace-tolerant. Use the same
-        # canonical form for cache identity so equivalent agent queries reuse work.
-        query = normalize_query(query, strip_punctuation=False).casefold()
+        # Natural-language search is case-insensitive, but symbol queries retain
+        # their original casing so exact identifiers are not broadened.
+        normalized_query = normalize_query(query, strip_punctuation=False)
+        query = normalized_query if symbol_like_query else normalized_query.casefold()
         eff_ctx_lines = int(context_lines) if context_lines is not None else (8 if enrich else None)
         from .project_config import (
             PathHint,

@@ -96,6 +96,7 @@ Profiles are ceilings, not proof of readiness. Resolve effective profile from ex
 ## Workstream 6 — RTX 5070 Ti and hardware evaluation
 
 - [x] Inspect active effective profile, installed model tags, device/backend selection and memory availability through approved status and benchmark interfaces. Recorded source revision, driver/backend, model tags, context, quantization, model identity and VRAM sample in `docs/agent-evaluation/results.md`. No model pull or provider change.
+- [x] When detailed local traces are enabled, retain startup-prewarm exception type, message and traceback in a bounded local trace; with the toggle off, retain no detailed failure trace. Focused regression test covers both states. Runtime trace capture is not yet observed.
 - [ ] Benchmark representative available models and capability workloads on RTX 5070 Ti; collect real GPU residency/offload, peak VRAM, prompt and generation throughput, latency, concurrency, context length and errors. Measure warm and cold cases separately and preserve artifacts. One post-restart qwen 4B smoke and a fail-closed qwen coder 3B admission (`target_vram_estimate_unavailable`) are recorded in `docs/agent-evaluation/results.md`; repeated, cold/warm, multi-model and concurrency measurements remain open.
 - [ ] Evaluate quality against task-specific labeled cases and baseline: grounded search summary, cross-file analysis, review, vision where supported and bounded edits. Report passes, failures and sample limitations; benchmark-runner success alone is not quality success. Current live evidence: A1 failed the citation/arithmetic rubric; search summary was rejected for missing citations; D1 is NOT_RUN after quality-floor rejection and pre-send transport failure. No post-change summary result or representative quality matrix is available.
 - [ ] Use measurements to propose `high` model routes and context/concurrency limits. Define promotion thresholds and regression checks before claiming readiness. Candidate models, missing weights and unmeasured hardware remain explicitly unqualified.
@@ -758,3 +759,51 @@ Still open before this plan can be accepted:
 - After the managed Hub restart, summarized search request `req_d93996e0f959` returned the narrowed source excerpt `src/local_ai_hub/mcp_server.py:6087-6092`, confirming the adjusted clipping behavior is present in the live runtime. The nested summary inference `req_cfb51eee095f` was rejected before generation because qwen3.5:4b and qwen3.5:9b both reported `insufficient VRAM for model admission`; no summary-quality evidence was produced and no retry was made.
 - Readiness request `req_3d8523e41fd5` reports Hub/Ollama online and admission available, but active model is null and VRAM telemetry remains pending/stale/unknown. A prior reservation check was free before the probe; no post-probe reservation state is claimed. Do not attempt further model work until a fresh readiness and reservation observation supports it.
 - Released the completed source/test writer lease `lease_7c9cb06801584cc98af1` for task `task_74e75a046249` (`released_rows=2`). Current checkout is clean at `b942f7b72c1e382e610498035ad44e1227218e5f`; focused preprocessing/cache tests passed 3/3. The code-index cache benchmark remains synthetic and warm-cache only; search-summary quality, paired fast-model comparison, remaining model cases, GPU measurements, route promotion, and final gates remain open.
+
+### Continuation checkpoint — 2026-11-06, live summary quality still fails
+
+- W4 probe `req_e2c7991132c8` used `qwen3.5:4b-nvfp4` (`req_9ba398d1af23`) and source-bound citations, but failed content review: one bullet lacked a citation; it said result count was unknown although deterministic search reported exact `total_matches=4076`; nested summary budget said `truncated=true`. Separate request `req_ff0533408742` failed citation verification and retrieved unrelated dashboard/MCP snippets. See `docs/agent-evaluation/results.md` for exact evidence. W4 remains open.
+- Admission was available with the 4B model active; VRAM telemetry stayed pending/stale/unknown. Reservation was free before and after the probe. No GPU performance or model-attributed memory claim follows.
+- Current checkout at `b14c6222` has concurrent edits in `AGENTS.md`, `src/local_ai_hub/{mcp_server,preprocess,repo_tools,search_modes,services}.py` and a deleted `tools/benchmark_code_index_inventory_cache.py`; preserved without edits. Project `plan_list` request `req_588750e97673` has no matching GPU-capability plan and the active schema has no `plan_create`; repository Markdown plan remains the checklist. Agent OS checkpoint `req_c49478e8c264` records the Hub/scheduler diagnostics.
+- Next: keep W4 unqualified; investigate per-bullet citation enforcement, count/coverage consistency, nested truncation reporting, and retrieval relevance. Resume GPU/quality work only with stable readiness and fresh free reservation. User requested targeted tests only; no broad suite.
+
+### Progress update — 2026-11-06
+
+- W4 summary validation hardened: require 1–3 citation-bearing list items, reject uncited claims and nested truncated responses, and clip leading adjacent code from query-matched source excerpts.
+- Focused tests: **16 passed, 108 deselected** (`tests/test_mcp_agent_routing.py`, search summary and source-span cases). No broad suite run.
+- Live quality still fails and remains unqualified. Post-fix model review is blocked by current Hub `gpu_admission_state=outcome_unknown`; active model is null and VRAM telemetry is unknown. Do not promote this route or claim GPU qualification.
+- Next: resolve GPU admission state through normal authorized lifecycle, then rerun only the bounded W4 evaluation cases and continue remaining plan gates.
+
+### Continuation checkpoint — 2026-11-06, lexical-default drift and live summary rejection
+
+- A current runtime probe with omitted `search_mode` returned `hybrid`, contrary to the checked lexical-default contract. Root cause: `default_search_mode` selected hybrid for natural-language queries. Updated it to always select lexical; `hybrid` and `rag` stay explicit. Restored the deleted embedded-symbol anchor helper and service use so explicit hybrid/lexical searches retain exact identifier handling.
+- The same live W4 probe (`req_3756446e33bc`) rejected the model output as `invalid_summary_structure`; deterministic result metadata also showed inexact count/coverage and truncated response. This is a quality failure, not an accepted summary.
+- After source update and Hub recovery, MCP default search `req_8920a0a94775` returned lexical mode, exact count 3916, reranker not requested, and stable pagination (`has_more=true`, `next_offset=1`).
+- Targeted tests: search-mode fusion **50 passed**; MCP search-summary **15 passed, 109 deselected**. No broad suite run. Scoped diff check passed.
+- Restart attempt returned `hub_stop_unverified`; the service was then started and verified online. Current readiness reports an active external embedding reservation (`owner=embedding:20388:23476`); preserve it and do not start inference until naturally free.
+- W4 summary quality, paired baseline, hardware measurements, high-profile route proposal, independent review and release gates remain open.
+
+### Continuation checkpoint — 2026-11-06, internal GPU uncertainty persists
+
+- Fresh readiness `req_175b8c991b63` reports `outcome_unknown`, no active model and unknown VRAM, while reservation `req_134d76524947` is free. The expired external embedding lease is not the remaining gate; internal scheduler uncertainty persists.
+- No additional restart or inference was attempted. Continue static work only until normal scheduler recovery; W4 quality, W6 hardware measurements, route promotion and release gates remain open.
+
+### Continuation checkpoint — 2026-11-06, embedding worker still live
+
+- The former external reservation owner maps to a live Python Hub worker (PID 20388); one bounded 10-second wait confirmed it remains running. Readiness still reported internal `outcome_unknown` with the reservation file free.
+- Preserve the live worker. No force-kill, release or repeated restart. GPU quality and performance work resumes only after normal worker completion and verified scheduler availability.
+
+### Continuation checkpoint — 2026-11-06, repeated internal uncertainty
+
+- Fresh evidence `req_15c9a6a3b809` / `req_bad35815ec6a`: Hub and Ollama online, scheduler `outcome_unknown`, active model null, VRAM unknown, external reservation free. PID 20388 remained alive after another bounded 5-second wait.
+- Existing runtime audit confirms `_internal_gpu_uncertain` is distinct from the external reservation and says to preserve fail-closed admission until an authentic diagnostic or owner-authorized recovery. Do not reset scheduler state, force-release, infer, or benchmark while uncertain.
+- Remaining plan gates (live W4 quality, W6 GPU measurement/model quality/route thresholds, final release validation) require scheduler recovery; goal paused as blocked pending that external state change.
+
+### Continuation checkpoint — 2026-11-06, GPU load identified and benchmark rejected safely
+
+- Dashboard Doctor reported all checks healthy, selected provider `ollama + llama.cpp (managed)`, device CUDA0 and 11,792/16,303 MiB at 73.12°C. Fresh Hub status reported `gpu_admission_state=available` but stale/unknown VRAM telemetry and no active model.
+- A single bounded 32-token `qwen3.5:4b-nvfp4` hardware benchmark was rejected before inference: `insufficient VRAM for model admission` (`req_b63f2696c552`). Read-only `nvidia-smi` measured 11,538/16,303 MiB, 99% utilization and 74.58°C; process list included Baldur's Gate 3 (`bg3_dx11.exe`, PID 33352) and managed `llama-server.exe` (PID 10540). Per-process memory is unavailable, so exact ownership remains unknown. No process was stopped.
+- W4 paired model quality, W6 performance/quality/route qualification and release gates remain open. Retry benchmark only after fresh VRAM admission succeeds under normal scheduler control.
+- Follow-up read-only sample `req_81de1ef943ff` / `req_62614e401193`: admission `available`, reservation free, but VRAM telemetry stale; `nvidia-smi` reported 12,125/16,303 MiB, 100% utilization and 74.44°C with the same BG3 and `llama-server.exe` processes. No second benchmark was sent.
+- Targeted validation while GPU-loaded: `python -m pytest -q tests/test_mcp_agent_routing.py -k search_ai_summary` → 15 passed, 109 deselected; `python tools/release_check.py --allow-installed` → OK; `python -m compileall -q src/local_ai_hub` → passed. This does not close the broad release suite or W4/W6 model/GPU evaluation gates.
+- Latest read-only sample after targeted validation: 13,524/16,303 MiB at 99% and 71.58°C; BG3 PID 33352 and managed `llama-server.exe` PID 10540 remain listed, with per-process memory unavailable. No inference was sent.

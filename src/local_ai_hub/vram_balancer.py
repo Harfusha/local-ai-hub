@@ -28,7 +28,9 @@ class VRAMBalancer:
         self._sampling_workers: set[int] = set()
         self._max_sampling_workers = 2
         self._sampling_start_error: str | None = None
-        self._sample_wait_timeout_seconds = 3.0
+        # Windows GPU telemetry may use a bounded 4-second PowerShell probe.
+        # Keep the sampler timeout above that limit to avoid restarting a valid probe.
+        self._sample_wait_timeout_seconds = 5.0
         self._last_status: dict[str, Any] = {}
         self._last_check_time = 0.0
         self._status_generation = 0
