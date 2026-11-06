@@ -338,3 +338,11 @@ review and are not included in this search fix commit.
 - Synthetic vector retrieval now reports median and nearest-rank p95: 1,024 chunks **7.462/7.660 ms**, 8,192 **25.151/25.215 ms**, 16,384 **55.700/58.919 ms** with 512-row batches. Three warm samples per size; no HTTP/MCP, embeddings or reranker.
 - Live RAG query `Local AI Hub installation` returned no candidates with `embedding_space_mismatch` and `reindex_required=true`. Index requests failed with `gpu_reserved`. The expired fence was reaped, but a new 64-byte fence appeared without lease metadata; Hub reports `gpu_admission_state=outcome_unknown`, active model null. No fence was edited. Live RAG relevance and reranker activation remain unverified.
 - The search and code-index benchmark artifacts record these separate evidence classes. The full goal remains open; do not mark the live semantic, reranker, sustained preprocessing or installation-cleanup gates complete.
+
+## Continuation checkpoint — 2026-11-06 (live embedder failure)
+
+- After the digest-only fence aged past one lease TTL, one authorized RAG-index attempt let the Hub reap it. The attempt then returned `embedding model disabled` for `BAAI/bge-small-en-v1.5`; no vectors were indexed.
+- That failed request created a new active reservation with metadata: owner `embedding:37980:32312`, generation present, owner PID alive. Hub now reports `external_reservation`; do not release or archive this live lease.
+- Effective file configuration resolves `profile=high`, `features.rag=true`, BGE sentence-transformers on CUDA, and the BGE reranker on CUDA. Hub reports `active_model=null`; `hubctl status` reports managed backend offline with zero online Ollama models. Effective config is not runtime model proof.
+- An unrelated uncommitted lifecycle test appeared in the shared checkout. It was preserved and not staged or edited.
+- Next: diagnose why the live embedding provider reports disabled despite effective config, then reindex only after GPU admission is safe. Keep the live RAG and reranker acceptance gates open.
