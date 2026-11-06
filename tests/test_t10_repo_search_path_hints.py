@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import inspect
+
 import pytest
 from pathlib import Path
 
@@ -184,6 +186,35 @@ def test_repo_search_uses_path_override_include_only_as_priority(tmp_path: Path)
         "templates/element/button.php",
         "src/button.py",
     ]
+
+
+def test_exact_search_hint_ranking_does_not_resolve_each_result_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    candidate = docs / "guide.py"
+    candidate.write_text("installation\n", encoding="utf-8")
+    services = _search_service(tmp_path, None)
+    original_resolve = Path.resolve
+    candidate_resolutions = []
+
+    def track_candidate_resolution(path: Path, *args, **kwargs):
+        frame = inspect.currentframe().f_back
+        path_priority_call = any(
+            current.frame.f_code.co_name == "path_priority"
+            for current in inspect.getouterframes(frame)
+        )
+        if path == candidate and kwargs.get("strict") is False and path_priority_call:
+            candidate_resolutions.append(path)
+        return original_resolve(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "resolve", track_candidate_resolution)
+    result = services.repo_search(str(tmp_path), "installation", top_k=1)
+
+    assert result["success"] is True
+    assert result["results"][0]["path"] == "docs/guide.py"
+    assert candidate_resolutions == []
 
 
 def test_tool_repo_search_routes_request_hints_through_complete_service() -> None:

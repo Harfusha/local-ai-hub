@@ -3968,7 +3968,7 @@ class LocalAIServices:
             source_focused = _source_focused_query(query)
 
             def path_priority(relative: str) -> tuple[int, int, int]:
-                candidate = (hint_root / relative).resolve(strict=False) if hint_root else None
+                candidate = hint_root / relative if hint_root else None
 
                 def matches(roots: tuple[Path, ...]) -> bool:
                     return bool(candidate and any(

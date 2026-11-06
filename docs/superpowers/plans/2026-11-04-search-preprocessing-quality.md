@@ -364,3 +364,10 @@ review and are not included in this search fix commit.
 - Real repository, one English installation query, cache enabled, three samples: **3,184 ms cold**, then **81.4/76.6 ms warm**; rank 1, exact count 3,928, 1,743 files scanned. A prior cold one-sample result was 3,554 ms; this is directional only, not a paired speed claim.
 - Current live fence now has valid active lease metadata: owner `embedding:39424:43140`, generation `d3db61079353491a9cd20217374fa7c2`, active until its recorded expiry. Hub is online but managed inference remains offline and `active_model=null`; do not release this live lease or start a competing CUDA reindex.
 - Next: continue cold exact-search profiling, then verify the embedding owner’s terminal state and backend readiness before any RAG index operation. Preserve current dirty release-plan, prompt, and GPU-reservation work.
+
+## Continuation checkpoint — 2026-11-06 (path-hint ranking cost)
+
+- Removed `Path.resolve(strict=False)` from exact-result path-hint ranking. Search validates each candidate against the root and project policy before ranking, so this avoids one filesystem resolution per result without changing authorization.
+- Added a regression that fails if `path_priority` resolves every result path. Search/path-hint regressions: **133 passed, 2 skipped**; `release_check.py --allow-installed` passes.
+- Real repository, English installation query, three cache-enabled samples: **2,884 ms cold**, **80.6/95.4 ms warm**; rank 1, exact count 3,928. Prior single cold sample was 3,184 ms. Directional comparison only; one cold sample per run, not a paired benchmark.
+- The active `embedding:39424:43140` reservation remains owned by the running Hub. Keep CUDA rebuild and restart gated on terminal owner/backend evidence.
