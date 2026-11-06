@@ -1,5 +1,5 @@
 from local_ai_hub.evidence import EvidenceStore
-from local_ai_hub.code_index_demand import one_hop_python_imports
+from local_ai_hub.code_index_demand import one_hop_related_files
 from local_ai_hub.code_index import CodeIndex
 from local_ai_hub.repo_tools import RepositoryTools
 from local_ai_hub.preprocess import ProjectPreprocessor
@@ -33,9 +33,37 @@ def test_one_hop_python_imports_does_not_recurse_or_escape_eligible_paths(tmp_pa
     (package / "b.py").write_text("from . import c\n", encoding="utf-8")
     (package / "c.py").write_text("VALUE = 1\n", encoding="utf-8")
     eligible = {"pkg/a.py", "pkg/b.py", "pkg/c.py"}
-    neighbors = one_hop_python_imports(tmp_path, ["pkg/a.py"], eligible, RepositoryTools({}))
+    neighbors = one_hop_related_files(tmp_path, ["pkg/a.py"], eligible, RepositoryTools({}))
     assert neighbors == ["pkg/b.py"]
-    assert one_hop_python_imports(tmp_path, ["pkg/a.py"], {"pkg/a.py", "pkg/c.py"}, RepositoryTools({})) == []
+    assert one_hop_related_files(tmp_path, ["pkg/a.py"], {"pkg/a.py", "pkg/c.py"}, RepositoryTools({})) == []
+
+
+def test_one_hop_follows_local_javascript_and_php_imports_once(tmp_path):
+    (tmp_path / "src/lib").mkdir(parents=True)
+    (tmp_path / "app/lib").mkdir(parents=True)
+    (tmp_path / "src/main.js").write_text('import { boot } from "./lib/boot";\n', encoding="utf-8")
+    (tmp_path / "src/lib/boot.js").write_text('import "./leaf.js";\n', encoding="utf-8")
+    (tmp_path / "src/lib/leaf.js").write_text("export const leaf = true;\n", encoding="utf-8")
+    (tmp_path / "app/main.php").write_text(
+        "<?php require_once __DIR__ . '/lib/bootstrap.php';\n", encoding="utf-8"
+    )
+    (tmp_path / "app/lib/bootstrap.php").write_text(
+        "<?php require_once __DIR__ . '/leaf.php';\n", encoding="utf-8"
+    )
+    (tmp_path / "app/lib/leaf.php").write_text("<?php return true;\n", encoding="utf-8")
+    eligible = {
+        "src/main.js", "src/lib/boot.js", "src/lib/leaf.js",
+        "app/main.php", "app/lib/bootstrap.php", "app/lib/leaf.php",
+    }
+
+    neighbors = one_hop_related_files(
+        tmp_path, ["src/main.js", "app/main.php"], eligible, RepositoryTools({}),
+    )
+
+    assert neighbors == ["src/lib/boot.js", "app/lib/bootstrap.php"]
+    assert one_hop_related_files(
+        tmp_path, ["src/main.js", "app/main.php"], eligible, RepositoryTools({}), limit=1,
+    ) == ["src/lib/boot.js"]
 
 
 def test_one_hop_ignores_ambiguous_module_names(tmp_path):
@@ -44,7 +72,7 @@ def test_one_hop_ignores_ambiguous_module_names(tmp_path):
         (tmp_path / folder).mkdir()
         (tmp_path / folder / "duplicate.py").write_text("pass\n", encoding="utf-8")
     eligible = {"a.py", "first/duplicate.py", "second/duplicate.py"}
-    assert one_hop_python_imports(tmp_path, ["a.py"], eligible, RepositoryTools({})) == []
+    assert one_hop_related_files(tmp_path, ["a.py"], eligible, RepositoryTools({})) == []
 
 
 def test_preprocessing_indexes_used_files_and_one_hop_only(tmp_path):

@@ -3362,8 +3362,8 @@ class ProjectPreprocessor:
             seeds = list(dict.fromkeys(str(item.get("path", "")).replace("\\", "/")
                                         for item in demand if isinstance(item, dict)))
             seeds = [path for path in seeds if path in allowed]
-            from .code_index_demand import one_hop_python_imports
-            neighbors = one_hop_python_imports(Path(root), seeds, set(allowed), self.repo_tools)
+            from .code_index_demand import one_hop_related_files
+            neighbors = one_hop_related_files(Path(root), seeds, set(allowed), self.repo_tools)
             refs = [(path, allowed[path]) for path in [*seeds, *neighbors]]
             record_usage = getattr(self.code_index, "record_usage", None)
             if callable(record_usage):

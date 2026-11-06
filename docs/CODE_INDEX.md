@@ -2,9 +2,11 @@
 
 The built-in code index is intentionally partial. Preprocessing admits files that
 the Hub has actually served as evidence, plus one level of eligible local Python
-imports. It does not claim whole-project symbol coverage. Search responses must
-keep their coverage and freshness fields visible and use source-based fallback
-when the requested file is not indexed.
+imports, relative JavaScript/TypeScript modules, and literal relative PHP
+includes. Unresolved or ambiguous dependencies remain unknown. It does not claim
+whole-project symbol coverage. Search responses must keep their coverage and
+freshness fields visible and use source-based fallback when the requested file
+is not indexed.
 
 Direct deterministic affected-test queries may open the existing code index, but
 they never admit every project file as a side effect. Only preprocessing admits
@@ -53,6 +55,14 @@ trigram rows, but zero eligible rows across three scanned roots: all three roots
 were active Git roots and stayed protected. It reported 317,538,408 physical
 bytes before and after, zero reusable pages, and zero bytes released. This is a
 live-install measurement, not a cleanup or compaction run.
+
+Live dry-run on 2026-11-06 (`--max-rows 10000 --max-roots 128
+--max-paths-per-root 64`) found 6,904 orphan-trigram candidates and zero
+eligible rows. It found zero stale files, zero reusable pages, and released
+zero physical bytes. The SQLite file plus WAL/SHM measured 470,814,720 bytes;
+active roots stayed protected. See
+`docs/CODE_INDEX_STORAGE_AUDIT_2026-11-06.md` for table row counts, measured
+payload sizes, and attribution limits.
 
 This cap covers the code-index database only. RAG, deterministic facts and
 preprocessing metadata have separate lifecycles.
