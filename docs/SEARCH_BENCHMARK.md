@@ -35,9 +35,28 @@ cross-lingual semantics. "How to configure the software" has no lexical overlap
 with that document and correctly exposes the missing semantic recall while the
 RAG backend is disabled. Natural-query false positives show why recall alone
 is insufficient. These small synthetic results do not compare healthy lexical,
-RAG, hybrid, or reranker variants. The live Hub still needs a separate run
-after its embedding backend and high-profile model finish preparing; the
-observed live hybrid path degraded to a current-source lexical fallback.
+RAG, hybrid, or reranker variants. The live Hub currently has high-profile
+configuration and reranking enabled, but no models are loaded and GPU
+admission is unknown. A healthy RAG/reranker run remains pending.
+
+## Bounded hybrid fallback — 2026-11-06
+
+Command:
+`python tools/benchmark_search_quality.py --suite holdout --repeats 3 --noise-files 1000`.
+This synthetic `LocalAIServices.repo_search` run disabled optional backends and
+exercised the lexical fallback. The fallback now searches the project-policy
+allowlist instead of stopping at an alphabetically early path prefix.
+
+| Queries | Recall@10 | MRR | Natural-query median range | Highest per-query p95 |
+| ---: | ---: | ---: | ---: | ---: |
+| 10 (9 positive) | 0.89 | 0.83 | 1.14–1.28 s | 2.30 s |
+
+The target behind unrelated paths was found. `retry sqlite` still ranked a
+distractor first, and the translation-only `How to configure the software`
+case still missed. This is a synthetic fallback result, not healthy RAG,
+HTTP/MCP, or a real-repository measurement. The natural-query latency is a
+known regression cost of searching the full allowed candidate set; further
+optimization is still required.
 
 ## Remaining benchmark coverage
 
@@ -50,7 +69,7 @@ observed live hybrid path degraded to a current-source lexical fallback.
 
 ## Live repository MCP samples — 2026-11-06
 
-Two single lexical requests ran against the actual checkout at
+At measurement time, two single lexical requests ran against the actual checkout at
 `C:\Users\Adam\.local-ai-hub` through Local AI Hub MCP. The Hub was online,
 but its status reported `active_model=null` and
 `gpu_admission_state=preparing_model`.
@@ -63,4 +82,14 @@ but its status reported `active_model=null` and
 These are single observations, not latency percentiles. They do not measure the
 raw HTTP route, healthy RAG, reranking, or cold/warm application-cache pairs.
 The natural query's high exact-match count and latency need a repeated
-controlled run after model preparation completes.
+controlled run after GPU admission is reconciled.
+
+## Current runtime readiness — 2026-11-06
+
+Hub status reports v5.1.3, NVIDIA RTX 5070 Ti with 16,303 MiB VRAM, active
+hardware profile `high`, and no loaded models. The active Hub config enables
+`BAAI/bge-reranker-v2-m3` through Torch on CUDA; its local Hugging Face cache
+contains the config and 2.27 GB of model weights. Status reports the reranker
+unloaded, and the GPU reservation is `unknown`. No model was loaded for this
+benchmark. The reranker-on/off comparison remains unmeasured until admission
+is safe.
