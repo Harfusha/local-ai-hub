@@ -3233,6 +3233,7 @@ class LocalAIServices:
             result = self._repo_search_lexical(
                 root, query, top_k, context_lines, enrich, path_hints, scope,
                 limit=page_limit, offset=offset,
+                installation_intent_priority=not prefers_lexical_precision(query),
             )
             result.update({
                 "search_mode": "lexical", "result_source": "lexical",

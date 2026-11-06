@@ -56,10 +56,14 @@ def _intent_path_adjustment(query: str, relative_path: str) -> float:
     if not path or any(part in {"plans", "specs", "superpowers"} for part in path.split("/")):
         return 0.0
     name = path.rsplit("/", 1)[-1]
+    if "prompt" in name and not query_terms.intersection({"prompt", "prompts"}):
+        return 0.0
     if path.startswith("tests/") or "/tests/" in path:
         return -8.0
     if path in {"readme.md", "docs/readme.md"}:
         return 24.0
+    if path == "docs/installation.md":
+        return 72.0
     install_intent = query_terms.intersection({
         "install", "installation", "nainstalovat", "instalovat", "instalace",
     })
@@ -1774,6 +1778,7 @@ class RepositoryTools:
         context_lines: int | None, project_settings: Any | None,
         git_inventory: Any, force_include_paths: list[str] | tuple[str, ...],
         path_priority: Callable[[str], tuple[int, int, int]] | None,
+        installation_intent_priority: bool,
     ) -> dict[str, Any]:
         """Count every eligible result while retaining only the requested prefix."""
         terms = self._terms(query)
@@ -2040,6 +2045,18 @@ class RepositoryTools:
                 relative = str(item["path"])
                 if relative != priority_path:
                     cached_priority = path_priority(relative) if path_priority else (0, 0, 0)
+                    if (
+                        installation_intent_priority
+                        and len(cached_priority) >= 2
+                        and _intent_path_adjustment(query, relative) > 0
+                    ):
+                        # A generic configured entry point must not outrank the
+                        # actual user guide for a natural installation question.
+                        # Keep explicit request hints first, then rank matching
+                        # installation docs ahead of durable generic hints.
+                        cached_priority = (
+                            cached_priority[0], 0, *cached_priority[2:]
+                        )
                     priority_path = relative
                 priority = cached_priority
                 score_rank = (
@@ -2170,6 +2187,8 @@ class RepositoryTools:
                         + path_score
                         + sum(min(low.count(term), 3) * 0.5 for term in matched)
                     )
+                    if installation_intent_priority:
+                        score += _intent_path_adjustment(query, rel)
                     if phrase and len(phrase) <= 120 and phrase in low:
                         score += 8
                     if declaration_pattern is not None:
@@ -2306,7 +2325,7 @@ class RepositoryTools:
             return self._exact_search_page(
                 base, query, exact_limit, offset, context_lines,
                 project_settings, git_inventory, force_include_paths,
-                path_priority,
+                path_priority, installation_intent_priority,
             )
         if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1:
             return {"success": False, "status_code": 400, "terminal": True, "retryable": False,

@@ -34,6 +34,10 @@ def test_installation_intent_prefers_user_documentation_over_tests(tmp_path):
         "Jak nainstalovat a spustit Local AI Hub ve Windows.\n",
         encoding="utf-8",
     )
+    (docs / "INSTALL_PROMPT.md").write_text(
+        "\n".join("How to install the local AI Hub on Windows" for _ in range(8)) + "\n",
+        encoding="utf-8",
+    )
     (tests / "test_installation.py").write_text(
         "\n".join(
             f'def test_install_local_ai_hub_windows_{index}(): '
@@ -53,10 +57,16 @@ def test_installation_intent_prefers_user_documentation_over_tests(tmp_path):
         "How to install the local AI Hub on Windows",
         "Jak nainstalovat a spustit Local AI Hub ve Windows",
     ):
-        result = tools.search(str(tmp_path), query, exact_count=False)
+        for exact_count in (False, True):
+            result = tools.search(
+                str(tmp_path), query, exact_count=exact_count,
+                path_priority=lambda relative: (
+                    1, 0 if relative.startswith(("tests/", "install.ps1")) else 1, 1,
+                ),
+            )
 
-        assert result["success"] is True
-        assert result["results"][0]["path"] == "docs/INSTALLATION.md"
+            assert result["success"] is True
+            assert result["results"][0]["path"] == "docs/INSTALLATION.md"
 
 
 def test_installation_intent_boost_targets_docs_not_install_scripts():

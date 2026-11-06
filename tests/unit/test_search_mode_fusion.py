@@ -43,6 +43,22 @@ def test_repository_search_defaults_to_lexical(monkeypatch):
     assert rag_calls == []
 
 
+def test_lexical_mode_prioritizes_intent_docs_but_keeps_symbol_queries_exact(monkeypatch):
+    service = _service(monkeypatch)
+    calls = []
+
+    def lexical(root, query, *args, **kwargs):
+        calls.append((query, kwargs))
+        return {"success": True, "results": [], "count_exact": True, "total_matches": 0}
+
+    monkeypatch.setattr(service, "_repo_search_lexical", lexical)
+    service.repo_search(".", "Local AI Hub installation", search_mode="lexical")
+    service.repo_search(".", "repo_search", search_mode="lexical")
+
+    assert calls[0][1]["installation_intent_priority"] is True
+    assert calls[1][1]["installation_intent_priority"] is False
+
+
 def test_hybrid_fusion_deduplicates_files_and_rewards_backend_agreement():
     lexical = [
         {"path": "src/setup.py", "start_line": 10, "score": 9.0, "text": "setup"},
