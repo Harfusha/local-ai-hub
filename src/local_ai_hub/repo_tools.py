@@ -1540,14 +1540,6 @@ class RepositoryTools:
         try:
             if not self._inventory_path_safe(base, path):
                 return False
-            if path.is_symlink():
-                return False
-            lexical_relative = Path(os.path.abspath(path)).relative_to(base)
-            current = base
-            for part in lexical_relative.parts:
-                current = current / part
-                if current.is_symlink():
-                    return False
             resolved = path.resolve(strict=True)
             resolved.relative_to(base)
             relative_path = resolved.relative_to(base)
@@ -2108,10 +2100,8 @@ class RepositoryTools:
                     # through the full safety and project-policy checks below.
                     if matching_relpaths is not None and rel not in matching_relpaths and not forced:
                         continue
-                    if path.is_symlink():
-                        continue
                     if project_settings is None:
-                        if self._is_ignored_relative_path(relative):
+                        if path.is_symlink() or self._is_ignored_relative_path(relative):
                             continue
                     elif not self._project_file_allowed(
                         base, path, project_settings,

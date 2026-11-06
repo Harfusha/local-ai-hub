@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -78,6 +79,51 @@ def test_exact_search_reuses_project_path_policy_for_one_request(tmp_path, monke
     assert result["success"] is True
     assert result["total_matches"] == 2
     assert len(instances) == 1
+
+
+def test_exact_search_does_not_repeat_symlink_checks_after_path_policy_preflight(tmp_path, monkeypatch):
+    (tmp_path / "source.py").write_text("needle\n", encoding="utf-8")
+    monkeypatch.setattr(repo_tools.subprocess, "run", lambda *_a, **_k: SimpleNamespace(
+        returncode=0, stdout="source.py\n", stderr=""))
+    tools = RepositoryTools({"rag": {"extensions": [".py"]}})
+    tools._rg = "rg"
+    original_is_symlink = Path.is_symlink
+    checked = []
+
+    def track_symlink_checks(path):
+        checked.append(path)
+        return original_is_symlink(path)
+
+    monkeypatch.setattr(Path, "is_symlink", track_symlink_checks)
+    result = tools.search(
+        str(tmp_path), "needle", exact_count=True, project_settings=ProjectSettings(),
+    )
+
+    assert result["success"] is True
+    assert result["total_matches"] == 1
+    assert checked == []
+
+
+def test_exact_search_path_policy_preflight_still_rejects_symlink(tmp_path, monkeypatch):
+    outside = tmp_path.parent / "outside-search-target.py"
+    outside.write_text("needle\n", encoding="utf-8")
+    link = tmp_path / "linked.py"
+    try:
+        link.symlink_to(outside)
+    except OSError as exc:
+        pytest.skip(f"symlink creation unavailable: {exc}")
+    monkeypatch.setattr(repo_tools.subprocess, "run", lambda *_a, **_k: SimpleNamespace(
+        returncode=0, stdout="linked.py\n", stderr=""))
+    tools = RepositoryTools({"rag": {"extensions": [".py"]}})
+    tools._rg = "rg"
+
+    result = tools.search(
+        str(tmp_path), "needle", exact_count=True, project_settings=ProjectSettings(),
+    )
+
+    assert result["success"] is True
+    assert result["total_matches"] == 0
+    assert result["results"] == []
 
 
 def test_excluded_tree_acceleration_matches_complete_fallback(tmp_path, monkeypatch):
