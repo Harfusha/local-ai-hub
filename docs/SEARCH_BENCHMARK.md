@@ -47,3 +47,20 @@ observed live hybrid path degraded to a current-source lexical fallback.
 - Actual cold and warm application-cache latency, median, and p95.
 - Live HTTP/MCP boundary and running-install results, reported separately from
   synthetic fixtures.
+
+## Live repository MCP samples — 2026-11-06
+
+Two single lexical requests ran against the actual checkout at
+`C:\Users\Adam\.local-ai-hub` through Local AI Hub MCP. The Hub was online,
+but its status reported `active_model=null` and
+`gpu_admission_state=preparing_model`.
+
+| Query | Exact matches | First relevant result | Observed MCP call time |
+| --- | ---: | --- | ---: |
+| `Local AI Hub installation` | 3,907 | `docs/INSTALLATION.md` | 11.77 s |
+| `repo_search` | 162 | `src/local_ai_hub/services.py` | 1.00 s |
+
+These are single observations, not latency percentiles. They do not measure the
+raw HTTP route, healthy RAG, reranking, or cold/warm application-cache pairs.
+The natural query's high exact-match count and latency need a repeated
+controlled run after model preparation completes.
