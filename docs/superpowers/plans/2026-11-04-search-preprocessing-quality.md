@@ -346,3 +346,13 @@ review and are not included in this search fix commit.
 - Effective file configuration resolves `profile=high`, `features.rag=true`, BGE sentence-transformers on CUDA, and the BGE reranker on CUDA. Hub reports `active_model=null`; `hubctl status` reports managed backend offline with zero online Ollama models. Effective config is not runtime model proof.
 - An unrelated uncommitted lifecycle test appeared in the shared checkout. It was preserved and not staged or edited.
 - Next: diagnose why the live embedding provider reports disabled despite effective config, then reindex only after GPU admission is safe. Keep the live RAG and reranker acceptance gates open.
+
+## Continuation checkpoint — 2026-11-06 (search ranking and degraded hybrid)
+
+- Commit `46f85921` makes natural English and Czech installation intent rank the user installation guide above generic entry points in exact-count search. Exact symbol queries keep their lexical precision path.
+- Commit `fe23d295` changes hybrid behavior when RAG is unavailable or degraded without usable candidates: it returns an exact, paged lexical search over current authorized sources. Lexical count is exact; hybrid semantic coverage remains incomplete and degraded. It no longer treats up to 64 preprocessed candidate paths as the result page.
+- Focused search, fusion, benchmark, literal, and pagination regressions: **104 passed**. One-repeat real-repository lexical and hybrid runs both reached hit-rate@10 **0.875** and MRR **0.8125** with optional backends disabled. Hybrid degraded fallback now ranks both English and Czech installation queries first; two Czech code-index size cases still miss/rank low. These small runs do not establish general quality.
+- Two-repeat lexical cache run measured cold/warm samples: warm requests were about **71–91 ms**; cold natural queries were about **2.6–3.6 s**. This confirms cache benefit, not a cold-search speedup.
+- Current Hub status remains `active_model=null`, `gpu_admission_state=outcome_unknown`, and managed inference backend offline. The 64-byte digest fence has no lease metadata and was about **170 seconds** old; a live Hub child process exists. This does not prove orphan ownership, so no archive, clear, RAG rebuild, or service restart was performed.
+- Search behavior notes in both canonical prompts now describe exact lexical fallback counts and incomplete hybrid coverage. Their pre-existing unrelated dirty edits remain uncommitted and preserved.
+- Next: profile and reduce cold exact-search cost without weakening current-source freshness, then diagnose safe runtime GPU admission and verify live RAG/reranker before closing remaining gates.
