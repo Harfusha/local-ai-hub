@@ -21,6 +21,87 @@ def _service(monkeypatch, rag_rows=None, rag_meta=None):
     return service
 
 
+@pytest.mark.parametrize(
+    "rag_meta",
+    [
+        {"success": False, "reason": "embedding_backend", "index_state": "unavailable"},
+        {
+            "success": True,
+            "degraded": True,
+            "degradation_reason": "embedding_backend",
+            "index_state": "stale",
+        },
+    ],
+)
+def test_hybrid_lexical_fallback_does_not_compute_or_claim_exact_counts(monkeypatch, rag_meta):
+    service = _service(monkeypatch, rag_meta=rag_meta)
+    lexical_calls = []
+
+    def lexical(root, query, *args, **kwargs):
+        lexical_calls.append(kwargs)
+        return {
+            "success": True,
+            "root": root,
+            "results": [{"path": "docs/INSTALLATION.md", "text": "installation guide"}],
+            "total_matches": 1,
+            "count_exact": False,
+            "has_more": False,
+        }
+
+    monkeypatch.setattr(service, "_repo_search_lexical", lexical)
+
+    result = service.repo_search(
+        ".", "Local AI Hub installation", search_mode="hybrid", limit=5,
+    )
+
+    assert lexical_calls[0]["exact_count"] is False
+    assert result["result_source"] == "lexical_fallback"
+    assert result["coverage_complete"] is False
+    assert result["total_matches"] is None
+    assert result["count_exact"] is False
+    assert result["lexical_total_matches"] is None
+    assert result["lexical_count_exact"] is False
+    assert result["has_more"] is None
+    assert len(result["results"]) == 1
+
+
+def test_hybrid_bounded_fallback_finds_matches_after_unrelated_path_prefix(tmp_path, monkeypatch):
+    root = tmp_path / "repo"
+    noise = root / "aaa_noise"
+    target = root / "src" / "access.py"
+    noise.mkdir(parents=True)
+    target.parent.mkdir(parents=True)
+    for index in range(48):
+        (noise / f"file_{index:03d}.py").write_text("value = 1\n", encoding="utf-8")
+    target.write_text("def renew_access_key():\n    return True\n", encoding="utf-8")
+
+    tools = RepositoryTools({"rag": {"extensions": [".py"]}})
+    tools.max_hits = 8
+    service = object.__new__(LocalAIServices)
+    service.config = {
+        "server": {"state_dir": str(tmp_path / "state")},
+        "features": {"rag": True},
+    }
+    service.repo_tools = tools
+    service.learner = service.deterministic = service.code_index = None
+    service.preprocessor = service.evidence_store = None
+    service._repo_cache_state = lambda _root: {}
+    monkeypatch.setattr(
+        service, "_repo_rag_search",
+        lambda _root, _query, _top_k: ([], {"success": False, "reason": "embedding_backend"}),
+    )
+
+    result = service.repo_search(
+        str(root), "renew access key", search_mode="hybrid", limit=5,
+    )
+
+    assert result["success"] is True
+    assert result["result_source"] == "lexical_fallback"
+    assert result["coverage_complete"] is False
+    assert result["count_exact"] is False
+    assert [row["path"] for row in result["results"]] == ["src/access.py"]
+
+
 def test_repository_search_defaults_to_hybrid_for_natural_language(monkeypatch):
     service = _service(monkeypatch, [{"path": "docs/semantic-only.md", "text": "semantic"}])
     rag_calls = []
@@ -572,7 +653,7 @@ def test_preprocessed_lexical_candidates_bound_source_search(tmp_path):
     assert empty["success"] is False
 
 
-def test_hybrid_rag_failure_preserves_exact_lexical_page(monkeypatch):
+def test_hybrid_rag_failure_preserves_page_but_marks_count_unknown(monkeypatch):
     service = _service(monkeypatch, rag_meta={"success": False, "reason": "rag_index_missing"})
     calls = []
 
@@ -585,13 +666,17 @@ def test_hybrid_rag_failure_preserves_exact_lexical_page(monkeypatch):
     result = service.repo_search(".", "identifier", search_mode="hybrid", limit=1, offset=2)
 
     assert result["results"] == [{"path": "src/2.py", "sources": ["lexical"], "result_source": "lexical_fallback"}]
-    assert result["total_matches"] == 31
-    assert result["count_exact"] is True
+    assert result["total_matches"] is None
+    assert result["count_exact"] is False
+    assert result["lexical_total_matches"] is None
+    assert result["lexical_count_exact"] is False
+    assert result["has_more"] is None
     assert result["degraded"] is True
+    assert calls[0]["exact_count"] is False
     assert calls[0]["offset"] == 2
 
 
-def test_hybrid_rag_unavailable_keeps_exact_natural_query_page(monkeypatch):
+def test_hybrid_rag_unavailable_keeps_bounded_natural_query_page(monkeypatch):
     service = _service(monkeypatch, rag_meta={
         "success": False, "reason": "rag_disabled", "index_state": "disabled",
     })
@@ -615,17 +700,18 @@ def test_hybrid_rag_unavailable_keeps_exact_natural_query_page(monkeypatch):
     assert result["degraded"] is True
     assert result["degradation_reason"] == "rag_disabled"
     assert result["results"][0]["path"] == "docs/INSTALLATION.md"
-    assert result["total_matches"] == result["lexical_total_matches"] == 23
-    assert result["count_exact"] is result["lexical_count_exact"] is True
+    assert result["total_matches"] is result["lexical_total_matches"] is None
+    assert result["count_exact"] is result["lexical_count_exact"] is False
+    assert result["has_more"] is None
     assert result["coverage_complete"] is False
-    assert calls[0]["exact_count"] is True
+    assert calls[0]["exact_count"] is False
     assert calls[0]["offset"] == 2
     assert calls[0]["limit"] == 1
     assert calls[0].get("candidate_paths") is None
     assert calls[0].get("candidate_query") is None
 
 
-def test_hybrid_degraded_empty_rag_candidates_use_exact_lexical_page(monkeypatch):
+def test_hybrid_degraded_empty_rag_candidates_use_bounded_lexical_page(monkeypatch):
     service = _service(monkeypatch, rag_rows=[], rag_meta={
         "success": True, "degraded": True, "degradation_reason": "embedding_space_mismatch",
         "index_state": "stale", "reranker": {"requested": True, "used": False, "degraded": True},
@@ -650,15 +736,16 @@ def test_hybrid_degraded_empty_rag_candidates_use_exact_lexical_page(monkeypatch
 
     assert result["result_source"] == "lexical_fallback"
     assert result["degradation_reason"] == "embedding_space_mismatch"
-    assert result["total_matches"] == 14
-    assert result["lexical_total_matches"] == 14
-    assert result["count_exact"] is True
-    assert result["lexical_count_exact"] is True
+    assert result["total_matches"] is None
+    assert result["lexical_total_matches"] is None
+    assert result["count_exact"] is False
+    assert result["lexical_count_exact"] is False
+    assert result["has_more"] is None
     assert result["query_expansion_applied"] is True
     assert result["results"][0]["sources"] == ["lexical"]
     assert calls[0]["offset"] == 3
     assert calls[0]["limit"] == 1
-    assert calls[0]["exact_count"] is True
+    assert calls[0]["exact_count"] is False
     assert calls[0].get("candidate_paths") is None
     assert calls[0].get("candidate_query") is None
 

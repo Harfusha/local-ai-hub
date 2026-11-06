@@ -3312,7 +3312,7 @@ class LocalAIServices:
             if mode == "hybrid":
                 result = self._repo_search_lexical(
                     root, query, top_k, context_lines, enrich, path_hints, scope,
-                    limit=page_limit, offset=offset, exact_count=True,
+                    limit=page_limit, offset=offset, exact_count=False,
                     installation_intent_priority=(
                         mode == "hybrid" and not prefers_lexical_precision(query)
                     ),
@@ -3320,12 +3320,12 @@ class LocalAIServices:
                 result.update({
                     "search_mode": "hybrid", "result_source": "lexical_fallback",
                     "coverage_complete": False, "degraded": True,
+                    "total_matches": None, "count_exact": False, "has_more": None,
                     "degradation_reason": rag_meta.get("reason", "rag_unavailable"),
                     "index_state": rag_meta.get("index_state", "unavailable"),
                     "index_coverage": rag_meta.get("index_coverage", "unknown_or_partial"),
                     "candidate_freshness": "verified_against_current_sources",
-                    "lexical_total_matches": result.get("total_matches"),
-                    "lexical_count_exact": result.get("count_exact") is True,
+                    "lexical_total_matches": None, "lexical_count_exact": False,
                     "reranker": rag_meta.get("reranker", {"requested": True, "used": False, "degraded": True}),
                     "lexical_candidate_source": "current_source_scan",
                     "lexical_preprocessed_candidate_count": 0,
@@ -3373,7 +3373,7 @@ class LocalAIServices:
         if not rag_rows and rag_meta.get("degraded"):
             result = self._repo_search_lexical(
                 root, query, top_k, context_lines, enrich, path_hints, scope,
-                limit=page_limit, offset=offset, exact_count=True,
+                limit=page_limit, offset=offset, exact_count=False,
                 installation_intent_priority=(
                     mode == "hybrid" and not prefers_lexical_precision(query)
                 ),
@@ -3381,6 +3381,7 @@ class LocalAIServices:
             result.update({
                 "search_mode": "hybrid", "result_source": "lexical_fallback",
                 "coverage_complete": False, "degraded": True,
+                "total_matches": None, "count_exact": False, "has_more": None,
                 "degradation_reason": rag_meta.get("degradation_reason", "rag_backend_degraded"),
                 "index_state": rag_meta.get("index_state", "unknown"),
                 "index_coverage": rag_meta.get("index_coverage", "unknown_or_partial"),
@@ -3388,8 +3389,7 @@ class LocalAIServices:
                 "stale_candidate_count": rag_meta.get("stale_candidate_count", 0),
                 "stale_candidate_reasons": rag_meta.get("stale_candidate_reasons", {}),
                 "stale_candidate_details": rag_meta.get("stale_candidate_details", []),
-                "lexical_total_matches": result.get("total_matches"),
-                "lexical_count_exact": result.get("count_exact") is True,
+                "lexical_total_matches": None, "lexical_count_exact": False,
                 "lexical_candidate_source": "current_source_scan",
                 "lexical_preprocessed_candidate_count": 0,
                 "rag_candidate_count": 0, "rag_candidate_count_exact": False,

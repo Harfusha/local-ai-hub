@@ -2365,13 +2365,14 @@ class RepositoryTools:
         candidate_engine = "python"
         project_candidates = None
         if project_settings is not None:
-            project_candidates = []
-            for path in self._iter_project_search_files(
+            # Keep the project policy allowlist intact, but do not truncate it
+            # before searching. A path-sorted prefix can be filled by unrelated
+            # files and hide later lexical matches. `_iter_project_search_files`
+            # already applies the configured file bound and access policy;
+            # `_ripgrep_candidates` separately bounds returned matches and time.
+            project_candidates = list(self._iter_project_search_files(
                 base, project_settings, 25, git_inventory=git_inventory,
-            ):
-                if len(project_candidates) >= candidate_limit + 1:
-                    break
-                project_candidates.append(path)
+            ))
         elif candidate_paths is not None:
             # This is an explicitly incomplete candidate set for hybrid search,
             # never a source of exact lexical counts or complete-coverage claims.
