@@ -168,8 +168,8 @@ def test_repo_search_reuses_cache_for_equivalent_query_whitespace_and_case(tmp_p
     services.preprocessor = None
     services.evidence_store = None
 
-    first = services.repo_search(str(tmp_path), "  Cache   Route  ", top_k=12)
-    second = services.repo_search(str(tmp_path), "cache route", top_k=12)
+    first = services.repo_search(str(tmp_path), "  Cache   Route  ", top_k=12, search_mode="lexical")
+    second = services.repo_search(str(tmp_path), "cache route", top_k=12, search_mode="lexical")
 
     assert first["cache_hit"] is False
     assert second["cache_hit"] is True

@@ -625,3 +625,81 @@ Still open before this plan can be accepted:
 - Reviewed `_prewarm_should_retry` and its bounded retry loop. It stops when scheduler status is unavailable, malformed, or `outcome_unknown`; it retries only an allowlisted admission state, with a 120-attempt default cap and bounded waits.
 - Focused checks passed: `test_prewarm_stops_retrying_after_unknown_gpu_outcome`, `test_prewarm_retries_while_gpu_is_temporarily_busy`, and `test_prewarm_stops_when_scheduler_status_is_unavailable_or_unknown` (3 passed). This validates retry policy, not physical GPU readiness.
 - Fresh Hub readiness `req_d4bb195456c1` reports `gpu_admission_state=outcome_unknown`, active model null and stale VRAM telemetry. The fast-model comparison, 5070 Ti benchmark, labeled quality matrix, and route recommendations remain open.
+
+### Continuation checkpoint — 2026-11-06, authorized reservation cleanup
+
+- User authorization and the replacement repo policy exposed `gpu_reservation_release_authorized`; the first authorized call returned `success=true, mutation_applied=true`. The immediate status still showed `reservation_present=true, state=unknown, manual_intervention_required=true`, so I inspected the current source contract rather than touching reservation files.
+- Source confirms the authorized release takes the store lock and removes only a valid current lease, valid orphan metadata, or a validated legacy digest fence; symlinks and malformed content fail closed. A second distinct authorized cleanup returned `success=true, mutation_applied=true`; follow-up status now reports `reservation_present=false, state=free, manual_intervention_required=false`.
+- Final post-cleanup readiness `req_a47802bba371` remains `gpu_admission_state=outcome_unknown`, `active_model=null`, with VRAM telemetry `sample_pending`, `sampling=true`, and `stale=true`. Reservation cleanup is verified, but GPU inference/benchmark is still unsafe until admission and telemetry become fresh.
+
+### Continuation checkpoint — 2026-11-06, restart and admission mismatch
+
+- Restarted the Local AI Hub with `python tools/service.py restart` (exit 0). Hub and Ollama came online. Readiness `req_fe9a762f31b6` reports `gpu_admission_state=external_reservation`, `active_model=null`, and VRAM `sample_pending`/stale.
+- A fresh `gpu_reservation_status` reports `reservation_present=false`, `state=free`, and `manual_intervention_required=false`. These two live interfaces disagree. No second cleanup or GPU inference was attempted.
+- Current scheduler source initializes its GPU reservation path from configured `server.state_dir` and reports `external_reservation` when `_external_gpu_reserved()` is true. It does not explain why this differs from the owner-global coordination status. Exact source revision fingerprint: `bc60898d12b5ee5a76caa4fcedd59c608feb2d238afe8024a2daea35bffd1cff`.
+- `python tools/hubctl.py status` confirms Hub 5.1.3 online, one model online, and `NVIDIA GeForce RTX 5070 Ti (15 GB)`. Focused test `tests/test_mixed_scheduler_integration.py::test_scheduler_timeout_reports_gpu_reservation_wait_reason` passed (1 passed); it validates scheduler reporting only, not the live GPU state.
+- A bounded `local_ai_repo(action="review_diff")` request for this plan returned queued job `940f40f3fa1f43f69d592cc773feb848` with `admission_state=degraded`, `reason=resource_pressure`, and VRAM sample `sample_pending`; it returned no task ID or review result. Do not count this as review evidence.
+- Focused remaining task: identify whether the scheduler and coordination endpoint resolve different reservation stores or whether another live owner holds a separate reservation. Keep 5070 Ti benchmarks and inference on hold until a single fresh readiness result reports safe admission and fresh VRAM telemetry.
+
+### Continuation checkpoint — 2026-11-06, benchmark response and fail-closed reservation
+
+- After the stale embedding lease was released, one Hub restart failed verification and left the service offline. `python tools/service.py start` then succeeded; `hubctl status` confirmed Hub 5.1.3 online as PID 27672, seven installed models, one online model, and RTX 5070 Ti 15 GB.
+- Readiness `req_326dfe421dfd` reported `gpu_admission_state=available`, active `qwen3.5:4b-nvfp4`, but VRAM telemetry still `sample_pending`/stale. Reservation status was free before a bounded 40-token `hardware_benchmark` request (`req_effe10b29b24`). The request returned `success=true` but its response envelope was truncated and contained no measurements; it is not benchmark evidence.
+- Follow-up status `req_2fed97909cde` reported scheduler `probe_timeout`, `gpu_admission_state=unknown`, and no active model. Reservation status then returned `state=unknown, manual_intervention_required=true`. The user-authorized `gpu_reservation_release_authorized` call failed closed with `no valid current GPU reservation could be released` and `mutation_applied=false`.
+- Do not retry inference, benchmark, restart, or remove the state file directly. Resolve the malformed/unreadable reservation through a supported diagnostic or operator repair path first. Hardware results, quality matrix, and `high` route recommendations remain open.
+
+### Continuation checkpoint — 2026-11-06, lease heartbeat verification
+
+- Current reservation status is again `free`; no cleanup was needed. Fresh Local AI readiness `req_04bbf27d11a8` is degraded: scheduler, runtime, Ollama profile and other dependencies time out; admission is `unknown`, VRAM is `sample_pending`/stale. No live inference or benchmark is safe.
+- The shared checkout contains a reservation keepalive context plus embedding and reranker integration. Three focused tests now pass: `test_active_lease_heartbeat_prevents_expiry_until_owner_finishes`, `test_embedding_renews_gpu_fence_until_long_inference_finishes`, and `test_cuda_reranker_renews_shared_reservation_during_long_call` (3 passed). The embedding test now checks lease expiry at the in-inference observation timestamp, avoiding a post-return TTL race. These are isolated/mock tests, not physical GPU evidence.
+- `git diff --check` passed for the modified source, test and plan paths. The hardware benchmark request still has no usable metrics; continue to hold GPU evaluation until Hub dependencies and admission recover.
+- After the focused tests, `hubctl status` showed a new online Hub process (PID 42404). Readiness `req_e6b764d906b3` reports active `qwen3.5:4b-nvfp4` and `external_reservation`, while the owner-global reservation action reports `free`. The mismatch persists across process replacement; VRAM telemetry remains stale, so no further inference or restart was attempted.
+
+### Continuation checkpoint — 2026-11-06, scheduler-authoritative reservation path
+
+- The user approved immediate reservation cleanup. `gpu_reservation_release_authorized` returned `success=false`, `mutation_applied=false`, `no valid current GPU reservation could be released`; the store stayed untouched.
+- Implemented an authenticated `/api/gpu-reservation` route handled by the Hub server's active scheduler. MCP status and release actions now use that route, so they read and mutate the same configured store as scheduler admission. Authorized release calls scheduler status afterward to observe the durable operator-release marker and clear stale in-memory admission.
+- Focused verification passed: route registry and dispatch checks, both MCP release contract tests, scheduler-authoritative release and store-release synchronization tests, and lifecycle owner-probe test (7 passed). `git diff --check` passed before this checkpoint.
+- Source-level routing is now covered; the installed Hub process has not been restarted onto this source, and runtime parity, local-model quality, VRAM measurement, and RTX 5070 Ti benchmark evidence remain open. Continue with targeted tests and review, then restart only through the managed service path when source validation is complete.
+
+### Continuation checkpoint — 2026-11-06, live scheduler route after managed restart
+
+- Targeted source validation passed: `py_compile` for scheduler, route registry, HTTP server and MCP server; 8 selected regression tests passed; the isolated embedding lease-heartbeat test passed separately (1 passed); `git diff --check` had no whitespace errors. No broad suite ran.
+- The previously requested managed `python tools/hubctl.py restart` completed. `hubctl status` reports Hub 5.1.3 online (PID 29532), one model online, RTX 5070 Ti 15 GB. Through the new authenticated route, `gpu_reservation_status` request `req_b0205f15f2e0` returned `free`; readiness `req_d777863c56b7` returned `gpu_admission_state=available`, `degraded=false`, profile `high`, active `qwen3.5:4b-nvfp4`. VRAM telemetry remains `sample_pending`/stale and pressure `unknown`.
+- One bounded 4B hardware smoke request `req_2e47da44287b` returned `success=true` with a truncated response envelope and no measurements. It is not benchmark evidence; no retry was made. Workstream 4 fast-model comparison, Workstream 6 performance/quality matrix and route promotion remain open. Broader release checks remain unrun per the user's targeted-test instruction.
+
+### Continuation checkpoint — 2026-11-06, current readiness and release check
+
+- Fresh readiness `req_77f27afb7ba3` reports Hub online but `gpu_admission_state=outcome_unknown`, no active model, stale/pending VRAM telemetry, and a preprocessing stats probe timeout. No more inference, benchmark, status retry, or restart was attempted after this result.
+- The configured Codex/MCP auto-start contract remains active: `test_mcp_client_keeps_hub_owned_auto_start_enabled` and `test_mcp_client_bounds_auto_start_after_daemon_connection_refusal` passed (2 passed).
+- The read-only `python tools/release_check.py --allow-installed --json` passed version consistency, defaults consistency, manifest hygiene, public docs and release-doc version; it failed workspace hygiene on `forbidden directory: build/`. The existing directory was preserved. No full test suite was run.
+- Source/runtime reservation routing is verified, but local-model review, fast-model paired comparison, RTX 5070 Ti performance/quality measurements, route promotion, workspace hygiene and broader release suites remain open.
+
+### Continuation checkpoint — 2026-11-06, hybrid search fallback and workspace hygiene
+
+- Owner-global reservation request `req_ba29036019ce` reports `free`; this does not clear the previously observed scheduler `outcome_unknown`, so no inference was attempted.
+- Nine focused search regressions passed. They cover preservation of original lexical terms, bounded preprocessed candidate paths for hybrid fallback, Czech pagination term expansion, and simple Unicode ripgrep candidates with Python verification. Multi-character case folds remain on the authoritative Git scan. This improves deterministic retrieval/fallback; it does not qualify model summaries.
+- `build/` is not empty: it contains `bdist.win-amd64` and `lib` with 207 entries. Both nonrecursive removal attempts failed without deleting contents. The build output remains preserved; release hygiene remains blocked on ownership/cleanup.
+- The fast-model comparison, RTX 5070 Ti performance/quality matrix, route promotion, and broader release suites remain open.
+
+### Continuation checkpoint — 2026-11-06, exact-search Unicode candidate safety
+
+- A failure-first regression reproduced an exact-count risk: Python `.lower()` finds ASCII `i` inside `İstanbul` after its lowercase expansion, while ripgrep Unicode simple folding returns no file. Ripgrep candidate filtering could therefore drop an exact match.
+- Exact search now caches the set of characters produced by multi-character lowercase mappings and disables ripgrep candidate narrowing when the query can match within or across such an expansion. The guard follows the actual `.lower()` matcher; simple safe Czech Unicode queries still use ripgrep, while expansion-prone queries retain the complete Git scan.
+- Focused validation passed: exact-search and hybrid-candidate modules, 19 tests; four targeted search-mode fusion tests; `py_compile` on the touched search modules; `git diff --check`. No broad suite or GPU inference ran.
+- This closes the source-level exact-search candidate safety unit; AI summary factuality, paired fast-model comparison, 5070 Ti measurements/quality, promotion and release gates remain open.
+
+### Continuation checkpoint — 2026-11-06, bounded benchmark metric projection
+
+- A mocked failure-first test showed `local_ai_task(hardware_benchmark)` could lose measured fields under a response budget because it reused the generic `status` projection. The response now uses a benchmark-specific projection that protects model identity, loaded/peak VRAM, token counts, latency, throughput, score, and measurement warnings while allowing verbose nonessential fields to be removed.
+- Focused verification passed: the new budget-pressure projection test and canonical task-dispatch cases (14 passed), `py_compile` for `mcp_server.py`, and `git diff --check`.
+- This repairs MCP delivery of metrics without running inference. A real benchmark still must be repeated once scheduler admission is authoritatively safe; the earlier truncated request remains unusable. Quality comparison, route promotion, final review, release hygiene and broader suite remain open.
+
+### Continuation checkpoint — 2026-11-06, reservation cleanup and first valid RTX 5070 Ti sample
+
+- Managed restart reset the scheduler's in-memory `_internal_gpu_uncertain` gate. The restart command initially left the Hub stopped; `python tools/service.py start` restored Hub 5.1.3. Readiness request `req_ed43be6b4c9c` reported `gpu_admission_state=available`; its first VRAM sample was pending.
+- One valid warm benchmark on installed `qwen3.5:4b-nvfp4` succeeded as request `req_dcd2741b477e`: 40 backend-counted tokens, 170.67 tokens/s, TTFT 84.23 ms, generation 234.37 ms, call latency 318.6 ms, device-wide sampled peak 6,248,464,384 bytes. Model-attributed VRAM was unavailable. Full record is in `docs/agent-evaluation/results.md`. This does not complete cold, concurrency, quality or route-promotion criteria.
+- The owner-global reservation became `unknown` after GPU activity and required the previously authorized Hub release operation. Source audit confirmed `_remove_unlocked` deletes the digest before metadata and did not retry a transient Windows sharing violation on metadata deletion. Added bounded retries for `WinError 32`, rechecking metadata generation and digest and refusing symlinks; malformed or persistent failures remain fail-closed.
+- Failure-first regression was red before the fix and green after. Four targeted lifecycle tests passed, including digest-failure recovery and malformed-orphan refusal; `py_compile` and scoped `git diff --check` passed.
+- Release check now passes after moving the ignored 207-entry `build/` output to `C:\Users\Adam\AppData\Local\Temp\local-ai-hub-build-archive-2026-11-06`; contents were preserved. No full test suite was run.
+- Bounded semantic solve/review attempts still ended `outcome_unknown`; review artifact is unavailable and cleanup was unconfirmed. No further model work until the async worker state is authoritatively settled. Quality comparison, complete hardware matrix, route promotion, review and broader release suite remain open.

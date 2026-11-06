@@ -86,7 +86,7 @@ a live latency gain.
 ## Live repository MCP samples — 2026-11-06
 
 At measurement time, two single lexical requests ran against the actual checkout at
-`C:\Users\Adam\.local-ai-hub` through Local AI Hub MCP. The Hub was online,
+the repository root through Local AI Hub MCP. The Hub was online,
 but its status reported `active_model=null` and
 `gpu_admission_state=preparing_model`.
 

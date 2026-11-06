@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from local_ai_hub.repo_tools import RepositoryTools
+from local_ai_hub.search_modes import expand_semantic_query
 from local_ai_hub.services import LocalAIServices
 
 
@@ -46,9 +47,9 @@ def test_hybrid_uses_expanded_query_for_bounded_lexical_candidates(monkeypatch):
     assert lexical_calls[0][1]["candidate_query"].startswith(
         "Jak omezit velikost code indexu? "
     )
-    assert lexical_calls[0][1]["candidate_query"].endswith(
-        "code_index max_index_bytes eviction byte budget"
-    )
+    assert lexical_calls[0][1]["candidate_query"] == expand_semantic_query(
+        "Jak omezit velikost code indexu?"
+    )[0]
     assert lexical_calls[0][1]["installation_intent_priority"] is True
     assert result["query_expansion_applied"] is True
     assert result["lexical_count_exact"] is False
@@ -92,10 +93,16 @@ def test_hybrid_degrades_to_bounded_expanded_candidates_when_rag_is_stale(monkey
             "index_state": "stale",
         },
     )
+    candidate_limits = []
+
+    def candidate_paths(_self, _root, _query, limit):
+        candidate_limits.append(limit)
+        return ["docs/CODE_INDEX.md"]
+
     service.preprocessor = type(
         "Preprocessor",
         (),
-        {"candidate_paths": lambda _self, _root, _query, _limit: ["docs/CODE_INDEX.md"]},
+        {"candidate_paths": candidate_paths},
     )()
     lexical_calls = []
     service._repo_search_lexical = lambda _root, query, *_args, **kwargs: (
@@ -127,6 +134,7 @@ def test_hybrid_degrades_to_bounded_expanded_candidates_when_rag_is_stale(monkey
     assert lexical_calls[0][1]["candidate_query"].endswith(
         "code_index max_index_bytes eviction byte budget"
     )
+    assert candidate_limits == [128]
     assert result["success"] is True
     assert result["result_source"] == "lexical_fallback"
     assert result["degraded"] is True
@@ -168,7 +176,9 @@ def test_hybrid_stale_rag_uses_expanded_current_source_scan_without_index_paths(
 
     assert lexical_calls[0][0] == "Local AI Hub installation"
     assert lexical_calls[0][1]["candidate_query"].startswith("Local AI Hub installation ")
-    assert lexical_calls[0][1]["candidate_query"].endswith("install setup getting started bootstrap")
+    assert lexical_calls[0][1]["candidate_query"] == expand_semantic_query(
+        "Local AI Hub installation"
+    )[0]
     assert lexical_calls[0][1]["candidate_paths"] is None
     assert lexical_calls[0][1]["exact_count"] is False
     assert result["lexical_candidate_source"] == "current_source_scan"
@@ -208,7 +218,9 @@ def test_hybrid_empty_degraded_rag_uses_the_same_expanded_fallback(monkeypatch):
     )
 
     assert lexical_calls[0][1]["candidate_query"].startswith("Local AI Hub installation ")
-    assert lexical_calls[0][1]["candidate_query"].endswith("install setup getting started bootstrap")
+    assert lexical_calls[0][1]["candidate_query"] == expand_semantic_query(
+        "Local AI Hub installation"
+    )[0]
     assert lexical_calls[0][1]["exact_count"] is False
     assert result["result_source"] == "lexical_fallback"
     assert result["query_expansion_applied"] is True

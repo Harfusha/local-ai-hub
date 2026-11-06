@@ -193,6 +193,47 @@ def test_scheduler_timeout_reports_gpu_reservation_wait_reason(tmp_path):
         scheduler.close()
 
 
+def test_authorized_store_release_clears_scheduler_owned_fence(tmp_path):
+    config = {
+        "server": {"state_dir": str(tmp_path), "ollama_url": "http://127.0.0.1:11434"},
+        "ollama": {"enabled": True},
+    }
+    scheduler = AffinityScheduler(OllamaRuntime(config), config)
+    try:
+        token = scheduler.reserve_external_gpu()
+        assert token
+        store = scheduler._external_gpu_store
+        assert store is not None
+        assert store.release_current_with_consent(
+            consent=True,
+            audit_reason="focused test of the authorized coordination release path",
+        )
+        assert scheduler.status()["gpu_admission_state"] == "available"
+    finally:
+        scheduler.close()
+
+
+def test_authorized_scheduler_release_uses_live_store_and_syncs_admission(tmp_path):
+    config = {
+        "server": {"state_dir": str(tmp_path), "ollama_url": "http://127.0.0.1:11434"},
+        "ollama": {"enabled": True},
+    }
+    scheduler = AffinityScheduler(OllamaRuntime(config), config)
+    try:
+        token = scheduler.reserve_external_gpu()
+        assert token
+        result = scheduler.gpu_reservation_operation(
+            action="release_authorized",
+            consent=True,
+            audit_reason="focused test of scheduler-authoritative GPU release",
+        )
+        assert result["success"] is True
+        assert scheduler.status()["gpu_admission_state"] == "available"
+        assert scheduler._external_gpu_store.read() is None
+    finally:
+        scheduler.close()
+
+
 @pytest.mark.parametrize("available_mb, outcome", [(6144, "success"), (256, "reject"), (6144, "partial")])
 def test_scheduler_routes_cuda_only_after_ollama_unload_and_admission(tmp_path, available_mb, outcome):
     state = {"ollama_loaded": True, "cuda_loaded": False, "events": []}

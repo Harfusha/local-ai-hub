@@ -56,7 +56,7 @@ were active Git roots and stayed protected. It reported 317,538,408 physical
 bytes before and after, zero reusable pages, and zero bytes released. This is a
 live-install measurement, not a cleanup or compaction run.
 
-Live dry-run on 2026-11-06 (`--max-rows 10000 --max-roots 128
+Earlier live dry-run on 2026-11-06 (`--max-rows 10000 --max-roots 128
 --max-paths-per-root 64`) found 6,904 orphan-trigram candidates and zero
 eligible rows. It found zero stale files, zero reusable pages, and released
 zero physical bytes. The SQLite file plus WAL/SHM measured 470,814,720 bytes;
@@ -82,7 +82,7 @@ does not imply complete code-index coverage. Search continues to verify indexed
 candidates against current source and falls back to source search when coverage
 is partial or a candidate is stale.
 
-## Read-only live SQLite snapshot — 2026-11-06
+## Earlier read-only live SQLite snapshot — 2026-11-06
 
 A read-only SQLite connection measured the live database and its sidecars at
 431,702,016 bytes total: 431,669,248-byte main file, zero-byte WAL, and
@@ -94,12 +94,14 @@ symbols, 143,542 references, 153,498 edges, 1,532,661 symbol-trigram rows,
 
 The configured default limit is 536,870,912 bytes (512 MiB), and no
 `code_index.max_index_bytes` override was present in `config.toml`. This
-snapshot did not mutate, clean, or vacuum the database. Compared with the older
-470,814,720-byte dry-run observation above, it is 39,112,704 bytes smaller;
-the cause is not established. `dbstat` was unavailable, so these totals do not
-attribute bytes to individual tables. Zero free pages means this snapshot gives
-no evidence that SQLite can return additional pages to the filesystem through
-incremental vacuum.
+snapshot did not mutate, clean, or vacuum the database. The later same-day
+snapshot and table-page attribution are recorded in
+`docs/CODE_INDEX_STORAGE_AUDIT_2026-11-06.md`; the earlier measurement did not
+capture the database/WAL/SHM split, so it cannot explain the change between
+snapshots. The Python SQLite build had no `dbstat` virtual table, but the later
+audit used the installed `sqlite3_analyzer` to measure table and index page
+shares. Zero free pages in both snapshots means neither showed reusable pages
+for SQLite to return to the filesystem.
 
 ## Synthetic bounded-inventory benchmark — 2026-11-06
 
@@ -121,3 +123,25 @@ This isolates inventory materialization and filtering. It excludes project path
 policy, filesystem reads, locks, disk I/O, scheduler work, index writes, and the
 running service. It is synthetic evidence for the bounded-read change, not an
 end-to-end preprocessing or search latency claim.
+
+A second same-day run measured full materialization at 232.64 ms median and
+242.18 ms p95, versus 167.73 ms median and 199.72 ms p95 for bounded batches.
+Peak Python allocation remained 15,149,929 B versus 7,791,301 B. The timing
+shift across runs shows host-level variation; both runs retained the same
+eligible-path count and lower allocation for bounded batches.
+
+## Synthetic code-index eviction benchmark — 2026-11-06
+
+Reproduce with:
+
+```powershell
+python tools/benchmark_code_index_budget.py
+```
+
+On a temporary synthetic repository, eviction reduced physical SQLite storage
+from 17,223,680 B to 10,170,368 B (7,053,312 B released) after evicting six of
+16 indexed files. The hot file stayed indexed and the result fit the synthetic
+12,056,576 B budget. A separate write-admission case reserved 65,536 B and
+remained within its 16,437,247 B cap. This demonstrates synthetic SQLite page
+release and admission behavior; it does not measure eviction or latency in the
+installed Hub database.

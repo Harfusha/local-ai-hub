@@ -1,6 +1,6 @@
 # Local model GPU evaluation: fixed cases
 
-Version 2. This is a future benchmark protocol, not a completed benchmark.
+Protocol revision 2. This is a future benchmark protocol, not a completed benchmark.
 Give the model only the selected case and its allowed synthetic workspace. Keep
 the scoring key outside that workspace and outside the model's context.
 Use a fresh isolated fixture for every run; never run write cases on the Hub

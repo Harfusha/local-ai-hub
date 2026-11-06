@@ -1,6 +1,6 @@
 # Local model GPU evaluation: scoring and promotion
 
-Version 2. This key is for the operator and must not be placed in the evaluated
+Protocol revision 2. This key is for the operator and must not be placed in the evaluated
 model's workspace or prompt. The fixed inputs are in
 `local-model-gpu-cases.md`. No outcome is recorded until the actual run.
 

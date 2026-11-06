@@ -268,6 +268,15 @@ def test_degraded_lexical_expansion_uses_only_direct_translation_terms():
     assert expand_lexical_fallback_query("repo_search") == ("repo_search", False)
 
 
+def test_czech_pagination_fallback_adds_english_source_terms():
+    original = "Kde se ověřuje limit a offset výsledků hledání?"
+
+    assert expand_lexical_fallback_query(original) == (
+        original + " valid size pagination results search",
+        True,
+    )
+
+
 def test_installation_expansion_targets_semantic_candidates_only(monkeypatch):
     service = _service(monkeypatch, [{"path": "docs/INSTALLATION.md", "text": "install"}])
     rag_calls = []
@@ -302,11 +311,13 @@ def test_installation_expansion_targets_semantic_candidates_only(monkeypatch):
     assert lexical["search_mode"] == "lexical"
 
 
-def test_hybrid_lexical_fallback_uses_expanded_query_for_czech_recall(monkeypatch):
+def test_hybrid_lexical_fallback_matches_original_and_ranks_with_expansion(monkeypatch):
     original = "How to configure the software"
     semantic_expanded = expand_semantic_query(original)[0]
-    lexical_expanded = original + " konfigurace nastavení"
     service = _service(monkeypatch, [])
+    service.preprocessor = type(
+        "Preprocessor", (), {"candidate_paths": lambda _self, _root, _query, _limit: []},
+    )()
     rag_calls = []
     lexical_calls = []
     lexical_options = []
@@ -326,12 +337,90 @@ def test_hybrid_lexical_fallback_uses_expanded_query_for_czech_recall(monkeypatc
     result = service.repo_search(".", original, search_mode="hybrid")
 
     assert rag_calls == [semantic_expanded]
-    assert lexical_calls == [lexical_expanded]
+    assert lexical_calls == [original]
+    assert lexical_options[0]["candidate_query"] == semantic_expanded
     assert lexical_options[0]["exact_count"] is False
     assert result["query_expansion_applied"] is True
     assert result["result_source"] == "lexical_fallback"
     assert result["coverage_complete"] is False
     assert result["total_matches"] is None
+
+
+def test_degraded_hybrid_fallback_keeps_original_lexical_query(monkeypatch):
+    original = "Kde se ověřuje limit a offset výsledků hledání?"
+    service = _service(monkeypatch, [])
+    lexical_calls = []
+    monkeypatch.setattr(
+        service, "_repo_rag_search",
+        lambda _root, _query, _top_k: ([], {
+            "success": True,
+            "degraded": True,
+            "reason": "embedding_space_mismatch",
+            "degradation_reason": "embedding_space_mismatch",
+            "index_state": "stale",
+        }),
+    )
+    monkeypatch.setattr(
+        service, "_repo_search_lexical",
+        lambda _root, query, *args, **kwargs: (
+            lexical_calls.append(query) or
+            {"success": True, "results": [], "count_exact": True, "total_matches": 0}
+        ),
+    )
+
+    result = service.repo_search(".", original, search_mode="hybrid")
+
+    assert lexical_calls == [original]
+    assert result["result_source"] == "lexical_fallback"
+    assert result["degraded"] is True
+    assert result["coverage_complete"] is False
+    assert result["count_exact"] is False
+    assert result["total_matches"] is None
+
+
+def test_degraded_hybrid_uses_preprocessed_candidates_when_available(monkeypatch):
+    original = "Kde se ověřuje limit a offset výsledků hledání?"
+    expanded = expand_semantic_query(original)[0]
+    service = _service(monkeypatch, [])
+    candidate_calls = []
+    lexical_options = []
+
+    class Preprocessor:
+        def candidate_paths(self, root, query, limit):
+            candidate_calls.append((root, query, limit))
+            return ["src/local_ai_hub/search_pagination.py"]
+
+    service.preprocessor = Preprocessor()
+    monkeypatch.setattr(
+        service, "_repo_rag_search",
+        lambda _root, _query, _top_k: ([], {
+            "success": True,
+            "degraded": True,
+            "reason": "embedding_space_mismatch",
+            "degradation_reason": "embedding_space_mismatch",
+            "index_state": "stale",
+        }),
+    )
+    monkeypatch.setattr(
+        service, "_repo_search_lexical",
+        lambda _root, _query, *args, **kwargs: (
+            lexical_options.append(kwargs) or
+            {"success": True, "results": [], "count_exact": False, "total_matches": None}
+        ),
+    )
+
+    result = service.repo_search("C:/workspace", original, search_mode="hybrid", limit=5)
+
+    assert candidate_calls == [("C:/workspace", expanded, 128)]
+    assert lexical_options[0]["candidate_paths"] == ("src/local_ai_hub/search_pagination.py",)
+    assert lexical_options[0]["candidate_query"] == expanded
+    assert lexical_options[0]["exact_count"] is False
+    assert result["result_source"] == "lexical_fallback"
+    assert result["coverage_complete"] is False
+    assert result["count_exact"] is False
+    assert result["total_matches"] is None
+    assert result["lexical_candidate_source"] == "preprocess_index"
+    assert result["lexical_preprocessed_candidate_count"] == 1
 
 
 def test_rag_mode_applies_czech_expansion_only_to_semantic_candidates(monkeypatch):
@@ -969,3 +1058,23 @@ def test_empty_rag_workspace_skips_embedding_search(tmp_path):
     assert meta["success"] is False
     assert meta["reason"] == "rag_index_missing"
     assert meta["index_state"] == "missing"
+
+
+@pytest.mark.parametrize(
+    ("query", "expected_terms"),
+    [
+        (
+            "Jak preprocessing obnoví RAG po změně souborů?",
+            ("preprocess", "refresh", "files"),
+        ),
+        (
+            "Jak hybridní hledání označí nedostupný RAG index?",
+            ("hybrid", "search", "indicate", "unavailable"),
+        ),
+    ],
+)
+def test_czech_hybrid_expansion_maps_terms_from_live_miss_cases(query, expected_terms):
+    expanded, applied = expand_semantic_query(query)
+
+    assert applied is True
+    assert all(term in expanded.casefold().split() for term in expected_terms)

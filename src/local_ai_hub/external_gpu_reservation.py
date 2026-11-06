@@ -44,8 +44,23 @@ class ExternalGpuReservationStore:
         self.metadata_path = self.path.with_name(self.path.name + ".lease.json")
         self.lock_path = self.path.with_name(self.path.name + ".lock")
         self.audit_path = self.path.with_name(self.path.name + ".audit.jsonl")
+        self.operator_release_path = self.path.with_name(self.path.name + ".operator-release.json")
         self.ttl_seconds = float(ttl_seconds)
         self._clock = clock
+
+    def operator_release_marker(self) -> str | None:
+        """Return the latest durable consented-release marker for scheduler reconciliation."""
+        with self._locked():
+            if self.operator_release_path.is_symlink():
+                return None
+            try:
+                if self.operator_release_path.stat().st_size > 1024:
+                    return None
+                payload = json.loads(self.operator_release_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                return None
+            marker = payload.get("release_id") if isinstance(payload, dict) else None
+            return marker if isinstance(marker, str) and re.fullmatch(r"[0-9a-f]{32}", marker) else None
 
     def read(self) -> dict[str, Any] | None:
         with self._locked():
@@ -181,6 +196,50 @@ class ExternalGpuReservationStore:
             updated = {**record, "state": state, "updated_at": now, "expires_at": now + self.ttl_seconds}
             return self._write_metadata(updated)
 
+    @contextlib.contextmanager
+    def keepalive(self, token_digest: str, generation: str, *, state: str = "active") -> Iterator[threading.Event]:
+        """Renew an owned reservation until the protected operation finishes.
+
+        The returned event is set if ownership is lost or any renewal fails.
+        The daemon worker stops with its owning process, so ordinary TTL
+        recovery still applies after process exit.
+        """
+        _validate_digest(token_digest)
+        if not isinstance(generation, str) or not generation:
+            raise ValueError("generation must be a non-empty string")
+        if not isinstance(state, str) or state not in {"idle", "active"}:
+            raise ValueError("state must be idle or active")
+
+        stopped = threading.Event()
+        lost = threading.Event()
+        interval = self.ttl_seconds / 3.0
+
+        def renew_until_stopped() -> None:
+            while not stopped.wait(interval):
+                try:
+                    if not self.renew(token_digest, generation, state=state):
+                        lost.set()
+                        return
+                except Exception:
+                    lost.set()
+                    return
+
+        if not self.renew(token_digest, generation, state=state):
+            lost.set()
+        else:
+            worker = threading.Thread(
+                target=renew_until_stopped,
+                name="gpu-reservation-keepalive",
+                daemon=True,
+            )
+            worker.start()
+        try:
+            yield lost
+        finally:
+            stopped.set()
+            if "worker" in locals():
+                worker.join(timeout=min(2.0, max(interval, 0.05)))
+
     def release(self, token_digest: str, generation: str) -> bool:
         _validate_digest(token_digest)
         with self._locked():
@@ -263,6 +322,8 @@ class ExternalGpuReservationStore:
                     self._append_audit(event)
                 except OSError:
                     return False
+                if not self._write_operator_release_marker():
+                    return False
                 return self._remove_unlocked(record["generation"])
 
             if not self.path.exists() and self.metadata_path.exists():
@@ -278,13 +339,26 @@ class ExternalGpuReservationStore:
                 }
                 try:
                     self._append_audit(event)
+                    if not self._write_operator_release_marker():
+                        return False
                     self.metadata_path.unlink()
                 except OSError:
                     return False
                 return True
 
-            if self.metadata_path.exists() or not self.path.exists():
+            if self.metadata_path.exists():
                 return False
+            if not self.path.exists():
+                try:
+                    self._append_audit({
+                        "action": "consented_release_no_current_reservation",
+                        "owner": "unknown",
+                        "reason": audit_reason.strip(),
+                        "released_at": self._clock(),
+                    })
+                except OSError:
+                    return False
+                return self._write_operator_release_marker()
             try:
                 with self.path.open("rb") as stream:
                     before = os.fstat(stream.fileno())
@@ -311,6 +385,8 @@ class ExternalGpuReservationStore:
             }
             try:
                 self._append_audit(event)
+                if not self._write_operator_release_marker():
+                    return False
                 self.path.unlink()
             except OSError:
                 return False
@@ -405,12 +481,23 @@ class ExternalGpuReservationStore:
                 current = self._read_unlocked()
                 if current is None or current.get("generation") != generation:
                     return False
-        try:
-            self.metadata_path.unlink()
-        except OSError:
-            # Missing metadata with a stale digest is fail-closed; never mask it.
-            return False
-        return True
+        for attempt in range(6):
+            try:
+                if self.metadata_path.is_symlink():
+                    return False
+                self.metadata_path.unlink()
+                return True
+            except OSError as exc:
+                if getattr(exc, "winerror", None) != 32 or attempt == 5:
+                    # Missing metadata with a stale digest is fail-closed; never mask it.
+                    return False
+                time.sleep(0.01)
+                current = self._read_metadata_unlocked()
+                if (current is None
+                        or current.get("generation") != generation
+                        or not hmac.compare_digest(current["token_digest"], record["token_digest"])):
+                    return False
+        return False
 
     def _write_digest_exclusive(self, digest: str) -> None:
         with self.path.open("xb") as stream:
@@ -442,9 +529,29 @@ class ExternalGpuReservationStore:
             stream.flush()
             os.fsync(stream.fileno())
 
+    def _write_operator_release_marker(self) -> bool:
+        if self.operator_release_path.is_symlink():
+            return False
+        fd, temp_name = tempfile.mkstemp(
+            prefix=self.operator_release_path.name + ".", suffix=".tmp", dir=self.operator_release_path.parent,
+        )
+        payload = {"schema_version": 1, "release_id": uuid.uuid4().hex, "released_at": self._clock()}
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as stream:
+                json.dump(payload, stream, separators=(",", ":"), sort_keys=True)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temp_name, self.operator_release_path)
+            return True
+        except OSError:
+            with contextlib.suppress(OSError):
+                os.unlink(temp_name)
+            return False
+
     @contextlib.contextmanager
     def _locked(self) -> Iterator[None]:
-        if self.path.is_symlink() or self.metadata_path.is_symlink() or self.lock_path.is_symlink():
+        if (self.path.is_symlink() or self.metadata_path.is_symlink() or self.lock_path.is_symlink()
+                or self.operator_release_path.is_symlink()):
             raise OSError("reservation paths cannot be symlinks")
         key = str(self.lock_path.resolve())
         with _LOCKS_GUARD:

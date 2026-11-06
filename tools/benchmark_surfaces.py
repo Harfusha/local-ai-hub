@@ -3858,6 +3858,7 @@ def run_benchmark(
                     "top_k": 10,
                     "reranker": False,
                     "semantic_only": False,
+                    "semantic_query": clean_query,
                     "scope_path": None,
                     "chunker_version": RAG_CHUNKER_VERSION,
                     "stored_chunker_version": stored_chunker_version,
@@ -3973,8 +3974,8 @@ def run_benchmark(
         def seed_parent(target: Path) -> dict[str, Any]:
             result = app.preprocessor._seed_from_parent(str(target), str(repo_root))
             seeded_rows.update({key: int(value) for key, value in result.items()})
-            if int(result.get("code_index", 0)) < 1:
-                raise RuntimeError("parent seed did not copy synthetic CodeIndex rows")
+            if int(result.get("code_index", 0)) != 0:
+                raise RuntimeError("parent seed copied CodeIndex rows despite demand-driven admission")
             return {"success": True, "seeded_rows": result}
 
         def prepare_warm_seed(index: int) -> dict[str, Any]:
@@ -3996,9 +3997,7 @@ def run_benchmark(
                     "SELECT COUNT(*) FROM files WHERE root=?", (root,),
                 ).fetchone()[0])
             empty_target = not any(target.iterdir())
-            if regime == "cold" and (file_rows != 0 or not empty_target):
-                return {"success": False}
-            if regime == "warm" and file_rows < 1:
+            if file_rows != 0 or not empty_target:
                 return {"success": False}
             status = "cold_case_unseen" if regime == "cold" else "warm_exact_case_primed"
             return _preparation_observation(
@@ -4026,7 +4025,7 @@ def run_benchmark(
             warm_prepare=prepare_warm_seed,
             cold_verify=lambda index: verify_seed_case("cold", index),
             warm_verify=lambda index: verify_seed_case("warm", index),
-            definition="Copies only benchmark-owned parent CodeIndex rows into synthetic worktree roots; cold destinations are empty, warm destination is preseeded. Paired IDs identify same numbered copy observation.",
+            definition="Verifies demand-driven worktree registration does not clone unrelated parent CodeIndex rows; cold and warm destinations are isolated empty synthetic roots, with the warm no-clone outcome primed outside timing. Paired IDs identify the same numbered no-clone observation.",
             workload_fingerprint=parent_seed_workload_fingerprint,
             sample_ids_by_regime={
                 "cold": parent_seed_sample_ids,

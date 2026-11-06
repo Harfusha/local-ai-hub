@@ -326,7 +326,43 @@ class Reranker:
                 "results": [],
             }
         result: dict[str, Any] | None = None
+        lease_lost: threading.Event | None = None
         try:
+            if isinstance(reservation, tuple):
+                store = getattr(self, "_gpu_reservation_store", None)
+                if store is None:
+                    return {
+                        "success": False,
+                        "error_code": "gpu_reservation_lost",
+                        "error": "GPU reservation store is unavailable",
+                        "retryable": True,
+                        "results": [],
+                    }
+                with store.keepalive(reservation[0], reservation[1], state="active") as lease_lost:
+                    if lease_lost.is_set():
+                        return {
+                            "success": False,
+                            "error_code": "gpu_reservation_lost",
+                            "error": "GPU reservation was lost before reranking started",
+                            "retryable": True,
+                            "results": [],
+                        }
+                    result = self._rerank_without_admission(
+                        query,
+                        documents,
+                        top_k=top_k,
+                        priority=priority,
+                        allow_cpu_fallback=allow_cpu_fallback,
+                    )
+                    if lease_lost.is_set():
+                        result = {
+                            "success": False,
+                            "error_code": "gpu_reservation_lost",
+                            "error": "GPU reservation was lost during reranking; results were discarded",
+                            "retryable": True,
+                            "results": [],
+                        }
+                return result
             result = self._rerank_without_admission(
                 query,
                 documents,
@@ -336,10 +372,7 @@ class Reranker:
             )
             return result
         finally:
-            # Reranking is synchronous: once this call returns or raises, the
-            # GPU work is no longer in flight. Keep the reservation fail-closed
-            # only for a hung process, which never reaches this finally block.
-            if isinstance(reservation, tuple):
+            if isinstance(reservation, tuple) and not (lease_lost is not None and lease_lost.is_set()):
                 self._release_gpu_reservation(reservation)
 
     def _rerank_without_admission(

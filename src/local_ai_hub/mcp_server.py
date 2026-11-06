@@ -788,7 +788,7 @@ def _desc_coord() -> str:
             "plan_list", "plan_get", "plan_board_view", "plan_task_edit",
         ) if name in supported]
         reservation_note = (
-            " GPU reservation status is owner-global and takes no root; gpu_reservation_release requires consent=true, generation and audit_reason, then expiry or confirmed owner death. gpu_reservation_release_authorized removes the current valid reservation without a generation or owner-liveness preflight; require explicit consent=true and audit_reason. Malformed metadata and symlinks remain fail-closed."
+            " GPU reservation status is owner-global and takes no root; gpu_reservation_release requires consent=true, generation and audit_reason, then expiry or confirmed owner death. gpu_reservation_release_authorized requires explicit consent=true and audit_reason, without a generation or owner-liveness preflight. It releases a valid reservation or records a durable operator-release marker when the reservation file is already missing, allowing the scheduler to clear only stale in-memory external admission. Malformed metadata and symlinks remain fail-closed."
             if {"gpu_reservation_status", "gpu_reservation_release", "gpu_reservation_release_authorized"}.issubset(actions)
             else ""
         )
@@ -980,6 +980,15 @@ _STATUS_PROTECTED_KEYS = (
     "mutation_applied", "operation_not_started", "dependency_status",
     "worktree_id", "worktree_path", "lease_id", "branch",
     "enabled", "active_tasks", "tasks_count", "incidents_count", "candidates_count", "status",
+)
+_HARDWARE_BENCHMARK_PROTECTED_KEYS = (
+    "model", "model_digest", "model_digest_status",
+    "loaded_model_vram_bytes", "loaded_model_vram_status",
+    "tokens_generated", "token_count_estimated", "token_count_method",
+    "ttft_ms", "call_latency_ms", "latency_basis", "tokens_per_second",
+    "hardware_score", "generation_duration_ms", "load_duration_ms",
+    "queue_wait_ms", "peak_vram_bytes", "peak_vram_scope",
+    "initial_vram", "final_vram", "measurement_warning",
 )
 _SECURITY_PROTECTED_KEYS = (
     "clean", "leak_count", "real_leaks_count", "secrets_count", "test_findings_count",
@@ -1734,6 +1743,7 @@ def _compact(
             *(SOURCE_SLICE_FIELDS if source_slice and raw_value.get("success") is True else ()),
             *(_CONTEXT_PROTECTED_KEYS if task_kind in {"context", "context_compile"} else ()),
             *(_STATUS_PROTECTED_KEYS if task_kind == "status" else ()),
+            *(_HARDWARE_BENCHMARK_PROTECTED_KEYS if task_kind == "hardware_benchmark" else ()),
             *(_VERIFY_PROTECTED_KEYS if task_kind == "verify" else ()),
         )))
         compacted = budget_response(
@@ -3220,7 +3230,7 @@ def local_ai_task(
     if action == "benchmark":
         return _compact(CLIENT.post("/api/benchmark", {}, timeout=_timeout("long")), "status")
     if action == "hardware_benchmark":
-        return _compact(CLIENT.post("/api/benchmark/run", {"model": model or "", "prompt": prompt, "num_tokens": max_tokens or 40}, timeout=_timeout("long")), "status")
+        return _compact(CLIENT.post("/api/benchmark/run", {"model": model or "", "prompt": prompt, "num_tokens": max_tokens or 40}, timeout=_timeout("long")), "hardware_benchmark")
     if action == "evaluation_record":
         return _compact(CLIENT.post("/api/evaluation", {
             "action": "record", "task_id": evaluation_task_id, "cohort": evaluation_cohort,
@@ -5204,7 +5214,7 @@ def local_ai_coord(
     spec_content: str = "",
     expected_spec_revision: str = "",
 ) -> dict[str, Any]:
-    """Coordination for Hub work and GPU reservations. `gpu_reservation_status` takes only `action` (no root) and reports owner, generation, state and expiry. `gpu_reservation_release` requires `generation`, `consent=true` and a non-empty `audit_reason`; release is allowed after expiry or when the owner process is confirmed gone. `gpu_reservation_release_authorized` requires explicit consent and an audit reason, then releases the current valid reservation without a status or owner-liveness preflight. Malformed metadata and symlinks remain fail-closed. Never unlink reservation files directly. ask persists a repository/session-scoped question; retrieve it later with the same question_id, root and session_id. answer records an operator response under the authorized repository root. Public actions are limited to the contract enum; unscoped memory relation/reaping storage remains private. Claim overlapping edit paths before concurrent Hub work. Use scoped Agent OS memory_find/memory_record for reusable findings; workspace memo actions are operator-only and unavailable through this tool. Native peer subagents are coordinated by Codex rather than by this Hub tool."""
+    """Coordination for Hub work and GPU reservations. `gpu_reservation_status` takes only `action` (no root) and reports owner, generation, state and expiry. `gpu_reservation_release` requires `generation`, `consent=true` and a non-empty `audit_reason`; release is allowed after expiry or when the owner process is confirmed gone. `gpu_reservation_release_authorized` requires explicit consent and an audit reason, without a status or owner-liveness preflight. It releases a valid reservation or records a durable operator-release marker when the reservation file is already missing, allowing the scheduler to clear only stale in-memory external admission. Malformed metadata and symlinks remain fail-closed. Never unlink reservation files directly. ask persists a repository/session-scoped question; retrieve it later with the same question_id, root and session_id. answer records an operator response under the authorized repository root. Public actions are limited to the contract enum; unscoped memory relation/reaping storage remains private. Claim overlapping edit paths before concurrent Hub work. Use scoped Agent OS memory_find/memory_record for reusable findings; workspace memo actions are operator-only and unavailable through this tool. Native peer subagents are coordinated by Codex rather than by this Hub tool."""
     if not FEATURES.coord:
         return {"success": False, "unsupported": True, "error": "local_ai_coord is disabled in configuration"}
     if action in {"gpu_reservation_status", "gpu_reservation_release", "gpu_reservation_release_authorized"}:
@@ -5216,43 +5226,22 @@ def local_ai_coord(
         contract_error_value = validate_operation_arguments("local_ai_coord", action, supplied)
         if contract_error_value:
             return contract_error(contract_error_value, status_code=400)
-        from .external_gpu_reservation import ExternalGpuReservationStore
-        from .state_paths import configured_state_dir
-
-        state_dir = configured_state_dir(load_config())
-        store = ExternalGpuReservationStore(state_dir / "external-gpu-reservation")
-        if action == "gpu_reservation_status":
-            store.reap_expired()
-            record = store.read()
-            if record is None:
-                present = (state_dir / "external-gpu-reservation").exists()
-                return {"success": True, "reservation_present": present,
-                        "state": "unknown" if present else "free",
-                        "manual_intervention_required": present}
-            return {"success": True, "reservation_present": True,
-                    "generation": record["generation"], "owner": record["owner"],
-                    "state": record["state"], "created_at": record["created_at"],
-                    "expires_at": record["expires_at"],
-                    "expired": record["expires_at"] <= time.time()}
-        if action == "gpu_reservation_release_authorized":
-            if type(consent) is not bool or not consent or not audit_reason.strip():
-                return {"success": False, "operation_not_started": True,
-                        "error": "unknown reservation release requires consent=true and audit_reason"}
-            released = store.release_current_with_consent(
-                consent=consent, audit_reason=audit_reason,
-            )
-            result = {"success": released, "mutation_applied": released}
-            if not released:
-                result["error"] = "no valid current GPU reservation could be released"
-            return result
-        if type(consent) is not bool or not consent or not generation or not audit_reason.strip():
-            return {"success": False, "operation_not_started": True,
-                    "error": "gpu reservation release requires consent=true, generation, and audit_reason"}
-        released = store.release_with_consent(generation, consent=consent, audit_reason=audit_reason)
-        result = {"success": released, "mutation_applied": released, "generation": generation}
-        if not released:
-            result["error"] = "lease is missing, active, unexpired, or changed"
-        return result
+        operation = {
+            "action": {
+                "gpu_reservation_status": "status",
+                "gpu_reservation_release": "release",
+                "gpu_reservation_release_authorized": "release_authorized",
+            }[action],
+            "generation": generation,
+            "consent": consent,
+            "audit_reason": audit_reason,
+        }
+        try:
+            return CLIENT.post("/api/gpu-reservation", operation, timeout=_timeout("quick"))
+        except Exception:
+            # A lost response may follow a committed release; never replay it here.
+            return {"success": False, "outcome_unknown": True,
+                    "error": "GPU reservation operation response unavailable; inspect status before retrying"}
     if isinstance(action, str) and action.startswith("plan_"):
         # Preserve omission versus explicit null; do not inject other actions' defaults.
         options = _CURRENT_RESPONSE_OPTIONS.get() or {}

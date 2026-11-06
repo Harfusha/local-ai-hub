@@ -104,6 +104,7 @@ _CURRENT_ADDED_ROUTES = {
  'post_coord_plan_adopt_legacy_board_1': {'paths': ['/api/coord/plan_adopt_legacy_board'], 'before': 'post_benchmark_run_1'},
  'post_coord_plan_bind_task_1': {'paths': ['/api/coord/plan_bind_task'], 'before': 'post_benchmark_run_1'},
  'post_coord_plan_reconcile_steering_1': {'paths': ['/api/coord/plan_reconcile_steering'], 'before': 'post_benchmark_run_1'},
+ 'post_gpu_reservation_1': {'paths': ['/api/gpu-reservation'], 'before': 'post_delegate_repo_1'},
  'post_repo_patch_1': {'paths': ['/api/repo/patch'], 'before': 'post_implementations_1'},
  'post_repo_call_graph_1': {'paths': ['/api/repo/call_graph'], 'before': 'post_implementations_1'},
  'post_repo_git_status_1': {'paths': ['/api/repo/git_status'], 'before': 'post_implementations_1'},

@@ -75,10 +75,10 @@ def test_exact_search_prefilters_ignored_dirs_and_preserves_forced_paths(tmp_pat
     (tmp_path / ".git").mkdir()
     (tmp_path / ".venv").mkdir()
     (tmp_path / "state").mkdir()
-    (tmp_path / "match.py").write_text("audit_needle = 1\n", encoding="utf-8")
+    (tmp_path / "match.py").write_text("safe_needle = 1\n", encoding="utf-8")
     (tmp_path / "skip.py").write_text("pass\n", encoding="utf-8")
-    (tmp_path / ".venv" / "forced.py").write_text("audit_needle = 2\n", encoding="utf-8")
-    (tmp_path / "state" / "cache.py").write_text("audit_needle = 3\n", encoding="utf-8")
+    (tmp_path / ".venv" / "forced.py").write_text("safe_needle = 2\n", encoding="utf-8")
+    (tmp_path / "state" / "cache.py").write_text("safe_needle = 3\n", encoding="utf-8")
     payload = b"match.py\0skip.py\0.venv/forced.py\0state/cache.py\0"
     monkeypatch.setattr(repo_tools, "popen_managed", lambda *args, **kwargs: _Process(payload))
 
@@ -98,7 +98,7 @@ def test_exact_search_prefilters_ignored_dirs_and_preserves_forced_paths(tmp_pat
     tools._path_extension_is_searchable = lambda *_args, **_kwargs: True
 
     result = tools.search(
-        str(tmp_path), "audit_needle", limit=10, exact_count=True,
+        str(tmp_path), "safe_needle", limit=10, exact_count=True,
         project_settings=object(), force_include_paths=[".venv/forced.py"],
     )
 
@@ -131,7 +131,7 @@ def test_exact_search_computes_path_priority_once_per_matching_file(tmp_path):
 def test_exact_search_uses_complete_ascii_ripgrep_candidates_without_git_inventory(
     tmp_path, monkeypatch,
 ):
-    (tmp_path / "match.py").write_text("audit_needle = 1\n", encoding="utf-8")
+    (tmp_path / "match.py").write_text("safe_needle = 1\n", encoding="utf-8")
     (tmp_path / "other.py").write_text("unrelated = 1\n", encoding="utf-8")
     rg_calls = []
 
@@ -153,7 +153,7 @@ def test_exact_search_uses_complete_ascii_ripgrep_candidates_without_git_invento
     tools._path_extension_is_searchable = lambda *_args, **_kwargs: True
 
     result = tools.search(
-        str(tmp_path), "audit_needle", limit=10, exact_count=True,
+        str(tmp_path), "safe_needle", limit=10, exact_count=True,
         project_settings=object(),
     )
 
@@ -201,15 +201,15 @@ def test_exact_search_does_not_narrow_ripgrep_for_more_than_sixteen_terms(
     assert [item["path"] for item in result["results"]] == ["match.py"]
 
 
-def test_exact_search_keeps_unicode_queries_on_authoritative_git_scan(tmp_path, monkeypatch):
+def test_exact_search_uses_simple_czech_ripgrep_candidates(tmp_path, monkeypatch):
     (tmp_path / ".git").mkdir()
-    (tmp_path / "match.py").write_text("název = 'žlutý'\n", encoding="utf-8")
+    (tmp_path / "match.py").write_text("word = 'řež'\n", encoding="utf-8")
     monkeypatch.setattr(repo_tools, "popen_managed", lambda *_args, **_kwargs: _Process(b"match.py\0"))
     rg_calls = []
 
     def unicode_ripgrep(*_args, **_kwargs):
         rg_calls.append(True)
-        return SimpleNamespace(returncode=0, stdout="", stderr="")
+        return SimpleNamespace(returncode=0, stdout="match.py\n", stderr="")
 
     monkeypatch.setattr(repo_tools.subprocess, "run", unicode_ripgrep)
     tools = RepositoryTools({
@@ -218,7 +218,60 @@ def test_exact_search_keeps_unicode_queries_on_authoritative_git_scan(tmp_path, 
     })
     tools._rg = "rg"
 
-    result = tools.search(str(tmp_path), "ŽLUTÝ", limit=10, exact_count=True)
+    result = tools.search(str(tmp_path), "ŘEŽ", limit=10, exact_count=True)
+
+    assert rg_calls == [True]
+    assert result["success"] is True, result
+    assert result["count_exact"] is True
+    assert result["total_matches"] == 1
+    assert [item["path"] for item in result["results"]] == ["match.py"]
+
+
+def test_exact_search_keeps_multi_character_unicode_folds_on_git_scan(tmp_path, monkeypatch):
+    (tmp_path / ".git").mkdir()
+    (tmp_path / "match.py").write_text("word = 'straße'\n", encoding="utf-8")
+    monkeypatch.setattr(repo_tools, "popen_managed", lambda *_args, **_kwargs: _Process(b"match.py\0"))
+    rg_calls = []
+
+    def unexpected_ripgrep(*_args, **_kwargs):
+        rg_calls.append(True)
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(repo_tools.subprocess, "run", unexpected_ripgrep)
+    tools = RepositoryTools({
+        "rag": {"extensions": [".py"]},
+        "search": {"use_ripgrep_if_available": True},
+    })
+    tools._rg = "rg"
+
+    result = tools.search(str(tmp_path), "Straße", limit=10, exact_count=True)
+
+    assert rg_calls == []
+    assert result["success"] is True, result
+    assert result["count_exact"] is True
+    assert result["total_matches"] == 1
+    assert [item["path"] for item in result["results"]] == ["match.py"]
+
+
+def test_exact_ascii_query_matching_unicode_lower_expansion_uses_git_scan(tmp_path, monkeypatch):
+    (tmp_path / ".git").mkdir()
+    (tmp_path / "match.py").write_text("word = 'İstanbul'\n", encoding="utf-8")
+    monkeypatch.setattr(repo_tools, "popen_managed", lambda *_args, **_kwargs: _Process(b"match.py\0"))
+    rg_calls = []
+
+    def simple_fold_ripgrep(*_args, **_kwargs):
+        rg_calls.append(True)
+        # Unicode simple folding does not match Python's dotted-I lowercase expansion.
+        return SimpleNamespace(returncode=1, stdout="", stderr="")
+
+    monkeypatch.setattr(repo_tools.subprocess, "run", simple_fold_ripgrep)
+    tools = RepositoryTools({
+        "rag": {"extensions": [".py"]},
+        "search": {"use_ripgrep_if_available": True},
+    })
+    tools._rg = "rg"
+
+    result = tools.search(str(tmp_path), "i", limit=10, exact_count=True)
 
     assert rg_calls == []
     assert result["success"] is True, result

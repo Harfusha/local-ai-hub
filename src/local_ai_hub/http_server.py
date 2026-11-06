@@ -7823,6 +7823,17 @@ class Handler(BaseHTTPRequestHandler):
                 num_tokens = int(payload.get("num_tokens", payload.get("max_tokens", 40)))
                 res = APP.benchmark_runner.run(model=model, prompt=prompt or "def test(): pass\n", num_tokens=num_tokens)
                 self._send(200, res); return
+            if 'post_gpu_reservation_1' in post_route_ids:
+                scheduler = getattr(APP, "scheduler", None)
+                if scheduler is None:
+                    self._send(503, {"success": False, "error": "scheduler unavailable"}); return
+                res = scheduler.gpu_reservation_operation(
+                    action=str(payload.get("action", "")),
+                    generation=payload.get("generation", ""),
+                    consent=payload.get("consent"),
+                    audit_reason=payload.get("audit_reason", ""),
+                )
+                self._send(200, res); return
             if 'post_delegate_repo_1' in post_route_ids:
                 connection = getattr(self, "connection", None) if getattr(self, "headers", {}).get("X-LocalAI-Cancel-On-Disconnect") == "1" else None
                 if connection is not None:

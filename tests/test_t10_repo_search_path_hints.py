@@ -68,7 +68,8 @@ def test_repo_search_prioritizes_request_and_config_hints_without_narrowing(tmp_
     )
 
     result = services.repo_search(
-        str(tmp_path), "button", top_k=2, path_hints=[request_hint], scope="task"
+        str(tmp_path), "button", top_k=2, path_hints=[request_hint], scope="task",
+        search_mode="lexical",
     )
 
     assert [item["path"] for item in result["results"]] == [
@@ -79,7 +80,7 @@ def test_repo_search_prioritizes_request_and_config_hints_without_narrowing(tmp_
     assert "secret/button.php" not in {item["path"] for item in result["results"]}
 
     configured = services.repo_search(
-        str(tmp_path), "button", top_k=2, scope="task"
+        str(tmp_path), "button", top_k=2, scope="task", search_mode="lexical",
     )
     assert [item["path"] for item in configured["results"]] == [
         "templates/element/button.php",
@@ -100,6 +101,7 @@ def test_repo_search_default_scope_applies_public_repository_search_hint(tmp_pat
         str(tmp_path),
         "button",
         top_k=2,
+        search_mode="lexical",
         path_hints=[
             PathHint(
                 path="templates/element",
@@ -180,7 +182,7 @@ def test_repo_search_uses_path_override_include_only_as_priority(tmp_path: Path)
     )
     services = _search_service(tmp_path, None)
 
-    result = services.repo_search(str(tmp_path), "button", top_k=2)
+    result = services.repo_search(str(tmp_path), "button", top_k=2, search_mode="lexical")
 
     assert [item["path"] for item in result["results"]] == [
         "templates/element/button.php",
@@ -310,7 +312,9 @@ def test_repo_search_skips_partial_code_index_for_natural_query_and_keeps_exact_
     code_index = FailingCodeIndex()
     services.code_index = code_index
 
-    result = services.repo_search(str(tmp_path), "needle", top_k=5, scope="task")
+    result = services.repo_search(
+        str(tmp_path), "needle", top_k=5, scope="task", search_mode="lexical",
+    )
 
     assert result["success"] is True
     assert "src/button.py" in {item["path"] for item in result["results"]}
@@ -328,7 +332,9 @@ def test_repo_search_does_not_claim_progressive_disclosure_without_receipts(tmp_
     services = _search_service(tmp_path, _CandidatePreprocessor([]))
     services.evidence_store = IncompleteEvidenceStore()
 
-    result = services.repo_search(str(tmp_path), "needle", top_k=5, scope="task")
+    result = services.repo_search(
+        str(tmp_path), "needle", top_k=5, scope="task", search_mode="lexical",
+    )
 
     assert result["success"] is True
     assert result["progressive_disclosure"] is False

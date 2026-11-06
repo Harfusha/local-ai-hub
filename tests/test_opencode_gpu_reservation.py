@@ -42,6 +42,30 @@ def test_owned_external_reservation_expires_in_memory_after_files_disappear(tmp_
         scheduler.close()
 
 
+def test_consent_release_reconciles_scheduler_cache_after_reservation_file_disappears(tmp_path):
+    scheduler = AffinityScheduler(
+        SimpleNamespace(loaded_model_details=lambda: []),
+        {"server": {"state_dir": str(tmp_path)}},
+    )
+    try:
+        token = scheduler.reserve_external_gpu()
+        assert token
+        reservation_path = tmp_path / "external-gpu-reservation"
+        reservation_path.unlink()
+        (tmp_path / "external-gpu-reservation.lease.json").unlink()
+
+        assert scheduler._external_gpu_reserved() is True
+        assert scheduler._external_gpu_store.release_current_with_consent(
+            consent=True,
+            audit_reason="operator confirmed stale reservation should be cleared",
+        ) is True
+
+        assert scheduler._external_gpu_reserved() is False
+        assert scheduler.reserve_external_gpu() is not None
+    finally:
+        scheduler.close()
+
+
 def test_unknown_internal_outcome_still_reaps_expired_external_fence(tmp_path):
     from local_ai_hub.external_gpu_reservation import ExternalGpuReservationStore
 
@@ -92,7 +116,7 @@ def test_cuda_embedding_encode_excludes_external_session_and_retains_unknown(tmp
         assert model.encode(["text"])["success"] is False
         assert len(called) == 1
         assert scheduler.release_external_gpu(token)
-        outcome = {"success": False, "error": "unknown inference outcome"}
+        outcome = {"success": False, "error": "unknown inference outcome", "outcome_unknown": True}
         assert model.encode(["text"])["success"] is False
         assert (tmp_path / "external-gpu-reservation").exists()
         assert scheduler.reserve_external_gpu() is None

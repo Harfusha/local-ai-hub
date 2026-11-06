@@ -109,7 +109,7 @@ def test_registered_search_path_hints_use_candidate_worktree_config(
         "stale": False,
         "degraded": False,
     }
-    services._repo_cached = lambda _operation, _root, _params, compute: compute()
+    services._repo_cached = lambda _operation, _root, _params, compute, **_kwargs: compute()
     services.repo_tools = RepositoryTools(config)
     services.learner = None
     services.deterministic = None
@@ -211,7 +211,7 @@ def test_registered_search_path_hints_use_candidate_worktree_config(
                 "enrich": False,
                 "limit": 24,
                 "offset": 0,
-                "search_mode": "hybrid",
+                "search_mode": "lexical",
                 "path_hints": [hint],
             }
         ]

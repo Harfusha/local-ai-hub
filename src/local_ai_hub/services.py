@@ -41,7 +41,6 @@ from .search_modes import (
     canonical_search_mode,
     default_search_mode,
     deduplicate_search_files,
-    expand_lexical_fallback_query,
     expand_semantic_query,
     fuse_search_results,
     prefers_lexical_precision,
@@ -3290,7 +3289,6 @@ class LocalAIServices:
         # the expansion terms. RepoTools separates added terms for ranking, so
         # passing only the suffix can hide exact source wording (for example
         # "installation" when expansion contains only "install").
-        lexical_fallback_query, _ = expand_lexical_fallback_query(query)
         rag_rows, rag_meta = self._repo_rag_search(
             root,
             semantic_query,
@@ -3303,6 +3301,24 @@ class LocalAIServices:
                 search_cache_fields["cache_hit"] = search_cache["hit"]
             if type(search_cache.get("coalesced")) is bool:
                 search_cache_fields["coalesced"] = search_cache["coalesced"]
+
+        def lexical_preprocessed_candidates() -> tuple[str, ...] | None:
+            preprocessor = getattr(self, "preprocessor", None)
+            if prefers_lexical_precision(query) or preprocessor is None:
+                return None
+            try:
+                candidate_limit = 128
+                candidates = preprocessor.candidate_paths(
+                    root, candidate_query, candidate_limit,
+                )
+                return tuple(candidates[:candidate_limit]) if candidates else None
+            except (OSError, sqlite3.Error, ValueError) as candidate_exc:
+                logger.debug(
+                    "Hybrid preprocessing candidates skipped (%s)",
+                    type(candidate_exc).__name__,
+                )
+                return None
+
         if prefers_lexical_precision(query):
             literal = query.casefold()
             rag_rows = [
@@ -3312,13 +3328,21 @@ class LocalAIServices:
             ]
         if rag_meta.get("success") is not True:
             if mode == "hybrid":
+                lexical_candidate_paths = lexical_preprocessed_candidates()
                 result = self._repo_search_lexical(
-                    root, lexical_fallback_query, top_k, context_lines, enrich, path_hints, scope,
+                    root, query, top_k, context_lines, enrich, path_hints, scope,
                     limit=page_limit, offset=offset, exact_count=False,
+                    candidate_paths=lexical_candidate_paths,
+                    candidate_query=(
+                        candidate_query
+                        if query_expansion_applied and getattr(self, "preprocessor", None) is not None
+                        else None
+                    ),
                     installation_intent_priority=(
                         mode == "hybrid" and not prefers_lexical_precision(query)
                     ),
                 )
+                result["results"] = deduplicate_search_files(result.get("results", []))
                 result.update({
                     "search_mode": "hybrid", "result_source": "lexical_fallback",
                     "coverage_complete": False, "degraded": True,
@@ -3329,8 +3353,10 @@ class LocalAIServices:
                     "candidate_freshness": "verified_against_current_sources",
                     "lexical_total_matches": None, "lexical_count_exact": False,
                     "reranker": rag_meta.get("reranker", {"requested": True, "used": False, "degraded": True}),
-                    "lexical_candidate_source": "current_source_scan",
-                    "lexical_preprocessed_candidate_count": 0,
+                    "lexical_candidate_source": (
+                        "preprocess_index" if lexical_candidate_paths else "current_source_scan"
+                    ),
+                    "lexical_preprocessed_candidate_count": len(lexical_candidate_paths or ()),
                     "query_expansion_applied": query_expansion_applied,
                 })
                 for item in result.get("results", []):
@@ -3373,9 +3399,16 @@ class LocalAIServices:
             }
 
         if not rag_rows and rag_meta.get("degraded"):
+            lexical_candidate_paths = lexical_preprocessed_candidates()
             result = self._repo_search_lexical(
                 root, query, top_k, context_lines, enrich, path_hints, scope,
                 limit=page_limit, offset=offset, exact_count=False,
+                candidate_paths=lexical_candidate_paths,
+                candidate_query=(
+                    candidate_query
+                    if query_expansion_applied and getattr(self, "preprocessor", None) is not None
+                    else None
+                ),
                 installation_intent_priority=(
                     mode == "hybrid" and not prefers_lexical_precision(query)
                 ),
@@ -3392,13 +3425,16 @@ class LocalAIServices:
                 "stale_candidate_reasons": rag_meta.get("stale_candidate_reasons", {}),
                 "stale_candidate_details": rag_meta.get("stale_candidate_details", []),
                 "lexical_total_matches": None, "lexical_count_exact": False,
-                "lexical_candidate_source": "current_source_scan",
-                "lexical_preprocessed_candidate_count": 0,
+                "lexical_candidate_source": (
+                    "preprocess_index" if lexical_candidate_paths else "current_source_scan"
+                ),
+                "lexical_preprocessed_candidate_count": len(lexical_candidate_paths or ()),
                 "rag_candidate_count": 0, "rag_candidate_count_exact": False,
                 "reranker": rag_meta.get("reranker", {}),
                 "query_expansion_applied": query_expansion_applied,
                 **search_cache_fields,
             })
+            result["results"] = deduplicate_search_files(result.get("results", []))
             for item in result.get("results", []):
                 if isinstance(item, dict):
                     item["sources"] = ["lexical"]

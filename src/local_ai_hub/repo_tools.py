@@ -203,6 +203,17 @@ _SYMBOL_PATTERNS = [
 
 
 @lru_cache(maxsize=1)
+def _lower_expansion_characters() -> frozenset[str]:
+    """Characters emitted by multi-character Unicode lowercase mappings."""
+    expanded: set[str] = set()
+    for codepoint in range(0x110000):
+        lowered = chr(codepoint).lower()
+        if len(lowered) > 1:
+            expanded.update(lowered)
+    return frozenset(expanded)
+
+
+@lru_cache(maxsize=1)
 def _windows_file_api():
     import ctypes
     from ctypes import wintypes
@@ -1813,14 +1824,35 @@ class RepositoryTools:
                 configured_state_relative = None
 
         matching_relpaths: set[str] | None = None
-        # Ripgrep's command below has a fixed 16-term limit and uses its own
-        # Unicode case folding. Only trust it as an exhaustive candidate source
-        # when Python's exact matcher will inspect the same bounded ASCII terms.
+        # Ripgrep uses simple Unicode folding. Restrict its candidate role to
+        # queries whose lowercase/casefold mapping is one-to-one; Python still
+        # verifies every candidate and computes exact counts.
+        simple_casefold_query = all(
+            len(char.lower()) == 1
+            and len(char.casefold()) == 1
+            and char.lower() == char.casefold()
+            for char in phrase
+        ) and all(
+            len(char.lower()) == 1
+            and len(char.casefold()) == 1
+            and char.lower() == char.casefold()
+            for term in terms
+            for char in term
+        )
+        # Python verifies text with .lower(), while ripgrep uses Unicode simple
+        # folding. A query containing any character emitted by a multi-character
+        # lowercase mapping could match inside or across that expansion (for
+        # example ``i`` inside ``İstanbul``), so it cannot bound candidates.
+        lower_expansion_characters = _lower_expansion_characters()
+        lower_complete_query = not any(
+            char in lower_expansion_characters
+            for char in phrase
+        )
         ripgrep_candidates_complete = (
             bool(terms)
             and len(terms) <= 16
-            and phrase.isascii()
-            and all(term.isascii() for term in terms)
+            and lower_complete_query
+            and (phrase.isascii() or simple_casefold_query)
         )
         if self.use_ripgrep and self._rg and ripgrep_candidates_complete:
             rg_cmd = [

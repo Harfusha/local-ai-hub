@@ -10,6 +10,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
+from contextlib import nullcontext
 from typing import Any
 
 from .cache import SQLiteCache, SingleFlightGroup, TieredCache, stable_hash
@@ -355,7 +356,10 @@ class EmbeddingModel:
                     seen.add(key)
                     deduped.append((backend, device))
             return deduped
-        return [("sentence-transformers", self.device)]
+        candidates = [("sentence-transformers", self.device)]
+        if str(self.device).lower().startswith("cuda"):
+            candidates.append(("sentence-transformers", "cpu"))
+        return candidates
 
     def _load_candidate(self, index: int, *, ollama_fallback: bool = False) -> bool:
         candidates = self._candidate_specs(ollama_fallback=ollama_fallback)
@@ -597,6 +601,20 @@ class EmbeddingModel:
                     self.active_device = None
                     if self._ensure_st_model():
                         continue
+                elif self.active_backend == "sentence-transformers" and uses_torch_cuda(
+                    self.active_backend, self.active_device or self.device
+                ):
+                    failed_model = self._model
+                    self._load_error = f"sentence-transformers/cuda inference failed: {exc}"
+                    import time
+                    self._load_error_time = time.time()
+                    self._model = None
+                    self.active_backend = None
+                    self.active_device = None
+                    del failed_model
+                    release_model(self, used_cuda=True)
+                    if self._ensure_st_model():
+                        continue
                 return None, self.active_backend or "sentence-transformers"
 
     @staticmethod
@@ -748,21 +766,55 @@ class EmbeddingModel:
             return {"success": False, "error_code": "gpu_reserved", "error": "GPU admission is unavailable", "retryable": True}
         digest = reservation[0] if isinstance(reservation, tuple) else None
         self._execution_local.gpu_fence_digest = digest
-        confirmed = False
+        terminal_response = False
         try:
-            request_key = self._encode_request_key(texts, query)
-            result, _coalesced = self.flight_group.do(
-                request_key,
-                lambda: self._encode_uncached(texts, query=query, priority=priority),
+            store = getattr(self, "_gpu_reservation_store", None)
+            keepalive = (
+                store.keepalive(reservation[0], reservation[1], state="active")
+                if isinstance(reservation, tuple) and store is not None
+                else nullcontext(None)
             )
-            output = dict(result)
-            if isinstance(output.get("embeddings"), list):
-                output["embeddings"] = [list(vector) if isinstance(vector, (list, tuple)) else vector for vector in output["embeddings"]]
-            confirmed = output.get("success") is True and not self._execution_local.ollama_gpu_fenced
+            with keepalive as lease_lost:
+                if lease_lost is not None and lease_lost.is_set():
+                    output = {
+                        "success": False,
+                        "error_code": "gpu_reservation_lost",
+                        "error": "GPU reservation was lost before inference started",
+                        "retryable": True,
+                    }
+                else:
+                    request_key = self._encode_request_key(texts, query)
+                    result, _coalesced = self.flight_group.do(
+                        request_key,
+                        lambda: self._encode_uncached(texts, query=query, priority=priority),
+                    )
+                    output = dict(result)
+                    if isinstance(output.get("embeddings"), list):
+                        output["embeddings"] = [list(vector) if isinstance(vector, (list, tuple)) else vector for vector in output["embeddings"]]
+                if lease_lost is not None and lease_lost.is_set():
+                    output.update({
+                        "success": False,
+                        "error_code": "gpu_reservation_lost",
+                        "error": "GPU reservation was lost during inference; embeddings were discarded",
+                        "retryable": True,
+                        "outcome_unknown": True,
+                    })
+                    output.pop("embeddings", None)
+                uncertainty_flags = (
+                    "outcome_unknown", "timed_out", "cancelled", "preempted",
+                    "cleanup_unconfirmed", "_lah_partial_response", "in_progress",
+                    "output_truncated", "partial",
+                )
+                uncertain = any(key in output and output[key] is not False for key in uncertainty_flags)
+                terminal_response = (
+                    (type(output.get("success")) is bool or output.get("operation_not_started") is True)
+                    and not uncertain
+                    and not self._execution_local.ollama_gpu_fenced
+                )
             return output
         finally:
             self._execution_local.gpu_fence_digest = None
-            if confirmed and isinstance(reservation, tuple):
+            if terminal_response and isinstance(reservation, tuple):
                 self._release_embedding_gpu(reservation)
 
     def _encode_uncached(self, texts: list[str], query: bool = False, priority: int = 3) -> dict[str, Any]:

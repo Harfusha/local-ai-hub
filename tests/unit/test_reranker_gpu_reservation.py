@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import threading
+import time
 
 from local_ai_hub.external_gpu_reservation import ExternalGpuReservationStore
 import local_ai_hub.reranker as reranker_module
@@ -54,6 +55,40 @@ def test_cuda_reranker_marks_shared_reservation_active_until_call_returns(tmp_pa
         finish.set()
         worker.join(2)
     assert not worker.is_alive()
+    assert store.read() is None
+
+
+def test_cuda_reranker_renews_shared_reservation_during_long_call(tmp_path, monkeypatch):
+    reranker = _cuda_reranker(tmp_path, monkeypatch)
+    store = reranker._gpu_reservation_store
+    store.ttl_seconds = 0.12
+    observed = {}
+    original_renew = store.renew
+    renewals = 0
+
+    def track_renewal(*args, **kwargs):
+        nonlocal renewals
+        renewed = original_renew(*args, **kwargs)
+        if renewed:
+            renewals += 1
+        return renewed
+
+    store.renew = track_renewal
+
+    def hold_rerank(*_args, **_kwargs):
+        before = renewals
+        time.sleep(0.3)
+        observed["lease"] = store.read()
+        observed["renewals_during_call"] = renewals - before
+        return {"success": True, "results": []}
+
+    reranker._rerank_uncached = hold_rerank
+
+    result = reranker.rerank("query", ["document"])
+
+    assert result["success"] is True
+    assert observed["lease"] is not None
+    assert observed["renewals_during_call"] >= 1
     assert store.read() is None
 
 

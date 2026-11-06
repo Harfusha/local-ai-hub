@@ -2,7 +2,7 @@
 
 ## Live installed Hub: lexical baseline
 
-Measured against the configured loopback HTTP `/api/search` endpoint in the real `C:\Users\Adam\.local-ai-hub` checkout. The runner used manually labeled case set `agent-search-manual-2026-11-05-v2`, 25 cases, and two requests per case (50 requests). Labels are source-anchored and manually judged; they are not exhaustive corpus truth.
+Measured against the configured loopback HTTP `/api/search` endpoint in the real repository checkout. The runner used manually labeled case set `agent-search-manual-2026-11-05-v2`, 25 cases, and two requests per case (50 requests). Labels are source-anchored and manually judged; they are not exhaustive corpus truth.
 
 Reproduce with:
 

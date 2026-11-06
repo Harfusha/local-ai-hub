@@ -272,6 +272,9 @@ class AffinityScheduler:
         self._external_gpu_owned = False
         self._external_gpu_generation: str | None = None
         self._external_gpu_expiry_monotonic: float | None = None
+        self._external_gpu_operator_release_marker = (
+            self._external_gpu_store.operator_release_marker() if self._external_gpu_store is not None else None
+        )
         if self._external_gpu_store is not None:
             reservation = self._external_gpu_store.read()
             if reservation is not None and reservation.get("token_digest") == self._external_gpu_token:
@@ -1037,6 +1040,7 @@ class AffinityScheduler:
             try:
                 reaped = store.reap_expired()
                 record = store.read()
+                release_marker = store.operator_release_marker()
             except OSError:
                 return True
             if (record is not None
@@ -1048,6 +1052,20 @@ class AffinityScheduler:
             return True
         path = getattr(self, "_external_gpu_path", None)
         current = _read_external_reservation(path) if path else None
+        previous_release_marker = getattr(self, "_external_gpu_operator_release_marker", None)
+        if store is not None and release_marker is not None and release_marker != previous_release_marker:
+            self._external_gpu_operator_release_marker = release_marker
+            if (
+                current is None
+                and path is not None
+                and not path.exists()
+                and not path.is_symlink()
+                and not getattr(self, "_internal_gpu_digest", None)
+            ):
+                self._external_gpu_token = None
+                self._external_gpu_generation = None
+                self._external_gpu_owned = False
+                self._external_gpu_expiry_monotonic = None
         if getattr(self, "_external_gpu_token", None) and getattr(self, "_external_gpu_owned", False):
             if current is not None:
                 return True
@@ -2030,6 +2048,59 @@ class AffinityScheduler:
                 "stats": dict(self._stats),
                 "cache_stats": self._cache_stats(),
             }
+
+    def gpu_reservation_operation(
+        self, *, action: str, generation: str = "", consent: bool | None = None,
+        audit_reason: str = "",
+    ) -> dict[str, Any]:
+        """Read or release the reservation using this scheduler's live state store."""
+        store = self._external_gpu_store
+        if store is None:
+            return {"success": False, "error": "GPU reservation store unavailable"}
+        if action == "status":
+            store.reap_expired()
+            record = store.read()
+            if record is None:
+                present = store.path.exists() or store.path.is_symlink()
+                return {
+                    "success": True, "reservation_present": present,
+                    "state": "unknown" if present else "free",
+                    "manual_intervention_required": present,
+                }
+            return {
+                "success": True, "reservation_present": True,
+                "generation": record["generation"], "owner": record["owner"],
+                "state": record["state"], "created_at": record["created_at"],
+                "expires_at": record["expires_at"],
+                "expired": record["expires_at"] <= time.time(),
+            }
+        if action == "release_authorized":
+            if (type(consent) is not bool or not consent
+                    or not isinstance(audit_reason, str) or not audit_reason.strip()):
+                return {"success": False, "operation_not_started": True,
+                        "error": "unknown reservation release requires consent=true and audit_reason"}
+            released = store.release_current_with_consent(
+                consent=consent, audit_reason=audit_reason,
+            )
+            result = {"success": released, "mutation_applied": released}
+            if not released:
+                result["error"] = "no valid current GPU reservation could be released"
+            else:
+                self.status()  # observe the operator marker and clear stale in-memory admission
+            return result
+        if action != "release":
+            return {"success": False, "operation_not_started": True,
+                    "error": "unsupported GPU reservation operation"}
+        if (type(consent) is not bool or not consent
+                or not isinstance(generation, str) or not generation.strip()
+                or not isinstance(audit_reason, str) or not audit_reason.strip()):
+            return {"success": False, "operation_not_started": True,
+                    "error": "gpu reservation release requires consent=true, generation, and audit_reason"}
+        released = store.release_with_consent(generation, consent=consent, audit_reason=audit_reason)
+        result = {"success": released, "mutation_applied": released, "generation": generation}
+        if not released:
+            result["error"] = "lease is missing, active, unexpired, or changed"
+        return result
 
     def is_running(self) -> bool:
         with self._cond:

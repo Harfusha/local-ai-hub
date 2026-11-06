@@ -4,6 +4,7 @@ import hashlib
 import json
 import math
 import os
+import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -83,6 +84,25 @@ def test_idle_expiration_reaps_before_new_owner_reserves(tmp_path):
     assert replacement is not None
     assert replacement["generation"] != old["generation"]
     assert replacement["owner"] == "second"
+
+
+def test_active_lease_heartbeat_prevents_expiry_until_owner_finishes(tmp_path):
+    path = tmp_path / "external-gpu-reservation"
+    store = ExternalGpuReservationStore(path, ttl_seconds=0.12)
+    lease = store.reserve(_digest("long-running-owner"), owner="embedding:123:456")
+    assert lease is not None
+    assert store.renew(_digest("long-running-owner"), lease["generation"], state="active")
+
+    with store.keepalive(_digest("long-running-owner"), lease["generation"], state="active"):
+        time.sleep(0.3)
+        renewed = store.read()
+        assert renewed is not None
+        assert renewed["generation"] == lease["generation"]
+        assert renewed["expires_at"] > time.time()
+
+    time.sleep(0.14)
+    assert store.reap_expired() is True
+    assert store.read() is None
 
 
 def test_expired_legacy_digest_fence_reaps_by_mtime_and_audits(tmp_path):
@@ -346,6 +366,35 @@ def test_reserve_keeps_expired_generation_when_digest_cleanup_fails(tmp_path, mo
     assert store.release_with_consent(
         old_lease["generation"], consent=True, audit_reason="recover failed digest cleanup"
     )
+    assert not store.path.exists()
+    assert not store.metadata_path.exists()
+    assert store.reserve(_digest("new-owner-token"), owner="new-session") is not None
+
+
+def test_expired_release_retries_transient_metadata_sharing_violation(tmp_path, monkeypatch):
+    now = [100.0]
+    store = ExternalGpuReservationStore(
+        tmp_path / "external-gpu-reservation", ttl_seconds=10, clock=lambda: now[0]
+    )
+    lease = store.reserve(_digest("owner-token"), owner="session")
+    assert lease is not None
+    now[0] = 111.0
+
+    original_unlink = Path.unlink
+    attempts = 0
+
+    def fail_once_on_metadata(path, *args, **kwargs):
+        nonlocal attempts
+        if path == store.metadata_path and attempts == 0:
+            attempts += 1
+            error = OSError("simulated metadata sharing violation")
+            error.winerror = 32
+            raise error
+        return original_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", fail_once_on_metadata)
+    assert store.reap_expired() is True
+    assert attempts == 1
     assert not store.path.exists()
     assert not store.metadata_path.exists()
     assert store.reserve(_digest("new-owner-token"), owner="new-session") is not None

@@ -566,7 +566,7 @@ Bounded source inspection after lexical search exceeded Hub response budget foun
 
 ### A1 — isolated fix candidate and regression proof (2026-11-06)
 
-- Created managed worktree `C:\Users\Adam\.codex\worktrees\gpu-reserve-a1-fix\.local-ai-hub` from `master`; current shared checkout was not changed. The bug is present in `master` source SHA-256 `cccc3ac286b4c140e4bcf49d9d990e7f969b7b515255823e4a1b1ce9c5f18789`.
+- Created managed worktree under the Codex worktree directory from `master`; current shared checkout was not changed. The bug is present in `master` source SHA-256 `cccc3ac286b4c140e4bcf49d9d990e7f969b7b515255823e4a1b1ce9c5f18789`.
 - Added `test_reserve_returns_none_when_metadata_write_fails`: confirmed RED before the fix (`reserve()` returned a lease when `_write_metadata()` returned `False`). Minimal fix now returns `None` while leaving the digest fence in place for recovery.
 - Worktree source SHA-256 `b7714552717647eebd8d153e894fcefb26bebe618022255125d8a59ae3eaa7be`; regression test SHA-256 `47d6415a1c0ca8d89f902293220adc127dada543584861ea6675cebd91fd45dc`.
 - `python -m pytest -q tests/test_external_gpu_reservation_lifecycle.py --tb=short` — **31 passed in 0.77 s**. `git diff --check -- src/local_ai_hub/external_gpu_reservation.py tests/test_external_gpu_reservation_lifecycle.py` — clean. Candidate remains isolated; integration into the shared checkout awaits editor ownership release.

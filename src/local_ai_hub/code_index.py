@@ -1324,6 +1324,24 @@ class CodeIndex:
         if existing_symbols and not existing_trigrams:
             # The index is derived state; old databases are rebuilt, never migrated.
             raise sqlite3.DatabaseError("stale derived code-index trigram schema; rebuild this cache")
+        for table, required_columns in (
+            ("files", {"analyzer_version", "mtime_ns", "size_bytes"}),
+            ("edges", {"src_name", "dst_name"}),
+        ):
+            exists = con.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,),
+            ).fetchone()
+            if exists:
+                columns = {
+                    str(row["name"])
+                    for row in con.execute(f"PRAGMA table_info({table})").fetchall()
+                }
+                if not required_columns.issubset(columns):
+                    # Check before CREATE INDEX references new columns, so the
+                    # disposable-cache recovery path gets the stable diagnosis.
+                    raise sqlite3.DatabaseError(
+                        "stale derived code-index schema; rebuild this cache"
+                    )
         if existing_trigrams:
             trigram_columns = {
                 str(row["name"])
@@ -1488,8 +1506,15 @@ class CodeIndex:
                     side = Path(str(self.db_path) + suffix)
                     if side.exists():
                         side.unlink(missing_ok=True)
-            except OSError:
-                pass
+            except OSError as archive_error:
+                reason = (
+                    "stale derived code-index schema recovery failed"
+                    if "stale derived code-index schema" in str(exc)
+                    else "code-index recovery failed"
+                )
+                raise sqlite3.DatabaseError(
+                    f"{reason}: unable to archive cache ({type(archive_error).__name__})"
+                ) from exc
             with self._lock, closing(self._connect()) as con:
                 initialize_wal(con)
                 self._schema(con)

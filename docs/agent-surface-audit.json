@@ -1839,6 +1839,28 @@
         ]
       }
     },
+    "MCP local_ai_coord.gpu_reservation_release_authorized": {
+      "decision": "protocol_boundary",
+      "role": "agent",
+      "reason": "Conditional operator recovery endpoint requires its explicit authorization path; it does not establish that a reservation owner is dead or that an active fence is safe to clear.",
+      "response_policy": "Preserve success, errors, retry/degraded state and evidence. Keep authorization and audit reason explicit; unknown owner liveness remains fail-closed and reservation credentials stay private.",
+      "source_contract": {
+        "source": "src/local_ai_hub/operation_contracts.py",
+        "selector": "action",
+        "output_schema_fields": [
+          "cancel_reason",
+          "cancel_requested",
+          "cancelled",
+          "degraded",
+          "error",
+          "evidence_ids",
+          "retryable",
+          "stale",
+          "success",
+          "terminal"
+        ]
+      }
+    },
     "MCP local_ai_coord.gpu_reservation_status": {
       "decision": "retain",
       "role": "agent",
@@ -9275,10 +9297,33 @@
       "source_contract": {
         "source": "src/local_ai_hub/http_route_registry.py",
         "handler": "post_search_1",
-        "literal_response_fields": [],
+        "literal_response_fields": [
+          "error",
+          "retryable",
+          "success",
+          "terminal"
+        ],
         "response_producers": [
           "APP.services.repo_search",
           "local:result"
+        ],
+        "action_literals": []
+      }
+    },
+    "POST /api/gpu-reservation": {
+      "decision": "protocol_boundary",
+      "role": "agent",
+      "reason": "Explicit GPU reservation management is an operator boundary used for bounded cross-process resource admission and recovery.",
+      "response_policy": "Preserve success and errors; require the route's current authorization checks and retain fail-closed handling for unknown owner liveness. Do not expose reservation credentials.",
+      "source_contract": {
+        "source": "src/local_ai_hub/http_route_registry.py",
+        "handler": "post_gpu_reservation_1",
+        "literal_response_fields": [
+          "error",
+          "success"
+        ],
+        "response_producers": [
+          "local:res"
         ],
         "action_literals": []
       }

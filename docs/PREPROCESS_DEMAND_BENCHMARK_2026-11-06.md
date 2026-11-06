@@ -20,7 +20,7 @@ Demand selection adds 0.576 ms median and 1.710 ms p95 on this synthetic run. Th
 
 ## Sampled real repository
 
-Command: `python tools/benchmark_preprocess_demand.py --files 512 --batch-size 32 --root "C:\Users\Adam\.local-ai-hub" --query "search endpoint hybrid RAG"`
+Command from repository root: `python tools/benchmark_preprocess_demand.py --files 512 --batch-size 32 --root . --query "search endpoint hybrid RAG"`
 
 The bounded sample covered 512 files and 8,190,153 bytes after examining 701 directory entries. The file cap was reached; the directory-entry cap was not. The query matched 214 sampled files. FIFO and demand ordering both produced useful context in batch 1 after 32 files; no preprocessing work was saved. Both completed all 512 sampled files in 16 batches.
 

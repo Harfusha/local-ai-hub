@@ -155,6 +155,50 @@ def test_registered_task_handler_dispatches_canonical_inputs(
     assert {key: client.calls[0][1][key] for key in expected} == expected
 
 
+def test_hardware_benchmark_projection_keeps_measurements_inside_response_budget(monkeypatch):
+    class BenchmarkClient:
+        def post(self, path, payload, **kwargs):
+            assert path == "/api/benchmark/run"
+            return {
+                "success": True,
+                "model": "qwen3.5:4b-nvfp4",
+                "model_digest": "a" * 64,
+                "model_digest_status": "verified_installed",
+                "loaded_model_vram_bytes": 123456,
+                "loaded_model_vram_status": "observed_loaded_model",
+                "tokens_generated": 8,
+                "token_count_method": "backend_eval_count",
+                "ttft_ms": 12.3,
+                "call_latency_ms": 45.6,
+                "latency_basis": "ttft",
+                "tokens_per_second": 100.2,
+                "hardware_score": 80.1,
+                "generation_duration_ms": 8.0,
+                "load_duration_ms": 1.2,
+                "queue_wait_ms": 2.1,
+                "peak_vram_bytes": 987654,
+                "peak_vram_scope": "device_wide_sampled_during_inference",
+                "initial_vram": {"vram_used_mb": 3, "vram_total_mb": 15},
+                "final_vram": {"vram_used_mb": 4, "vram_total_mb": 15},
+                "verbose_debug_detail": "x" * 8000,
+            }
+
+    monkeypatch.setattr(mcp_server, "CLIENT", BenchmarkClient())
+    monkeypatch.setattr(mcp_server, "TaskAction", Literal["hardware_benchmark"])
+
+    result = mcp_server.local_ai_task(
+        action="hardware_benchmark", model="qwen3.5:4b-nvfp4", prompt="measure",
+        max_tokens=8, max_response_tokens=512, response_profile="compact",
+    )
+
+    assert result["success"] is True
+    assert result["tokens_per_second"] == 100.2
+    assert result["peak_vram_bytes"] == 987654
+    assert result["loaded_model_vram_bytes"] == 123456
+    assert result["response_budget"]["returned_tokens"] <= 512
+    assert result["response_budget"]["truncated"] is True
+
+
 def test_vision_contract_keeps_distinct_artifact_inputs():
     values = {
         "prompt": "inspect", "candidate": "image.png", "root": "repo",

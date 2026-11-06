@@ -1011,11 +1011,12 @@ def generate_token_economy_policy(cfg: dict[str, Any] | None = None) -> str:
         "- Compress repo snapshots with `repomix --compress`/`files-to-prompt -c`; use `tokcount` for exact tokens.\n"
         "- Run tests/builds with the native command tool; use `trim-run` only with bundled `tokcount`/`repo-map`, read-only `rg`/`fd`/`grep-ast`, or stdin pipelines. Use `jq` for JSON.\n"
         "- Surgical edits: Prefer targeted block replacements over rewriting entire files.\n"
-        + "- `response_budget.returned_tokens` is the final envelope estimate and must not exceed the requested budget; reject `max_response_tokens` below 128, never raise it silently.\n"
-        + "- Preserve status, error, evidence and context identity; keep exact detail artifact-backed.\n"
-        + "- Report savings only with a current `baseline_evidence_id` and signed `token_savings_delta_est`; keep protocol, schema and local-compute estimates separate.\n"
-        + "- Hub fallback requires `terminal=true` and `retryable=false`; unknown commands also require `native_fallback_allowed=true` and native authorization.\n"
-        + "- On `outcome_unknown`/`in_progress`, do independent work; never poll or repeat the operation.\n"
+        + "- `response_budget.returned_tokens` measures the final serialized response envelope in `estimated_tokens` and stays at or below the requested budget.\n"
+        + "- Preserve protected status, error, evidence, and context-identity fields; keep exact detail artifact-backed.\n"
+        + "- Claim savings only with a current `baseline_evidence_id`; report signed `token_savings_delta_est`, including negative values; keep `protocol_tokens_est`, `schema_tokens_est`, and `local_compute_reused_tokens_est` separate.\n"
+        + "- Reject `max_response_tokens` below 128; never raise the request silently.\n"
+        + "- For Hub outages, native fallback requires explicit `terminal=true` and `retryable=false`; for Hub-unknown commands, require `native_fallback_allowed=true` plus native-tool authorization.\n"
+        + "- On `outcome_unknown` or `in_progress`, do independent work; never poll or repeat the identical operation.\n"
         + local_model_line
         + "<!-- END TOKEN ECONOMY POLICY -->"
     )

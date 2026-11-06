@@ -1825,7 +1825,7 @@ def test_component_baselines_measure_graph_rag_batch_parent_seed_and_serena(tmp_
     parent_seed = stages["parent_worktree_seed"]
     assert parent_seed["status"] == "passed"
     assert parent_seed["measurement"] == "ProjectPreprocessor._seed_from_parent"
-    assert parent_seed["seeded_rows"]["code_index"] > 0
+    assert parent_seed["seeded_rows"]["code_index"] == 0
     assert parent_seed["sample_ids_by_regime"]["cold"] == parent_seed["sample_ids_by_regime"]["warm"]
     assert len(parent_seed["sample_ids_by_regime"]["cold"]) == 2
     assert parent_seed["sample_independence_status"] == "established"

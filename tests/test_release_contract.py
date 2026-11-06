@@ -275,7 +275,7 @@ def test_no_personal_paths_or_runtime_payloads_in_tracked_release_sources():
     forbidden = ("C:" + "\\Users\\" + "Adam", "/Users/" + "Adam", "DROP" + "IN", "RTX " + "4060")
     skip_parts = {
         ".git", "__pycache__", ".pytest_cache", ".venv", "tool-envs", "state", "data", "generated",
-        ".agents", ".serena", ".superpowers", ".handoff", ".t03-root-current-overlay", "artifacts", "agy-contextless-workspace",
+        ".agents", ".serena", ".superpowers", ".handoff", ".local-ai-hub", ".t03-root-current-overlay", "artifacts", "agy-contextless-workspace",
         "backups", "migration-backups", ".worktrees", "handoff", "T18-review-artifacts-20260928",
     }
     skip_files = {"ORIGINAL_REQUEST.md", ".coverage", "config.toml"}
