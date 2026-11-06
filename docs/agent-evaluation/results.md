@@ -2428,3 +2428,9 @@ These were advisory `local_ai_task(action="compress")` calls using the authentic
 - `python tools/release_check.py --allow-installed` → **release-check: OK**.
 - `python -m compileall -q src/local_ai_hub` → **passed**. These checks do not qualify local-model quality or RTX 5070 Ti capacity. Broad pytest and selftest remain unrun per user instruction to run only specific tests.
 - Latest read-only sample after those checks: RTX 5070 Ti at 13,524/16,303 MiB, 99% utilization and 71.58°C. BG3 PID 33352 and `llama-server.exe` PID 10540 remain listed; WDDM still reports per-process memory as `[N/A]`. No model request was submitted.
+
+## 2026-11-06 — Scheduler admission recovered; GPU measurement deferred
+
+- User-authorized `gpu_reservation_release_authorized` succeeded (`req_178241428048`) with no live queued/running work. Fresh `local_ai_status` (`req_89d7b7bf2472`) reports Hub/Ollama online, scheduler not degraded and `gpu_admission_state=available`; active model is null.
+- Detailed dashboard telemetry is On. Refreshed resident inventory reports no model currently resident; this does not establish whether weights are installed. VRAM telemetry remains `sample_pending`, stale and unavailable.
+- No hardware benchmark or model inference was retried because current VRAM capacity and installed-model availability are unknown; the last physical sample above showed heavy GPU use with external process attribution unavailable. W4 quality, W6 performance and route qualification remain **NOT VERIFIED**.

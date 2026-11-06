@@ -111,10 +111,11 @@ device readiness remain unqualified until role evaluation and runtime evidence.
   residency, peak VRAM, cold/warm latency, throughput and concurrency is not
   established by these source paths.
 - The active Local AI Hub status reported Ollama online, `active_model=null` and
-  unknown VRAM pressure. `hubctl status` and `ollama list` observed the managed
-  Ollama + llama.cpp backend online, an RTX 5070 Ti with 15 GB reported VRAM,
-  and 12 installed model tags. These are runtime/inventory snapshots, not proof
-  of per-request GPU residency, speed or quality.
+  unknown VRAM pressure. Historical `hubctl status` / `ollama list` snapshots
+  disagree on installed model count: one reported 12 tags, while the later
+  2026-11-06 record in `agent-evaluation/results.md` reported 7. The current
+  installed count is unknown; neither snapshot proves per-request GPU residency,
+  speed or quality. The host was reported as an RTX 5070 Ti with 15 GB VRAM.
 - A 40-token request for installed `qwen3.5:9b-nvfp4` returned a truncated
   hardware-benchmark envelope without usable performance fields. No model was
   pulled; benchmark evidence remains unestablished.
