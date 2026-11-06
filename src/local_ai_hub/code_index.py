@@ -3693,7 +3693,7 @@ class CodeIndex:
         return [path for path, _ in sorted(scores.items(), key=lambda item: (-item[1], item[0]))[:limit]]
 
     def prune(
-        self, root: str, current_paths: list[str], *, stale_paths: list[str] | None = None,
+        self, root: str, current_paths: Iterable[str], *, stale_paths: Iterable[str] | None = None,
     ) -> dict[str, Any]:
         """Remove stale per-workspace index rows in one short transaction."""
         resolved_root = canonical_root(root)

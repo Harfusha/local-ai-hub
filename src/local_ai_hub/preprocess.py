@@ -3324,28 +3324,34 @@ class ProjectPreprocessor:
             self._prune_missing_file_refs(root)
             self._missing_refs_checked_generations.add(generation_key)
             self._missing_refs_checked_generations = self._bound_generation_set(self._missing_refs_checked_generations)
-        with self._db_lock, closing(self._connect()) as con:
-            refs = [
-                (str(r["path"]), str(r["content_hash"]), int(r["size"] or 0))
-                for r in con.execute(
-                    "SELECT path,content_hash,size FROM file_refs WHERE root=? AND needs_hash=0 AND content_hash<>'' ORDER BY path",
-                    (root,),
-                ).fetchall()
-            ]
         settings = self._project_settings(root)
         path_policy = ProjectPathPolicy(root, settings)
-        refs = [
-            (path, digest)
-            for path, digest, size_bytes in refs
-            if not any(part.lower() in self.repo_tools.ignore_dirs for part in Path(path).parts[:-1])
-            and self._project_path_allowed(
-                root, path, settings, phase="call_graph", size_bytes=size_bytes,
-                path_policy=path_policy,
-            )
-        ]
+        allowed: dict[str, str] = {}
+        with self._db_lock:
+            connection = self._connect()
+        with closing(connection) as con:
+            with self._db_lock:
+                cursor = con.execute(
+                    "SELECT path,content_hash,size FROM file_refs WHERE root=? AND needs_hash=0 AND content_hash<>'' ORDER BY path",
+                    (root,),
+                )
+            while True:
+                with self._db_lock:
+                    batch = cursor.fetchmany(256)
+                if not batch:
+                    break
+                for row_ref in batch:
+                    path = str(row_ref["path"])
+                    if any(part.lower() in self.repo_tools.ignore_dirs for part in Path(path).parts[:-1]):
+                        continue
+                    if self._project_path_allowed(
+                        root, path, settings, phase="call_graph",
+                        size_bytes=int(row_ref["size"] or 0), path_policy=path_policy,
+                    ):
+                        allowed[path] = str(row_ref["content_hash"])
         pruned_generations = getattr(self, "_code_index_pruned_generations", set())
         if generation_key not in pruned_generations:
-            prune_result = self.code_index.prune(root, [p for p,_ in refs])
+            prune_result = self.code_index.prune(root, allowed.keys())
             if not isinstance(prune_result, dict) or prune_result.get("success") is not True:
                 raise RuntimeError("code index prune failed")
             pruned_generations.add(generation_key)
@@ -3359,7 +3365,6 @@ class ProjectPreprocessor:
             return True
         try:
             demand = recent_paths(root, limit=256)
-            allowed = {path: digest for path, digest in refs}
             seeds = list(dict.fromkeys(str(item.get("path", "")).replace("\\", "/")
                                         for item in demand if isinstance(item, dict)))
             seeds = [path for path in seeds if path in allowed]

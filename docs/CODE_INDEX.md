@@ -100,3 +100,24 @@ the cause is not established. `dbstat` was unavailable, so these totals do not
 attribute bytes to individual tables. Zero free pages means this snapshot gives
 no evidence that SQLite can return additional pages to the filesystem through
 incremental vacuum.
+
+## Synthetic bounded-inventory benchmark — 2026-11-06
+
+Reproduce with:
+
+```powershell
+.\.venv\Scripts\python.exe tools/benchmark_code_index_inventory.py --rows 50000 --repeats 7 --batch-size 256
+```
+
+The benchmark compares the former full-list materialization with 256-row
+`fetchmany` batches over 50,000 synthetic rows in warm, in-memory SQLite. Both
+paths selected the same 45,454 eligible paths. Full materialization measured
+227.73 ms median, 238.01 ms nearest-rank p95, and 15,149,929 median peak Python
+bytes. Bounded batches measured 156.02 ms median, 162.12 ms p95, and 7,791,301
+median peak Python bytes: 31.5% lower median time and 48.6% lower peak Python
+allocation in this microbenchmark.
+
+This isolates inventory materialization and filtering. It excludes project path
+policy, filesystem reads, locks, disk I/O, scheduler work, index writes, and the
+running service. It is synthetic evidence for the bounded-read change, not an
+end-to-end preprocessing or search latency claim.
