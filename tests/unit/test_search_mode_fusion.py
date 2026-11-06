@@ -553,29 +553,76 @@ def test_hybrid_rag_failure_preserves_exact_lexical_page(monkeypatch):
     assert calls[0]["offset"] == 2
 
 
-def test_hybrid_degraded_empty_rag_candidates_use_inexact_expanded_page(monkeypatch):
+def test_hybrid_rag_unavailable_keeps_exact_natural_query_page(monkeypatch):
+    service = _service(monkeypatch, rag_meta={
+        "success": False, "reason": "rag_disabled", "index_state": "disabled",
+    })
+    calls = []
+
+    def lexical(*args, **kwargs):
+        calls.append(kwargs)
+        return {
+            "success": True,
+            "results": [{"path": "docs/INSTALLATION.md"}],
+            "total_matches": 23, "count_exact": kwargs["exact_count"],
+            "has_more": True, "offset": kwargs["offset"], "limit": kwargs["limit"],
+        }
+
+    monkeypatch.setattr(service, "_repo_search_lexical", lexical)
+    result = service.repo_search(
+        ".", "Local AI Hub installation", search_mode="hybrid", limit=1, offset=2,
+    )
+
+    assert result["result_source"] == "lexical_fallback"
+    assert result["degraded"] is True
+    assert result["degradation_reason"] == "rag_disabled"
+    assert result["results"][0]["path"] == "docs/INSTALLATION.md"
+    assert result["total_matches"] == result["lexical_total_matches"] == 23
+    assert result["count_exact"] is result["lexical_count_exact"] is True
+    assert result["coverage_complete"] is False
+    assert calls[0]["exact_count"] is True
+    assert calls[0]["offset"] == 2
+    assert calls[0]["limit"] == 1
+    assert calls[0].get("candidate_paths") is None
+    assert calls[0].get("candidate_query") is None
+
+
+def test_hybrid_degraded_empty_rag_candidates_use_exact_lexical_page(monkeypatch):
     service = _service(monkeypatch, rag_rows=[], rag_meta={
         "success": True, "degraded": True, "degradation_reason": "embedding_space_mismatch",
         "index_state": "stale", "reranker": {"requested": True, "used": False, "degraded": True},
     })
-    monkeypatch.setattr(service, "_repo_search_lexical", lambda *args, **kwargs: {
-        "success": True, "results": [
+    calls = []
+
+    def lexical(*args, **kwargs):
+        calls.append(kwargs)
+        all_results = [
             {"path": "docs/install.md"}, {"path": "docs/other.md"},
             {"path": "src/install.py"}, {"path": "src/setup.py"},
-        ],
-        "total_matches": 14, "count_exact": True, "has_more": True,
-        "offset": kwargs["offset"], "limit": kwargs["limit"],
-    })
+        ]
+        return {
+            "success": True, "results": all_results[kwargs["offset"]:kwargs["offset"] + kwargs["limit"]],
+            "total_matches": 14, "count_exact": kwargs["exact_count"], "has_more": True,
+            "offset": kwargs["offset"], "limit": kwargs["limit"],
+        }
+
+    monkeypatch.setattr(service, "_repo_search_lexical", lexical)
 
     result = service.repo_search(".", "Local AI Hub installation", search_mode="hybrid", limit=1, offset=3)
 
     assert result["result_source"] == "lexical_fallback"
     assert result["degradation_reason"] == "embedding_space_mismatch"
-    assert result["total_matches"] is None
-    assert result["lexical_total_matches"] is None
-    assert result["count_exact"] is False
+    assert result["total_matches"] == 14
+    assert result["lexical_total_matches"] == 14
+    assert result["count_exact"] is True
+    assert result["lexical_count_exact"] is True
     assert result["query_expansion_applied"] is True
     assert result["results"][0]["sources"] == ["lexical"]
+    assert calls[0]["offset"] == 3
+    assert calls[0]["limit"] == 1
+    assert calls[0]["exact_count"] is True
+    assert calls[0].get("candidate_paths") is None
+    assert calls[0].get("candidate_query") is None
 
 
 def test_invalid_search_mode_rejects(monkeypatch):

@@ -3309,73 +3309,26 @@ class LocalAIServices:
             ]
         if rag_meta.get("success") is not True:
             if mode == "hybrid":
-                fallback_candidate_paths = None
-                preprocessor = getattr(self, "preprocessor", None)
-                if query_expansion_applied and preprocessor is not None:
-                    try:
-                        candidates = preprocessor.candidate_paths(
-                            root, candidate_query, max(64, page_limit),
-                        )
-                        if candidates:
-                            fallback_candidate_paths = tuple(candidates[:64])
-                    except (OSError, sqlite3.Error, ValueError) as candidate_exc:
-                        logger.debug(
-                            "Preprocessing degraded hybrid candidates skipped (%s)",
-                            type(candidate_exc).__name__,
-                        )
-                expanded_fallback = query_expansion_applied
-                bounded_candidate_page = expanded_fallback
-                fallback_limit = (
-                    min(MAX_PAGE_SIZE, max(page_limit + offset, 64))
-                    if bounded_candidate_page else page_limit
-                )
                 result = self._repo_search_lexical(
                     root, query, top_k, context_lines, enrich, path_hints, scope,
-                    limit=fallback_limit,
-                    offset=0 if bounded_candidate_page else offset,
-                    exact_count=not expanded_fallback,
-                    candidate_paths=fallback_candidate_paths,
-                    candidate_query=candidate_query if expanded_fallback else None,
+                    limit=page_limit, offset=offset, exact_count=True,
                     installation_intent_priority=(
                         mode == "hybrid" and not prefers_lexical_precision(query)
                     ),
                 )
-                fallback_page = result.get("results", [])
-                if bounded_candidate_page and isinstance(fallback_page, list):
-                    unique_candidates = deduplicate_search_files(fallback_page)
-                    fallback_page = unique_candidates[offset:offset + page_limit]
-                else:
-                    unique_candidates = []
                 result.update({
                     "search_mode": "hybrid", "result_source": "lexical_fallback",
                     "coverage_complete": False, "degraded": True,
                     "degradation_reason": rag_meta.get("reason", "rag_unavailable"),
                     "index_state": rag_meta.get("index_state", "unavailable"),
+                    "index_coverage": rag_meta.get("index_coverage", "unknown_or_partial"),
+                    "candidate_freshness": "verified_against_current_sources",
                     "lexical_total_matches": result.get("total_matches"),
                     "lexical_count_exact": result.get("count_exact") is True,
                     "reranker": rag_meta.get("reranker", {"requested": True, "used": False, "degraded": True}),
-                    "results": fallback_page,
-                    **({
-                        "total_matches": None,
-                        "count_exact": False,
-                        "candidate_count": len(unique_candidates),
-                        "candidate_count_exact": False,
-                        "coverage_complete": False,
-                        "candidate_freshness": "verified_against_current_sources",
-                        "lexical_total_matches": None,
-                        "lexical_count_exact": False,
-                        "lexical_candidate_source": (
-                            "preprocessed_index" if fallback_candidate_paths else "current_source_scan"
-                        ),
-                        "lexical_preprocessed_candidate_count": len(fallback_candidate_paths or ()),
-                        "query_expansion_applied": query_expansion_applied,
-                        "offset": offset,
-                        "limit": page_limit,
-                        "has_more": (
-                            True if offset + len(fallback_page) < len(unique_candidates) else None
-                        ),
-                        "next_offset": offset + len(fallback_page),
-                    } if expanded_fallback else {}),
+                    "lexical_candidate_source": "current_source_scan",
+                    "lexical_preprocessed_candidate_count": 0,
+                    "query_expansion_applied": query_expansion_applied,
                 })
                 for item in result.get("results", []):
                     if isinstance(item, dict):
@@ -3417,43 +3370,13 @@ class LocalAIServices:
             }
 
         if not rag_rows and rag_meta.get("degraded"):
-            fallback_candidate_paths = None
-            preprocessor = getattr(self, "preprocessor", None)
-            if query_expansion_applied and preprocessor is not None:
-                try:
-                    candidates = preprocessor.candidate_paths(
-                        root, candidate_query, max(64, page_limit),
-                    )
-                    if candidates:
-                        fallback_candidate_paths = tuple(candidates[:64])
-                except (OSError, sqlite3.Error, ValueError) as candidate_exc:
-                    logger.debug(
-                        "Preprocessing degraded hybrid candidates skipped (%s)",
-                        type(candidate_exc).__name__,
-                    )
-            expanded_fallback = query_expansion_applied
-            bounded_candidate_page = expanded_fallback
-            fallback_limit = (
-                min(MAX_PAGE_SIZE, max(page_limit + offset, 64))
-                if bounded_candidate_page else page_limit
-            )
             result = self._repo_search_lexical(
                 root, query, top_k, context_lines, enrich, path_hints, scope,
-                limit=fallback_limit,
-                offset=0 if bounded_candidate_page else offset,
-                exact_count=not expanded_fallback,
-                candidate_paths=fallback_candidate_paths,
-                candidate_query=candidate_query if expanded_fallback else None,
+                limit=page_limit, offset=offset, exact_count=True,
                 installation_intent_priority=(
                     mode == "hybrid" and not prefers_lexical_precision(query)
                 ),
             )
-            fallback_page = result.get("results", [])
-            if bounded_candidate_page and isinstance(fallback_page, list):
-                unique_candidates = deduplicate_search_files(fallback_page)
-                fallback_page = unique_candidates[offset:offset + page_limit]
-            else:
-                unique_candidates = []
             result.update({
                 "search_mode": "hybrid", "result_source": "lexical_fallback",
                 "coverage_complete": False, "degraded": True,
@@ -3466,30 +3389,12 @@ class LocalAIServices:
                 "stale_candidate_details": rag_meta.get("stale_candidate_details", []),
                 "lexical_total_matches": result.get("total_matches"),
                 "lexical_count_exact": result.get("count_exact") is True,
+                "lexical_candidate_source": "current_source_scan",
+                "lexical_preprocessed_candidate_count": 0,
                 "rag_candidate_count": 0, "rag_candidate_count_exact": False,
                 "reranker": rag_meta.get("reranker", {}),
-                "results": fallback_page,
+                "query_expansion_applied": query_expansion_applied,
                 **search_cache_fields,
-                **({
-                    "total_matches": None,
-                    "count_exact": False,
-                    "candidate_count": len(unique_candidates),
-                    "candidate_count_exact": False,
-                    "candidate_freshness": "verified_against_current_sources",
-                    "lexical_total_matches": None,
-                    "lexical_count_exact": False,
-                    "lexical_candidate_source": (
-                        "preprocessed_index" if fallback_candidate_paths else "current_source_scan"
-                    ),
-                    "lexical_preprocessed_candidate_count": len(fallback_candidate_paths or ()),
-                    "query_expansion_applied": query_expansion_applied,
-                    "offset": offset,
-                    "limit": page_limit,
-                    "has_more": (
-                        True if offset + len(fallback_page) < len(unique_candidates) else None
-                    ),
-                    "next_offset": offset + len(fallback_page),
-                } if expanded_fallback else {}),
             })
             for item in result.get("results", []):
                 if isinstance(item, dict):
