@@ -652,10 +652,13 @@ def test_retrieval_latency_and_peak_memory_baseline(tmp_path, monkeypatch):
         assert sum(scoring_batch_rows) == count
         assert max(scoring_batch_rows) <= configured_batch_size
 
+        ordered_samples = sorted(samples_ms)
+        p95_sample = ordered_samples[max(0, math.ceil(0.95 * len(ordered_samples)) - 1)]
         metrics.append({
             "chunks": count,
             "search_batch_size": configured_batch_size,
             "median_ms": round(float(np.median(samples_ms)), 3),
+            "p95_ms": round(float(p95_sample), 3),
             "peak_traced_mib": round(peak_bytes / (1024 * 1024), 3),
             "measured_samples": len(samples_ms),
             "peak_memory_samples": len(samples_ms),
@@ -672,6 +675,7 @@ def test_retrieval_latency_and_peak_memory_baseline(tmp_path, monkeypatch):
         assert row["scored_chunks"] == row["chunks"]
         assert row["max_scoring_batch_rows"] <= row["search_batch_size"]
         assert math.isfinite(float(row["median_ms"])) and float(row["median_ms"]) >= 0.0
+        assert math.isfinite(float(row["p95_ms"])) and float(row["p95_ms"]) >= float(row["median_ms"])
         assert math.isfinite(float(row["peak_traced_mib"])) and float(row["peak_traced_mib"]) >= 0.0
 
     receipt = {

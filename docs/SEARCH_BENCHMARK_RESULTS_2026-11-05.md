@@ -85,3 +85,19 @@ Expanded `tools/benchmark_real_search.py` with four exact-symbol cases and four 
 Both installation queries and `Jak omezit velikost code indexu?` missed their labeled files; `Jak nastavit limit code indexu?` ranked its expected source second. A separate one-repeat hybrid run over those four natural queries, with RAG disabled in this isolated harness, returned `result_source=lexical_fallback`, `degraded=true`, and `degradation_reason=rag_disabled` for all four; all four labeled files were missed (0/4 top-10, MRR 0). Latency was 1.43–1.82 seconds. This is evidence about the degraded current-source fallback only, not a live RAG/hybrid or reranker comparison.
 
 The holdout synthetic benchmark (`python tools/benchmark_search_quality.py --repeats 3 --noise-files 100 --suite holdout`) scored recall@10 1.0 and MRR 1.0 over seven cases. Its precision@10 was 0.5 on two broad positive cases and 1.0 on the remaining positives and negative case; per-case median latencies were 37–44 ms and nearest-rank p95 values 42–96 ms. This synthetic result is separate from the real-repository failures above and does not establish general quality.
+
+## Live Hub RAG check — 2026-11-06
+
+`local_ai_rag:list` reported 2,506 files and 20,592 chunks for this workspace. A live `Local AI Hub installation` query returned no candidates and explicitly reported `degraded=true`, `fallback=embedding_space_mismatch`, and `reindex_required=true` for index revision `f894d022ec08cc06964ebe62192df5fc8bd1cf7b5d9a982b51b3cf5dfc9b873f`. Two authorized index attempts returned retryable `gpu_reserved`. After the expired lease was reaped, a new 64-byte reservation fence appeared without lease metadata; Hub status then reported `gpu_admission_state=outcome_unknown`. This is an unavailable live-RAG measurement, not a relevance score. No reservation file was edited and no model was downloaded.
+
+## Synthetic vector-retrieval baseline — 2026-11-06
+
+`RAG_BENCHMARK=1 python -m pytest -q tests/test_rag_quality_contract.py::test_retrieval_latency_and_peak_memory_baseline -s` scored all vectors once in bounded batches of 512, without HTTP/MCP, query embeddings, or reranking. Each corpus used three warm samples; p95 is nearest-rank and therefore equals the observed maximum at this sample size.
+
+| Chunks | Median / p95 | Peak traced memory | Scoring batches |
+| ---: | ---: | ---: | ---: |
+| 1,024 | 7.462 / 7.660 ms | 2.429 MiB | 2 |
+| 8,192 | 25.151 / 25.215 ms | 2.487 MiB | 16 |
+| 16,384 | 55.700 / 58.919 ms | 2.440 MiB | 32 |
+
+These timings measure the in-process vector scan only; they do not estimate embedding, reranker, cold-start, or live-service latency.

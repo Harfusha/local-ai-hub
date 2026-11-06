@@ -43,3 +43,12 @@ from 573,362,176 to 1,814,528 bytes and released 571,547,648 bytes. The Hub
 subsequently repopulated indexes for current roots; a later observation showed
 490,483,712 bytes, below the configured 536,870,912-byte cap. P23's usage data
 was not part of the cleanup and remains preserved.
+
+## Synthetic eviction benchmark — 2026-11-06
+
+`python tools/benchmark_code_index_budget.py` indexed 16 generated files, marked
+one hot, then applied a 12,056,576-byte limit. It evicted 6 cold files and
+reduced physical SQLite size from 17,223,680 to 10,170,368 bytes (7,053,312
+bytes released); the hot file remained. A subsequent write was admitted within
+its 16,437,247-byte limit. This temporary-repository result verifies eviction
+and physical reclamation mechanics; it does not predict production savings.
