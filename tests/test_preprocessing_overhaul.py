@@ -438,9 +438,15 @@ def test_worktree_cache_seed_logs_expected_sqlite_failures_without_paths(tmp_pat
     child.mkdir()
 
     class BrokenCacheStore:
+        def __init__(self):
+            self.connect_calls = 0
+
         def _connect(self):
+            self.connect_calls += 1
             raise sqlite3.OperationalError("database is locked")
 
+    code_index = BrokenCacheStore()
+    deterministic = BrokenCacheStore()
     repo_tools = RepositoryTools(config)
     pre = ProjectPreprocessor(
         config,
@@ -449,8 +455,8 @@ def test_worktree_cache_seed_logs_expected_sqlite_failures_without_paths(tmp_pat
         scheduler=None,
         runtime=None,
         repo_tools=repo_tools,
-        code_index=BrokenCacheStore(),
-        deterministic=BrokenCacheStore(),
+        code_index=code_index,
+        deterministic=deterministic,
     )
     monkeypatch.setattr(pre, "_connect", BrokenCacheStore()._connect)
     try:
@@ -458,8 +464,10 @@ def test_worktree_cache_seed_logs_expected_sqlite_failures_without_paths(tmp_pat
             stats = pre._seed_from_parent(str(child), str(parent))
 
         assert stats == {"file_refs": 0, "code_index": 0, "deterministic": 0}
+        assert code_index.connect_calls == 0
+        assert deterministic.connect_calls == 1
         messages = [record.getMessage() for record in caplog.records]
-        assert len(messages) == 3
+        assert len(messages) == 2
         assert all("OperationalError" in message for message in messages)
         assert all(str(tmp_path) not in message for message in messages)
     finally:
