@@ -149,3 +149,180 @@ def test_existing_only_reindex_selection_does_not_admit_new_paths(tmp_path):
     )
 
     assert pending == [("used.py", "changed-hash")]
+
+
+def test_code_index_allowed_paths_cache_reuses_and_invalidates_on_source_changes(tmp_path):
+    from local_ai_hub.preprocess import _ensure_file_refs_revision_tracking
+
+    root = tmp_path / "repo"
+    package = root / "pkg"
+    package.mkdir(parents=True)
+    (package / "a.py").write_text("from . import b\n", encoding="utf-8")
+    (package / "b.py").write_text("VALUE = 1\n", encoding="utf-8")
+    root_s = str(root)
+    db = tmp_path / "pre.sqlite"
+    with closing(sqlite3.connect(db)) as con:
+        con.execute(
+            "CREATE TABLE file_refs(root TEXT,path TEXT,content_hash TEXT,size INTEGER,needs_hash INTEGER)"
+        )
+        _ensure_file_refs_revision_tracking(con)
+        con.executemany(
+            "INSERT INTO file_refs VALUES(?,?,?,?,0)",
+            [(root_s, "pkg/a.py", "hash-a", 20), (root_s, "pkg/b.py", "hash-b", 20)],
+        )
+        con.commit()
+
+    def connect():
+        con = sqlite3.connect(db)
+        con.row_factory = sqlite3.Row
+        return con
+
+    class Index:
+        def __init__(self):
+            self.indexed = {}
+            self.pruned = []
+            self.batches = []
+
+        def prune(self, _root, paths):
+            allowed = set(paths)
+            self.pruned.append(allowed)
+            self.indexed = {path: digest for path, digest in self.indexed.items() if path in allowed}
+            return {"success": True}
+
+        def record_usage(self, *_args):
+            return None
+
+        def files_needing_reindex(self, _root, refs):
+            return [(path, digest) for path, digest in refs if self.indexed.get(path) != digest]
+
+        def update_files_batch(self, _root, pending):
+            self.batches.extend(pending)
+            self.indexed.update(pending)
+            return {"files_processed": len(pending), "cached": 0}
+
+    evidence = EvidenceStore(tmp_path / "state")
+    evidence.put(root_s, {"path": "pkg/a.py", "text": "a", "content_hash": "hash-a"})
+    pre = ProjectPreprocessor.__new__(ProjectPreprocessor)
+    pre._db_lock = threading.RLock()
+    pre._stats_lock = threading.RLock()
+    pre._connect = connect
+    pre._stats = {"code_index_files": 0}
+    pre._code_index_allowed_cache_lock = threading.Lock()
+    pre._code_index_allowed_cache = {}
+    pre._missing_refs_checked_generations = {(root_s, 1), (root_s, 2)}
+    pre._project_settings = lambda _root: None
+    path_checks = []
+    pre._project_path_allowed = lambda _root, path, *_args, **_kwargs: path_checks.append(path) or True
+    pre._set_project = lambda *_args, **_kwargs: None
+    pre._record_progress = lambda *_args: None
+    pre.cfg = {"code_index_files_per_step": 1}
+    pre.repo_tools = RepositoryTools({})
+    pre.code_index = Index()
+    pre.services = SimpleNamespace(evidence_store=evidence)
+
+    assert pre._step_code_index({"root": root_s, "generation": 1})
+    (package / "a.py").write_text("from . import b, c\n", encoding="utf-8")
+    (package / "c.py").write_text("VALUE = 2\n", encoding="utf-8")
+    with closing(connect()) as con:
+        con.execute("UPDATE file_refs SET content_hash='hash-a2' WHERE root=? AND path='pkg/a.py'", (root_s,))
+        con.execute("INSERT INTO file_refs VALUES(?,?,?,?,0)", (root_s, "pkg/c.py", "hash-c", 20))
+        con.commit()
+    assert pre._step_code_index({"root": root_s, "generation": 1})
+    assert pre._step_code_index({"root": root_s, "generation": 1})
+    assert pre._step_code_index({"root": root_s, "generation": 1})
+    assert pre._step_code_index({"root": root_s, "generation": 1})
+
+    (package / "b.py").unlink()
+    (package / "a.py").write_text("from . import c\n", encoding="utf-8")
+    with closing(connect()) as con:
+        con.execute("UPDATE file_refs SET content_hash='hash-a3' WHERE root=? AND path='pkg/a.py'", (root_s,))
+        con.execute("DELETE FROM file_refs WHERE root=? AND path='pkg/b.py'", (root_s,))
+        con.commit()
+    assert pre._step_code_index({"root": root_s, "generation": 2})
+    assert pre._step_code_index({"root": root_s, "generation": 2})
+
+    assert path_checks == ["pkg/a.py", "pkg/b.py", "pkg/a.py", "pkg/b.py", "pkg/c.py", "pkg/a.py", "pkg/c.py"]
+    assert pre.code_index.batches == [
+        ("pkg/a.py", "hash-a"), ("pkg/a.py", "hash-a2"),
+        ("pkg/b.py", "hash-b"), ("pkg/c.py", "hash-c"), ("pkg/a.py", "hash-a3"),
+    ]
+    assert pre.code_index.pruned == [
+        {"pkg/a.py", "pkg/b.py"},
+        {"pkg/a.py", "pkg/b.py", "pkg/c.py"},
+        {"pkg/a.py", "pkg/c.py"},
+    ]
+    assert pre.code_index.indexed == {"pkg/a.py": "hash-a3", "pkg/c.py": "hash-c"}
+
+
+def test_code_index_prunes_again_when_project_path_settings_change(tmp_path):
+    from local_ai_hub.preprocess import _ensure_file_refs_revision_tracking
+    from local_ai_hub.project_config import ProjectSettings
+
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / "a.py").write_text("VALUE = 1\n", encoding="utf-8")
+    root_s = str(root)
+    db = tmp_path / "pre.sqlite"
+    with closing(sqlite3.connect(db)) as con:
+        con.execute(
+            "CREATE TABLE file_refs(root TEXT,path TEXT,content_hash TEXT,size INTEGER,needs_hash INTEGER)"
+        )
+        _ensure_file_refs_revision_tracking(con)
+        con.execute("INSERT INTO file_refs VALUES(?,?,?,?,0)", (root_s, "a.py", "hash-a", 20))
+        con.commit()
+
+    def connect():
+        con = sqlite3.connect(db)
+        con.row_factory = sqlite3.Row
+        return con
+
+    class Index:
+        def __init__(self):
+            self.indexed = {}
+            self.prune_count = 0
+
+        def prune(self, _root, paths):
+            self.prune_count += 1
+            allowed = set(paths)
+            self.indexed = {path: digest for path, digest in self.indexed.items() if path in allowed}
+            return {"success": True}
+
+        def record_usage(self, *_args):
+            return None
+
+        def files_needing_reindex(self, _root, refs):
+            return [(path, digest) for path, digest in refs if self.indexed.get(path) != digest]
+
+        def update_files_batch(self, _root, pending):
+            self.indexed.update(pending)
+            return {"files_processed": len(pending), "cached": 0}
+
+    evidence = EvidenceStore(tmp_path / "state")
+    evidence.put(root_s, {"path": "a.py", "text": "a", "content_hash": "hash-a"})
+    settings = [ProjectSettings()]
+    pre = ProjectPreprocessor.__new__(ProjectPreprocessor)
+    pre._db_lock = threading.RLock()
+    pre._stats_lock = threading.RLock()
+    pre._connect = connect
+    pre._stats = {"code_index_files": 0}
+    pre._code_index_allowed_cache_lock = threading.Lock()
+    pre._code_index_allowed_cache = {}
+    pre._missing_refs_checked_generations = {(root_s, 1)}
+    pre._project_settings = lambda _root: settings[0]
+    pre._project_path_allowed = lambda _root, _path, current, *, size_bytes, **_kwargs: (
+        current.max_file_size_bytes is None or size_bytes <= current.max_file_size_bytes
+    )
+    pre._set_project = lambda *_args, **_kwargs: None
+    pre._record_progress = lambda *_args: None
+    pre.cfg = {"code_index_files_per_step": 1}
+    pre.repo_tools = RepositoryTools({})
+    pre.code_index = Index()
+    pre.services = SimpleNamespace(evidence_store=evidence)
+
+    assert pre._step_code_index({"root": root_s, "generation": 1})
+    assert pre.code_index.indexed == {"a.py": "hash-a"}
+    settings[0] = ProjectSettings(max_file_size_bytes=10)
+    assert pre._step_code_index({"root": root_s, "generation": 1})
+
+    assert pre.code_index.prune_count == 2
+    assert pre.code_index.indexed == {}

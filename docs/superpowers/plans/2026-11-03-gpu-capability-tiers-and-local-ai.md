@@ -719,3 +719,36 @@ Still open before this plan can be accepted:
 - Focused verification passed: the new response-budget regression plus four existing summary citation/input/truncation tests (**5 passed**); `py_compile src/local_ai_hub/mcp_server.py` and scoped `git diff --check` passed. No broad test suite ran.
 - An actual summarized search request `req_fbf24f918473` returned a truncated envelope; its summary text/citation fields were not captured, so it is inconclusive and is not quality evidence. A subsequent bounded `local_ai_repo(action="solve")` review request `req_7ddd574335f5` ended `outcome_unknown` with the GPU reservation retained. No more local inference or benchmark until that state is resolved; do not replay the request or release the retained reservation.
 - The paired fast-model comparison, remaining quality cases, RTX 5070 Ti cold/warm/concurrency measurements, route promotion and final integrated gates remain open.
+
+### Continuation checkpoint — 2026-11-06, MCP transport unavailable
+
+- Local AI MCP calls then failed to connect to `http://127.0.0.1:11436/mcp`; one readiness attempt failed the same way. Bounded `python tools/hubctl.py status` still reports Hub v5.1.3 online (PID 22828), Ollama online and RTX 5070 Ti present. Hub process status does not resolve MCP transport or GPU admission; no restart or inference was attempted.
+- Continue with already-grounded source work only until MCP connectivity and the retained GPU outcome can be checked through their authorized interfaces.
+
+### Continuation checkpoint — 2026-11-06, admission recovered and repeat warm sample
+
+- Current MCP readiness request `req_6556a7110707` reports admission `available` with `qwen3.5:4b-nvfp4` active; reservation request `req_c3074a4066d7` reports `free`. The earlier solve request remains unqualified; it was not replayed.
+- One repeat warm benchmark `req_b6f25eec1b1e` succeeded and is recorded in `docs/agent-evaluation/results.md`. It returned six tokens at 55.08 tokens/s; speculative inference was active with `qwen2.5-coder:3b`. Device-wide peak was 12,384,731,136 bytes; model-attributed VRAM remains unavailable. Do not compare this short, speculative sample as a stable throughput result.
+- Repeat warm samples without confounds, cold-start, concurrency/context, task-quality evaluations, paired fast-model comparison, route promotion and final gates remain open.
+
+### Continuation checkpoint — 2026-11-06, search summary remains unqualified
+
+- Live search summary requests `req_d69c180190cb`, `req_00fba5d410f9`, `req_bf9b8c010817`, `req_a5fead5a906e` and `req_38e23ed20303` produced claims not supported by cited source excerpts, despite structural `source_bound` validation. The last request still cited `src/local_ai_hub/mcp_server.py:6082-6092` and made an unsupported `local_ai_work` claim; nested model request `req_879ca9a24561`. Keep search summaries advisory and unqualified; do not promote route.
+- Source fix removes the search query from model input, strengthens excerpt-grounding instructions, and clips leading adjacent Python definitions from query-named excerpts while narrowing citation line ranges. Added a regression using the `local_ai_work` source span. Focused tests: 13 passed, 108 deselected. Local source evidence confirms the helper exists; live runtime/source alignment remains unresolved.
+- Runtime diagnosis: `python tools/hubctl.py status` reports HTTP Hub PID 5736 online. Separate Python PIDs 25032/29268 run `local_ai_hub.mcp_server`, created 10:54:37; checkout source last-write is 13:03:36. MCP config generation uses `-m local_ai_hub.mcp_server` with `cwd=install_dir` (evidence `E9dd34a1b929b7f2c83d9`). The active MCP server predates this edit; restarting HTTP Hub alone will not reload its Python module. No direct MCP restart control is exposed here.
+- Diff review request `req_d392f704f353` failed in model `qwen3.5:4b-nvfp4`; no retry. Earlier whole-diff review exceeded the 8-segment safe limit (`req_2466e14ed564`). Static compile and scoped diff check passed.
+- Next: restart/reconnect Codex's `local-ai` MCP server, then run one live summary probe and confirm adjusted source citations before judging quality. Do not issue another model request or claim live fix until runtime reload is verified. Paired fast-model comparison, remaining quality cases, GPU matrix and final gates stay open.
+
+### Continuation checkpoint — 2026-11-06, Hub restart and rejected summary probe
+
+- Verified the stale local MCP parent/child processes `25032`/`29268` and stopped them; the child exit also ended its parent. The Local AI tool bridge remained callable. A subsequent process scan found only the HTTP Hub server, so process termination alone did not establish a reloaded MCP wrapper.
+- One fresh search-summary request `req_cade9e7b8b37` returned deterministic search results but its local summary was rejected before inference: qwen3.5:4b-nvfp4 `insufficient VRAM for model admission`, qwen3.5:9b-nvfp4 circuit open; nested request `req_1d29ed194d61`. No retry. Its returned summary source metadata still used untrimmed `src/local_ai_hub/mcp_server.py:6082-6092` despite the local helper's clipping regression; runtime alignment remains unproven.
+- Owner-global GPU reservation was free (`req_87cd899348f1`) before the managed restart. `python tools/service.py restart` succeeded; `hubctl status` now reports Hub 5.1.3 online as PID 29996. Post-restart readiness `req_6ce56ee60af9` reports profile `high`, nominal VRAM pressure, but `gpu_admission_state=preparing_model` and no active model. Do not infer or retry while preparation is unresolved.
+- Focused current-workspace preprocessing tests passed 2/2; scoped `git diff --check` passed. No full suite ran. Next: continue independent source/test work; before any new live summary probe, obtain one fresh readiness and reservation observation after startup activity has settled, then verify narrowed citations and claim quality. W4/W6 quality and GPU gates remain open.
+
+### Continuation checkpoint — 2026-11-06, code-index cache repeat benchmark
+
+- Current readiness `req_df523d3b96f5` reports `qwen3.5:4b-nvfp4` active, profile `high`, admission available, but VRAM telemetry pending/stale. Reservation `req_377f06f6da34` is active for reranker PID 29996; do not run model/GPU work or release it.
+- Verified two focused tests for the current source changes: code-index inventory-cache reuse/invalidation and file-ref revision tracking; 2 passed. Scoped `git diff --check` passed.
+- Ran `tools/benchmark_code_index_inventory_cache.py --files 5000 --demand-files 32 --repeats 3`. Synthetic full-scan median 1,459.787 ms versus revision-cache 801.831 ms (45.07% faster); path-policy checks fell 165,000 to 5,000 (96.97%). This is warm-cache synthetic evidence only, not live repository or service performance; recorded repeat in `docs/CODE_INDEX_INVENTORY_CACHE_BENCHMARK.md`.
+- The MCP summary probe remains unqualified after its pre-inference VRAM rejection and untrimmed source metadata. Next live work requires a later independent ready status and free reservation; no polling or retry. W4/W6 remain open.

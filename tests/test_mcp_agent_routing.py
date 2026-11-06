@@ -266,12 +266,14 @@ def test_search_ai_summary_preserves_deterministic_results_and_sources(monkeypat
     import json
     summary_input = json.loads(calls[1][1]["text"])
     assert summary_input["root_fingerprint"] == result["ai_summary_root_fingerprint"]
+    assert "query" not in summary_input
     assert summary_input["coverage_note"] == (
         "Supplied excerpts: 1; this is not the total result count. "
         "Do not infer total counts or unshown results."
     )
     assert "copy the full path verbatim" in calls[1][1]["instruction"]
     assert "contained in that match" in calls[1][1]["instruction"]
+    assert "Do not infer behavior from names or signatures" in calls[1][1]["instruction"]
     assert calls[1][1]["model_role"] == "fast_code"
     assert str(ROOT) not in calls[1][1]["text"]
     assert result["ai_summary_advisory"] is True
@@ -289,6 +291,40 @@ def test_search_ai_summary_preserves_deterministic_results_and_sources(monkeypat
     assert "Use literal square brackets" in calls[1][1]["instruction"]
     assert "Preserve qualifiers in the coverage note" in calls[1][1]["instruction"]
     assert "If the note says may be omitted, never claim results were omitted." in calls[1][1]["instruction"]
+
+
+def test_search_summary_source_span_drops_adjacent_function_tail() -> None:
+    summary_input, sources = local_ai_mcp._bounded_search_summary_input(
+        "local_ai_work submit bounded",
+        str(ROOT),
+        [{
+            "path": "src/local_ai_hub/mcp_server.py",
+            "start_line": 6082,
+            "end_line": 6092,
+            "evidence_id": "E1",
+            "text": "\n".join([
+                "6082: return _invalid_action(\"local_ai_coord\", action)",
+                "6083: ",
+                "6084: @mcp.tool()",
+                "6085: @_instrumented_tool()",
+                "6086: def local_ai_work(",
+                "6087:     action: WorkAction,",
+                "6088:     root: str = \".\",",
+                "6089:     task: str = \"\",",
+                "6090: ): ",
+                "6091:     return _invalid_action(\"local_ai_work\", action)",
+                "6092: ",
+            ]),
+        }],
+    )
+
+    import json
+    payload = json.loads(summary_input)
+    assert payload["matches"][0]["text"].startswith("6086: def local_ai_work")
+    assert "local_ai_coord" not in payload["matches"][0]["text"]
+    assert sources == [{
+        "path": "src/local_ai_hub/mcp_server.py", "start_line": 6086, "end_line": 6092, "evidence_id": "E1",
+    }]
 
 
 def test_search_ai_summary_failure_keeps_deterministic_results(monkeypatch) -> None:

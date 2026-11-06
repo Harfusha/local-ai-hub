@@ -74,11 +74,23 @@ def _safe_int(val: Any, default: int, min_val: int = 0) -> int:
 def _ensure_file_refs_revision_tracking(con: sqlite3.Connection) -> None:
     """Track source-identity changes without rescanning file_refs per batch."""
     columns = {str(row[1]) for row in con.execute("PRAGMA table_info(file_refs)").fetchall()}
-    update_columns = [column for column in ("root", "path", "content_hash") if column in columns]
+    update_columns = [
+        column for column in ("root", "path", "content_hash", "size", "mtime_ns", "needs_hash")
+        if column in columns
+    ]
     if not {"root", "path"}.issubset(columns):
         return
     update_fields = ", ".join(update_columns)
     update_condition = " OR ".join(f"OLD.{column} IS NOT NEW.{column}" for column in update_columns)
+    trigger_row = con.execute(
+        "SELECT sql FROM sqlite_master WHERE type='trigger' AND name='file_refs_revision_update'"
+    ).fetchone()
+    if trigger_row is not None:
+        trigger_sql = str(trigger_row[0] or "")
+        if any(f"OLD.{column} IS NOT NEW.{column}" not in trigger_sql for column in update_columns):
+            # Rebuild only outdated derived triggers. Avoid unnecessary schema
+            # writes on every Hub start while upgrading old index databases.
+            con.execute("DROP TRIGGER file_refs_revision_update")
     con.executescript(
         """
         CREATE TABLE IF NOT EXISTS file_refs_revision (
@@ -322,11 +334,15 @@ class ProjectPreprocessor:
         self._hash_git_maps: dict[tuple[str, int], dict[str, str]] = {}
         self._hash_git_maps_lock = threading.RLock()
         # Pruning the per-root code indexes is a consistency operation, not part
-        # of every bounded parse batch. Keep it once per generation and invalidate
-        # it only when the watcher reports a real file change.
-        self._code_index_pruned_generations: set[tuple[str, int]] = set()
+        # of every bounded parse batch. Repeat it only after source-generation or
+        # path-policy changes invalidate the previously pruned view.
+        self._code_index_pruned_generations: set[tuple[Any, ...]] = set()
         self._deterministic_pruned_generations: set[tuple[str, int]] = set()
         self._missing_refs_checked_generations: set[tuple[str, int]] = set()
+        self._code_index_allowed_cache_lock = threading.Lock()
+        self._code_index_allowed_cache: dict[
+            str, tuple[int, int, Any, dict[str, str]]
+        ] = {}
         # CPU and GPU loops may observe the same durable phase at the same time. A
         # per-project non-blocking step lock guarantees exactly one owner for that
         # project while still allowing independent projects to progress concurrently.
@@ -476,6 +492,11 @@ class ProjectPreprocessor:
         self._missing_refs_checked_generations = {
             key for key in self._missing_refs_checked_generations if key[0] != root
         }
+        cache_lock = getattr(self, "_code_index_allowed_cache_lock", None)
+        cache = getattr(self, "_code_index_allowed_cache", None)
+        if cache_lock is not None and isinstance(cache, dict):
+            with cache_lock:
+                cache.pop(root, None)
 
     def _active_code_index_roots(self) -> tuple[str, ...] | None:
         """Snapshot roots currently owned by preprocessing workers for safe eviction."""
@@ -3326,36 +3347,69 @@ class ProjectPreprocessor:
             self._missing_refs_checked_generations = self._bound_generation_set(self._missing_refs_checked_generations)
         settings = self._project_settings(root)
         path_policy = ProjectPathPolicy(root, settings)
-        allowed: dict[str, str] = {}
-        with self._db_lock:
-            connection = self._connect()
-        with closing(connection) as con:
-            with self._db_lock:
+        allowed: dict[str, str] | None = None
+        source_revision: int | None = None
+        allowed_cache_lock = getattr(self, "_code_index_allowed_cache_lock", None)
+        allowed_cache = getattr(self, "_code_index_allowed_cache", None)
+        with self._db_lock, closing(self._connect()) as con:
+            con.execute("BEGIN")
+            try:
+                revision_row = con.execute(
+                    "SELECT revision FROM file_refs_revision WHERE root=?", (root,),
+                ).fetchone()
+                source_revision = int(revision_row[0]) if revision_row is not None else 0
+            except sqlite3.Error:
+                # Keep indexing available on an older or damaged derived DB; skip
+                # caching until the revision trigger table is available again.
+                source_revision = None
+            if source_revision is not None and allowed_cache_lock is not None and isinstance(allowed_cache, dict):
+                with allowed_cache_lock:
+                    cached = allowed_cache.get(root)
+                    if (cached is not None and cached[0] == int(row.get("generation", 0) or 0)
+                            and cached[1] == source_revision and cached[2] == settings):
+                        allowed = cached[3]
+                        allowed_cache.pop(root, None)
+                        allowed_cache[root] = cached
+            if allowed is None:
+                allowed = {}
                 cursor = con.execute(
                     "SELECT path,content_hash,size FROM file_refs WHERE root=? AND needs_hash=0 AND content_hash<>'' ORDER BY path",
                     (root,),
                 )
-            while True:
-                with self._db_lock:
+                while True:
                     batch = cursor.fetchmany(256)
-                if not batch:
-                    break
-                for row_ref in batch:
-                    path = str(row_ref["path"])
-                    if any(part.lower() in self.repo_tools.ignore_dirs for part in Path(path).parts[:-1]):
-                        continue
-                    if self._project_path_allowed(
-                        root, path, settings, phase="call_graph",
-                        size_bytes=int(row_ref["size"] or 0), path_policy=path_policy,
-                    ):
-                        allowed[path] = str(row_ref["content_hash"])
+                    if not batch:
+                        break
+                    for row_ref in batch:
+                        path = str(row_ref["path"])
+                        if any(part.lower() in self.repo_tools.ignore_dirs for part in Path(path).parts[:-1]):
+                            continue
+                        if self._project_path_allowed(
+                            root, path, settings, phase="call_graph",
+                            size_bytes=int(row_ref["size"] or 0), path_policy=path_policy,
+                        ):
+                            allowed[path] = str(row_ref["content_hash"])
+                if source_revision is not None and allowed_cache_lock is not None and isinstance(allowed_cache, dict):
+                    if len(allowed) <= 50_000:
+                        with allowed_cache_lock:
+                            allowed_cache.pop(root, None)
+                            allowed_cache[root] = (
+                                int(row.get("generation", 0) or 0), source_revision, settings, allowed,
+                            )
+                            while len(allowed_cache) > 4:
+                                allowed_cache.pop(next(iter(allowed_cache)))
+                    else:
+                        with allowed_cache_lock:
+                            allowed_cache.pop(root, None)
+        prune_key = (root, generation_key[1], repr(settings), source_revision)
         pruned_generations = getattr(self, "_code_index_pruned_generations", set())
-        if generation_key not in pruned_generations:
+        if source_revision is None or prune_key not in pruned_generations:
             prune_result = self.code_index.prune(root, allowed.keys())
             if not isinstance(prune_result, dict) or prune_result.get("success") is not True:
                 raise RuntimeError("code index prune failed")
-            pruned_generations.add(generation_key)
-            self._code_index_pruned_generations = self._bound_generation_set(pruned_generations)
+            if source_revision is not None:
+                pruned_generations.add(prune_key)
+                self._code_index_pruned_generations = self._bound_generation_set(pruned_generations)
         # Evidence is a record of source material actually served to an agent.
         # The repository inventory alone is not a reason to grow the index.
         evidence_store = getattr(getattr(self, "services", None), "evidence_store", None)
@@ -3434,7 +3488,7 @@ class ProjectPreprocessor:
         return True
 
     @staticmethod
-    def _bound_generation_set(s: set[tuple[str, int]], max_size: int = 512) -> set[tuple[str, int]]:
+    def _bound_generation_set(s: set[tuple[Any, ...]], max_size: int = 512) -> set[tuple[Any, ...]]:
         if len(s) > max_size:
             return set(sorted(s, key=lambda item: item[1])[-max_size // 2:])
         return s

@@ -275,10 +275,26 @@ def test_file_ref_revision_tracks_source_identity_not_card_state(tmp_path):
     db = tmp_path / "pre.sqlite"
     with closing(sqlite3.connect(db)) as con:
         con.execute(
-            "CREATE TABLE file_refs(root TEXT, path TEXT, content_hash TEXT, card_key TEXT)"
+            "CREATE TABLE file_refs(root TEXT, path TEXT, content_hash TEXT, card_key TEXT, size INTEGER, mtime_ns INTEGER, needs_hash INTEGER)"
         )
         _ensure_file_refs_revision_tracking(con)
-        con.execute("INSERT INTO file_refs VALUES('repo','a.py','hash-a',NULL)")
+        con.execute("DROP TRIGGER file_refs_revision_update")
+        con.executescript(
+            """
+            CREATE TRIGGER file_refs_revision_update
+            AFTER UPDATE OF root,path,content_hash ON file_refs
+            WHEN OLD.root IS NOT NEW.root OR OLD.path IS NOT NEW.path OR OLD.content_hash IS NOT NEW.content_hash
+            BEGIN
+                INSERT INTO file_refs_revision(root,revision) VALUES(NEW.root,1)
+                ON CONFLICT(root) DO UPDATE SET revision=revision+1;
+                INSERT INTO file_refs_revision(root,revision)
+                SELECT OLD.root,1 WHERE OLD.root IS NOT NEW.root
+                ON CONFLICT(root) DO UPDATE SET revision=revision+1;
+            END;
+            """
+        )
+        _ensure_file_refs_revision_tracking(con)
+        con.execute("INSERT INTO file_refs VALUES('repo','a.py','hash-a',NULL,10,1,0)")
 
         def revision(root):
             row = con.execute("SELECT revision FROM file_refs_revision WHERE root=?", (root,)).fetchone()
@@ -287,12 +303,18 @@ def test_file_ref_revision_tracks_source_identity_not_card_state(tmp_path):
         assert revision("repo") == 1
         con.execute("UPDATE file_refs SET card_key='card' WHERE root='repo'")
         assert revision("repo") == 1
-        con.execute("UPDATE file_refs SET content_hash='hash-b' WHERE root='repo'")
+        con.execute("UPDATE file_refs SET size=11 WHERE root='repo'")
         assert revision("repo") == 2
-        con.execute("UPDATE file_refs SET path='b.py' WHERE root='repo'")
+        con.execute("UPDATE file_refs SET mtime_ns=2 WHERE root='repo'")
         assert revision("repo") == 3
-        con.execute("UPDATE file_refs SET root='other' WHERE root='repo'")
+        con.execute("UPDATE file_refs SET needs_hash=1 WHERE root='repo'")
         assert revision("repo") == 4
+        con.execute("UPDATE file_refs SET content_hash='hash-b' WHERE root='repo'")
+        assert revision("repo") == 5
+        con.execute("UPDATE file_refs SET path='b.py' WHERE root='repo'")
+        assert revision("repo") == 6
+        con.execute("UPDATE file_refs SET root='other' WHERE root='repo'")
+        assert revision("repo") == 7
         assert revision("other") == 1
         con.execute("DELETE FROM file_refs WHERE root='other'")
         assert revision("other") == 2
