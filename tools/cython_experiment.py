@@ -307,7 +307,7 @@ def run(iterations: int = 20, hash_count: int = 20000, *, chunk_counts: tuple[in
         "overall_adoption_recommended": overall_adoption_recommended,
         "recommendation_reason": recommendation_reason,
         "provenance": provenance,
-        "production_enabled": False,
+        "production_enabled": bool(importlib.import_module("local_ai_hub.native_kernels").is_native_enabled()),
     }
 
 

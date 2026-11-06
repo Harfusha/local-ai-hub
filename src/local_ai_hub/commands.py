@@ -5927,6 +5927,14 @@ class CommandBroker:
                 return _terminate_and_confirm_windows_job_empty(job_handle)
             if os.name != "nt" and process is not None and process.pid > 0:
                 try:
+                    try:
+                        os.killpg(process.pid, 0)
+                    except ProcessLookupError:
+                        return True
+                    except PermissionError:
+                        return False
+                    except Exception:
+                        return False
                     kwargs: dict[str, Any] = {"grace_seconds": float(self.terminate_grace_seconds)}
                     sig = inspect.signature(terminate_tree)
                     if "process_group" in sig.parameters:
