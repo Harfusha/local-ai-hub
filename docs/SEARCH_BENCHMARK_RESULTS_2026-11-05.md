@@ -175,14 +175,25 @@ The final results were freshness-checked against current sources. This is a
 runtime degradation record, not a labeled relevance or latency benchmark; it
 does not measure the public HTTP search endpoint.
 
-## Live HTTP lexical spot check after Hub restart — 2026-11-06
+## Live HTTP lexical spot checks after Hub restart — 2026-11-06
 
-The configured loopback `/api/search` was measured with
-`tools/benchmark_live_search.py --modes lexical --repeats 1 --timeout-seconds 15 --case exact-repo-search`
-against this real repository. The installed Hub reported profile `high` and a
-configured reranker (`BAAI/bge-reranker-v2-m3`); lexical mode did not invoke it.
-The cold request returned HTTP 200 in 6,027 ms, `count_exact=true`,
-`total_matches=165`, and `index_state=current_sources`. On this single manually
-labeled case, recall@10 was 1.0 but precision@10 was 0.2; the two expected
-files appeared at ranks 1 and 3. This is a spot check, not a stable latency
-estimate or a general relevance claim.
+Both cases used the configured loopback `/api/search` against this real
+repository. The installed Hub reported profile `high` and a configured
+reranker (`BAAI/bge-reranker-v2-m3`); lexical mode did not invoke it.
+
+| Case | Cache | HTTP | Latency | Recall@10 | Precision@10 | Exact total |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| `exact-repo-search` (`repo_search`) | cold | 200 | 6,027 ms | 1.0 | 0.2 | 165 |
+| `exact-page-symbol` (`_exact_search_page`) | cold | 200 | 2,709 ms | 1.0 | 0.25 | 10 |
+
+The expected files ranked 1 and 3 for `repo_search`; the expected file ranked
+1 for `_exact_search_page`. The second query returned ten occurrence hits over
+four unique paths; repeated paths are separate lexical hit records, so the
+exact total is occurrence count. This contract needs to remain distinct from
+hybrid source-level deduplication.
+
+Three subsequent `_exact_search_page` warm-cache requests returned HTTP 200 at
+3,459, 542 and 484 ms. Median was 542 ms; nearest-rank p95 was 3,459 ms, with
+the first cache-hit request an outlier. These two manually labeled queries and
+the three warm samples are spot checks, not stable latency estimates or
+general relevance evidence.
