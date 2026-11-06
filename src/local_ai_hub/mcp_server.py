@@ -58,6 +58,7 @@ from local_ai_hub.process_utils import canonical_root, canonical_workspace_id, i
 from local_ai_hub.token_accounting import account_projection, attach_accounting, context_digest, finalize_tool_accounting, json_tokens, pop_accounting, tool_request_tokens
 from local_ai_hub.trace_context import efficiency_metadata, reset_metadata, set_metadata
 from local_ai_hub.search_pagination import MAX_PAGE_SIZE, pagination_bounds_error
+from local_ai_hub.search_modes import default_search_mode
 from local_ai_hub.adoption_metrics import AdoptionMetricsStore
 from local_ai_hub.endpoint_stats import EndpointStatsStore
 from local_ai_hub.task_memory_wire import (
@@ -3745,7 +3746,7 @@ def _local_ai_repo_impl(
     limit: int | None = None,
     summarize_results: bool = False,
     offset: int = 0,
-    search_mode: str = "lexical",
+    search_mode: str | None = None,
     old_symbol: str | None = None,
     new_symbol: str | None = None,
     old_code: str | None = None,
@@ -4012,7 +4013,9 @@ def _local_ai_repo_impl(
             **({"owner": owner, "lease_id": lease_id} if owner is not None and lease_id is not None else {}),
         }, timeout=_timeout("quick")), "verify")
     if action == "search":
-        if type(search_mode) is not str or search_mode not in {"lexical", "rag", "hybrid"}:
+        if search_mode is None:
+            search_mode = default_search_mode(query)
+        elif type(search_mode) is not str or search_mode not in {"lexical", "rag", "hybrid"}:
             return {"success": False, "error": "search_mode must be lexical, rag, or hybrid",
                     "status_code": 400, "terminal": True, "retryable": False}
         if summarize_results and not getattr(FEATURES, "search_summaries", False):
@@ -4744,7 +4747,7 @@ def local_ai_repo(
     limit: int | None = None,
     summarize_results: bool = False,
     offset: int = 0,
-    search_mode: str = "lexical",
+    search_mode: str | None = None,
     old_symbol: str | None = None,
     new_symbol: str | None = None,
     old_code: str | None = None,

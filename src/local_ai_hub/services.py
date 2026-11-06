@@ -39,6 +39,7 @@ from .repo_tools import RepositoryTools
 from .search_pagination import MAX_PAGE_SIZE, MAX_PAGE_WINDOW, pagination_bounds_error
 from .search_modes import (
     canonical_search_mode,
+    default_search_mode,
     deduplicate_search_files,
     expand_semantic_query,
     fuse_search_results,
@@ -3209,9 +3210,9 @@ class LocalAIServices:
         *,
         limit: int | None = None,
         offset: int = 0,
-        search_mode: str = "lexical",
+        search_mode: str | None = None,
     ) -> dict[str, Any]:
-        mode = canonical_search_mode(search_mode)
+        mode = default_search_mode(query) if search_mode is None else canonical_search_mode(search_mode)
         if mode is None:
             return {
                 "success": False, "error": "search_mode must be lexical, rag, or hybrid",

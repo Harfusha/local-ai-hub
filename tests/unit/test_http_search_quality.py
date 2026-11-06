@@ -35,6 +35,59 @@ def test_http_search_preserves_literal_query_and_returns_current_source(tmp_path
     assert [hit["path"] for hit in responses[0][1]["results"]] == ["bridge.py"]
 
 
+def test_http_search_rejects_explicit_null_search_mode(tmp_path, monkeypatch):
+    root = tmp_path / "repo"
+    root.mkdir()
+    service = LocalAIServices.__new__(LocalAIServices)
+    service.config = {"server": {"state_dir": str(tmp_path / "state")}}
+    monkeypatch.setattr(http_server, "APP", SimpleNamespace(config=service.config, recovery=None, services=service))
+
+    handler = http_server.Handler.__new__(http_server.Handler)
+    handler.path, handler.headers, handler._authorization_root = "/api/search", {}, str(root)
+    handler._begin_trace = lambda _path: None
+    handler._require_authorized = lambda: True
+    handler._read_json = lambda: {"root": str(root), "query": "install", "search_mode": None}
+    handler._validate_payload = lambda _path, _payload: None
+    handler._bind_repository_root_payload = lambda _payload: True
+    responses = []
+    handler._send = lambda status, body: responses.append((status, body))
+
+    handler.do_POST()
+
+    assert responses[0][0] == 400
+    assert responses[0][1]["error"] == "search_mode must be lexical, rag, or hybrid"
+
+
+def test_http_search_keeps_lexical_default_for_natural_query(tmp_path, monkeypatch):
+    root = tmp_path / "repo"
+    root.mkdir()
+    service = LocalAIServices.__new__(LocalAIServices)
+    service.config = {"server": {"state_dir": str(tmp_path / "state")}}
+    captured = {}
+
+    def repo_search(*_args, **kwargs):
+        captured.update(kwargs)
+        return {"success": True, "search_mode": kwargs["search_mode"], "results": []}
+
+    service.repo_search = repo_search
+    monkeypatch.setattr(http_server, "APP", SimpleNamespace(config=service.config, recovery=None, services=service))
+
+    handler = http_server.Handler.__new__(http_server.Handler)
+    handler.path, handler.headers, handler._authorization_root = "/api/search", {}, str(root)
+    handler._begin_trace = lambda _path: None
+    handler._require_authorized = lambda: True
+    handler._read_json = lambda: {"root": str(root), "query": "Local AI Hub installation"}
+    handler._validate_payload = lambda _path, _payload: None
+    handler._bind_repository_root_payload = lambda _payload: True
+    responses = []
+    handler._send = lambda status, body: responses.append((status, body))
+
+    handler.do_POST()
+
+    assert responses[0][0] == 200
+    assert captured["search_mode"] == "lexical"
+
+
 def test_service_keeps_engine_order_when_a_path_has_multiple_hits(tmp_path):
     root = tmp_path / "repo"
     root.mkdir()

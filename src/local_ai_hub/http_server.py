@@ -8238,6 +8238,12 @@ class Handler(BaseHTTPRequestHandler):
                     int(payload.get("max_dependents", APP.config.get("workflow", {}).get("impact_max_dependents", 30))),
                 )); return
             if 'post_search_1' in post_route_ids:
+                if "search_mode" in payload and (
+                    type(payload["search_mode"]) is not str
+                    or payload["search_mode"] not in {"lexical", "rag", "hybrid"}
+                ):
+                    self._send(400, {"success": False, "terminal": True, "retryable": False,
+                                     "error": "search_mode must be lexical, rag, or hybrid"}); return
                 result = APP.services.repo_search(
                     str(payload.get("root", ".")),
                     str(payload.get("query", "")),

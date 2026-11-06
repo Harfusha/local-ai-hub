@@ -486,7 +486,7 @@ def test_repo_search_timeout_respects_120_second_protocol_limit(monkeypatch):
 
     assert captured == {
         "path": "/api/search",
-        "payload": {"root": "C:/repo", "query": "needle", "top_k": 12, "limit": 24, "offset": 0, "enrich": False, "search_mode": "lexical"},
+        "payload": {"root": "C:/repo", "query": "needle", "top_k": 12, "limit": 24, "offset": 0, "enrich": False, "search_mode": "hybrid"},
         "timeout": 120,
         "path_hints": None,
     }
@@ -552,7 +552,8 @@ def test_repo_path_hints_schema_is_bounded_and_context_scoped():
     context_schema = operation_input_schema("local_ai_repo", "context")
     search_schema = operation_input_schema("local_ai_repo", "search")
     assert search_schema["properties"]["search_mode"]["enum"] == ["lexical", "rag", "hybrid"]
-    assert search_schema["properties"]["search_mode"]["default"] == "lexical"
+    assert "default" not in search_schema["properties"]["search_mode"]
+    assert "hybrid for natural-language queries" in search_schema["properties"]["search_mode"]["description"]
     context_fields = ("path_hints", "directory_hints", "exclude_paths", "force_include_paths")
     assert all(field in context_schema["properties"] for field in context_fields)
     assert all(field not in search_schema["properties"] for field in context_fields[1:])

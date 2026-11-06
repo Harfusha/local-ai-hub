@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import pytest
+
 from local_ai_hub.search_modes import (
+    default_search_mode,
     expand_semantic_query,
     fuse_search_results,
     prefers_lexical_precision,
@@ -18,7 +21,7 @@ def _service(monkeypatch, rag_rows=None, rag_meta=None):
     return service
 
 
-def test_repository_search_defaults_to_lexical(monkeypatch):
+def test_repository_search_defaults_to_hybrid_for_natural_language(monkeypatch):
     service = _service(monkeypatch, [{"path": "docs/semantic-only.md", "text": "semantic"}])
     rag_calls = []
     lexical_calls = []
@@ -38,9 +41,44 @@ def test_repository_search_defaults_to_lexical(monkeypatch):
 
     result = service.repo_search(".", "natural language query")
 
-    assert result["search_mode"] == "lexical"
+    assert result["search_mode"] == "hybrid"
     assert lexical_calls == ["natural language query"]
+    assert rag_calls == ["natural language query"]
+
+
+@pytest.mark.parametrize("query", ["repo_search", "C++"])
+def test_repository_search_defaults_to_lexical_for_exact_identifiers(monkeypatch, query):
+    service = _service(monkeypatch, [{"path": "docs/semantic-only.md", "text": "semantic"}])
+    rag_calls = []
+    lexical_calls = []
+    monkeypatch.setattr(
+        service,
+        "_repo_rag_search",
+        lambda root, query, top_k: (rag_calls.append(query) or [], {"success": True}),
+    )
+    monkeypatch.setattr(
+        service,
+        "_repo_search_lexical",
+        lambda root, query, *args, **kwargs: (
+            lexical_calls.append(query)
+            or {"success": True, "results": [], "count_exact": True, "total_matches": 0}
+        ),
+    )
+
+    result = service.repo_search(".", query)
+
+    assert result["search_mode"] == "lexical"
+    assert lexical_calls == [query]
     assert rag_calls == []
+
+
+@pytest.mark.parametrize(("query", "expected"), [
+    ("Local AI Hub installation", "hybrid"),
+    ("repo_search", "lexical"),
+    ("C++", "lexical"),
+])
+def test_default_search_mode_selects_agent_safe_mode(query, expected):
+    assert default_search_mode(query) == expected
 
 
 def test_lexical_mode_prioritizes_intent_docs_but_keeps_symbol_queries_exact(monkeypatch):

@@ -31,6 +31,11 @@ def prefers_lexical_precision(query: str) -> bool:
     )
 
 
+def default_search_mode(query: str) -> str:
+    """Pick agent search mode without weakening exact identifier queries."""
+    return "lexical" if prefers_lexical_precision(query) else "hybrid"
+
+
 _SEMANTIC_QUERY_TERMS = {
     "jak": "how",
     "nainstalovat": "install",
