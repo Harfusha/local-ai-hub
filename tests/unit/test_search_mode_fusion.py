@@ -4,6 +4,7 @@ import pytest
 
 from local_ai_hub.search_modes import (
     default_search_mode,
+    expand_lexical_fallback_query,
     expand_semantic_query,
     fuse_search_results,
     prefers_lexical_precision,
@@ -236,12 +237,35 @@ def test_czech_semantic_query_gets_bounded_english_terms_without_changing_lexica
     )
     assert expand_semantic_query("repo_search") == ("repo_search", False)
     english, english_applied = expand_semantic_query("Local AI Hub installation")
-    assert english == "Local AI Hub installation install setup getting started bootstrap"
+    assert english == (
+        "Local AI Hub installation install setup getting started bootstrap "
+        "instalace nainstalovat"
+    )
     assert english_applied is True
     assert expand_semantic_query("Jak instalace Local AI Hub?")[0].endswith(
         "how installation install setup getting started bootstrap"
     )
     assert expand_semantic_query("How to set a size limit?")[1] is False
+
+
+def test_english_configuration_query_gets_bounded_czech_terms():
+    original = "How to configure the software"
+    expanded, applied = expand_semantic_query(original)
+
+    assert applied is True
+    assert expanded == original + " nastavit nastavení konfigurovat konfigurace"
+
+
+def test_degraded_lexical_expansion_uses_only_direct_translation_terms():
+    assert expand_lexical_fallback_query("Local AI Hub installation") == (
+        "Local AI Hub installation instalace",
+        True,
+    )
+    assert expand_lexical_fallback_query("How to configure the software") == (
+        "How to configure the software konfigurace nastavení",
+        True,
+    )
+    assert expand_lexical_fallback_query("repo_search") == ("repo_search", False)
 
 
 def test_installation_expansion_targets_semantic_candidates_only(monkeypatch):
@@ -265,7 +289,10 @@ def test_installation_expansion_targets_semantic_candidates_only(monkeypatch):
 
     result = service.repo_search(".", "Local AI Hub installation", search_mode="hybrid")
 
-    assert rag_calls == ["Local AI Hub installation install setup getting started bootstrap"]
+    assert rag_calls == [
+        "Local AI Hub installation install setup getting started bootstrap "
+        "instalace nainstalovat"
+    ]
     assert lexical_calls == ["Local AI Hub installation"]
     assert result["query_expansion_applied"] is True
 
@@ -273,6 +300,38 @@ def test_installation_expansion_targets_semantic_candidates_only(monkeypatch):
     lexical = service.repo_search(".", "Local AI Hub installation", search_mode="lexical")
     assert lexical_calls == ["Local AI Hub installation"]
     assert lexical["search_mode"] == "lexical"
+
+
+def test_hybrid_lexical_fallback_uses_expanded_query_for_czech_recall(monkeypatch):
+    original = "How to configure the software"
+    semantic_expanded = expand_semantic_query(original)[0]
+    lexical_expanded = original + " konfigurace nastavení"
+    service = _service(monkeypatch, [])
+    rag_calls = []
+    lexical_calls = []
+    lexical_options = []
+    monkeypatch.setattr(
+        service, "_repo_rag_search",
+        lambda root, query, top_k: (rag_calls.append(query) or [],
+                                   {"success": False, "reason": "embedding_backend"}),
+    )
+    monkeypatch.setattr(
+        service, "_repo_search_lexical",
+        lambda root, query, *args, **kwargs: (
+            lexical_calls.append(query) or lexical_options.append(kwargs) or
+            {"success": True, "results": [], "count_exact": True, "total_matches": 0}
+        ),
+    )
+
+    result = service.repo_search(".", original, search_mode="hybrid")
+
+    assert rag_calls == [semantic_expanded]
+    assert lexical_calls == [lexical_expanded]
+    assert lexical_options[0]["exact_count"] is False
+    assert result["query_expansion_applied"] is True
+    assert result["result_source"] == "lexical_fallback"
+    assert result["coverage_complete"] is False
+    assert result["total_matches"] is None
 
 
 def test_rag_mode_applies_czech_expansion_only_to_semantic_candidates(monkeypatch):

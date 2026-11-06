@@ -703,6 +703,7 @@ class EmbeddingModel:
                 local.ollama_gpu_fenced = True
             return None
         confirmed = False
+        response_received = False
         try:
             req = urllib.request.Request(
                 f"{self.ollama_url}/api/embed",
@@ -710,18 +711,22 @@ class EmbeddingModel:
                 headers={"Content-Type": "application/json"},
             )
             with urllib.request.urlopen(req, timeout=30.0) as resp:
+                response_received = True
                 data = json.loads(resp.read().decode("utf-8"))
                 vectors = data.get("embeddings")
                 if isinstance(vectors, list) and len(vectors) == len(texts):
                     confirmed = True
                     return vectors
+        except urllib.error.HTTPError:
+            response_received = True
+            return None
         except Exception:
             return None
         finally:
             if not confirmed and path is not None:
                 if local is not None:
                     local.ollama_gpu_fenced = True
-            if confirmed and owned_reservation is not None:
+            if response_received and owned_reservation is not None:
                 self._release_embedding_gpu(owned_reservation)
         return None
 

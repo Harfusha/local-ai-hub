@@ -41,6 +41,7 @@ from .search_modes import (
     canonical_search_mode,
     default_search_mode,
     deduplicate_search_files,
+    expand_lexical_fallback_query,
     expand_semantic_query,
     fuse_search_results,
     prefers_lexical_precision,
@@ -3284,11 +3285,12 @@ class LocalAIServices:
             return result
 
         semantic_query, query_expansion_applied = expand_semantic_query(query)
+        candidate_query = semantic_query
         # Search fallback needs both the user's original lexical anchors and
         # the expansion terms. RepoTools separates added terms for ranking, so
         # passing only the suffix can hide exact source wording (for example
         # "installation" when expansion contains only "install").
-        candidate_query = semantic_query
+        lexical_fallback_query, _ = expand_lexical_fallback_query(query)
         rag_rows, rag_meta = self._repo_rag_search(
             root,
             semantic_query,
@@ -3311,7 +3313,7 @@ class LocalAIServices:
         if rag_meta.get("success") is not True:
             if mode == "hybrid":
                 result = self._repo_search_lexical(
-                    root, query, top_k, context_lines, enrich, path_hints, scope,
+                    root, lexical_fallback_query, top_k, context_lines, enrich, path_hints, scope,
                     limit=page_limit, offset=offset, exact_count=False,
                     installation_intent_priority=(
                         mode == "hybrid" and not prefers_lexical_precision(query)

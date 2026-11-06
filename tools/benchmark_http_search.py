@@ -25,8 +25,23 @@ else:
     from selftest import ROOT, SRC, _free_port, _get_json, _terminate_selftest_process
 
 
-def run(repeats: int = 3, noise_files: int = 100, suite: str = "holdout") -> dict:
-    if repeats < 1 or noise_files < 0 or suite not in {"development", "holdout"}:
+def build_search_payload(root: str, query: str, search_mode: str) -> dict[str, object]:
+    if search_mode not in {"default", "lexical", "rag", "hybrid"}:
+        raise ValueError("invalid search_mode")
+    payload: dict[str, object] = {"root": root, "query": query, "limit": 10}
+    if search_mode != "default":
+        payload["search_mode"] = search_mode
+    return payload
+
+
+def run(
+    repeats: int = 3,
+    noise_files: int = 100,
+    suite: str = "holdout",
+    search_mode: str = "default",
+) -> dict:
+    if (repeats < 1 or noise_files < 0 or suite not in {"development", "holdout"}
+            or search_mode not in {"default", "lexical", "rag", "hybrid"}):
         raise ValueError("invalid benchmark arguments")
     with tempfile.TemporaryDirectory(prefix="hub-http-search-", ignore_cleanup_errors=True) as directory:
         temp = Path(directory)
@@ -66,21 +81,33 @@ def run(repeats: int = 3, noise_files: int = 100, suite: str = "holdout") -> dic
             for case in cases:
                 timings, hits = [], []
                 for _ in range(repeats):
-                    payload = json.dumps({"root": str(root), "query": case["query"], "limit": 10}).encode()
+                    payload = json.dumps(build_search_payload(str(root), case["query"], search_mode)).encode()
                     request = urllib.request.Request(f"http://127.0.0.1:{port}/api/search", data=payload,
                                                      headers={"Content-Type": "application/json"})
                     started = time.perf_counter()
-                    with urllib.request.urlopen(request, timeout=20) as response:
+                    try:
+                        with urllib.request.urlopen(request, timeout=20) as response:
+                            result = json.load(response)
+                    except urllib.error.HTTPError as response:
                         result = json.load(response)
                     timings.append((time.perf_counter() - started) * 1000)
-                    if not result.get("success"):
-                        raise RuntimeError(f"search failed for {case['query']!r}: {result.get('error')}")
                     hits.append(result.get("cache_hit"))
-                paths = [item["path"] for item in result["results"]]
+                succeeded = result.get("success") is True
+                paths = [item["path"] for item in result.get("results", [])] if succeeded else []
+                reranker = result.get("reranker")
                 rows.append({"query": case["query"], "expected": case["relevant"], "paths": paths,
-                             **evaluate(paths, case["relevant"]), "samples_ms": timings, "cache_hits": hits})
+                             **evaluate(paths, case["relevant"]), "samples_ms": timings, "cache_hits": hits,
+                             "success": succeeded, "error": result.get("error"),
+                             "actual_search_mode": result.get("search_mode"),
+                             "result_source": result.get("result_source"),
+                             "degraded": result.get("degraded"),
+                             "degradation_reason": result.get("degradation_reason"),
+                             "query_expansion_applied": result.get("query_expansion_applied"),
+                             "reranker_requested": reranker.get("requested") if isinstance(reranker, dict) else None,
+                             "reranker_used": reranker.get("used") if isinstance(reranker, dict) else None})
             return {"scope": "isolated local supervisor and HTTP /api/search; CPU profile, preprocessing disabled",
-                    "suite": suite, "noise_files": noise_files, "repeats": repeats, "cases": rows}
+                    "suite": suite, "search_mode": search_mode, "noise_files": noise_files,
+                    "repeats": repeats, "cases": rows}
         finally:
             _terminate_selftest_process(process, identity)
 
@@ -90,8 +117,9 @@ def main() -> None:
     parser.add_argument("--repeats", type=int, default=3)
     parser.add_argument("--noise-files", type=int, default=100)
     parser.add_argument("--suite", choices=("development", "holdout"), default="holdout")
+    parser.add_argument("--search-mode", choices=("default", "lexical", "rag", "hybrid"), default="default")
     args = parser.parse_args()
-    print(json.dumps(run(args.repeats, args.noise_files, args.suite), ensure_ascii=False, indent=2))
+    print(json.dumps(run(args.repeats, args.noise_files, args.suite, args.search_mode), ensure_ascii=False, indent=2))
 
 
 if __name__ == "__main__":

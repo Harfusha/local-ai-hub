@@ -162,6 +162,31 @@ def test_failed_ollama_embedding_keeps_active_lease_only_until_ttl(tmp_path, mon
     assert store.read() is None
 
 
+def test_terminal_ollama_embedding_http_error_releases_active_lease(tmp_path, monkeypatch):
+    from urllib.error import HTTPError
+
+    from local_ai_hub.external_gpu_reservation import ExternalGpuReservationStore
+
+    model = EmbeddingModel.__new__(EmbeddingModel)
+    model._gpu_reservation_path = tmp_path / "external-gpu-reservation"
+    store = ExternalGpuReservationStore(model._gpu_reservation_path, ttl_seconds=30)
+    model._gpu_reservation_store = store
+    model._ollama_model_name = "test-embedding-model"
+    model.ollama_url = "http://127.0.0.1:11434"
+    model._execution_local = threading.local()
+    model._execution_local.gpu_fence_digest = None
+
+    def terminal_http_error(_request, *, timeout):
+        assert timeout == 30.0
+        raise HTTPError("http://127.0.0.1:11434/api/embed", 503, "unavailable", {}, None)
+
+    monkeypatch.setattr("urllib.request.urlopen", terminal_http_error)
+
+    assert model._encode_ollama(["hello"]) is None
+    assert store.read() is None
+    assert not model._gpu_reservation_path.exists()
+
+
 def test_embed_reuses_cached_vectors_and_preserves_batch_order():
     service = LocalAIServices.__new__(LocalAIServices)
     service.config = {

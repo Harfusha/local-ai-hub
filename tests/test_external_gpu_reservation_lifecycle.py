@@ -17,8 +17,8 @@ def _digest(token: str) -> str:
     return hashlib.sha256(token.encode("ascii")).hexdigest()
 
 
-def test_reservation_has_generation_expiry_and_idle_state(tmp_path):
-    store = ExternalGpuReservationStore(tmp_path / "external-gpu-reservation", ttl_seconds=60, clock=lambda: 100.0)
+def test_default_reservation_ttl_is_bounded_and_idle_state(tmp_path):
+    store = ExternalGpuReservationStore(tmp_path / "external-gpu-reservation", clock=lambda: 100.0)
 
     lease = store.reserve(_digest("owner-token"), owner="opencode-session")
 

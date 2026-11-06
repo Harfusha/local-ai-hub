@@ -73,22 +73,71 @@ _INSTALLATION_SEMANTIC_MARKERS = {
     "install", "installation", "installing", "setup", "bootstrap",
 }
 
+_ENGLISH_TO_CZECH_SEMANTIC_TERMS = {
+    "configure": ("nastavit", "nastavení", "konfigurovat", "konfigurace"),
+    "configuration": ("nastavení", "konfigurace"),
+    "settings": ("nastavení",),
+    "setup": ("nastavení", "instalace"),
+    "install": ("instalace", "nainstalovat"),
+    "installation": ("instalace", "nainstalovat"),
+    "installing": ("instalace", "instalovat"),
+    "bootstrap": ("instalace", "nastavení"),
+}
+
+_ENGLISH_TO_CZECH_LEXICAL_TERMS = {
+    "configure": ("konfigurace", "nastavení"),
+    "configuration": ("nastavení",),
+    "settings": ("nastavení",),
+    "setup": ("nastavení", "instalace"),
+    "install": ("instalace",),
+    "installation": ("instalace",),
+    "installing": ("instalovat",),
+    "bootstrap": ("instalace",),
+}
+
+
+def expand_lexical_fallback_query(query: str) -> tuple[str, bool]:
+    """Add only direct bilingual terms to degraded lexical search."""
+    if type(query) is not str or not query.strip():
+        return query, False
+    tokens = re.findall(r"[^\W_]+", query.casefold(), flags=re.UNICODE)
+    token_set = set(tokens)
+    if _CZECH_SEMANTIC_MARKERS.intersection(token_set):
+        terms = list(dict.fromkeys(
+            _SEMANTIC_QUERY_TERMS[token] for token in tokens
+            if token in _SEMANTIC_QUERY_TERMS
+        ))
+    else:
+        terms = list(dict.fromkeys(
+            term for token in tokens
+            for term in _ENGLISH_TO_CZECH_LEXICAL_TERMS.get(token, ())
+        ))
+    if not terms:
+        return query, False
+    return f"{query.strip()} {' '.join(terms)}", True
+
 
 def expand_semantic_query(query: str) -> tuple[str, bool]:
     """Append bounded related terms for common natural-language searches.
 
     Exact lexical search keeps the original query. Czech terms target the
-    configured English embedding space; installation terms add common wording
-    used in setup and getting-started documentation.
+    configured English embedding space, while a small English vocabulary adds
+    common Czech equivalents for configuration and installation searches.
     """
     if type(query) is not str or not query.strip():
         return query, False
     tokens = re.findall(r"[^\W_]+", query.casefold(), flags=re.UNICODE)
     token_set = set(tokens)
     if not _CZECH_SEMANTIC_MARKERS.intersection(token_set):
-        if not _INSTALLATION_SEMANTIC_MARKERS.intersection(token_set):
+        expanded_terms: list[str] = []
+        if _INSTALLATION_SEMANTIC_MARKERS.intersection(token_set):
+            expanded_terms.extend(("install", "setup", "getting started", "bootstrap"))
+        for token in tokens:
+            expanded_terms.extend(_ENGLISH_TO_CZECH_SEMANTIC_TERMS.get(token, ()))
+        expanded_terms = list(dict.fromkeys(expanded_terms))
+        if not expanded_terms:
             return query, False
-        return f"{query.strip()} install setup getting started bootstrap", True
+        return f"{query.strip()} {' '.join(expanded_terms)}", True
     translated = list(dict.fromkeys(
         _SEMANTIC_QUERY_TERMS[token] for token in tokens
         if token in _SEMANTIC_QUERY_TERMS

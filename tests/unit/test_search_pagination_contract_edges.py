@@ -74,9 +74,18 @@ def test_service_exact_count_pages_late_request_hint_after_candidate_window(
     (root / "yyy-config-hint.py").write_text("needle match\n", encoding="utf-8")
     request_hint = [{"path": "zzz-request-hint.py", "purpose": "repository_search", "scope": "repo_search"}]
 
-    first = service.repo_search(str(root), "needle", limit=20, offset=0, path_hints=request_hint)
-    second = service.repo_search(str(root), "needle", limit=20, offset=20, path_hints=request_hint)
-    late = service.repo_search(str(root), "needle", limit=20, offset=330, path_hints=request_hint)
+    first = service.repo_search(
+        str(root), "needle", limit=20, offset=0, path_hints=request_hint,
+        search_mode="lexical",
+    )
+    second = service.repo_search(
+        str(root), "needle", limit=20, offset=20, path_hints=request_hint,
+        search_mode="lexical",
+    )
+    late = service.repo_search(
+        str(root), "needle", limit=20, offset=330, path_hints=request_hint,
+        search_mode="lexical",
+    )
 
     assert [hit["path"] for hit in first["results"][:2]] == [
         "zzz-request-hint.py", "yyy-config-hint.py",
@@ -436,7 +445,7 @@ def test_http_search_route_maps_service_503_to_transport_status(
     assert responses[0][1]["success"] is False
     assert responses[0][1]["total_matches"] == 0
     assert responses[0][1]["has_more"] is False
-    assert service_calls[0]["search_mode"] == "lexical"
+    assert service_calls[0]["search_mode"] is None
 
 
 def test_search_compaction_keeps_largest_whole_result_prefix_with_continuation(

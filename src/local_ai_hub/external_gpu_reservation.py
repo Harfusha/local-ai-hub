@@ -34,7 +34,7 @@ class ExternalGpuReservationStore:
         self,
         path: str | os.PathLike[str],
         *,
-        ttl_seconds: float = 900,
+        ttl_seconds: float = 60,
         clock: Callable[[], float] = time.time,
     ) -> None:
         if (isinstance(ttl_seconds, bool) or not isinstance(ttl_seconds, (int, float))

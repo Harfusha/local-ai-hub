@@ -86,7 +86,8 @@ cloud_provider = ""
 # A mapped llama.cpp route takes precedence; when unavailable, Ollama is used
 # only if fallback_to_ollama is true and Ollama is enabled.
 mode = "auto" # off | auto (external only) | on (managed llama.cpp)
-model_load_timeout_seconds = 600
+# Bound foreground model preparation so a stalled provider cannot pin requests for minutes.
+model_load_timeout_seconds = 60
 managed_model_filename = "hub-qwen-15.gguf"
 fallback_to_ollama = false
 
