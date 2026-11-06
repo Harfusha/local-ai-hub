@@ -126,3 +126,24 @@ against current sources. The reranker was requested but unavailable, and the
 endpoint reported `heuristic_rerank` degradation. No latency was captured for
 these calls, so this is an endpoint behavior smoke only, not a timing benchmark
 or paired reranker comparison.
+
+## GPU admission recovery and focused lifecycle checks — 2026-11-06
+
+A live RAG index request was rejected with `gpu_reserved`. The subsequent Hub
+status remained `gpu_admission_state=outcome_unknown`; no index rebuild completed.
+The Ollama process reported no loaded models, which does not rule out a Torch
+embedding operation.
+
+The reservation audit records a `consented_release_current_reservation` event
+at 04:50:04 UTC for owner `embedding:25292:24256`; its stored reason says the
+release was authorized without owner checks. After that event, a new lease was
+observed for `embedding:25292:27256` with `state=active`, a generation and an
+expiry. PID 25292 was still running as a Hub Python process. The fresh active
+lease and `outcome_unknown` status fail the safe GPU-admission gate. No further
+release or rebuild was attempted.
+
+Focused workspace tests passed: `tests/test_external_gpu_reservation_lifecycle.py`
+(36 passed) and `tests/unit/test_mcp_gpu_reservation_release_contract.py`
+(2 passed). These temporary-directory tests verify lifecycle and response
+contracts; they do not establish that the installed service can safely release
+or admit a live GPU reservation.
