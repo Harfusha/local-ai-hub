@@ -147,3 +147,26 @@ Focused workspace tests passed: `tests/test_external_gpu_reservation_lifecycle.p
 (2 passed). These temporary-directory tests verify lifecycle and response
 contracts; they do not establish that the installed service can safely release
 or admit a live GPU reservation.
+
+## Isolated HTTP holdout benchmark — 2026-11-06
+
+Reproduce with:
+
+```powershell
+.\.venv\Scripts\python.exe tools/benchmark_http_search.py --repeats 7 --noise-files 1000 --suite holdout
+```
+
+This run used the script's temporary CPU-only supervisor, 1,000 synthetic noise
+files, and ten manually labeled queries. The first request per query missed the
+application cache; the remaining 60 requests hit it. Across cold requests,
+median latency was 365.28 ms and nearest-rank p95 was 625.13 ms. Across warm
+cache hits, median latency was 160.18 ms and p95 was 194.67 ms.
+
+Eight of nine queries with relevant labels had recall@10 and MRR of 1.0. Exact
+symbols `C#`, `widget::render`, and `namespace.name`, plus `while`, ranked the
+expected source first. Both installation queries in English and Czech ranked
+correctly. `How to configure the software` missed its expected result. The
+negative `missing_quantum_driver` query had no relevant label and returned no
+relevant match. This is isolated HTTP integration evidence over a synthetic
+fixture; preprocessing was disabled, and it does not measure the installed
+service, RAG, or reranking.
