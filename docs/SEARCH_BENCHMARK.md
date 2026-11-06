@@ -109,3 +109,20 @@ contains the config and 2.27 GB of model weights. Status reports the reranker
 unloaded, and the GPU reservation is `unknown`. No model was loaded for this
 benchmark. The reranker-on/off comparison remains unmeasured until admission
 is safe.
+
+## Live MCP mode smoke — 2026-11-06
+
+One actual-checkout MCP smoke queried `repo_search` lexically and
+`Local AI Hub installation` in RAG and hybrid modes. The lexical response
+reported 164 exact current-source matches. RAG returned 15 semantic candidates
+with an explicitly inexact count. Hybrid returned a 39-item candidate union;
+its 64 lexical-preprocessed candidates and 15 RAG candidates were both
+explicitly inexact. `docs/INSTALLATION.md` ranked first for the natural
+installation query in both RAG and hybrid output. Hybrid also surfaced test and
+project metadata files, so this single query does not establish broad relevance.
+
+Index coverage was `unknown_or_partial`; returned candidates were verified
+against current sources. The reranker was requested but unavailable, and the
+endpoint reported `heuristic_rerank` degradation. No latency was captured for
+these calls, so this is an endpoint behavior smoke only, not a timing benchmark
+or paired reranker comparison.

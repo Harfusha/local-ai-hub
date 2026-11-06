@@ -81,3 +81,22 @@ coverage as incomplete by contract. A completed preprocessing project therefore
 does not imply complete code-index coverage. Search continues to verify indexed
 candidates against current source and falls back to source search when coverage
 is partial or a candidate is stale.
+
+## Read-only live SQLite snapshot — 2026-11-06
+
+A read-only SQLite connection measured the live database and its sidecars at
+431,702,016 bytes total: 431,669,248-byte main file, zero-byte WAL, and
+32,768-byte SHM. SQLite reported 105,388 pages of 4,096 bytes, zero free pages,
+and incremental auto-vacuum mode. The database contained 577 files, 12,477
+symbols, 143,542 references, 153,498 edges, 1,532,661 symbol-trigram rows,
+578 parse blobs, and 831 file-usage rows across two roots; the larger root had
+292 files.
+
+The configured default limit is 536,870,912 bytes (512 MiB), and no
+`code_index.max_index_bytes` override was present in `config.toml`. This
+snapshot did not mutate, clean, or vacuum the database. Compared with the older
+470,814,720-byte dry-run observation above, it is 39,112,704 bytes smaller;
+the cause is not established. `dbstat` was unavailable, so these totals do not
+attribute bytes to individual tables. Zero free pages means this snapshot gives
+no evidence that SQLite can return additional pages to the filesystem through
+incremental vacuum.
