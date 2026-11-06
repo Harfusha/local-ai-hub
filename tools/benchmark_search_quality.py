@@ -58,6 +58,7 @@ def make_holdout_fixture(root: Path, noise_files: int = 100) -> list[dict]:
         "src/component.py": '# widget::render\nFLAG = "namespace.name"\n',
         "src/similar.py": 'FLAG = "namespaceXname"\n',
         "docs/guide.md": '# Guide\nwhile running, stop safely\n',
+        "docs/cs_guide.md": '# Instalace Local AI Hubu\nNávod k instalaci a nastavení služby.\n',
     }
     for relative, content in files.items():
         path = root / relative
@@ -74,6 +75,9 @@ def make_holdout_fixture(root: Path, noise_files: int = 100) -> list[dict]:
         {"query": "widget::render", "relevant": ["src/component.py"], "literal": "widget::render"},
         {"query": "namespace.name", "relevant": ["src/component.py"], "literal": "namespace.name"},
         {"query": "while", "relevant": ["docs/guide.md"], "literal": "while"},
+        {"query": "Local AI Hub installation", "relevant": ["docs/cs_guide.md"], "literal": ""},
+        {"query": "Jak nainstalovat Local AI Hub", "relevant": ["docs/cs_guide.md"], "literal": ""},
+        {"query": "How to configure the software", "relevant": ["docs/cs_guide.md"], "literal": ""},
         {"query": "missing_quantum_driver", "relevant": [], "literal": ""},
     ]
 

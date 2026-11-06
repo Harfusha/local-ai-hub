@@ -25,15 +25,19 @@ per-query medians and maximum per-query p95, respectively.
 | Fixture and path | Queries | Recall@10 | MRR | Median range | Highest per-query p95 | Precision finding |
 | --- | ---: | ---: | ---: | ---: | ---: | --- |
 | Development, `LocalAIServices.repo_search` | 8 | 1.00 | 1.00 | 36.46–44.40 ms | 79.50 ms | Lowest case 0.33; `restore session token` returned two distractors |
-| Holdout, `LocalAIServices.repo_search` | 7 | 1.00 | 1.00 | 37.22–42.67 ms | 76.89 ms | Two natural queries had precision 0.50 |
-| Holdout, `RepositoryTools.search` | 7 | 1.00 | 1.00 | 33.59–39.47 ms | 52.94 ms | Two natural queries had precision 0.50 |
+| Holdout, service default with optional backends absent | 10 | 0.89 | 0.89 | 36.79–54.40 ms | 94.68 ms | Two natural queries had precision 0.50; translation-only paraphrase recall 0 |
+| Holdout, RepositoryTools.search lexical | 10 | 0.89 | 0.89 | 34.91–39.55 ms | 53.37 ms | Same false positives and translation-only miss |
 
-Exact-symbol and negative cases passed in both fixtures. The natural-query
-false positives show why recall alone is insufficient. These small synthetic
-results do not establish general search quality or compare lexical, RAG,
-hybrid, or reranker variants. The live Hub also needs a separate run after its
-embedding backend and high-profile model finish preparing; the observed live
-hybrid path previously degraded to a current-source lexical fallback.
+Exact-symbol and negative cases passed in both fixtures. The service-default
+holdout includes "Local AI Hub installation" and a Czech query against a Czech
+document; both match through shared "Local AI Hub" words and do not prove
+cross-lingual semantics. "How to configure the software" has no lexical overlap
+with that document and correctly exposes the missing semantic recall while the
+RAG backend is disabled. Natural-query false positives show why recall alone
+is insufficient. These small synthetic results do not compare healthy lexical,
+RAG, hybrid, or reranker variants. The live Hub still needs a separate run
+after its embedding backend and high-profile model finish preparing; the
+observed live hybrid path degraded to a current-source lexical fallback.
 
 ## Remaining benchmark coverage
 
