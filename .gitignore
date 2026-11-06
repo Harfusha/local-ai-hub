@@ -53,6 +53,7 @@ Thumbs.db
 
 # Local overrides / IDE
 config.runtime.toml
+/config.runtime.toml.lock
 .env
 .env.*
 .vscode/
