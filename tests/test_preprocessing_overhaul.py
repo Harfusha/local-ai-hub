@@ -934,6 +934,9 @@ def test_code_index_inventory_uses_bounded_streaming_reads(tmp_path: Path, monke
                     break
             return batch
 
+        def fetchone(self):
+            return (1,)
+
         def fetchall(self):
             pytest.fail("code-index inventory must not materialize the full result")
 

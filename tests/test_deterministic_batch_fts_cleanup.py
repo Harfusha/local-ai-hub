@@ -58,6 +58,57 @@ def _assert_facts_match_fts(engine):
     assert ordinary == fts
 
 
+@pytest.mark.parametrize("paths", [None, []], ids=["omitted", "empty"])
+def test_deterministic_build_never_expands_to_the_whole_project(engine, tmp_path, monkeypatch, paths):
+    root = tmp_path / "repo"
+    root.mkdir()
+
+    def unexpected(*_args, **_kwargs):
+        pytest.fail("demand build must not enumerate the project")
+
+    monkeypatch.setattr(engine.repo_tools, "iter_files", unexpected)
+    monkeypatch.setattr(engine, "update_file", unexpected)
+    monkeypatch.setattr(engine, "prune", unexpected)
+    monkeypatch.setattr(engine, "refresh_manifests", unexpected)
+
+    result = engine.build(str(root), paths=paths)
+
+    if paths is None:
+        assert result["success"] is False
+        assert result["coverage_complete"] is False
+        assert result["reason"] == "explicit_paths_required"
+    else:
+        assert result["success"] is True
+        assert result["coverage_complete"] is True
+        assert result["files"] == 0
+
+
+def test_deterministic_build_bounds_explicit_paths_and_skips_global_cleanup(engine, tmp_path, monkeypatch):
+    root = tmp_path / "repo"
+    root.mkdir()
+    engine.config["preprocessing"] = {"deterministic_files_per_step": 2}
+    indexed: list[str] = []
+
+    def update_file(_root: str, path: str) -> dict[str, bool]:
+        indexed.append(path)
+        return {"success": True}
+
+    def unexpected(*_args, **_kwargs):
+        pytest.fail("bounded demand build must not scan or prune the project")
+
+    monkeypatch.setattr(engine, "update_file", update_file)
+    monkeypatch.setattr(engine.repo_tools, "iter_files", unexpected)
+    monkeypatch.setattr(engine, "prune", unexpected)
+    monkeypatch.setattr(engine, "refresh_manifests", unexpected)
+
+    result = engine.build(str(root), paths=["used.py", "related.py", "unrelated.py"])
+
+    assert indexed == ["used.py", "related.py"]
+    assert result["files"] == 2
+    assert result["coverage_complete"] is False
+    assert result["remaining"] == 1
+
+
 @pytest.mark.parametrize("batch_size", [1, 32, 128])
 def test_batch_fts_cleanup_one_delete_with_isolated_scaling_measurement(
     engine, tmp_path, monkeypatch, batch_size

@@ -141,3 +141,25 @@ database rebuild was needed. Hub health and MCP returned online on 5.1.3 with
 the `high` hardware profile. GPU reservation status then reported
 `state=unknown`, so this run did not attempt CUDA embedding or reranker
 inference.
+
+## Synthetic code-index inventory benchmark — 2026-11-06
+
+`tools/benchmark_code_index_inventory.py` used an in-memory SQLite database
+with 50,000 synthetic file-reference rows, seven repeats and 45,454 eligible
+rows. This isolates Python allocation and SQLite inventory iteration; it does
+not measure project parsing, write contention, search relevance or live Hub
+latency. The current real repository has 1,981 `file_refs` rows for this root,
+all pointing to existing files, so the synthetic corpus is about 25 times
+larger than the current per-root inventory.
+
+| Batch size | Full materialization median / p95 | Peak Python memory | Bounded median / p95 | Peak Python memory |
+| ---: | ---: | ---: | ---: | ---: |
+| 256 | 242.52 / 267.60 ms | 15,149,929 B | 166.95 / 650.40 ms | 7,791,301 B |
+| 512 | 219.72 / 413.78 ms | 15,149,929 B | 170.19 / 251.03 ms | 7,808,181 B |
+| 1,024 | 223.92 / 256.25 ms | 15,149,929 B | 160.80 / 383.54 ms | 7,845,685 B |
+
+The bounded iterator used roughly half the peak Python memory in this synthetic
+run. Seven samples make p95 equal to the nearest-rank maximum and expose noisy
+timings; no batch-size change is justified by this result. The live
+preprocessor currently fetches 256 references at a time. This microbenchmark
+does not establish end-to-end speedup or general scaling.

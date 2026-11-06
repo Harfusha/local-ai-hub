@@ -1840,20 +1840,46 @@ class DeterministicEngine:
 
     def build(self, root: str, paths: list[str] | None = None, limit: int = 0) -> dict[str, Any]:
         base = Path(root).expanduser().resolve()
-        candidates = paths or [str(p.relative_to(base)).replace("\\", "/") for p in self.repo_tools.iter_files(str(base))]
-        if limit > 0:
-            candidates = candidates[:limit]
+        root_s = str(base)
+        if paths is None:
+            return {
+                "success": False, "root": root_s, "updated": 0, "cached": 0,
+                "failed": 0, "files": 0, "remaining": 0,
+                "coverage_complete": False, "reason": "explicit_paths_required",
+            }
+        requested = list(dict.fromkeys(str(path) for path in paths if isinstance(path, str) and path))
+        if not requested:
+            return {
+                "success": True, "root": root_s, "updated": 0, "cached": 0,
+                "failed": 0, "files": 0, "remaining": 0, "coverage_complete": True,
+            }
+        if type(limit) is not int or limit < 0:
+            return {
+                "success": False, "root": root_s, "updated": 0, "cached": 0,
+                "failed": len(requested), "files": 0, "remaining": len(requested),
+                "coverage_complete": False, "reason": "invalid_limit",
+            }
+        configured_limit = max(
+            1, int(self.config.get("preprocessing", {}).get("deterministic_files_per_step", 256))
+        )
+        batch_limit = min(limit, configured_limit) if limit else configured_limit
+        candidates = requested[:batch_limit]
         updated = cached = failed = 0
         for path in candidates:
             try:
                 result = self.update_file(str(base), path)
                 cached += int(bool(result.get("cached")))
                 updated += int(bool(result.get("success")) and not result.get("cached"))
+                failed += int(result.get("success") is not True)
             except Exception:
                 failed += 1
-        self.prune(str(base), candidates if paths is None else [str(p.relative_to(base)).replace("\\", "/") for p in self.repo_tools.iter_files(str(base))])
-        self.refresh_manifests(str(base))
-        return {"success": True, "root": str(base), "updated": updated, "cached": cached, "failed": failed, "files": len(candidates)}
+        remaining = max(0, len(requested) - len(candidates))
+        coverage_complete = remaining == 0 and failed == 0
+        return {
+            "success": failed == 0, "root": root_s, "updated": updated, "cached": cached,
+            "failed": failed, "files": len(candidates), "remaining": remaining,
+            "coverage_complete": coverage_complete,
+        }
 
     @staticmethod
     def _purpose(script: str) -> str:
