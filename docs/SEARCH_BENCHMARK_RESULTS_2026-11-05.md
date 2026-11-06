@@ -107,3 +107,37 @@ The operator explicitly authorized the supported orphan-fence recovery. The auth
 | 16,384 | 55.700 / 58.919 ms | 2.440 MiB | 32 |
 
 These timings measure the in-process vector scan only; they do not estimate embedding, reranker, cold-start, or live-service latency.
+
+## Installed Hub after commit 860f953f — lexical recheck, 2026-11-06
+
+After installing the clean commit with profile `high`, ran
+`tools/benchmark_live_search.py --modes lexical --repeats 3 --timeout-seconds 15`
+against the installed loopback service and this real repository. Of 25 labeled
+cases, 24 completed all three HTTP 200 requests; `exact-rag-preprocess` timed
+out after 15.011 s on its first request, so the benchmark stopped repeating
+that case. The lexical mode did not request or use the reranker. The command
+output was truncated before its complete relevance summary, so this recheck is
+latency evidence only and its partial per-case quality must not be treated as a
+macro score.
+
+| Measure | Result |
+| --- | ---: |
+| Successful requests / timeout | 72 / 1 |
+| Cold samples (one per completed case), median / p95 | 4,142 / 6,866 ms |
+| Warm cache-hit samples, median / p95 | 209 / 607 ms |
+| Cold / warm maximum | 9,632 / 3,010 ms |
+
+Percentiles use nearest-rank over the successful samples and exclude the
+15-second timeout. For `repo_search`, recall@10 was 1.0, precision@10 0.2,
+MRR 1.0 and NDCG@10 0.920; this is one query, not broad quality evidence.
+
+One read-only storage sample from the installed code-index database measured
+418,532,528 physical bytes against the 536,870,912-byte cap. The database had
+97,758 pages, 29,830 free pages and 122,183,680 reusable bytes; physical size
+was under cap by 118,338,384 bytes. This single live snapshot can change while
+the Hub writes; it is not a stable post-compaction measurement.
+The RAG database's stored fingerprint matched the active configuration; no RAG
+database rebuild was needed. Hub health and MCP returned online on 5.1.3 with
+the `high` hardware profile. GPU reservation status then reported
+`state=unknown`, so this run did not attempt CUDA embedding or reranker
+inference.
