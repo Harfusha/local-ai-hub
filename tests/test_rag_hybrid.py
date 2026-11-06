@@ -259,6 +259,41 @@ def test_search_marks_heuristic_rerank_as_degraded_not_model_reranked(tmp_path):
     assert result["fallback"] == "heuristic_rerank"
 
 
+def test_search_uses_configured_cpu_reranker(tmp_path):
+    store = _store(tmp_path)
+    root = tmp_path / "project"
+    root.mkdir()
+    (root / "installation.py").write_text(
+        "def install_local_ai_hub():\n    return 'ready'\n", encoding="utf-8",
+    )
+    assert store.index_step(str(root), max_files=10)["success"] is True
+    calls = []
+
+    class _CpuReranker:
+        device = "cpu"
+        active_device = "cpu"
+
+        def rerank(self, query, documents, **kwargs):
+            calls.append((query, documents, kwargs))
+            return {
+                "success": True,
+                "results": [{"index": index, "score": 1.0 - index}
+                            for index in range(len(documents))],
+            }
+
+    store.reranker = _CpuReranker()
+    result = store.search(
+        "install Local AI Hub", use_reranker=True,
+        workspace=store.workspace_id(str(root)),
+    )
+
+    assert calls
+    assert calls[0][2]["allow_cpu_fallback"] is False
+    assert result["reranked"] is True
+    assert result["degraded"] is False
+    assert result.get("fallback") != "heuristic_rerank"
+
+
 def test_search_propagates_embedding_backend_fallback_status(tmp_path):
     store = _store(tmp_path)
     root = tmp_path / "project"

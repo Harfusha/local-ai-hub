@@ -119,3 +119,60 @@ def test_benchmark_measures_uncached_inference_then_cached_latency(monkeypatch):
     assert case["inference_sample"]["computed"] == len(CASES[0]["candidates"])
     assert case["samples"][0]["cache_state"] == "warm_hit"
     assert case["reranker_success"] is True
+
+
+def test_benchmark_separates_failed_cold_ranking_from_warm_cache(monkeypatch):
+    class FailingInferenceReranker:
+        def __init__(self, _config):
+            self.model_name = "test-reranker"
+            self.device = "cuda"
+            self.active_backend = "torch"
+            self.active_device = "cuda"
+            self.cache_enabled = True
+
+        def rerank(self, _query, documents, **_kwargs):
+            if not self.cache_enabled:
+                return {
+                    "success": False,
+                    "error": "GPU inference timed out",
+                    "results": [],
+                    "cache_enabled": False,
+                    "computed": None,
+                }
+            return {
+                "success": True,
+                "results": [
+                    {"index": index, "score": float(index)}
+                    for index in range(len(documents))
+                ],
+                "cache_enabled": True,
+                "cache_hits": len(documents),
+                "computed": 0,
+            }
+
+        def is_loaded(self):
+            return True
+
+        def is_enabled(self):
+            return True
+
+        def release(self):
+            pass
+
+    monkeypatch.setattr(benchmark_reranker, "load_config", lambda *_args, **_kwargs: {
+        "hardware": {"profile": "high"}, "models": {}, "features": {"reranker": True},
+    })
+    monkeypatch.setattr(benchmark_reranker, "Reranker", FailingInferenceReranker)
+    monkeypatch.setattr(benchmark_reranker, "CASES", [CASES[0]])
+
+    result = benchmark_reranker.run(repeats=1)
+    case = result["cases"][0]
+
+    assert case["inference_sample"]["success"] is False
+    assert case["inference_sample"]["error"] == "GPU inference timed out"
+    assert case["reranked_order"] is None
+    assert case["reranked"] is None
+    assert case["samples"][0]["cache_state"] == "warm_hit"
+    assert case["samples"][0]["ranked_order"] == ["install", "index", "search"]
+    assert case["latency_by_cache_state"]["warm_hit"]["sample_count"] == 1
+    assert case["reranker_success"] is False

@@ -176,7 +176,8 @@ class ExternalGpuReservationStore:
             }
             try:
                 self._write_digest_exclusive(token_digest)
-                self._write_metadata(record)
+                if not self._write_metadata(record):
+                    return None
             except OSError:
                 # A digest without metadata is intentionally left fail-closed.
                 return None
@@ -272,7 +273,7 @@ class ExternalGpuReservationStore:
                 return False
             expired = record["expires_at"] <= self._clock()
             dead_owner_release = (
-                not metadata_orphan and not expired
+                not expired
                 and self._owner_process_is_gone(record.get("owner"))
             )
             if not expired and not dead_owner_release:

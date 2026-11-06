@@ -835,3 +835,14 @@ Still open before this plan can be accepted:
 - Capability-status source and docs confirm `available` means profile/configuration enabled; `provider_readiness=not_checked` deliberately does not assert installed weights, quality or live GPU use. No status contract change is warranted from this evidence.
 - Dashboard UI navigation accidentally invoked database optimization while trying to reach failure history; its result reported 0 KB freed. No repository files were changed by that operation.
 - No benchmark was retried: current VRAM remains unknown and prior physical evidence showed heavy external GPU use. W4 paired summary quality, W6 performance/quality measurements and route-promotion gates remain **NOT VERIFIED**. Broad tests remain unrun per user instruction.
+
+### Continuation checkpoint — 2026-11-06, first GPU smoke recorded
+
+- The earlier deferred-measurement checkpoint above is superseded for a single smoke only. After user-authorized reservation cleanup and dashboard diagnostics enablement, `local_ai_task(action="hardware_benchmark")` succeeded as `req_4b52602aed04` on installed `qwen3.5:4b-nvfp4`; exact metrics and limits are recorded in `docs/agent-evaluation/results.md`.
+- Fresh `ollama list` found seven installed tags. The benchmark measured 40 backend-counted tokens at 211.07 tokens/s and 209.35 ms TTFT; device-wide sampled peak was 6,401,556,480 bytes. Model-specific VRAM residency is unavailable.
+- Focused tests passed: 183 across external reservation lifecycle, MCP routing, and mixed scheduler integration. No broad suite was run.
+- The dashboard later showed two queued `qwen2.5-coder:7b` review jobs and `gpu_admission_state=outcome_unknown`. Do not start paired 9B measurements while that shared GPU queue is unresolved.
+- W4 paired summary quality, 9B high-tier performance/quality, repeated warm p50/p95, context/concurrency, and route promotion remain **NOT VERIFIED**. The one smoke result is not a promotion receipt.
+- Attempted documentation review via `local_ai_repo(action="review_diff")` was asynchronous and all three jobs ended `outcome_unknown` before cancellation; no review result is claimed. Do not replay those job IDs or treat them as review receipts.
+- A second operator-authorized cleanup after `gpu_reservation_status=free` changed scheduler state from `outcome_unknown` to `preparing_model` (`req_0c9d5c5be4b3`); RTX telemetry is now available and nominal, with `qwen3.5:4b-nvfp4` active. Do not start another run until model preparation and shared queue settle.
+- Later dashboard snapshot showed 0 queued/running work and admission `available`, but GPU utilization was 99% with 13,276/16,303 MiB VRAM used. Explicit 40-token `qwen3.5:9b` smoke was rejected before inference for `vram_budget` (`req_a6e57311cfcb`). Do not retry or terminate a process; W6 waits for sufficient free VRAM under normal admission.

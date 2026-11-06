@@ -1,6 +1,15 @@
 from tools.prepare_local_model_eval_fixture import prepare_fixture
-from tools.local_model_eval_tool_harness import _loopback_url, _prepare_runtime_state, run_tool_case
+from tools.local_model_eval_tool_harness import _loopback_url, run_tool_case
 import pytest
+
+
+class FakeScheduler:
+    def __init__(self):
+        self.submissions = []
+
+    def submit(self, model, *, source, execute, priority, wait_timeout, cancel_event=None):
+        self.submissions.append({"model": model, "source": source})
+        return execute()
 
 
 class FakeRuntime:
@@ -8,6 +17,7 @@ class FakeRuntime:
         self.requested = requested
         self.chat_calls = 0
         self.payloads = []
+        self.scheduler = FakeScheduler()
 
     def request(self, endpoint, payload=None, timeout=None):
         if endpoint == "/api/tags":
@@ -38,12 +48,35 @@ def test_tool_case_uses_production_loop_and_records_search(tmp_path):
     assert report["model_digest"] == "sha256:fixture"
     assert report["attempted_tools"] == ["repo_search"]
     assert report["executed_tools"] == ["repo_search"]
+    assert len(runtime.scheduler.submissions) == 1
+    assert all(item["source"] == "tool-agent:explorer" for item in runtime.scheduler.submissions)
     assert runtime.chat_calls == 2
     assert report["result"]["execution_profile"]["num_ctx"] == 16384
     assert report["result"]["effective_context_tokens"] is None
     assert report["result"]["tool_agent"]["role"] == "explorer"
     assert report["transcript"][1]["tool_messages"][0]["tool_call_id"] == "call-1"
     assert "src/clamp.py" in report["transcript"][1]["tool_messages"][0]["content"]
+
+
+def test_gpu_admission_rejection_prevents_model_inference(tmp_path):
+    root = tmp_path / "fixture"
+    prepare_fixture(root, "C1")
+    runtime = FakeRuntime()
+
+    class RejectingScheduler:
+        calls = 0
+
+        def submit(self, model, *, source, execute, **kwargs):
+            self.calls += 1
+            return {"success": False, "error_code": "gpu_outcome_unknown", "outcome_unknown": True}
+
+    runtime.scheduler = RejectingScheduler()
+    report = run_tool_case("C1", root, "synthetic:1", runtime,
+                           context_tokens=16384, timeout_seconds=10)
+
+    assert runtime.scheduler.calls == 1
+    assert runtime.chat_calls == 0
+    assert report["success"] is False
 
 
 def test_streamed_tool_call_reaches_agent_and_returns_tool_result(tmp_path, monkeypatch):
@@ -192,6 +225,8 @@ def test_inventory_exception_returns_explicit_failure(tmp_path):
     prepare_fixture(root, "C1")
 
     class OfflineRuntime:
+        scheduler = FakeScheduler()
+
         def request(self, *args, **kwargs):
             raise TimeoutError("backend timeout")
 
@@ -221,15 +256,3 @@ def test_unprepared_directory_is_rejected_before_contacting_model(tmp_path):
 def test_backend_must_be_an_explicit_loopback_origin(url):
     with pytest.raises(ValueError):
         _loopback_url(url)
-
-
-def test_runtime_state_cannot_reuse_existing_path(tmp_path):
-    root = tmp_path / "fixture"
-    prepare_fixture(root, "C1")
-    state = root / ".git" / "local-ai-eval-runtime"
-    state.mkdir()
-    marker = state / "preserve.txt"
-    marker.write_text("preserve", encoding="utf-8")
-    with pytest.raises(ValueError):
-        _prepare_runtime_state(root)
-    assert marker.read_text(encoding="utf-8") == "preserve"

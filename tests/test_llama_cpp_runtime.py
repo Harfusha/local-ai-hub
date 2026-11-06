@@ -1134,5 +1134,63 @@ class LlamaCppRuntimeTests(unittest.TestCase):
             self.assertNotIn("never installs or starts llama.cpp automatically", guidance, relative)
 
 
+    def test_ensure_model_aborts_when_cancel_check_raises(self):
+        from local_ai_hub.llama_cpp import LlamaCppRouter
+
+        router = LlamaCppRouter({"llama_cpp": {
+            "mode": "on",
+            "models": {"candidate": {"url": "http://127.0.0.1:12438", "served_model": "fp4"}},
+        }})
+
+        def cancel_check():
+            raise RuntimeError("cancel state unavailable")
+
+        with patch.object(router, "_healthy", return_value=False) as health:
+            self.assertFalse(router.ensure_model("candidate", timeout=1, should_stop=cancel_check))
+        health.assert_not_called()
+
+    def test_request_stream_preempts_when_cancel_check_raises(self):
+        from local_ai_hub.llama_cpp import LlamaCppRouter
+
+        router = LlamaCppRouter({"llama_cpp": {
+            "mode": "on",
+            "models": {"candidate": {"url": "http://127.0.0.1:12438", "served_model": "fp4"}},
+        }})
+
+        def cancel_check():
+            raise RuntimeError("cancel state unavailable")
+
+        with patch.object(router, "ensure_model", return_value=False) as load:
+            result = router.request_stream(
+                "/api/chat", {"model": "candidate", "messages": []}, None,
+                timeout=1, should_stop=cancel_check,
+            )
+        self.assertTrue(result.get("preempted"))
+        load.assert_not_called()
+
+    def test_unload_model_preserves_recovery_state_when_cancel_check_raises(self):
+        from local_ai_hub.llama_cpp import LlamaCppRouter
+
+        router = LlamaCppRouter({"llama_cpp": {
+            "mode": "on",
+            "models": {"candidate": {"url": "http://127.0.0.1:12438", "served_model": "fp4"}},
+        }})
+        recovery = {"served_model": "fp4", "recovery_original_alias": "original"}
+        details = {"model": "candidate"}
+        router._active_recoveries["candidate"] = recovery
+        router._models["__loaded_details__"] = details
+
+        def cancel_check():
+            raise RuntimeError("cancel state unavailable")
+
+        with patch.object(router, "_unload_model_once", return_value=False) as unload:
+            self.assertFalse(router.unload_model(
+                "candidate", should_stop=cancel_check, deadline=time.monotonic() + 1,
+            ))
+        unload.assert_not_called()
+        self.assertIs(router._active_recoveries["candidate"], recovery)
+        self.assertIs(router._models["__loaded_details__"], details)
+
+
 if __name__ == "__main__":
     unittest.main()

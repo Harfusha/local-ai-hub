@@ -6,6 +6,7 @@ It reads a bounded set of small source files and stores the fixture outside the 
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 import os
@@ -38,6 +39,30 @@ class _Learner:
 
     def hot_queries(self, root, limit):
         return [self.query] if self.enabled else []
+
+
+def _read_learned_query(learning_db: str | Path, root: str) -> str:
+    requested_root = Path(root).expanduser()
+    if (requested_root.is_symlink()
+            or getattr(os.path, "isjunction", lambda _path: False)(str(requested_root))
+            or not requested_root.is_dir()):
+        raise ValueError("root must be an existing, non-symlink directory")
+    resolved_root = str(requested_root.resolve(strict=True))
+
+    requested_db = Path(learning_db).expanduser()
+    if (requested_db.is_symlink()
+            or getattr(os.path, "isjunction", lambda _path: False)(str(requested_db))
+            or not requested_db.is_file()):
+        raise ValueError("learning database must be an existing, non-symlink file")
+    database_uri = f"{requested_db.resolve(strict=True).as_uri()}?mode=ro"
+    with closing(sqlite3.connect(database_uri, uri=True)) as con:
+        row = con.execute(
+            "SELECT query FROM intents WHERE root=? ORDER BY hits DESC,last_seen DESC LIMIT 1",
+            (resolved_root,),
+        ).fetchone()
+    if row is None or not isinstance(row[0], str) or not row[0].strip():
+        raise ValueError("learning database has no query for this repository root")
+    return row[0]
 
 
 def _repository_fixture(root: str, max_files: int) -> tuple[str, list[tuple], list[tuple], dict]:
@@ -100,9 +125,11 @@ def _p95(samples: list[float]) -> float:
 
 
 def run(files: int = 4096, batch_size: int = 64, *, root: str | None = None,
-        query: str = "rare_demand") -> dict:
+        query: str = "rare_demand", query_source: str = "explicit") -> dict:
     if files < 2 or batch_size < 2:
         raise ValueError("files and batch_size must be at least two")
+    if query_source not in {"explicit", "learned"}:
+        raise ValueError("query_source must be explicit or learned")
     if root is not None and (not query.strip() or len(query) > 120):
         raise ValueError("query must be non-empty and at most 120 characters in repository mode")
     with tempfile.TemporaryDirectory(prefix="hub-demand-benchmark-") as directory:
@@ -154,9 +181,13 @@ def run(files: int = 4096, batch_size: int = 64, *, root: str | None = None,
                   "query_match_count": len(hot_files), "useful_context_verified": False,
                   "cache_revision_tracking": True, "useful_context_work_saved": None}
         if root is not None:
-            output.update({"repository": Path(repo_root).name, "query": query,
+            output.update({"repository": Path(repo_root).name, "query_source": query_source,
+                           "query_length": len(query),
+                           "query_sha256": hashlib.sha256(query.encode("utf-8")).hexdigest(),
                            "sampled_bytes": sum(row[2] for row in file_rows),
                            "sampled_files": len(file_rows), **sample})
+            if query_source == "explicit":
+                output["query"] = query
         for name, enabled in (("baseline", False), ("demand", True)):
             with closing(connect()) as con:
                 con.execute("UPDATE file_refs SET card_key=NULL")
@@ -254,9 +285,22 @@ def main() -> None:
     parser.add_argument("--files", type=int, default=4096)
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--root", help="measure a bounded sample of text files from this repository")
-    parser.add_argument("--query", default="ProjectPreprocessor", help="demand query in repository mode")
+    parser.add_argument("--query", help="explicit demand query in repository mode")
+    parser.add_argument("--learning-db", type=Path,
+                        help="read top learned query for --root from this existing SQLite database")
     args = parser.parse_args()
-    print(json.dumps(run(args.files, args.batch_size, root=args.root, query=args.query), indent=2))
+    if args.learning_db is not None and (args.root is None or args.query is not None):
+        parser.error("--learning-db requires --root and cannot be combined with --query")
+    if args.query is not None and not args.query.strip():
+        parser.error("--query must be non-empty")
+    query_source = "learned" if args.learning_db is not None else "explicit"
+    try:
+        query = (_read_learned_query(args.learning_db, args.root) if args.learning_db is not None
+                 else args.query if args.query is not None else "ProjectPreprocessor")
+    except (OSError, sqlite3.DatabaseError, ValueError) as exc:
+        parser.error(f"learned query selection failed: {type(exc).__name__}")
+    print(json.dumps(run(args.files, args.batch_size, root=args.root, query=query,
+                         query_source=query_source), indent=2))
 
 
 if __name__ == "__main__":

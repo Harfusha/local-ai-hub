@@ -117,12 +117,13 @@ class GpuMonitorTests(unittest.TestCase):
                 patch.object(gpu_monitor, "_nvidia_live", return_value=None), \
                 patch.object(gpu_monitor, "_rocm_live", return_value=None), \
                 patch.object(gpu_monitor, "_windows_live", return_value=None), \
-                patch.object(gpu_monitor, "detect_hardware", return_value=hardware):
+                patch.object(gpu_monitor, "detect_hardware", return_value=hardware) as detect_hardware:
             result = gpu_monitor.get_gpu_telemetry()
 
         self.assertEqual(result["vram_total_mb"], 16303)
         self.assertEqual(result["vram_available_mb"], 3000)
         self.assertFalse(result["live_metrics"])
+        detect_hardware.assert_called_once_with(include_openvino=False)
 
     def test_dynamic_budget_uses_explicit_available_vram_measurement(self):
         telemetry = {

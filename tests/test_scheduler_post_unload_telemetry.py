@@ -116,6 +116,31 @@ def test_post_unload_rejects_explicitly_unavailable_measurement(sample):
     assert result["reason"] == "post_unload_vram_unavailable"
 
 
+def test_normal_admission_rejects_unavailable_stale_vram_capacity():
+    class Balancer:
+        def status(self, force=False):
+            return {
+                "available": False,
+                "pressure_level": "unknown",
+                "context_budget_factor": 0.25,
+                "throttle_background": True,
+                "vram_total_mb": 8192.0,
+                "vram_available_mb": 7168.0,
+                "telemetry_stale": True,
+                "telemetry_wait_timed_out": True,
+            }
+
+    result = scheduler_with_balancer(Balancer())._admission(
+        background=False,
+        model="target-model",
+    )
+
+    assert result["state"] == "rejected"
+    assert result["reason"] == "vram_telemetry_unavailable"
+    assert result["vram_admission"] == "unknown"
+    assert "vram_available_bytes" not in result
+
+
 def test_post_unload_requests_refresh_without_changing_normal_status():
     calls = []
 

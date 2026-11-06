@@ -601,8 +601,8 @@ class FencingLeaseStore:
                     ).fetchone()
                     physical_row = con.execute(
                         "SELECT MAX(fencing_token) FROM writer_fence_leases "
-                        "WHERE resource=? AND scope_id=resource",
-                        (root_id,),
+                        "WHERE resource=? AND (scope_id=? OR scope_id=resource)",
+                        (root_id, scope_id),
                     ).fetchone()
                     prior_token = max(
                         int(row[0]) if row is not None else 0,

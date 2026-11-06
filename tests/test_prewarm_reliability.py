@@ -102,3 +102,45 @@ def test_prewarm_stops_when_scheduler_status_is_unavailable_or_unknown() -> None
 
     assert _prewarm_should_retry(_UnavailableScheduler()) is False
     assert _prewarm_should_retry(_UnknownStateScheduler()) is False
+
+
+def test_prewarm_stops_when_admission_state_is_not_a_string() -> None:
+    class _MalformedScheduler:
+        def status(self):
+            return {"gpu_admission_state": []}
+
+    assert _prewarm_should_retry(_MalformedScheduler()) is False
+
+
+def test_prewarm_failure_is_not_reported_as_recovered(monkeypatch, tmp_path) -> None:
+    from local_ai_hub import app as app_module
+    from local_ai_hub.scheduler import AffinityScheduler
+    from local_ai_hub.telemetry import TelemetryStore
+
+    events = []
+    def fail_prewarm(_self, _model):
+        raise RuntimeError("simulated prewarm failure")
+    def capture_error(_self, component, operation, error, **kwargs):
+        if component == "prewarm":
+            events.append(kwargs)
+    monkeypatch.setattr(AffinityScheduler, "prewarm", fail_prewarm)
+    monkeypatch.setattr(AffinityScheduler, "status", lambda _self: {"gpu_admission_state": "outcome_unknown"})
+    monkeypatch.setattr(TelemetryStore, "record_error", capture_error)
+    monkeypatch.setattr(app_module, "_wait_for_prewarm_backend", lambda *_args: True)
+    monkeypatch.setattr(app_module, "_prewarm_route_is_eligible", lambda *_args: True)
+    config = tmp_path / "config.toml"
+    state = (tmp_path / "state").as_posix()
+    config.write_text(
+        f'[server]\nstate_dir="{state}"\n[hardware]\nprofile="cpu"\nauto_tune=false\n'
+        '[prewarm]\nenabled=true\ndelay_seconds=0\n[preprocessing]\nenabled=false\n'
+        '[resilience]\nwatchdog_enabled=false\n[code_intelligence]\nenabled=false\n', encoding="utf-8",
+    )
+    app = app_module.LocalAIApp(str(config))
+    try:
+        assert app._prewarm_thread is not None
+        app._prewarm_thread.join(timeout=5)
+        assert not app._prewarm_thread.is_alive()
+        assert len(events) == 1
+        assert events[0].get("recovered") is False
+    finally:
+        app.close()

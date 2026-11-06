@@ -1734,6 +1734,11 @@ def _compact(
         extra_fields=compact_extra_fields,
     )
     compacted = _preserve_contract_state(raw_value, compacted)
+    if task_kind == "status" and isinstance(projected, dict) and isinstance(compacted, dict):
+        for key in ("modified", "staged", "untracked", "deleted", "unmerged", "changed_paths", "files"):
+            original, shown = projected.get(key), compacted.get(key)
+            if isinstance(original, list) and isinstance(shown, list) and len(original) > len(shown):
+                compacted["truncated"] = True
     if task_kind == "coord" and isinstance(raw_value, dict) and isinstance(compacted, dict):
         if "checkpoint_sync" in raw_value:
             compacted["checkpoint_sync"] = raw_value["checkpoint_sync"]
@@ -4395,10 +4400,38 @@ def _local_ai_repo_impl(
                     return [x for x in items if isinstance(x, str) and (x == clean_p or x.startswith(clean_p + "/"))]
                 return items
             filtered_status = dict(raw_status)
+            scope_complete = raw_status.get("success") is True and raw_status.get("truncated") is not True
             for k in ("changed_paths", "modified", "untracked", "staged", "deleted", "unmerged", "files"):
                 if k in filtered_status:
+                    original = filtered_status[k]
+                    if not isinstance(original, list):
+                        filtered_status.pop(k, None)
+                        filtered_status.pop(f"{k}_count", None)
+                        scope_complete = False
+                        continue
+                    if any(not isinstance(item, str) for item in original):
+                        scope_complete = False
                     filtered_status[k] = _filter_p(filtered_status[k])
-            filtered_status["clean"] = not any(filtered_status.get(k) for k in ("changed_paths", "modified", "untracked", "staged", "deleted", "unmerged", "files"))
+                    count_key = f"{k}_count"
+                    if isinstance(original, list) and count_key in raw_status:
+                        count = raw_status[count_key]
+                        if type(count) is int and count == len(original) and scope_complete:
+                            filtered_status[count_key] = len(filtered_status[k])
+                        else:
+                            filtered_status.pop(count_key, None)
+                            scope_complete = False
+                elif f"{k}_count" in raw_status:
+                    count_key = f"{k}_count"
+                    if type(raw_status[count_key]) is not int or raw_status[count_key] != 0:
+                        filtered_status.pop(count_key, None)
+                        scope_complete = False
+            any_changes = any(filtered_status.get(k) for k in ("changed_paths", "modified", "untracked", "staged", "deleted", "unmerged", "files"))
+            if any_changes or scope_complete:
+                filtered_status["clean"] = not any_changes
+            else:
+                filtered_status.pop("clean", None)
+            if not scope_complete:
+                filtered_status["truncated"] = True
             return _compact(filtered_status, "status")
         return _compact(raw_status, "status")
     if action == "repo_state":
@@ -5352,6 +5385,19 @@ def local_ai_coord(
             return contract_error(error, status_code=400)
         metadata = operation_contract("local_ai_coord")["actions"][action]
         arguments = {name: value for name, value in supplied.items() if name in metadata["allowed"]}
+        if action == "plan_task_edit":
+            requested_budget, _, _, budget_enabled = _response_budget("coord", options)
+            if budget_enabled and 0 < requested_budget < 256:
+                return {
+                    "success": False,
+                    "error": "plan_task_edit requires max_response_tokens >= 256 to preserve the write acknowledgement",
+                    "terminal": True,
+                    "retryable": False,
+                    "operation_not_started": True,
+                    "mutation_applied": False,
+                    "plan_id": plan_id,
+                    "task_id": task_id,
+                }
         result = CLIENT.coord(action=action, **arguments)
         if action in {"plan_create", "plan_update", "plan_task_edit", "plan_task_delete", "plan_archive", "plan_adopt_legacy_board"} and isinstance(result, dict) and result.get("success") is True:
             no_op = result.get("no_op")
@@ -5382,6 +5428,75 @@ def local_ai_coord(
                     isinstance(revision, str) and revision and isinstance(rel_path, str) and rel_path):
                     incomplete.update(plan_id=plan_id, file_revision=revision, rel_path=rel_path)
                 return _compact(incomplete, "coord", ["plan_id", "file_revision", "rel_path"])
+        if action in {"plan_list", "plan_board_view"} and isinstance(result, dict) and result.get("success") is True:
+            if action == "plan_list":
+                required_fields = ("plans",)
+                complete_source = isinstance(result.get("plans"), list)
+            else:
+                required_fields = ("project_root", "columns", "counts", "total_items")
+                complete_source = (
+                    isinstance(result.get("project_root"), str) and bool(result.get("project_root"))
+                    and isinstance(result.get("columns"), dict)
+                    and isinstance(result.get("counts"), dict)
+                    and isinstance(result.get("total_items"), int)
+                    and not isinstance(result.get("total_items"), bool)
+                    and result["total_items"] >= 0
+                )
+            if not isinstance(projected, dict) or (
+                projected.get("success") is True
+                and (
+                    not complete_source
+                    or any(projected.get(key) != result.get(key) for key in required_fields)
+                )
+            ):
+                return _compact({
+                    "success": False,
+                    "error": "Plan response incomplete; request a larger budget or read the plan source in bounded slices.",
+                    "terminal": True,
+                    "retryable": False,
+                }, "coord")
+        if action == "plan_task_edit" and isinstance(result, dict) and result.get("success") is True:
+            identity_fields = ("mutation_applied", "plan_id", "task_id", "file_revision")
+            mutation_applied = result.get("mutation_applied")
+            valid_identity = (
+                isinstance(mutation_applied, bool)
+                and result.get("plan_id") == plan_id
+                and result.get("task_id") == task_id
+                and isinstance(result.get("file_revision"), str)
+                and bool(result.get("file_revision"))
+            )
+            if isinstance(projected, dict) and projected.get("success") is False:
+                failed_projection = dict(projected)
+                failed_projection["projection_incomplete"] = True
+                for key in identity_fields:
+                    if key in result:
+                        failed_projection[key] = result[key]
+                if not isinstance(mutation_applied, bool):
+                    failed_projection["outcome_unknown"] = True
+                if isinstance(result.get("rel_path"), str) and result["rel_path"]:
+                    failed_projection["rel_path"] = result["rel_path"]
+                return failed_projection
+            if (
+                not valid_identity
+                or not isinstance(projected, dict)
+                or projected.get("success") is not True
+                or any(projected.get(key) != result.get(key) for key in identity_fields)
+            ):
+                incomplete = {
+                    "success": False,
+                    "error": "Plan edit response incomplete; inspect persisted plan revision before continuing.",
+                    "terminal": True,
+                    "retryable": False,
+                    "projection_incomplete": True,
+                }
+                for key in identity_fields:
+                    if key in result:
+                        incomplete[key] = result[key]
+                if not isinstance(mutation_applied, bool):
+                    incomplete["outcome_unknown"] = True
+                if isinstance(result.get("rel_path"), str) and result["rel_path"]:
+                    incomplete["rel_path"] = result["rel_path"]
+                return incomplete
         return projected
     if changed_paths is not None and not paths:
         paths = changed_paths
@@ -6654,8 +6769,49 @@ if hasattr(mcp, "_tool_manager") and hasattr(mcp, "_mcp_server") and mcp_types i
             requested, profile, reuse_key, enabled = _response_budget(
                 str(arguments.get("action") or name), options
             )
+        action = str(arguments.get("action") or "").lower()
         if not enabled:
             return ([mcp_types.TextContent(type="text", text=json_dumps(value))], value)
+
+        if (name == "local_ai_coord" and action == "plan_task_edit"
+                and isinstance(value, dict) and isinstance(value.get("mutation_applied"), bool)
+                and isinstance(value.get("plan_id"), str) and value.get("plan_id")
+                and isinstance(value.get("task_id"), str) and value.get("task_id")
+                and isinstance(value.get("file_revision"), str) and value.get("file_revision")
+                and (value.get("projection_incomplete") is True
+                     or json_tokens(_mcp_wire_view(value, structured=True)) > requested)):
+            acknowledgement = {
+                "success": False,
+                "error": "Plan edit response shortened; inspect file_revision before continuing.",
+                "terminal": True,
+                "retryable": False,
+                "mutation_applied": value["mutation_applied"],
+                "plan_id": value["plan_id"],
+                "task_id": value["task_id"],
+                "file_revision": value["file_revision"],
+                "response_budget": {
+                    "requested_tokens": requested,
+                    "returned_tokens": 0,
+                    "truncated": True,
+                },
+            }
+            for _ in range(16):
+                returned = json_tokens(_mcp_wire_view(acknowledgement, structured=True))
+                acknowledgement["response_budget"]["returned_tokens"] = returned
+                finalized = json_tokens(_mcp_wire_view(acknowledgement, structured=True))
+                if finalized == returned and finalized <= requested:
+                    content = [mcp_types.TextContent(type="text", text=json_dumps(acknowledgement))]
+                    return content, acknowledgement
+            # The action-specific preflight guarantees sufficient room for this
+            # acknowledgement before the underlying plan mutation starts.
+            return _build_mcp_budget_payload(name, arguments, {
+                "success": False,
+                "error": "The write acknowledgement exceeds the configured response budget.",
+                "terminal": True,
+                "retryable": False,
+                "operation_not_started": True,
+                "mutation_applied": False,
+            })
 
         if name == "local_ai_coord" and str(arguments.get("action") or "").startswith("task_"):
             memory_wire = _mcp_task_memory_wire(value, requested)
@@ -6672,7 +6828,6 @@ if hasattr(mcp, "_tool_manager") and hasattr(mcp, "_mcp_server") and mcp_types i
             if bounded_error is not None:
                 return bounded_error
 
-        action = str(arguments.get("action") or "").lower()
         protected = (
             *_RELIABILITY_PROTECTED_KEYS,
             *(_COORD_PROTECTED_KEYS if name == "local_ai_coord" else ()),

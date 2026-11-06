@@ -151,8 +151,8 @@ def test_waiting_status_does_not_reuse_snapshot_invalidated_after_publish():
     balancer._condition = ObservedCondition(balancer._lock)
     original_status_builder = balancer._status_from_telemetry
 
-    def pause_after_publish(gpu):
-        snapshot = original_status_builder(gpu)
+    def pause_after_publish(gpu, **kwargs):
+        snapshot = original_status_builder(gpu, **kwargs)
         snapshot_published.set()
         allow_sampler_return.wait(timeout=3.0)
         return snapshot
@@ -236,6 +236,26 @@ def test_vram_balancer_critical_pressure():
         assert st["throttle_background"] is True
         assert balancer.recommended_context_budget(32768) == 8192
         assert "throttled" in st["speculative_inference"]["strategy"]
+
+
+def test_nonblocking_status_keeps_bounded_windows_probe_before_timeout():
+    balancer = VRAMBalancer()
+    balancer._sampling = True
+    balancer._sampling_started_at = 6.5  # 3.5 seconds elapsed at the mocked current time.
+
+    with (
+        patch("local_ai_hub.vram_balancer.time.monotonic", return_value=10.0),
+        patch.object(balancer, "_sampling_pending_status_locked", return_value={"available": False}) as pending,
+        patch.object(balancer, "_sampling_timeout_fallback_locked") as fallback,
+        patch.object(balancer, "_start_sampling_locked") as restart,
+    ):
+        status = balancer.status()
+
+    assert pending.called
+    assert not fallback.called
+    assert not restart.called
+    assert status["telemetry_error"] == "sample_pending"
+    assert status["telemetry_sampling"] is True
 
 
 def test_status_wait_timeout_returns_conservative_unavailable_without_second_sampler():

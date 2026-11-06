@@ -319,7 +319,7 @@ def choose_profile(gpus: list[dict[str, Any]], ram_gb: float, requested: str = "
 
 
 @lru_cache(maxsize=4)
-def detect_hardware(requested_profile: str = "auto") -> dict[str, Any]:
+def detect_hardware(requested_profile: str = "auto", *, include_openvino: bool = True) -> dict[str, Any]:
     total, available = _memory_bytes()
     gpus = _nvidia() or _amd() or _intel()
     if not gpus:
@@ -327,7 +327,7 @@ def detect_hardware(requested_profile: str = "auto") -> dict[str, Any]:
     total_gb = round(total / (1024 ** 3), 1) if total else 0.0
     profile_name = choose_profile(gpus, total_gb, requested_profile)
 
-    ov_devices = _openvino_devices()
+    ov_devices = _openvino_devices() if include_openvino else []
     runtime_npus = [dict(item) for item in ov_devices if item.get("kind") == "npu"]
     physical_npus = _windows_npus()
     npus = runtime_npus or physical_npus

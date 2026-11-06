@@ -15,3 +15,5 @@ def test_packaged_defaults_match_repository_defaults_and_enable_concise_local_ou
 
     assert packaged_defaults == repository_defaults
     assert repository_defaults["token_saving"]["concise_local_output"] is True
+    retired_models = {"qwen3.5:4b-q4_K_M", "gemma4:12b", "qwen2.5-coder:14b"}
+    assert retired_models.isdisjoint(repository_defaults["models"].values())

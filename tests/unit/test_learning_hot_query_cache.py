@@ -1,0 +1,84 @@
+from __future__ import annotations
+
+from types import SimpleNamespace
+
+from local_ai_hub import learning
+from local_ai_hub.learning import UsageLearner
+
+
+def test_hot_query_cache_reuses_reads_and_record_invalidates_immediately(tmp_path, monkeypatch):
+    root = tmp_path / "repo"
+    root.mkdir()
+    learner = UsageLearner({"server": {"state_dir": str(tmp_path / "state")}})
+    learner.record(str(root), "first query")
+
+    connect_count = 0
+    connect = learner._connect
+
+    def counted_connect():
+        nonlocal connect_count
+        connect_count += 1
+        return connect()
+
+    monkeypatch.setattr(learner, "_connect", counted_connect)
+
+    initial = learner.hot_queries(str(root), 4)
+    assert initial == ["first query"]
+    assert learner.hot_queries(str(root), 4) == initial
+    assert connect_count == 1
+
+    learner.record(str(root), "second query")
+    learner.record(str(root), "second query")
+    learner.record(str(root), "second query")
+
+    assert connect_count == 4
+    assert learner.hot_queries(str(root), 4) == ["second query", "first query"]
+    assert connect_count == 5
+
+
+def test_clear_invalidates_only_the_requested_root_or_all_roots(tmp_path):
+    root_a = tmp_path / "repo-a"
+    root_b = tmp_path / "repo-b"
+    root_a.mkdir()
+    root_b.mkdir()
+    learner = UsageLearner({"server": {"state_dir": str(tmp_path / "state")}})
+    learner.record(str(root_a), "alpha query")
+    learner.record(str(root_b), "beta query")
+
+    assert learner.hot_queries(str(root_a), 4) == ["alpha query"]
+    assert learner.hot_queries(str(root_b), 4) == ["beta query"]
+
+    learner.clear(str(root_a))
+    assert learner.hot_queries(str(root_a), 4) == []
+    assert learner.hot_queries(str(root_b), 4) == ["beta query"]
+
+    learner.clear()
+    assert learner.hot_queries(str(root_b), 4) == []
+
+
+def test_hot_query_cache_expires_and_returns_a_copy(tmp_path, monkeypatch):
+    root = tmp_path / "repo"
+    root.mkdir()
+    learner = UsageLearner({"server": {"state_dir": str(tmp_path / "state")}})
+    learner.record(str(root), "fresh query")
+
+    clock = [100.0]
+    monkeypatch.setattr(learning, "time", SimpleNamespace(monotonic=lambda: clock[0]))
+    connect_count = 0
+    connect = learner._connect
+
+    def counted_connect():
+        nonlocal connect_count
+        connect_count += 1
+        return connect()
+
+    monkeypatch.setattr(learner, "_connect", counted_connect)
+
+    first = learner.hot_queries(str(root), 4)
+    first.append("caller mutation")
+    assert learner.hot_queries(str(root), 4) == ["fresh query"]
+    assert connect_count == 1
+
+    clock[0] += learning._HOT_QUERY_CACHE_TTL_SECONDS + 0.01
+    assert learner.hot_queries(str(root), 4) == ["fresh query"]
+    assert connect_count == 2

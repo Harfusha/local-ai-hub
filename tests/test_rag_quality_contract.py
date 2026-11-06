@@ -300,6 +300,29 @@ def test_subthreshold_query_uses_degraded_lexical_fallback_instead_of_vector_tie
     assert result["results"] == []
 
 
+def test_cuda_reranker_failure_is_reported_with_deterministic_fallback(tmp_path):
+    store = _store(tmp_path)
+    workspace = "gpu-reranker-fallback-workspace"
+    _insert_vectors(store, workspace, np.asarray([[1.0, 0.0], [0.8, 0.6]], dtype=np.float32))
+    store.config["features"]["reranker"] = True
+
+    class _UnavailableCudaReranker:
+        active_device = "cuda"
+        device = "cuda"
+
+        def rerank(self, *_args, **_kwargs):
+            return {"success": False, "error": "GPU admission unavailable", "results": []}
+
+    store.reranker = _UnavailableCudaReranker()
+    result = store._search_uncached("fixture", workspace, top_k=2, use_reranker=True)
+
+    assert result["success"] is True
+    assert result["results"]
+    assert result["fallback"] == "heuristic_rerank"
+    assert "reranker" in result["fallbacks"]
+    assert "heuristic_rerank" in result["fallbacks"]
+
+
 def test_fallback_embedding_reports_identity_of_backend_that_produced_vectors():
     class _Cache:
         def __init__(self):

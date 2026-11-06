@@ -116,21 +116,22 @@ Tool-loop cache identity also includes supplied instruction suffix, a snapshot o
 
 ## Proposed 16 GB profile and contexts
 
-These are candidates, not an assertion of superiority, installation or full GPU residency. Check current model tags, compatibility, availability and user overrides. Compare on target hardware before promotion:
+**Candidate update — 2026-11-06:** the earlier Q4 4B and Gemma 12B recommendations are superseded. The user's selected fast-code candidate is `qwen3.5:4b-nvfp4`; it is not evidence of current installation, quality, or full GPU residency. No vision model is approved in this profile until image/tool support and target-hardware behavior are qualified. The table and config fragment below are inactive evaluation guidance, not live routes. Check current tags and explicit overrides before evaluation.
 
 | Role | Initial candidate | Default / adaptive ceiling (tokens) |
 | --- | --- | --- |
 | background_code | existing `qwen2.5-coder:3b` | 8192 / 16384 |
-| fast_code | `qwen3.5:4b-q4_K_M` | 16384 / 32768 |
+| fast_code | `qwen3.5:4b-nvfp4` | 16384 / 32768 |
 | heavy_code | `qwen3.5:9b-q4_K_M` | 32768 / 65536 |
 | reasoning | `qwen3.5:9b-q4_K_M` | 32768 / 65536 |
 | general | `qwen3.5:9b-q4_K_M` | 32768 / 65536 |
-| vision | `gemma4:12b` | 16384 / 32768 |
+| vision | no approved candidate; qualification required | — |
 
-The 4B fast and Gemma vision candidates have explicit advisory prompt scopes
-instead of being mislabeled as the legacy 0.5B preprocessing model. Those
-static scopes are not evidence of model quality, installed availability,
-image support or native tool support, and grant no edit or security authority.
+The 4B fast candidate has an explicit advisory prompt scope instead of being
+mislabeled as the legacy 0.5B preprocessing model. That static scope is not
+evidence of model quality, installed availability, image support or native tool
+support, and grants no edit or security authority. No vision prompt scope here
+establishes image support or grants edit or security authority.
 Quantized or otherwise unmatched heavy and vision prompt profiles explicitly
 exclude security decisions, direct edits and final verification. These are
 prompt boundaries; the existing scoped authorization remains the enforcement.
@@ -144,11 +145,11 @@ TOML tables is invalid. Preserve unrelated settings and explicit overrides.
 ```toml
 [models]
 background_code = "qwen2.5-coder:3b"
-fast_code = "qwen3.5:4b-q4_K_M"
+fast_code = "qwen3.5:4b-nvfp4"
 heavy_code = "qwen3.5:9b-q4_K_M"
 reasoning = "qwen3.5:9b-q4_K_M"
 general = "qwen3.5:9b-q4_K_M"
-vision = "gemma4:12b"
+# vision intentionally omitted pending qualification of a candidate.
 
 [model_execution.fast]
 context_tokens = 16384
@@ -241,6 +242,10 @@ role or assigning its represented bounded work. An unrelated passing case
 cannot compensate for a failed UI, implementation, review, diagnosis or tool
 case. This is an operator/task-selection rule; the current read-only tool
 qualification gate does not enforce the separate implementation scores.
+
+## Evaluation harness scheduler admission
+
+The standalone tool-calling evaluation harness must route every model-generation request through `AffinityScheduler.submit` using the same Hub config and `server.state_dir` as the running service, so it shares the cross-process GPU reservation fence. It accepts an explicit config path for custom service installations. It must never substitute a synchronous `execute()` callback for scheduler admission or place scheduler state inside the synthetic fixture. The operator explicitly selects loopback Ollama through the harness CLI; configuration changes exist only in memory, and the harness does not start Ollama or pull models. Unit tests inject a fake scheduler and prove that admission rejection prevents model inference. Live evaluation remains deferred until authoritative GPU admission is available; tests never require Ollama or a GPU.
 
 ## Non-goals
 

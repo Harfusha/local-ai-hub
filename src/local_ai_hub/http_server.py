@@ -1329,6 +1329,8 @@ def _telemetry_http_outcome(status: int, data: Any, path: str = "") -> tuple[boo
         return True, "terminal_client_result", False
     if success:
         return True, "", False
+    if status < 400:
+        return False, "application_error", True
     return False, "http_error", True
 
 
@@ -3728,7 +3730,8 @@ class Handler(BaseHTTPRequestHandler):
                     if reliability_success and request_evaluation is not None:
                         APP.telemetry.record_request_evaluation(request_evaluation, duration_ms=elapsed_ms)
                     if record_operational_error and err:
-                        APP.telemetry.record_error("http", path, err, request_id=str(getattr(self, "_trace_request_id", "")), agent=self._agent(), error_type_override=outcome_error_type, error_code_override="http_request_failed", retryable=status in {429, 500, 502, 503, 504})
+                        error_code = "application_error" if outcome_error_type == "application_error" else "http_request_failed"
+                        APP.telemetry.record_error("http", path, err, request_id=str(getattr(self, "_trace_request_id", "")), agent=self._agent(), error_type_override=outcome_error_type, error_code_override=error_code, retryable=status in {429, 500, 502, 503, 504})
                     if APP is not None and getattr(APP, "endpoint_stats", None) is not None:
                         try:
                             req_root = getattr(self, "_request_root", "") or (data.get("root") if isinstance(data, dict) else "")

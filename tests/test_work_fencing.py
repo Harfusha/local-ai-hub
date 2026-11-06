@@ -380,6 +380,41 @@ def test_stale_owner_cannot_renew_or_release_reacquired_lease(tmp_path: Path) ->
     store.assert_current(current, ["a.py"])
 
 
+def test_namespace_writer_token_floor_recovers_from_missing_counter_row(tmp_path: Path) -> None:
+    root = tmp_path / "repo"
+    root.mkdir()
+    store = FencingLeaseStore(tmp_path / "fences.sqlite3")
+    coordination_id = "repo-coordination-counter-floor"
+
+    first_attempt = store.claim_attempt(
+        root, "work-a", "owner-a", ttl_seconds=30,
+        coordination_id=coordination_id,
+    )
+    first = store.acquire(
+        root, "owner-a", ["src/first.py"], ttl_seconds=30,
+        attempt=first_attempt,
+        coordination_id=coordination_id,
+    )
+    store.release(first)
+    store.release_attempt(first_attempt)
+
+    scope_id = f"project:{coordination_id}"
+    with closing(store._connect()) as con:
+        con.execute("DELETE FROM writer_fence_counters WHERE resource=?", (scope_id,))
+
+    next_attempt = store.claim_attempt(
+        root, "work-b", "owner-b", ttl_seconds=30,
+        coordination_id=coordination_id,
+    )
+    next_lease = store.acquire(
+        root, "owner-b", ["src/second.py"], ttl_seconds=30,
+        attempt=next_attempt,
+        coordination_id=coordination_id,
+    )
+
+    assert next_lease.fencing_token > first.fencing_token
+
+
 def test_namespace_writer_token_starts_above_legacy_physical_token(tmp_path: Path) -> None:
     root = tmp_path / "repo"
     root.mkdir()

@@ -644,6 +644,7 @@ def parse_treesitter_with_status(text: str, language: str, *, source_key: str | 
                 "fallback_reason": "worker_dispatch_busy",
                 "syntax_error_count": 0,
             }
+        parse_timeout_seconds = 25.0
         try:
             disabled = _worker_disabled_result()
             if disabled is not None:
@@ -651,7 +652,7 @@ def parse_treesitter_with_status(text: str, language: str, *, source_key: str | 
             pool = _get_worker_pool()
             future = (pool.submit(_worker_parse, text, language, source_key)
                       if source_key is not None else pool.submit(_worker_parse, text, language))
-            result = future.result(timeout=25.0)
+            result = future.result(timeout=parse_timeout_seconds)
             if isinstance(result, dict) and result.get("fallback_reason") == "worker_error":
                 cleanup = _disable_worker_pool(
                     f"worker_error:{result.get('error_type', 'unknown')}"
@@ -670,8 +671,11 @@ def parse_treesitter_with_status(text: str, language: str, *, source_key: str | 
                 "syntax_error_count": 0,
             }
         except TimeoutError as exc:
-            logger.warning("Tree-sitter worker timed out: %s", exc)
             cleanup = _disable_worker_pool(f"worker_timeout:{type(exc).__name__}")
+            logger.warning(
+                "Tree-sitter worker timed out input_chars=%d timeout_seconds=%g cleanup_confirmed=%s",
+                len(text), parse_timeout_seconds, cleanup,
+            )
             return {
                 "result": None,
                 "status": "failed",

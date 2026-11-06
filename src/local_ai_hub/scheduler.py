@@ -622,12 +622,27 @@ class AffinityScheduler:
         vram_fields: dict[str, int] = {}
         total_mb = resource.get("vram_total_mb")
         available_mb = resource.get("vram_available_mb")
-        if (
+        valid_total = (
             isinstance(total_mb, (int, float)) and not isinstance(total_mb, bool)
             and math.isfinite(total_mb) and total_mb > 0
-            and isinstance(available_mb, (int, float)) and not isinstance(available_mb, bool)
+        )
+        valid_available = (
+            isinstance(available_mb, (int, float)) and not isinstance(available_mb, bool)
             and math.isfinite(available_mb) and available_mb >= 0
-        ):
+        )
+        if resource.get("available") is not True and valid_total and valid_available:
+            # A timeout may retain last-known numbers for display. They are not
+            # current capacity and must not admit a model.
+            return {
+                "state": "rejected",
+                "reason": "vram_telemetry_unavailable",
+                "pressure_level": pressure,
+                "queue_age_ms": 0,
+                "retryable": True,
+                "vram_admission": "unknown",
+                "vram_estimate_source": "unknown",
+            }
+        if valid_total and valid_available:
             vram_fields = {
                 "vram_budget_bytes": int(round(float(total_mb) * 1024 * 1024)),
                 "vram_available_bytes": int(round(min(float(total_mb), float(available_mb)) * 1024 * 1024)),

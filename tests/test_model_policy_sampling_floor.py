@@ -55,6 +55,18 @@ class ModelPolicySamplingFloorTests(unittest.TestCase):
         self.assertFalse(profile.think)
         self.assertFalse(payload["think"])
 
+    def test_fast_execution_role_reserves_output_budget_for_visible_answer(self):
+        payload, profile = self.policy.apply_payload(
+            "qwen3.5:4b-nvfp4",
+            {"options": {"num_predict": 512}},
+            role="fast_code",
+            output_tokens=512,
+            preserve_explicit_think=False,
+        )
+
+        self.assertFalse(profile.think)
+        self.assertFalse(payload["think"])
+
     def test_qwen_coder_context_never_exceeds_its_32k_limit(self):
         policy = ModelExecutionPolicy({
             "models": {"reasoning": "qwen2.5-coder:7b"},

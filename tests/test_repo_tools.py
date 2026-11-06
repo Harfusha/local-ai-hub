@@ -43,6 +43,35 @@ def _cfg(tmp_path: Path):
     return load_config(str(path))
 
 
+def test_ripgrep_project_candidates_stay_in_one_bounded_argument_batch(tmp_path: Path, monkeypatch):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    tools = RepositoryTools(_cfg(tmp_path))
+    tools._rg = "rg"
+    monkeypatch.setattr(
+        tools, "_resolve_under_base",
+        lambda _base, path: (repo / Path(path), Path(path)),
+    )
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append((cmd, kwargs))
+        return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    paths = [Path(f"src/module_{index}.py") for index in range(250)]
+
+    matches, failed = tools._ripgrep_candidates(repo, ["needle"], 10, candidate_paths=paths)
+
+    assert not failed
+    assert matches == []
+    assert len(calls) == 1
+    cmd, kwargs = calls[0]
+    assert "--files-from" not in cmd
+    assert cmd[cmd.index("--") + 1:] == [path.as_posix() for path in paths]
+    assert kwargs["cwd"] == str(repo)
+
+
 def test_generated_tool_metadata_never_enters_inventory(tmp_path: Path):
     repo = tmp_path / "repo"
     repo.mkdir()

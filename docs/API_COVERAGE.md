@@ -190,6 +190,7 @@ Reproduce with `python tools/surface_inventory.py --check --task-id task_d20e0b0
 | HTTP POST | /api/git/history_search | confirmed | src/local_ai_hub/http_server.py | op-f94556281c61 |
 | HTTP POST | /api/git/status | confirmed | src/local_ai_hub/http_server.py | op-32774709009e |
 | HTTP POST | /api/git/synthesize_commit | confirmed | src/local_ai_hub/http_server.py | op-99533a46fb0e |
+| HTTP POST | /api/gpu-reservation | confirmed | src/local_ai_hub/http_server.py | op-ccefa6cfe07a |
 | HTTP POST | /api/leases/claim_batch | confirmed | src/local_ai_hub/http_server.py | op-cf5ba5179dc2 |
 | HTTP POST | /api/leases/release | confirmed | src/local_ai_hub/http_server.py | op-4d2be6d29bd6 |
 | HTTP POST | /api/leases/renew | confirmed | src/local_ai_hub/http_server.py | op-f15fb6fced56 |
@@ -311,6 +312,7 @@ Reproduce with `python tools/surface_inventory.py --check --task-id task_d20e0b0
 | MCP action local_ai_coord | context_compile | confirmed | src/local_ai_hub/generator.py | op-145b6332056b |
 | MCP action local_ai_coord | curate_dataset | confirmed | src/local_ai_hub/generator.py | op-26aa09a9ccbf |
 | MCP action local_ai_coord | gpu_reservation_release | confirmed | src/local_ai_hub/generator.py | op-1fdbae158826 |
+| MCP action local_ai_coord | gpu_reservation_release_authorized | confirmed | src/local_ai_hub/generator.py | op-cf900fe6919d |
 | MCP action local_ai_coord | gpu_reservation_status | confirmed | src/local_ai_hub/generator.py | op-d5a8988b2135 |
 | MCP action local_ai_coord | incident_decision | confirmed | src/local_ai_hub/generator.py | op-0d8149da9907 |
 | MCP action local_ai_coord | leases | confirmed | src/local_ai_hub/generator.py | op-10fac56595f4 |

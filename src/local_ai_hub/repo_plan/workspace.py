@@ -326,7 +326,10 @@ class RepoPlanWorkspace:
     def get_plan(self, plan_id: str) -> dict[str, Any]:
         """Get full plan file dictionary and file revision."""
         rel_path = self._plan_rel_path(plan_id)
-        data, rev = self.storage.read_plan_file(rel_path)
+        try:
+            data, rev = self.storage.read_plan_file(rel_path)
+        except FileNotFoundError as exc:
+            raise RepoPlanNotFoundError(f"Plan '{plan_id}' not found") from exc
         if data.get("id") != plan_id:
             raise RepoPlanNotFoundError(f"Plan '{plan_id}' not found")
         branch, head = get_git_context(self.repo_root)

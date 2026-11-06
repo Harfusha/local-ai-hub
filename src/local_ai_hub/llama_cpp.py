@@ -176,7 +176,9 @@ def _stop_requested(should_stop: Any | None) -> bool:
     try:
         return bool(should_stop())
     except Exception:
-        return False
+        # Cancellation authority is unavailable; fail closed instead of
+        # continuing model lifecycle or request work.
+        return True
 
 
 _DNS_RESOLUTION_SLOTS = threading.BoundedSemaphore(4)
@@ -627,7 +629,7 @@ class LlamaCppRouter:
     @contextmanager
     def _managed_slot(self, deadline: float, should_stop: Any | None) -> Iterator[bool]:
         if self.managed_runtime is None:
-            yield True
+            yield time.monotonic() < deadline and not _stop_requested(should_stop)
             return
         acquired = False
         try:
@@ -785,12 +787,7 @@ class LlamaCppRouter:
         deadline: float | None = None,
     ) -> bool:
         def stopped() -> bool:
-            if should_stop is None:
-                return False
-            try:
-                return bool(should_stop())
-            except Exception:
-                return False
+            return _stop_requested(should_stop)
 
         if stopped():
             return False
@@ -1319,12 +1316,7 @@ class LlamaCppRouter:
         total_timeout = max(0.0, deadline - started)
 
         def stopped() -> bool:
-            if should_stop is None:
-                return False
-            try:
-                return bool(should_stop())
-            except Exception:
-                return False
+            return _stop_requested(should_stop)
 
         def timed_out() -> dict[str, Any]:
             return {

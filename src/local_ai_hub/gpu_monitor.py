@@ -262,7 +262,10 @@ def get_gpu_telemetry() -> dict[str, Any]:
         if live is not None:
             _GPU_CACHE, _GPU_CACHE_TIME = live, now
             return dict(live)
-        hw = detect_hardware()
+        # Static hardware inventory remains useful for device metadata, but
+        # optional OpenVINO discovery can block in Core.available_devices.
+        # Skip that unbounded probe in this telemetry sampling path.
+        hw = detect_hardware(include_openvino=False)
         gpus = hw.get("gpus", []) if isinstance(hw, dict) else []
         if not gpus:
             result = {"available": False, "reason": "no supported GPU telemetry provider detected"}

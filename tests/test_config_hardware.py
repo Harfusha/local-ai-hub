@@ -100,6 +100,8 @@ def test_16gb_nvidia_profiles_bound_parallelism_and_admit_cuda_retrieval(profile
     assert overrides["models"]["reranker_device"] == "cuda"
     assert overrides["model_execution"]["smart"]["context_tokens"] == 65_536
     assert overrides["model_execution"]["smart"]["parallel"] == 1
+    retired_models = {"qwen3.5:4b-q4_K_M", "gemma4:12b", "qwen2.5-coder:14b"}
+    assert retired_models.isdisjoint(overrides["models"].values())
 
 
 @pytest.mark.parametrize("key", ("cache_type_k", "cache_type_v"))

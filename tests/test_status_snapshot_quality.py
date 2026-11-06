@@ -30,6 +30,11 @@ def test_preprocessing_status_has_bounded_budget_for_large_registered_projects()
     assert app_module._status_dependency_timeout_seconds("headless") == 0.25
 
 
+def test_ollama_profile_probe_has_separate_bounded_budget() -> None:
+    assert app_module._status_dependency_timeout_seconds("ollama_profile") == 1.0
+    assert app_module._status_dependency_timeout_seconds("headless") == 0.25
+
+
 class Probe:
     def __init__(self, **responses):
         self.calls = {}
@@ -617,6 +622,7 @@ def test_realtime_status_bounds_runtime_health_probes(monkeypatch, slow_probe):
 
     setattr(app.runtime, slow_probe, slow)
     monkeypatch.setattr(app_module, "_STATUS_DEPENDENCY_TIMEOUT_SECONDS", 0.02)
+    monkeypatch.setattr(app_module, "_STATUS_OLLAMA_PROFILE_TIMEOUT_SECONDS", 0.02)
 
     started = time.monotonic()
     result = app.realtime_status(light=True)
@@ -634,6 +640,25 @@ def test_realtime_status_bounds_runtime_health_probes(monkeypatch, slow_probe):
         assert result["ollama_status"] == "online"
         assert result["ollama_profile"] == {}
         assert result["dependency_status"]["ollama_profile"]["reason"] == "probe_timeout"
+
+
+def test_realtime_status_allows_slow_managed_profile_within_extended_budget():
+    app = make_realtime_app()
+
+    def slow_profile(*_args, **_kwargs):
+        time.sleep(0.30)
+        return {"managed": True}
+
+    app.runtime.managed_profile_status = slow_profile
+
+    result = app.realtime_status(light=True)
+    profile = result["dependency_status"]["ollama_profile"]
+
+    assert result["success"] is True
+    assert result["degraded"] is False
+    assert result["ollama_profile"] == {"managed": True}
+    assert profile["degraded"] is False
+    assert profile["deadline_ms"] == 1000
 
 
 def test_slow_agent_state_summary_uses_dependency_deadline(monkeypatch):

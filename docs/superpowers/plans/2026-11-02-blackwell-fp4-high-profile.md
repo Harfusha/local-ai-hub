@@ -16,8 +16,8 @@
 ## Proposed model roles
 
 - Keep `qwen2.5-coder:1.5b` for configured preprocessing; `qwen2.5-coder:3b` for fast/background code; `qwen2.5-coder:7b` for heavier code; `qwen3.5:9b` for reasoning, general and vision. These are the source `high` defaults, not independently proven optimal choices.
-- Evaluate `qwen3.5:4b` NVFP4 as an alternative fast advisory model against installed `qwen3.5:4b-q4_K_M` and the current 3B route. Evaluate the actual 9B and vision workloads separately before proposing replacements; no 9B FP4 result is established here.
-- Keep `qwen2.5-coder:14b` pending OpenCode usage review: it is a 16 GB OpenCode candidate. Keep `gemma4:12b` pending visual evaluation. Keep embedding and fallback models pending an inventory of all consumers and actual configured providers.
+- Evaluate `qwen3.5:4b-nvfp4` only as an optional fast advisory candidate against the current 3B route; the previously installed `qwen3.5:4b-q4_K_M` candidate is retired. Require a fresh installed-tag snapshot and measured quality before recommending the NVFP4 candidate. Evaluate the actual 9B and vision workloads separately before proposing replacements; no 9B FP4 result is established here.
+- `qwen2.5-coder:14b` and `gemma4:12b` are retired from current recommendations by the 2026-11-06 model-pruning decision; historical inventory and evaluation evidence remains. Keep embedding and fallback models pending an inventory of all consumers and actual configured providers.
 
 ## Work packages and acceptance
 

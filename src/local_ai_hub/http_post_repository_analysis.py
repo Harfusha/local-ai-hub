@@ -105,7 +105,14 @@ def handle_post_repository_analysis(
         staged = bool(payload.get("staged", False))
         max_lines = int(payload.get("max_lines", 1000))
         if app.deterministic is not None:
-            revisions = {key: payload[key] for key in ("rev1", "rev2", "base") if key in payload}
+            revisions = {key: payload[key] for key in ("rev1", "rev2") if key in payload}
+            base = payload.get("base")
+            head = payload.get("head")
+            if revisions and (base not in (None, "", "HEAD", revisions.get("rev1")) or head not in (None, "", revisions.get("rev2"))):
+                handler._send(400, {"success": False, "error": "conflicting git diff revisions"})
+                return True
+            if not revisions and ((base and base != "HEAD") or head):
+                revisions = {"rev1": base or "HEAD", "rev2": head or "HEAD"}
             handler._send(200, app.services.git_diff(root, path=path, staged=staged, max_lines=max_lines, **revisions))
 
         else:

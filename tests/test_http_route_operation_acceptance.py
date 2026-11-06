@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import threading
 from types import SimpleNamespace
 from urllib.error import HTTPError
@@ -123,6 +124,91 @@ def test_http_git_diff_forwards_current_revision_contract(running_http_hub, monk
     assert calls == [(str(tmp_path), "src/example.py", False, 25, None, None)]
     assert result["success"] is True
     assert result["diff"] == "bounded diff"
+
+
+def test_http_git_diff_post_forwards_revision_pair_without_base_alias(running_http_hub, monkeypatch, tmp_path):
+    base_url, app = running_http_hub
+    calls = []
+
+    def git_diff(root, *, path=None, staged=False, max_lines=1000, rev1=None, rev2=None):
+        calls.append((root, path, staged, max_lines, rev1, rev2))
+        return {"success": True, "diff": "bounded diff"}
+
+    monkeypatch.setattr(app.services, "git_diff", git_diff)
+    payload = {"root": str(tmp_path), "path": "src/example.py", "staged": False,
+               "max_lines": 25, "rev1": "HEAD~1", "rev2": "HEAD", "base": "HEAD~1", "head": "HEAD"}
+    request = urllib_request.Request(
+        f"{base_url}/api/git/diff", data=json.dumps(payload).encode("utf-8"),
+        headers={"X-LocalAI-Token": "acceptance-secret", "Content-Type": "application/json"}, method="POST",
+    )
+    with _urlopen_with_error_body(request) as response:
+        result = json.loads(response.read().decode("utf-8"))
+
+    assert calls == [(str(tmp_path), "src/example.py", False, 25, "HEAD~1", "HEAD")]
+    assert result["success"] is True
+
+    payload.pop("rev1")
+    payload.pop("rev2")
+    request = urllib_request.Request(
+        f"{base_url}/api/git/diff", data=json.dumps(payload).encode("utf-8"),
+        headers={"X-LocalAI-Token": "acceptance-secret", "Content-Type": "application/json"}, method="POST",
+    )
+    with _urlopen_with_error_body(request) as response:
+        result = json.loads(response.read().decode("utf-8"))
+    assert calls[-1] == (str(tmp_path), "src/example.py", False, 25, "HEAD~1", "HEAD")
+    assert result["success"] is True
+
+    payload.update(base="HEAD", head="HEAD~1")
+    request = urllib_request.Request(
+        f"{base_url}/api/git/diff", data=json.dumps(payload).encode("utf-8"),
+        headers={"X-LocalAI-Token": "acceptance-secret", "Content-Type": "application/json"}, method="POST",
+    )
+    with _urlopen_with_error_body(request) as response:
+        result = json.loads(response.read().decode("utf-8"))
+    assert calls[-1] == (str(tmp_path), "src/example.py", False, 25, "HEAD", "HEAD~1")
+    assert result["success"] is True
+
+    payload.update(base="HEAD~1", head="HEAD", rev1="HEAD~2", rev2="HEAD")
+    request = urllib_request.Request(
+        f"{base_url}/api/git/diff", data=json.dumps(payload).encode("utf-8"),
+        headers={"X-LocalAI-Token": "acceptance-secret", "Content-Type": "application/json"}, method="POST",
+    )
+    with pytest.raises(HTTPError) as exc:
+        urllib_request.urlopen(request)
+    assert exc.value.code == 400
+    exc.value.close()
+    assert len(calls) == 3
+
+
+def test_http_git_diff_post_compares_actual_revisions(running_http_hub, tmp_path):
+    base_url, _app = running_http_hub
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    def git(*args):
+        return subprocess.run(
+            ["git", "-c", "user.name=Test", "-c", "user.email=test@example.invalid", *args],
+            cwd=repo, check=True, capture_output=True, text=True, timeout=10,
+        ).stdout.strip()
+    git("init")
+    target = repo / "example.txt"
+    target.write_text("before\n", encoding="utf-8")
+    git("add", "example.txt")
+    git("commit", "-m", "first")
+    first = git("rev-parse", "HEAD")
+    target.write_text("after\n", encoding="utf-8")
+    git("commit", "-am", "second")
+    second = git("rev-parse", "HEAD")
+    payload = {"root": str(repo), "rev1": first, "rev2": second, "base": "HEAD", "head": second}
+    request = urllib_request.Request(
+        f"{base_url}/api/git/diff", data=json.dumps(payload).encode("utf-8"),
+        headers={"X-LocalAI-Token": "acceptance-secret", "Content-Type": "application/json"}, method="POST",
+    )
+    with _urlopen_with_error_body(request) as response:
+        result = json.loads(response.read().decode("utf-8"))
+    assert result["success"] is True
+    assert result["resolved_rev1"] == first
+    assert result["resolved_rev2"] == second
+    assert "-before" in result["diff"] and "+after" in result["diff"]
 
 
 def test_http_rag_search_cannot_bypass_reranker_capability_gate(

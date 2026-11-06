@@ -415,6 +415,7 @@ def test_backend_fallback_is_reported_as_degraded():
     assert result["success"] is True
     assert result["degraded"] is True
     assert result["fallback"] == "sentence-transformers"
+    assert result["device"] == "cpu"
 
 
 def test_backend_fallback_reports_embedding_space_of_backend_that_encoded_vectors():

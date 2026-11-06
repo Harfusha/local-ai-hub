@@ -208,6 +208,10 @@ class ModelExecutionPolicy:
                 target = min(target, 32768)
             if safe_vram < 8192 and not self._is_small_model(model):
                 target = min(target, 8192)
+        else:
+            # Unknown VRAM cannot justify the configured 32K–65K contexts.
+            # Keep a bounded 16K fallback until fresh device telemetry is available.
+            target = min(target, 16384)
 
         target = min(max_ctx, max(4096, target))
         if max(256, safe_out) + reserve + 1024 > target:

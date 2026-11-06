@@ -1,3 +1,4 @@
+import hashlib
 import sqlite3
 import threading
 from contextlib import closing
@@ -6,7 +7,7 @@ from local_ai_hub.preprocess import ProjectPreprocessor, _ensure_file_refs_revis
 from local_ai_hub.learning import UsageLearner
 from local_ai_hub.repo_tools import RepositoryTools
 from local_ai_hub.services import LocalAIServices
-from tools.benchmark_preprocess_demand import run
+from tools.benchmark_preprocess_demand import _read_learned_query, run
 
 
 def test_file_cards_prioritize_learned_queries_but_keep_regular_work(tmp_path):
@@ -370,3 +371,24 @@ def test_sustained_hot_queries_do_not_starve_regular_file_cards(tmp_path):
 
     assert len(set(hot_progress)) == 4
     assert len(set(cold_progress)) == 12
+
+
+def test_repository_benchmark_uses_scoped_learned_query_without_emitting_it(tmp_path):
+    root = tmp_path / "learned-repo"
+    root.mkdir()
+    (root / "a_cold.py").write_text("ordinary source path", encoding="utf-8")
+    (root / "z_hot.py").write_text("private learned query appears here", encoding="utf-8")
+    other_root = tmp_path / "other-repo"
+    other_root.mkdir()
+    state_dir = tmp_path / "state"
+    learner = UsageLearner({"server": {"state_dir": str(state_dir)}})
+    learner.record(str(root), "private learned query")
+    learner.record(str(other_root), "other repository query")
+
+    query = _read_learned_query(state_dir / "learning.sqlite3", str(root))
+    result = run(files=2, batch_size=2, root=str(root), query=query, query_source="learned")
+
+    assert result["query_source"] == "learned"
+    assert result["query_length"] == len(query)
+    assert result["query_sha256"] == hashlib.sha256(query.encode("utf-8")).hexdigest()
+    assert "private learned query" not in repr(result)

@@ -162,6 +162,20 @@ def test_treesitter_isolated_worker_handles_timeout_gracefully(monkeypatch):
     assert result["fallback_reason"] in ("worker_timeout", "worker_error")
 
 
+def test_treesitter_timeout_log_includes_workload_metadata_not_source(monkeypatch, caplog):
+    pool = MagicMock()
+    pool.submit.return_value.result.side_effect = TimeoutError("secret exception text")
+    monkeypatch.setattr(module, "_get_worker_pool", lambda: pool)
+    monkeypatch.setattr(module, "_use_isolated_worker", lambda: True)
+    source = "private source text"
+    result = module.parse_treesitter_with_status(source, "python")
+    assert result["fallback_reason"] == "worker_timeout"
+    assert "input_chars=19" in caplog.text
+    assert "timeout_seconds=25" in caplog.text
+    assert source not in caplog.text
+    assert "secret exception text" not in caplog.text
+
+
 def test_worker_crash_disables_all_later_submissions(monkeypatch):
     mock_pool = MagicMock()
     mock_future = MagicMock()

@@ -10,6 +10,9 @@ from typing import Any
 
 from .sqlite_support import connect_sqlite, initialize_wal, is_busy_error, quick_sanity_check
 
+_HOT_QUERY_CACHE_TTL_SECONDS = 15.0
+_HOT_QUERY_CACHE_MAX_ENTRIES = 128
+
 
 def _clean_text(value: Any) -> str:
     if value is None or isinstance(value, bool):
@@ -64,6 +67,7 @@ class UsageLearner:
         self.db_path = Path(config["server"]["state_dir"]) / "learning.sqlite3"
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
+        self._hot_query_cache: dict[tuple[str, int], tuple[float, tuple[str, ...]]] = {}
         self._init_db()
 
     def _connect(self) -> sqlite3.Connection:
@@ -132,6 +136,10 @@ class UsageLearner:
                     (resolved, self.max_queries),
                 )
                 con.commit()
+                self._hot_query_cache = {
+                    key: value for key, value in self._hot_query_cache.items()
+                    if key[0] != resolved
+                }
         except sqlite3.DatabaseError:
             # Learning must never block foreground retrieval.
             return
@@ -141,15 +149,29 @@ class UsageLearner:
         if not resolved:
             return []
         safe_limit = min(_safe_positive_int(limit, 12, minimum=1), self.max_queries)
-        try:
-            with self._lock, closing(self._connect()) as con:
-                rows = con.execute(
-                    "SELECT query FROM intents WHERE root=? ORDER BY hits DESC,last_seen DESC LIMIT ?",
-                    (resolved, safe_limit),
-                ).fetchall()
-            return [str(row["query"]) for row in rows]
-        except sqlite3.DatabaseError:
-            return []
+        key = (resolved, safe_limit)
+        now = time.monotonic()
+        with self._lock:
+            cached = self._hot_query_cache.get(key)
+            if cached is not None and cached[0] > now:
+                return list(cached[1])
+            if cached is not None:
+                self._hot_query_cache.pop(key, None)
+            try:
+                with closing(self._connect()) as con:
+                    rows = con.execute(
+                        "SELECT query FROM intents WHERE root=? ORDER BY hits DESC,last_seen DESC LIMIT ?",
+                        (resolved, safe_limit),
+                    ).fetchall()
+                queries = tuple(str(row["query"]) for row in rows)
+            except sqlite3.DatabaseError:
+                return []
+            expires_at = now + _HOT_QUERY_CACHE_TTL_SECONDS
+            if len(self._hot_query_cache) >= _HOT_QUERY_CACHE_MAX_ENTRIES and key not in self._hot_query_cache:
+                oldest = min(self._hot_query_cache, key=lambda item: self._hot_query_cache[item][0])
+                self._hot_query_cache.pop(oldest, None)
+            self._hot_query_cache[key] = (expires_at, queries)
+            return list(queries)
 
     def count(self, root: str | None = None) -> int:
         try:
@@ -176,6 +198,13 @@ class UsageLearner:
                 else:
                     con.execute("DELETE FROM intents")
                 con.commit()
+                if root is None:
+                    self._hot_query_cache.clear()
+                else:
+                    self._hot_query_cache = {
+                        key: value for key, value in self._hot_query_cache.items()
+                        if key[0] != resolved
+                    }
         except sqlite3.DatabaseError:
             pass
 

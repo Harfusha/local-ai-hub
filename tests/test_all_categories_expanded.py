@@ -314,6 +314,25 @@ def test_vram_context_scaling():
     assert prof_12g.num_ctx == 32768
 
 
+def test_vram_context_unknown_is_conservative():
+    policy = ModelExecutionPolicy({
+        "models": {"fast_code": "qwen2.5-coder:7b"},
+        "model_execution": {"fast": {"context_tokens": 32768, "max_context_tokens": 65536}},
+    })
+
+    profile = policy.profile("qwen2.5-coder:7b", requested_ctx=49152, vram_free_mb=None)
+    payload, applied_profile = policy.apply_payload(
+        "qwen2.5-coder:7b",
+        {"model": "qwen2.5-coder:7b", "options": {"num_ctx": 49152}},
+        role="fast",
+        vram_free_mb=None,
+    )
+
+    assert profile.num_ctx == 16384
+    assert applied_profile.num_ctx == 16384
+    assert payload["options"]["num_ctx"] == 16384
+
+
 def test_generation_cache_key_with_format():
     key1 = generation_cache_key(model="qwen2.5-coder:7b", prompt="p", system="s", options={}, think=None, execution=None, format=None)
     key2 = generation_cache_key(model="qwen2.5-coder:7b", prompt="p", system="s", options={}, think=None, execution=None, format="json")

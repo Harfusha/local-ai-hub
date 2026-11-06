@@ -809,6 +809,149 @@ def test_code_index_phase_removes_deleted_files_instead_of_spinning(tmp_path: Pa
         pre.close()
 
 
+def test_incremental_inventory_invalidates_learned_priority_after_content_change(tmp_path: Path):
+    from local_ai_hub.preprocess import _ensure_file_refs_revision_tracking
+
+    cfg = _cfg(tmp_path)
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    source = repo / "hot.py"
+    source.write_text("rare_demand = 'old'\n", encoding="utf-8")
+    tools = RepositoryTools(cfg)
+    pre = ProjectPreprocessor(cfg, _Noop(), _Rag(), _IdleScheduler(), _Noop(), tools)
+
+    class Learner:
+        enabled = True
+
+        def hot_queries(self, _root, _limit):
+            return ["rare_demand"]
+
+    pre.learner = Learner()
+    root = str(repo.resolve())
+    try:
+        now = time.time()
+        stat = source.stat()
+        digest = tools._hash_file_only(source)
+        with closing(pre._connect()) as con:
+            _ensure_file_refs_revision_tracking(con)
+            con.execute(
+                "INSERT INTO projects(root,workspace,status,phase,generation,registered_at,updated_at,next_check_at,last_complete_at) VALUES(?,?,?,?,?,?,?,?,?)",
+                (root, "workspace", "complete", "complete", 0, now, now, 0, now),
+            )
+            con.execute(
+                "INSERT INTO file_refs(root,path,content_hash,size,mtime_ns,needs_hash,rag_hash,generation,card_key,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                (root, "hot.py", digest, stat.st_size, stat.st_mtime_ns, 0, digest, 0, "old-card", now),
+            )
+            con.execute(
+                "INSERT INTO source_index(root,path,content_hash,text,updated_at) VALUES(?,?,?,?,?)",
+                (root, "hot.py", digest, source.read_text(encoding="utf-8"), now),
+            )
+            con.execute(
+                "INSERT INTO source_fts(root,path,content) VALUES(?,?,?)",
+                (root, "hot.py", "hot.py\nrare_demand = 'old'"),
+            )
+            con.commit()
+
+        assert pre._learned_priority_paths(root) == ("hot.py",)
+        row = dict(pre._project_row(root))
+        source.write_text("ordinary = 'new content'\n", encoding="utf-8")
+        assert pre._step_incremental_inventory(row, {"hot.py"}) is True
+        assert pre._learned_priority_paths(root) == ()
+
+        with closing(pre._connect()) as con:
+            assert con.execute(
+                "SELECT 1 FROM source_fts WHERE root=? AND path=?", (root, "hot.py")
+            ).fetchone() is None
+            refreshed = con.execute(
+                "SELECT content_hash,card_key FROM file_refs WHERE root=? AND path=?", (root, "hot.py")
+            ).fetchone()
+        assert refreshed["content_hash"] == tools._hash_file_only(source)
+        assert refreshed["card_key"] is None
+    finally:
+        pre.close()
+
+
+def test_real_learned_query_recovers_after_incremental_reindex_and_card_generation(tmp_path: Path):
+    from local_ai_hub.learning import UsageLearner
+    from local_ai_hub.preprocess import _ensure_file_refs_revision_tracking
+
+    cfg = _cfg(tmp_path)
+    cfg["preprocessing"]["disable_llm_card_synthesis"] = True
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    source = repo / "hot.py"
+    source.write_text("rare demand marker = 'old'\n", encoding="utf-8")
+    tools = RepositoryTools(cfg)
+    pre = ProjectPreprocessor(cfg, _Noop(), _Rag(), _IdleScheduler(), _Noop(), tools)
+    root = str(repo.resolve())
+    learner = UsageLearner(cfg)
+    learner.record(root, "rare demand")
+    assert learner.hot_queries(root, 4) == ["rare demand"]
+    pre.learner = learner
+
+    try:
+        now = time.time()
+        stat = source.stat()
+        digest = tools._hash_file_only(source)
+        with closing(pre._connect()) as con:
+            _ensure_file_refs_revision_tracking(con)
+            con.execute(
+                "INSERT INTO projects(root,workspace,status,phase,generation,registered_at,updated_at,next_check_at,last_complete_at) VALUES(?,?,?,?,?,?,?,?,?)",
+                (root, "workspace", "complete", "complete", 0, now, now, 0, now),
+            )
+            con.execute(
+                "INSERT INTO file_refs(root,path,content_hash,size,mtime_ns,needs_hash,rag_hash,generation,card_key,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                (root, "hot.py", digest, stat.st_size, stat.st_mtime_ns, 0, digest, 0, "old-card", now),
+            )
+            con.execute(
+                "INSERT INTO source_index(root,path,content_hash,text,updated_at) VALUES(?,?,?,?,?)",
+                (root, "hot.py", digest, source.read_text(encoding="utf-8"), now),
+            )
+            con.execute(
+                "INSERT INTO source_fts(root,path,content) VALUES(?,?,?)",
+                (root, "hot.py", "hot.py\nrare demand marker = 'old'"),
+            )
+            con.commit()
+
+        assert pre._learned_priority_paths(root) == ("hot.py",)
+        row = dict(pre._project_row(root))
+        source.write_text("ordinary replacement = 'new'\n", encoding="utf-8")
+        assert pre._step_incremental_inventory(row, {"hot.py"}) is True
+        assert pre._learned_priority_paths(root) == ()
+
+        with closing(pre._connect()) as con:
+            assert con.execute(
+                "SELECT 1 FROM source_fts WHERE root=? AND path=?", (root, "hot.py")
+            ).fetchone() is None
+            refreshed = con.execute(
+                "SELECT content_hash,card_key FROM file_refs WHERE root=? AND path=?", (root, "hot.py")
+            ).fetchone()
+        assert refreshed["content_hash"] == tools._hash_file_only(source)
+        assert refreshed["card_key"] is None
+
+        assert pre._step_lexical(row) is True
+        assert pre._learned_priority_paths(root) == ()
+        with closing(pre._connect()) as con:
+            indexed = con.execute(
+                "SELECT content FROM source_fts WHERE root=? AND path=?", (root, "hot.py")
+            ).fetchone()
+        assert indexed is not None
+        assert "ordinary" in indexed["content"]
+        assert "rare" not in indexed["content"]
+
+        assert pre._step_file_card(row) is True
+        with closing(pre._connect()) as con:
+            card = con.execute(
+                "SELECT c.content_hash,c.model FROM file_refs f JOIN content_cards c ON c.card_key=f.card_key WHERE f.root=? AND f.path=?",
+                (root, "hot.py"),
+            ).fetchone()
+        assert card is not None
+        assert card["content_hash"] == tools._hash_file_only(source)
+        assert card["model"] == "deterministic-stub"
+    finally:
+        pre.close()
+
+
 def test_code_index_phase_skips_ignored_refs_left_by_previous_inventory(tmp_path: Path):
     cfg = _cfg(tmp_path)
     cfg["rag"]["ignore_dirs"] = ["Library"]

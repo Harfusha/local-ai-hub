@@ -3596,7 +3596,7 @@ class RAGStore:
 
         if heuristic_fallback:
             fallbacks.append("heuristic_rerank")
-        elif reranker_failed:
+        if reranker_failed:
             fallbacks.append("reranker")
 
         graphrag_enriched = False

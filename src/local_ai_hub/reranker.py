@@ -155,6 +155,11 @@ class Reranker:
                 kwargs["device"] = "cpu"
                 kwargs["backend"] = "openvino"
                 ov_model_kwargs: dict[str, Any] = {"device": str(device).lower()}
+                npu_static = str(device).upper().startswith("NPU")
+                if npu_static:
+                    # OpenVINO's NPU plugin requires static shapes. Defer its
+                    # first compile until the CrossEncoder transformer is reshaped.
+                    ov_model_kwargs["compile"] = False
                 cache_dir = openvino_cache_dir(self.config)
                 if cache_dir is not None:
                     ov_model_kwargs["ov_config"] = {"CACHE_DIR": str(cache_dir)}
@@ -168,13 +173,20 @@ class Reranker:
                         allow_downloads=models_cfg.get("allow_hf_downloads") is True)
                 from sentence_transformers import CrossEncoder
                 try:
-                    return CrossEncoder(self.model_name, local_files_only=True, **kwargs)
+                    model = CrossEncoder(self.model_name, local_files_only=True, **kwargs)
                 except Exception:
                     models_cfg = self.config.get("models") if isinstance(self.config, dict) else None
                     allow_hf = models_cfg.get("allow_hf_downloads") is True if isinstance(models_cfg, dict) else False
                     if not allow_hf:
                         raise
-                    return CrossEncoder(self.model_name, **kwargs)
+                    model = CrossEncoder(self.model_name, **kwargs)
+                if backend == "openvino" and str(device).upper().startswith("NPU"):
+                    ov_model = getattr(model, "transformers_model", None)
+                    if ov_model is None:
+                        raise RuntimeError("OpenVINO NPU reranker does not expose a reshapeable transformer")
+                    ov_model.reshape(self.batch_size, self.max_length)
+                    ov_model.compile()
+                return model
 
             self._model = load_model(
                 self,
@@ -247,7 +259,25 @@ class Reranker:
                         model = self._model
                         if model is None:
                             continue
-                        return model.predict(pairs, batch_size=self.batch_size, show_progress_bar=False)
+                        is_openvino_npu = (
+                            self.active_backend == "openvino"
+                            and str(self.active_device or "").upper().startswith("NPU")
+                        )
+                        predict_pairs = pairs
+                        predict_kwargs: dict[str, Any] = {"batch_size": self.batch_size}
+                        if is_openvino_npu:
+                            remainder = len(pairs) % self.batch_size
+                            if pairs and remainder:
+                                predict_pairs = pairs + [pairs[-1]] * (self.batch_size - remainder)
+                            predict_kwargs["processing_kwargs"] = {
+                                "text": {
+                                    "padding": "max_length",
+                                    "max_length": self.max_length,
+                                    "truncation": True,
+                                }
+                            }
+                        scores = model.predict(predict_pairs, show_progress_bar=False, **predict_kwargs)
+                        return scores[:len(pairs)] if is_openvino_npu else scores
             except Exception as exc:
                 if self.backend == "openvino" and self.active_backend == "openvino":
                     failed = self.active_device or "openvino"

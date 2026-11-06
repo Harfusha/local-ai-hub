@@ -203,6 +203,19 @@ def test_owned_model_reports_worker_exit_code_and_bounded_stderr():
         process.close()
 
 
+def test_owned_model_timeout_reports_bounded_worker_stderr():
+    from local_ai_hub.owned_model import _ModelProcess
+
+    script = "import sys,time;sys.stdin.readline();sys.stderr.write('predict still running');sys.stderr.flush();time.sleep(5)"
+    process = _ModelProcess([sys.executable, "-u", "-c", script])
+    try:
+        with pytest.raises(TimeoutError, match="model operation timed out") as raised:
+            process.request({"operation": "predict"}, timeout=0.1)
+        assert "worker stderr: predict still running" in str(raised.value)
+    finally:
+        process.close()
+
+
 def test_owned_model_rejects_request_after_close():
     from local_ai_hub.owned_model import _ModelProcess
 
