@@ -795,6 +795,7 @@ class AffinityScheduler:
             priority = min(priority, 1)
         preempt_hook: Callable[[], bool | None] | None = None
         with self._cond:
+            self._external_gpu_reserved()
             if self._internal_gpu_uncertain:
                 return {"success": False, "error": "previous GPU inference outcome is unknown; reservation retained",
                         "error_code": "gpu_outcome_unknown", "outcome_unknown": True, "retryable": False}
@@ -1063,15 +1064,14 @@ class AffinityScheduler:
             if no_reservation_file:
                 with self._cond:
                     scheduler_idle = not (
-                        self._pending
-                        or self._inflight
+                        self._inflight
                         or self._switching
                         or self._gpu_prepare_in_progress
                         or self._background_gpu_lease
                     )
                     if scheduler_idle:
-                        # Explicit operator consent may clear a stale in-memory fence,
-                        # but never while this scheduler still owns active GPU work.
+                        # Queued waiters are not active GPU work. Explicit operator
+                        # consent may clear a stale fence unless execution is active.
                         self._external_gpu_operator_release_marker = release_marker
                         self._external_gpu_token = None
                         self._external_gpu_generation = None

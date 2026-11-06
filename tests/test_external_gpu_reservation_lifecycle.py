@@ -4,6 +4,7 @@ import hashlib
 import json
 import math
 import os
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -86,21 +87,43 @@ def test_idle_expiration_reaps_before_new_owner_reserves(tmp_path):
     assert replacement["owner"] == "second"
 
 
-def test_active_lease_heartbeat_prevents_expiry_until_owner_finishes(tmp_path):
+def test_active_lease_heartbeat_prevents_expiry_until_owner_finishes(tmp_path, monkeypatch):
     path = tmp_path / "external-gpu-reservation"
-    store = ExternalGpuReservationStore(path, ttl_seconds=0.12)
+    now = [100.0]
+
+    def clock():
+        now[0] += 0.01
+        return now[0]
+
+    store = ExternalGpuReservationStore(path, ttl_seconds=0.12, clock=clock)
     lease = store.reserve(_digest("long-running-owner"), owner="embedding:123:456")
     assert lease is not None
     assert store.renew(_digest("long-running-owner"), lease["generation"], state="active")
+    initial_expiry = store.read()["expires_at"]
+
+    original_renew = store.renew
+    renewals = 0
+    heartbeat_seen = threading.Event()
+
+    def observe_renewal(token_digest, generation, *, state="idle"):
+        nonlocal renewals
+        renewed = original_renew(token_digest, generation, state=state)
+        if renewed:
+            renewals += 1
+            if renewals >= 2:
+                heartbeat_seen.set()
+        return renewed
+
+    monkeypatch.setattr(store, "renew", observe_renewal)
 
     with store.keepalive(_digest("long-running-owner"), lease["generation"], state="active"):
-        time.sleep(0.3)
+        assert heartbeat_seen.wait(timeout=5)
         renewed = store.read()
         assert renewed is not None
         assert renewed["generation"] == lease["generation"]
-        assert renewed["expires_at"] > time.time()
+        assert renewed["expires_at"] > initial_expiry
 
-    time.sleep(0.14)
+    now[0] = renewed["expires_at"] + 1
     assert store.reap_expired() is True
     assert store.read() is None
 

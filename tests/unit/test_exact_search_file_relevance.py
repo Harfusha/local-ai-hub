@@ -55,6 +55,8 @@ def test_installation_intent_prefers_user_documentation_over_tests(tmp_path):
 
     for query in (
         "How to install the local AI Hub on Windows",
+        "How do I set up the local AI Hub on Windows without running Ollama?",
+        "Which guide explains installing the local AI Hub on Windows?",
         "Jak nainstalovat a spustit Local AI Hub ve Windows",
     ):
         for exact_count in (False, True):
@@ -73,6 +75,14 @@ def test_installation_intent_boost_targets_docs_not_install_scripts():
     query = "How to install the local AI Hub on Windows"
 
     assert _intent_path_adjustment(query, "docs/INSTALLATION.md") > 0
+    assert _intent_path_adjustment(
+        "Which guide explains installing the local AI Hub on Windows?",
+        "docs/INSTALLATION.md",
+    ) > 0
+    assert _intent_path_adjustment(
+        "How do I set up the local AI Hub on Windows without running Ollama?",
+        "docs/INSTALLATION.md",
+    ) > 0
     assert _intent_path_adjustment(query, "install.ps1") == 0
     assert _intent_path_adjustment(query, "docs/CONFIGURATION.md") == 0
     assert _intent_path_adjustment("How to configure the Hub", "docs/CONFIGURATION.md") > 0

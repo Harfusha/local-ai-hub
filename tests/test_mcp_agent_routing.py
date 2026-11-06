@@ -253,13 +253,19 @@ def test_search_ai_summary_preserves_deterministic_results_and_sources(monkeypat
     def post(path, payload, **kwargs):
         calls.append((path, payload, kwargs))
         if path == "/api/search":
-            return {"success": True, "results": [{"path": "src/a.py", "start_line": 4, "end_line": 8, "evidence_id": "E1", "text": "match"}]}
+            return {
+                "success": True,
+                "total_matches": 41,
+                "has_more": True,
+                "results": [{"path": "src/a.py", "start_line": 4, "end_line": 8, "evidence_id": "E1", "text": "match"}],
+            }
         return {"success": True, "text": "- Finding [src/a.py:4-8]."}
 
     monkeypatch.setattr(local_ai_mcp.CLIENT, "post", post)
     result = local_ai_mcp.local_ai_repo(action="search", root=str(ROOT), query="needle", summarize_results=True)
 
     assert result["results"][0]["path"] == "src/a.py"
+    assert result["total_matches"] == 41
     assert result["ai_summary"]["text"] == "- Finding [src/a.py:4-8]."
     assert result["ai_summary_sources"] == [{"path": "src/a.py", "start_line": 4, "end_line": 8, "evidence_id": "E1"}]
     assert result["ai_summary_citation_validation"] == {"status": "source_bound", "reference_count": 1}
@@ -268,8 +274,9 @@ def test_search_ai_summary_preserves_deterministic_results_and_sources(monkeypat
     assert summary_input["root_fingerprint"] == result["ai_summary_root_fingerprint"]
     assert "query" not in summary_input
     assert summary_input["coverage_note"] == (
-        "Supplied excerpts: 1; this is not the total result count. "
-        "Do not infer total counts or unshown results."
+        "Exact total_matches: 41. Results returned: 1. Supplied excerpts: 1. "
+        "The search reports additional matching results beyond this response. "
+        "Do not infer counts beyond these exact values or describe unshown results."
     )
     assert "copy the full path verbatim" in calls[1][1]["instruction"]
     assert "contained in that match" in calls[1][1]["instruction"]
@@ -292,6 +299,39 @@ def test_search_ai_summary_preserves_deterministic_results_and_sources(monkeypat
     assert "Use literal square brackets" in calls[1][1]["instruction"]
     assert "Preserve qualifiers in the coverage note" in calls[1][1]["instruction"]
     assert "If the note says may be omitted, never claim results were omitted." in calls[1][1]["instruction"]
+
+
+def test_search_ai_summary_rejects_unknown_count_when_exact_count_is_available(monkeypatch) -> None:
+    monkeypatch.setattr(local_ai_mcp.FEATURES, "search_summaries", True)
+
+    def post(path, payload, **kwargs):
+        if path == "/api/search":
+            return {
+                "success": True,
+                "total_matches": 41,
+                "has_more": True,
+                "results": [{"path": "src/a.py", "start_line": 4, "end_line": 8, "text": "match"}],
+            }
+        return {"success": True, "text": "- The total result count is unknown [src/a.py:4-8]."}
+
+    monkeypatch.setattr(local_ai_mcp.CLIENT, "post", post)
+    result = local_ai_mcp.local_ai_repo(action="search", root=str(ROOT), query="needle", summarize_results=True)
+
+    assert result["total_matches"] == 41
+    assert result["ai_summary"]["success"] is False
+    assert result["ai_summary_citation_validation"] == {
+        "status": "rejected",
+        "reason": "contradictory_coverage_claim",
+    }
+
+
+def test_search_ai_summary_allows_unknown_count_when_exact_count_is_unavailable() -> None:
+    validation = local_ai_mcp._validate_search_summary_citations(
+        "- The total result count is unknown [src/a.py:4-8].",
+        [{"path": "src/a.py", "start_line": 4, "end_line": 8}],
+    )
+
+    assert validation == {"status": "source_bound", "reference_count": 1}
 
 
 def test_search_summary_source_span_drops_adjacent_function_tail() -> None:

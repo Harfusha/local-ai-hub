@@ -807,3 +807,31 @@ Still open before this plan can be accepted:
 - Follow-up read-only sample `req_81de1ef943ff` / `req_62614e401193`: admission `available`, reservation free, but VRAM telemetry stale; `nvidia-smi` reported 12,125/16,303 MiB, 100% utilization and 74.44°C with the same BG3 and `llama-server.exe` processes. No second benchmark was sent.
 - Targeted validation while GPU-loaded: `python -m pytest -q tests/test_mcp_agent_routing.py -k search_ai_summary` → 15 passed, 109 deselected; `python tools/release_check.py --allow-installed` → OK; `python -m compileall -q src/local_ai_hub` → passed. This does not close the broad release suite or W4/W6 model/GPU evaluation gates.
 - Latest read-only sample after targeted validation: 13,524/16,303 MiB at 99% and 71.58°C; BG3 PID 33352 and managed `llama-server.exe` PID 10540 remain listed, with per-process memory unavailable. No inference was sent.
+
+### Continuation checkpoint — 2026-11-06, exact search counts supplied to advisory summary
+
+- Fixed W4 search-summary context: pass the deterministic search `total_matches` and `has_more` into the bounded model input, with exact coverage wording. The model may repeat only counts explicitly stated in that note; source matches/citations remain mandatory and deterministic search fields remain authoritative.
+- Added regression assertions for exact `total_matches`, returned result count, supplied excerpt count and `has_more`. Focused summary/citation tests: 5 passed; `py_compile` and `git diff --check` passed. No broad suite ran. Native test evidence is not a broker verification receipt.
+- GPU scheduler state is still unqualified from the retained earlier `outcome_unknown` / live 9B preparation. No inference, benchmark, reservation release or restart was attempted. Continue W1–W5 source audit; defer paired model quality and W6 GPU measurements until scheduler admission is safely resolved.
+
+### Continuation checkpoint — 2026-11-06, reject summaries contradicting exact result counts
+
+- W4 validator now rejects a citation-bearing summary that calls the result count unknown when deterministic `total_matches` is available. It still accepts that wording when the exact count is unavailable; original deterministic results remain intact in both cases.
+- Added focused regressions for exact count propagation and the contradiction guard. Seven targeted search-summary/citation tests passed; `py_compile` and `git diff --check` passed. No broad tests ran.
+- Current readiness remains `gpu_admission_state=outcome_unknown` with a free external reservation and stale/pending VRAM sample. Continue static audit; no inference or benchmark until scheduler admission is resolved.
+
+### Progress update — 2026-11-06, profile filtering cross-check
+
+- Static source audit confirmed `operation_actions` applies the shared minimum-profile policy; `validate_operation_arguments` derives accepted actions from that same filtered list. Feature-generated trigger guidance uses the filtered task/work actions.
+- Focused tier tests passed: **11 passed** for effective/unknown profiles, balanced search summaries, high-only bounded submission, task-action exposure and a direct HTTP reranker bypass attempt. This is focused evidence, not a rerun of the full W3 matrix.
+- Scheduler remains `outcome_unknown`; GPU and live model quality gates stay open. Continue static W1–W5 audit.
+
+### Continuation checkpoint — 2026-11-06, scheduler admission recovered
+
+- User-authorized `gpu_reservation_release_authorized` succeeded (`req_178241428048`) after the dashboard showed no queued/running work and `outcome_unknown` admission. A fresh `local_ai_status` (`req_89d7b7bf2472`) now reports Hub/Ollama online, scheduler not degraded and `gpu_admission_state=available`.
+- VRAM telemetry remains unavailable (`sample_pending`, stale), `active_model=null`, and refreshed dashboard inventory reports no resident models. Execution profiles are configuration only; installed-model availability was not freshly confirmed. The latest retained physical sample in `docs/agent-evaluation/results.md` is 13,524/16,303 MiB at 99%, with BG3 and `llama-server.exe` present and process VRAM attribution unavailable.
+- Detailed telemetry is now On in the dashboard. Runtime health is Healthy and scheduler queues are empty. Existing Ollama failures predate this toggle and still provide only sanitized `unexpected failure`; no new inference was sent to generate a trace.
+- Static inventory audit found conflicting historical installed-model counts (12 versus 7). `docs/LOCAL_MODEL_CAPABILITY_INVENTORY.md` now marks the current installed count unknown; dashboard refresh confirmed only that no models are currently resident.
+- Capability-status source and docs confirm `available` means profile/configuration enabled; `provider_readiness=not_checked` deliberately does not assert installed weights, quality or live GPU use. No status contract change is warranted from this evidence.
+- Dashboard UI navigation accidentally invoked database optimization while trying to reach failure history; its result reported 0 KB freed. No repository files were changed by that operation.
+- No benchmark was retried: current VRAM remains unknown and prior physical evidence showed heavy external GPU use. W4 paired summary quality, W6 performance/quality measurements and route-promotion gates remain **NOT VERIFIED**. Broad tests remain unrun per user instruction.

@@ -401,7 +401,12 @@ def _normalize_repo_search_path_hints(
     return normalized, None
 
 
-def _validate_search_summary_citations(summary_text: Any, sources: list[dict[str, Any]]) -> dict[str, Any]:
+def _validate_search_summary_citations(
+    summary_text: Any,
+    sources: list[dict[str, Any]],
+    *,
+    total_matches: Any = None,
+) -> dict[str, Any]:
     if not isinstance(summary_text, str) or not summary_text.strip():
         return {"status": "rejected", "reason": "missing_source_citation"}
     summary_lines = [line.strip() for line in summary_text.splitlines() if line.strip()]
@@ -411,6 +416,17 @@ def _validate_search_summary_citations(summary_text: Any, sources: list[dict[str
     bullet_citation_pattern = re.compile(r"\[[^\[\]]+:\s*[1-9]\d*(?:-[1-9]\d*)?\]")
     if any(bullet_citation_pattern.search(line) is None for line in summary_lines):
         return {"status": "rejected", "reason": "missing_source_citation"}
+    if type(total_matches) is int and total_matches >= 0:
+        count_terms = r"(?:total\s+)?(?:result|match|search|hit)\s+count|number\s+of\s+(?:matches|results)"
+        unknown_terms = r"unknown|unavailable|unclear|not\s+(?:known|provided|available)|cannot\s+be\s+(?:determined|known)"
+        contradictory_count = re.search(
+            rf"(?:\b(?:{count_terms})\b[^.!?\n]{{0,48}}\b(?:{unknown_terms})\b"
+            rf"|\b(?:{unknown_terms})\b[^.!?\n]{{0,48}}\b(?:{count_terms})\b)",
+            summary_text,
+            re.IGNORECASE,
+        )
+        if contradictory_count is not None:
+            return {"status": "rejected", "reason": "contradictory_coverage_claim"}
     citation_like_pattern = re.compile(
         r"(?:[A-Za-z0-9_.-]+[/\\])+[A-Za-z0-9_.-]+\.[A-Za-z0-9_-]{1,12}:[1-9]\d*(?:-[1-9]\d*)?"
     )
@@ -455,14 +471,39 @@ def _validate_search_summary_citations(summary_text: Any, sources: list[dict[str
     return {"status": "source_bound", "reference_count": len(citation_candidates)}
 
 
-def _bounded_search_summary_input(query: Any, root: str, matches: list[Any]) -> tuple[str, list[dict[str, Any]]]:
+def _bounded_search_summary_input(
+    query: Any,
+    root: str,
+    matches: list[Any],
+    *,
+    total_matches: Any = None,
+    has_more: Any = None,
+) -> tuple[str, list[dict[str, Any]]]:
     root_fingerprint = hashlib.sha256(_client_root(root).encode("utf-8", errors="replace")).hexdigest()
     query_tokens = {token.casefold() for token in re.findall(r"[A-Za-z_][A-Za-z0-9_]*", str(query or ""))}
     payload: dict[str, Any] = {
         "root_fingerprint": root_fingerprint,
-        "coverage_note": "Supplied excerpts: 0; this is not the total result count. Do not infer total counts or unshown results.",
+        "coverage_note": "",
         "matches": [],
     }
+
+    def coverage_note(excerpt_count: int) -> str:
+        coverage = []
+        if type(total_matches) is int and total_matches >= 0:
+            coverage.append(f"Exact total_matches: {total_matches}.")
+        else:
+            coverage.append("Exact total_matches unavailable.")
+        coverage.append(f"Results returned: {len(matches)}.")
+        coverage.append(f"Supplied excerpts: {excerpt_count}.")
+        if type(has_more) is bool:
+            if has_more:
+                coverage.append("The search reports additional matching results beyond this response.")
+            else:
+                coverage.append("The search reports no additional matching results beyond this response.")
+        coverage.append("Do not infer counts beyond these exact values or describe unshown results.")
+        return " ".join(coverage)
+
+    payload["coverage_note"] = coverage_note(0)
     sources: list[dict[str, Any]] = []
     serialized = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
     for match in matches[:8]:
@@ -498,7 +539,11 @@ def _bounded_search_summary_input(query: Any, root: str, matches: list[Any]) -> 
                     entry_text = "\n".join(text_lines[line_index:])
                     break
         entry = {**source, "text": entry_text}
-        candidate = {**payload, "matches": [*payload["matches"], entry]}
+        candidate = {
+            **payload,
+            "coverage_note": coverage_note(len(payload["matches"]) + 1),
+            "matches": [*payload["matches"], entry],
+        }
         candidate_text = json.dumps(candidate, ensure_ascii=False, separators=(",", ":"))
         if len(candidate_text) > 12000:
             original_text = entry["text"]
@@ -520,10 +565,7 @@ def _bounded_search_summary_input(query: Any, root: str, matches: list[Any]) -> 
         serialized = candidate_text
         if source:
             sources.append(source)
-    payload["coverage_note"] = (
-        f"Supplied excerpts: {len(payload['matches'])}; this is not the total result count. "
-        "Do not infer total counts or unshown results."
-    )
+    payload["coverage_note"] = coverage_note(len(payload["matches"]))
     serialized = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
     return serialized, sources
 
@@ -4096,7 +4138,13 @@ def _local_ai_repo_impl(
             return projected
         matches = search_result.get("results")
         matches = matches if isinstance(matches, list) else []
-        summary_input, summary_sources = _bounded_search_summary_input(query, root, matches)
+        summary_input, summary_sources = _bounded_search_summary_input(
+            query,
+            root,
+            matches,
+            total_matches=search_result.get("total_matches"),
+            has_more=search_result.get("has_more"),
+        )
         projected["ai_summary_root_fingerprint"] = hashlib.sha256(
             _client_root(root).encode("utf-8", errors="replace")
         ).hexdigest()
@@ -4110,6 +4158,7 @@ def _local_ai_repo_impl(
                     "Ensure every factual claim is directly supported by its cited excerpt. "
                     "Do not infer behavior from names or signatures; omit unsupported claims or state uncertainty. "
                     "State omissions only when explicit in the coverage note. Do not infer result counts or omitted findings. "
+                    "You may repeat exact counts from the coverage note only; do not derive any others. "
                     "Preserve qualifiers in the coverage note; never turn possible omissions into facts. "
                     "If the note says may be omitted, never claim results were omitted. "
                     "Do not cite evidence_id or E1/E2 labels. Use literal square brackets, copy the full path verbatim, "
@@ -4139,7 +4188,11 @@ def _local_ai_repo_impl(
                 }
                 projected["ai_summary_citation_validation"] = {"status": "not_checked", "reason": "summary_truncated"}
             elif isinstance(summary_result, dict) and summary_result.get("success") is True:
-                citation_validation = _validate_search_summary_citations(summary_result.get("text"), summary_sources)
+                citation_validation = _validate_search_summary_citations(
+                    summary_result.get("text"),
+                    summary_sources,
+                    total_matches=search_result.get("total_matches"),
+                )
                 projected["ai_summary_citation_validation"] = citation_validation
                 if citation_validation.get("status") == "source_bound":
                     projected["ai_summary"] = _compact(summary_result, "compress")

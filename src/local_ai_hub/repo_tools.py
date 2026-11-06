@@ -44,13 +44,21 @@ def _intent_query_terms(query: str) -> frozenset[str]:
     return frozenset(term.casefold() for term in tokenize_query_terms(query))
 
 
+def _is_installation_intent(query_terms: frozenset[str]) -> bool:
+    if query_terms.intersection(_INSTALLATION_INTENT_TERMS):
+        return True
+    if {"set", "up"}.issubset(query_terms):
+        return True
+    return any(term.startswith(("install", "instal", "nainstal")) for term in query_terms)
+
+
 @lru_cache(maxsize=8192)
 def _intent_path_adjustment(query: str, relative_path: str) -> float:
     """Prefer user-facing install guides over tests for natural how-to queries."""
     if prefers_lexical_precision(query):
         return 0.0
     query_terms = _intent_query_terms(query)
-    if not query_terms.intersection(_INSTALLATION_INTENT_TERMS):
+    if not _is_installation_intent(query_terms):
         return 0.0
     path = relative_path.casefold().replace("\\", "/").strip("/")
     if not path or any(part in {"plans", "specs", "superpowers"} for part in path.split("/")):
@@ -64,10 +72,10 @@ def _intent_path_adjustment(query: str, relative_path: str) -> float:
         return 24.0
     if path == "docs/installation.md":
         return 72.0
-    install_intent = query_terms.intersection({
-        "install", "installation", "nainstalovat", "instalovat", "instalace",
-    })
-    setup_intent = query_terms.intersection({"setup", "quickstart", "spustit"})
+    install_intent = _is_installation_intent(query_terms)
+    setup_intent = query_terms.intersection({"setup", "quickstart", "spustit"}) or {
+        "set", "up",
+    }.issubset(query_terms)
     configuration_intent = query_terms.intersection({"configure", "configuration", "nastavit", "nastavení"})
     documentation_entrypoint = (
         (install_intent and name.startswith(("install", "setup", "getting_started", "getting-started", "quickstart")))
@@ -2646,8 +2654,8 @@ class RepositoryTools:
         # Give that intent a larger bounded recall window so one noisy path
         # cannot hide the actual user guide. Other queries retain the smaller
         # default window; response size stays controlled by pagination.
-        install_intent = installation_intent_priority and bool(
-            _intent_query_terms(query).intersection(_INSTALLATION_INTENT_TERMS)
+        install_intent = installation_intent_priority and _is_installation_intent(
+            _intent_query_terms(query)
         )
         candidate_limit = max(
             64,

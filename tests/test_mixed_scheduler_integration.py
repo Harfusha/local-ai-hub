@@ -10,7 +10,7 @@ from unittest.mock import patch
 import pytest
 
 from local_ai_hub.ollama import OllamaRuntime
-from local_ai_hub.scheduler import AffinityScheduler, SchedulerTimeoutError
+from local_ai_hub.scheduler import AffinityScheduler, Job, SchedulerTimeoutError
 
 
 @pytest.mark.parametrize("available_mb, admitted, resize, preloaded", [(6144, True, False, False), (256, False, False, False), (6144, True, True, False), (6144, True, False, True)])
@@ -231,6 +231,35 @@ def test_authorized_scheduler_release_uses_live_store_and_syncs_admission(tmp_pa
         assert scheduler.status()["gpu_admission_state"] == "available"
         assert scheduler._external_gpu_store.read() is None
     finally:
+        scheduler.close()
+
+
+def test_authorized_release_clears_reservation_fence_with_queued_waiter(tmp_path, monkeypatch):
+    config = {
+        "server": {"state_dir": str(tmp_path), "ollama_url": "http://127.0.0.1:11434"},
+        "ollama": {"enabled": True},
+    }
+    monkeypatch.setattr(AffinityScheduler, "_dispatch_loop", lambda _scheduler: None)
+    scheduler = AffinityScheduler(OllamaRuntime(config), config)
+    try:
+        token = scheduler.reserve_external_gpu()
+        assert token
+        with scheduler._cond:
+            scheduler._pending.append(Job(
+                id=1, model="candidate", source="benchmark", priority=10,
+                execute=lambda: {"success": True},
+            ))
+
+        released = scheduler.gpu_reservation_operation(
+            action="release_authorized",
+            consent=True,
+            audit_reason="focused test: clear stale reservation fence with a queued waiter",
+        )
+        assert released["success"] is True
+        assert scheduler.status()["gpu_admission_state"] == "available"
+    finally:
+        with scheduler._cond:
+            scheduler._pending.clear()
         scheduler.close()
 
 
