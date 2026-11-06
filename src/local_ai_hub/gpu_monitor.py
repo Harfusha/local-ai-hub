@@ -19,6 +19,7 @@ from .process_utils import hidden_run_kwargs
 _GPU_CACHE: dict[str, Any] = {}
 _GPU_CACHE_TIME = 0.0
 _GPU_LOCK = threading.Lock()
+_GPU_LOCK_TIMEOUT_SECONDS = 2.0
 _WINDOWS_CACHE: dict[str, Any] = {}
 _WINDOWS_CACHE_TIME = 0.0
 _WINDOWS_LOCK = threading.Lock()
@@ -241,7 +242,15 @@ def get_gpu_telemetry() -> dict[str, Any]:
     now = time.time()
     if _GPU_CACHE and now - _GPU_CACHE_TIME < 1.5:
         return dict(_GPU_CACHE)
-    with _GPU_LOCK:
+    if not _GPU_LOCK.acquire(timeout=_GPU_LOCK_TIMEOUT_SECONDS):
+        return {
+            "available": False,
+            "reason": "GPU telemetry sampler lock timed out",
+            "telemetry_error": "sampling_lock_timeout",
+            "telemetry_stale": True,
+            "timestamp": now,
+        }
+    try:
         now = time.time()
         if _GPU_CACHE and now - _GPU_CACHE_TIME < 1.5:
             return dict(_GPU_CACHE)
@@ -281,6 +290,8 @@ def get_gpu_telemetry() -> dict[str, Any]:
             }
         _GPU_CACHE, _GPU_CACHE_TIME = result, now
         return dict(result)
+    finally:
+        _GPU_LOCK.release()
 
 
 def get_dynamic_token_budget(base_tokens: int = 32768, min_tokens: int = 8192, max_tokens: int = 65536) -> int:

@@ -32,6 +32,32 @@ MODEL_URL = (
 MAX_MODEL_BYTES = 2_000_000_000
 MAX_RUNTIME_BYTES = 2_000_000_000
 MAX_EXTRACTED_BYTES = 8_000_000_000
+_CPU_VARIANTS_REQUIRING_AVX512_OR_AVX_VNNI = frozenset({
+    "ggml-cpu-alderlake.dll",
+    "ggml-cpu-cannonlake.dll",
+    "ggml-cpu-cascadelake.dll",
+    "ggml-cpu-cooperlake.dll",
+    "ggml-cpu-icelake.dll",
+    "ggml-cpu-sapphirerapids.dll",
+    "ggml-cpu-skylakex.dll",
+    "ggml-cpu-zen4.dll",
+})
+
+
+def _windows_avx512f_available() -> bool:
+    """Return whether Windows enabled AVX-512 state for this process."""
+    if os.name != "nt":
+        return True
+    try:
+        import ctypes
+
+        is_feature_present = ctypes.windll.kernel32.IsProcessorFeaturePresent
+        is_feature_present.argtypes = [ctypes.c_uint32]
+        is_feature_present.restype = ctypes.c_int
+        # PF_AVX512F_INSTRUCTIONS_AVAILABLE; checks OS-visible support, not CPUID alone.
+        return bool(is_feature_present(41))
+    except (AttributeError, OSError, ValueError):
+        return False
 
 # Digests are from the official ggml-org/llama.cpp GitHub build attestation
 # for b10964 (attestation 47376843).
@@ -249,6 +275,14 @@ class LlamaCppManagedRuntime:
         binary = self._find_server(self.runtime_dir)
         marker = self.runtime_dir / ".runtime-sha256"
         verified = marker.exists() and marker.read_text(encoding="utf-8").strip() == expected_marker
+        avx512_available = _windows_avx512f_available()
+        incompatible_cpu_variants = (
+            set(_CPU_VARIANTS_REQUIRING_AVX512_OR_AVX_VNNI)
+            if self._host_platform() == ("win32", "amd64") and not avx512_available
+            else set()
+        )
+        if binary is not None and any((binary.parent / name).is_file() for name in incompatible_cpu_variants):
+            verified = False
         if self.cuda_selected and binary is not None and not (binary.parent / "cudart64_13.dll").is_file():
             verified = False
         if binary is None or not verified:
@@ -271,7 +305,11 @@ class LlamaCppManagedRuntime:
                         target.mkdir(parents=True, exist_ok=True)
                     elif item.is_file():
                         target.parent.mkdir(parents=True, exist_ok=True)
+                        if item.name.lower() in incompatible_cpu_variants:
+                            continue
                         shutil.copy2(item, target)
+                for name in incompatible_cpu_variants:
+                    (target_dir / name).unlink(missing_ok=True)
                 binary = self._find_server(target_dir)
                 if self.cuda_selected and (binary is None or not (binary.parent / "cudart64_13.dll").is_file()):
                     raise RuntimeError("Verified CUDA archives do not contain the required runtime DLL beside llama-server")
@@ -588,6 +626,7 @@ class LlamaCppManagedRuntime:
                 for row in gpus if isinstance(row, dict)
             )
             attempts = self._device_attempts(gpu)
+            failed_attempts: list[str] = []
             for device, wait_seconds in attempts:
                 if stopped():
                     return False
@@ -628,15 +667,27 @@ class LlamaCppManagedRuntime:
                     self._retry_after = 0.0
                     return True
                 if proc is not None:
+                    exit_code = proc.poll()
                     if not self._terminate_owned_process(proc, 2.0):
                         self._managed_process = proc
-                        self._last_error = "llama-server could not be stopped after a failed health check. See state/logs/llama.cpp-server.log."
+                        self._last_error = (
+                            f"llama-server {device} could not be stopped after a failed health check. "
+                            "See state/logs/llama.cpp-server.log."
+                        )
                         self._retry_after = time.monotonic() + 60.0
                         return False
+                    if exit_code is not None:
+                        failed_attempts.append(f"{device} exit code {exit_code}")
+                    else:
+                        failed_attempts.append(f"{device} did not become healthy")
                 self.pid_path.unlink(missing_ok=True)
                 if stopped():
                     return False
-            self._last_error = "llama-server did not become healthy in SYCL/CPU mode. See state/logs/llama.cpp-server.log."
+            failure_detail = "; ".join(failed_attempts) or "no backend attempt completed"
+            self._last_error = (
+                f"llama-server did not become healthy ({failure_detail}). "
+                "See state/logs/llama.cpp-server.log."
+            )
             self._retry_after = time.monotonic() + 60.0
             return False
 

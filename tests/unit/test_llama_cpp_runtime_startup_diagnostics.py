@@ -72,3 +72,49 @@ def test_missing_managed_binary_sets_a_useful_startup_error(tmp_path):
     assert "llama-server" in runtime._last_error
     assert "not found" in runtime._last_error
     provision.assert_called_once()
+
+
+def test_failed_cuda_start_reports_device_and_child_exit_code(tmp_path):
+    runtime = LlamaCppManagedRuntime(
+        {
+            "server": {"state_dir": str(tmp_path)},
+            "llama_cpp": {"backend": "cuda", "managed_with_ollama": True},
+        }
+    )
+    runtime._port_and_url = lambda: (12438, "http://127.0.0.1:12438")
+
+    class PortProbe:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def setsockopt(self, *_args):
+            return None
+
+        def bind(self, _address):
+            return None
+
+    class ExitedProcess:
+        pid = 43210
+
+        @staticmethod
+        def poll():
+            return 17
+
+    with (
+        patch.object(runtime, "is_online", return_value=False),
+        patch("local_ai_hub.llama_cpp_runtime.socket.socket", return_value=PortProbe()),
+        patch.object(runtime, "provision"),
+        patch.object(runtime, "_find_server", return_value=tmp_path / "llama-server.exe"),
+        patch.object(runtime, "_write_preset"),
+        patch("local_ai_hub.llama_cpp_runtime.popen_managed", return_value=ExitedProcess()),
+        patch.object(runtime, "_ready", return_value=False),
+        patch.object(runtime, "_terminate_owned_process", return_value=True),
+    ):
+        assert runtime.ensure_running() is False
+
+    assert "CUDA0" in runtime._last_error
+    assert "exit code 17" in runtime._last_error
+    assert "SYCL/CPU" not in runtime._last_error

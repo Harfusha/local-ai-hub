@@ -106,6 +106,66 @@ def test_expired_legacy_digest_fence_reaps_by_mtime_and_audits(tmp_path):
     assert events[-1]["owner"] == "unknown"
 
 
+def test_consented_release_current_removes_active_reservation_without_owner_probe(tmp_path, monkeypatch):
+    from local_ai_hub import process_utils
+
+    path = tmp_path / "external-gpu-reservation"
+    store = ExternalGpuReservationStore(path, ttl_seconds=900, clock=lambda: 100.0)
+    lease = store.reserve(_digest("active-owner"), owner="embedding:424242:17")
+    assert lease is not None
+
+    def unexpected_owner_probe(_pid):
+        raise AssertionError("consented release must not probe owner liveness")
+
+    monkeypatch.setattr(process_utils, "process_is_alive", unexpected_owner_probe)
+    assert store.release_current_with_consent(
+        consent=True,
+        audit_reason="operator authorized release without owner inspection",
+    )
+    assert store.read() is None
+    event = json.loads(store.audit_path.read_text(encoding="utf-8").splitlines()[-1])
+    assert event["action"] == "consented_release_current_reservation"
+    assert event["generation"] == lease["generation"]
+    assert event["owner"] == "embedding:424242:17"
+
+
+def test_consented_release_current_clears_unknown_legacy_fence_and_audits(tmp_path):
+    path = tmp_path / "external-gpu-reservation"
+    path.write_text(_digest("legacy-owner"), encoding="ascii")
+    store = ExternalGpuReservationStore(path, ttl_seconds=900)
+
+    assert store.read() is None
+    assert store.release_current_with_consent(
+        consent=True,
+        audit_reason="operator authorized cleanup of stale legacy reservation",
+    )
+    assert not path.exists()
+    events = [
+        json.loads(line)
+        for line in store.audit_path.read_text(encoding="utf-8").splitlines()
+    ]
+    assert events[-1]["action"] == "consented_release_current_legacy_fence"
+    assert events[-1]["owner"] == "unknown"
+    assert events[-1]["reason"] == "operator authorized cleanup of stale legacy reservation"
+
+
+def test_consented_release_current_rejects_malformed_metadata(tmp_path):
+    path = tmp_path / "external-gpu-reservation"
+    store = ExternalGpuReservationStore(path, ttl_seconds=900)
+    active = store.reserve(_digest("active-owner"), owner="embedding:123:456")
+
+    assert active is not None
+    assert store.read() == active
+
+    metadata_path = path.with_name(path.name + ".lease.json")
+    metadata_path.write_text("malformed", encoding="utf-8")
+    assert not store.release_current_with_consent(
+        consent=True, audit_reason="operator authorized reservation cleanup",
+    )
+    assert path.exists()
+    assert metadata_path.exists()
+
+
 def test_expired_active_reservation_reaps_before_new_owner_reserves(tmp_path):
     now = [100.0]
     path = tmp_path / "external-gpu-reservation"
@@ -464,6 +524,7 @@ def test_coordination_mcp_contract_exposes_status_and_consented_release():
     contract = operation_contract("local_ai_coord")
     assert "gpu_reservation_status" in contract["action_order"]
     assert "gpu_reservation_release" in contract["action_order"]
+    assert "gpu_reservation_release_authorized" in contract["action_order"]
     assert not validate_operation_arguments("local_ai_coord", "gpu_reservation_status", {
         "action": "gpu_reservation_status",
     })
@@ -475,4 +536,12 @@ def test_coordination_mcp_contract_exposes_status_and_consented_release():
         "generation": "generation-1",
         "consent": True,
         "audit_reason": "operator confirmed stale owner is gone",
+    })
+    assert not validate_operation_arguments("local_ai_coord", "gpu_reservation_release_authorized", {
+        "action": "gpu_reservation_release_authorized",
+        "consent": True,
+        "audit_reason": "operator authorized release without owner inspection",
+    })
+    assert validate_operation_arguments("local_ai_coord", "gpu_reservation_release_authorized", {
+        "action": "gpu_reservation_release_authorized",
     })

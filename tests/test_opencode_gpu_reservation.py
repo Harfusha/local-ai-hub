@@ -406,6 +406,36 @@ def test_failed_prewarm_retains_gpu_fence(tmp_path, raises):
         other.close()
 
 
+def test_offline_prewarm_starts_backend_under_scheduler_gpu_lease(tmp_path):
+    class _StartableRuntime:
+        scheduler = None
+        online = False
+
+        def loaded_model_details(self, **_kwargs):
+            return []
+
+        def is_online(self):
+            return self.online
+
+        def ensure_running(self):
+            assert self.scheduler._internal_gpu_digest
+            self.online = True
+            return True
+
+        def prepare_model(self, _model, **_kwargs):
+            assert self.online
+            return []
+
+    runtime = _StartableRuntime()
+    scheduler = AffinityScheduler(runtime, {"server": {"state_dir": str(tmp_path)}})
+    runtime.scheduler = scheduler
+    try:
+        assert scheduler.prewarm("model") is True
+        assert runtime.online is True
+    finally:
+        scheduler.close()
+
+
 def test_failed_dispatched_model_preparation_retains_gpu_fence(tmp_path):
     config = {"server": {"state_dir": str(tmp_path)}}
     def prepare(*_args, **_kwargs):

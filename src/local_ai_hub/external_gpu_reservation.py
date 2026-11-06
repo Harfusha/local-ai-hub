@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import contextlib
-import hashlib
 import hmac
 import json
 import math
@@ -241,6 +240,81 @@ class ExternalGpuReservationStore:
                     return False
                 return True
             return self._remove_unlocked(generation)
+
+    def release_current_with_consent(self, *, consent: bool, audit_reason: str) -> bool:
+        if type(consent) is not bool or not consent:
+            return False
+        if not isinstance(audit_reason, str) or not audit_reason.strip() or len(audit_reason) > 1000:
+            return False
+        with self._locked():
+            if self.metadata_path.is_symlink() or self.path.is_symlink():
+                return False
+
+            record = self._read_unlocked()
+            if record is not None:
+                event = {
+                    "action": "consented_release_current_reservation",
+                    "generation": record["generation"],
+                    "owner": record["owner"],
+                    "reason": audit_reason.strip(),
+                    "released_at": self._clock(),
+                }
+                try:
+                    self._append_audit(event)
+                except OSError:
+                    return False
+                return self._remove_unlocked(record["generation"])
+
+            if not self.path.exists() and self.metadata_path.exists():
+                orphan = self._read_metadata_unlocked()
+                if orphan is None:
+                    return False
+                event = {
+                    "action": "consented_release_orphaned_metadata",
+                    "generation": orphan["generation"],
+                    "owner": orphan["owner"],
+                    "reason": audit_reason.strip(),
+                    "released_at": self._clock(),
+                }
+                try:
+                    self._append_audit(event)
+                    self.metadata_path.unlink()
+                except OSError:
+                    return False
+                return True
+
+            if self.metadata_path.exists() or not self.path.exists():
+                return False
+            try:
+                with self.path.open("rb") as stream:
+                    before = os.fstat(stream.fileno())
+                    if not stat.S_ISREG(before.st_mode) or before.st_size != 64:
+                        return False
+                    raw_digest = stream.read(65)
+                    after = os.fstat(stream.fileno())
+                current = self.path.stat(follow_symlinks=False)
+                if (
+                    not os.path.samestat(before, after)
+                    or not os.path.samestat(after, current)
+                    or len(raw_digest) != 64
+                ):
+                    return False
+                _validate_digest(raw_digest.decode("ascii"))
+            except (OSError, UnicodeDecodeError, ValueError):
+                return False
+
+            event = {
+                "action": "consented_release_current_legacy_fence",
+                "owner": "unknown",
+                "reason": audit_reason.strip(),
+                "released_at": self._clock(),
+            }
+            try:
+                self._append_audit(event)
+                self.path.unlink()
+            except OSError:
+                return False
+            return True
 
     @staticmethod
     def _owner_process_is_gone(owner: Any) -> bool:

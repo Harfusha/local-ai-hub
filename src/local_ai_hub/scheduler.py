@@ -1838,7 +1838,17 @@ class AffinityScheduler:
             self._gpu_prepare_in_progress = True
             self._switch_not_started = False
         try:
-            success = self._perform_switch(model)
+            is_online = getattr(self.runtime, "is_online", None)
+            ensure_running = getattr(self.runtime, "ensure_running", None)
+            runtime_online = bool(is_online()) if callable(is_online) else True
+            if not runtime_online and not callable(ensure_running):
+                with self._cond:
+                    self._switch_not_started = True
+                success = False
+            elif not runtime_online and not ensure_running():
+                success = False
+            else:
+                success = self._perform_switch(model)
         except Exception:
             with self._cond:
                 self._internal_gpu_uncertain = True

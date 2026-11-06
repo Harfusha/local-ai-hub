@@ -490,6 +490,7 @@ def test_coord_description_and_prompts_expose_plan_workflow() -> None:
     description = local_ai_mcp._desc_coord()
     assert "gpu_reservation_status" in description
     assert "gpu_reservation_release" in description
+    assert "gpu_reservation_release_authorized" in description
     assert "confirmed owner death" in description
     assert "plan_list" in description
     assert "plan_get" in description
@@ -501,7 +502,9 @@ def test_coord_description_and_prompts_expose_plan_workflow() -> None:
     prompt_paths = [ROOT / "docs" / name for name in ("INSTALL_PROMPT.md", "UPDATE_PROMPT.md")]
     prompt_paths.append(ROOT / "AGENTS.md")
     for path in prompt_paths:
-        assert expected_prompt in path.read_text(encoding="utf-8")
+        content = path.read_text(encoding="utf-8")
+        assert expected_prompt in content
+        assert "gpu_reservation_release_authorized" in content
     for path in prompt_paths[:2]:
         prompt = path.read_text(encoding="utf-8")
         assert "gpu_reservation_status" in prompt
@@ -514,7 +517,7 @@ def test_public_action_parameters_are_explicit_literals() -> None:
     expected = {
         "local_ai_task": {"delegate", "explore", "reason", "continue", "review", "second_opinion", "compress", "route", "batch", "benchmark", "hardware_benchmark", "evaluation_record", "evaluation_report", "submit", "status", "wait", "result", "cancel", "candidate_create", "candidate_promote", "speculative_draft", "vision", "transcribe", "eval_suite", "prompt_eval", "eval_drift", "complete_code", "scaffold"},
         "local_ai_rag": {"index", "search", "list", "docset_index", "docset_search", "ingest_document", "ingest_diagram"},
-        "local_ai_coord": {"claim", "renew", "release", "leases", "gpu_reservation_status", "gpu_reservation_release", "task_create", "task_get", "task_checkpoint", "task_rollback", "task_transition", "task_resume", "task_list", "task_budget_increase", "task_complete", "task_fail", "task_heartbeat", "ask", "answer", "memory_record", "memory_get", "memory_find", "memory_delete", "memory_promote", "context_compile", "verify_receipt", "verify_completion", "verify_export", "negative_knowledge_record", "negative_knowledge_find", "incident_decision", "blackboard_update", "blackboard_get", "blackboard_list", "blackboard_delete", "blackboard_merge", "swarm_dispatch", "swarm_step", "swarm_status", "swarm_list", "swarm_cancel", "worktree_lease", "worktree_release", "pubsub_publish", "pubsub_poll", "simulate_merge", "curate_dataset", "task_sync", "task_zombie_reap", "task_cleanup_worktree", "wait_for_event", "semaphore_acquire", "semaphore_release", "semaphore_status", "board_item_create", "board_item_update", "board_item_get", "board_item_delete", "board_item_list", "board_summary", "milestone_create", "milestone_status", "session_briefing"},
+        "local_ai_coord": {"claim", "renew", "release", "leases", "gpu_reservation_status", "gpu_reservation_release", "gpu_reservation_release_authorized", "task_create", "task_get", "task_checkpoint", "task_rollback", "task_transition", "task_resume", "task_list", "task_budget_increase", "task_complete", "task_fail", "task_heartbeat", "ask", "answer", "memory_record", "memory_get", "memory_find", "memory_delete", "memory_promote", "context_compile", "verify_receipt", "verify_completion", "verify_export", "negative_knowledge_record", "negative_knowledge_find", "incident_decision", "blackboard_update", "blackboard_get", "blackboard_list", "blackboard_delete", "blackboard_merge", "swarm_dispatch", "swarm_step", "swarm_status", "swarm_list", "swarm_cancel", "worktree_lease", "worktree_release", "pubsub_publish", "pubsub_poll", "simulate_merge", "curate_dataset", "task_sync", "task_zombie_reap", "task_cleanup_worktree", "wait_for_event", "semaphore_acquire", "semaphore_release", "semaphore_status", "board_item_create", "board_item_update", "board_item_get", "board_item_delete", "board_item_list", "board_summary", "milestone_create", "milestone_status", "session_briefing"},
     }
     expected["local_ai_task"].update({"browser", "automation"})
     expected["local_ai_coord"].update({

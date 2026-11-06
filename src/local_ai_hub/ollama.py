@@ -2344,6 +2344,7 @@ class OllamaRuntime:
             if selected is None:
                 raise ModelPreparationAdmissionRejected({"state": "rejected", "reason": "mixed_cuda_route_unavailable"})
             managed_status = self.llama_cpp_managed.status()
+            managed_online = isinstance(managed_status, dict) and managed_status.get("online") is True
             if (isinstance(managed_status, dict) and managed_status.get("online") is True
                     and not str(managed_status.get("mode", "")).startswith("CUDA")):
                 raise ModelPreparationAdmissionRejected({"state": "rejected", "reason": "mixed_cuda_device_unavailable"})
@@ -2369,6 +2370,25 @@ class OllamaRuntime:
                     return already_evicted + prepared
                 finally:
                     self._mixed_fallback_preparing = False
+
+            if not managed_online:
+                managed_should_stop = lambda: stopped() or time.monotonic() >= prepare_deadline
+                if not self.llama_cpp_managed.ensure_running(should_stop=managed_should_stop):
+                    check_active()
+                    fallback = fallback_to_ollama([])
+                    if fallback is not None:
+                        return fallback
+                    try:
+                        startup_error = str(self.llama_cpp_managed.status().get("last_error", ""))
+                    except Exception:
+                        startup_error = "managed runtime status unavailable"
+                    admission = {
+                        "state": "rejected",
+                        "reason": "mixed_managed_backend_unavailable",
+                    }
+                    if startup_error:
+                        admission["detail"] = startup_error
+                    raise ModelPreparationAdmissionRejected(admission)
 
             snapshot = self.loaded_model_inventory(should_stop=stopped, deadline=prepare_deadline, force_refresh=True)
             if not isinstance(snapshot, dict) or snapshot.get("complete") is not True or not isinstance(snapshot.get("models"), list):

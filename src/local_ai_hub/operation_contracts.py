@@ -255,7 +255,7 @@ _TASK_ACTIONS = (
     "eval_suite", "prompt_eval", "eval_drift", "complete_code", "scaffold", "automation",
 )
 _RAG_ACTIONS = ("index", "search", "list", "docset_index", "docset_search", "ingest_document", "ingest_diagram")
-_COORD_BASE_ACTIONS = ("claim", "renew", "release", "leases", "gpu_reservation_status", "gpu_reservation_release")
+_COORD_BASE_ACTIONS = ("claim", "renew", "release", "leases", "gpu_reservation_status", "gpu_reservation_release", "gpu_reservation_release_authorized")
 _COORD_ACTIONS = (
     *_COORD_BASE_ACTIONS,
     "task_create", "task_get", "task_checkpoint", "task_rollback", "task_transition", "task_resume", "task_list", "task_budget_increase", "task_repair_session",
@@ -937,6 +937,7 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
             "task_claim": ("root", "task_id", "owner"),
             "gpu_reservation_status": (),
             "gpu_reservation_release": ("generation", "consent", "audit_reason"),
+            "gpu_reservation_release_authorized": ("consent", "audit_reason"),
             "task_create": ("root", "task_id", "goal", "task", "paths", "contract", "scope", "acceptance_criteria", "criteria", "title", "description", "path", "file"),
             "task_update": ("root", "task_id", "checkpoint", "contract", "goal", "acceptance_criteria", "criteria"),
             "memory_list": ("root", "scope", "query", "limit", "kind"),
@@ -993,6 +994,7 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
             "task_claim": ("task_id",),
             "record_native_receipt": ("task_id", "criterion", "command_id"),
             "gpu_reservation_release": ("generation", "consent", "audit_reason"),
+            "gpu_reservation_release_authorized": ("consent", "audit_reason"),
         },
         non_empty={
             "ask": ("root", "session_id"),
@@ -1024,6 +1026,7 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
             "task_claim": ("task_id",),
             "record_native_receipt": ("task_id", "criterion", "command_id"),
             "gpu_reservation_release": ("generation", "audit_reason"),
+            "gpu_reservation_release_authorized": ("audit_reason",),
             "plan_init": ("root",),
             "plan_list": ("root",),
             "plan_get": ("root", "plan_id"),

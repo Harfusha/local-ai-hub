@@ -58,6 +58,23 @@ def test_prewarm_backend_wait_accepts_online_runtime() -> None:
     assert _wait_for_prewarm_backend(_OnlineRuntime(), threading.Event(), 1.0) is True
 
 
+def test_prewarm_defers_offline_runtime_start_to_scheduler_admission() -> None:
+    class _StartableRuntime:
+        ensure_calls = 0
+
+        def is_online(self) -> bool:
+            return False
+
+        def ensure_running(self) -> bool:
+            self.ensure_calls += 1
+            raise AssertionError("prewarm gate must not start runtime outside scheduler admission")
+
+    runtime = _StartableRuntime()
+
+    assert _wait_for_prewarm_backend(runtime, threading.Event(), 0.0) is True
+    assert runtime.ensure_calls == 0
+
+
 def test_prewarm_stops_retrying_after_unknown_gpu_outcome() -> None:
     class _UnknownScheduler:
         def status(self) -> dict[str, str]:

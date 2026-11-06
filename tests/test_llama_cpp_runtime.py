@@ -379,7 +379,8 @@ class LlamaCppRuntimeTests(unittest.TestCase):
                               "managed_model_sha256": "a" * 64, "managed_model_logical": "candidate",
                               "models": {"candidate": {"url": "http://127.0.0.1:12438", "context_length": 512}}},
             })
-            with (patch.object(runtime, "loaded_model_inventory", return_value={"complete": True, "models": []}),
+            with (patch.object(runtime.llama_cpp_managed, "ensure_running", return_value=True),
+                  patch.object(runtime, "loaded_model_inventory", return_value={"complete": True, "models": []}),
                   patch.object(runtime.llama_cpp, "ensure_model", return_value=True) as load):
                 with self.assertRaises(ModelPreparationAdmissionRejected) as rejected:
                     runtime.prepare_model("candidate", post_unload_admission=lambda: {"state": "admitted"})
@@ -470,13 +471,15 @@ class LlamaCppRuntimeTests(unittest.TestCase):
                 try:
                     runtime.prepare_model("candidate", deadline=time.monotonic() + 0.1)
                 except Exception as exc:
-                    results.append(type(exc))
+                    results.append(exc)
             with runtime._mixed_provider_lock:
                 thread = threading.Thread(target=prepare)
                 thread.start()
                 thread.join(timeout=2)
             self.assertFalse(thread.is_alive())
-            self.assertEqual(results, [TimeoutError])
+            self.assertEqual(len(results), 1)
+            self.assertIsInstance(results[0], TimeoutError)
+            self.assertTrue(getattr(results[0], "operation_not_started", False))
 
     def test_mixed_fallback_can_reuse_ollama_when_cuda_is_stopped(self):
         from local_ai_hub.ollama import OllamaRuntime
@@ -572,7 +575,8 @@ class LlamaCppRuntimeTests(unittest.TestCase):
             row = {"name": "candidate", "backend": "ollama", "endpoint_id": "http://127.0.0.1:11434"}
             selected_row = {"name": "candidate", "backend": "llama.cpp-cuda", "endpoint_url": "http://127.0.0.1:12438", "status": "loaded"}
             snapshots = [{"complete": True, "models": [row]}, {"complete": True, "models": []}, {"complete": True, "models": [selected_row]}]
-            with (patch.object(runtime, "loaded_model_inventory", side_effect=snapshots),
+            with (patch.object(runtime.llama_cpp_managed, "ensure_running", return_value=True),
+                  patch.object(runtime, "loaded_model_inventory", side_effect=snapshots),
                   patch.object(runtime, "unload_inventory_model", side_effect=lambda *_a, **_kw: events.append("unload") or True),
                   patch.object(runtime.llama_cpp, "ensure_model", side_effect=lambda *_a, **_kw: events.append("load") or True)):
                 evicted = runtime.prepare_model("candidate", post_unload_admission=lambda: events.append("admit") or {"state": "admitted"})
@@ -691,7 +695,8 @@ class LlamaCppRuntimeTests(unittest.TestCase):
             events = []
             other = {"name": "other", "backend": "ollama", "context_length": 4096}
             snapshots = [{"complete": False}, {"complete": True, "models": [other]}, {"complete": True, "models": []}]
-            with (patch.object(runtime, "loaded_model_inventory", side_effect=snapshots),
+            with (patch.object(runtime.llama_cpp_managed, "ensure_running", return_value=True),
+                  patch.object(runtime, "loaded_model_inventory", side_effect=snapshots),
                   patch.object(runtime, "_reserve_mixed_cuda_endpoint", return_value=guard),
                   patch.object(runtime, "ensure_running", return_value=True),
                   patch.object(runtime, "unload_inventory_model", side_effect=lambda *_a, **_kw: events.append("unload") or True),
@@ -957,6 +962,55 @@ class LlamaCppRuntimeTests(unittest.TestCase):
             ):
                 runtime.provision()
             self.assertEqual((binary.parent / "cudart64_13.dll").read_bytes(), b"runtime")
+
+    def test_cuda_provision_omits_cpu_variants_not_enabled_by_windows(self):
+        with tempfile.TemporaryDirectory() as temp:
+            runtime = LlamaCppManagedRuntime({
+                "server": {"state_dir": temp},
+                "llama_cpp": {"backend": "cuda"},
+                "_hardware": {"gpus": [{"vendor": "nvidia"}]},
+            })
+            archives = {}
+            for name, members in (
+                ("cuda-server.zip", {
+                    "llama-server.exe": b"server",
+                    "ggml-cpu-x64.dll": b"generic",
+                    "ggml-cpu-haswell.dll": b"avx2",
+                    "ggml-cpu-alderlake.dll": b"avx-vnni",
+                    "ggml-cpu-zen4.dll": b"avx512",
+                }),
+                ("cuda-libs.zip", {"cudart64_13.dll": b"runtime"}),
+            ):
+                data = io.BytesIO()
+                with zipfile.ZipFile(data, "w") as bundle:
+                    for member, payload in members.items():
+                        bundle.writestr(member, payload)
+                archives[name] = data.getvalue()
+            specs = tuple((name, hashlib.sha256(data).hexdigest(), "zip") for name, data in archives.items())
+            runtime.model_path.parent.mkdir(parents=True)
+            runtime.model_path.write_bytes(b"model")
+
+            def download(_url, destination, expected_sha256, _max_bytes, timeout):
+                data = archives[Path(destination).name]
+                self.assertEqual(hashlib.sha256(data).hexdigest(), expected_sha256)
+                destination.write_bytes(data)
+
+            with (
+                patch.object(runtime, "_host_platform", return_value=("win32", "amd64")),
+                patch("local_ai_hub.llama_cpp_runtime.CUDA_WINDOWS_X64", specs),
+                patch("local_ai_hub.llama_cpp_runtime.MODEL_SHA256", hashlib.sha256(b"model").hexdigest()),
+                patch("local_ai_hub.llama_cpp_runtime._windows_avx512f_available", return_value=False),
+                patch.object(runtime, "_download", side_effect=download),
+            ):
+                binary = runtime.provision()
+                self.assertEqual((binary.parent / "ggml-cpu-x64.dll").read_bytes(), b"generic")
+                self.assertEqual((binary.parent / "ggml-cpu-haswell.dll").read_bytes(), b"avx2")
+                self.assertFalse((binary.parent / "ggml-cpu-alderlake.dll").exists())
+                self.assertFalse((binary.parent / "ggml-cpu-zen4.dll").exists())
+
+                (binary.parent / "ggml-cpu-zen4.dll").write_bytes(b"stale installed variant")
+                runtime.provision()
+                self.assertFalse((binary.parent / "ggml-cpu-zen4.dll").exists())
 
     def test_backend_selection_is_explicit_and_ollama_has_precedence(self):
         self.assertEqual(llama_cpp_backend_selection({"ollama": {"enabled": True}, "llama_cpp": {"mode": "on"}}), "ollama")

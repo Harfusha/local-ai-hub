@@ -335,7 +335,13 @@ def _prewarm_should_retry(scheduler: Any) -> bool:
 
 
 def _wait_for_prewarm_backend(runtime: Any, shutdown: threading.Event, max_wait_seconds: float) -> bool:
-    """Give a managed backend a short startup grace period without blocking requests."""
+    """Let scheduler admission start an offline backend before prewarming it."""
+    if not _runtime_is_available(runtime):
+        ensure_running = getattr(runtime, "ensure_running", None)
+        if callable(ensure_running):
+            # Starting here would acquire GPU resources outside the scheduler's
+            # admission fence. Runtime preparation starts it after admission.
+            return not shutdown.is_set()
     deadline = time.monotonic() + max(0.0, float(max_wait_seconds))
     while not shutdown.is_set():
         if _runtime_is_available(runtime):
