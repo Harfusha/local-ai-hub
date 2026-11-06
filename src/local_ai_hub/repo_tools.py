@@ -1924,18 +1924,24 @@ class RepositoryTools:
                 pending = bytearray()
                 inventory: set[str] = set()
                 inventory_bytes = 0
+                inventory_path_count = 0
 
                 def remember_path(raw: bytes) -> None:
-                    nonlocal inventory_bytes
+                    nonlocal inventory_bytes, inventory_path_count
                     if not raw:
                         return
                     inventory_bytes += len(raw)
                     if inventory_bytes > MAX_EXACT_GIT_PATH_BYTES:
                         raise _IncompleteGitInventory("Git exact-search path bytes exceeded bounded inventory")
-                    relative = raw.decode("utf-8", errors="surrogateescape").replace("\\", "/")
-                    inventory.add(Path(relative).as_posix())
-                    if len(inventory) > MAX_EXACT_GIT_PATHS:
+                    inventory_path_count += 1
+                    if inventory_path_count > MAX_EXACT_GIT_PATHS:
                         raise _IncompleteGitInventory("Git exact-search path count exceeded bounded inventory")
+                    relative = raw.decode("utf-8", errors="surrogateescape").replace("\\", "/")
+                    normalized = Path(relative).as_posix()
+                    # Keep Git's complete bounded inventory check, but retain
+                    # only content candidates before deterministic ordering.
+                    if matching_relpaths is None or normalized in matching_relpaths:
+                        inventory.add(normalized)
 
                 try:
                     assert process.stdout is not None

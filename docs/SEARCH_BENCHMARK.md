@@ -58,6 +58,22 @@ HTTP/MCP, or a real-repository measurement. The natural-query latency is a
 known regression cost of searching the full allowed candidate set; further
 optimization is still required.
 
+## Exact lexical search — 2026-11-06
+
+Command:
+`python tools/benchmark_search_quality.py --mode engine --suite holdout --repeats 3 --noise-files 1000`.
+This synthetic `RepositoryTools.search(exact_count=True)` run measured recall@10
+0.89 and MRR 0.89. `Local AI Hub installation` had a 169 ms median and 177 ms
+p95; translation-only `How to configure the software` still had recall 0.
+The fixture is not a Git checkout, so these timings do not measure Git
+inventory pruning or real-repository performance.
+
+A focused Git-backed regression fixture enumerates 1001 paths but retains and
+sorts only the single ripgrep match. Git enumeration remains complete and
+bounded, preserving exact counts, force-includes, and stable path ordering.
+This verifies reduced candidate memory and sorting work; it does not establish
+a live latency gain.
+
 ## Remaining benchmark coverage
 
 - A manually judged real-repository set, including Czech-to-English semantic
