@@ -2,7 +2,13 @@
 
 ### Current coverage reconciliation — 2026-11-07
 
-Across prompts 001–107: **51 PASS, 3 PARTIAL, 52 NOT_RUN, 1 BLOCKED**. NOT_RUN and BLOCKED are not passes. Cases 102 and 105 passed in isolated practical chats. Cases 103 and 104 passed in prepared isolated sandboxes. Case 098 remains PARTIAL overall; its tokenless dashboard path previously passed without API token headers. Cases 101 and 107 passed in isolated chats after this iteration. Focused tests only; full pytest suite not run by user instruction.
+Across prompts 001–108: **52 PASS, 3 PARTIAL, 52 NOT_RUN, 1 BLOCKED**. NOT_RUN and BLOCKED are not passes. Cases 102 and 105 passed in isolated practical chats. Cases 103 and 104 passed in prepared isolated sandboxes. Case 098 remains PARTIAL overall; its tokenless dashboard path previously passed without API token headers. Cases 101, 107, and 108 passed in isolated chats after this iteration. Focused tests only; full pytest suite not run by user instruction.
+
+### Case 108 — Dashboard bez API tokenu
+
+- Status: **PASS** for dashboard page and visible local status; protected API permissions remain untested.
+- Isolated projectless chat: `01a1b815-1acb-72e3-9ccd-034fd65b3e3a`, host `local`; 22.17 s.
+- Harness first run correctly returned NOT_RUN because status omitted the dashboard URL. The supported `python tools/hubctl.py dashboard` command returned `http://127.0.0.1:11435/dashboard`; the URL contained no credential. After providing that URL, the chat opened it in Chrome without a login prompt and observed `live`, `Active`, and `12/12` modules. It did not inspect credentials or call protected APIs. One in-app browser launch failed; Chrome launch succeeded.
 
 ### Post-restart regression iteration — 2026-11-07
 
