@@ -7222,7 +7222,7 @@ def test_{sym}_regression_edge_cases():
             if not p.is_file():
                 continue
             rel_parts = p.relative_to(p_root).parts
-            if any(part.startswith((".", "node_modules", "venv", ".git", "test")) for part in rel_parts):
+            if any(part.startswith((".", "node_modules", "venv", ".git", "test", "tool-envs", "site-packages")) or part in {"tool-envs", "venv", ".venv", "site-packages", "node_modules", "__pycache__", "build", "dist"} for part in rel_parts):
                 continue
             rel = str(p.relative_to(p_root)).replace("\\", "/")
             try:
