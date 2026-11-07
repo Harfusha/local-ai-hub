@@ -362,6 +362,31 @@ def test_cancel_before_model_preparation_does_not_quarantine_gpu(tmp_path):
         other.close()
 
 
+def test_cancel_during_prepare_with_not_started_does_not_quarantine_gpu(tmp_path):
+    class PreparationCancelledNotStarted(Exception):
+        preparation_cancelled = True
+        operation_not_started = True
+
+    config = {"server": {"state_dir": str(tmp_path)}}
+    def prepare(*_args, **_kwargs):
+        raise PreparationCancelledNotStarted("cancelled before load")
+
+    runtime = SimpleNamespace(loaded_model_details=lambda: [], prepare_model=prepare)
+    scheduler = AffinityScheduler(runtime, config)
+    other = AffinityScheduler(SimpleNamespace(loaded_model_details=lambda: []), config)
+    try:
+        with pytest.raises(TimeoutError):
+            scheduler.submit("model", source="test", execute=lambda: {"success": True}, wait_timeout=0.2)
+        with scheduler._cond:
+            assert not scheduler._internal_gpu_uncertain
+            assert scheduler._release_internal_gpu()
+        token = other.reserve_external_gpu()
+        assert token and other.release_external_gpu(token)
+    finally:
+        scheduler.close()
+        other.close()
+
+
 def test_cancel_after_model_preparation_begins_retains_fence(tmp_path):
     class PreparationCancelled(Exception):
         preparation_cancelled = True

@@ -2159,18 +2159,18 @@ class OllamaRuntime:
             return list(self._meta_cache.get("loaded_details", []))
         result = self.request("/api/ps", timeout=1.0, should_stop=should_stop, deadline=deadline)
         if result.get("preempted") or _stop_requested(should_stop):
-            raise ModelPreparationCancelled("model preparation cancelled while checking loaded models")
+            raise ModelPreparationCancelled("model preparation cancelled while checking loaded models", operation_not_started=True)
         if deadline is not None and time.monotonic() >= deadline:
-            raise TimeoutError("model preparation deadline expired while checking loaded models")
+            raise ModelPreparationNotStarted("model preparation deadline expired while checking loaded models")
         if "error" in result or not isinstance(result, dict):
             if should_stop is not None or deadline is not None:
                 llama_rows = self.llama_cpp.loaded_model_details(
                     should_stop=should_stop, deadline=deadline,
                 )
                 if _stop_requested(should_stop):
-                    raise ModelPreparationCancelled("model preparation cancelled while checking adapter models")
+                    raise ModelPreparationCancelled("model preparation cancelled while checking adapter models", operation_not_started=True)
                 if deadline is not None and time.monotonic() >= deadline:
-                    raise TimeoutError("model preparation deadline expired while checking adapter models")
+                    raise ModelPreparationNotStarted("model preparation deadline expired while checking adapter models")
                 return llama_rows or list(self._meta_cache.get("loaded_details", []))
             llama_rows = self.llama_cpp.loaded_model_details()
             return llama_rows or list(self._meta_cache.get("loaded_details", []))
@@ -2208,9 +2208,9 @@ class OllamaRuntime:
     ) -> list[str]:
         def check() -> None:
             if should_stop():
-                raise ModelPreparationCancelled("model preparation cancelled")
+                raise ModelPreparationCancelled("model preparation cancelled", operation_not_started=True)
             if time.monotonic() >= deadline:
-                raise TimeoutError("model preparation deadline expired")
+                raise ModelPreparationNotStarted("model preparation deadline expired")
 
         check()
         if self._is_embedding_model(model) or not self.ensure_running():
@@ -2327,10 +2327,14 @@ class OllamaRuntime:
         def stopped() -> bool:
             return _stop_requested(should_stop)
 
+        load_started = False
+
         def check_active() -> None:
             if stopped():
-                raise ModelPreparationCancelled("model preparation cancelled")
+                raise ModelPreparationCancelled("model preparation cancelled", operation_not_started=not load_started)
             if time.monotonic() >= prepare_deadline:
+                if not load_started:
+                    raise ModelPreparationNotStarted("model preparation deadline expired")
                 raise TimeoutError("model preparation deadline expired")
 
         check_active()
@@ -2438,6 +2442,7 @@ class OllamaRuntime:
                     rejected.update({"state": "rejected", "reason": rejected.get("reason", "post_unload_admission_rejected")})
                     raise ModelPreparationAdmissionRejected(rejected, evicted)
             check_active()
+            load_started = True
             if self.llama_cpp.ensure_model(model, timeout=max(0.05, prepare_deadline - time.monotonic()),
                                            should_stop=stopped, deadline=prepare_deadline):
                 check_active()
@@ -2460,6 +2465,7 @@ class OllamaRuntime:
                 "state": "rejected", "reason": "post_unload_admission_unsupported_backend",
                 "vram_admission": "rejected", "vram_admission_phase": "post_unload",
             })
+        load_started = True
         if self.llama_cpp.ensure_model(
             model,
             timeout=max(0.05, min(load_timeout, prepare_deadline - time.monotonic())),
@@ -2518,6 +2524,7 @@ class OllamaRuntime:
                 raise ModelPreparationAdmissionRejected(rejected_admission, evicted)
             check_active()
 
+        load_started = True
         keep_alive = self.config.get("ollama", {}).get("keep_alive", "24h")
         if self._is_embedding_model(model):
             payload = {"model": model, "input": [""], "keep_alive": keep_alive}

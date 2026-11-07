@@ -88,7 +88,7 @@ def _status_dependency_timeout_seconds(key: str) -> float:
         timeout = max(timeout, float(_STATUS_TELEMETRY_SUMMARY_TIMEOUT_SECONDS))
     elif key == "ollama_profile":
         timeout = max(timeout, float(_STATUS_OLLAMA_PROFILE_TIMEOUT_SECONDS))
-    elif key in {"preprocessing.status", "preprocessing.stats"}:
+    elif key in {"preprocessing.status", "preprocessing.stats", "background_gpu"}:
         timeout = max(timeout, float(_STATUS_PREPROCESSING_STATUS_TIMEOUT_SECONDS))
     return max(0.0, timeout)
 

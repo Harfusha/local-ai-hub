@@ -110,10 +110,11 @@ def test_t12_prepare_model_honors_stop_before_model_load() -> None:
 
     runtime.llama_cpp = LlamaRuntime()
 
-    with pytest.raises(ModelPreparationCancelled):
+    with pytest.raises(ModelPreparationCancelled) as exc_info:
         runtime.prepare_model("reranker-model", should_stop=lambda: True)
 
     assert calls == []
+    assert exc_info.value.operation_not_started is True
 
 
 def test_t12_prepare_model_forwards_deadline_and_stop_to_embedding_load() -> None:
