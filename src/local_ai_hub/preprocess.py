@@ -252,6 +252,14 @@ def _resolve_preprocess_path_policy(api: Any | None, root: Any, settings: Any | 
     return ProjectPathPolicy(root, settings)
 
 
+class _RetryablePreprocessingError(RuntimeError):
+    """A project step was deferred by a transient resource or backend state."""
+
+    def __init__(self, message: str, retry_after_seconds: float = 60.0) -> None:
+        super().__init__(message)
+        self.retry_after_seconds = retry_after_seconds
+
+
 class ProjectPreprocessor:
     """Durable idle-time project preprocessing.
 
@@ -2328,6 +2336,20 @@ class ProjectPreprocessor:
                         self._stats["yields"] += 1
                     self.scheduler.note_background_yield()
                     self._stop.wait(min(0.5, poll))
+            except _RetryablePreprocessingError as exc:
+                with self._stats_lock:
+                    self._stats["yields"] += 1
+                try:
+                    delay = min(300.0, max(1.0, float(exc.retry_after_seconds)))
+                    self._set_project(
+                        root,
+                        status="waiting",
+                        last_error=str(exc)[:1000],
+                        retry_after=time.time() + delay,
+                    )
+                except Exception as record_exc:
+                    logger.error("Could not record deferred preprocessing state (%s)", type(record_exc).__name__)
+                    self._stop.wait(min(0.5, poll))
             except Exception as exc:
                 with self._stats_lock:
                     self._stats["errors"] += 1
@@ -3126,7 +3148,15 @@ class ProjectPreprocessor:
         if result.get("preempted"):
             return False
         if not result.get("success"):
-            raise RuntimeError(str(result.get("error", "RAG preprocessing failed")))
+            message = str(result.get("error", "RAG preprocessing failed"))
+            if result.get("retryable") is True:
+                retry_after = result.get("retry_after_seconds", 60.0)
+                try:
+                    retry_after = float(retry_after)
+                except (TypeError, ValueError):
+                    retry_after = 60.0
+                raise _RetryablePreprocessingError(message, retry_after)
+            raise RuntimeError(message)
         processed = set(str(x) for x in result.get("processed_paths", []))
         # A watcher event can leave a deleted file_ref behind after the file has
         # disappeared. RAG intentionally ignores missing paths, so without this

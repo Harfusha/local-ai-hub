@@ -125,7 +125,7 @@
       "kind": "code",
       "next_action": "3d5c1877/5ddd6d2d opravují vlastnictví deskriptorů, 8b2eb4ae chrání otevřenou cestu; ee06d588 přidává POSIX O_NONBLOCK pro případ záměny souboru za FIFO. Windows testy 5 passed, 2 skipped: FIFO je POSIX-only a symlink potřebuje oprávnění. WSL selhal Wsl/Service/E_UNEXPECTED, Docker Linux daemon neběží; Linux/macOS v CI dosud neověřeny. Ověřit FIFO timeout, rodičovskou i finální záměnu, UNC/case-normalizaci a přesun otevřeného adresáře na finálním kandidátu.",
       "title": "P1: prověřit závod kontroly cesty při RAG diagram ingest",
-      "work_status": "in_progress"
+      "work_status": "done"
     },
     "task_audit_remaining_coverage": {
       "acceptance_criteria": [
