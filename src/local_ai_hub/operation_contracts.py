@@ -478,6 +478,10 @@ _ACTION_SCOPED_FIELDS = {
         "result": frozenset({"task_complete", "task_fail", "record_native_receipt"}),
         "timeout_seconds": frozenset({"wait_for_event", "semaphore_acquire"}),
         "id": frozenset({"task_get", "task_resume", "task_cleanup_worktree", "task_zombie_reap", "board_item_get", "board_item_delete", "board_item_update"}),
+        "approver": frozenset(),
+        "target_scope": frozenset(),
+        "record_id": frozenset(),
+        "record": frozenset(),
     },
 }
 OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
@@ -944,6 +948,8 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
             "memory_list": ("root", "scope", "query", "limit", "kind"),
             "memory_find": ("root", "scope", "query", "limit", "kind", "key", "status", "session_id"),
             "memory_record": ("root", "scope", "key", "value", "kind", "status", "confidence", "ttl_seconds", "session_id"),
+            "memory_delete": ("root", "scope", "record_id", "scope_id", "task_id", "session_id", "clone_id", "worktree_id", "branch"),
+            "memory_promote": ("root", "scope", "record_id", "target_scope", "scope_id", "task_id", "session_id", "clone_id", "worktree_id", "branch"),
             "task_fail": ("root", "task_id", "reason", "error", "message"),
             "task_list": ("root", "query", "status", "owner", "limit", "offset", "include_stale"),
             "record_native_receipt": ("root", "task_id", "criterion", "command_id"),
@@ -965,6 +971,8 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
             "ask": ("root", "session_id"),
             "curate_dataset": ("root",),
             "memory_record": ("root", "scope", "key", "value"),
+            "memory_delete": ("root", "scope", "record_id"),
+            "memory_promote": ("root", "scope", "record_id", "target_scope"),
             "task_budget_increase": ("root", "task_id", "reason", "budget"),
             "answer": ("root", "question_id", "answer"),
             "task_cleanup_worktree": ("task_id",),
@@ -1002,6 +1010,8 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
             "ask": ("root", "session_id"),
             "curate_dataset": ("root",),
             "memory_record": ("root", "scope", "key"),
+            "memory_delete": ("root", "scope", "record_id"),
+            "memory_promote": ("root", "scope", "record_id", "target_scope"),
             "task_budget_increase": ("root", "task_id", "reason"),
             "answer": ("root", "question_id", "answer"),
             "task_cleanup_worktree": ("task_id",),
@@ -2291,17 +2301,26 @@ def validate_operation_arguments(
             return f"{field} is only valid for actions {scoped_names}"
     if tool == "local_ai_coord" and action == "task_create" and arguments.get("scope") == "":
         return "scope must use a canonical AgentScope value when supplied"
-    if tool == "local_ai_coord" and action == "memory_record":
+    if tool == "local_ai_coord" and action in {"memory_record", "memory_delete", "memory_promote"}:
         root = arguments.get("root")
         if not isinstance(root, str) or not root.strip():
-            return "root is required for action='memory_record'"
+            return f"root is required for action='{action}'"
         if not Path(root).expanduser().is_absolute():
-            return "root must be an absolute path for action='memory_record'"
+            return f"root must be an absolute path for action='{action}'"
         scope = arguments.get("scope")
         if not isinstance(scope, str) or not scope:
-            return "scope is required for action='memory_record'"
+            return f"scope is required for action='{action}'"
         if scope not in {"global", "repository", "clone", "worktree", "branch", "task", "session"}:
-            return "scope must use a canonical AgentScope value for action='memory_record'"
+            return f"scope must use a canonical AgentScope value for action='{action}'"
+        if action in {"memory_delete", "memory_promote"}:
+            record_id = arguments.get("record_id")
+            if not isinstance(record_id, str) or not record_id.strip():
+                return f"record_id is required for action='{action}'"
+        if action == "memory_promote":
+            target_scope = arguments.get("target_scope")
+            if not isinstance(target_scope, str) or target_scope not in {"global", "repository", "clone", "worktree", "branch", "task", "session"}:
+                return "target_scope must use a canonical AgentScope value for action='memory_promote'"
+    if tool == "local_ai_coord" and action == "memory_record":
         key = arguments.get("key")
         if not isinstance(key, str) or not key.strip():
             return "key must be a non-empty string for action='memory_record'"

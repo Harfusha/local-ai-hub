@@ -6039,10 +6039,16 @@ def local_ai_coord(
                 and isinstance(task_projection, dict) and task_projection.get("success") is True):
             task_projection["tasks"] = []
         return task_projection
-    if action == "memory_record":
-        supplied = {"action": action, "root": root, "scope": scope, "key": key}
-        if value is not None:
-            supplied["value"] = value
+    if action in {"memory_record", "memory_delete", "memory_promote"}:
+        supplied = {"action": action, "root": root, "scope": scope}
+        if action == "memory_record":
+            supplied["key"] = key
+            if value is not None:
+                supplied["value"] = value
+        if action in {"memory_delete", "memory_promote"}:
+            supplied["record_id"] = record_id
+        if action == "memory_promote":
+            supplied["target_scope"] = target_scope
         if session_id:
             supplied["session_id"] = session_id
         for alias, alias_value in (("name", name), ("content", content), ("query", query)):

@@ -1241,6 +1241,10 @@ def test_coord_memory_record_rejects_content_and_name():
         )
         assert incomplete.get("success") is False
         assert aliased.get("success") is False
+        deletion = local_ai_coord(action="memory_delete", record_id="mem_fixture")
+        promotion = local_ai_coord(action="memory_promote", record_id="mem_fixture")
+        assert deletion.get("success") is False
+        assert promotion.get("success") is False
         assert mc.coord.call_count == 0
 
 

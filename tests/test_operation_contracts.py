@@ -153,6 +153,17 @@ def test_hub_client_forwards_explicit_memory_record_identity(tmp_path):
     assert payload["session_id"] == "session-fixture-101"
 
 
+def test_hub_client_rejects_memory_mutations_without_explicit_root_and_scope():
+    calls = []
+    client = SimpleNamespace(post=lambda *args, **kwargs: calls.append((args, kwargs)))
+
+    for action in ("memory_delete", "memory_promote"):
+        result = HubClient.coord(client, action, record_id="mem_fixture")
+        assert result["success"] is False
+        assert result["status_code"] == 400
+    assert calls == []
+
+
 def test_artifact_handler_applies_registry_validation_before_backend_call(monkeypatch):
     monkeypatch.setattr(local_ai_mcp, "FEATURES", FeatureSet.from_config(_config()))
     monkeypatch.setattr(local_ai_mcp, "_record_adoption", lambda *args, **kwargs: None)

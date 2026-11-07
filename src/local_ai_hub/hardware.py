@@ -611,10 +611,21 @@ def profile_overrides(profile_name: str, detected: dict[str, Any] | None = None)
     )
     if profile_name in {"high", "max"} and nvidia_vram >= 15 * 1024:
         result = _deep_merge_dict(result, {"models": {"embedding_device": "cuda", "reranker_device": "cuda"}})
-    if has_npu or (profile_name in ("integrated", "cpu") and intel_integrated):
-        # Retrieval models are small enough to be useful on Intel/AMD NPU/iGPU while
-        # leaving the shared-memory LLM lane serial and conservative. Runtime
-        # failures fall back to the next OpenVINO device and finally CPU.
+    if has_npu:
+        # NPU takes priority in ANY profile: offload embeddings and reranker to dedicated NPU hardware,
+        # freeing GPU VRAM and CPU cores for LLM inference.
+        result = _deep_merge_dict(result, {
+            "models": {
+                "embedding": "BAAI/bge-small-en-v1.5",
+                "embedding_backend": "openvino", "embedding_device": "NPU",
+                "reranker": "cross-encoder/ms-marco-MiniLM-L6-v2",
+                "reranker_backend": "openvino", "reranker_device": "NPU",
+            },
+            "features": {"reranker": True},
+            "openvino": {"enabled": True},
+        })
+    elif profile_name in ("integrated", "cpu") and intel_integrated:
+        # Intel iGPU OpenVINO acceleration for integrated systems without discrete NPU
         result = _deep_merge_dict(result, {
             "models": {
                 "embedding": "BAAI/bge-small-en-v1.5",
@@ -622,6 +633,7 @@ def profile_overrides(profile_name: str, detected: dict[str, Any] | None = None)
                 "reranker": "cross-encoder/ms-marco-MiniLM-L6-v2",
                 "reranker_backend": "openvino", "reranker_device": "auto",
             },
+            "features": {"reranker": True},
             "openvino": {"enabled": True},
         })
     return result
