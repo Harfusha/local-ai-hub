@@ -943,7 +943,7 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
             "task_update": ("root", "task_id", "checkpoint", "contract", "goal", "acceptance_criteria", "criteria"),
             "memory_list": ("root", "scope", "query", "limit", "kind"),
             "memory_find": ("root", "scope", "query", "limit", "kind", "key", "status", "session_id"),
-            "memory_record": ("root", "scope", "key", "value", "kind", "status", "confidence", "ttl_seconds", "name", "content", "session_id"),
+            "memory_record": ("root", "scope", "key", "value", "kind", "status", "confidence", "ttl_seconds", "session_id"),
             "task_fail": ("root", "task_id", "reason", "error", "message"),
             "task_list": ("root", "query", "status", "owner", "limit", "offset", "include_stale"),
             "record_native_receipt": ("root", "task_id", "criterion", "command_id"),
@@ -2302,6 +2302,11 @@ def validate_operation_arguments(
             return "scope is required for action='memory_record'"
         if scope not in {"global", "repository", "clone", "worktree", "branch", "task", "session"}:
             return "scope must use a canonical AgentScope value for action='memory_record'"
+        key = arguments.get("key")
+        if not isinstance(key, str) or not key.strip():
+            return "key must be a non-empty string for action='memory_record'"
+        if not isinstance(arguments.get("value"), str):
+            return "value must be a string for action='memory_record'"
     if tool == "local_ai_repo" and action == "context":
         mode = arguments.get("mode", properties.get("mode", {}).get("default", "adaptive"))
         if mode != "adaptive":

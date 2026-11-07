@@ -5214,7 +5214,7 @@ def local_ai_coord(
     owner: str = "",
     purpose: str = "agent edit",
     key: str = "",
-    value: str = "",
+    value: str | None = None,
     query: str = "",
     command: str = "",
     command_id: str = "",
@@ -6039,11 +6039,21 @@ def local_ai_coord(
                 and isinstance(task_projection, dict) and task_projection.get("success") is True):
             task_projection["tasks"] = []
         return task_projection
+    if action == "memory_record":
+        supplied = {"action": action, "root": root, "scope": scope, "key": key}
+        if value is not None:
+            supplied["value"] = value
+        if session_id:
+            supplied["session_id"] = session_id
+        for alias, alias_value in (("name", name), ("content", content), ("query", query)):
+            if alias_value not in (None, ""):
+                supplied[alias] = alias_value
+        contract_error_value = validate_operation_arguments("local_ai_coord", action, supplied)
+        if contract_error_value:
+            return contract_error(contract_error_value, status_code=400)
     if action.startswith("memory_"):
-        if not key and name:
-            key = name
-        if not value and content:
-            value = str(content) if not isinstance(content, str) else content
+        if value is None:
+            value = ""
         mem_root = root if (requested_root and requested_root != ".") else _workspace
         if not repository_id and mem_root:
             from .project_config import resolve_project_context

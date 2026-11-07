@@ -7041,7 +7041,7 @@ class Handler(BaseHTTPRequestHandler):
                             # Defaulting here to TASK made a repository-only
                             # write impossible to read back by root.
                             "scope": payload.get("scope"),
-                            "key": str(payload.get("key") or payload.get("query") or ""),
+                            "key": payload.get("key"),
                             "value": payload.get("value"),
                             "scope_id": str(payload.get("scope_id", "")),
                             "confidence": payload.get("confidence", 1.0),
@@ -7053,8 +7053,8 @@ class Handler(BaseHTTPRequestHandler):
                             "expires_at": payload.get("expires_at"),
                             "ttl_seconds": payload.get("ttl_seconds"),
                         }
-                    if not isinstance(rec_data.get("scope"), str) or not rec_data["scope"].strip():
-                        self._send(400, {"success": False, "error": "memory record requires an explicit scope", "terminal": True, "retryable": False}); return
+                    if rec_data.get("scope") is not None and (not isinstance(rec_data["scope"], str) or not rec_data["scope"].strip()):
+                        self._send(400, {"success": False, "error": "memory record scope must be a non-empty string when provided", "terminal": True, "retryable": False}); return
                     if not isinstance(rec_data.get("key"), str) or not rec_data["key"].strip():
                         self._send(400, {"success": False, "error": "memory record requires a non-empty key", "terminal": True, "retryable": False}); return
                     if not value_supplied:

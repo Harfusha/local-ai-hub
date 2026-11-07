@@ -107,6 +107,7 @@ def test_http_global_memory_identity_uses_repository_scope_and_session_id(tmp_pa
         for malformed_record in (
             {"action": "record", "root": str(repo_a)},
             {"action": "record", "scope": "repository", "key": "missing-root", "value": "x"},
+            {"action": "record", "root": str(repo_a), "scope": "repository", "query": "legacy-key", "value": "x"},
         ):
             status, invalid_record = post(malformed_record)
             assert status == 400

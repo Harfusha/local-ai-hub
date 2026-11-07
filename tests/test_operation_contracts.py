@@ -106,6 +106,15 @@ def test_memory_record_requires_explicit_identity_and_preserves_session_id():
     }
     assert validate_operation_arguments("local_ai_coord", "memory_record", valid) is None
 
+    for alias_payload in (
+        {**valid, "name": "legacy-key"},
+        {**valid, "content": "legacy-value"},
+        {**valid, "query": "legacy-key"},
+    ):
+        assert validate_operation_arguments(
+            "local_ai_coord", "memory_record", alias_payload
+        ) is not None
+
 
 def test_hub_client_rejects_incomplete_memory_record_before_http():
     calls = []

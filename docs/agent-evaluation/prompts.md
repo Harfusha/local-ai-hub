@@ -873,13 +873,13 @@ Ve fixture aplikaci nefunguje export úloh s diakritikou a při zrušení někdy
 
 ### 101 — Přenos paměti mezi dvěma session
 
-Režim: R + přidělená testovací koordinace. Dva oddělené chaty; pouze první smí zapsat testovací záznam.
+Režim: R + disposable Git fixture `C:\Users\Adam\Documents\Codex\2026-11-07\prompt-stress-101\app`. Dva skutečné oddělené chaty; pouze první smí zapsat testovací záznam. Harness musí před startem znát oba chat ID a použít je jako explicitní `session_id`; nevymýšlet náhradní ID.
 
-První chat: „V testovací repository scope zapiš přes Hub memory záznam s klíčem `prompt-isolation-101`, hodnotou `modrá-origami-731` a současnou explicitní session ID. Vrať pouze potvrzené ID záznamu. Nepoužívej workspace soubory ani produkční paměť.“
+První chat: „V rootu `C:\Users\Adam\Documents\Codex\2026-11-07\prompt-stress-101\app` zapiš přes `local_ai_coord(action="memory_record")` s top-level `root`, `scope="repository"`, `key="prompt-isolation-101"`, `value="modrá-origami-731"` a svým skutečným `session_id`. Použij jen kanonická pole. Vrať potvrzené ID záznamu. Nepoužívej workspace soubory ani produkční paměť.“
 
-Druhý chat: „Najdi přes Hub záznam `prompt-isolation-101` pro přidělenou repository scope. Uveď jeho hodnotu, source scope a session vazbu. Pokud scope nebo oprávnění nesedí, odmítni převzít cizí kontext. Nic nezapisuj.“
+Druhý chat: „Ve stejném rootu vyhledej přes Hub záznam `prompt-isolation-101` v repository scope. Uveď přesnou hodnotu a ověř, že provenance váže zápis na writer session ID. Nic nezapisuj. Pokud scope nebo provenance nesedí, odmítni převzít cizí kontext.“
 
-STOP: bez oddělené testovací koordinace a předem přidělených session ID scénář nespouštěj.
+STOP: pokud oba skutečné chat ID nebo disposable root nejsou dostupné, nespouštěj zápis. Po testu smaž pouze přesné ID testovacího záznamu z disposable root a ověř jeho nepřítomnost.
 
 ### 102 — Odpověď nástroje s neznámým výsledkem
 

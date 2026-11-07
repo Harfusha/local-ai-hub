@@ -206,7 +206,8 @@ def test_schema_polymorphism_and_validation():
     coord_err = validate_operation_arguments(
         "local_ai_coord",
         "memory_record",
-        {"key": "test_k", "value": "test_v", "confidence": 0.9, "root": "."},
+        {"key": "test_k", "value": "test_v", "confidence": 0.9,
+         "root": str(Path.cwd().resolve()), "scope": "repository"},
     )
     assert coord_err is None
 
@@ -1217,18 +1218,30 @@ def test_coord_task_create_accepts_title_and_description():
 
 
 # ---------------------------------------------------------------------------
-# 10. local_ai_coord memory_record accepts content= and name=
+# 10. local_ai_coord memory_record rejects content= and name=
 # ---------------------------------------------------------------------------
 
-def test_coord_memory_record_accepts_content_and_name():
+def test_coord_memory_record_rejects_content_and_name():
     with patch("local_ai_hub.mcp_server.CLIENT") as mc:
-        mc.coord.return_value = {"success": True, "memory_id": "M1"}
-        res = local_ai_coord(action="memory_record", root="/repo", name="api_key_format", content="Starts with sk-")
-        assert res.get("success") is True, f"memory_record with name/content failed: {res}"
-        assert mc.coord.call_count >= 1
-        kwargs = mc.coord.call_args[1]
-        assert kwargs.get("key") == "api_key_format"
-        assert kwargs.get("value") == "Starts with sk-"
+        incomplete = local_ai_coord(
+            action="memory_record",
+            root=str(Path.cwd().resolve()),
+            scope="repository",
+            name="api_key_format",
+            content="Starts with sk-",
+        )
+        aliased = local_ai_coord(
+            action="memory_record",
+            root=str(Path.cwd().resolve()),
+            scope="repository",
+            key="canonical-key",
+            value="canonical-value",
+            name="legacy-key",
+            content="legacy-value",
+        )
+        assert incomplete.get("success") is False
+        assert aliased.get("success") is False
+        assert mc.coord.call_count == 0
 
 
 # ---------------------------------------------------------------------------

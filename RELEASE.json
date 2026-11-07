@@ -3,5 +3,5 @@
   "version": "5.1.4",
   "release_date": "2026-11-07",
   "status": "production-ready",
-  "focus": "Plan projection and wire identity preservation, task create idempotency handling, search Git inventory prefilter, and service parity."
+  "focus": "Harden status dependency deadlines, disk reconciliation for GPU admission reservation, AMD Zen 4 Ollama bypass, test matrix deadlines, and plan completed status compatibility."
 }
