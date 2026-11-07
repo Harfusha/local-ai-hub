@@ -1,5 +1,15 @@
 # Changelog
 
+## 5.1.4 — 2026-11-07
+
+- Preserve plan identity fields (plan_id, file_revision, rel_path, plan_task_id) during tight budget compaction.
+- Ensure mcp wire error responses retain plan identity attributes on budget rejection.
+- Resolve undefined global route in services.py and propagate resident execution roles.
+- Enforce task create idempotency conflict handling with TaskIdempotencyConflictError and HTTP 409.
+- Prefilter complete Git path inventory before globbing in repo_tools find_files.
+- Reconcile operation contracts for work order actions (wait, continue).
+- Synchronize default configuration and prompt policies across agent environments.
+
 ## 5.1.3 — 2026-10-30
 
 - Align local_ai_coord task checkpoint test fixtures with canonical contract and reject legacy flat arguments.
