@@ -102,6 +102,7 @@ from .agent_tasks import (
     CheckpointResponseBudgetError,
     CompletionGateError,
     GoalContract,
+    TaskIdempotencyConflictError,
     TaskWorktreeError,
     TaskCheckpoint,
     TaskStatus,
@@ -6611,6 +6612,11 @@ class Handler(BaseHTTPRequestHandler):
                             "response_budget": {"requested_tokens": exc.requested_tokens,
                                                 "required_tokens": exc.required_tokens,
                                                 "unit": "estimated_tokens"},
+                        }); return
+                    except TaskIdempotencyConflictError as exc:
+                        self._send(409, {
+                            "success": False, "error": str(exc), "terminal": True, "retryable": False,
+                            "mutation_applied": False, "operation_not_started": True,
                         }); return
                     except TaskWorktreeError as exc:
                         error_payload = {

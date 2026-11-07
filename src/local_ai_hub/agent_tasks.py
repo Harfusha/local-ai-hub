@@ -70,6 +70,10 @@ class TaskWorktreeError(CompletionGateError):
         super().__init__(message)
 
 
+class TaskIdempotencyConflictError(CompletionGateError):
+    """Raised when a task-create idempotency key is reused with different data."""
+
+
 class InvalidTransitionError(ValueError):
     """Raised when an illegal task state transition is attempted."""
 
@@ -4298,7 +4302,9 @@ class TaskStore:
                 if existing:
                     existing_event = AgentEvent.from_row(existing)
                     if existing_event.kind != event.kind or dict(existing_event.payload) != dict(event.payload):
-                        raise RuntimeError("task create idempotency key conflicts with a different event")
+                        raise TaskIdempotencyConflictError(
+                            "task create idempotency key conflicts with a different event"
+                        )
                     current = con.execute(
                         "SELECT * FROM agent_tasks_projection WHERE task_id = ?",
                         (state.task_id,),
@@ -4307,7 +4313,9 @@ class TaskStore:
                         con.execute("COMMIT")
                         return self._row_to_state(current), []
                     if str(existing_event.payload.get("task_id", "")) != state.task_id:
-                        raise RuntimeError("task create event conflicts with requested task identity")
+                        raise TaskIdempotencyConflictError(
+                            "task create event conflicts with requested task identity"
+                        )
 
                 con.execute(
                     """

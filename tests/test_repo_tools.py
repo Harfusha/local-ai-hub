@@ -413,3 +413,21 @@ def test_git_grep_timeout_reaps_owned_process(tmp_path: Path, monkeypatch):
     assert timed_out is True
     assert calls[0] == ("terminate", process.pid, process)
     assert calls[1][0] == "wait"
+
+
+
+def test_find_files_git_inventory_prefilters_pattern(tmp_path: Path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "alpha.py").write_text("print(1)\n", encoding="utf-8")
+    (repo / "beta.txt").write_text("hello\n", encoding="utf-8")
+    (repo / "sub").mkdir()
+    (repo / "sub" / "gamma.py").write_text("print(2)\n", encoding="utf-8")
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
+    subprocess.run(["git", "-C", str(repo), "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-qm", "base"], check=True)
+
+    tools = RepositoryTools(_cfg(tmp_path))
+    res = tools.find_files(str(repo), pattern="*.py")
+    assert res["success"] is True
+    assert sorted(res["files"]) == ["alpha.py", "sub/gamma.py"]

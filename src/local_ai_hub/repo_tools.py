@@ -4326,16 +4326,37 @@ class RepositoryTools:
             norm_offset = 0
 
         clean_pattern = pattern.strip() if isinstance(pattern, str) and pattern.strip() else "*"
+        pattern_lower = clean_pattern.lower()
         matched: list[str] = []
 
-        for p in self.iter_files(base):
+        git_inventory = self._git_files(base)
+        if git_inventory is not None and git_inventory.complete:
+            # Filter the complete Git path inventory before touching the filesystem.
+            # Glob misses need no symlink, reparse-point, or file-size checks.
+            candidates = git_inventory
+            validate_candidate = True
+        else:
+            candidates = self.iter_files(base)
+            validate_candidate = False
+
+        for p in candidates:
             try:
-                rel = str(p.relative_to(base)).replace("\\", "/")
+                relative = p.relative_to(base)
+                rel = str(relative).replace("\\", "/")
             except ValueError:
                 continue
             name = p.name
-            if fnmatch.fnmatch(rel.lower(), clean_pattern.lower()) or fnmatch.fnmatch(name.lower(), clean_pattern.lower()):
-                matched.append(rel)
+            if not (fnmatch.fnmatch(rel.lower(), pattern_lower) or fnmatch.fnmatch(name.lower(), pattern_lower)):
+                continue
+            if validate_candidate:
+                if self._is_ignored_relative_path(relative) or not self._inventory_path_safe(base, p):
+                    continue
+                try:
+                    if p.stat().st_size > self.max_file_bytes:
+                        continue
+                except OSError:
+                    continue
+            matched.append(rel)
 
         total = len(matched)
         sliced = matched[norm_offset : norm_offset + norm_limit]
