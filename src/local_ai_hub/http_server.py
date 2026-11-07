@@ -3436,18 +3436,24 @@ class Handler(BaseHTTPRequestHandler):
             self._send(403, {"success": False, "unsupported": True, "error": "work orchestrator is disabled", "terminal": True}); return
         action = str(payload.get("action", "submit")).strip().lower().replace("-", "_")
         work_id = str(payload.get("work_id", "")).strip()
+
+        def send_work_result(result: Any) -> None:
+            if isinstance(result, dict) and result.get("error") == "work order not found":
+                self._send(404, {**result, "terminal": True, "retryable": False}); return
+            self._send(200, result)
+
         if action == "submit":
             self._send(200, APP.work_orchestrator.submit(payload)); return
         if action == "status":
-            self._send(200, APP.work_orchestrator.status(work_id)); return
+            send_work_result(APP.work_orchestrator.status(work_id)); return
         if action == "wait":
-            self._send(200, APP.work_orchestrator.wait(work_id, float(payload.get("timeout_seconds", 90)))); return
+            send_work_result(APP.work_orchestrator.wait(work_id, float(payload.get("timeout_seconds", 90)))); return
         if action == "get":
-            self._send(200, APP.work_orchestrator.get(work_id, profile=str(payload.get("response_profile", "")), return_fields=payload.get("return_fields") if isinstance(payload.get("return_fields"), list) else None, max_output_tokens=int(payload.get("max_output_tokens", 0) or 0))); return
+            send_work_result(APP.work_orchestrator.get(work_id, profile=str(payload.get("response_profile", "")), return_fields=payload.get("return_fields") if isinstance(payload.get("return_fields"), list) else None, max_output_tokens=int(payload.get("max_output_tokens", 0) or 0))); return
         if action == "cancel":
-            self._send(200, APP.work_orchestrator.cancel(work_id)); return
+            send_work_result(APP.work_orchestrator.cancel(work_id)); return
         if action == "continue":
-            self._send(200, APP.work_orchestrator.continue_work(work_id, str(payload.get("answer", "")))); return
+            send_work_result(APP.work_orchestrator.continue_work(work_id, str(payload.get("answer", "")))); return
         self._send(400, {"success": False, "error": "unknown work-order action", "terminal": True}); return
 
     def _handle_post_async_jobs(self, payload: Any) -> None:

@@ -2,7 +2,7 @@
   "default_target_ref": "refs/heads/master",
   "description": "Wire the global plan-led skill to existing Local AI Hub plan reconciliation, checkpoints, resumption, and completion verification; verify source/runtime alignment. Specifications remain owned by Superpowers.",
   "id": "plan_plan_led_work_skill",
-  "lifecycle": "active",
+  "lifecycle": "completed",
   "schema_version": 1,
   "spec_refs": [],
   "tasks": {

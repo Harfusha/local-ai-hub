@@ -5436,8 +5436,9 @@ def local_ai_coord(
                 return _compact(incomplete, "coord", ["plan_id", "file_revision", "rel_path"])
         if action in {"plan_list", "plan_board_view"} and isinstance(result, dict) and result.get("success") is True:
             if action == "plan_list":
-                required_fields = ("plans",)
-                complete_source = isinstance(result.get("plans"), list)
+                has_plans = "plans" in result
+                required_fields = ("plans",) if has_plans else ()
+                complete_source = isinstance(result.get("plans"), list) if has_plans else True
             else:
                 required_fields = ("project_root", "columns", "counts", "total_items")
                 complete_source = (
