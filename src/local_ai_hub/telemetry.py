@@ -5,6 +5,7 @@ from .json_utils import dumps as json_dumps
 import errno
 import hashlib
 import json
+import logging
 import base64
 import math
 import numbers
@@ -28,6 +29,8 @@ from .http_route_registry import (
     POST_ROUTE_REGISTRY,
     TELEMETRY_SAFE_GET_ROUTE_LABELS,
 )
+
+logger = logging.getLogger(__name__)
 
 
 _PATH_RE = re.compile(r"(?:(?:[A-Za-z]:\\\\|/)(?:[^\s:'\"<>|]+[/\\\\])+[^\s:'\"<>|]*)")

@@ -458,6 +458,7 @@ button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-vis
         <button class="btn warn" id="prepToggle">Pause preprocessing</button>
         <div class="tiny muted">Destructive maintenance</div>
         <button class="btn warn" id="purgeCacheBtn" data-control-action="purge_cache">Purge expired cache</button>
+        <button class="btn danger" id="purgeStatsBtn" data-control-action="purge_stats">Purge all statistics</button>
       </div>
     </details>
   </div>
@@ -716,6 +717,7 @@ button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-vis
           <button class="btn" id="coordEditPlanBtn" disabled>Edit Plan</button>
           <button class="btn primary" id="coordNewCardBtn">+ Add Task</button>
           <button class="btn" id="coordRefreshBoardBtn">↻ Refresh Board</button>
+          <button class="btn" id="coordCompactBtn" type="button" title="Toggle compact card view">▤ Compact (On)</button>
           <input id="coordBoardRoot" type="search" list="worktreeRoots" aria-label="Repository or worktree root for project board" placeholder="Repository or worktree root" style="min-width:240px">
           <select id="coordBoardPlan" aria-label="Filter project board by plan" style="min-width:180px"><option value="">All plans</option></select>
           <input id="coordBoardSearch" type="search" aria-label="Search project board tasks" placeholder="Filter tasks by title, description, next action..." style="min-width:240px">
@@ -938,6 +940,19 @@ document.head.insertAdjacentHTML('beforeend','<style>.vision-review-modal{width:
 
 const $=id=>document.getElementById(id), esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])), escJs=v=>esc(JSON.stringify(v));
 const n=v=>Number(v||0).toLocaleString(), ms=v=>{v=Number(v||0);return v>=1000?(v/1000).toFixed(v>=10000?1:2)+' s':Math.round(v)+' ms'}, durSec=s=>{s=Number(s||0);if(s<60)return Math.round(s)+'s';if(s<3600)return Math.floor(s/60)+'m '+Math.round(s%60)+'s';if(s<86400)return Math.floor(s/3600)+'h '+Math.floor((s%3600)/60)+'m';return Math.floor(s/86400)+'d '+Math.floor((s%86400)/3600)+'h'}, age=msv=>durSec(Number(msv||0)/1000), formatBytes=b=>{b=Number(b||0);if(b<=0)return '0 B';const u=['B','KB','MB','GB','TB'],i=Math.min(u.length-1,Math.floor(Math.log(b)/Math.log(1024)));return (b/Math.pow(1024,i)).toFixed(i>1?1:0)+' '+u[i];};
+function setButtonLoading(btn, isLoading, loadingText){
+  if(!btn) return;
+  if(isLoading){
+    if(!btn.dataset.origHtml) btn.dataset.origHtml = btn.innerHTML;
+    btn.disabled = true;
+    btn.classList.add('is-loading');
+    btn.innerHTML = `<span class="btn-spinner" aria-hidden="true"></span> ${esc(loadingText || btn.textContent.trim())}`;
+  } else {
+    btn.disabled = false;
+    btn.classList.remove('is-loading');
+    if(btn.dataset.origHtml){ btn.innerHTML = btn.dataset.origHtml; delete btn.dataset.origHtml; }
+  }
+}
 
 function dashboardPreprocessingHealth(preprocessing={},dependencies={},features={}){
   const disabled=features.preprocessing===false||preprocessing.enabled===false;
@@ -4711,14 +4726,18 @@ function renderProjects(items){
     const activityText=isComplete?'Indexing complete · last reported snapshot':x.active_detail||(state==='paused'?(x.global_paused?'Globally paused':'Project paused'):state==='waiting'?'Waiting for preprocessing slot':state==='error'?(x.last_error_short||'Pipeline error'):'Processing queue');
     const activityCls=isComplete?'ok':state==='error'?'bad-t':state==='paused'?'warn-t':state==='waiting'?'muted':'';
     const progressAge=Number(x.progress_age_seconds),progressHint=Number.isFinite(progressAge)?(progressAge<5?'live checkpoint':`${durSec(progressAge)} since last checkpoint`):'';
-    const phaseObj=PHASES.find(ph=>ph.id===x.phase)||(isComplete?PHASES[PHASES.length-1]:{name:x.phase||'Inventory',icon:'⚙️'}),phaseTitle=(isComplete||x.phase==='complete')?`${PHASES.length}/${PHASES.length} Ready`:`${n(x.phase_index||1)}/${PHASES.length} ${phaseObj.icon} ${phaseObj.name}`;
+    const phaseIndex=PHASES.findIndex(ph=>ph.id===x.phase),currentStep=phaseIndex>=0?phaseIndex+1:(Number(x.phase_index)||1);
+    const phaseObj=(phaseIndex>=0?PHASES[phaseIndex]:null)||(isComplete?PHASES[PHASES.length-1]:{name:x.phase||'Inventory',icon:'⚙️'});
+    const phaseTitle=(isComplete||x.phase==='complete')?`${PHASES.length}/${PHASES.length} Ready`:`${currentStep}/${PHASES.length} ${phaseObj.icon} ${phaseObj.name}`;
+    const phaseDetailText=isComplete?'100% complete':(x.active_detail||(phasePct>0?`${phasePct}% in phase`:'In progress…'));
     const variants=x.variants||[x],variantLabel=variants.length>1?`<span class="chip" title="${esc(variants.map(v=>v.root).join('\n'))}">${variants.length} worktrees</span>`:'';
     const actions=`<div class="project-actions"><button class="action-btn-sm" data-project-action="${state==='paused'?'resume':'pause'}" data-project-root="${esc(x.root)}" title="${state==='paused'?'Resume project preprocessing':'Pause project'}">${state==='paused'?'▶ Resume':'⏸ Pause'}</button><button class="action-btn-sm" data-project-action="refresh" data-project-root="${esc(x.root)}" title="Re-scan selected project entry">Refresh</button><button class="action-btn-sm danger" data-project-action="delete" data-project-root="${esc(x.root)}" data-project-name="${esc(x.project)}" title="Unregister selected project entry">Unregister</button></div>`;
-    return clickableRow(x,`<td><div class="project-name"><b>${esc(x.project)}</b>${isWorktree?'<span class="chip" style="font-size:9px;color:var(--accent2);border-color:#584578">worktree</span>':''}${variantLabel}</div><div class="tiny muted">Repository identity</div><div class="tiny muted mono project-root" title="${esc(x.repository_identity||x.root)}">${esc(x.repository_identity||x.root)}</div></td><td><span class="badge-status ${badge[0]}">${badge[2]}${badge[1]}</span><div class="tiny ${activityCls} project-activity" title="${esc(x.active_detail||activityText)}">${esc(activityText)}</div><div class="tiny muted">${esc(progressHint)}</div></td><td><div class="project-progress-line"><b>${phaseTitle}</b><span>${overall}%</span></div><div class="bar project-progress"><i style="width:${overall}%;background:${state==='error'?'var(--bad)':isComplete?'var(--ok)':'var(--accent)'}"></i></div><div class="tiny muted">${phasePct}% in phase</div></td><td><div class="project-index"><span class="${ragFiles>=tot?'ok':''}">🧠 RAG ${ragPct}%</span><span class="${cards>=tot*0.9?'ok':''}">📄 Cards ${cardPct}%</span></div></td><td>${actions}</td>`,'project',x.root);
+    return clickableRow(x,`<td><div class="project-name"><b>${esc(x.project)}</b>${isWorktree?'<span class="chip" style="font-size:9px;color:var(--accent2);border-color:#584578">worktree</span>':''}${variantLabel}</div><div class="tiny muted">Repository identity</div><div class="tiny muted mono project-root" title="${esc(x.repository_identity||x.root)}">${esc(x.repository_identity||x.root)}</div></td><td><span class="badge-status ${badge[0]}">${badge[2]}${badge[1]}</span><div class="tiny ${activityCls} project-activity" title="${esc(x.active_detail||activityText)}">${esc(activityText)}</div><div class="tiny muted">${esc(progressHint)}</div></td><td><div class="project-progress-line"><b>${phaseTitle}</b><span>${overall}%</span></div><div class="bar project-progress"><i style="width:${overall}%;background:${state==='error'?'var(--bad)':isComplete?'var(--ok)':'var(--accent)'}"></i></div><div class="tiny muted">${esc(phaseDetailText)}</div></td><td><div class="project-index"><span class="${ragFiles>=tot?'ok':''}">🧠 RAG ${ragPct}%</span><span class="${cards>=tot*0.9?'ok':''}">📄 Cards ${cardPct}%</span></div></td><td>${actions}</td>`,'project',x.root);
   },5,query||projectFilter!=='all'?'No projects match the current filters.':'No projects registered. Register a repository to begin.');
 }
-async function projectAction(root, action) {
-  try { const result=await post('/api/preprocess', { root, action }); if(!result.success)throw new Error(result.error||'Project action failed'); await pollStatus(); } catch(e) { alert('Action error: ' + e); }
+async function projectAction(root, action, btn) {
+  if(btn) setButtonLoading(btn, true, '…');
+  try { const result=await post('/api/preprocess', { root, action }); if(!result.success)throw new Error(result.error||'Project action failed'); await pollStatus(); } catch(e) { alert('Action error: ' + e); } finally { if(btn) setButtonLoading(btn, false); }
 }
 $('regProjectBtn').onclick = openRegisterProjectModal;
 $('cleanMissingBtn').onclick = openCleanMissingModal;
