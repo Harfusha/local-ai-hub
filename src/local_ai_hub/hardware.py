@@ -96,10 +96,16 @@ def _nvidia() -> list[dict[str, Any]]:
     if not smi:
         return []
     cp = _run([
-        smi, "--query-gpu=name,memory.total,memory.free,driver_version", "--format=csv,noheader,nounits"
+        smi, "--query-gpu=name,memory.total,memory.free,driver_version,compute_cap", "--format=csv,noheader,nounits"
     ])
     has_free_vram = True
     if not cp or cp.returncode != 0:
+        cp = _run([
+            smi, "--query-gpu=name,memory.total,driver_version,compute_cap", "--format=csv,noheader,nounits"
+        ])
+        has_free_vram = False
+    if not cp or cp.returncode != 0:
+        # Fallback without compute_cap for legacy drivers
         cp = _run([
             smi, "--query-gpu=name,memory.total,driver_version", "--format=csv,noheader,nounits"
         ])
@@ -117,11 +123,30 @@ def _nvidia() -> list[dict[str, Any]]:
             vram = 0
         free_index = 2 if has_free_vram else None
         driver_index = 3 if has_free_vram else 2
+        cap_index = 4 if has_free_vram else 3
         try:
             vram_free = int(float(parts[free_index])) if free_index is not None and len(parts) > free_index else None
         except (TypeError, ValueError):
             vram_free = None
-        out.append({"vendor": "nvidia", "name": parts[0], "vram_mb": vram, "vram_free_mb": vram_free, "driver": parts[driver_index] if len(parts) > driver_index else "", "backend": "cuda"})
+        compute_cap: float | None = None
+        has_fp4: bool = False
+        if len(parts) > cap_index:
+            try:
+                compute_cap = float(parts[cap_index])
+                has_fp4 = compute_cap >= 10.0  # NVIDIA Blackwell (SM 10.0 / SM 12.0) native FP4 Tensor Cores
+            except (TypeError, ValueError):
+                compute_cap = None
+        entry: dict[str, Any] = {
+            "vendor": "nvidia",
+            "name": parts[0],
+            "vram_mb": vram,
+            "vram_free_mb": vram_free,
+            "driver": parts[driver_index] if len(parts) > driver_index else "",
+            "backend": "cuda",
+            "compute_cap": compute_cap,
+            "has_fp4": has_fp4,
+        }
+        out.append(entry)
     return out
 
 
@@ -346,6 +371,7 @@ def detect_hardware(requested_profile: str = "auto", *, include_openvino: bool =
     if requested_norm == "auto" and intel_npu and dedicated_vram <= 0 and total_gb >= 16:
         profile_name = "integrated"
 
+    has_fp4 = any(bool(g.get("has_fp4")) for g in gpus if isinstance(g, dict))
     return {
         "platform": sys_platform(),
         "os": platform.system().lower(),
@@ -353,6 +379,7 @@ def detect_hardware(requested_profile: str = "auto", *, include_openvino: bool =
         "cpu": {"name": platform.processor() or platform.machine(), "logical_cores": os.cpu_count() or 1},
         "ram": {"total_gb": total_gb, "available_gb": round(available / (1024 ** 3), 1) if available else 0.0},
         "gpus": gpus,
+        "has_fp4": has_fp4,
         "npus": npus,
         "openvino_devices": ov_devices,
         "openvino_gpu_devices": openvino_gpu_devices,
@@ -620,14 +647,16 @@ def profile_overrides(profile_name: str, detected: dict[str, Any] | None = None)
         ),
         default=0,
     )
+    has_fp4 = any(bool(g.get("has_fp4")) for g in gpus if isinstance(g, dict))
     if profile_name in {"high", "max"} and nvidia_vram >= 15 * 1024:
-        result = _deep_merge_dict(result, {
-            "models": {
-                "heavy_code": "qwen2.5-coder:14b",
-                "embedding_device": "cuda",
-                "reranker_device": "cuda",
-            }
-        })
+        nv_models: dict[str, Any] = {
+            "heavy_code": "qwen2.5-coder:14b",
+            "embedding_device": "cuda",
+            "reranker_device": "cuda",
+        }
+        if has_fp4:
+            nv_models["general"] = "qwen3.5:9b-nvfp4"
+        result = _deep_merge_dict(result, {"models": nv_models})
     if has_npu:
         # NPU takes priority in ANY profile: offload embeddings and reranker to dedicated NPU hardware,
         # freeing GPU VRAM and CPU cores for LLM inference.

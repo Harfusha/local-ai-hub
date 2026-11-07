@@ -168,3 +168,33 @@ def test_high_profile_background_ollama_avoids_mcp_http_port(tmp_path: Path):
 
     background_port = cfg["background_gpu"]["ollama_url"].rsplit(":", 1)[-1]
     assert background_port != str(cfg["mcp_http"]["port"])
+
+
+def test_model_routes_match_install_update_prompts_and_capability_matrix():
+    root = Path(__file__).resolve().parents[1]
+    roles = ("background_code", "fast_code", "heavy_code", "reasoning", "general", "vision")
+    for name in ("INSTALL_PROMPT.md", "UPDATE_PROMPT.md"):
+        prompt = (root / "docs" / name).read_text(encoding="utf-8")
+        for profile in PROFILE_OVERRIDES:
+            route = "/".join(PROFILE_OVERRIDES[profile]["models"][role] for role in roles)
+            preprocess_model = PROFILE_OVERRIDES[profile].get("preprocessing", {}).get("model", "<default>")
+            assert f"{profile}={route}" in prompt
+            assert f"{profile}={preprocess_model}" in prompt
+
+    capability_doc = (root / "docs" / "MODEL_CAPABILITIES.md").read_text(encoding="utf-8")
+    for profile in PROFILE_OVERRIDES:
+        row = "| `" + profile + "` | " + " | ".join(
+            f"`{PROFILE_OVERRIDES[profile]['models'][role]}`" for role in roles
+        ) + " |"
+        assert row in capability_doc
+        preprocess_model = PROFILE_OVERRIDES[profile].get("preprocessing", {}).get("model", "<default>")
+        assert f"{profile}=`{preprocess_model}`" in capability_doc
+
+
+def test_fp4_detection_and_model_overrides():
+    overrides = profile_overrides(
+        "high",
+        {"gpus": [{"vendor": "nvidia", "vram_mb": 16_303, "compute_cap": 12.0, "has_fp4": True}], "ram": {"total_gb": 32}},
+    )
+    assert overrides["models"]["general"] == "qwen3.5:9b-nvfp4"
+    assert overrides["models"]["heavy_code"] == "qwen2.5-coder:14b"

@@ -8,7 +8,7 @@
 
 ## Local API security
 
-The Hub binds to `127.0.0.1` by default. Remote binding is unsupported; the HTTP server must bind to `127.0.0.1`. On loopback, set `security.api_token` when trusted local integrations need token authentication. Send it in `X-LocalAI-Token` or `Authorization: Bearer`; `/health` and the dashboard shell are public. Configured `allowed_roots` constrains repository roots, and `api_token_permissions` restricts coarse route roles. Retired tenant/principal fields reject by presence; no tenant header selects authority. See [Security model](SECURITY_MODEL.md).
+The Hub binds to `127.0.0.1` by default. Remote binding is unsupported; the HTTP server must bind to `127.0.0.1`. On loopback, set `security.api_token` when trusted local integrations need token authentication. Send it in `X-LocalAI-Token` or `Authorization: Bearer`; `/health` is public liveness. The dashboard shell and same-origin loopback dashboard reads work without an API token; protected HTTP routes still enforce configured credentials. Configured `allowed_roots` constrains repository roots, and `api_token_permissions` restricts coarse route roles. Retired tenant/principal fields reject by presence; no tenant header selects authority. See [Security model](SECURITY_MODEL.md).
 
 ## Bootstrap & One-Command Setup
 

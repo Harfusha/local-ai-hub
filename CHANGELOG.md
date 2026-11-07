@@ -2,10 +2,10 @@
 
 ## 6.0.0 — 2026-11-07
 
-- Major version bump to 6.0.0: Transition to clean-slate runtime state architecture.
-- Automatic purge on upgrade: Outdated pre-v6 runtime state in `state/` (legacy caches, old telemetry, stale lockfiles, and disposable indexes) is automatically purged upon first v6 startup.
+- Major version bump to 6.0.0: Versioned runtime state checks; persistent state is preserved.
+- State version mismatch now fails closed without deleting or migrating files. Complete the separate backed-up offline conversion before startup.
 - Removal of deprecated backwards-compatibility shims and legacy tenant conversion handlers.
-- New `state_lifecycle.py` module enforcing `state_version == 6`.
+- `state_lifecycle.py` initializes the version marker only for empty state and rejects incompatible existing state.
 
 ## 5.1.4 — 2026-11-07
 

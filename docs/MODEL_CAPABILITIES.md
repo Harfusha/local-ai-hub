@@ -31,8 +31,10 @@ Cached fallback models remain eligible while downloads are disabled.
 | `qwen2.5-coder:1.5b` | preprocessing only | inference, code generation, reviews, reasoning, or edits |
 | `qwen2.5-coder:3b` | bounded review, test plans, simple patch plans, comparisons | architecture decisions, high-risk migrations, security decisions, edits |
 | `qwen2.5-coder:7b` | root-cause analysis, cross-file reasoning, diff review, patch/test plans | security decisions, final verification, edits |
+| `qwen2.5-coder:32b` | configured `max`-profile `heavy_code` target | security decisions, final verification, edits; quality and host availability remain unqualified |
 | `qwen3.5:4b-nvfp4` | unqualified advisory candidate for bounded review, test plans, simple patch plans and comparisons | architecture or security decisions, high-risk migrations, edits, final verification, tool-use qualification |
 | `qwen3-vl:4b` | visual review, UI observations, accessibility observations | source-only reasoning, security decisions, edits, final verification |
+| `minicpm-v:8b` | configured `balanced`, `high` and `max` vision target | source-only reasoning, security decisions, edits, final verification; image capability remains unqualified |
 | `qwen3.5:9b` | heavy reasoning, cross-file review, patch plans, visual review; quality-evaluated bounded implementation through `local_ai_work` | unscoped or unreviewed edits, security decisions, final verification |
 | `qwen3.5:9b-q4_K_M` | candidate for heavy reasoning, cross-file review and bounded patch plans | direct edits, security decisions, final verification |
 
@@ -56,13 +58,20 @@ names do not establish cached-weight availability, transcription quality or WER.
 | `cpu` | `qwen2.5-coder:3b` | `qwen2.5-coder:3b` | `qwen2.5-coder:7b` | `qwen3.5:9b` | `qwen2.5-coder:7b` | `qwen3-vl:4b` |
 | `integrated` | `qwen2.5-coder:3b` | `qwen2.5-coder:3b` | `qwen2.5-coder:7b` | `qwen3.5:9b` | `qwen2.5-coder:7b` | `qwen3-vl:4b` |
 | `low` | `qwen2.5-coder:3b` | `qwen2.5-coder:3b` | `qwen2.5-coder:7b` | `qwen3.5:9b` | `qwen2.5-coder:7b` | `qwen3-vl:4b` |
-| `balanced` | `qwen2.5-coder:3b` | `qwen2.5-coder:3b` | `qwen2.5-coder:7b` | `qwen3.5:9b` | `qwen2.5-coder:7b` | `qwen3.5:9b` |
-| `high` | `qwen2.5-coder:3b` | `qwen2.5-coder:3b` | `qwen2.5-coder:7b` | `qwen3.5:9b` | `qwen3.5:9b` | `qwen3.5:9b` |
-| `max` | `qwen2.5-coder:3b` | `qwen2.5-coder:3b` | `qwen3.5:9b` | `qwen3.5:9b` | `qwen3.5:9b` | `qwen3.5:9b` |
+| `balanced` | `qwen2.5-coder:3b` | `qwen2.5-coder:3b` | `qwen2.5-coder:7b` | `qwen3.5:9b` | `qwen2.5-coder:7b` | `minicpm-v:8b` |
+| `high` | `qwen2.5-coder:3b` | `qwen2.5-coder:3b` | `qwen2.5-coder:7b` | `qwen3.5:9b` | `qwen3.5:9b` | `minicpm-v:8b` |
+| `max` | `qwen2.5-coder:7b` | `qwen2.5-coder:7b` | `qwen2.5-coder:32b` | `qwen3.5:9b` | `qwen3.5:9b` | `minicpm-v:8b` |
 
 These are profile routing targets from `hardware.py`. They do not prove a model
 is installed on a host, and profile selection does not pull models. Runtime
 availability must be checked separately.
+
+Preprocessing routes: cpu=`qwen2.5-coder:0.5b`; integrated=`qwen2.5-coder:1.5b`;
+low=`qwen2.5-coder:1.5b`; balanced=`qwen2.5-coder:1.5b`;
+high=`qwen2.5-coder:3b`; max=`qwen2.5-coder:7b`.
+CPU and low profiles disable search summaries and vision; balanced, high and max
+enable them. Integrated inherits configured feature defaults. These flags do not
+qualify model quality, availability, or image support.
 
 ## Static operation contracts
 
