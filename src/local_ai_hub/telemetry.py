@@ -2918,6 +2918,40 @@ class TelemetryStore:
             for r in rows
         ]
 
+    def reset(self) -> bool:
+        """Purge all recorded events, rollups, snapshots, errors, and reset in-memory caches."""
+        if not self.enabled:
+            return False
+        try:
+            self.flush(0.5)
+            with self._stats_lock:
+                self._stats = {
+                    "queued": 0, "processed": 0, "written": 0, "dropped": 0,
+                    "writer_errors": 0, "batches": 0,
+                    "attempted": 0, "accepted": 0,
+                    "rejected_overflow": 0, "lost_after_acceptance": 0,
+                }
+            with self._live_lock:
+                self._live_events.clear()
+                self._live_seq = 0
+            with self._dashboard_lock:
+                self._dashboard_cache.clear()
+                self._dashboard_cache_at.clear()
+            with self._summary_cache_lock:
+                self._summary_cache.clear()
+            self.process_started_at = time.time()
+            self._process_started_monotonic = time.monotonic()
+            with closing(self._connect()) as con, con:
+                con.execute("DELETE FROM events")
+                con.execute("DELETE FROM daily_rollups")
+                con.execute("DELETE FROM errors")
+                con.execute("DELETE FROM snapshots")
+                con.execute("PRAGMA wal_checkpoint(TRUNCATE);")
+            return True
+        except Exception as exc:
+            logger.warning("telemetry store reset failed: %s", exc)
+            return False
+
     def close(self) -> None:
         if not self.enabled:
             return

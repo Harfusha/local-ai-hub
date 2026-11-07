@@ -1,6 +1,6 @@
-# Local AI Hub: 113 praktických promptů pro izolované agenty
+# Local AI Hub: 128 praktických promptů pro izolované agenty
 
-Aktualizováno 8. 11. 2026. **Návrh 113 testovacích scénářů; stav pilotních běhů je v `results.md`.**
+Aktualizováno 8. 11. 2026. **Návrh 128 testovacích scénářů; stav pilotních běhů je v `results.md`.**
 Cíl: správnost výsledku, volba nástrojů, porozumění instrukcím, přiměřenost práce, poctivost důkazů a chování při poruchách. Průchod konečnou sadou neprokazuje úplnou bezchybnost Hubu.
 
 ## Jak zadávat
@@ -990,3 +990,120 @@ Režim: V + disposable checkout; bez inference a stahování modelů.
 ```text
 V izolovaném checkoutu spusť pouze `python -m pytest -q tests/test_config_hardware.py`. Porovnej všechny hardware profily, foreground role, vision a preprocessing route v `hardware.py` s `docs/MODEL_CAPABILITIES.md`, `docs/INSTALL_PROMPT.md` a `docs/UPDATE_PROMPT.md`. Zdrojem pravdy je aktivní hardware konfigurace; route není důkaz instalovaného modelu. Pokud najdeš drift, oprav pouze dokumentaci v disposable checkoutu a spusť tentýž cílený test znovu. Modely nestahuj ani nespouštěj.
 ```
+### 114 — Artifact a status API
+
+Režim: izolovaný chat; status bez side effectů.
+
+~~~text
+Na disposable fixture a bez tajných údajů otestuj local_ai_status a local_ai_artifact: status; list, source, slice a get. U každé operace ověř root binding, limity/offsety, rozsah, identitu souboru a chování pro chybějící či zakázanou cestu. Chybějící artefakt musí být explicitní chyba a obsah se nesmí přimíchat z jiného rootu. Žádné tokeny, skutečné logy ani zápisy. Nedostupná akce/fixture = NOT_RUN.
+~~~
+### 115 — Repo retrieval a navigace
+
+Režim: V + syntetický disposable repository; pouze čtení.
+
+~~~text
+V izolovaném repo fixture projdi přes local_ai_repo všechny read-only navigační akce uvedené pro případ 115 v mcp-action-coverage.md. U každé zaznamenej root/query/symbol a ověř přesnou cestu/rozsah, limity, chybějící symbol a neúplný index. Zahrň search/indexed lookup, soubory, symboly, definice/reference/callers/callees, git read status/history/diff a kontextové/profilové odpovědi. Ověř path confinement a degraded/partial; netvrď úplnost indexu. Žádné opravy, refresh ani zápis. Chybějící fixture = NOT_RUN.
+~~~
+
+### 116 — Repo analýzy, security a test matice
+
+Režim: V + disposable syntetický repo; žádné změny.
+
+~~~text
+V izolovaném fixture zavolej každou analytickou/quality akci local_ai_repo uvedenou pro případ 116 v mcp-action-coverage.md. Použij známé symboly, neškodný zranitelný kód, importní cyklus, malý testovací strom a známé závislosti. Security/secret/dead-code/mutation/test-matrix výstupy nesmí tvrdit runtime coverage ani úspěch nespouštěných testů. Nepoužívej skutečné secrety, neinstaluj závislosti a nespouštěj celou sadu. Zápisová akce nebo chybějící fixture = NOT_RUN.
+~~~
+
+### 117 — Repo mutace, generátory a preprocess lifecycle
+
+Režim: V + zahoditelný checkout; změny jen ve fixture.
+
+~~~text
+V disposable checkoutu otestuj každou repo akci uvedenou pro případ 117 v mcp-action-coverage.md. Ověř root confinement, approval, patch validation, rollback, cancellation a unknown outcome. Preprocess register/refresh/pause/resume/cancel/unregister testuj jen proti checkoutu a izolovanému indexu; žádný force ani polling. Generátory/refaktory spusť na kopii fixture, zkontroluj deterministicky a zahoď. Commit/install ani externí změnu neprováděj. Neautorizováno/profile-disabled = BLOCKED/NOT_RUN.
+~~~
+
+### 118 — Task reasoning, routing a batch
+
+Režim: izolovaný chat; syntetické úlohy, bez editace.
+
+~~~text
+Projdi přes local_ai_task delegate, explore, reason, continue, review, second_opinion, compress, route a batch podle případu 118 v mcp-action-coverage.md. Použij krátkou syntetickou úlohu s přesnými soubory a nejednoznačností. Modelový výrok není fakt; review používá dodané diff/evidence; compress zachová omezení; batch zachová per-item výstupy. Nedostupný model, truncate, cancel a backend failure jsou failure/NOT_RUN, ne PASS. Nic nespouštěj ani neupravuj.
+~~~
+
+### 119 — Task eval, benchmark a dlouhé joby
+
+Režim: syntetické evaluace; žádný model pull.
+
+~~~text
+Otestuj local_ai_task evaluation_record, evaluation_report, benchmark, hardware_benchmark, eval_suite, prompt_eval, eval_drift, submit, status, wait, result a cancel dle případu 119 v mcp-action-coverage.md. Nejprve ověř odmítnutí neúplného/neschváleného vstupu; pokračuj jen se syntetickými daty a limitem času/zdrojů. Job ID/root/task/session musí zůstat stejné; unknown/in_progress nesmí vyvolat retry ani falešné dokončení. Hardware test vyžaduje přidělený slot. Model nestahuj. Zakázaná akce = BLOCKED.
+~~~
+
+### 120 — Task kandidáti, drafty a generátory
+
+Režim: V + kopie disposable fixture; bez auto-promotion.
+
+~~~text
+Otestuj task candidate_create, candidate_promote, speculative_draft, complete_code, scaffold, automation, browser, vision a transcribe dle případu 120 v mcp-action-coverage.md. Použij syntetickou specifikaci, inertní obrázek/zvuk a kopii fixture. Kandidát zůstane oddělen; promotion odmítne chybějící evidence/consent. Draft nic nespustí ani nepoužije síť. Ověř falsey vstup, cestu mimo root a cancellation. Žádný zápis mimo kopii, credential ani externí browser akce. Nepovolená akce = BLOCKED/NOT_RUN.
+~~~
+
+### 121 — RAG, docset a ingestion
+
+Režim: disposable workspace a unikátní syntetický docset.
+
+~~~text
+Otestuj všech sedm local_ai_rag akcí: index, search, list, docset_index, docset_search, ingest_document a ingest_diagram dle případu 121 v mcp-action-coverage.md. Ověř explicitní absolutní root, projektový vs owner-global docset scope, symlink/junction, prázdný obsah, duplicitu, chybný dokument a nezávislé selhání backendů. Použij jen syntetický text/diagram. Neměň existující docset; vytvoř unikátní fixture a po testu jej ukliď. Nepotvrzený úklid = FAIL/unknown.
+~~~
+### 122 — Agent OS task lifecycle
+
+Režim: disposable repository ID a syntetické tasky.
+
+~~~text
+V izolovaném task scope otestuj všechny task lifecycle akce local_ai_coord z případu 122 v mcp-action-coverage.md. Pokryj validní sekvenci i chybný owner/root/revision/session, stale CAS, deadline a cancellation. Ověř skutečný session binding, že zamítnutí nemění state, fail status zůstává zachován a cleanup používá jen autorizovaný disposable root. Nikdy nemaž cizí task/worktree a nevymýšlej receipt. Admin zásah bez fixture = NOT_RUN.
+~~~
+
+### 123 — Memory, evidence a compiled context
+
+Režim: disposable repo/session/task; žádné skutečné uživatelské záznamy.
+
+~~~text
+Otestuj memory_find/get/record/delete/promote, context_compile, verify_completion, verify_receipt, verify_export, record_native_receipt a session_briefing dle případu 123 v mcp-action-coverage.md. Mutace proveď jen nad čerstvým syntetickým záznamem s explicitním rootem, canonical scope a provenance; ověř výsledek i úklid. Otestuj chybějící root/scope/key/ID, aliasy, cizí record, task/session mismatch, chybný receipt a neúplný context. Nikdy nesyntetizuj passed receipt ani nepřijímej cizí root.
+~~~
+
+### 124 — Plány, board a milestones
+
+Režim: nová disposable plan/board; změny s CAS revision.
+
+~~~text
+Otestuj všechny plan, board item, board summary a milestone akce z případu 124 v mcp-action-coverage.md na nové disposable identitě. Ověř validaci, list/get/view, create/update/delete/archive, reconcile steering a task binding jen s odpovídající reálnou session; edituj s aktuální expected_revision a potom zkus stale revision. Chraň cizí tasky/ID/terminal stavy. Incomplete/truncated API výstup není úplný důkaz. Storage neupravuj napřímo.
+~~~
+
+### 125 — Coordination primitives
+
+Režim: disposable scope a dvě logické identity; bez sdílených zdrojů.
+
+~~~text
+Otestuj blackboard CRUD/merge, pubsub publish/poll, ask/answer, claim/renew/release, lease listing, semaphore acquire/status/release, wait_for_event a incident decision dle případu 125 v mcp-action-coverage.md. Ověř CAS, pořadí/cursor, falsey/null payload, owner identity, expiry, timeout/cancel a odmítnutí cross-root. Dva vlastníci soutěží jen o nový synthetic resource; právě jeden získá lease. Nepoužívej uživatelský lease/reservation/blackboard/topic a nepolluj dlouhodobě.
+~~~
+
+### 126 — Swarm, worktree a merge simulace
+
+Režim: izolovaný dočasný repo; bez skutečného merge.
+
+~~~text
+Otestuj swarm dispatch/list/status/step/cancel, worktree lease/release a simulate_merge dle případu 126 v mcp-action-coverage.md. Použij disposable repo a explicitní autorizovanou cestu. Ověř roli, target paths, cancel, lease fencing, false delete_branch, conflict simulaci a úklid. Nikdy nemaž worktree ani nemerguj mimo fixture. Potvrď beze změny původní checkout a cizí branches. Neověřený úklid není PASS.
+~~~
+
+### 127 — Data curation, GPU a privileged actions
+
+Režim: status read-only; mutace jen nad disposable fixture.
+
+~~~text
+Otestuj curate_dataset, gpu_reservation_status/release/release_authorized a incident/privileged coord akce z případu 127 v mcp-action-coverage.md. Export piš na novou explicitní cestu v disposable rootu a ověř schema/min_receipts. GPU status je owner-global; nikdy neuvolňuj existující reservation. Release zkoušej pouze na syntetické expired/dead-owner fixture s consent a audit reason; malformed metadata/symlink musí fail-closed. Incident vyžaduje repository provenance. Bez izolované reservation fixture jsou mutace NOT_RUN.
+~~~
+
+### 128 — Existing work status, recovery a cancel
+
+Režim: existující syntetické work ID; bez nového submitu.
+
+~~~text
+Otestuj local_ai_work status/get/wait/cancel nad existujícím disposable work item, pokud jej profil zpřístupní. Ověř přesné ID/root/task/session, unknown/in_progress/timed_out/cancelled a artifact retrieval; žádný opakovaný wait/poll, retry téhož jobu ani nový submit. Profil zakazující submit se nesmí obcházet jiným nástrojem. Bez bezpečného synthetic work ID označ podscénáře NOT_RUN.
+~~~

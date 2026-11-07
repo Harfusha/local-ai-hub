@@ -345,6 +345,14 @@ pre,.code-box{font-size:12px;line-height:1.7;tab-size:2}
 .kanban-card-title{font-weight:600;color:#eff1e6;font-size:13px;line-height:1.4}
 .kanban-card-meta{display:flex;gap:5px;flex-wrap:wrap;align-items:center;font-size:11px}
 .kanban-card-actions{display:flex;gap:4px;margin-top:auto;padding-top:8px;border-top:1px dashed #24354a;justify-content:space-between;align-items:center}
+.kanban-card.compact{padding:7px 10px;gap:4px}
+.kanban-card.compact .kanban-card-collapsible{display:none}
+.kanban-card.compact.expanded .kanban-card-collapsible{display:block;margin-top:4px}
+.kanban-card-toggle{background:none;border:none;color:var(--muted);cursor:pointer;padding:1px 5px;font-size:10px;border-radius:3px}
+.kanban-card-toggle:hover{color:var(--fg-bright);background:rgba(255,255,255,0.08)}
+.btn.is-loading,.action-btn-sm.is-loading{position:relative;pointer-events:none;opacity:0.8}
+.btn-spinner{display:inline-block;width:11px;height:11px;border:2px solid rgba(255,255,255,0.3);border-top-color:currentColor;border-radius:50%;animation:btn-spin 0.6s linear infinite;vertical-align:middle;margin-right:4px}
+@keyframes btn-spin{to{transform:rotate(360deg)}}
 .milestone-card{background:#1c2217;border:1px solid #1f2e42;border-radius:8px;padding:16px;display:flex;flex-direction:column;gap:10px}
 .progress-bar{background:#343b2d;border-radius:999px;height:8px;overflow:hidden;margin:6px 0}
 .progress-fill{background:var(--accent);height:100%;border-radius:999px;transition:width .3s ease}

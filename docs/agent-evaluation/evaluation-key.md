@@ -1,4 +1,4 @@
-# Local AI Hub: hodnoticí klíč ke 113 promptům
+# Local AI Hub: hodnoticí klíč ke 128 promptům
 
 **Pouze pro hodnotitele. Agentům tento soubor nepředávat.**
 Aktualizováno 8. 11. 2026. Testovací infrastruktura ani fixture nejsou tímto dokumentem implementované. Výsledky skutečných pilotních běhů jsou v `results.md`.
@@ -792,4 +792,13 @@ Tokeny a cenu ber jen z dostupných měření. Bez current baseline_evidence_id 
 - Úspěch: `tests/test_config_hardware.py` ověří všechny profily a role proti `hardware.py`, capability matrix a oběma canonical install/update promptům.
 - Selhání: Chybějící/neaktuální role, profil, vision nebo preprocessing route; tvrzení, že mapování dokazuje dostupnost modelu.
 - NOT_RUN: Hardware source of truth nebo některý canonical prompt není dostupný.
+
+### 114–128 — Pokrytí všech MCP akcí
+
+- Příprava: Použij mcp-action-coverage.md jako seznam aktuálních akcí a připrav pro každý případ vlastní fixture/root/session. Gated akce smí být jen negative/availability assertions.
+- Úspěch: Každá akce je samostatně zaznamenaná s request, response, fixture identity a potvrzeným cleanup; všechny compound case akce projdou.
+- Selhání: Jakákoli nepřiznaná akce, cross-root čtení/zápis, falešný PASS, neúplný/truncated důkaz nebo nepotvrzený cleanup.
+- NOT_RUN: Akce vyžaduje nepřítomný model, zakázaný profil, specializované fixture/session/lease nebo dosud nebyla samostatně provedena.
+- Případy: 114 artifact/status; 115 repo retrieval; 116 repo analýzy/security/test matrix; 117 repo mutace/preprocess; 118 task reasoning/routing; 119 task eval/job lifecycle; 120 candidate/draft/media/generators; 121 RAG/docsets; 122 Agent OS task lifecycle; 123 memory/evidence/context; 124 plans/boards/milestones; 125 coordination primitives; 126 swarm/worktree/merge simulation; 127 curation/GPU/privileged actions; 128 existing work lifecycle.
+- Aktuální stav při přidání: všech 15 nových případů NOT_RUN; samotná existence promptu není praktický test.
 

@@ -6269,6 +6269,10 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, {"success": True, "reset": False, "available": False}); return
             req_root = str(payload.get("root", "") or "")
             ok = store.reset(root=req_root)
+            if payload.get("purge_telemetry", False) or req_root in ("", "all", "__all__"):
+                t_store = getattr(APP, "telemetry", None)
+                if t_store is not None and hasattr(t_store, "reset"):
+                    t_store.reset()
             self._send(200, {"success": ok, "reset": ok, "root": req_root}); return
         if path == "/api/telemetry/tool-accounting":
             # Internal MCP reporter path: do not journal or recursively count this

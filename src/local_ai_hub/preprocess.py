@@ -273,6 +273,24 @@ class ProjectPreprocessor:
     # indexing before any idle-GPU card generation. This lets embeddings run even
     # while foreground model work is active instead of waiting behind GPU-idle work.
     PHASES = ("inventory", "hash", "code_index", "deterministic", "serena", "lexical", "rag", "files", "modules", "project", "hot_queries", "diagnostics", "complete")
+    PHASE_WEIGHTS = {
+        "inventory": 2.0, "hash": 3.0, "code_index": 10.0, "deterministic": 5.0,
+        "serena": 5.0, "lexical": 5.0, "rag": 40.0, "files": 20.0,
+        "modules": 4.0, "project": 3.0, "hot_queries": 2.0, "diagnostics": 1.0,
+    }
+
+    @classmethod
+    def calculate_overall_progress(cls, phase_str: str, phase_pct: float, is_complete: bool = False) -> float:
+        if is_complete or phase_str == "complete":
+            return 100.0
+        base = 0.0
+        for ph in cls.PHASES:
+            if ph == phase_str:
+                break
+            base += cls.PHASE_WEIGHTS.get(ph, 0.0)
+        curr_weight = cls.PHASE_WEIGHTS.get(phase_str, 0.0)
+        progress = base + (curr_weight * (max(0.0, min(100.0, phase_pct)) / 100.0))
+        return round(max(0.0, min(99.9, progress)), 1)
 
     def __init__(self, config: dict[str, Any], services: Any, rag: Any, scheduler: Any, runtime: Any, repo_tools: Any, code_index: Any | None = None, learner: Any | None = None, deterministic: Any | None = None, telemetry: Any | None = None, background_gpu: Any | None = None, external_tools: Any | None = None):
         self.config = config
@@ -2143,7 +2161,7 @@ class ProjectPreprocessor:
                     overall_progress = round(min(100.0, max(0.0, ((phase_index - 1 + frac) / total_phases) * 100)), 1)
                 else:
                     phase_pct = 0.0
-                    overall_progress = round(min(100.0, max(0.0, ((phase_index - 1) / total_phases) * 100)), 1)
+                overall_progress = self.calculate_overall_progress(phase_str, phase_pct, status_str == "complete" or phase_str == "complete")
 
                 # Throughput speed and ETA calculation
                 now = time.time()
