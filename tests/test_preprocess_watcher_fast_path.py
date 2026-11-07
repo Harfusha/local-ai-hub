@@ -81,5 +81,15 @@ def test_preprocess_watcher_fast_path(tmp_path: Path) -> None:
         notified = prep.notify_path_changed(str(app_file), fast_path=True)
         assert notified is True
 
+        rejected = prep.fast_update_file(
+            str(root), "../outside.py", content="def outside(): return 'secret'\n"
+        )
+        assert rejected["success"] is False
+        with closing(prep._connect()) as con:
+            assert con.execute(
+                "SELECT COUNT(*) FROM file_refs WHERE root=? AND path LIKE '../%'",
+                (str(root.resolve()),),
+            ).fetchone()[0] == 0
+
     finally:
         prep.close()

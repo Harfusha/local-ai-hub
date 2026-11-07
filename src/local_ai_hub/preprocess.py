@@ -15,7 +15,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing, nullcontext
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Any
 
 from . import __version__
@@ -1079,8 +1079,33 @@ class ProjectPreprocessor:
         import hashlib
         t0 = time.monotonic()
         resolved = self._root(root)
-        clean_rel = rel_path.replace("\\", "/").lstrip("/")
-        full_path = Path(resolved) / clean_rel
+        if not isinstance(rel_path, str) or not rel_path or "\x00" in rel_path:
+            return {"success": False, "error": "path must be a relative file inside root"}
+        normalized_rel = rel_path.replace("\\", "/")
+        raw_parts = normalized_rel.split("/")
+        if (
+            normalized_rel.startswith("/")
+            or PureWindowsPath(normalized_rel).drive
+            or any(part == ".." for part in raw_parts)
+        ):
+            return {"success": False, "error": "path must be a relative file inside root"}
+        clean_rel = "/".join(part for part in raw_parts if part not in ("", "."))
+        if not clean_rel:
+            return {"success": False, "error": "path must identify a file inside root"}
+
+        root_path = Path(resolved)
+        full_path = root_path.joinpath(*clean_rel.split("/"))
+        cursor = root_path
+        for part in clean_rel.split("/"):
+            cursor = cursor / part
+            is_junction = getattr(os.path, "isjunction", lambda _path: False)(cursor)
+            if cursor.is_symlink() or is_junction:
+                return {"success": False, "error": "symlink or junction traversal is not allowed"}
+        try:
+            if not full_path.resolve(strict=False).is_relative_to(root_path):
+                return {"success": False, "error": "path must stay inside root"}
+        except (OSError, RuntimeError, ValueError):
+            return {"success": False, "error": "path must stay inside root"}
 
         if content is not None:
             text = content
@@ -3633,8 +3658,12 @@ class ProjectPreprocessor:
             seeds = [path for path in seeds if path in allowed]
             if not seeds:
                 seeds.extend(self._proactive_git_seeds(root, allowed))
-            from .code_index_demand import one_hop_related_files
-            neighbors = one_hop_related_files(Path(root), seeds, set(allowed), self.repo_tools)
+            from .code_index_demand import one_hop_related_files, two_hop_related_files
+            demand_hops = max(1, int(self.cfg.get("demand_hops", 1)))
+            if demand_hops >= 2:
+                neighbors = two_hop_related_files(Path(root), seeds, set(allowed), self.repo_tools)
+            else:
+                neighbors = one_hop_related_files(Path(root), seeds, set(allowed), self.repo_tools)
             refs = [(path, allowed[path]) for path in [*seeds, *neighbors]]
             record_usage = getattr(self.code_index, "record_usage", None)
             if callable(record_usage):

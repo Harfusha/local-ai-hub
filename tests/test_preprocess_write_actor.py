@@ -53,3 +53,35 @@ def test_preprocess_write_actor_exception_handling(tmp_path: Path) -> None:
 
     finally:
         actor.stop()
+
+
+def test_preprocess_write_actor_does_not_report_success_before_commit(tmp_path: Path) -> None:
+    db_path = tmp_path / "deferred_fk.sqlite3"
+    con = sqlite3.connect(db_path)
+    try:
+        con.executescript(
+            "CREATE TABLE parent (id INTEGER PRIMARY KEY);"
+            "CREATE TABLE child (parent_id INTEGER, "
+            "FOREIGN KEY(parent_id) REFERENCES parent(id) DEFERRABLE INITIALLY DEFERRED);"
+        )
+    finally:
+        con.close()
+
+    actor = PreprocessWriteActor(db_path)
+    actor.start()
+    try:
+        with pytest.raises(sqlite3.IntegrityError):
+            actor.submit(
+                lambda con: (
+                    con.execute("INSERT INTO child (parent_id) VALUES (404)"),
+                    "inserted",
+                )[1]
+            )
+    finally:
+        actor.stop()
+
+    con = sqlite3.connect(db_path)
+    try:
+        assert con.execute("SELECT COUNT(*) FROM child").fetchone()[0] == 0
+    finally:
+        con.close()

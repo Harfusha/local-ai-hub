@@ -240,7 +240,7 @@ def _regex_ast_chunks(text: str, language: str, size: int = 4500) -> list[str]:
     including oversized classes or functions. Ambiguous, malformed, or over-budget
     input is kept as one complete chunk rather than split at an unsafe boundary.
     """
-    if language not in {"typescript", "c_sharp", "go", "rust"}:
+    if language not in {"typescript", "javascript", "c_sharp", "go", "rust", "java", "cpp", "c", "php"}:
         return []
     if len(text) > _REGEX_AST_MAX_SOURCE_CHARS or size < 1:
         return [text] if text.strip() else []
@@ -957,7 +957,7 @@ class RAGStore:
             ast_chunks = self._ast_chunks(text, lang, size, overlap)
             if ast_chunks:
                 return ast_chunks
-        if lang in {"typescript", "c_sharp", "go", "rust"}:
+        if lang in {"typescript", "javascript", "c_sharp", "go", "rust", "java", "cpp", "c", "php"}:
             lexical_chunks = _regex_ast_chunks(text, lang, size)
             if lexical_chunks:
                 return lexical_chunks

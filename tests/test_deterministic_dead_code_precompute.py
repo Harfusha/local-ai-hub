@@ -13,6 +13,9 @@ def test_deterministic_precompute_dead_code(tmp_path: Path) -> None:
     engine = DeterministicEngine(config=config)
 
     root = str(tmp_path.resolve())
+    (tmp_path / "src").mkdir()
+    changed_source = tmp_path / "src" / "dead.py"
+    changed_source.write_text("def dead_func(): return 2\n", encoding="utf-8")
     # Mock code_index attached to engine
     mock_code_index = MagicMock()
     code_index_db = tmp_path / "test_ci.sqlite3"
@@ -51,4 +54,9 @@ def test_deterministic_precompute_dead_code(tmp_path: Path) -> None:
     assert len(cached) == 1
     assert cached[0]["name"] == "dead_func"
     assert cached[0]["path"] == "src/dead.py"
+
+    # A deterministic source generation change invalidates the cached scan.
+    update = engine.update_file(root, "src/dead.py", content_hash="changed-content-hash")
+    assert update["success"] is True
+    assert engine.get_unreferenced_symbols(root) == []
     ci_con.close()

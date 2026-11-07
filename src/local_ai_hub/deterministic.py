@@ -812,6 +812,7 @@ class DeterministicEngine:
         # Keep only the current generation; these rows are cheap to regenerate and
         # retaining stale generations only grows the DB.
         con.execute("DELETE FROM query_cache WHERE root=? AND generation<>?", (root_s, generation))
+        con.execute("DELETE FROM unreferenced_symbols WHERE root=?", (root_s,))
         for key in [k for k in self._query_l1 if k[0] == root_s]:
             self._query_l1.pop(key, None)
         self._stats["query_invalidations"] += 1
@@ -3927,6 +3928,42 @@ class DeterministicEngine:
                                 break
             except Exception as exc:
                 return {"success": False, "error": str(exc), "dead_symbols": []}
+
+        if not dead and self.code_index is None:
+            try:
+                with self._lock, closing(self._connect()) as con:
+                    rows = con.execute(
+                        """SELECT name, kind, path, line
+                           FROM facts
+                           WHERE root=? AND kind IN ('function', 'class')
+                             AND path NOT LIKE '%/test/%' AND path NOT LIKE '%/tests/%'
+                             AND path NOT LIKE '%_test.%' AND path NOT LIKE '%.test.%'
+                           ORDER BY path, line""",
+                        (resolved,),
+                    ).fetchall()
+                    for r in rows:
+                        s_name, s_kind, s_path, s_line = str(r[0]), str(r[1]), str(r[2]), int(r[3])
+                        if s_name in EXCLUDED_NAMES or s_name.startswith("test_") or s_name.startswith("On"):
+                            continue
+                        if Path(s_path).name.lower() in ("main.py", "app.py", "index.ts", "index.js", "program.cs"):
+                            continue
+                        count = con.execute(
+                            "SELECT COUNT(*) FROM facts WHERE root=? AND (name=? OR value=?) AND path<>?",
+                            (resolved, s_name, s_name, s_path),
+                        ).fetchone()[0]
+                        if count == 0:
+                            dead.append({
+                                "name": s_name,
+                                "kind": s_kind,
+                                "path": s_path,
+                                "line": s_line,
+                                "container": "",
+                                "reason": "0 references found in deterministic facts",
+                            })
+                            if len(dead) >= limit:
+                                break
+            except Exception:
+                pass
 
         return {
             "success": True,

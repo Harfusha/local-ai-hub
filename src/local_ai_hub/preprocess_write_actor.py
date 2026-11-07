@@ -133,17 +133,57 @@ class PreprocessWriteActor:
                     except queue.Empty:
                         break
 
+                if len(batch) == 1:
+                    op, fut = batch[0]
+                    if fut.set_running_or_notify_cancel():
+                        try:
+                            con.execute("BEGIN IMMEDIATE")
+                            res = op(con)
+                            con.commit()
+                            fut.set_result(res)
+                        except Exception as exc:
+                            try:
+                                con.rollback()
+                            except Exception:
+                                pass
+                            fut.set_exception(exc)
+                    self._queue.task_done()
+                    continue
+
+                # Multi-item batch with isolated fallback on individual failure
+                results: list[tuple[concurrent.futures.Future[Any], Any]] = []
+                has_error = False
                 try:
                     con.execute("BEGIN IMMEDIATE")
                     for op, fut in batch:
-                        if fut.cancelled():
+                        if not fut.set_running_or_notify_cancel():
                             continue
                         try:
                             res = op(con)
+                            results.append((fut, res))
+                        except Exception:
+                            has_error = True
+                            break
+                    if has_error:
+                        con.rollback()
+                        for op, fut in batch:
+                            if fut.done():
+                                continue
+                            try:
+                                con.execute("BEGIN IMMEDIATE")
+                                res = op(con)
+                                con.commit()
+                                fut.set_result(res)
+                            except Exception as indiv_exc:
+                                try:
+                                    con.rollback()
+                                except Exception:
+                                    pass
+                                fut.set_exception(indiv_exc)
+                    else:
+                        con.commit()
+                        for fut, res in results:
                             fut.set_result(res)
-                        except Exception as op_exc:
-                            fut.set_exception(op_exc)
-                    con.commit()
                 except Exception as tx_exc:
                     try:
                         con.rollback()
