@@ -1606,11 +1606,20 @@ class LocalAIServices:
                                 "final_response_produced": bool(clean_text.strip()), "final_response_status": "truncated",
                                 "terminal": True, "retryable": False, "_cacheable": False,
                                 **({"_lah_backend_completed": True} if response.get("done") is True else {})}
+                    if not clean_text.strip():
+                        return {
+                            "success": False, "error": "local model returned empty response",
+                            "error_code": "model_empty_response", "model": candidate_model,
+                            "requested_model": requested_model, "text": "", "thinking": thinking,
+                            "final_response_produced": False, "final_response_status": "empty",
+                            "terminal": False, "retryable": True, "_cacheable": False,
+                            "_lah_retry_count": int(response.get("_lah_retry_count", 0) or 0),
+                        }
                     return {
                         "success": True, "model": candidate_model, "requested_model": requested_model,
                         "text": clean_text, "thinking": thinking,
-                        "final_response_produced": bool(clean_text.strip()),
-                        "final_response_status": "produced" if clean_text.strip() else "empty",
+                        "final_response_produced": True,
+                        "final_response_status": "produced",
                         "load_duration_ns": response.get("load_duration", 0), "eval_count": response.get("eval_count", 0),
                         "prompt_eval_count": response.get("prompt_eval_count", 0),
                         "prompt_eval_duration_ns": response.get("prompt_eval_duration", 0),
@@ -1620,7 +1629,7 @@ class LocalAIServices:
                         **({"context_recovery": response["context_recovery"]} if response.get("context_recovery") is not None else {}),
                         "_lah_provider": response.get("_lah_provider", "ollama"),
                         "_lah_cache_origin": "ollama", "fallback_used": candidate_model != requested_model,
-                        "_cacheable": candidate_model == requested_model and bool(clean_text.strip()) and not response.get("context_recovery"),
+                        "_cacheable": candidate_model == requested_model and not response.get("context_recovery"),
                     }
 
                 try:
@@ -5965,12 +5974,12 @@ class LocalAIServices:
             def compute() -> dict[str, Any]:
                 try:
                     models = getattr(self, "config", {}).get("models", {})
-                    model = getattr(self, "config", {}).get("context_relevance_model") or models.get("general") or models.get("fast_code") or "context-relevance"
+                    model = getattr(self, "config", {}).get("context_relevance_model") or models.get("fast_code") or models.get("general") or "context-relevance"
                     generated = self._generate(
                         str(model),
                         json.dumps(payload, ensure_ascii=True, separators=(",", ":")),
                         "Return JSON only. Use only supplied deterministic evidence IDs. Never invent repository facts, repeat source text, reveal secrets, or use the user prompt as evidence.",
-                        min(512, max(64, int(request.token_budget) // 4)),
+                        min(1024, max(128, int(request.token_budget) // 2)),
                         0.0,
                         source="context-relevance", priority=4,
                         semantic_query="context relevance",

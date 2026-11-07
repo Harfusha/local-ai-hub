@@ -7218,33 +7218,39 @@ def test_{sym}_regression_edge_cases():
         defs: dict[str, dict[str, Any]] = {}
         usages: set[str] = set()
 
-        for p in p_root.rglob("*.py"):
-            if not p.is_file():
-                continue
-            rel_parts = p.relative_to(p_root).parts
-            if any(part.startswith((".", "node_modules", "venv", ".git", "test", "tool-envs", "site-packages")) or part in {"tool-envs", "venv", ".venv", "site-packages", "node_modules", "__pycache__", "build", "dist"} for part in rel_parts):
-                continue
-            rel = str(p.relative_to(p_root)).replace("\\", "/")
-            try:
-                content = p.read_text(encoding="utf-8", errors="replace")
-                tree = ast.parse(content, filename=str(p))
-                for node in ast.walk(tree):
-                    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                        if not node.name.startswith("_") and node.name not in ("main", "run", "cli", "app"):
-                            defs[f"{rel}::{node.name}"] = {
-                                "file": rel, "name": node.name, "line": node.lineno, "kind": "function"
-                            }
-                    elif isinstance(node, ast.ClassDef):
-                        if not node.name.startswith("_"):
-                            defs[f"{rel}::{node.name}"] = {
-                                "file": rel, "name": node.name, "line": node.lineno, "kind": "class"
-                            }
-                    elif isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
-                        usages.add(node.id)
-                    elif isinstance(node, ast.Attribute) and isinstance(node.ctx, ast.Load):
-                        usages.add(node.attr)
-            except Exception:
-                continue
+        for dirpath, dirnames, filenames in os.walk(p_root):
+            dirnames[:] = [
+                d for d in dirnames
+                if not (
+                    d.startswith((".", "node_modules", "venv", ".git", "test", "tool-envs", "site-packages"))
+                    or d in {"tool-envs", "venv", ".venv", "site-packages", "node_modules", "__pycache__", "build", "dist"}
+                )
+            ]
+            for fname in filenames:
+                if not fname.endswith(".py"):
+                    continue
+                p = Path(dirpath) / fname
+                rel = str(p.relative_to(p_root)).replace("\\", "/")
+                try:
+                    content = p.read_text(encoding="utf-8", errors="replace")
+                    tree = ast.parse(content, filename=str(p))
+                    for node in ast.walk(tree):
+                        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                            if not node.name.startswith("_") and node.name not in ("main", "run", "cli", "app"):
+                                defs[f"{rel}::{node.name}"] = {
+                                    "file": rel, "name": node.name, "line": node.lineno, "kind": "function"
+                                }
+                        elif isinstance(node, ast.ClassDef):
+                            if not node.name.startswith("_"):
+                                defs[f"{rel}::{node.name}"] = {
+                                    "file": rel, "name": node.name, "line": node.lineno, "kind": "class"
+                                }
+                        elif isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
+                            usages.add(node.id)
+                        elif isinstance(node, ast.Attribute) and isinstance(node.ctx, ast.Load):
+                            usages.add(node.attr)
+                except Exception:
+                    continue
 
         dead_candidates: list[dict[str, Any]] = []
         for key, item in defs.items():
