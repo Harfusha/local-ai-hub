@@ -45,6 +45,7 @@ from local_ai_hub.projection import AgentProjector
 from local_ai_hub.config import load_config
 from local_ai_hub.features import FeatureSet
 from local_ai_hub.operation_contracts import (
+    HARDWARE_PROFILE_ORDER,
     MAX_EVENT_SEQUENCE,
     MAX_REPO_PIPELINE_PARALLEL_STEPS,
     REPO_PHASES,
@@ -2792,7 +2793,9 @@ def local_ai_status(
         return contract_error("live status endpoint returned an invalid payload", status_code=502)
     scheduler = status.get("scheduler")
     scheduler = scheduler if isinstance(scheduler, dict) else {}
-    raw_capabilities = FEATURES.capability_status()
+    raw_capabilities = status.get("capabilities")
+    if not isinstance(raw_capabilities, dict):
+        raw_capabilities = FEATURES.capability_status()
     capabilities = {
         str(name): {
             key: item[key]
@@ -2808,6 +2811,9 @@ def local_ai_status(
         "preparing_model", "inference_active", "outcome_unknown",
     }:
         gpu_admission_state = "unknown"
+    hardware_profile = status.get("hardware_profile")
+    if not isinstance(hardware_profile, str) or hardware_profile not in HARDWARE_PROFILE_ORDER:
+        hardware_profile = FEATURES.hardware_profile
     result: dict[str, Any] = {
         "success": bool(status.get("hub_online", False)),
         "version": status.get("version"),
@@ -2815,7 +2821,7 @@ def local_ai_status(
         "active_model": scheduler.get("active_model"),
         "gpu_admission_state": gpu_admission_state,
         "degraded": status.get("degraded") is True,
-        "hardware_profile": FEATURES.hardware_profile,
+        "hardware_profile": hardware_profile,
         "capabilities": capabilities,
     }
     vram = status.get("vram_balancer")

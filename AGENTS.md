@@ -9,7 +9,7 @@ If any required skill or the Hub is unavailable, report the precise limitation a
 
 ## Simplified development and integration process
 
-Follow [`docs/superpowers/specs/2026-10-07-simplified-worktree-integration.md`](docs/superpowers/specs/2026-10-07-simplified-worktree-integration.md). It supersedes older instructions below that imply routine delegation, handoff packets, fingerprint manifests, or keeping work in stale branches. Main agent owns audits and integration; default to the current `master` checkout; use only necessary branches/worktrees; integrate bounded units promptly; preserve and classify every leftover before recoverable archival.
+Follow [`docs/WORKTREE_INTEGRATION.md`](docs/WORKTREE_INTEGRATION.md). It supersedes older instructions below that imply routine delegation, handoff packets, fingerprint manifests, or keeping work in stale branches. Main agent owns audits and integration; default to the current `master` checkout; use only necessary branches/worktrees; integrate bounded units promptly; preserve and classify every leftover before recoverable archival.
 
 ## Architecture rules
 

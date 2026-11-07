@@ -59,7 +59,7 @@ def test_request_trace_availability_does_not_infer_expiry_from_partial_local_cac
     node = shutil.which("node")
     assert node is not None, "Node.js is required for the bounded dashboard behavior test"
     start = DASHBOARD_HTML.index("function requestTrace(request){")
-    end = DASHBOARD_HTML.index("function requestOutcome(request={})", start)
+    end = DASHBOARD_HTML.index("function requestOutcome(request={}", start)
     trace_functions = DASHBOARD_HTML[start:end]
     requests = [
         {"request_id": "request-missing-local-trace", "trace_id": "trace-known-but-not-loaded"},
@@ -88,6 +88,49 @@ console.log(JSON.stringify(results));
         {"label": "Trace status unverified", "className": "muted", "traceId": None},
         {"label": "No trace recorded", "className": "muted", "traceId": None},
         {"label": "Trace available", "className": "ok", "traceId": "trace-loaded"},
+    ]
+
+
+def test_request_outcome_distinguishes_pending_from_failed() -> None:
+    import json
+    import shutil
+    import subprocess
+
+    node = shutil.which("node")
+    assert node is not None, "Node.js is required for the bounded dashboard behavior test"
+    start = DASHBOARD_HTML.index("function requestOutcome(request={}")
+    end = DASHBOARD_HTML.index("function workRecentRequestRow(", start)
+    outcome_source = DASHBOARD_HTML[start:end]
+    requests = [
+        {"request": {"success": True, "status_code": 200}, "trace": {"state": "queued"}},
+        {"request": {"success": True, "status_code": 200}, "trace": {"state": "running"}},
+        {"request": {"success": True, "status_code": 200}, "trace": {"state": "outcome_unknown"}},
+        {"request": {"success": True, "status_code": 200}, "trace": {"state": "partial"}},
+        {"request": {"success": True, "status_code": 200}, "trace": {"state": "needs_agent"}},
+        {"request": {"success": True, "status_code": 200}, "trace": {"state": "blocked"}},
+        {"request": {"success": False, "status_code": 500}, "trace": {"state": "failed"}},
+        {"request": {"success": True, "status_code": 200}, "trace": {"state": "succeeded"}},
+    ]
+    script = f"""
+const vm=require('node:vm');
+const source={json.dumps(outcome_source)};
+const requests={json.dumps(requests)};
+const sandbox=vm.createContext({{humanLabel:value=>value}});
+vm.runInContext(source,sandbox,{{timeout:1000}});
+console.log(JSON.stringify(requests.map(item=>sandbox.requestOutcome(item.request,item.trace))));
+"""
+    completed = subprocess.run([node, "-e", script], capture_output=True, text=True, check=True, timeout=5)
+    results = json.loads(completed.stdout)
+
+    assert results == [
+        {"failed": False, "pending": True, "label": "queued · HTTP 200", "className": "warn-t"},
+        {"failed": False, "pending": True, "label": "running · HTTP 200", "className": "warn-t"},
+        {"failed": False, "pending": True, "label": "outcome_unknown · HTTP 200", "className": "warn-t"},
+        {"failed": False, "pending": True, "label": "partial · HTTP 200", "className": "warn-t"},
+        {"failed": False, "pending": True, "label": "needs_agent · HTTP 200", "className": "warn-t"},
+        {"failed": False, "pending": True, "label": "blocked · HTTP 200", "className": "warn-t"},
+        {"failed": True, "pending": False, "label": "Failed · HTTP 500", "className": "bad-t"},
+        {"failed": False, "pending": False, "label": "Succeeded · HTTP 200", "className": "ok"},
     ]
 
 
@@ -125,7 +168,9 @@ def test_dashboard_exposes_activity_mode_and_reports_http_failures() -> None:
     assert "invalid mode" in mode_source.lower()
     fetch_start = DASHBOARD_HTML.index("async function apiFetch")
     fetch_end = DASHBOARD_HTML.index("function setFrontendVisionCaptureState", fetch_start)
+    assert "window.prompt" not in DASHBOARD_HTML[fetch_start:fetch_end]
     assert "X-LocalAI-Token" not in DASHBOARD_HTML[fetch_start:fetch_end]
+    assert "dashboardApiToken" not in DASHBOARD_HTML[fetch_start:fetch_end]
     assert "X-LocalAI-Client" in DASHBOARD_HTML[fetch_start:fetch_end]
     assert "Active" in DASHBOARD_HTML
     assert "Gaming" in DASHBOARD_HTML

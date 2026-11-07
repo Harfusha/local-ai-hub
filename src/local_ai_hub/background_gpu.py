@@ -51,6 +51,7 @@ class IdleGPUWorker:
         self._stop_unconfirmed = False
         self._cpu_lease = False
         self._last_error: str | None = None
+        self._model_details: list[dict[str, Any]] = []
         self._retry_after = 0.0
         self._consecutive_start_failures = 0
         self._startup_circuit_open = False
@@ -207,6 +208,8 @@ class IdleGPUWorker:
                 # GPU-heavy process leaves too little VRAM and Ollama spills too much of
                 # the idle worker to CPU, abort the disposable session and cool down.
                 details = self.runtime.loaded_model_details()
+                with self._lock:
+                    self._model_details = [dict(item) for item in details]
                 row = next((x for x in details if str(x.get("name", "")) == self.model), None)
                 offload = float((row or {}).get("cpu_offload_fraction", 0.0) or 0.0)
                 if row is not None and offload > self.max_cpu_offload_fraction:
@@ -232,7 +235,7 @@ class IdleGPUWorker:
                 self._stop_and_release_gpu()
                 return False
 
-    def ready(self) -> bool:
+    def ready(self, *, server_online: bool | None = None) -> bool:
         if not self.enabled or not self.model or self._startup_circuit_open or self._stop_unconfirmed:
             return False
         if self.scheduler.foreground_busy():
@@ -240,8 +243,10 @@ class IdleGPUWorker:
         with self._lock:
             if time.monotonic() < self._retry_after:
                 return False
-            if self._lease and self.runtime.is_online():
-                return not self._cancel.is_set()
+            if self._lease:
+                online = self.runtime.is_online() if server_online is None else bool(server_online)
+                if online:
+                    return not self._cancel.is_set()
         return self.scheduler.foreground_idle_seconds() >= self.idle_seconds
 
     def _acquire_cpu_session(self) -> bool:
@@ -298,6 +303,7 @@ class IdleGPUWorker:
                 self._last_error = "background server stop unconfirmed; GPU reservation retained"
                 return False
             self._lease = False
+            self._model_details = []
         self.scheduler.release_background_gpu()
         return True
 
@@ -483,12 +489,8 @@ class IdleGPUWorker:
             lease = self._lease
             active = self._active
             last_error = self._last_error
-        details: list[dict[str, Any]] = []
-        if lease:
-            try:
-                details = self.runtime.loaded_model_details()
-            except Exception:
-                details = []
+            details = [dict(item) for item in self._model_details] if lease else []
+        server_online = bool(lease and self.runtime.is_online())
         return {
             "enabled": self.enabled,
             "model": self.model,
@@ -504,8 +506,8 @@ class IdleGPUWorker:
             },
             "lease": lease,
             "active": active,
-            "ready": self.ready(),
-            "server_online": bool(lease and self.runtime.is_online()),
+            "ready": self.ready(server_online=server_online),
+            "server_online": server_online,
             "models": details,
             "last_error": last_error,
             "retry_after_seconds": round(max(0.0, self._retry_after - time.monotonic()), 2),

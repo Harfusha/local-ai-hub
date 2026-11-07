@@ -1,0 +1,98 @@
+{
+  "default_target_ref": "refs/heads/master",
+  "description": "Audit the full 105-prompt catalog and result matrix, reconcile prior claims against actual evidence, fix confirmed product and fixture defects, add missing practical scenarios, then run the unresolved high-risk/partial cases in isolated chats and disposable sandboxes. Preserve tokenless dashboard behavior. Do not run the full pytest suite; use focused tests only.",
+  "id": "plan_prompt_stress_coverage_followup_20261107",
+  "lifecycle": "completed",
+  "schema_version": 1,
+  "spec_refs": [],
+  "tasks": {
+    "task_audit_coverage": {
+      "acceptance_criteria": [
+        "Every prompt ID 001–105 has one current, evidence-backed status.",
+        "Historical coverage summary agrees with later per-case results or is marked as a historical checkpoint.",
+        "List unresolved practical cases and missing scenario coverage; distinguish synthetic fixture defects from Hub defects."
+      ],
+      "accountable_role": "primary agent",
+      "blocker": null,
+      "clarifications": [],
+      "depends_on": [],
+      "description": "Compare every prompt and evaluation-key case with all prior pilots, per-case results and current source. Classify PASS, PARTIAL, NOT_RUN, invalid setup and blocked separately; verify prior claims and identify concrete gaps.",
+      "kind": "analysis",
+      "next_action": "All acceptance criteria verified; plan closed.",
+      "title": "Audit 105 prompts and reconcile execution evidence",
+      "work_phase": "verification",
+      "work_status": "completed"
+    },
+    "task_correct_findings": {
+      "acceptance_criteria": [
+        "Each confirmed product defect has a regression test and a practical reproduction.",
+        "Dashboard uses no API token; same-origin loopback auth is validated and external API token protection remains intact.",
+        "Fixture runners cannot disable auth accidentally or leak sandbox credentials.",
+        "Synthetic app-only bugs are labeled as fixture defects, not Hub fixes."
+      ],
+      "accountable_role": "primary agent",
+      "blocker": null,
+      "clarifications": [],
+      "depends_on": [],
+      "description": "Use the status audit to reproduce each actionable failure, correct product or test-harness defects, preserve synthetic challenge seeds, and keep dashboard UI tokenless.",
+      "kind": "code",
+      "next_action": "All acceptance criteria verified; plan closed.",
+      "title": "Repair confirmed production and fixture defects",
+      "work_phase": "verification",
+      "work_status": "completed"
+    },
+    "task_deploy_verify": {
+      "acceptance_criteria": [
+        "Installed package and running process use the intended source revision.",
+        "Hub restart and service identity are verified.",
+        "Focused targeted tests and live dashboard/auth smoke pass after restart.",
+        "No full pytest suite is run."
+      ],
+      "accountable_role": "primary agent",
+      "blocker": null,
+      "clarifications": [],
+      "depends_on": [],
+      "description": "Install only needed package changes, restart the existing service, and run focused post-restart verification. Do not run the whole pytest suite.",
+      "kind": "operation",
+      "next_action": "All acceptance criteria verified; plan closed.",
+      "title": "Install, restart Hub, and verify repaired behavior",
+      "work_phase": "verification",
+      "work_status": "completed"
+    },
+    "task_gap_scenarios": {
+      "acceptance_criteria": [
+        "New prompts cover tokenless dashboard with protected server, cross-origin rejection, fixture auth configuration, and any other audit-confirmed coverage gaps.",
+        "Each new prompt has a rubric entry and isolated test prerequisites.",
+        "No prompt is marked PASS without evidence; historical checkpoints are not presented as current coverage."
+      ],
+      "accountable_role": "primary agent",
+      "blocker": null,
+      "clarifications": [],
+      "depends_on": [],
+      "description": "Compare the catalog, evaluation key, and observed implementation. Add prompts for meaningful blind spots and reconcile stale status summaries.",
+      "kind": "documentation",
+      "next_action": "All acceptance criteria verified; plan closed.",
+      "title": "Add missing practical scenarios and current coverage matrix",
+      "work_phase": "verification",
+      "work_status": "completed"
+    },
+    "task_isolated_iteration": {
+      "acceptance_criteria": [
+        "Every previously unresolved practical scenario is either tested with concrete evidence or precisely classified blocked by a missing capability/prerequisite.",
+        "Run protected case 098 end-to-end with a nonempty sandbox token: HTTP/MCP use token; browser dashboard does not; cross-origin/remote calls fail.",
+        "Results record isolation identity, setup, observed outcome, cleanup, and limitations without exposing secrets."
+      ],
+      "accountable_role": "primary agent",
+      "blocker": null,
+      "clarifications": [],
+      "depends_on": [],
+      "description": "Retest the previously partial, not-run, or invalid-setup practical scenarios using one isolated chat and disposable state per case where needed. Avoid the full pytest suite.",
+      "kind": "operation",
+      "next_action": "All acceptance criteria verified; plan closed.",
+      "title": "Run second isolated-chat iteration for unresolved practical cases",
+      "work_phase": "verification",
+      "work_status": "completed"
+    }
+  },
+  "title": "Agent prompt stress suite: complete audit and second iteration"
+}

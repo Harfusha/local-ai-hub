@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 from copy import deepcopy
+from pathlib import Path
 from typing import Any
 
 from .search_pagination import MAX_PAGE_SIZE, MAX_PAGE_WINDOW, pagination_bounds_error
@@ -941,8 +942,8 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
             "task_create": ("root", "task_id", "goal", "task", "paths", "contract", "scope", "acceptance_criteria", "criteria", "title", "description", "path", "file"),
             "task_update": ("root", "task_id", "checkpoint", "contract", "goal", "acceptance_criteria", "criteria"),
             "memory_list": ("root", "scope", "query", "limit", "kind"),
-            "memory_find": ("root", "scope", "query", "limit", "kind", "key", "status"),
-            "memory_record": ("root", "scope", "key", "value", "kind", "status", "confidence", "ttl_seconds", "name", "content"),
+            "memory_find": ("root", "scope", "query", "limit", "kind", "key", "status", "session_id"),
+            "memory_record": ("root", "scope", "key", "value", "kind", "status", "confidence", "ttl_seconds", "name", "content", "session_id"),
             "task_fail": ("root", "task_id", "reason", "error", "message"),
             "task_list": ("root", "query", "status", "owner", "limit", "offset", "include_stale"),
             "record_native_receipt": ("root", "task_id", "criterion", "command_id"),
@@ -963,6 +964,7 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
         required={
             "ask": ("root", "session_id"),
             "curate_dataset": ("root",),
+            "memory_record": ("root", "scope", "key", "value"),
             "task_budget_increase": ("root", "task_id", "reason", "budget"),
             "answer": ("root", "question_id", "answer"),
             "task_cleanup_worktree": ("task_id",),
@@ -999,6 +1001,7 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
         non_empty={
             "ask": ("root", "session_id"),
             "curate_dataset": ("root",),
+            "memory_record": ("root", "scope", "key"),
             "task_budget_increase": ("root", "task_id", "reason"),
             "answer": ("root", "question_id", "answer"),
             "task_cleanup_worktree": ("task_id",),
@@ -2288,6 +2291,17 @@ def validate_operation_arguments(
             return f"{field} is only valid for actions {scoped_names}"
     if tool == "local_ai_coord" and action == "task_create" and arguments.get("scope") == "":
         return "scope must use a canonical AgentScope value when supplied"
+    if tool == "local_ai_coord" and action == "memory_record":
+        root = arguments.get("root")
+        if not isinstance(root, str) or not root.strip():
+            return "root is required for action='memory_record'"
+        if not Path(root).expanduser().is_absolute():
+            return "root must be an absolute path for action='memory_record'"
+        scope = arguments.get("scope")
+        if not isinstance(scope, str) or not scope:
+            return "scope is required for action='memory_record'"
+        if scope not in {"global", "repository", "clone", "worktree", "branch", "task", "session"}:
+            return "scope must use a canonical AgentScope value for action='memory_record'"
     if tool == "local_ai_repo" and action == "context":
         mode = arguments.get("mode", properties.get("mode", {}).get("default", "adaptive"))
         if mode != "adaptive":

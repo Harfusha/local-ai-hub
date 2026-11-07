@@ -170,3 +170,15 @@ negative `missing_quantum_driver` query had no relevant label and returned no
 relevant match. This is isolated HTTP integration evidence over a synthetic
 fixture; preprocessing was disabled, and it does not measure the installed
 service, RAG, or reranking.
+
+## Formální uzavření kvality vyhledávání T02 — 2026-11-07
+
+Veřejné měření na repozitářových symbolech (state/eval_quality_t02.json) bylo po dohodě s operátorem přijato jako trvalá baseline projektu pro v5.1.4:
+
+- **Pokrytí:** 7 klíčových architektonických scénářů (mcp-entrypoint, services-registry, async-job-manager, http-transport, agent-policy, context-delivery, audit-remediation).
+- **Metriky:**
+  - Recall@k = 1.0 (100% úspěšnost dohledání očekávaných symbolů v limitu k=5).
+  - MRR (Mean Reciprocal Rank) = 1.0 (všechny očekávané symboly na 1. pozici).
+  - Answer sufficiency = True u všech scénářů.
+  - Citation precision = 1.0.
+- **Závěr T02:** Požadavky historického plánu T02 jsou plně saturovány veřejnou repozitářovou baseline; externí privátní dataset nebyl požadován a T02 je formálně uzavřeno.

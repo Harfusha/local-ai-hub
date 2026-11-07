@@ -111,6 +111,52 @@ def _handler(path, token):
     return handler
 
 
+def _dashboard_handler(path, *, fetch_site="same-origin", client_address=("127.0.0.1", 23456), origin="http://127.0.0.1:11435"):
+    handler = _handler(path, "")
+    handler.headers = {
+        "X-LocalAI-Client": "dashboard",
+        "Sec-Fetch-Site": fetch_site,
+        "Host": "127.0.0.1:11435",
+        "Origin": origin,
+    }
+    handler.client_address = client_address
+    handler._validate_host_and_origin = lambda: http_server.Handler._validate_host_and_origin(handler)
+    return handler
+
+
+def test_same_origin_loopback_dashboard_uses_local_auth_without_api_token(monkeypatch):
+    monkeypatch.setattr(http_server, "APP", SimpleNamespace(config={
+        "security": {"api_token": "admin-token-long-enough"},
+        "server": {"bind": "127.0.0.1"},
+    }, telemetry=SimpleNamespace(record_system=lambda *_args, **_kwargs: True)))
+    handler = _dashboard_handler("/api/config/update")
+
+    assert handler._require_authorized() is True
+    assert handler._authorization_actor == "dashboard"
+    assert handler._authorization_status == 200
+    assert handler._authorization_permissions == frozenset({"monitor", "read", "write", "admin"})
+    assert handler.responses == []
+
+
+def test_dashboard_local_auth_rejects_cross_site_remote_and_markerless_requests(monkeypatch):
+    monkeypatch.setattr(http_server, "APP", SimpleNamespace(config={
+        "security": {"api_token": "admin-token-long-enough"},
+        "server": {"bind": "127.0.0.1"},
+    }))
+    cross_site = _dashboard_handler("/api/config/update", fetch_site="cross-site")
+    remote = _dashboard_handler("/api/config/update", client_address=("203.0.113.7", 23456))
+    markerless = _dashboard_handler("/api/config/update")
+    markerless.headers.pop("X-LocalAI-Client")
+    invalid_origin = _dashboard_handler("/api/config/update", origin="https://attacker.example")
+    missing_origin = _dashboard_handler("/api/config/update", origin="")
+
+    assert cross_site._authorized() is False
+    assert remote._authorized() is False
+    assert markerless._authorized() is False
+    assert invalid_origin._authorized() is False
+    assert missing_origin._authorized() is False
+
+
 def test_action_tokens_are_scoped_and_authorization_is_audited(monkeypatch):
     telemetry = AuditTelemetry()
     monkeypatch.setattr(

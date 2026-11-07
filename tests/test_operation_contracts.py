@@ -11,6 +11,7 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from local_ai_hub.features import FeatureSet
 from local_ai_hub.generator import generate_mcp_tool_schemas
+from local_ai_hub.client import HubClient
 from local_ai_hub import mcp_server as local_ai_mcp
 from local_ai_hub.operation_contracts import (
     OPERATION_CONTRACTS,
@@ -88,6 +89,59 @@ def test_artifact_runtime_validation_matches_action_contract():
     assert validate_operation_arguments(TOOL, "list", {}) is None
     assert "expected one of get, slice, list" in validate_operation_arguments(TOOL, "unknown", {})
     assert validate_operation_arguments(TOOL, "list", {"offset": 0}) == "offset is not valid for action='list'"
+
+
+def test_memory_record_requires_explicit_identity_and_preserves_session_id():
+    assert validate_operation_arguments(
+        "local_ai_coord", "memory_record", {"action": "memory_record"}
+    ) == "root is required for action='memory_record'"
+
+    valid = {
+        "action": "memory_record",
+        "root": "C:/fixture/repo",
+        "scope": "repository",
+        "key": "finding",
+        "value": "value",
+        "session_id": "session-fixture-101",
+    }
+    assert validate_operation_arguments("local_ai_coord", "memory_record", valid) is None
+
+
+def test_hub_client_rejects_incomplete_memory_record_before_http():
+    calls = []
+    client = SimpleNamespace(post=lambda *args, **kwargs: calls.append((args, kwargs)))
+
+    result = HubClient.coord(client, "memory_record")
+
+    assert result["success"] is False
+    assert result["error"] == "root is required for action='memory_record'"
+    assert calls == []
+
+
+def test_hub_client_forwards_explicit_memory_record_identity(tmp_path):
+    calls = []
+    client = SimpleNamespace(
+        post=lambda *args, **kwargs: calls.append((args, kwargs)) or {"success": True}
+    )
+
+    result = HubClient.coord(
+        client,
+        "memory_record",
+        root=str(tmp_path),
+        scope="repository",
+        key="falsey-value-is-explicit",
+        value="",
+        session_id="session-fixture-101",
+    )
+
+    assert result["success"] is True
+    assert len(calls) == 1
+    payload = calls[0][0][1]
+    assert payload["root"] == str(tmp_path)
+    assert payload["scope"] == "repository"
+    assert payload["key"] == "falsey-value-is-explicit"
+    assert payload["value"] == ""
+    assert payload["session_id"] == "session-fixture-101"
 
 
 def test_artifact_handler_applies_registry_validation_before_backend_call(monkeypatch):

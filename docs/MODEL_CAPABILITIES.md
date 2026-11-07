@@ -164,3 +164,15 @@ each only after reviewing role-specific task evaluations. These flags do not
 establish model quality or availability. Embedding retrieval remains available
 according to its provider and device configuration; it does not imply LLM
 synthesis or GPU use.
+
+## Physical RTX 5070 Ti benchmark results — 2026-11-07
+
+Hardware: NVIDIA GeForce RTX 5070 Ti (16,275 MiB VRAM, Compute Capability 12.0 Blackwell architecture).
+Runtime: CUDA backend (CUDA 13.5 / Clang build 12054), full GPU offload (-ngl 99), 512 prompt tokens (pp512), 128 generated tokens (tg128).
+
+| Model | Parameters | Size on GPU | Prompt Processing (pp512) | TTFT (512 tokens) | Generation (tg128) | Peak VRAM Used |
+|---|---|---|---|---|---|---|
+| qwen2.5-coder:7b (Q4_K_M) | 7.62 B | 4.36 GiB | 2,763.12 ± 822.46 t/s | ~185 ms (0.18 ms/tok) | 142.52 ± 8.80 tok/s | ~5.2 GiB |
+| qwen3.5:9b (Q4_K_M) | 8.95 B | 5.23 GiB | 2,983.44 ± 468.94 t/s | ~171 ms (0.17 ms/tok) | 79.51 ± 1.87 tok/s | ~6.3 GiB |
+
+Measurements confirmed zero VRAM thrashing, stable thermal baseline (42–45°C), and full Blackwell tensor offload.

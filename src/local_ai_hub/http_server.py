@@ -2787,6 +2787,29 @@ class Handler(BaseHTTPRequestHandler):
         configured_tokens = [token for token in (expected, supervisor_token, *action_tokens.values()) if token]
         if len(configured_tokens) != len(set(configured_tokens)):
             return False
+        dashboard_path = urlparse(str(getattr(self, "path", ""))).path
+        dashboard_method = str(getattr(self, "command", "GET")).upper()
+        dashboard_headers = getattr(self, "headers", {})
+        if not hasattr(dashboard_headers, "get"):
+            dashboard_headers = {}
+        dashboard_fetch_site = str(dashboard_headers.get("Sec-Fetch-Site", "")).strip().lower()
+        dashboard_origin = str(dashboard_headers.get("Origin", "")).strip()
+        dashboard_host = str(dashboard_headers.get("Host", "")).strip()
+        # The dashboard is tokenless only for same-origin browser calls from loopback.
+        dashboard_request = (
+            dashboard_path.startswith("/api/")
+            and dashboard_headers.get("X-LocalAI-Client", "") == "dashboard"
+            and dashboard_fetch_site == "same-origin"
+            and bool(dashboard_host)
+            and (dashboard_method in {"GET", "HEAD"} or bool(dashboard_origin))
+            and _is_loopback_client_address(getattr(self, "client_address", None))
+        )
+        host_origin_validator = getattr(self, "_validate_host_and_origin", None)
+        if dashboard_request and callable(host_origin_validator) and host_origin_validator():
+            self._authorization_actor = "dashboard"
+            self._authorization_permissions = frozenset({"monitor", "read", "write", "admin"})
+            self._authorization_status = 200
+            return True
         if action is None:
             action = _http_admin_action(
                 str(getattr(self, "command", "")),
@@ -6999,7 +7022,18 @@ class Handler(BaseHTTPRequestHandler):
                 idempotency_key = str(payload.get("idempotency_key", "")).strip()
                 actor = self._agent() or "agent"
                 if action == "record":
-                    rec_data = payload.get("record") or {}
+                    raw_record = payload.get("record")
+                    if raw_record is not None and not isinstance(raw_record, dict):
+                        self._send(400, {"success": False, "error": "memory record must be an object", "terminal": True, "retryable": False}); return
+                    requested_root = payload.get("root")
+                    if (
+                        not isinstance(requested_root, str)
+                        or not requested_root.strip()
+                        or not Path(requested_root).expanduser().is_absolute()
+                    ):
+                        self._send(400, {"success": False, "error": "memory record requires an explicit absolute root", "terminal": True, "retryable": False}); return
+                    rec_data = raw_record or {}
+                    value_supplied = "value" in rec_data if rec_data else "value" in payload
                     if not rec_data:
                         rec_data = {
                             "kind": payload.get("kind", MemoryKind.FACT.value),
@@ -7019,6 +7053,12 @@ class Handler(BaseHTTPRequestHandler):
                             "expires_at": payload.get("expires_at"),
                             "ttl_seconds": payload.get("ttl_seconds"),
                         }
+                    if not isinstance(rec_data.get("scope"), str) or not rec_data["scope"].strip():
+                        self._send(400, {"success": False, "error": "memory record requires an explicit scope", "terminal": True, "retryable": False}); return
+                    if not isinstance(rec_data.get("key"), str) or not rec_data["key"].strip():
+                        self._send(400, {"success": False, "error": "memory record requires a non-empty key", "terminal": True, "retryable": False}); return
+                    if not value_supplied:
+                        self._send(400, {"success": False, "error": "memory record requires an explicit value", "terminal": True, "retryable": False}); return
                     try:
                         raw_kind = str(rec_data.get("kind", MemoryKind.FACT.value)).lower()
                         try:
@@ -7028,7 +7068,6 @@ class Handler(BaseHTTPRequestHandler):
                         raw_scope = rec_data.get("scope")
                         requested_scope = _parse_memory_scope(raw_scope)
                         provenance = dict(rec_data.get("provenance") or {})
-                        requested_root = payload.get("root") or rec_data.get("root") or provenance.get("root")
                         project_identity = self._memory_project_identity(requested_root)
                         if requested_root and project_identity is None:
                             self._send(400, {"success": False, "error": "memory project identity could not be resolved", "terminal": True, "retryable": False}); return

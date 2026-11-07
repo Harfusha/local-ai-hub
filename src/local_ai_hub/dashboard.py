@@ -4787,12 +4787,15 @@ function requestTraceAvailability(request){
   if(trace)return {label:'Trace available',className:'ok',trace};
   return {label:'Trace status unverified',className:'muted',trace:null};
 }
-function requestOutcome(request={}){
-  const code=Number(request.status_code)||0,failed=request.success===false||code>=400;
-  const label=failed?'Failed':request.success===true?'Succeeded':code?'HTTP result':'Result unreported';
-  return {failed,label:label+(code?' · HTTP '+code:'')};
+function requestOutcome(request={},trace=null){
+  const code=Number(request.status_code)||0,state=String(trace?.state||'').trim().toLowerCase();
+  const pendingStates=['outcome_unknown','interrupted','cancelled','canceled','timed_out','preempted','partial','needs_agent','blocked','planned','ready','source_ready','active','in_progress','running','queued','pending','waiting'];
+  const traceFailed=state==='failed'||state==='error',failed=request.success===false||code>=400||traceFailed;
+  const pending=!failed&&pendingStates.includes(state);
+  const label=pending?humanLabel(state):failed?'Failed':request.success===true?'Succeeded':code?'HTTP result':'Result unreported';
+  return {failed,pending,label:label+(code?' · HTTP '+code:''),className:failed?'bad-t':pending?'warn-t':request.success===true?'ok':'muted'};
 }
-function workRecentRequestRow(request){const trace=requestTrace(request),availability=requestTraceAvailability(request),outcome=requestOutcome(request),failed=outcome.failed,context=trace?traceContextLabel(trace):(request.error_type||''),requestId=String(request.request_id||'—'),project=traceProjectLabel(request.project||request.workspace||request.root||trace?.project)||'—',inner=`<td>${request.created_at?new Date(request.created_at*1000).toLocaleString():'—'}</td><td><strong>${esc(requestId.slice(-12))}</strong><div class="tiny">${trace?'Trace linked · '+esc(String(trace.trace_id||'').slice(-8)):'Request-only record'}</div></td><td><strong>${esc(project)}</strong></td><td>${esc(request.agent||'—')}</td><td><strong>${esc(request.action||'—')}</strong><div class="tiny">${esc(context)}</div></td><td><span class="${failed?'bad-t':'ok'}">${esc(outcome.label)}</span>${request.error_type?`<div class="tiny">${esc(request.error_type)}</div>`:''}</td><td><span class="${availability.className}">${esc(availability.label)}</span></td><td>${ms(request.duration_ms)}</td>`;return requestRow(request,inner,8)}
+function workRecentRequestRow(request){const trace=requestTrace(request),availability=requestTraceAvailability(request),outcome=requestOutcome(request,trace),context=trace?traceContextLabel(trace):(request.error_type||''),requestId=String(request.request_id||'—'),project=traceProjectLabel(request.project||request.workspace||request.root||trace?.project)||'—',inner=`<td>${request.created_at?new Date(request.created_at*1000).toLocaleString():'—'}</td><td><strong>${esc(requestId.slice(-12))}</strong><div class="tiny">${trace?'Trace linked · '+esc(String(trace.trace_id||'').slice(-8)):'Request-only record'}</div></td><td><strong>${esc(project)}</strong></td><td>${esc(request.agent||'—')}</td><td><strong>${esc(request.action||'—')}</strong><div class="tiny">${esc(context)}</div></td><td><span class="${outcome.className}">${esc(outcome.label)}</span>${request.error_type?`<div class="tiny">${esc(request.error_type)}</div>`:''}</td><td><span class="${availability.className}">${esc(availability.label)}</span></td><td>${ms(request.duration_ms)}</td>`;return requestRow(request,inner,8)}
 
 function render(s){
   last=s;

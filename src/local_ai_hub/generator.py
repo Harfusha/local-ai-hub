@@ -427,7 +427,7 @@ Use Agent OS for every non-trivial multi-step, long-running, delegated, or accep
 
 ### 2. Scoped Memory & Learnings
 - **Store durable findings and decisions:**
-  `local_ai_coord(action="memory_record", record={{"kind": "decision", "scope": "repository", "key": "convention", "value": "Token format must follow HMAC-SHA256"}})`
+  `local_ai_coord(action="memory_record", root="/repo", scope="repository", key="convention", value="Token format must follow HMAC-SHA256")`
 - **Retrieve memories across turns:**
   `local_ai_coord(action="memory_find", query="convention")`
 

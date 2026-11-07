@@ -1472,7 +1472,7 @@ class HubClient:
                     raise RepositoryScopeError("record cannot override root", "invalid_incident_root")
             except RepositoryScopeError as exc:
                 return self._identity_preflight(str(exc), exc.code)
-        if act in {"context_compile", "verify_receipt", "verify_completion", "verify_export"}:
+        if act in {"context_compile", "verify_receipt", "verify_completion", "verify_export", "memory_record"}:
             validation_error = validate_operation_arguments("local_ai_coord", act, dict(kwargs))
             if validation_error:
                 return {

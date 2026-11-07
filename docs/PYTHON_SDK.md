@@ -179,4 +179,4 @@ These calls return the Hub response dictionary directly. Check `success` before 
 
 ## Release evidence
 
-This guide describes the Python source API. It does not prove package installation, clean-host update, MCP adapter/daemon revision identity, live model availability, or runtime quality. See [T19 Release Validation Runbook](T19_RELEASE_VALIDATION_RUNBOOK.md); clean-host lifecycle evidence remains pending T04 blocker clearance, T20's frozen revision, and an assigned serial slot.
+This guide describes the Python source API. It does not prove package installation, clean-host update, MCP adapter/daemon revision identity, live model availability, or runtime quality. See [the completion plan](FINAL_COMPLETION_PLAN.md); clean-host lifecycle evidence remains pending T04 blocker clearance, T20's frozen revision, and an assigned serial slot.
