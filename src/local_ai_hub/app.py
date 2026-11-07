@@ -335,7 +335,8 @@ def _prewarm_should_retry(scheduler: Any) -> bool:
         return False
     if not isinstance(status, dict):
         return False
-    return status.get("gpu_admission_state") in retryable_states
+    state = status.get("gpu_admission_state")
+    return isinstance(state, str) and state in retryable_states
 
 
 def _wait_for_prewarm_backend(runtime: Any, shutdown: threading.Event, max_wait_seconds: float) -> bool:
@@ -627,7 +628,7 @@ class LocalAIApp:
                             self.telemetry.record_system("prewarm_ready", model=str(model), attempts=attempts)
                             return
                     except Exception as exc:
-                        self.telemetry.record_error("prewarm", "startup_model", exc, recovered=True)
+                        self.telemetry.record_error("prewarm", "startup_model", exc, recovered=False)
                         _record_startup_prewarm_failure(self.debug_traces, str(model), exc)
                         self.logger.warning("prewarm attempt failed: %s", type(exc).__name__)
                     if not _prewarm_should_retry(self.scheduler):
