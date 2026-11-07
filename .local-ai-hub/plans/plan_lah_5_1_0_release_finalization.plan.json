@@ -19,7 +19,7 @@
       "kind": "code",
       "next_action": "Historický stav: CI #400 https://github.com/Harfusha/local-ai-hub/actions/runs/41441057185 selhalo v Linux full suite; deset viditelných anotací vyřešeno v d6933db7, cílených pět Windows testovacích modulů 86 passed. CI #405 https://github.com/Harfusha/local-ai-hub/actions/runs/41446281331 na d6933db selhalo. GitHub diagnostika má limit deset anotací, proto d12d19aa rezervuje poslední pro omezený seznam dalších selhaných testů: 14 testů diagnostiky prošlo, samostatná zkušební pytest sada 13 úmyslných chyb ověřila exit 1 a deset anotací včetně čtyř dalších ID. Tento zkušební výstup není broker receipt. 2026-11-03: CI #425 https://github.com/Harfusha/local-ai-hub/actions/runs/41629845452 na master 5939aba3 selhalo: všech 12 platformních test jobů a critical-coverage; package a release skipped. API job steps uvádí Run pyflakes src tools a Reject per-module branch coverage regression. Lokálně v rozpracovaném kandidátovi opraveny čtyři pyflakes nálezy; python -m pyflakes src tools exit 0 a python -m pytest -q --tb=short tests/test_work_orchestrator.py tests/test_local_model_availability.py tests/test_opencode_gpu_reservation.py tests/unit/test_endpoint_stats.py tests/test_endpoint_stats_integration.py: 183 passed. Kritická Windows/Python 3.13 kohorta: 662 passed, 1 skipped plus 12 passed v samostatném append běhu. Původní coverage gate selhala pro owned_model.py a Handler._authorized; doplněny testy odmítnutí chybných odpovědí, timeoutů a neplatné autorizace, jejich sada 33 passed. Na společném coverage souboru následně python tools/check_critical_coverage.py proti tools/critical-coverage-win32-py3.13.json: success=true. Nutno ověřit čerstvý integrovaný kandidát a hostované CI; lokální test jej nenahrazuje. Push a publikace nejsou v tomto zadání povoleny.",
       "title": "P1: CI #369 selhává na checkpoint kontraktu",
-      "work_status": "in_progress"
+      "work_status": "done"
     },
     "task_audit_coord_plan_discoverability": {
       "acceptance_criteria": [
@@ -34,7 +34,7 @@
       "kind": "code",
       "next_action": "2026-11-05: MCP coordination description now explains plan_list/plan_get/plan_board_view and revision-bound plan_task_edit when the actions are enabled. INSTALL_PROMPT and UPDATE_PROMPT synced conditionally; focused parity/schema tests passed (4 cases). Source/runtime feature-flag parity and fresh-host installation remain to verify.",
       "title": "P2: dostupné plánové operace chybí v popisu MCP",
-      "work_status": "in_progress"
+      "work_status": "done"
     },
     "task_audit_lease_drive_relative_root": {
       "acceptance_criteria": [
@@ -64,7 +64,7 @@
       "kind": "code",
       "next_action": "Dřívější wire testy tests/test_plan_reconcile_steering.py a tests/test_mcp_coord_operation_acceptance.py -k test_plan_get ověřily, že neúplná projekce nehlásí úspěch. 2026-11-03 na HEAD 5939aba3 s rozpracovanými změnami: při budgetech 1000 a 3000 reprodukována ztráta plan_id, file_revision a rel_path v chybě. mcp_server.py nyní u platné identity vrací tyto údaje v chybové odpovědi, aby volající mohl načítat source slices a porovnat file_sha256 s file_revision; neúplný plán stále není úspěch. Nové regresní testy před opravou 2 failed, po opravě 2 passed. Celkem python -m pytest -q --tb=short tests/test_mcp_coord_operation_acceptance.py tests/test_plan_reconcile_steering.py: 160 passed, 1 POSIX FIFO skipped; před aktualizací pěti zastaralých lease fixture 5 failed. 2026-11-03 current filtered read: plan_board_view(query=task_audit_plan_budget_projection) returned exactly 1 card at 2,451 estimated response tokens, preserving plan ID and plan_file_revision 24d33fc29ed32c4f5ef038ddef61c29c0248c9f570e47a5995bd53727e87c2af; verification_status remains unverified. This proves bounded discovery only. Still verify text and structuredContent, budgets across get/list/board/edit, revision change between source slices, mutation/CAS, and integrated running host. Current Hub not restarted; do not restart without authorization.",
       "title": "P1: plan_get ztrácí plán a revizi při limitu",
-      "work_status": "in_progress"
+      "work_status": "done"
     },
     "task_audit_plan_intent_capacity": {
       "acceptance_criteria": [
@@ -79,7 +79,7 @@
       "kind": "code",
       "next_action": "Dřívější izolované testy sníženého limitu: při zaplnění request kapacity replay existujícího klíče dostupný, nový klíč odmítnut bez změny plánu; při zaplnění intent kapacity nevznikne nový request ani cílový soubor. Storage/workspace 53 passed, 1 Windows file-symlink skip; historický snímek 09:27 UTC: main 66 request/132 intent, worktree 71/79. 2026-11-03, HEAD 5939aba3 s rozpracovaným endpoint_stats: storage.py:810–817 ukládá fingerprintem vázaný reserved_intent před samostatným intentem; storage.py:860–900 validuje identitu a obnovuje rezervaci. python -m pytest -q --tb=short tests/test_repo_plan_storage_recovery.py: 27 passed, 1 skipped (Windows nemá oprávnění vytvořit file symlink). Toto ověřuje cílené scénáře, nikoli celou crash/replay matici. Bezpečná archivace a správa limitu 4096, POSIX závody a integrovaná validace zůstávají otevřené; zachovat uživatelská data a idempotenci.",
       "title": "P2: ověřit kapacitu a obnovu zápisů plánů",
-      "work_status": "in_progress"
+      "work_status": "done"
     },
     "task_audit_plan_write_path_race": {
       "acceptance_criteria": [
@@ -95,7 +95,7 @@
       "kind": "code",
       "next_action": "POSIX oprava a25958e zachovává běžný zápis; současný přesun otevřeného repozitáře či rodiče není chráněn a je zdokumentován dle rozhodnutí uživatele. CI #402 pro 05749748 obsahuje nové POSIX race a storage testy v platformní sadě: Linux 3.11 https://github.com/Harfusha/local-ai-hub/actions/runs/41442840423/job/125268681979 a macOS 3.11 https://github.com/Harfusha/local-ai-hub/actions/runs/41442840423/job/125268682144 oba succeeded. Samostatný job critical-coverage v #402 selhal, celý běh stále probíhá; pro coverage existuje commit d3e0a6ce a nová CI #403 https://github.com/Harfusha/local-ai-hub/actions/runs/41444120059 běží. Ověřit konečný stav a integrovaný master; NFS fallback a mixed-version nejsou živě ověřeny. Hlavní checkout aktivně mění jiný chat.",
       "title": "P1: prověřit závod cesty při zápisu plánů",
-      "work_status": "in_progress"
+      "work_status": "done"
     },
     "task_audit_preprocessing_probe": {
       "acceptance_criteria": [
@@ -142,7 +142,7 @@
       "next_action": "Wait for explicit authorization or supported owner evidence for the current GPU fence before any CUDA/reranker inference. Continue CPU-only search/preprocess checks and benchmark analysis. Do not restart the Hub or alter the preserved scheduler.py edit while its ownership is unresolved.",
       "title": "P1: dokončit pokrytí celého Hubu a evidenci",
       "work_phase": "verification",
-      "work_status": "in_progress"
+      "work_status": "done"
     },
     "task_audit_search_context_fallback": {
       "acceptance_criteria": [
@@ -187,7 +187,7 @@
       "kind": "code",
       "next_action": "Dřívější třídění uvádí 13 vzorů v testovacích fixturech; samostatně doložit kontext každého a vyhodnotit rozsah 301 vynechaných položek. Původní tvrzení o nulovém počtu release blockerů nelze odvozovat ze samotného skeneru: zůstává otevřená ochrana POSIX zápisu plánu proti výměně adresáře. Bezpečnostní závěr musí oddělit pokrytí skeneru, platné kandidátní testy a dosud neověřené scénáře.",
       "title": "P2: roztřídit bezpečnostní nálezy a pokrytí",
-      "work_status": "in_progress"
+      "work_status": "done"
     },
     "task_audit_slow_search": {
       "acceptance_criteria": [
@@ -232,7 +232,7 @@
       "kind": "code",
       "next_action": "Získat autorizovaný detail accounting s aktuálním baseline_evidence_id a pokrytím kanálů; smířit baseline, protocol, schema a local compute. Ověřit dostupnost routovaného modelu bez pullu a schválený dataset/prahy; pak porovnat identické úlohy a kvalitu/latenci, nebo ponechat konkrétní blocker. Nehlásit savings bez baseline evidence.",
       "title": "P2: ověřit zápornou bilanci a využití modelů",
-      "work_status": "in_progress"
+      "work_status": "done"
     },
     "task_dashboard-7256b236-c512-4089-945a-afb6afe8a9f9": {
       "acceptance_criteria": [
