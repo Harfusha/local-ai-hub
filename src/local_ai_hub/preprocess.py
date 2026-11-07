@@ -364,6 +364,11 @@ class ProjectPreprocessor:
         self._demand_priority_cache: dict[
             str, tuple[float, tuple[str, ...], tuple[Any, ...], tuple[str, ...]]
         ] = {}
+        from .preprocess_ingest import SinglePassIngestCache
+        self.ingest_cache = SinglePassIngestCache(
+            max_entries=max(50, _safe_int(self.cfg.get("ingest_cache_max_entries"), 500)),
+            max_bytes=max(1024 * 1024, _safe_int(self.cfg.get("ingest_cache_max_bytes"), 64 * 1024 * 1024)),
+        )
         self._stats_lock = threading.Lock()
         self._last_db_maintenance = time.time()
         self._db_maintenance_retry_interval: int | None = None
@@ -557,6 +562,7 @@ class ProjectPreprocessor:
                     last_accessed_at REAL NOT NULL DEFAULT 0,
                     generation INTEGER NOT NULL,
                     card_key TEXT,
+                    centrality_score REAL NOT NULL DEFAULT 0.0,
                     updated_at REAL NOT NULL,
                     PRIMARY KEY(root,path)
                 );
@@ -633,6 +639,12 @@ class ProjectPreprocessor:
                 """
             )
             _ensure_file_refs_revision_tracking(con)
+            f_cols = {str(row[1]) for row in con.execute("PRAGMA table_info(file_refs)").fetchall()}
+            if "centrality_score" not in f_cols:
+                try:
+                    con.execute("ALTER TABLE file_refs ADD COLUMN centrality_score REAL NOT NULL DEFAULT 0.0")
+                except sqlite3.OperationalError:
+                    pass
             columns = {
                 str(row[1])
                 for row in con.execute("PRAGMA table_info(external_index_state)").fetchall()
@@ -1068,6 +1080,8 @@ class ProjectPreprocessor:
                 paths = self._dirty_paths.setdefault(root, set())
                 first = not paths
                 paths.add(rel)
+            if hasattr(self, "ingest_cache") and self.ingest_cache is not None:
+                self.ingest_cache.invalidate(rel)
                 self._watch_revisions[root] = self._watch_revisions.get(root, 0) + 1
             with self._hash_git_maps_lock:
                 for key in [key for key in self._hash_git_maps if key[0] == root]:
@@ -3064,6 +3078,7 @@ class ProjectPreprocessor:
             order = """ ORDER BY
                      -- Recently accessed files first (set by agent interactions)
                      (COALESCE(last_accessed_at, 0) > 0) DESC,
+                     COALESCE(centrality_score, 0.0) DESC,
                      -- Entry-points and key architectural files
                      CASE
                        WHEN path LIKE '%/Controllers/%' THEN 0
@@ -3138,6 +3153,25 @@ class ProjectPreprocessor:
             ).fetchall()
         content_overrides.update({str(item["path"]): str(item["text"]) for item in rows
                                   if str(item["content_hash"]) == pending_hashes.get(str(item["path"]))})
+        missing_hashes = [h for p, h in pending_hashes.items() if p not in content_overrides and h]
+        if missing_hashes:
+            with self._db_lock, closing(self._connect()) as con:
+                for batch in sqlite_batches(missing_hashes):
+                    ph = ",".join("?" for _ in batch)
+                    cas_rows = con.execute(
+                        f"SELECT content_hash, text FROM source_index WHERE content_hash IN ({ph})",
+                        batch,
+                    ).fetchall()
+                    cas_map = {str(r[0]): str(r[1]) for r in cas_rows}
+                    for p, h in pending_hashes.items():
+                        if p not in content_overrides and h in cas_map:
+                            content_overrides[p] = cas_map[h]
+        if hasattr(self, "ingest_cache") and self.ingest_cache is not None:
+            for p in paths:
+                if p not in content_overrides and self.ingest_cache.has(p):
+                    item = self.ingest_cache.get(p)
+                    if item is not None:
+                        content_overrides[p] = item.text
         result = self.rag.index_paths_step(
             root, workspace=workspace, paths=paths,
             should_yield=self._yield,
@@ -3249,8 +3283,12 @@ class ProjectPreprocessor:
             rel = str(item["path"])
             path = (base / rel).resolve(strict=False)
             path.relative_to(base)
-            file_hash, lines = self.repo_tools._read_snapshot(path)
-            text = "\n".join(lines)
+            if hasattr(self, "ingest_cache") and self.ingest_cache is not None:
+                ingested = self.ingest_cache.get_or_ingest(base, rel, self.repo_tools)
+                file_hash, text = ingested.content_hash, ingested.text
+            else:
+                file_hash, lines = self.repo_tools._read_snapshot(path)
+                text = "\n".join(lines)
             if self.deterministic is not None and bool(self.cfg.get("compact_lexical_for_deterministic_declarative", True)):
                 try:
                     compact = self.deterministic.lexical_projection(
@@ -3363,6 +3401,37 @@ class ProjectPreprocessor:
             self._stats["missing_files_pruned"] = self._stats.get("missing_files_pruned", 0) + len(missing)
         return len(missing)
 
+    def _proactive_git_seeds(self, root: str, allowed: dict[str, str]) -> list[str]:
+        """Discover proactive initial seeds: git status, branch changes, and entrypoints."""
+        from pathlib import PurePosixPath
+        proactive: list[str] = []
+        base = Path(root)
+        try:
+            status = getattr(self.repo_tools, "git_status", None)
+            if callable(status):
+                git_st = status(root)
+                if isinstance(git_st, dict):
+                    for p in git_st.get("modified", []) + git_st.get("staged", []) + git_st.get("untracked", []):
+                        norm = str(p).replace("\\", "/")
+                        if norm in allowed and norm not in proactive:
+                            proactive.append(norm)
+        except Exception:
+            pass
+
+        entrypoint_names = {
+            "main.py", "app.py", "server.py", "index.ts", "index.js", "main.ts", "main.js",
+            "main.go", "lib.rs", "main.rs", "program.cs", "main.java", "app.rb",
+        }
+        for path in allowed:
+            pure = PurePosixPath(path)
+            if pure.name.lower() in entrypoint_names or (len(pure.parts) <= 2 and pure.suffix in {".py", ".ts", ".js", ".go", ".rs"}):
+                if path not in proactive:
+                    proactive.append(path)
+                    if len(proactive) >= 16:
+                        break
+
+        return proactive[:32]
+
     def _step_code_index(self, row: dict[str, Any]) -> bool:
         root = str(row["root"])
         if self.code_index is None:
@@ -3459,6 +3528,8 @@ class ProjectPreprocessor:
             seeds = list(dict.fromkeys(str(item.get("path", "")).replace("\\", "/")
                                         for item in demand if isinstance(item, dict)))
             seeds = [path for path in seeds if path in allowed]
+            if not seeds:
+                seeds.extend(self._proactive_git_seeds(root, allowed))
             from .code_index_demand import one_hop_related_files
             neighbors = one_hop_related_files(Path(root), seeds, set(allowed), self.repo_tools)
             refs = [(path, allowed[path]) for path in [*seeds, *neighbors]]
@@ -3570,6 +3641,18 @@ class ProjectPreprocessor:
                 self.deterministic.find_hotspots(root, days=30, limit=20)
             except Exception as index_exc:
                 logger.warning("Deterministic hotspot refresh failed (%s)", type(index_exc).__name__)
+            if hasattr(self.deterministic, "get_centrality_ranks"):
+                try:
+                    ranks = self.deterministic.get_centrality_ranks(root)
+                    if ranks:
+                        with self._db_lock, closing(self._connect()) as con:
+                            con.executemany(
+                                "UPDATE file_refs SET centrality_score=? WHERE root=? AND path=?",
+                                [(score, root, p) for p, score in ranks.items()],
+                            )
+                            con.commit()
+                except Exception as exc:
+                    logger.debug("Centrality calculation failed: %s", exc)
             self._set_project(root, phase="serena")
             return True
 
@@ -3863,6 +3946,7 @@ class ProjectPreprocessor:
             selection = """SELECT * FROM file_refs WHERE root=? AND card_key IS NULL AND size<=?"""
             order = """ ORDER BY
                      (COALESCE(last_accessed_at, 0) > 0) DESC,
+                     COALESCE(centrality_score, 0.0) DESC,
                      CASE
                        WHEN path LIKE '%/Controllers/%' THEN 0
                        WHEN path LIKE '%/Runtime/%'     THEN 0
@@ -4094,6 +4178,33 @@ class ProjectPreprocessor:
             if not slice_result.get("success"):
                 data = {"purpose": "unreadable/skipped", "symbols": [], "dependencies": [], "side_effects": [], "risks": [], "tests": [], "keywords": []}
                 self._store_file_card(root, item, card_key, data, "deterministic-unreadable")
+                progressed = True
+                continue
+
+            file_text = slice_result.get("text", "")
+            rel_name = Path(str(item["path"])).name.lower()
+            is_trivial = False
+            if int(item["size"] or 0) < 1500:
+                if rel_name in {"__init__.py", "index.ts", "index.js", "index.mjs"}:
+                    is_trivial = True
+                elif rel_name.endswith(".d.ts") or rel_name.endswith("_types.py") or rel_name.endswith(".types.ts"):
+                    is_trivial = True
+                elif any(file_text.strip().startswith(prefix) for prefix in ("export *", "from .", "__all__ =")):
+                    is_trivial = True
+
+            if is_trivial:
+                import re
+                data = {
+                    "purpose": f"re-export / declaration module ({rel_name})",
+                    "symbols": [p.strip() for p in re.findall(r"\b(?:export|class|def|type|interface)\s+([a-zA-Z0-9_]+)", file_text)[:12]],
+                    "dependencies": [],
+                    "side_effects": [],
+                    "risks": [],
+                    "tests": [],
+                    "keywords": [Path(str(item["path"])).stem],
+                }
+                barrel_key = stable_hash({"app_version": __version__, "sha": content_hash, "source": "deterministic-barrel"})
+                self._store_file_card(root, item, barrel_key, data, "deterministic-barrel")
                 progressed = True
                 continue
 

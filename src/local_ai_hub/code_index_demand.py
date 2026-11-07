@@ -18,7 +18,36 @@ _JS_DYNAMIC_IMPORT = re.compile(
 _PHP_INCLUDE = re.compile(
     r"\b(?:require|include)(?:_once)?\s*(?:\(\s*)?(?:(?P<dir>__DIR__)\s*\.\s*)?['\"](?P<path>(?:\.{1,2}/|/)[^'\"]+)['\"]\s*\)?"
 )
+_RUBY_REQUIRE_RELATIVE = re.compile(
+    r"\brequire_relative\s*['\"]([^'\"]+)['\"]"
+)
+_C_INCLUDE = re.compile(
+    r'^\s*#\s*include\s*["\']([^"\']+)["\']', re.MULTILINE
+)
+_RUST_MOD = re.compile(
+    r"\b(?:pub\s+)?mod\s+([a-zA-Z0-9_]+)\s*;", re.MULTILINE
+)
+_RUST_USE_CRATE = re.compile(
+    r"\buse\s+(?:crate|self|super)::([a-zA-Z0-9_:]+)", re.MULTILINE
+)
+_CS_USING = re.compile(
+    r"^\s*using\s+([A-Za-z0-9_.]+)\s*;", re.MULTILINE
+)
+_JAVA_IMPORT = re.compile(
+    r"^\s*import\s+(?:static\s+)?([A-Za-z0-9_.]+)\s*;", re.MULTILINE
+)
+_GO_IMPORT_BLOCK = re.compile(
+    r"import\s*\((.*?)\)", re.DOTALL
+)
+_GO_SINGLE_IMPORT = re.compile(
+    r'import\s+(?:[a-zA-Z0-9_.]+\s+)?"([^"]+)"'
+)
+_GO_STRINGS = re.compile(
+    r'"([^"]+)"'
+)
+
 _JS_EXTENSIONS = (".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".json")
+_C_EXTENSIONS = (".c", ".h", ".cpp", ".hpp", ".cc", ".cxx", ".hh")
 
 
 def _safe_inventory_file(base: Path, path: str, repo_tools: Any) -> bool:
@@ -104,15 +133,126 @@ def _python_import_candidates(seed: str, tree: ast.AST, eligible: set[str]) -> l
     return found
 
 
+def _go_import_candidates(base: Path, source: str, eligible: set[str]) -> list[str]:
+    found: list[str] = []
+    module_name = ""
+    go_mod = base / "go.mod"
+    if go_mod.is_file():
+        try:
+            for line in go_mod.read_text(encoding="utf-8", errors="ignore").splitlines():
+                if line.strip().startswith("module "):
+                    module_name = line.strip().split()[1]
+                    break
+        except Exception:
+            module_name = ""
+
+    import_paths: list[str] = []
+    for block in _GO_IMPORT_BLOCK.findall(source):
+        import_paths.extend(_GO_STRINGS.findall(block))
+    for single in _GO_SINGLE_IMPORT.findall(source):
+        import_paths.append(single)
+
+    for imp in import_paths:
+        target_dir = ""
+        if module_name and imp.startswith(module_name + "/"):
+            target_dir = imp[len(module_name) + 1:].strip("/")
+        elif imp.startswith("./") or imp.startswith("../"):
+            target_dir = posixpath.normpath(imp)
+        if target_dir:
+            matches = [path for path in eligible if path.startswith(target_dir + "/") and path.endswith(".go")]
+            found.extend(matches)
+    return found
+
+
+def _rust_import_candidates(seed: str, source: str, eligible: set[str]) -> list[str]:
+    found: list[str] = []
+    parent = PurePosixPath(seed).parent
+    for mod_match in _RUST_MOD.finditer(source):
+        mod_name = mod_match.group(1)
+        candidates = [
+            (parent / f"{mod_name}.rs").as_posix(),
+            (parent / mod_name / "mod.rs").as_posix(),
+        ]
+        for c in candidates:
+            if c in eligible:
+                found.append(c)
+
+    for use_match in _RUST_USE_CRATE.finditer(source):
+        parts = [p for p in use_match.group(1).split("::") if p]
+        if parts:
+            for prefix in (PurePosixPath("src"), parent):
+                mod_path = prefix.joinpath(*parts).as_posix()
+                candidates = [
+                    mod_path + ".rs",
+                    (prefix.joinpath(*parts) / "mod.rs").as_posix(),
+                ]
+                if len(parts) > 1:
+                    mod_parent = prefix.joinpath(*parts[:-1]).as_posix()
+                    candidates.append(mod_parent + ".rs")
+                    candidates.append((prefix.joinpath(*parts[:-1]) / "mod.rs").as_posix())
+                for c in candidates:
+                    if c in eligible:
+                        found.append(c)
+    return found
+
+
+def _c_include_candidates(base: Path, seed: str, source: str, eligible: set[str], repo_tools: Any) -> list[str]:
+    found: list[str] = []
+    for match in _C_INCLUDE.finditer(source):
+        specifier = match.group(1)
+        res = _resolve_relative_module(base, seed, "./" + specifier if not specifier.startswith((".", "/")) else specifier, eligible, repo_tools, extensions=_C_EXTENSIONS)
+        if res:
+            found.append(res)
+            continue
+        # Check direct lookup in eligible
+        for candidate in eligible:
+            if candidate.endswith("/" + specifier) or candidate == specifier:
+                found.append(candidate)
+    return found
+
+
+def _ruby_require_candidates(base: Path, seed: str, source: str, eligible: set[str], repo_tools: Any) -> list[str]:
+    found: list[str] = []
+    for match in _RUBY_REQUIRE_RELATIVE.finditer(source):
+        spec = match.group(1)
+        res = _resolve_relative_module(base, seed, "./" + spec if not spec.startswith((".", "/")) else spec, eligible, repo_tools, extensions=(".rb",))
+        if res:
+            found.append(res)
+    return found
+
+
+def _csharp_using_candidates(source: str, eligible: set[str]) -> list[str]:
+    found: list[str] = []
+    for match in _CS_USING.finditer(source):
+        ns = match.group(1)
+        parts = ns.split(".")
+        last = parts[-1]
+        for c in eligible:
+            if not c.endswith(".cs"):
+                continue
+            pure = PurePosixPath(c)
+            if pure.stem == last or all(part in pure.parts for part in parts):
+                found.append(c)
+    return found
+
+
+def _java_import_candidates(source: str, eligible: set[str]) -> list[str]:
+    found: list[str] = []
+    for match in _JAVA_IMPORT.finditer(source):
+        fqn = match.group(1)
+        rel_path = fqn.replace(".", "/") + ".java"
+        for c in eligible:
+            if c.endswith(rel_path):
+                found.append(c)
+    return found
+
+
 def one_hop_related_files(
     root: Path, seeds: list[str], eligible: set[str], repo_tools: Any, *, limit: int = 64
 ) -> list[str]:
     """Resolve bounded direct local imports without executing or recursing.
 
-    Python imports, relative JavaScript/TypeScript modules, and literal relative
-    PHP includes are supported. Unresolved, ambiguous, external, non-literal,
-    unsupported, and inaccessible dependencies remain unknown. The caller
-    supplies the already policy-filtered inventory.
+    Polyglot support: Python, JavaScript/TypeScript, PHP, Go, Rust, C/C++, C#, Java, Ruby.
     """
     if type(limit) is not int or limit < 1 or limit > 256:
         raise ValueError("limit must be an integer between 1 and 256")
@@ -124,15 +264,15 @@ def one_hop_related_files(
         if len(found) >= limit or seed not in eligible or not _safe_inventory_file(base, seed, repo_tools):
             continue
         suffix = PurePosixPath(seed).suffix.lower()
-        if suffix not in {".py", ".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".php"}:
-            continue
         target = base / Path(seed)
         try:
             _, lines = repo_tools._read_snapshot(target)
             source = "\n".join(lines)
+            candidates: list[str] = []
+
             if suffix == ".py":
                 candidates = _python_import_candidates(seed, ast.parse(source), eligible)
-            elif suffix in {".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx"}:
+            elif suffix in _JS_EXTENSIONS and suffix != ".json":
                 specifiers = [match.group(1) for match in _JS_IMPORT.finditer(source)]
                 specifiers.extend(match.group(1) for match in _JS_DYNAMIC_IMPORT.finditer(source))
                 candidates = [
@@ -141,8 +281,7 @@ def one_hop_related_files(
                         base, seed, specifier, eligible, repo_tools, extensions=_JS_EXTENSIONS,
                     )) is not None
                 ]
-            else:
-                candidates = []
+            elif suffix == ".php":
                 for match in _PHP_INCLUDE.finditer(source):
                     specifier = match.group("path")
                     if specifier.startswith("/"):
@@ -154,6 +293,19 @@ def one_hop_related_files(
                     )
                     if path is not None:
                         candidates.append(path)
+            elif suffix == ".go":
+                candidates = _go_import_candidates(base, source, eligible)
+            elif suffix == ".rs":
+                candidates = _rust_import_candidates(seed, source, eligible)
+            elif suffix in _C_EXTENSIONS:
+                candidates = _c_include_candidates(base, seed, source, eligible, repo_tools)
+            elif suffix == ".rb":
+                candidates = _ruby_require_candidates(base, seed, source, eligible, repo_tools)
+            elif suffix == ".cs":
+                candidates = _csharp_using_candidates(source, eligible)
+            elif suffix == ".java":
+                candidates = _java_import_candidates(source, eligible)
+
         except (OSError, RuntimeError, UnicodeError, SyntaxError, TypeError, ValueError, RecursionError):
             continue
 

@@ -2787,6 +2787,42 @@ class DeterministicEngine:
         except sqlite3.DatabaseError:
             pass
 
+    def get_centrality_ranks(self, root: str) -> dict[str, float]:
+        """Compute normalized in-degree centrality score [0.0, 1.0] for source files."""
+        root_s = str(root)
+        with closing(self._connect()) as con:
+            files = [
+                str(r[0])
+                for r in con.execute(
+                    "SELECT path FROM files WHERE root=? AND is_test=0", (root_s,)
+                ).fetchall()
+            ]
+            if not files:
+                return {}
+            import_rows = con.execute(
+                "SELECT path, name, value FROM facts WHERE root=? AND kind='import'", (root_s,)
+            ).fetchall()
+
+        in_degrees: dict[str, int] = {f: 0 for f in files}
+        stem_to_paths: dict[str, list[str]] = {}
+        for f in files:
+            stem = PurePosixPath(f).stem.lower()
+            stem_to_paths.setdefault(stem, []).append(f)
+
+        for row in import_rows:
+            importing_path = str(row[0])
+            name = str(row[1] or row[2] or "").lower().replace("\\", "/")
+            parts = name.split(".")
+            for part in parts:
+                for candidate in stem_to_paths.get(part, []):
+                    if candidate != importing_path:
+                        in_degrees[candidate] = in_degrees.get(candidate, 0) + 1
+
+        max_deg = max(in_degrees.values()) if in_degrees else 0
+        if max_deg <= 0:
+            return {f: 0.0 for f in files}
+        return {f: round(deg / max_deg, 4) for f, deg in in_degrees.items()}
+
     def semantic_needed(self, root: str, path: str) -> bool:
         """Return whether semantic RAG is worth indexing this path.
 
