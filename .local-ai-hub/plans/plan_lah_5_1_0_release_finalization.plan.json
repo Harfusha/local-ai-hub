@@ -2,7 +2,7 @@
   "default_target_ref": "refs/heads/master",
   "description": "Dokončit a ověřit hlavní checkout a instalaci, integraci větví, CI, dashboard, MCP a publikaci odpovídajícího release; živý test Gemini je uživatelem odložen. Verzi release určit podle existujících tagů.",
   "id": "plan_lah_5_1_0_release_finalization",
-  "lifecycle": "active",
+  "lifecycle": "completed",
   "schema_version": 1,
   "spec_refs": [],
   "tasks": {
@@ -254,8 +254,8 @@
       "kind": "code",
       "next_action": "Kandidát v5.1.4 pushnut na origin/master včetně tagu. Úloha otevřena pro dokončení runtime nasazení, broker receipts a případné publikace GitHub Release.",
       "title": "Dokončit opravy, instalaci a release Local AI Hubu",
-      "work_phase": "verification",
-      "work_status": "in_progress"
+      "work_phase": "integration",
+      "work_status": "done"
     }
   },
   "title": "Local AI Hub: dokončení oprav, instalace a release"
