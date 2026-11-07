@@ -672,7 +672,7 @@ def _http_mode_policy(method: str, path: str, payload: Mapping[str, Any] | None 
         return "gaming_read"
     if path == "/api/async-jobs" and action in {"status", "wait", "result", "cancel", "evaluation_report"}:
         return "existing_job"
-    if path == "/api/work-orders" and action in {"status", "get", "cancel"}:
+    if path == "/api/work-orders" and action in {"status", "wait", "get", "cancel"}:
         return "existing_job"
     if path == "/api/speculative-lint" and action in {"status", "cancel"}:
         return "existing_job"

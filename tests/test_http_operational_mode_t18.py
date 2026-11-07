@@ -287,6 +287,7 @@ def test_context_pack_is_gated_in_both_paused_modes(monkeypatch, mode: str) -> N
     ("/api/async-jobs", {"job_action": "result", "job_id": "job-1"}),
     ("/api/async-jobs", {"job_action": "cancel", "job_id": "job-1"}),
     ("/api/work-orders", {"action": "status", "id": "work-1"}),
+    ("/api/work-orders", {"action": "wait", "id": "work-1"}),
     ("/api/work-orders", {"action": "get", "id": "work-1"}),
     ("/api/work-orders", {"action": "cancel", "id": "work-1"}),
     ("/api/speculative-lint", {"action": "status", "execution_id": "lint-1"}),

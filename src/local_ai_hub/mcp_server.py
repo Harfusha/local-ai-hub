@@ -1082,6 +1082,7 @@ _COORD_PROTECTED_KEYS = (
     "active_count", "offset", "limit", "has_more", "next_offset",
     "board", "columns", "summary", "checkpoint_sync",
     "plan", "plans", "file_revision", "plan_id", "rel_path", "git_branch", "git_head",
+    "project_root", "counts", "total_items", "plan_filter", "plan_task_id",
 )
 _REPO_PROTECTED_KEYS = (
     "symbols", "files", "results", "evidence", "findings", "issues", "diff",
@@ -5403,7 +5404,11 @@ def local_ai_coord(
             no_op = result.get("no_op")
             if isinstance(no_op, bool):
                 result = {**result, "mutation_applied": not no_op}
-        plan_extra = ["plan", "plans", "file_revision", "plan_id", "rel_path", "git_branch", "git_head", "board", "columns", "items", "tasks"]
+        plan_extra = [
+            "plan", "plans", "file_revision", "plan_id", "rel_path", "git_branch", "git_head",
+            "board", "columns", "items", "tasks",
+            "project_root", "counts", "total_items", "plan_filter", "plan_task_id",
+        ]
         projected = _compact(
             result,
             "coord" if action.startswith("plan_") or action == "plan_bind_task" else "status",
@@ -5424,9 +5429,10 @@ def local_ai_coord(
                 plan = result.get("plan")
                 revision = result.get("file_revision")
                 rel_path = result.get("rel_path")
-                if (isinstance(plan, dict) and plan.get("id") == plan_id and
+                resolved_plan_id = result.get("plan_id") or (plan.get("id") if isinstance(plan, dict) else "") or plan_id
+                if (
                     isinstance(revision, str) and revision and isinstance(rel_path, str) and rel_path):
-                    incomplete.update(plan_id=plan_id, file_revision=revision, rel_path=rel_path)
+                    incomplete.update(plan_id=resolved_plan_id, file_revision=revision, rel_path=rel_path)
                 return _compact(incomplete, "coord", ["plan_id", "file_revision", "rel_path"])
         if action in {"plan_list", "plan_board_view"} and isinstance(result, dict) and result.get("success") is True:
             if action == "plan_list":
@@ -5449,12 +5455,17 @@ def local_ai_coord(
                     or any(projected.get(key) != result.get(key) for key in required_fields)
                 )
             ):
-                return _compact({
+                incomplete_plan = {
                     "success": False,
                     "error": "Plan response incomplete; request a larger budget or read the plan source in bounded slices.",
                     "terminal": True,
                     "retryable": False,
-                }, "coord")
+                }
+                if plan_id:
+                    incomplete_plan["plan_id"] = plan_id
+                if isinstance(result.get("project_root"), str) and result["project_root"]:
+                    incomplete_plan["project_root"] = result["project_root"]
+                return _compact(incomplete_plan, "coord", ["plan_id", "project_root"])
         if action == "plan_task_edit" and isinstance(result, dict) and result.get("success") is True:
             identity_fields = ("mutation_applied", "plan_id", "task_id", "file_revision")
             mutation_applied = result.get("mutation_applied")
@@ -6639,7 +6650,8 @@ if hasattr(mcp, "_tool_manager") and hasattr(mcp, "_mcp_server") and mcp_types i
                                             "request_not_sent", "in_progress", "output_artifact_id",
                                             "review_scope_complete", "untracked_inventory_complete",
                                             "total_matches", "has_more", "offset", "limit",
-                                            "task_context_artifact_id", "next_action")
+                                            "task_context_artifact_id", "next_action",
+                                            "plan_id", "file_revision", "rel_path", "task_id", "plan_task_id")
                                 if key in value and key not in dropped
                             },
                         }
@@ -6668,6 +6680,7 @@ if hasattr(mcp, "_tool_manager") and hasattr(mcp, "_mcp_server") and mcp_types i
                                                     "mutation_applied", "operation_not_started", "outcome_unknown",
                                                     "request_not_sent", "in_progress", "output_artifact_id",
                                                     "total_matches", "has_more", "offset", "limit",
+                                                    "plan_id", "file_revision", "rel_path", "task_id", "plan_task_id",
                                                 )
                                                 if key in trial
                                             },
@@ -6686,6 +6699,7 @@ if hasattr(mcp, "_tool_manager") and hasattr(mcp, "_mcp_server") and mcp_types i
                                                     "request_id", "execution_id",
                                                     "evidence", "evidence_id", "evidence_ids", "artifact_id", "artifact_ids",
                                                     "total_matches", "has_more", "offset", "limit",
+                                                    "plan_id", "file_revision", "rel_path", "task_id", "plan_task_id",
                                                 )
                                                 if key in trial
                                             },

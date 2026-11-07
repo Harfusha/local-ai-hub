@@ -100,6 +100,7 @@ _IDENTIFIER_KEYS = {
     "artifact_id", "task_context_artifact_id", "context_id", "etag", "repo_revision", "revision", "task_id", "work_id", "lease_id",
     "request_id", "execution_id",
     "delta_from", "since_hash", "reuse_key",
+    "plan_id", "file_revision", "rel_path", "plan_task_id",
 }
 
 
@@ -407,6 +408,7 @@ def _fit_to_tokens(
                 "tasks", "records", "matches", "items", "negative_knowledge",
                 "total_count", "active_count", "tasks_omitted", "records_omitted", "items_omitted",
                 "plan", "plans", "file_revision", "plan_id", "rel_path", "git_branch", "git_head",
+                "board", "columns", "counts", "total_items", "project_root", "plan_filter", "plan_task_id",
             )
         keep_keys = (
             "success", "status", "error", "artifact_id", "reuse_key", "reused",

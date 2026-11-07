@@ -21,7 +21,7 @@ from concurrent.futures import ThreadPoolExecutor, wait
 from dataclasses import asdict
 from contextlib import closing, contextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 from . import __version__
 from .artifacts import ArtifactStore
@@ -1236,6 +1236,7 @@ class LocalAIServices:
         repository_revision: str = "",
         trace_system_override: str | None = None,
         cancel_event: threading.Event | None = None,
+        route: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         from .operational_mode import (
             OperationalModeSnapshot,
@@ -1263,6 +1264,7 @@ class LocalAIServices:
                 return rejection
         trace_system = system if trace_system_override is None else str(trace_system_override)
         mode_pause_result: dict[str, Any] | None = None
+        effective_route = dict(route) if isinstance(route, Mapping) else {}
         if cancel_event is None:
             from .client import CURRENT_REQUEST_CANCEL_EVENT
             cancel_event = CURRENT_REQUEST_CANCEL_EVENT.get()
@@ -1444,8 +1446,8 @@ class LocalAIServices:
                     if cancel_event is not None and cancel_event.is_set():
                         return cancelled_result()
                     candidate_role = (
-                        str(route.get("resident_execution_role") or role)
-                        if candidate_model == str(route.get("model") or "")
+                        str(effective_route.get("resident_execution_role") or role)
+                        if candidate_model == str(effective_route.get("model") or "")
                         else role
                     )
                     # A smart->fast resilience fallback may have a smaller context window
@@ -1965,6 +1967,7 @@ class LocalAIServices:
                 route["model"], prompt, system, max_tokens, temperature, source=source, priority=priority,
                 internal=True, use_cache=False, trace_system_override=trace_system,
                 cancel_event=cancel_event,
+                route=route,
             )
         except Exception:
             self.conversations.discard(conversation.conversation_id)
@@ -2013,6 +2016,7 @@ class LocalAIServices:
                 internal=True, use_cache=False,
                 trace_system_override=str(settings.get("trace_system", settings["system"])),
                 cancel_event=cancel_event,
+                route=settings.get("route"),
             )
         except Exception:
             self.conversations.abort(conversation_id)
@@ -2175,6 +2179,7 @@ class LocalAIServices:
             project_namespace=project_namespace,
             repository_revision=project_revision or str(args.get("repository_revision", "")),
             use_cache=project_context is None or bool(project_namespace),
+            route=route,
             **({"cancel_event": cancel_event} if cancel_event is not None else {}),
         )
         if cancel_event is not None and cancel_event.is_set() and result.get("success") is True:
@@ -2394,6 +2399,7 @@ class LocalAIServices:
             int(args.get("max_tokens", 4096)), float(args.get("temperature", 0.2)),
             source="second-opinion", priority=int(args.get("priority", 6)),
             semantic_query=f"{question}\n{focus}", semantic_context_fingerprint=stable_hash({"candidate": candidate, "context": context}),
+            route=route,
             **({"cancel_event": cancel_event} if cancel_event is not None else {}),
         )
         if cancel_event is not None and cancel_event.is_set() and result.get("success") is True:

@@ -175,7 +175,7 @@ CAPABILITY_REGISTRY = {
         "unavailable_reason": "requires_balanced_profile_and_reranker_qualification",
     },
     "work.bounded_submission": {
-        "operations": (("local_ai_work", "submit"),), "minimum_profile": "high",
+        "operations": (("local_ai_work", "submit"), ("local_ai_work", "continue")), "minimum_profile": "high",
         "backend": "local_model", "authority": "bounded_mutation", "quality_gate": "implementation_case_and_overall_gate",
         "feature_gate": "bounded_local_work",
         "unavailable_reason": "requires_high_profile_task_qualification_and_explicit_permissions",

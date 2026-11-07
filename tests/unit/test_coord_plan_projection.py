@@ -81,3 +81,54 @@ def test_plan_task_edit_budget_rejection_keeps_mutation_ack_and_revision() -> No
     assert compacted["task_id"] == "task_large"
     assert compacted["plan_id"] == "plan_large"
     assert compacted["file_revision"] == "revision-after-write"
+
+
+def test_plan_board_view_projection_retains_required_fields() -> None:
+    raw = {
+        "success": True,
+        "project_root": "C:/fake/repo",
+        "git_branch": "master",
+        "git_head": "abcdef123456",
+        "plan_filter": "plan_test",
+        "columns": {
+            "planned": [{"task_id": "t1", "title": "Task 1", "work_status": "planned"}],
+            "ready": [],
+            "in_progress": [],
+            "blocked": [],
+            "source_ready": [],
+            "done": [],
+        },
+        "counts": {"planned": 1, "ready": 0, "in_progress": 0, "blocked": 0, "source_ready": 0, "done": 0},
+        "total_items": 1,
+    }
+    compacted = mcp_server._compact(raw, "coord", extra_fields=[
+        "plan", "plans", "file_revision", "plan_id", "rel_path", "git_branch", "git_head",
+        "board", "columns", "items", "tasks",
+        "project_root", "counts", "total_items", "plan_filter", "plan_task_id",
+    ])
+    assert compacted.get("success") is True
+    assert compacted.get("project_root") == "C:/fake/repo"
+    assert compacted.get("counts") == raw["counts"]
+    assert compacted.get("total_items") == 1
+    assert "columns" in compacted
+
+
+def test_plan_get_wire_budget_error_preserves_identity() -> None:
+    rejection = {
+        "success": False,
+        "error": "Plan response incomplete; request a larger budget or read the plan source in bounded slices.",
+        "terminal": True,
+        "retryable": False,
+        "plan_id": "plan_audit",
+        "file_revision": "rev1234567890abcdef",
+        "rel_path": ".local-ai-hub/plans/audit.plan.json",
+    }
+    content, structured = mcp_server._build_mcp_budget_payload(
+        "local_ai_coord",
+        {"action": "plan_get", "plan_id": "plan_audit", "max_response_tokens": 512},
+        rejection,
+    )
+    assert structured.get("plan_id") == "plan_audit"
+    assert structured.get("file_revision") == "rev1234567890abcdef"
+    assert structured.get("rel_path") == ".local-ai-hub/plans/audit.plan.json"
+

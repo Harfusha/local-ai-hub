@@ -1,6 +1,6 @@
 # Local AI Hub project configuration
 project_type = "python"
-model_profile = "balanced"
+model_profile = "high"
 pinned_context = ["README.md", "defaults.toml", "docs/INSTALLATION.md", "docs/CODE_INDEX.md"]
 entry_points = ["src", "tools"]
 exclude_paths = [
