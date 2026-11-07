@@ -1117,6 +1117,9 @@ class AffinityScheduler:
         if getattr(self, "_external_gpu_token", None):
             self._external_gpu_token = current
         owned = getattr(self, "_internal_gpu_digest", None)
+        if current is None and owned is not None:
+            self._internal_gpu_digest = None
+            owned = None
         return current != owned if owned else bool(current)
 
     def _claim_internal_gpu(self) -> bool:
@@ -1165,6 +1168,10 @@ class AffinityScheduler:
         store = getattr(self, "_external_gpu_store", None)
         if store is not None:
             if not store.release_internal(digest):
+                if path is not None and not path.exists():
+                    self._internal_gpu_digest = None
+                    self._cond.notify_all()
+                    return True
                 return False
             self._internal_gpu_digest = None
             self._cond.notify_all()

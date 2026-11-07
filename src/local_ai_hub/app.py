@@ -78,6 +78,7 @@ _STATUS_DEPENDENCY_TIMEOUT_SECONDS = 0.25
 _STATUS_TELEMETRY_SUMMARY_TIMEOUT_SECONDS = 1.0
 _STATUS_OLLAMA_PROFILE_TIMEOUT_SECONDS = 1.0
 _STATUS_PREPROCESSING_STATUS_TIMEOUT_SECONDS = 2.0
+_STATUS_SCHEDULER_TIMEOUT_SECONDS = 1.0
 _STATUS_MAX_WORKERS = 32
 _STATUS_MAX_INFLIGHT_DEPENDENCIES = 32
 
@@ -90,6 +91,8 @@ def _status_dependency_timeout_seconds(key: str) -> float:
         timeout = max(timeout, float(_STATUS_OLLAMA_PROFILE_TIMEOUT_SECONDS))
     elif key in {"preprocessing.status", "preprocessing.stats", "background_gpu"}:
         timeout = max(timeout, float(_STATUS_PREPROCESSING_STATUS_TIMEOUT_SECONDS))
+    elif key == "scheduler":
+        timeout = max(timeout, float(_STATUS_SCHEDULER_TIMEOUT_SECONDS))
     return max(0.0, timeout)
 
 
@@ -1041,7 +1044,7 @@ class LocalAIApp:
             from .model_lifecycle import lifecycle_status
             model_execution = {**model_execution, "lifecycle": lifecycle_status()}
             vram_balancer_obj = getattr(self, "vram_balancer", None)
-            vram_balancer, vram_balancer_healthy = read("vram_balancer", vram_balancer_obj.status if vram_balancer_obj else lambda: {}, {})
+            vram_balancer, vram_balancer_healthy = read("vram_balancer", (lambda: vram_balancer_obj.status(force=True)) if vram_balancer_obj else lambda: {}, {})
             benchmark_obj = getattr(self, "benchmark_runner", None)
             benchmark, benchmark_healthy = read("benchmark", benchmark_obj.get_latest_summary if benchmark_obj else lambda: {"available": False}, {"available": False})
             debug_traces, traces_healthy = read("debug_traces", self.debug_traces.stats, {})
@@ -1142,7 +1145,7 @@ class LocalAIApp:
 
         def dependency(key, callback, fallback, diagnostic=None):
             dependency_deadline = deadline
-            if key == "telemetry.summary":
+            if key in {"telemetry.summary", "scheduler"}:
                 dependency_deadline = time.monotonic() + _status_dependency_timeout_seconds(key)
             return _status_dependency(
                 callback,
@@ -1221,6 +1224,7 @@ class LocalAIApp:
             # health dependencies and share the request deadline; a slow
             # runtime must not prevent the scheduler result from being ready.
             scheduler_diagnostic: dict[str, Any] = {}
+            scheduler_deadline = time.monotonic() + _status_dependency_timeout_seconds("scheduler")
             scheduler_handle = _schedule_status_dependency(
                 self.scheduler.status,
                 {},
@@ -1230,11 +1234,11 @@ class LocalAIApp:
                 inflight=self._status_dependency_inflight,
                 slots=self._status_dependency_slots,
                 executor=self._status_dependency_executor,
-                deadline=deadline,
+                deadline=scheduler_deadline,
                 diagnostic=scheduler_diagnostic,
             )
             pending_dependencies["scheduler"] = (
-                scheduler_handle, {}, scheduler_diagnostic, deadline
+                scheduler_handle, {}, scheduler_diagnostic, scheduler_deadline
             )
 
             runtime_diagnostic: dict[str, Any] = {}

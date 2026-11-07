@@ -138,12 +138,16 @@ class ExternalGpuReservationStore:
                 return False
             try:
                 current = self.path.read_text(encoding="ascii")
+            except FileNotFoundError:
+                return True
             except OSError:
                 return False
             if not hmac.compare_digest(current, digest):
                 return False
             try:
                 self.path.unlink()
+            except FileNotFoundError:
+                return True
             except OSError:
                 return False
             return True

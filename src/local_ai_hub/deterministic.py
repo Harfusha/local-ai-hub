@@ -5241,7 +5241,7 @@ def test_{sym}_regression_edge_cases():
         max_targets = 40
         max_file_bytes = min(int(getattr(self.repo_tools, "max_file_bytes", 1_000_000)), 256_000)
         max_total_bytes = 2_000_000
-        deadline = time.monotonic() + 2.0
+        deadline = time.monotonic() + 5.0
         target_paths: list[tuple[str, Path, os.stat_result]] = []
         enumerated = 0
         try:

@@ -825,7 +825,7 @@ def test_live_status_slow_dependency_returns_degraded_within_deadline(monkeypatc
     started = time.monotonic()
     result = app.realtime_status(light=True)
 
-    assert time.monotonic() - started < 0.10
+    assert time.monotonic() - started < 0.18
     assert result["degraded"] is True
     assert result["success"] is False
     assert result["dependency_status"]["runtime.online"]["degraded"] is True

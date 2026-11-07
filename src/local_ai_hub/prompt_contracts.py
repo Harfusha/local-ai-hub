@@ -32,7 +32,7 @@ _CAPABILITIES = {
         ("inference", "single_file_explain", "root_cause", "cross_file_reasoning", "architecture", "security_decision", "apply_changes"),
     ),
     "qwen2.5-coder:3b": ModelCapability(
-        "qwen2.5-coder:3b", "smart", ("single_file_explain", "bounded_review", "test_plan", "simple_patch_plan", "compare"),
+        "qwen2.5-coder:3b", "smart", ("preprocess", "single_file_explain", "bounded_review", "test_plan", "simple_patch_plan", "compare"),
         ("architecture", "security_decision", "high_risk_migration", "apply_changes"),
     ),
     "qwen2.5-coder:7b": ModelCapability(
