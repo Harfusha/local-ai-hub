@@ -1,4 +1,4 @@
-"""Invoke only case 098 coordination actions against the isolated Hub."""
+"""Invoke allowlisted case 098 MCP actions against the isolated Hub."""
 from __future__ import annotations
 
 import json
@@ -10,6 +10,7 @@ from pathlib import Path
 import anyio
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
+from invocation import serialize_result, validate_invocation
 
 HERE = Path(__file__).resolve().parent
 WORKSPACE = (HERE / "workspace").resolve()
@@ -31,10 +32,10 @@ if (server.get("bind") != "127.0.0.1"
 if len(sys.argv) != 2:
     raise SystemExit("usage: call_mcp.py JSON_ARGUMENTS")
 arguments = json.loads(sys.argv[1])
-allowed = {"task_create", "task_get", "task_list", "task_checkpoint", "verify_completion", "task_complete"}
-if (not isinstance(arguments, dict) or arguments.get("action") not in allowed
-        or Path(arguments.get("root", "")).resolve() != WORKSPACE):
-    raise SystemExit("case 098 action and explicit fixture workspace root required")
+try:
+    tool, arguments = validate_invocation(arguments, WORKSPACE)
+except ValueError as exc:
+    raise SystemExit(str(exc)) from exc
 env = os.environ.copy()
 for key in ("LOCAL_AI_TENANT", "LOCAL_AI_HUB_TOKEN", "LOCAL_AI_AGENT", "LOCAL_AI_AGENT_PROFILE"):
     env.pop(key, None)
@@ -44,11 +45,12 @@ params = StdioServerParameters(command=sys.executable, args=["-B", "-m", "local_
 
 
 async def run() -> None:
-    async with stdio_client(params) as (reader, writer):
-        async with ClientSession(reader, writer) as session:
-            await session.initialize()
-            result = await session.call_tool("local_ai_coord", arguments)
-            print(result.model_dump_json(exclude_none=True))
+    with open(os.devnull, "w", encoding="utf-8") as error_log:
+        async with stdio_client(params, errlog=error_log) as (reader, writer):
+            async with ClientSession(reader, writer) as session:
+                await session.initialize()
+                result = await session.call_tool(tool, arguments)
+                print(serialize_result(result))
 
 
 anyio.run(run)

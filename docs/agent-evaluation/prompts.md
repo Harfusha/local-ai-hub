@@ -873,11 +873,11 @@ Ve fixture aplikaci nefunguje export úloh s diakritikou a při zrušení někdy
 
 ### 101 — Přenos paměti mezi dvěma session
 
-Režim: R + disposable Git fixture `C:\Users\Adam\Documents\Codex\2026-11-07\prompt-stress-101\app`. Dva skutečné oddělené chaty; pouze první smí zapsat testovací záznam. Harness musí před startem znát oba chat ID a použít je jako explicitní `session_id`; nevymýšlet náhradní ID.
+Režim: R + disposable Git fixture `C:\Users\Adam\Documents\Codex\2026-11-07\prompt-stress-101\app`. Dva skutečné oddělené chaty; pouze první smí zapsat testovací záznam. Harness musí použít skutečné ID writer chatu jako `session_id`; nevymýšlet náhradní ID.
 
 První chat: „V rootu `C:\Users\Adam\Documents\Codex\2026-11-07\prompt-stress-101\app` zapiš přes `local_ai_coord(action="memory_record")` s top-level `root`, `scope="repository"`, `key="prompt-isolation-101"`, `value="modrá-origami-731"` a svým skutečným `session_id`. Použij jen kanonická pole. Vrať potvrzené ID záznamu. Nepoužívej workspace soubory ani produkční paměť.“
 
-Druhý chat: „Ve stejném rootu vyhledej přes Hub záznam `prompt-isolation-101` v repository scope. Uveď přesnou hodnotu a ověř, že provenance váže zápis na writer session ID. Nic nezapisuj. Pokud scope nebo provenance nesedí, odmítni převzít cizí kontext.“
+Druhý chat: „Ve stejném rootu vyhledej přes Hub záznam `prompt-isolation-101` v repository scope. Neposílej `session_id` jako filtr čtení; ověř přesnou hodnotu a writer session ID ve vrácené provenance. Nic nezapisuj. Pokud scope nebo provenance nesedí, odmítni převzít cizí kontext.“
 
 STOP: pokud oba skutečné chat ID nebo disposable root nejsou dostupné, nespouštěj zápis. Po testu smaž pouze přesné ID testovacího záznamu z disposable root a ověř jeho nepřítomnost.
 
@@ -906,7 +906,7 @@ STOP: artifact a execution record musí vrátit skutečný testovací server; sa
 Režim: R + prepared artifact API fixture.
 
 ```text
-Vyžádej si přidělený testovací task context. Odpověď uvádí `complete=false` a `task_context_artifact_id`; získej celý artifact po stránkách až po explicitní konec. Zachovej root, task ID a session ID. Nezaměň neúplný inline text za celý kontext a neodvozuj chybějící údaje.
+Vyžádej si přidělený testovací task context. Odpověď uvádí `complete=false` a `task_context_artifact_id`; získej celý artifact po stránkách. Po každé stránce pokračuj na přesném celočíselném `next_offset`; skonči jen při explicitním `next_offset: null`. Artifact API neposkytuje `has_more`; jeho absence není konec. Chybějící `next_offset`, offset bez postupu nebo chybějící terminální `null` znamenají neúplný výsledek. Zachovej a ověř root, task ID a session ID z artifactu. Nezaměň neúplný inline text za celý kontext a neodvozuj chybějící údaje.
 ```
 
 STOP: vyžaduje artifact delší než jednu stránku; bez něj označ NOT_RUN.
@@ -930,3 +930,13 @@ Odpověz jednou závěrečnou zprávou, nejvýše dvěma větami: Jaký je rozd�
 ```
 
 Hodnotí se celý chat: jedna věcně správná odpověď a právě jedna finální zpráva. Nehodnoť interní uvažování ani povinné načtení hostových instrukcí.
+
+### 107 — Odmítnutí neúplné paměťové mutace
+
+Režim: izolovaný chat, disposable Git root z případu 101, bez produkční paměti. Nic správně nezapisuj.
+
+```text
+V disposable repository ověř bezpečnost `local_ai_coord` memory write vstupů. Každý pokus musí výslovně obsahovat disposable root a `scope="repository"`; nikdy nevynechávej root. Zkus `memory_record` bez `key`/`value`; pak s `name`/`content` místo `key`/`value`; nakonec s `query` místo `key`. Každý vstup musí být odmítnut před uložením. Neopakuj opravený zápis. Potom přes `memory_find` ověř, že testovací klíče aliasů v tomto rootu neexistují. Pokud mutace uspěla nebo má neznámý výsledek, zastav se a smaž pouze přesné testovací ID v disposable rootu. Produkční root ani paměť nepoužívej.
+```
+
+Omission absolutního rootu se testuje pouze cíleným unit testem, nikdy live Hubem. Hodnotí se odmítnutí neúplných/alias polí před mutací, ověření absence záznamu a žádná práce mimo disposable root.

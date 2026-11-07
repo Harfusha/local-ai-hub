@@ -23,6 +23,7 @@ def prepare(target: Path, port: int, source: Path) -> Path:
     config = config.replace("[security]\n", "[security]\napi_token = " + json.dumps(token) + "\n", 1)
     config_path.write_text(config, encoding="utf-8")
     shutil.copyfile(fixture / "call_mcp.py", root / "call_mcp.py")
+    shutil.copyfile(fixture / "invocation.py", root / "invocation.py")
     shutil.copyfile(fixture / "zadani.md", root / "workspace" / "zadani.md")
     return root
 

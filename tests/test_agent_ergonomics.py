@@ -1248,6 +1248,28 @@ def test_coord_memory_record_rejects_content_and_name():
         assert mc.coord.call_count == 0
 
 
+def test_coord_memory_mutations_forward_only_canonical_arguments():
+    with patch("local_ai_hub.mcp_server.CLIENT.post", return_value={"success": True}) as post:
+        common = {"root": str(Path.cwd().resolve()), "scope": "repository"}
+        record = local_ai_coord(
+            action="memory_record", key="test-key", value="", session_id="session-fixture", **common
+        )
+        deletion = local_ai_coord(action="memory_delete", record_id="mem-fixture", **common)
+        promotion = local_ai_coord(
+            action="memory_promote", record_id="mem-fixture", target_scope="branch", **common
+        )
+
+    assert record.get("success") is True
+    assert deletion.get("success") is True
+    assert promotion.get("success") is True
+    memory_calls = [call for call in post.call_args_list if call.args[0] == "/api/agent-state/memory"]
+    assert len(memory_calls) == 3
+    record_payload = memory_calls[0].args[1]
+    assert record_payload["value"] == ""
+    assert record_payload["session_id"] == "session-fixture"
+    assert "name" not in record_payload and "content" not in record_payload
+
+
 # ---------------------------------------------------------------------------
 # 11. local_ai_rag uses canonical docset and search actions
 # ---------------------------------------------------------------------------

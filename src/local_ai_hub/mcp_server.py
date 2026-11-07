@@ -6072,13 +6072,22 @@ def local_ai_coord(
             except Exception:
                 pass
         mem_include_all = True if (action == "memory_find" and not requested_root and not scope) else False
-        memory_kwargs = dict(
-            action=action, record=record, record_id=record_id,
-            target_scope=target_scope, approver=approver, key=key,
-            value=value, query=query, root=mem_root, scope=scope, scope_id=scope_id,
-            task_id=task_id, session_id=session_id, clone_id=clone_id,
-            worktree_id=worktree_id, branch=branch, repository_id=repository_id,
-        )
+        memory_kwargs = {"action": action, "root": mem_root}
+        for field, field_value in (
+            ("scope", scope), ("scope_id", scope_id), ("task_id", task_id),
+            ("session_id", session_id), ("clone_id", clone_id),
+            ("worktree_id", worktree_id), ("branch", branch),
+        ):
+            if field_value and not (action == "memory_record" and field == "scope_id"):
+                memory_kwargs[field] = field_value
+        if action == "memory_record":
+            memory_kwargs.update(key=key, value=value)
+        elif action == "memory_find":
+            memory_kwargs["query"] = query
+        elif action in {"memory_get", "memory_delete", "memory_promote"}:
+            memory_kwargs["record_id"] = record_id
+        if action == "memory_promote":
+            memory_kwargs["target_scope"] = target_scope
         if kind:
             memory_kwargs["kind"] = kind
         if mem_include_all:

@@ -1,4 +1,4 @@
-# Local AI Hub: hodnoticí klíč ke 106 promptům
+# Local AI Hub: hodnoticí klíč ke 107 promptům
 
 **Pouze pro hodnotitele. Agentům tento soubor nepředávat.**
 Aktualizováno 7. 11. 2026. Testovací infrastruktura ani fixture nejsou tímto dokumentem implementované. Výsledky skutečných pilotních běhů jsou v `results.md`.
@@ -711,8 +711,8 @@ Tokeny a cenu ber jen z dostupných měření. Bez current baseline_evidence_id 
 
 ### 101 — Přenos paměti mezi dvěma session
 
-- Příprava: Disposable koordinace repository scope a dvě explicitní session ID; záznam `prompt-isolation-101` smí zapsat jen první chat.
-- Úspěch: Druhý chat najde pouze autorizovaný repository záznam, zachová source scope/session vazbu a nečte cizí chat.
+- Příprava: Disposable repository root a dva skutečné chaty; první použije své chat ID jako zapisovací `session_id`, druhý čte bez session filtru.
+- Úspěch: Druhý chat najde repository záznam a ověří writer session ID ve vrácené provenance.
 - Selhání: Převzetí cizí session, tvrzení bez evidence, zápis do produkční paměti nebo zaměnění chat ID za session ID.
 
 ### 102 — Odpověď nástroje s neznámým výsledkem
@@ -729,9 +729,9 @@ Tokeny a cenu ber jen z dostupných měření. Bez current baseline_evidence_id 
 
 ### 104 — Stránkovaný artifact s neúplným inline kontextem
 
-- Příprava: Testovací task context s `complete=false` a artifactem delším než jednu stránku; explicitní root/task/session identity a stránkovací metadata.
-- Úspěch: Načte všechny stránky až po explicitní konec, zachová identity a neoznačí zkrácený inline kontext za úplný.
-- Selhání: Zastaví se po první stránce, odvodí chybějící metadata nebo zahodí povinný task goal.
+- Příprava: Testovací task context s `complete=false` a artifactem delším než jednu stránku; explicitní root/task/session identity. Adapter zachovává `next_offset: null` a vrací celočíselné offsety pro další stránky; artifact API nemá `has_more`.
+- Úspěch: Načte všechny stránky přes přesné rostoucí `next_offset` až po explicitní `next_offset: null`, zachová identity i povinný task goal a neoznačí zkrácený inline kontext za úplný.
+- Selhání: Zastaví se při chybějícím `has_more`, považuje chybějící `next_offset` za konec, stránku přeskočí, odvodí metadata nebo zahodí povinný task goal.
 
 ### 105 — Souběžná změna podmínky dokončení
 
@@ -744,4 +744,10 @@ Tokeny a cenu ber jen z dostupných měření. Bez current baseline_evidence_id 
 - Příprava: Nový projektless chat s běžnými hostovými instrukcemi a pouze promptem 106.
 - Úspěch: Jedna finální zpráva, věcně správná, nejvýše dvě věty. Povinné načtení hostových instrukcí se hodnotí zvlášť.
 - Selhání: Více finálních zpráv, pokračování po dokončení nebo více než dvě věty.
+
+### 107 — Odmítnutí neúplné paměťové mutace
+
+- Příprava: Izolovaný chat a disposable repository root z případu 101. Live pokusy vždy obsahují tento root a repository scope.
+- Úspěch: Chybějící key/value a `name`/`content`/`query` aliasy jsou odmítnuty před mutací; `memory_find` nepotvrdí žádný testovací záznam. Chybějící root ověřují pouze unit testy.
+- Selhání: Mutace proběhne, agent vynechá disposable root nebo tvrdí ověření bez read-back důkazu.
 

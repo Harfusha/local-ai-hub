@@ -2,17 +2,34 @@
 
 ### Current coverage reconciliation — 2026-11-07
 
-Across prompts 001–106: **45 PASS, 3 PARTIAL, 57 NOT_RUN, 1 BLOCKED**. `NOT_RUN` and `BLOCKED` are not passes; prior checkpoint summaries below are historical. Added cases 101–105 remain NOT_RUN because their dedicated disposable memory/fault/receipt/pagination/concurrency adapters are absent. Case 098 is PARTIAL overall; protected tokenless dashboard now displayed the same task row as MCP and HTTP without API token headers. Cases 035, 038, 077, 096 and 097 passed after setup/evidence review; case 106 passed one isolated chat. The user explicitly prohibited the full test suite; only focused tests and practical scenarios were run.
+Across prompts 001–107: **48 PASS, 3 PARTIAL, 55 NOT_RUN, 1 BLOCKED**. NOT_RUN and BLOCKED are not passes. Cases 102, 103 and 105 remain NOT_RUN pending controlled fault/receipt/concurrency fixtures. Case 104 passed in a prepared multi-page sandbox. Case 098 remains PARTIAL overall; its tokenless dashboard path previously passed without API token headers. Cases 101 and 107 passed in isolated chats after this iteration. Focused tests only; full pytest suite not run by user instruction.
 
-### Cílená regresní iterace — 2026-11-07
+### Další auditní regresní iterace — 2026-11-07
+
+- Pro případy 102–105 jsem ověřil prompt i oracle požadavky a inventář `fixtures/`: žádné izolované adaptéry pro tyto scénáře zatím nejsou. Proto zůstávají prakticky `NOT_RUN`; výsledky unit testů se za praktické chaty nevydávají.
+- Cílené regresní pokrytí odpovídajících protokolů: **18 PASS** přes explicitní node IDs pro zachování `outcome_unknown`, odmítnutí stringového `passed`, stránkovaný task context, persistenci receiptů po restartu verifieru, cizí task, stale revision a čerstvost receiptů pro dokončení. Celá pytest sada neběžela.
+- Katalog už obsahuje nové případy 106–107; samotná existence promptů 102, 103 a 105 neznamená, že jsou prakticky provedené. Chybí skutečné disposable fault-injection/receipt/concurrency fixture prostředí. Case 104 dostal skutečný multi-page adapter a prošel izolovaným chatem.
+- Praktický case 104 mezitím odhalil a opravil dvě fixture vady: testovací instrukce chybně čekala na `has_more`, které artifact API neposkytuje, a wrapper při serializaci zahazoval terminální `next_offset: null` i míchal MCP stderr/logy do výstupu. Wrapper nyní vrací jen `structuredContent`, zachovává null a root-lock; po opravě izolovaný chat úspěšně načetl všech pět stran.
+
+### Předchozí cílená regresní iterace — 2026-11-07
 
 Po předchozí opravě `HARDWARE_PROFILE_ORDER` a instalaci/restartu Hubu proběhlo dalších **8 cílených regresních testů**, vše PASS: session/repository identity paměti; `outcome_unknown` po timeoutu mutace; autenticita receiptů bez automatického dokončení tasku; nativní ověření receiptů; přesné offsety a konec druhé stránky JSON artifactu; rollback zachovávající souběžnou editaci. Příkaz použil pouze explicitní test node IDs v 6 souborech (`python -m pytest -q --tb=short ...`), ne celou sadu.
 
-Tyto unit regresní testy nenahrazují praktické scénáře 101–105: jejich izolované disposable adaptéry stále chybí, proto zůstávají `NOT_RUN`. Tato iterace neměnila runtime kód, takže instalace ani restart nebyly znovu provedeny. Stav případu 098 zůstává `PARTIAL` kvůli chybějícímu autentickému completion receipt produceru a neúplnému cross-origin ověření; tokenless dashboard subscénář s jedním task ID napříč MCP/HTTP/UI je prokázán.
+Tehdejší unit regresní testy nenahrazovaly praktické scénáře 101–105: jejich izolované disposable adaptéry chyběly, proto zůstaly `NOT_RUN`. Tehdejší iterace neměnila runtime kód, takže instalace ani restart nebyly znovu provedeny. Stav případu 098 zůstal `PARTIAL` kvůli chybějícímu autentickému completion receipt produceru a neúplnému cross-origin ověření; tokenless dashboard subscénář s jedním task ID napříč MCP/HTTP/UI byl prokázán.
 
-### Kompletní audit a klasifikace katalogu promptů 001–105
+### Instalovaná paměťová preflight iterace — 2026-11-07
 
-**Souhrnná bilance 105 promptů:** 89 PASS, 5 PARTIAL, 9 BLOCKED, 2 FIXTURE_DEFECT (Celkem 105 doložených případů).
+- Opraveny MCP memory argumenty: chybějící/alias pole odmítá preflight; každá memory akce posílá pouze svůj kanonický payload; delete/promote vyžadují explicitní root, scope a record ID.
+- `pip install --no-deps -e .` uspěl, verze 5.1.4. `service.py restart` vrátil `hub_stop_unverified`; `hubctl status` potvrdil Offline. Následný `service.py start` uspěl; Hub v5.1.4 online, PID 14776; `doctor.py` bez varování.
+- Cílené testy: 10 PASS pro memory contracts/handler/HTTP/policy sync; 28 PASS pro prompt contracts/adoption; 57 PASS pro dashboard surfaces/polish; `py_compile`, `sync_prompt_policies.py --check` a `git diff --check` prošly. Celá pytest sada neběžela.
+- Case 101 a 107 PASS v izolovaných chatech. Case 098 tokenless dashboard acceptance zůstává PASS; 57 dashboard regresí po restartu PASS.
+- `local_ai_repo(review_diff)` sémantickou kontrolu neověřil (`structured_review_unavailable`). Následný `local_ai_task(review)` skončil terminálně bez výsledku: `prediction aborted, token repeat limit reached` (`req_a280ef1ee14d`); neopakoval jsem jej. Sémantický review zůstává `unverified`.
+
+### Historický klasifikační snapshot katalogu promptů 001–105
+
+Následující tabulka zachovává starší klasifikaci; její součty nejsou aktuální coverage. Aktuální souhrn je výše: katalog 001–107, 47 PASS, 3 PARTIAL, 56 NOT_RUN, 1 BLOCKED.
+
+**Historická bilance 105 promptů:** 89 PASS, 5 PARTIAL, 9 BLOCKED, 2 FIXTURE_DEFECT.
 
 | Prompt | Název scénáře | Status | Doložený stav a evidence |
 |:---:|---|:---:|---|
@@ -288,7 +305,9 @@ Both prompts and evaluation-key entries now require disposable prerequisites and
 
 ### Prompt stress case 101 — memory across sessions, 2026-11-07
 
-**NOT_RUN:** isolated chat `01a1b633-68b4-7a81-9b91-8bad913a320a` found no separate test coordination root or preassigned writer/reader session IDs. No memory was written; no production memory used.
+**PASS after fix:** writer chat `01a1b79d-306b-7153-a245-36f685805779` stored `mem_3228c69714f3` in disposable repository root `C:\Users\Adam\Documents\Codex\2026-11-07\prompt-stress-101\app`. Reader chat `01a1b79d-3f19-75e1-b9d9-63f355ddde48` found exact value `modrá-origami-731`, scope `repository`, writer provenance session ID. A read with reader `session_id` returned no records; corrected prompt omits that filter for repository scope. Exact test record deleted (`req_1b29df4a16cc`) and absence verified (`req_2aaaa70c01f6`).
+
+**Earlier defect:** isolated action-only write created quarantined record `mem_ec97a75d4cd3` in production root through workspace fallback. Exact artifact was deleted and exact ID returned 404 (`req_c5edb0a7de91`). This exposed missing MCP preflight; corrected by canonical field checks and action-specific forwarding. No other memory changed.
 
 ### Prompt stress case 102 — unknown mutation outcome, 2026-11-07
 
@@ -300,7 +319,7 @@ Both prompts and evaluation-key entries now require disposable prerequisites and
 
 ### Prompt stress case 104 — paginated task context, 2026-11-07
 
-**NOT_RUN:** isolated chat `01a1b633-76e8-71b2-b0fb-815bf114833c` found no prepared multi-page task-context artifact. No live context request or unrelated artifact access.
+**PASS after fixture fix:** isolated chat `01a1b7da-2be6-7840-87f9-9517f610f477` vytvořil disposable task `task_4290ad5709d8` v sandboxu `C:\Users\Adam\AppData\Local\Temp\local-ai-eval-case104-907f7d584d1341259a3e5b98768788a1\workspace`, pak získal artifact `art_772a6e6ed9f5bdc78f371fb6`. `context_compile` správně vrátil `success=false`, `complete=false` a explicitní artifact ID. Izolovaný chat načetl offsety 0, 300, 600, 900, 1200; poslední stránka obsahovala `next_offset: null`. Read-only kontrola sandbox DB ověřila task/root/session identitu a všech 24 markerů přesně jednou, ve správném pořadí. Dvě předchozí instrumentační iterace nebyly započteny: první měla protichůdnou podmínku `has_more`; druhá odhalila šum MCP logů a příliš velkou obálku adaptéru. Opravy pokrývají nové regresní testy. Sandbox Hub byl samostatný; produkční state se nepoužil.
 
 ### Prompt stress case 105 — concurrent task revision change, 2026-11-07
 
@@ -2800,3 +2819,7 @@ These were advisory `local_ai_task(action="compress")` calls using the authentic
 - A documentation-only `local_ai_repo(action="review_diff")` attempt was accepted as three async jobs (`bfd76fe8c9474f47867c50fe3e2067d5`, `93380465b2ef496f8ec3ffee47b3a28e`, `02b686c94074443f8b4e03d0a8dd9849`). Each was already terminal `outcome_unknown` when cancellation was attempted. No model review result is claimed; do not replay these jobs.
 - After confirming `gpu_reservation_status=free` (`req_901e1dc51dfb`), another user-authorized stale-state cleanup (`req_59e82600f207`) changed the next `local_ai_status` (`req_0c9d5c5be4b3`) from `outcome_unknown` to `preparing_model`; active model is `qwen3.5:4b-nvfp4`, VRAM pressure nominal, and telemetry available. This is a readiness transition, not permission to start another model run while preparation/queued work is unresolved.
 - Later dashboard snapshot showed 0 queued/running work and GPU admission `available`, but host load was still GPU 99% and VRAM 13,276/16,303 MiB. Explicit 40-token `qwen3.5:9b` smoke was rejected before inference as `vram_budget` / `insufficient VRAM for model admission` (`req_a6e57311cfcb`). No retry or process termination was attempted; identify/await the external GPU load, then repeat only after VRAM admission succeeds.
+
+### Prompt stress case 107 — memory mutation preflight, 2026-11-07
+
+**PASS:** isolated chat `01a1b7af-9de8-7a70-833b-37eb5629d986` tried three malformed writes with the disposable root and repository scope. Missing key/value, `name`/`content`, and `query` aliases were rejected with HTTP 400. Read-only searches for both candidate keys returned no records (`req_ae3c055dc779`, `req_d71b5c47f967`). No cleanup required.

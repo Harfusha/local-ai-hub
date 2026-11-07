@@ -479,9 +479,9 @@ _ACTION_SCOPED_FIELDS = {
         "timeout_seconds": frozenset({"wait_for_event", "semaphore_acquire"}),
         "id": frozenset({"task_get", "task_resume", "task_cleanup_worktree", "task_zombie_reap", "board_item_get", "board_item_delete", "board_item_update"}),
         "approver": frozenset(),
-        "target_scope": frozenset(),
-        "record_id": frozenset(),
-        "record": frozenset(),
+        "target_scope": frozenset({"memory_promote"}),
+        "record_id": frozenset({"memory_get", "memory_delete", "memory_promote"}),
+        "record": frozenset({"negative_knowledge_record"}),
     },
 }
 OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {

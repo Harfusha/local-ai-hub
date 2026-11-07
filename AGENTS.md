@@ -42,7 +42,7 @@ Bounded handoff `validation.receipt_status="not_recorded"` means command success
 On Windows, bounded patch parent directories must already exist. The Hub pins ancestor directories during patch application and uses pinned file handles during rollback; missing or unpinnable parents fail visibly. A patch targeting mixed LF and CRLF within a single file fails visibly. Do not infer equivalent non-Windows race protection.
 
 Task memory adoption passes the same resolved repository coordination ID into compilation, record materialization and excluded-memory diagnostics; expiry checks retain the current repository and declared scope identity.
-`memory_record` requires explicit absolute root, canonical scope, non-empty key and string value; it rejects `name`/`content`/`query` aliases and root fallback. An empty string value is valid only when explicitly supplied.
+`memory_record` requires explicit absolute root, canonical scope, non-empty key and string value; it rejects `name`/`content`/`query` aliases and root fallback. An empty string value is valid only when explicitly supplied. `memory_delete` and `memory_promote` require explicit root, scope and record ID; neither may fall back to workspace identity.
 
 Consistency-guard repository memory writes and audit reads require the current server-derived project coordination ID and declared scope; missing required identity cannot fall back to a physical-root lookup. No tenant routing or synthetic tenant identity is permitted. Windows isolated-parser workers treat only WerGetFlags ERROR_NOT_FOUND as absent per-process flags before setting NO_UI; other HRESULT failures remain explicit.
 
