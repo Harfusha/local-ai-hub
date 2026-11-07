@@ -4,7 +4,7 @@ Reusable prompt suite for testing agent tool use, source grounding, changes, coo
 
 ## Files
 
-- [prompts.md](prompts.md): 108 copy-ready prompts. Give the tested agent only its selected prompt and ordinary environment instructions.
+- [prompts.md](prompts.md): 113 copy-ready prompts. Give the tested agent only its selected prompt and ordinary environment instructions.
 - [evaluation-key.md](evaluation-key.md): fixture setup, expected behavior, and failure signals. Keep out of the tested agent's context.
 - [results.md](results.md): append one evidence-bound record for each run. Keep results separate by agent, Hub build, instructions, and fixture revision.
 - [fixtures/](fixtures/README.md): inert synthetic source trees for selected read-only repository lookup cases.

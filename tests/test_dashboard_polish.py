@@ -48,6 +48,49 @@ assert.equal(nodes.agentOsTrajectoriesSec.style.display,'block');
 """)
 
 
+def test_coordination_subtabs_toggle_active_and_sections():
+    coord_tabs = re.findall(r'data-coord-subtab="([^"]+)"', DASHBOARD_HTML)
+    assert coord_tabs == ["board", "semaphores", "plan-progress", "briefing"]
+    source = extract("function switchCoordSubtab(", "document.querySelectorAll('.subtab-btn[data-coord-subtab]')")
+    run_javascript(source, """
+const nodes = {};
+const tabNames = {
+  'board': 'Board',
+  'semaphores': 'Semaphores',
+  'plan-progress': 'PlanProgress',
+  'briefing': 'Briefing'
+};
+for(const [key, name] of Object.entries(tabNames)){
+  nodes['subtabCoord' + name] = {
+    classList: {
+      active: false,
+      toggle(cls, val){
+        if(cls === 'active') this.active = Boolean(val);
+      }
+    }
+  };
+  nodes['coord' + name + 'Sec'] = { style: { display: 'none' } };
+}
+const $ = id => nodes[id];
+
+for(const [key, name] of Object.entries(tabNames)){
+  switchCoordSubtab(key);
+  for(const [otherKey, otherName] of Object.entries(tabNames)){
+    if(otherKey === key){
+      assert.equal(nodes['subtabCoord' + otherName].classList.active, true);
+      assert.equal(nodes['coord' + otherName + 'Sec'].style.display, 'block');
+    } else {
+      assert.equal(nodes['subtabCoord' + otherName].classList.active, false);
+      assert.equal(nodes['coord' + otherName + 'Sec'].style.display, 'none');
+    }
+  }
+}
+
+switchCoordSubtab('unknown-subtab');
+assert.equal(nodes['subtabCoordBriefing'].classList.active, true);
+""")
+
+
 def test_initial_form_fields_have_accessible_names():
     class Fields(HTMLParser):
         def __init__(self):

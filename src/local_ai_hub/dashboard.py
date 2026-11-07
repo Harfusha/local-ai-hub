@@ -6849,12 +6849,13 @@ async function generateSessionBriefing(){
 
 function switchCoordSubtab(tabKey){
   const tabs = [
-    ['board','BoardSec'], ['semaphores','SemaphoresSec'],
-    ['plan-progress','PlanProgressSec'], ['briefing','BriefingSec']
+    ['board','Board'], ['semaphores','Semaphores'],
+    ['plan-progress','PlanProgress'], ['briefing','Briefing']
   ];
-  tabs.forEach(([key,suffix]) => {
-    const btn = $('subtabCoord' + suffix);
-    const sec = $('coord' + suffix);
+  if(!tabs.some(([key]) => key === tabKey)) return;
+  tabs.forEach(([key,name]) => {
+    const btn = $('subtabCoord' + name);
+    const sec = $('coord' + name + 'Sec');
     if(btn) btn.classList.toggle('active', key === tabKey);
     if(sec) sec.style.display = key === tabKey ? 'block' : 'none';
   });

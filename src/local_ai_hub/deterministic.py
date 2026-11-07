@@ -6214,7 +6214,23 @@ def test_{sym}_regression_edge_cases():
         code_smell_patterns = _SECURITY_AUDIT_SMELLS
 
         findings: list[dict[str, Any]] = []
-        candidate_files = self.repo_tools.iter_files(str(resolved_root))
+        raw_files = list(self.repo_tools.iter_files(str(resolved_root)))
+        def _sec_priority(p: Path) -> int:
+            try:
+                parts = p.relative_to(resolved_root).parts
+            except ValueError:
+                return 2
+            if not parts or len(parts) == 1:
+                return 0
+            top = parts[0].lower()
+            if top in {"src", "lib", "app", "core", "server", "api"}:
+                return 0
+            if top in {"tools", "scripts", "bin"}:
+                return 1
+            if top in {"tests", "test", "fixtures"}:
+                return 3
+            return 2
+        candidate_files = sorted(raw_files, key=_sec_priority)
         scanned_files = 0
         eligible_files = 0
         skipped_files = 0

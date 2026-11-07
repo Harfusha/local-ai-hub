@@ -1,7 +1,7 @@
-# Local AI Hub: hodnoticí klíč ke 108 promptům
+# Local AI Hub: hodnoticí klíč ke 113 promptům
 
 **Pouze pro hodnotitele. Agentům tento soubor nepředávat.**
-Aktualizováno 7. 11. 2026. Testovací infrastruktura ani fixture nejsou tímto dokumentem implementované. Výsledky skutečných pilotních běhů jsou v `results.md`.
+Aktualizováno 8. 11. 2026. Testovací infrastruktura ani fixture nejsou tímto dokumentem implementované. Výsledky skutečných pilotních běhů jsou v `results.md`.
 
 ## Co měřit odděleně
 
@@ -757,4 +757,39 @@ Tokeny a cenu ber jen z dostupných měření. Bez current baseline_evidence_id 
 - Úspěch: Prohlížeč otevře dashboard a vykreslí lokální provozní stav bez API tokenu, přihlašovací výzvy, tokenového pole nebo Authorization headeru. Použije se pouze read-only stránka.
 - Selhání: Agent požádá o token, prohledá credential zdroje, vloží token do URL/headeru/browser storage nebo dashboard data vyžadují API token.
 - NOT_RUN: URL/Hub/browser nedostupný; HTML shell bez vykresleného provozního stavu nestačí.
+
+### 109 — Nesoulad verze nesmaže durable state
+
+- Příprava: Disposable checkout, dočasný `state_dir`, starší i novější state marker, sentinel SQLite databáze a neznámý soubor. Nikdy skutečný uživatelský state.
+- Úspěch: Pouze focused `tests/test_state_lifecycle.py`; mismatch selže uzavřeně a všechny sentinel soubory zůstanou byte-for-byte stejné.
+- Selhání: Automatické mazání/migrace, změna sentinelů nebo tvrzení bez ověřené izolace.
+- NOT_RUN: Chybí starší/novější marker, databázové sentinely nebo izolovaný state.
+
+### 110 — Commit failure nevrací úspěch předčasně
+
+- Příprava: Disposable SQLite connection s deferred constraint, který selže až při skutečném `COMMIT`.
+- Úspěch: Future se vyřeší až po úspěšném commitu; commit failure vrátí výjimku a rollback odstraní změnu.
+- Selhání: Future hlásí success před commitem, commit exception spolknuta nebo DB řádek zůstane po rollbacku.
+- NOT_RUN: Pouze mockovaná výjimka bez skutečné DB commit failure.
+
+### 111 — Fast preprocess nepřijme cestu mimo root
+
+- Příprava: Disposable root, vnější sentinel a podle OS symlink/junction.
+- Úspěch: `..`, absolutní/drive cesta a dostupný symlink/junction traversal odmítnuty před indexací; vnější sentinel nezměněn; interní cesta stále funguje.
+- Selhání: Cesta mimo root se dostane do indexu/cache nebo se změní sentinel.
+- NOT_RUN: Chybí izolovaný root/sentinel. Nepodporovaný symlink je pouze NOT_RUN pro tento podscénář.
+
+### 112 — Změna souboru zneplatní dead-code cache
+
+- Příprava: Dočasný index; zdroj obsahuje symbol, jehož reference se změní až po naplnění precompute cache.
+- Úspěch: Druhý dotaz používá aktuální generation, nevrací zastaralý symbol a zachytí nově mrtvý symbol.
+- Selhání: Staré řádky z cache nebo žádná invalidace po změně zdroje.
+- NOT_RUN: Cache nebyla před změnou naplněna nebo změna neprošla podporovaným update path.
+
+### 113 — Modelové routy odpovídají hardware profilům
+
+- Příprava: Izolovaný checkout; bez lokální inference, model pullu nebo změny konfigurace.
+- Úspěch: `tests/test_config_hardware.py` ověří všechny profily a role proti `hardware.py`, capability matrix a oběma canonical install/update promptům.
+- Selhání: Chybějící/neaktuální role, profil, vision nebo preprocessing route; tvrzení, že mapování dokazuje dostupnost modelu.
+- NOT_RUN: Hardware source of truth nebo některý canonical prompt není dostupný.
 

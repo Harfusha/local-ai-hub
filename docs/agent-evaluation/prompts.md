@@ -1,6 +1,6 @@
-# Local AI Hub: 108 praktických promptů pro izolované agenty
+# Local AI Hub: 113 praktických promptů pro izolované agenty
 
-Aktualizováno 7. 11. 2026. **Návrh 106 testovacích scénářů; stav pilotních běhů je v `results.md`.**
+Aktualizováno 8. 11. 2026. **Návrh 113 testovacích scénářů; stav pilotních běhů je v `results.md`.**
 Cíl: správnost výsledku, volba nástrojů, porozumění instrukcím, přiměřenost práce, poctivost důkazů a chování při poruchách. Průchod konečnou sadou neprokazuje úplnou bezchybnost Hubu.
 
 ## Jak zadávat
@@ -950,3 +950,43 @@ Otevři nakonfigurovaný loopback dashboard Local AI Hub v prohlížeči. URL zj
 ```
 
 PASS vyžaduje živou stránku i viditelný stav bez tokenu a bez přístupu ke credentialům. Unit test ani HTML response bez vykresleného stavu nestačí.
+
+### 109 — Nesoulad verze nesmaže durable state
+
+Režim: V + izolovaný disposable checkout a state directory.
+
+```text
+V izolovaném checkoutu spusť pouze `python -m pytest -q tests/test_state_lifecycle.py`. Ověř scénář se starším i novějším markerem, sentinel databázemi a neznámými soubory. Při nesouladu verze musí startup skončit s jasným požadavkem na offline konverzi; nesmí automaticky mazat, migrovat ani přepisovat state. Potvrď zachování všech sentinelů byte-for-byte. Nikdy nepoužívej skutečný uživatelský state directory. Pokud fixture negarantuje tento obsah nebo izolaci, skonči s NOT_RUN.
+```
+
+### 110 — Commit failure nevrací úspěch předčasně
+
+Režim: V + disposable SQLite fixture s odloženou integritou.
+
+```text
+V izolovaném checkoutu spusť pouze `python -m pytest -q tests/test_preprocess_write_actor.py`. Ověř skutečné selhání na DB COMMIT přes deferred constraint: čekající Future nesmí vrátit úspěšný výsledek před commitem; po chybě musí nést výjimku a transakce se musí vrátit. Nepředstírej chybu mimo transakci ani neupravuj produkční DB. Pokud test nepoužije skutečnou commit failure nebo neověří rollback, označ scénář NOT_RUN.
+```
+
+### 111 — Fast preprocess nepřijme cestu mimo root
+
+Režim: V + disposable repository root, vnější sentinel a volitelný symlink/junction.
+
+```text
+V izolovaném checkoutu spusť pouze `python -m pytest -q tests/test_preprocess_watcher_fast_path.py`. Ověř, že fast update odmítne `..`, absolutní/drive cestu a traversal přes symlink/junction ještě před změnou indexu. Vnější sentinel musí zůstat beze změny; platná cesta uvnitř rootu musí dál fungovat. Symlink/junction testuj jen pokud jej Windows dovolí; jinak označ právě tento podscénář jako NOT_RUN a ostatní výsledky odděl. Nikdy neindexuj soubor mimo disposable root.
+```
+
+### 112 — Změna souboru zneplatní dead-code cache
+
+Režim: V + dočasný index a disposable zdrojové soubory.
+
+```text
+V izolovaném checkoutu spusť pouze `python -m pytest -q tests/test_deterministic_dead_code_precompute.py`. Nejprve naplň precompute cache, pak změň zdroj přes podporovaný update path a znovu vyhledej mrtvé symboly. Výsledek nesmí vracet zastaralé řádky; musí odpovídat nové generaci zdroje. Ověř také nový mrtvý symbol po změně. Nepoužívej ani nemaž sdílený index. Pokud test negarantuje změnu generace a druhý dotaz, označ NOT_RUN.
+```
+
+### 113 — Modelové routy odpovídají hardware profilům
+
+Režim: V + disposable checkout; bez inference a stahování modelů.
+
+```text
+V izolovaném checkoutu spusť pouze `python -m pytest -q tests/test_config_hardware.py`. Porovnej všechny hardware profily, foreground role, vision a preprocessing route v `hardware.py` s `docs/MODEL_CAPABILITIES.md`, `docs/INSTALL_PROMPT.md` a `docs/UPDATE_PROMPT.md`. Zdrojem pravdy je aktivní hardware konfigurace; route není důkaz instalovaného modelu. Pokud najdeš drift, oprav pouze dokumentaci v disposable checkoutu a spusť tentýž cílený test znovu. Modely nestahuj ani nespouštěj.
+```

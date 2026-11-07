@@ -1,8 +1,8 @@
 # Agent prompt evaluation results
 
-### Current coverage reconciliation — 2026-11-07
+### Current coverage reconciliation — 2026-11-08
 
-Across prompts 001–108: **52 PASS, 3 PARTIAL, 52 NOT_RUN, 1 BLOCKED**. NOT_RUN and BLOCKED are not passes. Cases 102 and 105 passed in isolated practical chats. Cases 103 and 104 passed in prepared isolated sandboxes. Case 098 remains PARTIAL overall; its tokenless dashboard path previously passed without API token headers. Cases 101, 107, and 108 passed in isolated chats after this iteration. Focused tests only; full pytest suite not run by user instruction.
+Across prompts 001–113: **52 PASS, 3 PARTIAL, 57 NOT_RUN, 1 BLOCKED**. NOT_RUN and BLOCKED are not passes. Cases 102 and 105 passed in isolated practical chats. Cases 103 and 104 passed in prepared isolated sandboxes. Case 098 remains PARTIAL overall; its tokenless dashboard path previously passed without API token headers. Cases 101, 107, and 108 passed in isolated chats after this iteration. Cases 109–113 were added from confirmed regression gaps and remain NOT_RUN until their disposable fixtures are exercised. Focused tests only; full pytest suite not run by user instruction.
 
 ### Case 108 — Dashboard bez API tokenu
 

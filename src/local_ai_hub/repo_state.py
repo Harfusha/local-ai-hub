@@ -37,7 +37,7 @@ class RepoStateTracker:
         self.max_untracked_walk_files = max(32, int(cfg.get("max_untracked_walk_files", 2048)))
         self.non_git_max_files = int(cfg.get("non_git_max_files", config.get("search", {}).get("max_files", 8000)))
         self.degraded_max_files = max(128, int(cfg.get("degraded_fingerprint_max_files", 2048)))
-        self.non_git_ignore_dirs = set(config.get("rag", {}).get("ignore_dirs", [".git", "node_modules", "vendor", "dist", "build", "bin", "obj", ".cache"]))
+        self.non_git_ignore_dirs = set(config.get("rag", {}).get("ignore_dirs", [".git", "node_modules", "vendor", "dist", "build", "bin", "obj", ".cache", ".venv", "tool-envs", "site-packages"]))
         self.cache = MemoryLRUCache(int(cfg.get("fingerprint_l1_entries", 128)), self.ttl)
         self._lock = threading.RLock()
         self._flight_lock = threading.Lock()

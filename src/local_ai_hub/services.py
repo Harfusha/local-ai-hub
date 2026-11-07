@@ -5583,6 +5583,12 @@ class LocalAIServices:
                     tasks: dict[str, Any] | None = None,
                     accountable_role: str | None = None, owner: str = "agent",
                     idempotency_key: str = "") -> dict[str, Any]:
+        if not plan_id:
+            import uuid
+            plan_id = f"plan_{uuid.uuid4().hex[:12]}"
+        elif not plan_id.startswith("plan_"):
+            clean_plan = re.sub(r"[^A-Za-z0-9_-]", "_", plan_id).strip("_")
+            plan_id = f"plan_{clean_plan}"[:80]
         arguments = dict(plan_id=plan_id, title=title, description=description,
                          lifecycle=lifecycle, default_target_ref=default_target_ref,
                          owner=owner, idempotency_key=idempotency_key)
@@ -5603,9 +5609,20 @@ class LocalAIServices:
     def plan_task_edit(self, root: str = "", plan_id: str = "", task_id: str = "",
                        task_data: dict[str, Any] | None = None, expected_revision: str = "",
                        idempotency_key: str = "", owner: str = "agent") -> dict[str, Any]:
+        if task_data and "status" in task_data and "work_status" not in task_data:
+            task_data = dict(task_data)
+            task_data["work_status"] = task_data.pop("status")
         arguments = dict(plan_id=plan_id, task_id=task_id, task_data=task_data,
                          expected_revision=expected_revision, idempotency_key=idempotency_key, owner=owner)
         ws = self._plan_workspace(root, "plan_task_edit", arguments)
+        if task_id and not task_id.startswith("task_"):
+            try:
+                plan_info = ws.get_plan(plan_id)
+                plan_tasks = plan_info.get("plan", {}).get("tasks", {})
+                if task_id not in plan_tasks and f"task_{task_id}" in plan_tasks:
+                    task_id = f"task_{task_id}"
+            except Exception:
+                pass
         allowed = {"title", "description", "kind", "work_status", "depends_on", "clarifications",
                    "acceptance_criteria", "next_action", "blocker", "order", "accountable_role",
                    "work_phase", "spec_refs", "scope", "results", "deliveries"}
