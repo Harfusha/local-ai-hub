@@ -31,6 +31,7 @@ class SinglePassIngestCache:
         self._cache: dict[str, IngestedFile] = {}
         self._total_bytes: int = 0
         self._lock = threading.RLock()
+        self._in_flight: dict[str, threading.Event] = {}
 
     def __len__(self) -> int:
         with self._lock:
@@ -105,28 +106,52 @@ class SinglePassIngestCache:
         if cached is not None:
             return cached
 
-        target = base / Path(normalized)
-        c_hash, lines = repo_tools._read_snapshot(target)
-        source = "\n".join(lines)
-        if not c_hash:
-            c_hash = hashlib.sha256(source.encode("utf-8", errors="replace")).hexdigest()
-        size = len(source.encode("utf-8", errors="replace"))
+        with self._lock:
+            cached = self.get(normalized)
+            if cached is not None:
+                return cached
+            event = self._in_flight.get(normalized)
+            if event is None:
+                event = threading.Event()
+                self._in_flight[normalized] = event
+                is_leader = True
+            else:
+                is_leader = False
 
-        tree = None
-        if PurePosixPath(normalized).suffix.lower() == ".py":
-            try:
-                tree = ast.parse(source)
-            except Exception:
-                tree = None
+        if not is_leader:
+            event.wait(timeout=30.0)
+            cached = self.get(normalized)
+            if cached is not None:
+                return cached
 
-        ingested = IngestedFile(
-            path=normalized,
-            content_hash=str(c_hash),
-            size_bytes=size,
-            text=source,
-            lines=tuple(lines),
-            ast_tree=tree,
-            timestamp=time.time(),
-        )
-        self.put(ingested)
-        return ingested
+        try:
+            target = base / Path(normalized)
+            c_hash, lines = repo_tools._read_snapshot(target)
+            source = "\n".join(lines)
+            if not c_hash:
+                c_hash = hashlib.sha256(source.encode("utf-8", errors="replace")).hexdigest()
+            size = len(source.encode("utf-8", errors="replace"))
+
+            tree = None
+            if PurePosixPath(normalized).suffix.lower() == ".py":
+                try:
+                    tree = ast.parse(source)
+                except Exception:
+                    tree = None
+
+            ingested = IngestedFile(
+                path=normalized,
+                content_hash=str(c_hash),
+                size_bytes=size,
+                text=source,
+                lines=tuple(lines),
+                ast_tree=tree,
+                timestamp=time.time(),
+            )
+            self.put(ingested)
+            return ingested
+        finally:
+            if is_leader:
+                with self._lock:
+                    self._in_flight.pop(normalized, None)
+                event.set()

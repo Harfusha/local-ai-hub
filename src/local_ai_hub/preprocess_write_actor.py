@@ -113,6 +113,8 @@ class PreprocessWriteActor:
                 con.execute("PRAGMA cache_size=-65536")
                 con.execute("PRAGMA mmap_size=536870912")
                 con.execute("PRAGMA synchronous=NORMAL")
+                con.execute("PRAGMA temp_store=MEMORY")
+                con.execute("PRAGMA journal_size_limit=67108864")
             except sqlite3.OperationalError:
                 pass
 

@@ -1141,6 +1141,15 @@ class ProjectPreprocessor:
                      updated_at=excluded.updated_at""",
                 (resolved, clean_rel, stat_size, stat_mtime, new_hash, gen, now),
             )
+            con.execute(
+                "INSERT OR REPLACE INTO source_index(root, path, content_hash, text, updated_at) VALUES(?, ?, ?, ?, ?)",
+                (resolved, clean_rel, new_hash, text, now),
+            )
+            try:
+                con.execute("DELETE FROM source_fts WHERE root=? AND path=?", (resolved, clean_rel))
+                con.execute("INSERT INTO source_fts(root, path, content) VALUES(?, ?, ?)", (resolved, clean_rel, clean_rel + "\n" + text))
+            except sqlite3.OperationalError:
+                pass
 
         self._write_retry(_update_db)
 
@@ -3660,10 +3669,11 @@ class ProjectPreprocessor:
                 seeds.extend(self._proactive_git_seeds(root, allowed))
             from .code_index_demand import one_hop_related_files, two_hop_related_files
             demand_hops = max(1, int(self.cfg.get("demand_hops", 1)))
+            ic = getattr(self, "ingest_cache", None)
             if demand_hops >= 2:
-                neighbors = two_hop_related_files(Path(root), seeds, set(allowed), self.repo_tools)
+                neighbors = two_hop_related_files(Path(root), seeds, set(allowed), self.repo_tools, ingest_cache=ic)
             else:
-                neighbors = one_hop_related_files(Path(root), seeds, set(allowed), self.repo_tools)
+                neighbors = one_hop_related_files(Path(root), seeds, set(allowed), self.repo_tools, ingest_cache=ic)
             refs = [(path, allowed[path]) for path in [*seeds, *neighbors]]
             record_usage = getattr(self.code_index, "record_usage", None)
             if callable(record_usage):

@@ -77,6 +77,16 @@ def test_preprocess_watcher_fast_path(tmp_path: Path) -> None:
             proj = con.execute("SELECT phase FROM projects WHERE root=?", (str(root.resolve()),)).fetchone()
             assert proj[0] == "complete"
 
+            # Verify source_index has the new text
+            src_row = con.execute("SELECT text FROM source_index WHERE root=? AND path='app.py'", (str(root.resolve()),)).fetchone()
+            assert src_row is not None
+            assert "universe" in src_row[0]
+
+            # Verify source_fts has the new content indexed
+            fts_row = con.execute("SELECT path FROM source_fts WHERE root=? AND source_fts MATCH 'universe'", (str(root.resolve()),)).fetchone()
+            assert fts_row is not None
+            assert fts_row[0] == "app.py"
+
         # Verify notify_path_changed with fast_path=True also works
         notified = prep.notify_path_changed(str(app_file), fast_path=True)
         assert notified is True

@@ -2816,13 +2816,26 @@ class DeterministicEngine:
             stem = PurePosixPath(f).stem.lower()
             stem_to_paths.setdefault(stem, []).append(f)
 
+        STD_MODULES = {
+            "os", "sys", "re", "json", "time", "math", "typing", "pathlib", "logging",
+            "collections", "io", "subprocess", "threading", "datetime", "functools",
+            "itertools", "unittest", "pytest", "asyncio", "http", "socket", "urllib",
+            "copy", "shutil", "tempfile", "traceback", "gc", "stat", "uuid", "hashlib",
+            "base64", "contextlib", "abc", "react", "express", "lodash", "axios", "fs",
+            "path", "events", "util", "crypto", "stream", "buffer",
+        }
+        seen_edges: set[tuple[str, str]] = set()
         for row in import_rows:
             importing_path = str(row[0])
             name = str(row[1] or row[2] or "").lower().replace("\\", "/")
             parts = name.split(".")
             for part in parts:
+                if part in STD_MODULES:
+                    continue
                 for candidate in stem_to_paths.get(part, []):
-                    if candidate != importing_path:
+                    edge = (importing_path, candidate)
+                    if candidate != importing_path and edge not in seen_edges:
+                        seen_edges.add(edge)
                         in_degrees[candidate] = in_degrees.get(candidate, 0) + 1
 
         max_deg = max(in_degrees.values()) if in_degrees else 0

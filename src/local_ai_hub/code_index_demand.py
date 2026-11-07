@@ -248,19 +248,29 @@ def _java_import_candidates(source: str, eligible: set[str]) -> list[str]:
 
 
 def _direct_import_candidates_for_seed(
-    base: Path, seed: str, eligible: set[str], repo_tools: Any
+    base: Path, seed: str, eligible: set[str], repo_tools: Any, ingest_cache: Any = None
 ) -> list[str]:
     if seed not in eligible or not _safe_inventory_file(base, seed, repo_tools):
         return []
     suffix = PurePosixPath(seed).suffix.lower()
     target = base / Path(seed)
     try:
-        _, lines = repo_tools._read_snapshot(target)
-        source = "\n".join(lines)
+        source: str | None = None
+        tree: ast.AST | None = None
+        if ingest_cache is not None and hasattr(ingest_cache, "get"):
+            ingested = ingest_cache.get(seed)
+            if ingested is not None:
+                source = getattr(ingested, "text", None)
+                tree = getattr(ingested, "ast_tree", None)
+
+        if source is None:
+            _, lines = repo_tools._read_snapshot(target)
+            source = "\n".join(lines)
         candidates: list[str] = []
 
         if suffix == ".py":
-            candidates = _python_import_candidates(seed, ast.parse(source), eligible)
+            py_tree = tree if tree is not None else ast.parse(source)
+            candidates = _python_import_candidates(seed, py_tree, eligible)
         elif suffix in _JS_EXTENSIONS and suffix != ".json":
             specifiers = [match.group(1) for match in _JS_IMPORT.finditer(source)]
             specifiers.extend(match.group(1) for match in _JS_DYNAMIC_IMPORT.finditer(source))
@@ -300,7 +310,7 @@ def _direct_import_candidates_for_seed(
 
 
 def one_hop_related_files(
-    root: Path, seeds: list[str], eligible: set[str], repo_tools: Any, *, limit: int = 64
+    root: Path, seeds: list[str], eligible: set[str], repo_tools: Any, *, limit: int = 64, ingest_cache: Any = None
 ) -> list[str]:
     """Resolve bounded direct local imports without executing or recursing.
 
@@ -315,7 +325,7 @@ def one_hop_related_files(
     for seed in seeds[:128]:
         if len(found) >= limit:
             break
-        for path in _direct_import_candidates_for_seed(base, seed, eligible, repo_tools):
+        for path in _direct_import_candidates_for_seed(base, seed, eligible, repo_tools, ingest_cache=ingest_cache):
             if path not in seen and len(found) < limit:
                 seen.add(path)
                 found.append(path)
@@ -341,6 +351,7 @@ def two_hop_weighted_files(
     limit: int = 64,
     hop1_limit: int = 32,
     decay: float = 0.5,
+    ingest_cache: Any = None,
 ) -> list[tuple[str, float]]:
     """Resolve 2-hop local imports with depth decay and interface/base class weights."""
     if type(limit) is not int or limit < 1 or limit > 256:
@@ -351,7 +362,7 @@ def two_hop_weighted_files(
 
     # Hop 1
     for seed in seeds[:128]:
-        candidates = _direct_import_candidates_for_seed(base, seed, eligible, repo_tools)
+        candidates = _direct_import_candidates_for_seed(base, seed, eligible, repo_tools, ingest_cache=ingest_cache)
         for cand in candidates:
             if cand in seeds_set:
                 continue
@@ -362,7 +373,7 @@ def two_hop_weighted_files(
     hop1_sorted = sorted(weights.keys(), key=lambda p: (-weights[p], p))[:hop1_limit]
     for h1_file in hop1_sorted:
         h1_weight = weights[h1_file]
-        h2_candidates = _direct_import_candidates_for_seed(base, h1_file, eligible, repo_tools)
+        h2_candidates = _direct_import_candidates_for_seed(base, h1_file, eligible, repo_tools, ingest_cache=ingest_cache)
         for h2_cand in h2_candidates:
             if h2_cand in seeds_set:
                 continue
@@ -382,9 +393,10 @@ def two_hop_related_files(
     limit: int = 64,
     hop1_limit: int = 32,
     decay: float = 0.5,
+    ingest_cache: Any = None,
 ) -> list[str]:
     """Resolve 2-hop local imports, returning ranked unique file paths."""
     weighted = two_hop_weighted_files(
-        root, seeds, eligible, repo_tools, limit=limit, hop1_limit=hop1_limit, decay=decay
+        root, seeds, eligible, repo_tools, limit=limit, hop1_limit=hop1_limit, decay=decay, ingest_cache=ingest_cache
     )
     return [p for p, _ in weighted]
