@@ -72,3 +72,24 @@ def test_version_mismatch_fails_closed_without_deleting_any_state(tmp_path: Path
         assert not (state_dir / STATE_VERSION_FILE).exists()
     else:
         assert (state_dir / STATE_VERSION_FILE).read_bytes() == marker_before
+
+
+def test_bootstrap_supervisor_files_allowed(tmp_path: Path):
+    state_dir = tmp_path / "bootstrap_state"
+    state_dir.mkdir(parents=True)
+    # Simulate files created by supervisor before hub initializes state_version.json
+    (state_dir / "supervisor.log").write_text("starting", encoding="utf-8")
+    (state_dir / "supervisor.pid").write_text("12345", encoding="utf-8")
+    (state_dir / "supervisor.lock").write_text("lock", encoding="utf-8")
+    (state_dir / "supervisor.lock.guard").write_text("guard", encoding="utf-8")
+    (state_dir / "supervisor.owner.json").write_text("{}", encoding="utf-8")
+    (state_dir / "supervisor.status.json").write_text("{}", encoding="utf-8")
+    logs_dir = state_dir / "logs"
+    logs_dir.mkdir()
+    (logs_dir / "hub_stderr.log").write_text("err", encoding="utf-8")
+
+    res = ensure_state_version(state_dir, target_version=6)
+    assert res["status"] == "initialized"
+    assert res["version"] == 6
+    assert (state_dir / STATE_VERSION_FILE).is_file()
+

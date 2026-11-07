@@ -13,6 +13,23 @@ from typing import Any
 
 CURRENT_STATE_VERSION = 6
 STATE_VERSION_FILE = "state_version.json"
+BOOTSTRAP_STATE_ENTRIES = {
+    STATE_VERSION_FILE,
+    "supervisor.log",
+    "supervisor.pid",
+    "supervisor.owner.json",
+    "supervisor.status.json",
+    "supervisor.lock",
+    "supervisor.lock.guard",
+    "service.disabled",
+    "service.managed",
+    "logs",
+    "hub.pid",
+    "hub.owner.json",
+    "hub.start.lock",
+    "hub.start.lock.guard",
+    ".gitignore",
+}
 
 def read_state_version(state_dir: Path | str) -> int | None:
     """Read the current state version from state_dir, or None if absent/invalid."""
@@ -83,10 +100,10 @@ def ensure_state_version(
             "refusing startup to preserve state. Use an offline state conversion before retrying."
         )
 
-    has_existing_state = any(item.name != STATE_VERSION_FILE for item in root.iterdir())
-    if has_existing_state:
+    unexpected = sorted(item.name for item in root.iterdir() if item.name not in BOOTSTRAP_STATE_ENTRIES)
+    if unexpected:
         raise RuntimeError(
-            f"State version mismatch (found={current_ver}, target={target_version}); "
+            f"State version mismatch (found={current_ver}, target={target_version}, unexpected={unexpected}); "
             "refusing to delete or migrate state. Complete an offline state conversion "
             "with backup and verified record preservation before startup."
         )
