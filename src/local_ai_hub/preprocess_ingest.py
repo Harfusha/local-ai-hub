@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import hashlib
 import threading
 import time
 from dataclasses import dataclass
@@ -61,14 +62,35 @@ class SinglePassIngestCache:
             if item is not None:
                 self._total_bytes = max(0, self._total_bytes - item.size_bytes)
 
-    def put(self, ingested: IngestedFile) -> None:
+    def put(self, ingested: IngestedFile | str, text: str | None = None, content_hash: str | None = None) -> None:
+        if isinstance(ingested, str):
+            rel = ingested
+            text_val = text or ""
+            chash = content_hash or hashlib.sha256(text_val.encode("utf-8", errors="replace")).hexdigest()
+            tree = None
+            if rel.endswith(".py"):
+                try:
+                    tree = ast.parse(text_val)
+                except Exception:
+                    tree = None
+            item = IngestedFile(
+                path=rel,
+                content_hash=chash,
+                size_bytes=len(text_val.encode("utf-8", errors="replace")),
+                text=text_val,
+                lines=tuple(text_val.splitlines()),
+                ast_tree=tree,
+                timestamp=time.time(),
+            )
+        else:
+            item = ingested
         with self._lock:
-            norm = ingested.path.replace("\\", "/")
+            norm = item.path.replace("\\", "/")
             existing = self._cache.pop(norm, None)
             if existing is not None:
                 self._total_bytes = max(0, self._total_bytes - existing.size_bytes)
-            self._cache[norm] = ingested
-            self._total_bytes += ingested.size_bytes
+            self._cache[norm] = item
+            self._total_bytes += item.size_bytes
             self._evict_if_needed()
 
     def _evict_if_needed(self) -> None:
@@ -78,33 +100,33 @@ class SinglePassIngestCache:
             self._total_bytes = max(0, self._total_bytes - evicted.size_bytes)
 
     def get_or_ingest(self, base: Path, rel_path: str, repo_tools: Any) -> IngestedFile:
-        norm = rel_path.replace("\\", "/")
-        with self._lock:
-            cached = self.get(norm)
-            if cached is not None:
-                return cached
+        normalized = rel_path.replace("\\", "/")
+        cached = self.get(normalized)
+        if cached is not None:
+            return cached
 
-        target = base / Path(rel_path)
-        file_hash, lines = repo_tools._read_snapshot(target)
-        text = "\n".join(lines)
-        size_bytes = len(text.encode("utf-8", errors="ignore"))
-        ast_tree = None
+        target = base / Path(normalized)
+        c_hash, lines = repo_tools._read_snapshot(target)
+        source = "\n".join(lines)
+        if not c_hash:
+            c_hash = hashlib.sha256(source.encode("utf-8", errors="replace")).hexdigest()
+        size = len(source.encode("utf-8", errors="replace"))
 
-        if PurePosixPath(norm).suffix.lower() == ".py":
+        tree = None
+        if PurePosixPath(normalized).suffix.lower() == ".py":
             try:
-                ast_tree = ast.parse(text)
-            except (SyntaxError, ValueError, RecursionError):
-                ast_tree = None
+                tree = ast.parse(source)
+            except Exception:
+                tree = None
 
         ingested = IngestedFile(
-            path=norm,
-            content_hash=str(file_hash),
-            size_bytes=size_bytes,
-            text=text,
+            path=normalized,
+            content_hash=str(c_hash),
+            size_bytes=size,
+            text=source,
             lines=tuple(lines),
-            ast_tree=ast_tree,
-            timestamp=time.monotonic(),
+            ast_tree=tree,
+            timestamp=time.time(),
         )
-
         self.put(ingested)
         return ingested

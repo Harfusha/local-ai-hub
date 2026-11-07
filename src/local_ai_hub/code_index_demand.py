@@ -247,6 +247,58 @@ def _java_import_candidates(source: str, eligible: set[str]) -> list[str]:
     return found
 
 
+def _direct_import_candidates_for_seed(
+    base: Path, seed: str, eligible: set[str], repo_tools: Any
+) -> list[str]:
+    if seed not in eligible or not _safe_inventory_file(base, seed, repo_tools):
+        return []
+    suffix = PurePosixPath(seed).suffix.lower()
+    target = base / Path(seed)
+    try:
+        _, lines = repo_tools._read_snapshot(target)
+        source = "\n".join(lines)
+        candidates: list[str] = []
+
+        if suffix == ".py":
+            candidates = _python_import_candidates(seed, ast.parse(source), eligible)
+        elif suffix in _JS_EXTENSIONS and suffix != ".json":
+            specifiers = [match.group(1) for match in _JS_IMPORT.finditer(source)]
+            specifiers.extend(match.group(1) for match in _JS_DYNAMIC_IMPORT.finditer(source))
+            candidates = [
+                path for specifier in specifiers
+                if (path := _resolve_relative_module(
+                    base, seed, specifier, eligible, repo_tools, extensions=_JS_EXTENSIONS,
+                )) is not None
+            ]
+        elif suffix == ".php":
+            for match in _PHP_INCLUDE.finditer(source):
+                specifier = match.group("path")
+                if specifier.startswith("/"):
+                    if not match.group("dir"):
+                        continue
+                    specifier = "." + specifier
+                path = _resolve_relative_module(
+                    base, seed, specifier, eligible, repo_tools, extensions=(".php",),
+                )
+                if path is not None:
+                    candidates.append(path)
+        elif suffix == ".go":
+            candidates = _go_import_candidates(base, source, eligible)
+        elif suffix == ".rs":
+            candidates = _rust_import_candidates(seed, source, eligible)
+        elif suffix in _C_EXTENSIONS:
+            candidates = _c_include_candidates(base, seed, source, eligible, repo_tools)
+        elif suffix == ".rb":
+            candidates = _ruby_require_candidates(base, seed, source, eligible, repo_tools)
+        elif suffix == ".cs":
+            candidates = _csharp_using_candidates(source, eligible)
+        elif suffix == ".java":
+            candidates = _java_import_candidates(source, eligible)
+        return candidates
+    except (OSError, RuntimeError, UnicodeError, SyntaxError, TypeError, ValueError, RecursionError):
+        return []
+
+
 def one_hop_related_files(
     root: Path, seeds: list[str], eligible: set[str], repo_tools: Any, *, limit: int = 64
 ) -> list[str]:
@@ -261,56 +313,78 @@ def one_hop_related_files(
     seen = set(seeds)
 
     for seed in seeds[:128]:
-        if len(found) >= limit or seed not in eligible or not _safe_inventory_file(base, seed, repo_tools):
-            continue
-        suffix = PurePosixPath(seed).suffix.lower()
-        target = base / Path(seed)
-        try:
-            _, lines = repo_tools._read_snapshot(target)
-            source = "\n".join(lines)
-            candidates: list[str] = []
-
-            if suffix == ".py":
-                candidates = _python_import_candidates(seed, ast.parse(source), eligible)
-            elif suffix in _JS_EXTENSIONS and suffix != ".json":
-                specifiers = [match.group(1) for match in _JS_IMPORT.finditer(source)]
-                specifiers.extend(match.group(1) for match in _JS_DYNAMIC_IMPORT.finditer(source))
-                candidates = [
-                    path for specifier in specifiers
-                    if (path := _resolve_relative_module(
-                        base, seed, specifier, eligible, repo_tools, extensions=_JS_EXTENSIONS,
-                    )) is not None
-                ]
-            elif suffix == ".php":
-                for match in _PHP_INCLUDE.finditer(source):
-                    specifier = match.group("path")
-                    if specifier.startswith("/"):
-                        if not match.group("dir"):
-                            continue
-                        specifier = "." + specifier
-                    path = _resolve_relative_module(
-                        base, seed, specifier, eligible, repo_tools, extensions=(".php",),
-                    )
-                    if path is not None:
-                        candidates.append(path)
-            elif suffix == ".go":
-                candidates = _go_import_candidates(base, source, eligible)
-            elif suffix == ".rs":
-                candidates = _rust_import_candidates(seed, source, eligible)
-            elif suffix in _C_EXTENSIONS:
-                candidates = _c_include_candidates(base, seed, source, eligible, repo_tools)
-            elif suffix == ".rb":
-                candidates = _ruby_require_candidates(base, seed, source, eligible, repo_tools)
-            elif suffix == ".cs":
-                candidates = _csharp_using_candidates(source, eligible)
-            elif suffix == ".java":
-                candidates = _java_import_candidates(source, eligible)
-
-        except (OSError, RuntimeError, UnicodeError, SyntaxError, TypeError, ValueError, RecursionError):
-            continue
-
-        for path in candidates:
+        if len(found) >= limit:
+            break
+        for path in _direct_import_candidates_for_seed(base, seed, eligible, repo_tools):
             if path not in seen and len(found) < limit:
                 seen.add(path)
                 found.append(path)
     return found
+
+
+def _score_candidate_path(path: str) -> float:
+    stem = PurePosixPath(path).stem
+    if stem.startswith("I") and len(stem) > 1 and stem[1].isupper():
+        return 1.5
+    stem_lower = stem.lower()
+    if any(k in stem_lower for k in ("interface", "base", "types", "protocol", "abstract")):
+        return 1.4
+    return 1.0
+
+
+def two_hop_weighted_files(
+    root: Path,
+    seeds: list[str],
+    eligible: set[str],
+    repo_tools: Any,
+    *,
+    limit: int = 64,
+    hop1_limit: int = 32,
+    decay: float = 0.5,
+) -> list[tuple[str, float]]:
+    """Resolve 2-hop local imports with depth decay and interface/base class weights."""
+    if type(limit) is not int or limit < 1 or limit > 256:
+        raise ValueError("limit must be an integer between 1 and 256")
+    base = Path(root).resolve(strict=True)
+    weights: dict[str, float] = {}
+    seeds_set = set(seeds)
+
+    # Hop 1
+    for seed in seeds[:128]:
+        candidates = _direct_import_candidates_for_seed(base, seed, eligible, repo_tools)
+        for cand in candidates:
+            if cand in seeds_set:
+                continue
+            score = _score_candidate_path(cand)
+            weights[cand] = max(weights.get(cand, 0.0), score)
+
+    # Hop 2
+    hop1_sorted = sorted(weights.keys(), key=lambda p: (-weights[p], p))[:hop1_limit]
+    for h1_file in hop1_sorted:
+        h1_weight = weights[h1_file]
+        h2_candidates = _direct_import_candidates_for_seed(base, h1_file, eligible, repo_tools)
+        for h2_cand in h2_candidates:
+            if h2_cand in seeds_set:
+                continue
+            h2_score = _score_candidate_path(h2_cand) * h1_weight * decay
+            weights[h2_cand] = max(weights.get(h2_cand, 0.0), h2_score)
+
+    ranked = sorted(weights.items(), key=lambda item: (-item[1], item[0]))
+    return ranked[:limit]
+
+
+def two_hop_related_files(
+    root: Path,
+    seeds: list[str],
+    eligible: set[str],
+    repo_tools: Any,
+    *,
+    limit: int = 64,
+    hop1_limit: int = 32,
+    decay: float = 0.5,
+) -> list[str]:
+    """Resolve 2-hop local imports, returning ranked unique file paths."""
+    weighted = two_hop_weighted_files(
+        root, seeds, eligible, repo_tools, limit=limit, hop1_limit=hop1_limit, decay=decay
+    )
+    return [p for p, _ in weighted]

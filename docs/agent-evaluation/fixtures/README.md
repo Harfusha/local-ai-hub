@@ -1,6 +1,6 @@
 # Synthetic lookup fixtures
 
-Fixture revision: `eval-fixtures-v5`.
+Fixture revision: `eval-fixtures-v7`.
 
 - `alpha/`: contains same-name symbols, one direct Python caller, a 218-line config file, API-to-storage flow, a stale HubClient example, and a PHP file for lexical coverage limits.
 - `beta/`: separate importer project expecting `createdAt`, while alpha export writes `created_at`.
@@ -21,7 +21,12 @@ Fixture revision: `eval-fixtures-v5`.
 - `case-093/`: real two-branch export conflict; `prepare_export.py` seeds UTF-8 versus atomic-write changes. Its `CHECKPOINT.md` is simulated; do not claim authentic interruption/resumption from it.
 - `case-095/`: blind writer fixture with a hidden oracle; fault injection before replace checks preservation of original bytes and temporary-file cleanup.
 - `case-098/`: isolated token-protected Hub harness for scoped coordination, paginated task-context artifacts, and tokenless dashboard checks; see its README for startup and cleanup requirements.
+- `case-102/`: disposable unknown-outcome adapter with a persistent mutation counter and independent read-only action; run only outside Git checkouts.
+- `case-103/`: seeds an untrusted malformed receipt artifact only inside a prepared case 098 sandbox; it never writes a receipt or completes a task.
+- `case-105/`: two-chat disposable task revision race; synthetic candidate is never a broker receipt, and the adapter cannot complete a task.
 
 Lookup trees are inert synthetic source. Runnable case harnesses may require dependencies or a Hub process; follow their per-case README and keep all state outside production. Use each lookup folder as the explicit read-only root for cases 011–015, 017, and 018. Case 016 needs a staged old-index/current-source transition that this fixture alone does not provide. Never use these trees as production Hub state.
+
+Revision 6 adds the case-102 local fault adapter; it keeps a persistent counter in a disposable sandbox and rejects Git roots and symlinked counter state. Revision 7 adds the case-105 revision-race adapter for two isolated chats.
 
 Revision 2 corrected the synthetic path normalizer to replace a single Windows separator character. Revision 3 adds the HubClient symbol needed by case 014. Revision 4 adds the case-038 destructive-command manifest and sibling sentinel plus the case-035 bounded log generator. Revision 5 updates the case-098 harness with root-locked `context_compile` and artifact paging; its CLI preserves the explicit terminal `next_offset: null`.

@@ -93,14 +93,14 @@ def test_16gb_nvidia_profiles_bound_parallelism_and_admit_cuda_retrieval(profile
 
     assert overrides["scheduler"]["max_parallel"] == 2
     assert overrides["ollama"]["num_parallel"] == 2
-    assert overrides["ollama"]["kv_cache_type"] == "q8_0"
-    assert overrides["llama_cpp"]["cache_type_k"] == "q8_0"
-    assert overrides["llama_cpp"]["cache_type_v"] == "q8_0"
+    assert overrides["ollama"]["kv_cache_type"] == ("q4_0" if profile == "high" else "q8_0")
+    assert overrides["llama_cpp"]["cache_type_k"] == ("q4_0" if profile == "high" else "q8_0")
+    assert overrides["llama_cpp"]["cache_type_v"] == ("q4_0" if profile == "high" else "q8_0")
     assert overrides["models"]["embedding_device"] == "cuda"
     assert overrides["models"]["reranker_device"] == "cuda"
     assert overrides["model_execution"]["smart"]["context_tokens"] == 65_536
     assert overrides["model_execution"]["smart"]["parallel"] == 1
-    retired_models = {"qwen3.5:4b-q4_K_M", "gemma4:12b", "qwen2.5-coder:14b"}
+    retired_models = {"qwen3.5:4b-q4_K_M", "gemma4:12b"}
     assert retired_models.isdisjoint(overrides["models"].values())
 
 

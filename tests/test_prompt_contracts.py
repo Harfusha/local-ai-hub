@@ -31,7 +31,7 @@ def test_retired_model_tags_are_not_in_the_prompt_capability_registry():
     assert "qwen3.5:4b-nvfp4" in supported
     assert "qwen3.5:4b-q4_K_M" not in supported
     assert "gemma4:12b" not in supported
-    assert "qwen2.5-coder:14b" not in supported
+    assert "qwen2.5-coder:14b" in supported
 
 
 def test_heavy_model_names_preserve_security_and_write_boundaries():

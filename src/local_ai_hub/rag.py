@@ -1011,10 +1011,23 @@ class RAGStore:
                                 if len(sub) <= size:
                                     chunks.append(sub)
                                 else:
-                                    chunks.extend(self._text_chunks(sub, size, overlap))
+                                    sub_chunks = self._text_chunks(sub, size, overlap)
+                                    header_prefix = f"# [Enclosing: class {node.name} -> def {item.name}]\n"
+                                    for idx, sc in enumerate(sub_chunks):
+                                        if idx > 0 and header_prefix.strip() not in sc:
+                                            sc = f"{header_prefix}{sc}"
+                                        chunks.append(sc)
                     else:
                         mark_covered(node)
-                        chunks.extend(self._text_chunks(full_chunk, size, overlap))
+                        fn_sig = "".join(lines[node.lineno - 1 : (node.body[0].lineno - 1 if getattr(node, "body", None) else node.end_lineno)]).strip()
+                        if not fn_sig:
+                            fn_sig = f"def {getattr(node, 'name', 'function')}"
+                        header_prefix = f"# [Enclosing: {fn_sig}]\n"
+                        sub_chunks = self._text_chunks(full_chunk, size, overlap)
+                        for idx, sc in enumerate(sub_chunks):
+                            if idx > 0 and header_prefix.strip() not in sc:
+                                sc = f"{header_prefix}{sc}"
+                            chunks.append(sc)
 
         # Definitions are not the whole module: retain constants, docstrings,
         # decorators, top-level statements and non-method class members too.

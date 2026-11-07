@@ -44,6 +44,10 @@ _CAPABILITIES = {
         "qwen3.5:4b-nvfp4", "smart", ("single_file_explain", "bounded_review", "test_plan", "simple_patch_plan", "compare"),
         ("architecture", "security_decision", "high_risk_migration", "apply_changes", "final_verification"),
     ),
+    "minicpm-v:8b": ModelCapability(
+        "minicpm-v:8b", "vision", ("visual_review", "visual_issue_list", "accessibility_observation", "extract"),
+        ("source_only_reasoning", "security_decision", "apply_changes", "final_verification"),
+    ),
     "qwen3-vl:4b": ModelCapability(
         "qwen3-vl:4b", "vision", ("visual_review", "visual_issue_list", "accessibility_observation", "extract"),
         ("source_only_reasoning", "security_decision", "apply_changes", "final_verification"),
@@ -51,6 +55,22 @@ _CAPABILITIES = {
     "qwen3.5:9b": ModelCapability(
         "qwen3.5:9b", "heavy", ("bounded_review", "root_cause", "cross_file_reasoning", "patch_plan", "visual_review", "compare"),
         ("apply_changes", "security_decision", "final_verification"),
+    ),
+    "qwen2.5-coder:14b": ModelCapability(
+        "qwen2.5-coder:14b", "heavy", ("bounded_review", "root_cause", "cross_file_reasoning", "test_plan", "patch_plan", "compare"),
+        ("security_decision", "apply_changes", "final_verification"),
+    ),
+    "qwen2.5-coder:32b": ModelCapability(
+        "qwen2.5-coder:32b", "heavy", ("bounded_review", "root_cause", "cross_file_reasoning", "test_plan", "patch_plan", "compare"),
+        ("security_decision", "apply_changes", "final_verification"),
+    ),
+    "deepseek-r1:14b": ModelCapability(
+        "deepseek-r1:14b", "reasoning", ("root_cause", "cross_file_reasoning", "test_plan", "compare"),
+        ("apply_changes", "security_decision", "final_verification"),
+    ),
+    "mistral-nemo:12b": ModelCapability(
+        "mistral-nemo:12b", "smart", ("single_file_explain", "bounded_review", "test_plan", "simple_patch_plan", "compare"),
+        ("architecture", "security_decision", "high_risk_migration", "apply_changes"),
     ),
 }
 
@@ -88,7 +108,7 @@ def capability_for(model: str, *, role: str = "") -> ModelCapability:
         return known
     if "vl" in normalized or str(role).lower() == "vision":
         return ModelCapability(model, "vision", ("visual_review", "visual_issue_list", "extract"), ("source_only_reasoning", "security_decision", "apply_changes", "final_verification"))
-    if any(size in normalized for size in ("9b", "13b", "14b", "32b", "70b", "72b")):
+    if "deepseek-r1" in normalized or any(size in normalized for size in ("9b", "12b", "13b", "14b", "32b", "70b", "72b")):
         return ModelCapability(model, "heavy", ("bounded_review", "root_cause", "cross_file_reasoning", "patch_plan", "compare"), ("security_decision", "apply_changes", "final_verification"))
     if "7b" in normalized:
         return _CAPABILITIES["qwen2.5-coder:7b"]

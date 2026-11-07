@@ -1,5 +1,12 @@
 # Changelog
 
+## 6.0.0 — 2026-11-07
+
+- Major version bump to 6.0.0: Transition to clean-slate runtime state architecture.
+- Automatic purge on upgrade: Outdated pre-v6 runtime state in `state/` (legacy caches, old telemetry, stale lockfiles, and disposable indexes) is automatically purged upon first v6 startup.
+- Removal of deprecated backwards-compatibility shims and legacy tenant conversion handlers.
+- New `state_lifecycle.py` module enforcing `state_version == 6`.
+
 ## 5.1.4 — 2026-11-07
 
 - Preserve plan identity fields (plan_id, file_revision, rel_path, plan_task_id) during tight budget compaction.

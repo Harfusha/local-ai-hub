@@ -639,6 +639,12 @@ class DeterministicEngine:
               PRIMARY KEY(content_hash,analyzer_version,filename));
             CREATE INDEX IF NOT EXISTS idx_manifest_blobs_updated ON manifest_blobs(updated_at);
 
+            CREATE TABLE IF NOT EXISTS unreferenced_symbols(
+              root TEXT NOT NULL, path TEXT NOT NULL, name TEXT NOT NULL,
+              kind TEXT NOT NULL, line INTEGER NOT NULL DEFAULT 0, updated_at REAL NOT NULL,
+              PRIMARY KEY(root, path, name));
+            CREATE INDEX IF NOT EXISTS idx_unref_sym_root ON unreferenced_symbols(root);
+
             CREATE TABLE IF NOT EXISTS test_source_links(
               root TEXT NOT NULL, source_path TEXT NOT NULL, test_path TEXT NOT NULL,
               confidence REAL NOT NULL DEFAULT 1.0, updated_at REAL NOT NULL,
@@ -653,7 +659,7 @@ class DeterministicEngine:
         except sqlite3.OperationalError:
             pass
         con.execute("CREATE TABLE IF NOT EXISTS _det_batch_active(root TEXT PRIMARY KEY)")
-        initialize_row_counts(con, ("files", "facts", "dependencies", "scripts"))
+        initialize_row_counts(con, ("files", "facts", "dependencies", "scripts", "unreferenced_symbols"))
         # Source writes from any SQLite connection must invalidate both cache tiers,
         # including raw external writes that do not call _bump_generation().
         had_invalidation_triggers = con.execute(
@@ -3929,6 +3935,47 @@ class DeterministicEngine:
             "dead_symbols": dead,
         }
 
+    def precompute_dead_code(self, root: str, limit: int = 500) -> dict[str, Any]:
+        """Precompute unreferenced symbols across the repository and persist them."""
+        resolved = self._root(root)
+        dead_info = self.detect_dead_code(resolved, limit=limit)
+        items = dead_info.get("dead_symbols", [])
+        now = time.time()
+        with self._lock, closing(self._connect()) as con:
+            con.execute("DELETE FROM unreferenced_symbols WHERE root=?", (resolved,))
+            if items:
+                con.executemany(
+                    """INSERT OR REPLACE INTO unreferenced_symbols(root, path, name, kind, line, updated_at)
+                       VALUES (?, ?, ?, ?, ?, ?)""",
+                    [(resolved, str(i["path"]), str(i["name"]), str(i["kind"]), int(i.get("line", 0)), now) for i in items],
+                )
+            con.commit()
+        return {"success": True, "root": resolved, "count": len(items), "symbols": items}
+
+    def get_unreferenced_symbols(self, root: str, limit: int = 50) -> list[dict[str, Any]]:
+        """Retrieve precomputed unreferenced symbols instantly from cache."""
+        resolved = self._root(root)
+        with self._lock, closing(self._connect()) as con:
+            rows = con.execute(
+                """SELECT path, name, kind, line, updated_at
+                   FROM unreferenced_symbols
+                   WHERE root=?
+                   ORDER BY path, line
+                   LIMIT ?""",
+                (resolved, limit),
+            ).fetchall()
+        return [
+            {
+                "path": str(r[0]),
+                "name": str(r[1]),
+                "kind": str(r[2]),
+                "line": int(r[3]),
+                "updated_at": float(r[4]),
+                "reason": "0 references found across repository (precomputed)",
+            }
+            for r in rows
+        ]
+
     KNOWN_CVE_SIGNATURES = {
         "newtonsoft.json": ("13.0.1", "CVE-2024-21907 (Improper Handling of Highly Nested Data)"),
         "log4net": ("2.0.10", "CVE-2018-1285 (XML External Entity Injection)"),
@@ -7100,6 +7147,10 @@ def test_{sym}_regression_edge_cases():
 
     def find_dead_code(self, root: str, limit: int = 50) -> dict[str, Any]:
         """Detect potentially dead/uncalled functions and classes in repository."""
+        cached = self.get_unreferenced_symbols(root, limit=limit)
+        if cached:
+            return {"success": True, "root": self._root(root), "dead_code": cached}
+
         if self.code_index is not None:
             try:
                 st = self.code_index.status(root)

@@ -370,7 +370,7 @@ PROFILE_OVERRIDES: dict[str, dict[str, Any]] = {
             "general": "qwen2.5-coder:7b",
             "vision": "qwen3-vl:4b",
         },
-        "features": {"reranker": True},
+        "features": {"reranker": True, "search_summaries": False, "vision": False},
         "scheduler": {"max_parallel": 1, "max_loaded_models": 1},
         "ollama": {
             "num_parallel": 1,
@@ -391,6 +391,7 @@ PROFILE_OVERRIDES: dict[str, dict[str, Any]] = {
             "smart": {"parallel": 1, "context_tokens": 16384, "max_context_tokens": 24576, "max_prompt_tokens": 14000},
         },
         "preprocessing": {
+            "model": "qwen2.5-coder:0.5b",
             "cpu_workers": 1,
             "cpu_worker_sleep_seconds": 0.20,
             "idle_grace_seconds": 30.0,
@@ -449,7 +450,9 @@ PROFILE_OVERRIDES: dict[str, dict[str, Any]] = {
                 "qwen-critic": {"model": "qwen2.5-coder:7b"},
             }
         },
+        "features": {"reranker": True, "search_summaries": False, "vision": False},
         "preprocessing": {
+            "model": "qwen2.5-coder:1.5b",
             "idle_grace_seconds": 30.0,
             "max_preprocessing_projects": 1,
             "cpu_workers": 1,
@@ -468,6 +471,8 @@ PROFILE_OVERRIDES: dict[str, dict[str, Any]] = {
         },
     },
     "low": {
+        "features": {"reranker": True, "search_summaries": False, "vision": False},
+        "preprocessing": {"model": "qwen2.5-coder:1.5b"},
         "models": {
             "background_code": "qwen2.5-coder:3b",
             "fast_code": "qwen2.5-coder:3b",
@@ -492,13 +497,15 @@ PROFILE_OVERRIDES: dict[str, dict[str, Any]] = {
         }},
     },
     "balanced": {
+        "features": {"reranker": True, "search_summaries": True, "vision": True},
+        "preprocessing": {"model": "qwen2.5-coder:1.5b"},
         "models": {
             "background_code": "qwen2.5-coder:3b",
             "fast_code": "qwen2.5-coder:3b",
             "heavy_code": "qwen2.5-coder:7b",
             "reasoning": "qwen3.5:9b",
             "general": "qwen2.5-coder:7b",
-            "vision": "qwen3.5:9b",
+            "vision": "minicpm-v:8b",
         },
         "scheduler": {"max_parallel": 2},
         "ollama": {"num_parallel": 2, "kv_cache_type": "q8_0"},
@@ -512,11 +519,13 @@ PROFILE_OVERRIDES: dict[str, dict[str, Any]] = {
             "heavy_code": "qwen2.5-coder:7b",
             "reasoning": "qwen3.5:9b",
             "general": "qwen3.5:9b",
-            "vision": "qwen3.5:9b",
+            "vision": "minicpm-v:8b",
         },
+        "features": {"reranker": True, "search_summaries": True, "vision": True, "local_semantic_analysis": True, "cross_file_design": True},
+        "preprocessing": {"model": "qwen2.5-coder:3b"},
         "scheduler": {"max_parallel": 2},
-        "ollama": {"num_parallel": 2, "kv_cache_type": "q8_0"},
-        "llama_cpp": {"cache_type_k": "q8_0", "cache_type_v": "q8_0"},
+        "ollama": {"num_parallel": 2, "kv_cache_type": "q4_0"},
+        "llama_cpp": {"cache_type_k": "q4_0", "cache_type_v": "q4_0"},
         "background_gpu": {"parallel": 4, "file_batch_size": 8, "module_batch_size": 6},
         "cpu_retrieval": {"embedding_batch_size": 20, "reranker_batch_size": 6},
         "model_execution": {
@@ -528,13 +537,15 @@ PROFILE_OVERRIDES: dict[str, dict[str, Any]] = {
     },
     "max": {
         "models": {
-            "background_code": "qwen2.5-coder:3b",
-            "fast_code": "qwen2.5-coder:3b",
-            "heavy_code": "qwen3.5:9b",
+            "background_code": "qwen2.5-coder:7b",
+            "fast_code": "qwen2.5-coder:7b",
+            "heavy_code": "qwen2.5-coder:32b",
             "reasoning": "qwen3.5:9b",
             "general": "qwen3.5:9b",
-            "vision": "qwen3.5:9b",
+            "vision": "minicpm-v:8b",
         },
+        "features": {"reranker": True, "search_summaries": True, "vision": True, "local_semantic_analysis": True, "cross_file_design": True, "code_generation": True, "automation": True},
+        "preprocessing": {"model": "qwen2.5-coder:7b"},
         "scheduler": {"max_parallel": 2},
         "ollama": {"num_parallel": 2, "kv_cache_type": "q8_0"},
         "llama_cpp": {"cache_type_k": "q8_0", "cache_type_v": "q8_0"},
@@ -610,7 +621,13 @@ def profile_overrides(profile_name: str, detected: dict[str, Any] | None = None)
         default=0,
     )
     if profile_name in {"high", "max"} and nvidia_vram >= 15 * 1024:
-        result = _deep_merge_dict(result, {"models": {"embedding_device": "cuda", "reranker_device": "cuda"}})
+        result = _deep_merge_dict(result, {
+            "models": {
+                "heavy_code": "qwen2.5-coder:14b",
+                "embedding_device": "cuda",
+                "reranker_device": "cuda",
+            }
+        })
     if has_npu:
         # NPU takes priority in ANY profile: offload embeddings and reranker to dedicated NPU hardware,
         # freeing GPU VRAM and CPU cores for LLM inference.

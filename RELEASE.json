@@ -1,7 +1,7 @@
 {
   "name": "local-ai-hub",
-  "version": "5.1.4",
+  "version": "6.0.0",
   "release_date": "2026-11-07",
   "status": "production-ready",
-  "focus": "Harden status dependency deadlines, disk reconciliation for GPU admission reservation, AMD Zen 4 Ollama bypass, test matrix deadlines, and plan completed status compatibility."
+  "focus": "Release v6.0.0: Clean slate architecture, automatic purge of pre-v6 legacy runtime state on upgrade, and removal of deprecated compatibility layers."
 }

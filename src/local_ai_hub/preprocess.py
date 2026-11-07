@@ -344,6 +344,9 @@ class ProjectPreprocessor:
         # Prune the per-root code index only when source inventory or path policy
         # changes; reuse a revision-fenced allowlist across bounded parse batches.
         self._code_index_pruned_generations: set[tuple[Any, ...]] = set()
+        from .preprocess_write_actor import PreprocessWriteActor
+        self._write_actor = PreprocessWriteActor(self.db_path)
+        self._write_actor.start()
         self._deterministic_pruned_generations: set[tuple[str, int]] = set()
         self._missing_refs_checked_generations: set[tuple[str, int]] = set()
         self._code_index_allowed_cache_lock = threading.Lock()
@@ -444,6 +447,14 @@ class ProjectPreprocessor:
         return is_busy_error(exc)
 
     def _write_retry(self, operation: Any) -> Any:
+        actor = getattr(self, "_write_actor", None)
+        if actor is not None and actor.is_alive and not actor.is_current_thread():
+            try:
+                return actor.submit(operation)
+            except Exception as actor_exc:
+                if not is_busy_error(actor_exc):
+                    raise
+
         def attempt() -> Any:
             with self._db_lock, closing(self._connect()) as con:
                 con.execute("BEGIN IMMEDIATE")
@@ -1053,7 +1064,89 @@ class ProjectPreprocessor:
                     "mtime_ns": int(stat.st_mtime_ns), "extension": candidate.suffix.lower(),
                 })
 
-    def notify_path_changed(self, changed_path: str) -> bool:
+    def fast_update_file(
+        self,
+        root: str,
+        rel_path: str,
+        content: str | None = None,
+    ) -> dict[str, Any]:
+        """Sub-50ms instant fast-path for editor save events.
+
+        Updates RAM ingest cache, file_refs hash/mtime, and deterministic AST facts
+        immediately for a single file without resetting project phase to inventory
+        nor running the full 13-phase cycle.
+        """
+        import hashlib
+        t0 = time.monotonic()
+        resolved = self._root(root)
+        clean_rel = rel_path.replace("\\", "/").lstrip("/")
+        full_path = Path(resolved) / clean_rel
+
+        if content is not None:
+            text = content
+            stat_size = len(text.encode("utf-8"))
+            stat_mtime = int(time.time() * 1e9)
+        else:
+            try:
+                st = full_path.stat()
+                stat_size = int(st.st_size)
+                stat_mtime = int(st.st_mtime_ns)
+                text = full_path.read_text(encoding="utf-8", errors="replace")
+            except Exception as read_exc:
+                return {"success": False, "error": str(read_exc)}
+
+        new_hash = hashlib.sha256(text.encode("utf-8", errors="replace")).hexdigest()
+
+        if hasattr(self, "ingest_cache") and self.ingest_cache is not None:
+            self.ingest_cache.put(clean_rel, text, new_hash)
+
+        now = time.time()
+        def _update_db(con: sqlite3.Connection) -> None:
+            gen_row = con.execute("SELECT generation FROM projects WHERE root=?", (resolved,)).fetchone()
+            gen = int(gen_row[0]) if gen_row else 1
+            con.execute(
+                """INSERT INTO file_refs (root, path, size, mtime_ns, content_hash, needs_hash, generation, updated_at)
+                   VALUES (?, ?, ?, ?, ?, 0, ?, ?)
+                   ON CONFLICT(root, path) DO UPDATE SET
+                     size=excluded.size,
+                     mtime_ns=excluded.mtime_ns,
+                     content_hash=excluded.content_hash,
+                     needs_hash=0,
+                     generation=excluded.generation,
+                     updated_at=excluded.updated_at""",
+                (resolved, clean_rel, stat_size, stat_mtime, new_hash, gen, now),
+            )
+
+        self._write_retry(_update_db)
+
+        det_updated = False
+        if self.deterministic is not None and hasattr(self.deterministic, "update_file"):
+            try:
+                det_res = self.deterministic.update_file(resolved, clean_rel, new_hash)
+                det_updated = bool(det_res.get("success", False))
+            except Exception as det_exc:
+                logger.debug("Fast-path deterministic update failed: %s", det_exc)
+
+        code_idx_updated = False
+        if self.code_index is not None and hasattr(self.code_index, "update_file"):
+            try:
+                ci_res = self.code_index.update_file(resolved, clean_rel)
+                code_idx_updated = bool(ci_res.get("success", False))
+            except Exception:
+                pass
+
+        elapsed_ms = round((time.monotonic() - t0) * 1000, 2)
+        return {
+            "success": True,
+            "root": resolved,
+            "path": clean_rel,
+            "content_hash": new_hash,
+            "deterministic_updated": det_updated,
+            "code_index_updated": code_idx_updated,
+            "elapsed_ms": elapsed_ms,
+        }
+
+    def notify_path_changed(self, changed_path: str, *, fast_path: bool = False) -> bool:
         """Coalesce watcher events and queue only the owning registered project."""
         if not self._background_work_allowed():
             return False
@@ -1068,6 +1161,7 @@ class ProjectPreprocessor:
             return False
 
         matched_roots: list[str] = []
+        matched_pairs: list[tuple[str, str]] = []
         matched_any = False
         for row in rows:
             root_path = Path(str(row[0])).resolve(strict=False)
@@ -1076,6 +1170,7 @@ class ProjectPreprocessor:
                 continue
             root = str(root_path)
             matched_any = True
+            matched_pairs.append((root, rel))
             with self._dirty_lock:
                 paths = self._dirty_paths.setdefault(root, set())
                 first = not paths
@@ -1094,6 +1189,14 @@ class ProjectPreprocessor:
             }
             if first:
                 matched_roots.append(root)
+
+        if fast_path:
+            for r, rel in matched_pairs:
+                try:
+                    self.fast_update_file(r, rel)
+                except Exception as fast_exc:
+                    logger.debug("Fast path update error for %s: %s", rel, fast_exc)
+            return bool(matched_pairs)
 
         for root in matched_roots:
             try:
@@ -3653,6 +3756,11 @@ class ProjectPreprocessor:
                             con.commit()
                 except Exception as exc:
                     logger.debug("Centrality calculation failed: %s", exc)
+            if hasattr(self.deterministic, "precompute_dead_code"):
+                try:
+                    self.deterministic.precompute_dead_code(root)
+                except Exception as exc:
+                    logger.debug("Dead code precompute failed: %s", exc)
             self._set_project(root, phase="serena")
             return True
 
@@ -3869,9 +3977,10 @@ class ProjectPreprocessor:
         return self.candidate_paths(root, query, limit, include_semantic=False)
 
     def _content_card_key(self, content_hash: str) -> str:
+        bg_model = str(self.config.get("preprocessing", {}).get("model") or self.config.get("models", {}).get("background_code", "qwen2.5-coder:0.5b"))
         return stable_hash({
             "app_version": __version__, "sha": content_hash,
-                    "model": self.config.get("models", {}).get("background_code", "qwen2.5-coder:0.5b"),
+            "model": bg_model,
         })
 
     def _learned_priority_paths(self, root: str) -> tuple[str, ...]:
@@ -4123,7 +4232,7 @@ class ProjectPreprocessor:
                 self._set_project(root, phase="modules", force_refresh=0)
             return True
 
-        background_model = str(self.config.get("models", {}).get("background_code", "qwen2.5-coder:0.5b"))
+        background_model = str(self.config.get("preprocessing", {}).get("model") or self.config.get("models", {}).get("background_code", "qwen2.5-coder:0.5b"))
         pending_tasks: list[dict[str, Any]] = []
         pending_meta: list[tuple[sqlite3.Row, str]] = []
         progressed = False
@@ -4314,7 +4423,7 @@ class ProjectPreprocessor:
 
         bg_cfg = self.config.get("background_gpu", {})
         batch_size = max(1, int(bg_cfg.get("module_batch_size", bg_cfg.get("parallel", 4))))
-        background_model = str(self.config.get("models", {}).get("background_code", "qwen2.5-coder:0.5b"))
+        background_model = str(self.config.get("preprocessing", {}).get("model") or self.config.get("models", {}).get("background_code", "qwen2.5-coder:0.5b"))
         pending_tasks: list[dict[str, Any]] = []
         pending_meta: list[tuple[str, str]] = []
         progressed = False
@@ -4943,3 +5052,5 @@ class ProjectPreprocessor:
             if t and t.is_alive() and threading.current_thread() is not t:
                 t.join(timeout=3.0)
         self._cpu_pool.shutdown(wait=False, cancel_futures=True)
+        if getattr(self, "_write_actor", None) is not None:
+            self._write_actor.stop()

@@ -222,7 +222,7 @@ module_batch_size = 4
 [scheduler]
 # Balanced baseline; the hardware profile overlays this before explicit user values.
 # Optional conservative per-model VRAM upper bounds for cold-start admission.
-model_vram_estimates_bytes = {"qwen3.5:4b-nvfp4" = 6442450944, "qwen3.5:9b" = 6096900060, "qwen3.5:9b-nvfp4" = 6096900060, "qwen2.5-coder:7b" = 6853448695}
+model_vram_estimates_bytes = {"qwen3.5:4b-nvfp4" = 6442450944, "qwen3.5:9b" = 6096900060, "qwen3.5:9b-nvfp4" = 6096900060, "qwen2.5-coder:7b" = 6853448695, "minicpm-v:8b" = 6442450944}
 max_parallel = 2
 max_loaded_models = 1
 max_queue = 256
