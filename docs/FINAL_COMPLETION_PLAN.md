@@ -1,14 +1,14 @@
 # Finální plán dokončení projektu Local AI Hub
 
 **Datum:** 2026-11-07  
-**Verze:** 5.1.4 (Commit HEAD: `f0485b07` / tag `v5.1.4`)  
+**Verze:** 6.0.0  
 **Účel:** Jediný autoritativní realizační plán pro navazujícího agenta. Nahrazuje všechny původní plány, specifikace, audity a pracovní záznamy, jejichž platný obsah byl konsolidován do trvalé dokumentace.
 
 ---
 
 ## 1. Souhrn stavu projektu a výchozí pozice
 
-Projekt Local AI Hub se nachází ve verzi **5.1.4** s plně funkčním produkčním během (`hub_online: true`, `ollama_online: true`).
+Projekt Local AI Hub se nachází ve verzi **6.0.0** s plně funkčním produkčním během (`hub_online: true`, `ollama_online: true`).
 Při generální inventuře a auditu k 2026-11-07 bylo analyzováno celkem **444 konkrétních požadavků** napříč 112 zdrojovými dokumenty:
 - **410 požadavků (92,3 %):** Dokončeno a ověřeno (A) technickou evidencí v kódu, testech a běžícím runtime.
 - **31 požadavků (7,0 %):** Nahrazeno nebo zrušeno (D) doložitelnými architektonickými rozhodnutími operátora (single-user no-tenancy, unredacted local trace, on-demand model routing, Serena max 2 sessions).

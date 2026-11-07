@@ -22,6 +22,9 @@ SAFE_DIR_NAMES_TO_REMOVE = {
     "htmlcov",
     "build",
     "dist",
+    "migration-backups",
+    "backups",
+    "scratch",
 }
 
 SAFE_FILE_PATTERNS_TO_REMOVE = {
@@ -29,6 +32,8 @@ SAFE_FILE_PATTERNS_TO_REMOVE = {
     "*.pyo",
     ".coverage*",
     "*.local-ai-hub-backup-*",
+    "ollama_*.log",
+    "raw_ci_*.log",
 }
 
 
