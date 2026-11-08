@@ -18,6 +18,73 @@ def canonical_search_mode(value: Any) -> str | None:
     return value
 
 
+def _is_version_or_number(token: str) -> bool:
+    clean = token.strip(".,!?;()[]{}<>\"'`")
+    return bool(re.match(r"^v?\d+(\.\d+)*[a-zA-Z0-9_-]*$", clean))
+
+
+def _is_file_path(token: str) -> bool:
+    clean = token.strip(".,!?;()[]{}<>\"'`")
+    if "/" in clean or "\\" in clean:
+        return True
+    return bool(re.match(r"^[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]{1,8}$", clean))
+
+
+def _is_code_symbol(token: str) -> bool:
+    clean = token.strip(".,!?;()[]{}<>\"'`")
+    if not clean or _is_version_or_number(clean) or _is_file_path(clean):
+        return False
+    if "_" in clean or "::" in clean:
+        return True
+    if any(op in clean for op in ("++", "#", "$", "->")):
+        return True
+    if re.search(r"[a-z][A-Z]", clean):
+        return True
+    return False
+
+
+def classify_query(query: str) -> str:
+    """Classify a search query into exact_symbol, file_path, natural_language, or mixed."""
+    if type(query) is not str:
+        return "natural_language"
+    value = query.strip()
+    if not value or len(value) > 256:
+        return "natural_language"
+    tokens = value.split()
+    if not tokens:
+        return "natural_language"
+
+    if len(tokens) == 1:
+        tok = tokens[0]
+        if _is_file_path(tok):
+            return "file_path"
+        if _is_code_symbol(tok):
+            return "exact_symbol"
+        return "natural_language"
+
+    has_symbols = False
+    has_paths = False
+    has_prose = False
+    for tok in tokens:
+        clean = tok.strip(".,!?;()[]{}<>\"'`")
+        if not clean:
+            continue
+        if _is_code_symbol(clean):
+            has_symbols = True
+        elif _is_file_path(clean) or _is_version_or_number(clean):
+            has_paths = True
+        else:
+            has_prose = True
+
+    if (has_symbols or has_paths) and has_prose:
+        return "mixed"
+    if has_symbols and not has_prose:
+        return "exact_symbol"
+    if has_paths and not has_prose:
+        return "file_path"
+    return "natural_language"
+
+
 def prefers_lexical_precision(query: str) -> bool:
     """Recognize symbol-bearing queries where exact hits must lead."""
     if type(query) is not str:
@@ -26,12 +93,8 @@ def prefers_lexical_precision(query: str) -> bool:
     if not value or len(value) > 256:
         return False
     for raw_token in value.split():
-        token = raw_token.strip(".,!?;()[]{}<>\"'`")
-        if not token:
-            continue
-        if any(ch in token for ch in ("_", "::", "/", "\\", ".", "+", "#", "$", ":")):
-            return True
-        if re.search(r"[a-z][A-Z]", token):
+        clean = raw_token.strip(".,!?;()[]{}<>\"'`")
+        if _is_code_symbol(clean):
             return True
     return False
 
@@ -46,11 +109,7 @@ def lexical_precision_query(query: str) -> str:
     anchors: list[str] = []
     for raw_token in value.split():
         token = raw_token.strip(".,!?;()[]{}<>\"'`")
-        if not token:
-            continue
-        if any(ch in token for ch in ("_", "::", "/", "\\", ".", "+", "#", "$", ":")):
-            anchors.append(token)
-        elif re.search(r"[a-z][A-Z]", token):
+        if _is_code_symbol(token):
             anchors.append(token)
     unique_anchors = list(dict.fromkeys(anchors))
     return unique_anchors[0] if len(unique_anchors) == 1 else value

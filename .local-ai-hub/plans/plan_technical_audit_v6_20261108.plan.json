@@ -122,8 +122,8 @@
       "kind": "code",
       "next_action": "",
       "title": "P1-3: Zlepšit klasifikaci dotazů v search_modes",
-      "work_phase": "discovery",
-      "work_status": "planned"
+      "work_phase": "verification",
+      "work_status": "completed"
     },
     "task_p1_rag_lifecycle": {
       "acceptance_criteria": [
