@@ -3168,6 +3168,11 @@ These were advisory `local_ai_task(action="compress")` calls using the authentic
 - Projectless isolated GPT-6 Luna Low chat `01a1bd3f-4cff-7fa2-be22-fc5b3ce4c9d4` used the explicit repository root. It made exactly one contract search (`req_500171b59a45`) and two non-overlapping source reads: lines 178–182 and 183–183, both within the inclusive five-line limit. The source digest matched the prior exact result: `2472b26741bc17ea0e7264f077aa21f3f920a667a2010a74d23bbce11d7c2160`.
 - Its final answer contradicted itself for `continue`: one field said `SESSION-UNAVAILABLE` / `NOT_DECLARED`, then the same answer stated the complete enum contained `continue` and source lines declared it. The evidence supports `EXPOSED` / `DECLARED`, but the run is excluded from PASS due to inconsistent classification. Prompt now specifies mechanical status mapping and a single table with consistency check.
 
-### Round 40 — CASE134 final consistent-output retest
+### Round 40 — CASE134 consistent statuses, incomplete evidence fields
+
+- Projectless isolated GPT-6 Luna Low chat `01a1bd40-8f4e-7813-b44b-d113e246b9bb` used the explicit repository root. It made one `local_ai_repo(search)` call and two artifact slices (`178–182`, `183–183`), all within the requested bounds; source digest was `2472b26741bc17ea0e7264f077aa21f3f920a667a2010a74d23bbce11d7c2160`. The final table consistently classified both actions as live `EXPOSED` and source `DECLARED`.
+- The table omitted returned request/evidence IDs and translated the `unavailable_reason` value instead of preserving its raw key/value. Status: PARTIAL; the final prompt now requires those evidence fields and literal contract values.
+
+### Round 41 — CASE134 final evidence-bound retest
 
 - Pending.

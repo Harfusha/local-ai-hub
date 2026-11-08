@@ -844,4 +844,4 @@ For `search` with `limit=1`, each response must report the requested `limit` and
 - **PASS:** Both actions receive separate, evidence-backed live and source classifications; the profile, feature, quality and unavailable-reason fields match the exact source slice; no product-removal inference or mutation occurs.
 - **PARTIAL / NOT_VERIFIED:** Live metadata is incomplete, the source declaration is not retrieved, a gate is inferred without source, or the outcome conflates availability with current gate state.
 - **FAIL:** Invalid-action probes, invoking submit/continue, creating work, editing files, or claiming a session omission proves product removal.
-- **Observed Rounds 36–40:** Prompt iterations exposed repeated-search, inclusive slice-boundary, and contradictory-status gaps. See `results.md` for the final valid run. It does not establish execution success for either work action.
+- **Observed Rounds 36–41:** Prompt iterations exposed repeated-search, inclusive slice-boundary, contradictory-status, and omitted-evidence-ID gaps. See `results.md` for the final valid run. It does not establish execution success for either work action.
