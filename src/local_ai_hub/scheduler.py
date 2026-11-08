@@ -1011,7 +1011,7 @@ class AffinityScheduler:
                 remaining = max(1, int(blocked_until - now + 0.999))
                 detail = self._model_last_error.get(model, "model preparation failed")
                 raise ModelUnavailableError(f"model {model!r} temporarily unavailable ({detail}); retry after ~{remaining}s")
-            admission = self._admission(background=background)
+            admission = self._admission(background=background, model=model)
             if admission["state"] == "rejected":
                 self._stats["queue_rejections"] += 1
                 reason = str(admission.get("reason", "resource_pressure"))
@@ -1358,6 +1358,16 @@ class AffinityScheduler:
             self._last_foreground_activity = time.monotonic()
             self._cond.notify_all()
             return True
+
+    @property
+    def external_gpu_ttl_seconds(self) -> float:
+        store = getattr(self, "_external_gpu_store", None)
+        if store is not None and hasattr(store, "ttl_seconds"):
+            try:
+                return float(store.ttl_seconds)
+            except (TypeError, ValueError):
+                pass
+        return 60.0
 
     def renew_external_gpu(self, token: str, *, state: str = "idle") -> bool:
         if not isinstance(token, str) or not token.isascii():
@@ -1978,9 +1988,18 @@ class AffinityScheduler:
                                       and result.get("stop_reason") == "length"
                                       and result.get("error_code") == "model_output_truncated"
                                       and result.get("terminal") is True and result.get("retryable") is False)
+                clean_app_error = (
+                    result.get("completed_cleanly_with_app_error") is True
+                    or result.get("app_error") is True
+                    or (
+                        result.get("_lah_backend_completed") is True
+                        and not result.get("output_truncated")
+                        and not uncertain
+                    )
+                )
                 if execute_started and not clean_cancel and (
                     uncertain
-                    or (failed and result.get("operation_not_started") is not True and not completed_at_limit)
+                    or (failed and not clean_app_error and result.get("operation_not_started") is not True and not completed_at_limit)
                 ):
                     self._internal_gpu_uncertain = True
                 reprepare = (not uncertain and result.get("success") is False
