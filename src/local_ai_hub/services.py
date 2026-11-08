@@ -3455,7 +3455,7 @@ class LocalAIServices:
                 "search_mode": "hybrid", "result_source": "lexical_fallback",
                 "coverage_complete": False, "degraded": True,
                 "total_matches": None, "count_exact": False, "has_more": None,
-                "degradation_reason": rag_meta.get("degradation_reason", "rag_backend_degraded"),
+                "degradation_reason": rag_meta.get("degradation_reason") or rag_meta.get("fallback") or rag_meta.get("reason") or "rag_backend_degraded",
                 "index_state": rag_meta.get("index_state", "unknown"),
                 "index_coverage": rag_meta.get("index_coverage", "unknown_or_partial"),
                 "candidate_freshness": rag_meta.get("candidate_freshness", "unknown"),

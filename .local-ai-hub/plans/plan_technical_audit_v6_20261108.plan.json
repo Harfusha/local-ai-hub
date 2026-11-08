@@ -137,8 +137,8 @@
       "kind": "code",
       "next_action": "",
       "title": "P1-4: Stabilizovat RAG embedding space a GPU reservation lifecycle",
-      "work_phase": "discovery",
-      "work_status": "planned"
+      "work_phase": "verification",
+      "work_status": "completed"
     },
     "task_p2_modularize": {
       "acceptance_criteria": [

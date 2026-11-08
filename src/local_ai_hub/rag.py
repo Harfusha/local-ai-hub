@@ -3569,7 +3569,7 @@ class RAGStore:
                     or getattr(self.reranker, "device", None)
                     or ""
                 ).strip().lower()
-                if reranker_device and reranker_device not in {"unknown", "none", "auto"} and not reranker_device.startswith("cpu"):
+                if reranker_device and reranker_device not in {"unknown", "none"}:
                     try:
                         rr = self.reranker.rerank(
                             query,
