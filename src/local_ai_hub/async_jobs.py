@@ -76,6 +76,8 @@ class AsyncJobManager:
         self.result_ttl_seconds = max(60.0, float(cfg.get("result_ttl_seconds", 259200)))
         self.max_attempts = max(1, int(cfg.get("max_attempts", 2)))
         self.stats_max_items = max(1, min(256, int(cfg.get("stats_max_items", 32))))
+        self.max_workers = max(1, int(cfg.get("max_workers", 16)))
+        self.max_dispatch_workers = max(1, int(cfg.get("max_dispatch_workers", 4)))
         self.scheduler, self.artifacts, self.executor, self.debug_traces = scheduler, artifacts, executor, debug_traces
         self.task_store = task_store
         self.verification_store = verification_store
@@ -891,6 +893,24 @@ class AsyncJobManager:
                         remaining.append(process)
         return cleanup_confirmed
 
+    def _dispatch_next_queued(self) -> None:
+        if self._shutdown.is_set():
+            return
+        with self._lock:
+            if len(self._workers) >= self.max_workers:
+                return
+            try:
+                with closing(self._connect()) as con:
+                    now = time.time()
+                    row = con.execute(
+                        "SELECT job_id FROM async_jobs WHERE state='queued' AND cancel_requested=0 AND lease_until<=? AND dispatch_not_before<=? ORDER BY created_at ASC LIMIT 1",
+                        (now, now),
+                    ).fetchone()
+                    if row:
+                        self._dispatch_background(str(row[0]))
+            except Exception:
+                pass
+
     def _dispatch_background(self, job_id: str) -> None:
         """Start scheduler admission off the request thread."""
         def run() -> None:
@@ -899,11 +919,12 @@ class AsyncJobManager:
             finally:
                 with self._lock:
                     self._dispatchers.discard(threading.current_thread())
+                self._dispatch_next_queued()
 
-        worker = threading.Thread(target=run, name=f"async-dispatch-{job_id[:8]}", daemon=True)
         with self._lock:
-            if self._shutdown.is_set():
+            if self._shutdown.is_set() or len(self._dispatchers) >= self.max_dispatch_workers:
                 return
+            worker = threading.Thread(target=run, name=f"async-dispatch-{job_id[:8]}", daemon=True)
             self._dispatchers.add(worker)
         worker.start()
 
@@ -1020,6 +1041,9 @@ class AsyncJobManager:
     def _dispatch(self, job_id: str) -> None:
         if self._shutdown.is_set():
             return
+        with self._lock:
+            if len(self._workers) >= self.max_workers:
+                return
         with self._mode_transition_lock:
             self._cancel_jobs_blocked_by_mode(self._operational_mode_snapshot())
             with self._lock, closing(self._connect()) as con:
@@ -1060,11 +1084,12 @@ class AsyncJobManager:
                 finally:
                     with self._lock:
                         self._workers.discard(threading.current_thread())
+                    self._dispatch_next_queued()
 
-            worker = threading.Thread(target=run, name=f"async-job-{job_id[:8]}", daemon=True)
             with self._lock:
                 if self._shutdown.is_set():
                     return
+                worker = threading.Thread(target=run, name=f"async-job-{job_id[:8]}", daemon=True)
                 self._workers.add(worker)
             worker.start()
 
@@ -1244,10 +1269,47 @@ class AsyncJobManager:
             _JOB_ATTEMPT.reset(attempt_token)
             cleanup_confirmed = self._cleanup_processes(job_id, attempt=int(row["attempts"]) + 1)
         deferred_for_resource_release = False
+        artifact_id = ""
+        final = {}
         if type(result.get("success")) is not bool:
             result = {"success": False, "error": "async executor success must be an explicit boolean", "retryable": False}
         if result.get("success") and str(result.get("state", "")) in {"queued", "running"}:
             result = {"success": False, "error": "async executor returned non-terminal state", "retryable": True}
+
+        # N06 Phase 1: Pre-check ownership and store artifact outside DB write transaction
+        pre_artifact_id = ""
+        if result.get("success") is True:
+            is_valid_attempt = False
+            with self._lock, closing(self._connect()) as chk_con:
+                chk_owner = chk_con.execute(
+                    "SELECT state,attempts,lease_until,expires_at FROM async_jobs WHERE job_id=?",
+                    (job_id,),
+                ).fetchone()
+                chk_cancel = chk_con.execute("SELECT cancel_requested FROM async_jobs WHERE job_id=?", (job_id,)).fetchone()
+                now_chk = time.time()
+                if (
+                    chk_owner is not None
+                    and chk_owner[0] == "running"
+                    and int(chk_owner[1]) == int(row["attempts"]) + 1
+                    and float(chk_owner[2]) > now_chk
+                    and float(chk_owner[3]) > now_chk
+                    and not (chk_cancel and chk_cancel[0])
+                    and cleanup_confirmed
+                    and not result.get("cleanup_unconfirmed")
+                    and not result.get("outcome_unknown")
+                ):
+                    is_valid_attempt = True
+            if is_valid_attempt:
+                try:
+                    stored_id = self.artifacts.put(
+                        json_dumps(result, ensure_ascii=False, separators=(",", ":")),
+                        kind="async-job",
+                    )
+                    pre_artifact_id = str(stored_id or "").strip()
+                except Exception:
+                    pass
+
+        # N06 Phase 2: Short atomic SQLite update transaction
         with self._lock, closing(self._connect()) as con:
             # Hold the SQLite writer fence through validation and final persistence.
             # A process-local lock alone cannot exclude another manager instance.
@@ -1318,15 +1380,7 @@ class AsyncJobManager:
                 )
                 deferred_for_resource_release = True
             elif result.get("success") is True:
-                artifact_id = ""
-                try:
-                    stored_id = self.artifacts.put(
-                        json_dumps(result, ensure_ascii=False, separators=(",", ":")),
-                        kind="async-job",
-                    )
-                    artifact_id = str(stored_id or "").strip()
-                except Exception:
-                    pass
+                artifact_id = pre_artifact_id
                 now = time.time()
                 if now >= float(owner[3]):
                     return self._expire_owned_attempt(
@@ -1341,32 +1395,6 @@ class AsyncJobManager:
                     con.execute("UPDATE async_jobs SET state='done',result_json=?,artifact_id=?,lease_until=0,updated_at=? WHERE job_id=?", (json_dumps(result, ensure_ascii=False, separators=(",", ":")), artifact_id, time.time(), job_id))
                     self._stats["completed"] += 1
                     final = result
-                    if task_id and self.task_store is not None:
-                        try:
-                            from .agent_tasks import TaskCheckpoint
-                            self.task_store.checkpoint(
-                                task_id,
-                                TaskCheckpoint(
-                                    phase=f"async_job:{action}:done",
-                                    next_action="complete",
-                                    evidence_ids=(artifact_id,),
-                                ),
-                            )
-                        except Exception:
-                            pass
-                    if task_id and self.verification_store is not None:
-                        try:
-                            from .agent_verification import VerificationReceipt
-                            rcpt = VerificationReceipt.create(
-                                task_id=task_id,
-                                criterion=f"async_job:{action}",
-                                passed=True,
-                                evidence_id=artifact_id,
-                                details={"job_id": job_id, "action": action},
-                            )
-                            self.verification_store.record(rcpt)
-                        except Exception:
-                            pass
             else:
                 con.row_factory = sqlite3.Row
                 cur_row = con.execute("SELECT attempts FROM async_jobs WHERE job_id=?", (job_id,)).fetchone()
@@ -1396,6 +1424,35 @@ class AsyncJobManager:
                         except Exception:
                             pass
             con.commit()
+
+        # N06 Phase 3: External task and verification callbacks outside SQLite transaction
+        if final and (final.get("state") == "done" or final.get("success") is True):
+            if task_id and self.task_store is not None:
+                try:
+                    from .agent_tasks import TaskCheckpoint
+                    self.task_store.checkpoint(
+                        task_id,
+                        TaskCheckpoint(
+                            phase=f"async_job:{action}:done",
+                            next_action="complete",
+                            evidence_ids=(artifact_id,) if artifact_id else (),
+                        ),
+                    )
+                except Exception:
+                    pass
+            if task_id and self.verification_store is not None:
+                try:
+                    from .agent_verification import VerificationReceipt
+                    rcpt = VerificationReceipt.create(
+                        task_id=task_id,
+                        criterion=f"async_job:{action}",
+                        passed=True,
+                        evidence_id=artifact_id,
+                        details={"job_id": job_id, "action": action},
+                    )
+                    self.verification_store.record(rcpt)
+                except Exception:
+                    pass
         if self.debug_traces is not None and trace_id:
             try:
                 self.debug_traces.update(trace_id, output=final)
