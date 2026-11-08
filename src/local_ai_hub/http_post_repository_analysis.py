@@ -125,7 +125,7 @@ def handle_post_repository_analysis(
         filters = {name: payload.get(name) for name in ("author", "since", "until", "path")}
         if (
             not isinstance(query, str)
-            or not query.strip()
+            or (query != "" and not query.strip())
             or len(query) > 512
             or any(ord(char) < 32 or ord(char) == 127 for char in query)
         ):

@@ -39,14 +39,14 @@ Probíhá druhá iterace auditu katalogu 105 promptů v `docs/agent-evaluation/`
 
 ### Konkrétní kroky pro dalšího agenta
 1. **Audit matice promptů 001–105:** Zkontrolovat `docs/agent-evaluation/results.md` a `evaluation-key.md`. U každého promptu ověřit, zda je klasifikován (PASS, PARTIAL, BLOCKED, FIXTURE_DEFECT).
-2. **Ověření autentizace dashboardu:** Spustit testy loopbacku `pytest tests/test_dashboard_operational_surfaces.py tests/test_http_admin_action_auth_t18.py -v`. Ověřit, že dashboard na loopbacku nevyžaduje API token a funguje tokenless, zatímco externí přístup je chráněn API tokenem.
+2. **Ověření loopback hranice dashboardu:** Spustit testy `pytest tests/test_dashboard_operational_surfaces.py tests/test_http_admin_action_auth_t18.py -v`. Ověřit tokenless přístup přes loopback a odmítnutí ne-loopback peerů; externí přístup není podporován.
 3. **Dokončení fixtures case-069 až case-098:** Dokončit izolované sandboxy v `docs/agent-evaluation/fixtures/`, oddělit chyby testovacího prostředí od chyb serveru.
 4. **Zápis výsledků:** Aktualizovat stav úloh v `.local-ai-hub/plans/plan_prompt_stress_coverage_followup_20261107.plan.json` na `completed`.
 
 ### Akceptační kritéria
 - Všech 105 promptů má doložený aktuální status v `results.md`.
 - `tests/test_dashboard_operational_surfaces.py` i `tests/test_http_admin_action_auth_t18.py` projdou na 100 %.
-- Dashboard UI zůstává bezpečně tokenless na loopbacku bez narušení API token ochrany externích klientů.
+- Dashboard UI zůstává tokenless na loopbacku; Hub odmítá ne-loopback přístup a zachovává route-level controls.
 
 ### Cílené testy a ověření
 ```bash
@@ -206,7 +206,7 @@ Všechny etapy 1–5 byly úspěšně a prokazatelně realizovány v souladu s a
 
 1. **Etapa 1 (Evaluační sada a audit 105 promptů): DOKONČENO**
    - Všech 105 promptů má doloženou a verifikovanou bilanci v `docs/agent-evaluation/results.md` (89 PASS, 5 PARTIAL, 9 BLOCKED, 2 FIXTURE_DEFECT).
-   - Testy tokenless loopback autentizace dashboardu a ochrany API tokenem pro externí klienty prošly na 100 % (`45 passed in 1.71s`).
+   - Historický běh `45 passed in 1.71s` před tokenless změnou nepotvrzuje současnou loopback hranici; znovu ji ověř cílenými testy.
    - Dokončena dokumentace a izolace fixtures case-069 až case-098 v `docs/agent-evaluation/fixtures/`.
    - Plán `.local-ai-hub/plans/plan_prompt_stress_coverage_followup_20261107.plan.json` byl kompletně uzavřen.
    - Opraven případ 1 (Ollama `0xc000001d` Illegal Instruction): v knihovnách Ollama na procesoru AMD Zen 4 byla deaktivována nekompatibilní `ggml-cpu-alderlake.dll`, čímž byl obnoven bezchybný běh modelů 3b, 7b i 9b na RTX 5070 Ti.

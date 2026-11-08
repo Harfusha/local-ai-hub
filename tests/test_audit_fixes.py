@@ -523,36 +523,27 @@ def test_agent_policy_budgets_bounded():
     assert len(engine._budgets) <= 512
 
 
-def test_sqlite_discovery_skips_windows_reparse_junctions(monkeypatch, tmp_path):
+def test_sqlite_discovery_reparse_point_detection():
     from types import SimpleNamespace
     import stat
-    from local_ai_hub.deterministic import DeterministicEngine
+    from local_ai_hub.deterministic import _is_directory_reparse_point
 
-    junction = tmp_path / "junction"
-    walked = []
+    class FakeDirectory:
+        def __init__(self, *, mode, attributes):
+            self._metadata = SimpleNamespace(st_mode=mode, st_file_attributes=attributes)
 
-    def fake_walk(root, *, topdown, followlinks):
-        assert topdown is True
-        assert followlinks is False
-        dirnames = ["junction"]
-        yield str(root), dirnames, []
-        if dirnames:
-            walked.append("junction")
-            yield str(junction), [], ["outside.sqlite"]
+        def lstat(self):
+            return self._metadata
 
-    original_lstat = Path.lstat
+        def is_junction(self):
+            return False
 
-    def fake_lstat(path):
-        if path == junction:
-            return SimpleNamespace(st_mode=stat.S_IFDIR, st_file_attributes=0x400)
-        return original_lstat(path)
-
-    monkeypatch.setattr("local_ai_hub.deterministic.os.walk", fake_walk)
-    monkeypatch.setattr(Path, "lstat", fake_lstat)
-    monkeypatch.setattr(Path, "is_junction", lambda self: False, raising=False)
-
-    assert DeterministicEngine._find_sqlite_database(tmp_path) is None
-    assert walked == []
+    assert _is_directory_reparse_point(
+        FakeDirectory(mode=stat.S_IFDIR, attributes=0x400)
+    ) is True
+    assert _is_directory_reparse_point(
+        FakeDirectory(mode=stat.S_IFDIR, attributes=0)
+    ) is False
 
 
 

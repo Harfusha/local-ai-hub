@@ -108,11 +108,8 @@ def test_provider_service_starts_and_closes_without_disclosing_secret(scheduler)
 
 
 def test_session_credentials_are_derived_from_nonce_only():
-    from local_ai_hub.opencode_boundary import derive_local_profile_token
-
     first, second = "a" * 32, "b" * 32
     assert derive_provider_token(first) != derive_provider_token(second)
-    assert derive_local_profile_token(first) != derive_local_profile_token(second)
 
 
 def test_request_stop_is_nonblocking_and_reports_completion(scheduler):
@@ -247,15 +244,14 @@ def test_stop_waits_for_active_response_before_releasing_fence(scheduler):
     assert not scheduler.foreground_busy()
 
 
-def test_http_lifecycle_requires_hub_token_and_never_returns_provider_secret(tmp_path, monkeypatch):
+def test_http_lifecycle_is_tokenless_and_never_returns_provider_secret(tmp_path, monkeypatch):
     from local_ai_hub import http_server
     from local_ai_hub.app import LocalAIApp
 
-    secret = "x" * 40
     config = tmp_path / "config.toml"
     config.write_text(
         f'[server]\nstate_dir = "{(tmp_path / "state").as_posix()}"\nollama_url = "http://127.0.0.1:11434"\nauto_start_ollama = false\n'
-        f'[security]\napi_token = "{secret}"\n[ollama]\nenabled = false\n[llama_cpp]\nmode = "off"\n'
+        '[security]\n[ollama]\nenabled = false\n[llama_cpp]\nmode = "off"\n'
         '[background_gpu]\nenabled = false\n[preprocessing]\nenabled = false\n', encoding="utf-8",
     )
     app = LocalAIApp(str(config))
@@ -263,67 +259,48 @@ def test_http_lifecycle_requires_hub_token_and_never_returns_provider_secret(tmp
     server = http_server.LocalAIHTTPServer(("127.0.0.1", 0), http_server.Handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
-    def post(path, body, token, actor="opencode-local"):
+    def post(path, body, actor="opencode-local"):
         request = urllib.request.Request(f"http://127.0.0.1:{server.server_address[1]}{path}", data=json.dumps(body).encode(),
-            headers={"Content-Type": "application/json", "X-LocalAI-Token": token, "X-LocalAI-Agent": actor}, method="POST")
-        return urllib.request.urlopen(request, timeout=5)
-    def readiness(token):
-        request = urllib.request.Request(f"http://127.0.0.1:{server.server_address[1]}/ready",
-            headers={"X-LocalAI-Token": token, "X-LocalAI-Agent": "cloud-agent"})
+            headers={"Content-Type": "application/json", "X-LocalAI-Agent": actor}, method="POST")
         return urllib.request.urlopen(request, timeout=5)
     try:
-        from local_ai_hub.opencode_boundary import derive_local_profile_token
-        with pytest.raises(urllib.error.HTTPError) as error:
-            post("/api/opencode/provider/start", {"model": "model-a"}, "wrong")
-        assert error.value.code == 401
-        error.value.close()
-        with post("/api/opencode/provider/start", {"model": "model-a"}, secret) as response:
+        with post("/api/opencode/provider/start", {"model": "model-a"}) as response:
             started = json.load(response)
-        assert started["success"] and secret not in str(started)
-        restricted = derive_local_profile_token(started["nonce"])
-        with readiness(restricted) as response:
-            assert response.status == 200
-        with pytest.raises(urllib.error.HTTPError) as scoped_denial:
-            post("/api/opencode/provider/status", {}, restricted, actor="cloud-agent")
-        assert scoped_denial.value.code == 403
-        scoped_denial.value.close()
+        assert started["success"]
+        provider_token = derive_provider_token(started["nonce"])
+        assert provider_token not in str(started)
+        with post("/api/opencode/provider/status", {}, actor="cloud-agent") as response:
+            assert json.load(response)["state"] == "running"
         derived = derive_provider_token(started["nonce"])
         assert derived not in str(started)
         with pytest.raises(urllib.error.HTTPError) as duplicate:
-            post("/api/opencode/provider/start", {"model": "other-model"}, secret)
+            post("/api/opencode/provider/start", {"model": "other-model"})
         assert duplicate.value.code == 409
         duplicate.value.close()
-        with post("/api/opencode/provider/status", {}, secret) as response:
+        with post("/api/opencode/provider/status", {}) as response:
             status = json.load(response)
         assert status["state"] == "running" and status["nonce"] == started["nonce"]
         with pytest.raises(urllib.error.HTTPError) as gaming:
-            post("/api/admin/mode", {"mode": "gaming"}, secret, actor="generic")
+            post("/api/admin/mode", {"mode": "gaming"}, actor="generic")
         assert gaming.value.code == 409
         assert json.loads(gaming.value.read())["error_code"] == "opencode_provider_not_stopped"
         gaming.value.close()
         assert app.opencode_provider._stopped.wait(timeout=5)
         assert not app.scheduler.foreground_busy()
-        with pytest.raises(urllib.error.HTTPError) as expired:
-            readiness(restricted)
-        assert expired.value.code == 401
-        expired.value.close()
-        with post("/api/opencode/provider/start", {"model": "model-a"}, secret) as response:
+        with post("/api/opencode/provider/start", {"model": "model-a"}) as response:
             restarted = json.load(response)
         assert restarted["success"]
-        with pytest.raises(urllib.error.HTTPError) as stale_token:
-            readiness(restricted)
-        assert stale_token.value.code == 401
-        stale_token.value.close()
-        with readiness(derive_local_profile_token(restarted["nonce"])) as response:
-            assert response.status == 200
+        restarted_provider_token = derive_provider_token(restarted["nonce"])
+        assert restarted_provider_token != provider_token
+        assert restarted_provider_token not in str(restarted)
         with pytest.raises(urllib.error.HTTPError) as stale:
-            post("/api/opencode/provider/stop", {"nonce": started["nonce"]}, secret)
+            post("/api/opencode/provider/stop", {"nonce": started["nonce"]})
         assert stale.value.code == 409
         stale.value.close()
         assert app.opencode_provider.status()["state"] == "running"
-        with post("/api/opencode/provider/stop", {"nonce": restarted["nonce"]}, secret) as response:
+        with post("/api/opencode/provider/stop", {"nonce": restarted["nonce"]}) as response:
             assert json.load(response)["state"] == "stopping"
-        with post("/api/opencode/provider/wait", {"timeout_seconds": 5}, secret) as response:
+        with post("/api/opencode/provider/wait", {"timeout_seconds": 5}) as response:
             assert json.load(response)["state"] == "stopped"
         assert not app.scheduler.foreground_busy()
     finally:

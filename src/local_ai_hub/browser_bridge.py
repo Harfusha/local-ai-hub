@@ -649,13 +649,12 @@ def issue_capture_capability(
     origin: str,
     tab_id: int | str | None = None,
     window_id: int | str | None = None,
-    api_token_authorized: bool = False,
 ) -> str:
     """Issue a short-lived capability bound to one extension origin and tab."""
     if not _enabled(config):
         raise CaptureProtocolError("unsupported", "current-tab browser bridge is disabled", status=501)
     normalized_origin = str(origin or "").strip()
-    if not normalized_origin or (not _origin_allowed(normalized_origin, config) and not api_token_authorized):
+    if not normalized_origin or not _origin_allowed(normalized_origin, config):
         raise CaptureProtocolError("permission_denied", "browser bridge origin is not permitted", status=403)
     if tab_id is None or str(tab_id).strip() == "":
         raise CaptureProtocolError("missing_tab_id", "current-tab capability requires an explicit tab_id", status=400)

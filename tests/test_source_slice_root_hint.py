@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from local_ai_hub.source_slice import read_source_slice
 
 
@@ -18,3 +20,14 @@ def test_outside_source_error_explains_authorized_root_without_reading(tmp_path)
     accepted = read_source_slice(str(other), str(target))
     assert accepted["success"] is True
     assert accepted["text"] == "private fixture content"
+
+
+def test_missing_traversal_outside_workspace_returns_scope_error(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    result = read_source_slice(str(workspace), str(Path("..") / "missing.txt"))
+
+    assert result["success"] is False
+    assert result["terminal"] is True and result["retryable"] is False
+    assert "within the workspace" in result["error"]

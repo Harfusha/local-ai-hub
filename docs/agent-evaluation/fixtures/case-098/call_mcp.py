@@ -20,15 +20,14 @@ with CONFIG.open("rb") as file:
     config = tomllib.load(file)
 server = config.get("server", {})
 security = config.get("security", {})
-token = security.get("api_token")
 if (server.get("bind") != "127.0.0.1"
         or type(server.get("port")) is not int
         or not 1024 <= server["port"] <= 65535
         or server["port"] in (11434, 11435)
         or Path(server.get("state_dir", "")).resolve() != (HERE / "state").resolve()
         or security.get("allowed_roots") != [WORKSPACE.as_posix()]
-        or not isinstance(token, str) or len(token) < 32):
-    raise SystemExit("fixture config does not describe this isolated token-protected Hub")
+        or any(key in security for key in ("api_token", "supervisor_token", "action_tokens", "api_token_permissions"))):
+    raise SystemExit("fixture config does not describe this isolated tokenless Hub")
 if len(sys.argv) != 2:
     raise SystemExit("usage: call_mcp.py JSON_ARGUMENTS")
 arguments = json.loads(sys.argv[1])
@@ -37,9 +36,9 @@ try:
 except ValueError as exc:
     raise SystemExit(str(exc)) from exc
 env = os.environ.copy()
-for key in ("LOCAL_AI_TENANT", "LOCAL_AI_HUB_TOKEN", "LOCAL_AI_AGENT", "LOCAL_AI_AGENT_PROFILE"):
+for key in ("LOCAL_AI_TENANT", "LOCAL_AI_AGENT", "LOCAL_AI_AGENT_PROFILE"):
     env.pop(key, None)
-env.update(LOCAL_AI_CONFIG=str(CONFIG), LOCAL_AI_HUB_TOKEN=token,
+env.update(LOCAL_AI_CONFIG=str(CONFIG),
            PYTHONPATH=str(SOURCE / "src"), PYTHONDONTWRITEBYTECODE="1")
 params = StdioServerParameters(command=sys.executable, args=["-B", "-m", "local_ai_hub.mcp_server"], env=env, cwd=str(HERE))
 

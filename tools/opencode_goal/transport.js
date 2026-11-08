@@ -1,17 +1,17 @@
 import { validateBinding } from "./core.js"
 
-function transport({ baseURL, token = "", actor = "opencode-local", fetchImpl = fetch, timeoutMs = 15000, signal }) {
+function transport(options) {
+  if (!options || typeof options !== "object" || Object.hasOwn(options, "token")) throw new Error("Hub token option was removed")
+  const { baseURL, actor = "opencode-local", fetchImpl = fetch, timeoutMs = 15000, signal } = options
   let endpoint
   try { endpoint = new URL(baseURL) } catch { throw new Error("Agent OS URL must be a loopback HTTP origin with an explicit port") }
   if (endpoint.protocol !== "http:" || endpoint.hostname !== "127.0.0.1" || !endpoint.port ||
       endpoint.username || endpoint.password || endpoint.pathname !== "/" || endpoint.search || endpoint.hash) {
     throw new Error("Agent OS URL must be a loopback HTTP origin with an explicit port")
   }
-  if (typeof token !== "string" || /[\r\n]/.test(token)) throw new Error("invalid Hub token")
   if (typeof actor !== "string" || !/^[A-Za-z0-9_.-]{1,128}$/.test(actor)) throw new Error("invalid Hub agent identity")
   if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 60000) throw new Error("invalid timeout")
   const headers = { "Content-Type": "application/json", "X-LocalAI-Agent": actor }
-  if (token) headers["X-LocalAI-Token"] = token
   async function request(path, payload, mutating, requestId) {
     let reader
     try {

@@ -22,14 +22,13 @@ server = config.get("server", {})
 security = config.get("security", {})
 preprocessing = config.get("preprocessing", {})
 code_intelligence = config.get("code_intelligence", {})
-token = security.get("api_token")
 if (server.get("bind") != "127.0.0.1"
         or type(server.get("port")) is not int
         or not 1024 <= server["port"] <= 65535
         or server["port"] in (11434, 11435)
         or Path(server.get("state_dir", "")).resolve() != (HERE / "state").resolve()
         or security.get("allowed_roots") != [WORKSPACE.as_posix()]
-        or not isinstance(token, str) or len(token) < 32
+        or any(key in security for key in ("api_token", "supervisor_token", "action_tokens", "api_token_permissions"))
         or preprocessing.get("enabled") is not False
         or preprocessing.get("fs_watcher_enabled") is not False
         or code_intelligence.get("enabled") is not False
@@ -53,8 +52,8 @@ if set(arguments) - allowed[kind]:
     raise SystemExit(f"unsupported {kind} argument; allowed fields: {valid}")
 arguments["root"] = str(ROOT)
 env = {key: value for key, value in os.environ.items()
-       if key not in {"LOCAL_AI_TENANT", "LOCAL_AI_HUB_TOKEN", "LOCAL_AI_AGENT", "LOCAL_AI_AGENT_PROFILE"}}
-env.update(LOCAL_AI_CONFIG=str(CONFIG), LOCAL_AI_HUB_TOKEN=token,
+       if key not in {"LOCAL_AI_TENANT", "LOCAL_AI_AGENT", "LOCAL_AI_AGENT_PROFILE"}}
+env.update(LOCAL_AI_CONFIG=str(CONFIG),
            PYTHONPATH=str(SOURCE / "src"), PYTHONDONTWRITEBYTECODE="1")
 params = StdioServerParameters(command=sys.executable, args=["-B", "-m", "local_ai_hub.mcp_server"],
                                env=env, cwd=str(HERE))

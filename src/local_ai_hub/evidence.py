@@ -74,6 +74,14 @@ class EvidenceStore:
     def _connect(self) -> sqlite3.Connection:
         return connect_sqlite(self.db_path, timeout_seconds=0.75, row_factory=sqlite3.Row)
 
+    @staticmethod
+    def _hash_source_file(path: Path) -> str:
+        digest = hashlib.sha256()
+        with path.open("rb") as source:
+            while chunk := source.read(65536):
+                digest.update(chunk)
+        return digest.hexdigest()
+
     def _init_db(self) -> None:
         try:
             with self._lock, closing(self._connect()) as con:
@@ -179,6 +187,7 @@ class EvidenceStore:
                 continue
             start = _safe_positive_int(item.get("start_line", 1), 1, minimum=1)
             end = _safe_positive_int(item.get("end_line", start), start, minimum=start)
+            text = self._strip_display_line_numbers(text, start, end)
             eid = self._id(clean_root, path, file_hash, start, end, text)
             clone["evidence_id"] = eid
             inserts.append((eid, clean_root, path, file_hash, start, end, text, now, now))
@@ -204,6 +213,19 @@ class EvidenceStore:
                     if str(item.get("evidence_id") or "") in unpersisted_ids:
                         item.pop("evidence_id", None)
         return out
+
+    @staticmethod
+    def _strip_display_line_numbers(text: str, start: int, end: int) -> str:
+        lines = text.splitlines()
+        if len(lines) != end - start + 1:
+            return text
+        source_lines: list[str] = []
+        for line_number, line in enumerate(lines, start=start):
+            prefix = f"{line_number}: "
+            if not line.startswith(prefix):
+                return text
+            source_lines.append(line[len(prefix):])
+        return "\n".join(source_lines)
 
     def get(self, evidence_id: str, *, verify: bool = True, root: str | None = None) -> dict[str, Any]:
         eid = _clean_text(evidence_id).strip()
@@ -291,6 +313,71 @@ class EvidenceStore:
         except Exception:
             return False
         return expected == evidence_id
+
+    def validate_current_many(self, evidence_ids: Any) -> bool:
+        """Prove a bounded evidence batch is current, hashing each source once."""
+        if type(evidence_ids) not in (list, tuple) or not evidence_ids or len(evidence_ids) > 64:
+            return False
+        if any(not isinstance(value, str) or not is_evidence_id(value) for value in evidence_ids):
+            return False
+        ids = list(dict.fromkeys(evidence_ids))
+        placeholders = ",".join("?" for _ in ids)
+        try:
+            with self._lock, closing(self._connect()) as con:
+                rows = con.execute(
+                    "SELECT id,root,path,file_hash,start_line,end_line,text FROM evidence "
+                    f"WHERE id IN ({placeholders})",
+                    tuple(ids),
+                ).fetchall()
+            by_id = {str(row["id"]): row for row in rows}
+            if len(by_id) != len(ids):
+                return False
+
+            file_hashes: dict[Path, str] = {}
+            for evidence_id in ids:
+                row = by_id[evidence_id]
+                expected = self._id(
+                    str(row["root"]),
+                    str(row["path"]),
+                    str(row["file_hash"]),
+                    int(row["start_line"]),
+                    int(row["end_line"]),
+                    str(row["text"]),
+                )
+                if expected != evidence_id:
+                    return False
+
+                path = (Path(str(row["root"])) / str(row["path"])).resolve(strict=False)
+                actual_hash = file_hashes.get(path)
+                if actual_hash is None:
+                    if not path.is_file():
+                        return False
+                    actual_hash = self._hash_source_file(path)
+                    file_hashes[path] = actual_hash
+                if actual_hash != str(row["file_hash"]):
+                    return False
+
+                start_line = int(row["start_line"])
+                end_line = int(row["end_line"])
+                selected: list[str] = []
+                line_count = 0
+                with path.open("r", encoding="utf-8", errors="replace") as source:
+                    for line_count, line in enumerate(source, start=1):
+                        if start_line <= line_count <= end_line:
+                            selected.append(line)
+                        if line_count >= end_line:
+                            break
+                if (
+                    start_line < 1
+                    or line_count < end_line
+                    or len(selected) != end_line - start_line + 1
+                ):
+                    return False
+                if "".join(selected).rstrip("\r\n") != str(row["text"]).rstrip("\r\n"):
+                    return False
+        except Exception:
+            return False
+        return True
 
     def count(self) -> int:
         return int(self.stats().get("entries", 0))

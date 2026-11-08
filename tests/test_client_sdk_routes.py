@@ -38,8 +38,6 @@ def live_client(tmp_path, monkeypatch, request):
         '[hardware]\nprofile = "balanced"\n'
         '[features]\nlocal_semantic_analysis = true\n'
         '[security]\n'
-        'api_token = "sdk-isolated-http-token-long"\n'
-        'api_token_permissions = ["read", "write", "admin"]\n'
         f'allowed_roots = ["{tmp_path.as_posix()}"]\n'
         f'[debug_traces]\nenabled = {str(detailed_diagnostics).lower()}\n',
         encoding="utf-8",
@@ -75,8 +73,6 @@ def root_scoped_live_client(tmp_path, monkeypatch):
         f'state_dir = "{state_dir.as_posix()}"\n'
         '[agent_state]\nenabled = true\n'
         '[security]\n'
-        'api_token = "sdk-root-isolated-http-token-long"\n'
-        'api_token_permissions = ["read", "write", "admin"]\n'
         f'allowed_roots = ["{workspace.as_posix()}"]\n',
         encoding="utf-8",
     )
@@ -518,7 +514,6 @@ def test_context_pack_returns_indexed_evidence_from_real_fast_context(live_clien
 
     indexed = app.services.deterministic.update_file(str(repo), source.name)
     assert indexed["success"] is True
-
     result = client.context_pack(
         str(repo),
         "config context_sentinel",
@@ -527,7 +522,7 @@ def test_context_pack_returns_indexed_evidence_from_real_fast_context(live_clien
     )
 
     assert http_post_paths == ["/api/context/pack"]
-    assert result["success"] is True
+    assert result["success"] is True, result
     assert result["context_source"] == "adaptive-hybrid"
     assert result["semantic_used"] is False
     assert "context_sentinel" in result["context"]
@@ -561,7 +556,7 @@ def test_adaptive_context_pack_returns_grounded_indexed_evidence_offline(
     )
 
     assert http_post_paths == ["/api/context/pack"]
-    assert result["success"] is True
+    assert result["success"] is True, result
     assert result["delivery_mode"] == "adaptive"
     if detailed_diagnostics:
         assert result["retrieval"]["quality_first"] is True

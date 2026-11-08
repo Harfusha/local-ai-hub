@@ -10,12 +10,13 @@ import assert from "node:assert/strict";
 import {runProjectCommand} from "./tools/opencode_goal/transport.js";
 let sent;
 const result=await runProjectCommand({root:"C:/repo",taskId:"task",criteria:["test"]},"session","test","a".repeat(32),
- {baseURL:"http://127.0.0.1:11435",token:"scoped",fetchImpl:async(url,opts)=>{
+ {baseURL:"http://127.0.0.1:11435",fetchImpl:async(url,opts)=>{
   sent={url,opts};return new Response(JSON.stringify({success:true,verification_receipt:{evidence_id:"e"}}));
  }});
 assert.equal(result.verification_receipt.evidence_id,"e");
 assert.equal(sent.opts.headers["X-LocalAI-Request-ID"],"a".repeat(32));
-assert.equal(sent.opts.headers["X-LocalAI-Token"],"scoped");
+assert.equal(sent.opts.headers["X-LocalAI-Token"],undefined);
+assert.equal(sent.opts.headers.Authorization,undefined);
 assert.deepEqual(JSON.parse(sent.opts.body),{action:"project_command",root:"C:/repo",task_id:"task",session_id:"session",alias:"test"});
 '''
     result = subprocess.run(["node", "--input-type=module", "-e", script], cwd=ROOT, capture_output=True, text=True, timeout=20, check=False)
@@ -707,7 +708,8 @@ let calls = 0;
 const send = async (url, options) => {
   calls++;
   assert.equal(options.redirect, "error");
-  assert.equal(options.headers["X-LocalAI-Token"], "secret");
+  assert.equal(options.headers["X-LocalAI-Token"], undefined);
+  assert.equal(options.headers.Authorization, undefined);
   if (url.endsWith("/api/agent-state/verification")) {
     assert.deepEqual(JSON.parse(options.body), {action:"completion",root:"C:/repo",task_id:"one"});
     return new Response(JSON.stringify({success:true,completion:{task_id:"one",complete:true,satisfied_criteria:["pytest"],unsatisfied_criteria:[],stale_criteria:[]}}), {status:200});
@@ -716,9 +718,9 @@ const send = async (url, options) => {
   assert.deepEqual(JSON.parse(options.body), {action: "complete", root: "C:/repo", task_id: "one", expected_criteria: ["pytest"], expected_binding:{goal:"Fix",session_id:"s"}});
   return new Response(JSON.stringify({success: true, task: {task_id:"one", status:"completed", owner:"opencode-local", context:{session_id:"s"}, contract:{goal:"Fix",acceptance_criteria:["pytest"]}, checkpoint:{state_data:{_agent_task_scope:{version:2,repo_root:"C:/repo"}}}}}), {status: 200});
 };
-assert.equal((await completeTask(state, {baseURL:"http://127.0.0.1:11435", token:"secret", fetchImpl:send})).success, true);
-await assert.rejects(completeTask(state, {baseURL:"http://example.com:11435", token:"secret", fetchImpl:send}));
-await assert.rejects(completeTask(state, {baseURL:"http://127.0.0.1:11435/other", token:"secret", fetchImpl:send}));
+assert.equal((await completeTask(state, {baseURL:"http://127.0.0.1:11435", fetchImpl:send})).success, true);
+await assert.rejects(completeTask(state, {baseURL:"http://example.com:11435", fetchImpl:send}));
+await assert.rejects(completeTask(state, {baseURL:"http://127.0.0.1:11435/other", fetchImpl:send}));
 await assert.rejects(completeTask({...state,root:"relative"}, {baseURL:"http://127.0.0.1:11435", fetchImpl:send}));
 await assert.rejects(completeTask({...state,criteria:[]}, {baseURL:"http://127.0.0.1:11435", fetchImpl:send}));
 assert.equal(calls, 2);
@@ -825,7 +827,7 @@ const ctx={options:{hubURL:"http://127.0.0.1:11435"},storage:{get:async()=>undef
   session:{synthetic:async value=>messages.push(value)},
   event:{subscribe:async function*(){}}};
 await assert.rejects(plugin.setup({...ctx,options:{hubURL:"https://example.com"}}),/loopback/);
-await assert.rejects(plugin.setup({...ctx,options:{hubURL:"http://127.0.0.1:11435",tokenEnv:"LOCAL_AI_HUB_MISSING_TEST_TOKEN"}}),/token/);
+await assert.rejects(plugin.setup({...ctx,options:{hubURL:"http://127.0.0.1:11435",tokenEnv:"LOCAL_AI_HUB_MISSING_TEST_TOKEN"}}),/removed/);
 const cleanup=await plugin.setup(ctx);
 await assert.rejects(command.execute({sessionID:"s",prompt:{text:"status"}}), /NO_GOAL/);
 assert.equal(messages.length,0);

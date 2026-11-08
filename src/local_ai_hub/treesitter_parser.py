@@ -36,6 +36,7 @@ _TREE_CACHE_BYTES = 0
 _TREE_CACHE_MAX_ENTRIES = 32
 _TREE_CACHE_MAX_BYTES = 8 * 1024 * 1024
 _TREE_CACHE_MAX_SOURCE_BYTES = 2 * 1024 * 1024
+_MAX_TREE_SITTER_SOURCE_BYTES = 1_048_576
 
 
 def _discard_tree(source_key: str | None, language: str) -> None:
@@ -628,6 +629,15 @@ def parse_treesitter_with_status(text: str, language: str, *, source_key: str | 
         return {"result": ([], [], []), "status": "empty", "parser": "tree_sitter", "syntax_error_count": 0}
     if not isinstance(language, str) or not language.replace("\x00", "").strip():
         return {"result": None, "status": "unavailable", "parser": "tree_sitter", "fallback_reason": "invalid_language", "syntax_error_count": 0}
+
+    if len(text.encode("utf-8", errors="surrogatepass")) > _MAX_TREE_SITTER_SOURCE_BYTES:
+        return {
+            "result": None,
+            "status": "unavailable",
+            "parser": "tree_sitter",
+            "fallback_reason": "source_too_large",
+            "syntax_error_count": 0,
+        }
 
     disabled = _worker_disabled_result()
     if disabled is not None:

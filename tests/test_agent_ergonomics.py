@@ -342,6 +342,45 @@ def test_call_graph_structure():
     assert res["depth"] == 1
 
 
+def test_call_graph_preserves_incomplete_index_metadata():
+    from unittest.mock import MagicMock
+    from local_ai_hub.services import LocalAIServices
+
+    services = LocalAIServices.__new__(LocalAIServices)
+    services.code_find_declaration = MagicMock(return_value={"success": True, "path": "target.py", "line": 1, "kind": "function"})
+    services.callers = MagicMock(return_value={
+        "success": True, "callers": [], "coverage": {"complete": False},
+        "freshness": {"status": "not_checked"}, "index_available": True, "truncated": False,
+    })
+    services.callees = MagicMock(return_value={
+        "success": True, "callees": [], "coverage": {"complete": False},
+        "freshness": {"status": "not_checked"}, "index_available": True, "truncated": False,
+    })
+
+    result = services.call_graph(".", "target", depth=1)
+
+    assert result["coverage"]["complete"] is False, result
+    assert result["freshness"]["status"] == "not_checked", result
+    assert result["index_available"] is True, result
+    assert result["partial"] is True, result
+
+
+def test_call_graph_does_not_hide_subquery_failure():
+    from unittest.mock import MagicMock
+    from local_ai_hub.services import LocalAIServices
+
+    services = LocalAIServices.__new__(LocalAIServices)
+    services.code_find_declaration = MagicMock(return_value={"success": True, "path": "target.py", "line": 1, "kind": "function"})
+    services.callers = MagicMock(return_value={"success": False, "error": "index unavailable", "callers": []})
+    services.callees = MagicMock(return_value={"success": True, "callees": []})
+
+    result = services.call_graph(".", "target", depth=1)
+
+    assert result["success"] is False, result
+    assert result["partial"] is True, result
+    assert result["subquery_errors"]["callers"] == "index unavailable", result
+
+
 def test_repo_query_task_aliasing():
     """Point 1: Verify query and task are gracefully aliased in local_ai_repo."""
     from unittest.mock import patch

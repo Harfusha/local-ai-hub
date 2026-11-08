@@ -4,11 +4,11 @@ Reusable prompt suite for testing agent tool use, source grounding, changes, coo
 
 ## Files
 
-- [prompts.md](prompts.md): 116 active copy-ready prompts. Cases 076, 080–082, 084–088, 103–104, 107, and 111 were merged into broader cases; see evaluation-key.md for the mapping. For MCP action cases 114–129, give the tested agent the selected prompt plus the matching action row from mcp-action-coverage.md.
+- [prompts.md](prompts.md): 121 active copy-ready prompts. Cases 076, 080–082, 084–088, 103–104, 107, and 111 were merged into broader cases; see evaluation-key.md for the mapping. For MCP action cases 114–134, give the tested agent the selected prompt, matching action row from mcp-action-coverage.md, exact relevant input-contract rows from mcp-action-contracts.md, and complete live action enum from that session. The source-contract snapshot supplies argument fields; only the live enum proves session exposure. A source-supported read-only action explicitly named by a case may be called once to test a callable-surface mismatch; classify a rejection as UNAVAILABLE for that session, not product removal. Missing fixture values or required argument fields mean affected branch NOT_RUN, never guessed arguments or invalid-action probes.
 - [evaluation-key.md](evaluation-key.md): fixture setup, expected behavior, and failure signals. Keep out of the tested agent's context.
 - [results.md](results.md): append one evidence-bound record for each run. Keep results separate by agent, Hub build, instructions, and fixture revision.
 - [fixtures/](fixtures/README.md): inert synthetic source trees for selected read-only repository lookup cases.
-- [mcp-action-coverage.md](mcp-action-coverage.md): source-supported action map with per-run profile availability; new cases stay NOT_RUN until executed.
+- [mcp-action-coverage.md](mcp-action-coverage.md): source-supported action map with per-run profile availability; a chat attempt is not action execution, and missing/incomplete live enums remain NOT_VERIFIED.
 - [mcp-action-contracts.md](mcp-action-contracts.md): source-derived per-action fields, gates, effects, retry semantics and validator branches; schema evidence only.
 - [local-model-gpu-cases.md](local-model-gpu-cases.md) and [local-model-gpu-scoring.md](local-model-gpu-scoring.md): fixed paired post-upgrade local-model cases and operator-only scoring key.
 

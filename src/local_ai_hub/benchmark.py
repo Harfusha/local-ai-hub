@@ -720,15 +720,68 @@ class HardwareBenchmarkRunner:
         model: str = "",
         prompt: str = "def fibonacci(n: int) -> int:\n    \"\"\"Compute fibonacci recursively.\"\"\"\n",
         num_tokens: int = 40,
+        context_tokens: int | None = None,
     ) -> dict[str, Any]:
         target_model = model.strip() or self._default_model()
         if not self.runtime:
             return {"success": False, "error": "Runtime not configured for benchmark"}
+        if context_tokens is not None and (
+            type(context_tokens) is not int or not 4096 <= context_tokens <= 32768
+        ):
+            return {
+                "success": False,
+                "model": target_model,
+                "error": "context_tokens must be an integer between 4096 and 32768",
+            }
+        generation_options: dict[str, Any] = {
+            "num_predict": max(1, int(num_tokens)),
+            "think": False,
+        }
+        if context_tokens is not None:
+            generation_options["num_ctx"] = context_tokens
 
         initial_vram = {}
-        if self.vram_balancer and hasattr(self.vram_balancer, "sample_vram"):
+        sample_vram = getattr(self.vram_balancer, "sample_vram", None)
+        if context_tokens is not None:
+            if not callable(sample_vram):
+                return {
+                    "success": False,
+                    "model": target_model,
+                    "error": "current dynamic VRAM context budget unavailable",
+                }
             try:
-                initial_vram = self.vram_balancer.sample_vram()
+                initial_vram = sample_vram()
+            except Exception:
+                return {
+                    "success": False,
+                    "model": target_model,
+                    "error": "current dynamic VRAM context budget unavailable",
+                }
+            dynamic_context_tokens = (
+                initial_vram.get("dynamic_context_tokens")
+                if isinstance(initial_vram, Mapping)
+                and initial_vram.get("available") is True
+                else None
+            )
+            if (
+                isinstance(dynamic_context_tokens, bool)
+                or not isinstance(dynamic_context_tokens, int)
+                or dynamic_context_tokens < 4096
+            ):
+                return {
+                    "success": False,
+                    "model": target_model,
+                    "error": "current dynamic VRAM context budget unavailable",
+                }
+            if context_tokens > dynamic_context_tokens:
+                return {
+                    "success": False,
+                    "model": target_model,
+                    "error": "context_tokens exceeds current dynamic VRAM context budget",
+                }
+        elif callable(sample_vram):
+            try:
+                initial_vram = sample_vram()
             except Exception:
                 pass
 
@@ -736,6 +789,10 @@ class HardwareBenchmarkRunner:
         first_token_time: float | None = None
         tokens_count = 0
         token_count_estimated = True
+        prompt_eval_count: int | None = None
+        prompt_eval_duration_ns: int | None = None
+        context_recovery: dict[str, Any] | None = None
+        backend_provider: str | None = None
         response_text = ""
         thinking_chars = 0
         generation_duration_ns: int | None = None
@@ -747,9 +804,15 @@ class HardwareBenchmarkRunner:
         sampler_thread: threading.Thread | None = None
         loaded_model_vram_bytes: int | None = None
         loaded_model_vram_status = "unavailable"
+        loaded_model_context_tokens: int | None = None
 
         def observe_loaded_model_vram() -> None:
-            nonlocal loaded_model_vram_bytes, loaded_model_vram_status
+            nonlocal loaded_model_vram_bytes, loaded_model_vram_status, loaded_model_context_tokens
+            # Each observation is a fresh snapshot. Never reuse a pre-inference
+            # context/VRAM value if the post-inference provider query is unavailable.
+            loaded_model_vram_bytes = None
+            loaded_model_vram_status = "unavailable"
+            loaded_model_context_tokens = None
             details_provider = getattr(self.runtime, "loaded_model_details", None)
             if not callable(details_provider):
                 return
@@ -764,6 +827,17 @@ class HardwareBenchmarkRunner:
                 return
             if not isinstance(loaded_details, list):
                 return
+            matching_contexts = [
+                row["context_length"]
+                for row in loaded_details
+                if isinstance(row, dict)
+                and str(row.get("name", row.get("model", ""))).strip().casefold()
+                == target_model.strip().casefold()
+                and type(row.get("context_length")) is int
+                and row["context_length"] > 0
+            ]
+            if matching_contexts and len(set(matching_contexts)) == 1:
+                loaded_model_context_tokens = matching_contexts[0]
             matching_vram = [
                 int(round(float(row["vram_bytes"])))
                 for row in loaded_details
@@ -811,6 +885,9 @@ class HardwareBenchmarkRunner:
             nonlocal sampler_thread
             nonlocal first_token_time, tokens_count, token_count_estimated, response_text
             nonlocal thinking_chars, generation_duration_ns, load_duration_ns, streaming
+            nonlocal prompt_eval_count, prompt_eval_duration_ns
+            nonlocal context_recovery
+            nonlocal backend_provider
             try:
                 # Scheduler prepares the requested model before invoking this callback.
                 observe_loaded_model_vram()
@@ -826,14 +903,42 @@ class HardwareBenchmarkRunner:
                     for chunk in self.runtime.generate_stream(
                         target_model,
                         prompt,
-                        options={"num_predict": max(1, int(num_tokens)), "think": False},
+                        options=generation_options,
                     ):
+                        if isinstance(chunk, Mapping):
+                            provider = chunk.get("_lah_provider")
+                            if isinstance(provider, str) and provider.strip():
+                                backend_provider = provider.strip()[:120]
+                            recovery = chunk.get("context_recovery")
+                            if isinstance(recovery, Mapping):
+                                context_recovery = dict(recovery)
                         if isinstance(chunk, dict) and chunk.get("error"):
-                            return {"success": False, "error": str(chunk["error"])}
+                            failure = {"success": False, "error": str(chunk["error"])}
+                            if context_recovery is not None:
+                                failure["context_recovery"] = context_recovery
+                            return failure
                         if isinstance(chunk, dict):
+                            recovery = chunk.get("context_recovery")
+                            if isinstance(recovery, Mapping):
+                                context_recovery = dict(recovery)
                             load_duration = chunk.get("load_duration")
                             if isinstance(load_duration, (int, float)) and math.isfinite(load_duration) and load_duration >= 0:
                                 load_duration_ns = int(load_duration)
+                            prompt_count = chunk.get("prompt_eval_count")
+                            if (
+                                isinstance(prompt_count, int)
+                                and not isinstance(prompt_count, bool)
+                                and prompt_count >= 0
+                            ):
+                                prompt_eval_count = prompt_count
+                            prompt_duration = chunk.get("prompt_eval_duration")
+                            if (
+                                isinstance(prompt_duration, (int, float))
+                                and not isinstance(prompt_duration, bool)
+                                and math.isfinite(prompt_duration)
+                                and prompt_duration >= 0
+                            ):
+                                prompt_eval_duration_ns = int(prompt_duration)
                             eval_count = chunk.get("eval_count")
                             if isinstance(eval_count, (int, float)) and math.isfinite(eval_count) and eval_count > 0:
                                 tokens_count = int(eval_count)
@@ -850,8 +955,11 @@ class HardwareBenchmarkRunner:
                         if visible and first_token_time is None:
                             first_token_time = time.perf_counter()
                     if not response_text and thinking_chars:
-                        return {"success": False, "error": "benchmark produced thinking-only output",
-                                "measurement_warning": "thinking_only_output", "thinking_chars": thinking_chars}
+                        failure = {"success": False, "error": "benchmark produced thinking-only output",
+                                   "measurement_warning": "thinking_only_output", "thinking_chars": thinking_chars}
+                        if context_recovery is not None:
+                            failure["context_recovery"] = context_recovery
+                        return failure
                 elif callable(getattr(self.runtime, "request_stream", None)):
                     streaming = True
 
@@ -870,14 +978,23 @@ class HardwareBenchmarkRunner:
                             "prompt": prompt,
                             "stream": True,
                             "think": False,
-                            "options": {"num_predict": max(1, int(num_tokens))},
+                            "options": generation_options,
                         },
                         record_stream_chunk,
                     )
                     if not isinstance(result, dict):
                         return {"success": False, "error": "benchmark stream runtime returned a non-object response"}
+                    recovery = result.get("context_recovery")
+                    if isinstance(recovery, Mapping):
+                        context_recovery = dict(recovery)
+                    provider = result.get("_lah_provider")
+                    if isinstance(provider, str) and provider.strip():
+                        backend_provider = provider.strip()[:120]
                     if result.get("error") or result.get("success") is False:
-                        return {"success": False, "error": str(result.get("error", "benchmark stream request failed"))}
+                        failure = {"success": False, "error": str(result.get("error", "benchmark stream request failed"))}
+                        if context_recovery is not None:
+                            failure["context_recovery"] = context_recovery
+                        return failure
                     if not response_text:
                         response_text = str(result.get("response", result.get("text", "")) or "")
                     thinking_chars = len(str(result.get("thinking", "") or ""))
@@ -887,19 +1004,49 @@ class HardwareBenchmarkRunner:
                     load_duration = result.get("load_duration")
                     if isinstance(load_duration, (int, float)) and math.isfinite(load_duration) and load_duration >= 0:
                         load_duration_ns = int(load_duration)
+                    result_prompt_count = result.get("prompt_eval_count")
+                    if (
+                        isinstance(result_prompt_count, int)
+                        and not isinstance(result_prompt_count, bool)
+                        and result_prompt_count >= 0
+                    ):
+                        prompt_eval_count = result_prompt_count
+                    result_prompt_duration = result.get("prompt_eval_duration")
+                    if (
+                        isinstance(result_prompt_duration, (int, float))
+                        and not isinstance(result_prompt_duration, bool)
+                        and math.isfinite(result_prompt_duration)
+                        and result_prompt_duration > 0
+                    ):
+                        prompt_eval_duration_ns = int(result_prompt_duration)
                     if not response_text and thinking_chars:
-                        return {"success": False, "error": "benchmark produced thinking-only output",
-                                "measurement_warning": "thinking_only_output", "thinking_chars": thinking_chars}
+                        failure = {"success": False, "error": "benchmark produced thinking-only output",
+                                   "measurement_warning": "thinking_only_output", "thinking_chars": thinking_chars}
+                        if context_recovery is not None:
+                            failure["context_recovery"] = context_recovery
+                        return failure
                 elif callable(getattr(self.runtime, "generate", None)):
                     res = self.runtime.generate(
                         target_model,
                         prompt,
-                        options={"num_predict": max(1, int(num_tokens)), "think": False},
+                        options=generation_options,
                     )
                     if not isinstance(res, dict):
                         return {"success": False, "error": "benchmark runtime returned a non-object response"}
+                    recovery = res.get("context_recovery")
+                    if isinstance(recovery, Mapping):
+                        context_recovery = dict(recovery)
+                    provider = res.get("_lah_provider")
+                    if isinstance(provider, str) and provider.strip():
+                        backend_provider = provider.strip()[:120]
                     if res.get("error"):
-                        return {"success": False, "error": str(res["error"])}
+                        failure = {"success": False, "error": str(res["error"])}
+                        if context_recovery is not None:
+                            failure["context_recovery"] = context_recovery
+                        return failure
+                    recovery = res.get("context_recovery")
+                    if isinstance(recovery, Mapping):
+                        context_recovery = dict(recovery)
                     response_text = str(res.get("response", res.get("text", "")) or "")
                     thinking_chars = len(str(res.get("thinking", "") or ""))
                     tokens_count = int(res.get("eval_count", 0) or 0)
@@ -909,9 +1056,12 @@ class HardwareBenchmarkRunner:
                     if isinstance(load_duration, (int, float)) and math.isfinite(load_duration) and load_duration >= 0:
                         load_duration_ns = int(load_duration)
                     if not response_text:
-                        return {"success": False, "error": "benchmark produced no visible output",
-                                "measurement_warning": "thinking_only_output" if thinking_chars else "empty_visible_output",
-                                "thinking_chars": thinking_chars}
+                        failure = {"success": False, "error": "benchmark produced no visible output",
+                                   "measurement_warning": "thinking_only_output" if thinking_chars else "empty_visible_output",
+                                   "thinking_chars": thinking_chars}
+                        if context_recovery is not None:
+                            failure["context_recovery"] = context_recovery
+                        return failure
                 else:
                     return {"success": False, "error": "Runtime does not support generation"}
             except Exception as exc:
@@ -921,9 +1071,12 @@ class HardwareBenchmarkRunner:
                 if sampler_thread is not None:
                     sampler_thread.join(timeout=0.5)
             if not response_text:
-                return {"success": False, "error": "benchmark produced no visible output",
-                        "measurement_warning": "thinking_only_output" if thinking_chars else "empty_visible_output",
-                        "thinking_chars": thinking_chars}
+                failure = {"success": False, "error": "benchmark produced no visible output",
+                           "measurement_warning": "thinking_only_output" if thinking_chars else "empty_visible_output",
+                           "thinking_chars": thinking_chars}
+                if context_recovery is not None:
+                    failure["context_recovery"] = context_recovery
+                return failure
             return {"success": True}
 
         scheduler_result: Mapping[str, Any] = {}
@@ -993,13 +1146,16 @@ class HardwareBenchmarkRunner:
         queue_wait_ms = scheduler_result.get("_lah_scheduler_queue_wait_ms")
 
         if not response_text:
-            return {
+            failure = {
                 "success": False,
                 "model": target_model,
                 "error": "benchmark produced no visible output",
                 "measurement_warning": "thinking_only_output" if thinking_chars else "empty_visible_output",
                 "thinking_chars": thinking_chars,
             }
+            if context_recovery is not None:
+                failure["context_recovery"] = context_recovery
+            return failure
         if tokens_count <= 0:
             tokens_count = len(response_text.split())
             token_count_estimated = True
@@ -1056,8 +1212,10 @@ class HardwareBenchmarkRunner:
                 model_digest = candidate_digest.lower()
                 model_digest_status = "verified_installed"
 
-        if loaded_model_vram_status != "observed_loaded_model":
-            observe_loaded_model_vram()
+        # The request may resize or replace the Ollama runner. Observe after inference
+        # so context qualification describes the runner that handled the measurement,
+        # rather than a pre-request runner with a smaller default context.
+        observe_loaded_model_vram()
 
         record: dict[str, Any] = {
             "timestamp": time.time(),
@@ -1086,8 +1244,43 @@ class HardwareBenchmarkRunner:
             "initial_vram": initial_vram,
             "final_vram": final_vram,
         }
+        if context_tokens is not None:
+            record["requested_context_tokens"] = context_tokens
+            context_qualified = (
+                loaded_model_context_tokens is not None
+                and loaded_model_context_tokens >= context_tokens
+            )
+            record["context_qualified"] = context_qualified
+            record["context_qualification_status"] = (
+                "unknown"
+                if loaded_model_context_tokens is None
+                else "verified"
+                if context_qualified
+                else "below_requested"
+            )
+        if context_recovery is not None:
+            record["context_recovery"] = context_recovery
+        if backend_provider is not None:
+            record["backend_provider"] = backend_provider
+        if loaded_model_context_tokens is not None:
+            record["loaded_model_context_tokens"] = loaded_model_context_tokens
         if measurement_warning:
             record["measurement_warning"] = measurement_warning
+        if prompt_eval_count is not None:
+            record["prompt_eval_count"] = prompt_eval_count
+            record["prompt_eval_count_method"] = "backend_prompt_eval_count"
+        if prompt_eval_duration_ns is not None:
+            record["prompt_eval_duration_ms"] = round(
+                prompt_eval_duration_ns / 1_000_000, 2
+            )
+        if (
+            prompt_eval_count is not None
+            and prompt_eval_duration_ns is not None
+            and prompt_eval_duration_ns > 0
+        ):
+            record["prefill_tokens_per_second"] = round(
+                prompt_eval_count / (prompt_eval_duration_ns / 1_000_000_000), 2
+            )
         if (
             not isinstance(queue_wait_ms, bool)
             and isinstance(queue_wait_ms, (int, float))

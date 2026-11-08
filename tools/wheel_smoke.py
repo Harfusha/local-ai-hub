@@ -140,7 +140,6 @@ def _write_smoke_config(directory: Path, *, port: int) -> Path:
                 "auto_tune = false",
                 "",
                 "[security]",
-                'api_token = ""',
                 "",
                 "[features]",
                 "preprocessing = false",

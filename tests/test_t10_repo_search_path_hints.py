@@ -369,3 +369,28 @@ def test_tool_repo_search_preserves_text_without_evidence_receipt() -> None:
 
     assert result["results"][0]["text"] == "needle button"
     assert result["progressive_disclosure"] is False
+
+
+@pytest.mark.parametrize(
+    ("search_mode", "query"),
+    [("lexical", "needle"), ("hybrid", "repoSearch")],
+)
+def test_repo_search_does_not_claim_complete_coverage_for_truncated_results(
+    tmp_path: Path, search_mode: str, query: str,
+) -> None:
+    services = _search_service(tmp_path, _CandidatePreprocessor([]))
+    services._repo_search_lexical = lambda *_args, **_kwargs: {
+        "success": True,
+        "results": [],
+        "has_more": False,
+        "truncated": True,
+        "truncation_reasons": ["candidate_file_limit"],
+    }
+
+    result = services.repo_search(
+        str(tmp_path), query, search_mode=search_mode,
+    )
+
+    assert result["success"] is True
+    assert result["truncated"] is True
+    assert result["coverage_complete"] is False

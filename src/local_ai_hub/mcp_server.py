@@ -295,10 +295,6 @@ def _operational_mode_rejection(
 try:
     CLIENT = _build_mcp_client(CONFIG_PATH)
     CFG = load_config(CONFIG_PATH, probe_hardware=False)
-    if (os.environ.get("LOCAL_AI_AGENT_PROFILE") or os.environ.get("LOCAL_AI_AGENT")) == "opencode-local":
-        from local_ai_hub.opencode_boundary import local_profile_config
-
-        CFG = local_profile_config(CFG, os.environ.get("LOCAL_AI_HUB_TOKEN", ""))
     atexit.register(CLIENT.close)
     FEATURES = FeatureSet.from_config(CFG)
     MCP_CFG = CFG.get("mcp", {})
@@ -1065,6 +1061,9 @@ _HARDWARE_BENCHMARK_PROTECTED_KEYS = (
     "tokens_generated", "token_count_estimated", "token_count_method",
     "ttft_ms", "call_latency_ms", "latency_basis", "tokens_per_second",
     "hardware_score", "generation_duration_ms", "load_duration_ms",
+    "requested_context_tokens",
+    "prompt_eval_count", "prompt_eval_count_method", "prompt_eval_duration_ms",
+    "prefill_tokens_per_second",
     "queue_wait_ms", "peak_vram_bytes", "peak_vram_scope",
     "initial_vram", "final_vram", "measurement_warning",
 )
@@ -1741,6 +1740,15 @@ def _compact(
     compact_extra_fields = extra_fields
     if task_kind == "status":
         compact_extra_fields = list(dict.fromkeys([*(extra_fields or ()), "job_id"]))
+    compact_max_items = 50
+    if (
+        task_kind == "coord"
+        and options.get("action") == "plan_board_view"
+        and isinstance(raw_value, dict)
+        and type(raw_value.get("total_items")) is int
+        and raw_value["total_items"] >= 0
+    ):
+        compact_max_items = max(compact_max_items, raw_value["total_items"])
     compacted = compact_result(
         projected,
         max_text_chars=MAX_TEXT,
@@ -1750,7 +1758,7 @@ def _compact(
             if (task_kind in {"search", "code_index"} or page_key in {"callers", "callees", "implementations"}) and isinstance(raw_value, dict)
             and isinstance(raw_value.get("limit"), int)
             and not isinstance(raw_value.get("limit"), bool)
-            else 50
+            else compact_max_items
         ),
         extra_fields=compact_extra_fields,
     )
@@ -1782,6 +1790,12 @@ def _compact(
         compacted.update({key: raw_value[key] for key in _COMPLEXITY_PROTECTED_KEYS if key in raw_value})
     if task_kind == "topology" and isinstance(raw_value, dict) and isinstance(compacted, dict):
         compacted.update({key: raw_value[key] for key in _TOPOLOGY_PROTECTED_KEYS if key in raw_value})
+    if task_kind == "hardware_benchmark" and isinstance(raw_value, dict) and isinstance(compacted, dict):
+        compacted.update({
+            key: raw_value[key]
+            for key in _HARDWARE_BENCHMARK_PROTECTED_KEYS
+            if key in raw_value
+        })
     source_slice = task_kind == "artifact" and isinstance(raw_value, dict) and raw_value.get("action") == "source"
     if source_slice and isinstance(compacted, dict) and raw_value.get("success") is True:
         from .source_slice import SOURCE_SLICE_FIELDS
@@ -2940,6 +2954,7 @@ def local_ai_task(
     automation: dict[str, Any] | None = None,
     complexity: str = "auto",
     max_tokens: int = 0,
+    context_tokens: int | None = None,
     tasks: list[dict[str, Any]] | None = None,
     items: list[Any] | None = None,
     cases: list[dict[str, Any]] | None = None,
@@ -3034,6 +3049,7 @@ def local_ai_task(
     input_values = {
         "task": task, "prompt": prompt, "context": context,
         "candidate": candidate, "workspace": workspace, "model": model,
+        "context_tokens": context_tokens,
         "root": root, "language": language, "candidate_data": candidate_data,
         "evaluation_task_id": evaluation_task_id,
     }
@@ -3336,7 +3352,10 @@ def local_ai_task(
     if action == "benchmark":
         return _compact(CLIENT.post("/api/benchmark", {}, timeout=_timeout("long")), "status")
     if action == "hardware_benchmark":
-        return _compact(CLIENT.post("/api/benchmark/run", {"model": model or "", "prompt": prompt, "num_tokens": max_tokens or 40}, timeout=_timeout("long")), "hardware_benchmark")
+        payload = {"model": model or "", "prompt": prompt, "num_tokens": max_tokens or 40}
+        if context_tokens is not None:
+            payload["context_tokens"] = context_tokens
+        return _compact(CLIENT.post("/api/benchmark/run", payload, timeout=_timeout("long")), "hardware_benchmark")
     if action == "evaluation_record":
         return _compact(CLIENT.post("/api/evaluation", {
             "action": "record", "task_id": evaluation_task_id, "cohort": evaluation_cohort,
@@ -3992,6 +4011,8 @@ def _local_ai_repo_impl(
     max_tokens = 0 if max_tokens is None else max_tokens
     max_response_tokens = 0 if max_response_tokens is None else max_response_tokens
     relation = "" if relation is None else relation
+    if action == "git_log" and max_commits is None and limit is not None:
+        max_commits = limit
     max_commits = 50 if max_commits is None else max_commits
     author = "" if author is None else author
     since = "" if since is None else since
@@ -4643,7 +4664,7 @@ def _local_ai_repo_impl(
         if profile_path and not is_rooted_path(profile_path):
             profile_path = str(Path(_client_root(root)) / profile_path)
         return _compact(CLIENT.post("/api/repo/profile_digest", {
-            "profile_path": profile_path, "top_n": max_tokens or 15,
+            "root": root, "profile_path": profile_path, "top_n": max_tokens or 15,
         }, timeout=_timeout("quick")), "architecture")
     if action == "callers":
         if not isinstance(query, str) or not query.strip() or task or path or isinstance(max_tokens, bool) or max_tokens != 0:
@@ -4797,7 +4818,7 @@ def _local_ai_repo_impl(
         return _compact(CLIENT.get(f"/api/git/diff?root={quote(root)}&path={quote(path or '')}&staged={'true' if staged else 'false'}&max_lines={max_tokens or 500}&base={quote(base or 'HEAD')}"), "diff",
                         extra_fields=[*(extra_fields or []), "stats_complete", "paths_complete", "diff_sha256", "comparison"])
     if action in {"git_history_search", "git_log"}:
-        max_c = limit or max_commits or 20
+        max_c = max_commits
         return _compact(CLIENT.post("/api/git/history_search", {
             "root": root, "query": query or "", "max_commits": max_c,
             "author": author or None, "since": since or None, "until": until or None,
@@ -5007,6 +5028,8 @@ def local_ai_repo(
             return {"success": False, "error": hotspot_error, "status_code": 400,
                     "terminal": True, "retryable": False}
     if resolved_action in {"git_history_search", "git_log"}:
+        if resolved_action == "git_log" and max_commits is None and limit is not None:
+            max_commits = limit
         if query is None:
             query = ""
         if (
@@ -5016,14 +5039,16 @@ def local_ai_repo(
         ):
             return {"success": False, "error": "query must be a bounded literal string", "status_code": 400,
                     "terminal": True, "retryable": False}
+        history_arguments = {
+            "query": query, "max_commits": 50 if max_commits is None else max_commits,
+            "author": "" if author is None else author,
+            "since": "" if since is None else since,
+            "until": "" if until is None else until,
+        }
+        if path is not None:
+            history_arguments["path"] = path
         history_error = validate_operation_arguments(
-            "local_ai_repo", resolved_action,
-            {
-                "query": query, "max_commits": 50 if max_commits is None else max_commits,
-                "author": "" if author is None else author,
-                "since": "" if since is None else since,
-                "until": "" if until is None else until, "path": path,
-            },
+            "local_ai_repo", resolved_action, history_arguments,
         )
         if history_error is not None:
             return {"success": False, "error": history_error, "status_code": 400,
@@ -5445,6 +5470,19 @@ def local_ai_coord(
             "coord" if action.startswith("plan_") or action == "plan_bind_task" else "status",
             plan_extra if action.startswith("plan_") else None,
         )
+        if (
+            action == "plan_board_view"
+            and isinstance(result, dict)
+            and result.get("success") is True
+            and isinstance(projected, dict)
+            and projected.get("success") is True
+        ):
+            # Board cards are the response payload, not advisory list context.
+            # Keep the complete board through projection; compact_result applies
+            # the endpoint-specific item bound and the response budget handles size.
+            for key in ("columns", "counts", "total_items"):
+                if key in result:
+                    projected[key] = copy.deepcopy(result[key])
         if action == "plan_get" and isinstance(result, dict) and result.get("success") is True:
             if (not isinstance(projected, dict) or projected.get("success") is not True or
                 projected.get("plan") != result.get("plan") or

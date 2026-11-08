@@ -42,14 +42,13 @@ def seed_artifact(sandbox_root: Path, target_task_id: str) -> dict[str, str]:
         config = tomllib.load(stream)
     server = config.get("server", {})
     security = config.get("security", {})
-    token = security.get("api_token")
     if (server.get("bind") != "127.0.0.1"
             or type(server.get("port")) is not int
             or server["port"] in (11434, 11435)
             or Path(server.get("state_dir", "")).resolve() != state.resolve()
             or security.get("allowed_roots") != [workspace.resolve().as_posix()]
-            or not isinstance(token, str) or len(token) < 32):
-        raise ValueError("case 098 isolated Hub config required")
+            or any(key in security for key in ("api_token", "supervisor_token", "action_tokens", "api_token_permissions"))):
+        raise ValueError("case 098 isolated tokenless Hub config required")
     source_file = root / "source.txt"
     source = Path(source_file.read_text(encoding="utf-8").strip()).resolve(strict=True)
     if not (source / "src" / "local_ai_hub" / "artifacts.py").is_file():

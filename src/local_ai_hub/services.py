@@ -3145,10 +3145,23 @@ class LocalAIServices:
         evidence = value.get("evidence")
         if not isinstance(evidence, list) or not evidence:
             return True
-        validate = getattr(getattr(self, "evidence_store", None), "validate_current", None)
-        if not callable(validate) or len(evidence) > 64:
+        evidence_store = getattr(self, "evidence_store", None)
+        if len(evidence) > 64:
             return False
         try:
+            evidence_ids = [
+                item.get("evidence_id")
+                for item in evidence
+                if isinstance(item, dict)
+            ]
+            if len(evidence_ids) != len(evidence):
+                return False
+            validate_many = getattr(evidence_store, "validate_current_many", None)
+            if callable(validate_many):
+                return validate_many(evidence_ids) is True
+            validate = getattr(evidence_store, "validate_current", None)
+            if not callable(validate):
+                return False
             return all(isinstance(item, dict) and isinstance(item.get("evidence_id"), str)
                        and bool(item["evidence_id"]) and validate(item["evidence_id"]) is True
                        for item in evidence)
@@ -3294,7 +3307,12 @@ class LocalAIServices:
             result.update({
                 "search_mode": "lexical", "result_source": "lexical",
                 "index_state": "current_sources" if result.get("success") is True else "unavailable",
-                "coverage_complete": result.get("success") is True,
+                "coverage_complete": (
+                    result.get("success") is True
+                    and result.get("truncated") is False
+                    and result.get("has_more") is False
+                    and result.get("read_errors", 0) == 0
+                ),
                 "reranker": {"requested": False, "used": False, "degraded": False},
             })
             for item in result.get("results", []) if result.get("success") is True else []:
@@ -3315,7 +3333,12 @@ class LocalAIServices:
             result.update({
                 "search_mode": "hybrid",
                 "result_source": "lexical",
-                "coverage_complete": succeeded,
+                "coverage_complete": (
+                    succeeded
+                    and result.get("truncated") is False
+                    and result.get("has_more") is False
+                    and result.get("read_errors", 0) == 0
+                ),
                 "degraded": not succeeded,
                 "degradation_reason": None if succeeded else result.get("error", "lexical_search_unavailable"),
                 "index_state": "current_sources" if succeeded else "unavailable",
@@ -3841,7 +3864,13 @@ class LocalAIServices:
                 ):
                     request_hints.append(hint)
         try:
-            workspace_state = self._repo_cache_state(root) or {}
+            tracker = getattr(self, "repo_state", None)
+            fingerprint = getattr(tracker, "fingerprint", None)
+            workspace_state = (
+                fingerprint(root, force=True) or {}
+                if callable(fingerprint)
+                else self._repo_cache_state(root) or {}
+            )
         except Exception:
             workspace_state = {}
         repository_revision = (
@@ -5203,10 +5232,64 @@ class LocalAIServices:
             }
 
         callers_res = self.callers(root, symbol, limit=limit)
-        caller_items = callers_res.get("callers", []) if isinstance(callers_res, dict) and callers_res.get("success") else []
+        callers_ok = isinstance(callers_res, dict) and callers_res.get("success") is True
+        caller_items = callers_res.get("callers", []) if callers_ok else []
 
         callees_res = self.callees(root, symbol, limit=limit)
-        callee_items = callees_res.get("callees", []) if isinstance(callees_res, dict) and callees_res.get("success") else []
+        callees_ok = isinstance(callees_res, dict) and callees_res.get("success") is True
+        callee_items = callees_res.get("callees", []) if callees_ok else []
+
+        caller_coverage = callers_res.get("coverage") if isinstance(callers_res, dict) else None
+        callee_coverage = callees_res.get("coverage") if isinstance(callees_res, dict) else None
+        coverage_complete = (
+            callers_ok and callees_ok
+            and isinstance(caller_coverage, dict) and caller_coverage.get("complete") is True
+            and isinstance(callee_coverage, dict) and callee_coverage.get("complete") is True
+        )
+        if coverage_complete:
+            coverage_reason = None
+        elif not isinstance(caller_coverage, dict) or not isinstance(callee_coverage, dict):
+            coverage_reason = "subquery_coverage_missing"
+        else:
+            coverage_reason = "subquery_coverage_incomplete"
+
+        caller_freshness = callers_res.get("freshness") if isinstance(callers_res, dict) else None
+        callee_freshness = callees_res.get("freshness") if isinstance(callees_res, dict) else None
+        freshness_statuses = [
+            item.get("status") for item in (caller_freshness, callee_freshness)
+            if isinstance(item, dict) and isinstance(item.get("status"), str)
+        ]
+        if "not_checked" in freshness_statuses:
+            freshness_status = "not_checked"
+        elif not freshness_statuses:
+            freshness_status = "not_reported"
+        elif len(set(freshness_statuses)) == 1:
+            freshness_status = freshness_statuses[0]
+        else:
+            freshness_status = "mixed"
+
+        index_states = [
+            item.get("index_available") for item in (callers_res, callees_res)
+            if isinstance(item, dict) and isinstance(item.get("index_available"), bool)
+        ]
+        index_available = False if False in index_states else True if len(index_states) == 2 and all(index_states) else None
+        subquery_errors = {
+            name: response.get("error")
+            for name, response, succeeded in (
+                ("callers", callers_res, callers_ok), ("callees", callees_res, callees_ok),
+            )
+            if not succeeded and isinstance(response, dict) and response.get("error")
+        }
+        truncated = any(
+            response.get("truncated") is True
+            for response in (callers_res, callees_res)
+            if isinstance(response, dict)
+        )
+        stale = any(
+            response.get("stale") is True
+            for response in (callers_res, callees_res)
+            if isinstance(response, dict)
+        )
 
         expanded_callers = []
         if depth > 1 and caller_items:
@@ -5227,7 +5310,7 @@ class LocalAIServices:
                     expanded_callees.append({"symbol": callee_sym, "calls": sub_callees})
 
         result = {
-            "success": True,
+            "success": callers_ok and callees_ok,
             "symbol": symbol,
             "found_in": found_in,
             "callers": caller_items,
@@ -5235,6 +5318,22 @@ class LocalAIServices:
             "callees": callee_items,
             "callee_count": len(callee_items),
             "depth": depth,
+            "partial": not (callers_ok and callees_ok and coverage_complete and freshness_status not in {"not_checked", "not_reported", "mixed"}) or truncated or stale,
+            "coverage": {
+                "complete": coverage_complete,
+                "reason": coverage_reason,
+                "callers": caller_coverage,
+                "callees": callee_coverage,
+            },
+            "freshness": {
+                "status": freshness_status,
+                "callers": caller_freshness,
+                "callees": callee_freshness,
+            },
+            "index_available": index_available,
+            "truncated": truncated,
+            "stale": stale,
+            "subquery_errors": subquery_errors,
         }
         if depth > 1:
             result["hierarchy"] = {
@@ -8726,7 +8825,12 @@ class LocalAIServices:
                         timeout=timeout, check=False, **hidden_run_kwargs(text=True),
                     )
                     if checked.returncode != 0:
-                        errors.append((checked.stderr or checked.stdout or "git apply --check failed").strip()[:500])
+                        check_error = (checked.stderr or checked.stdout or "git apply --check failed").strip()[:500]
+                        errors.append(check_error)
+                        if any(marker in check_error.casefold() for marker in (
+                            "corrupt patch", "patch fragment without header", "unrecognized input",
+                        )):
+                            syntax_errors.append(check_error)
                 except FileNotFoundError:
                     errors.append("git is unavailable for applicability check")
                 except subprocess.TimeoutExpired:

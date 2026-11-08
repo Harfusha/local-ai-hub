@@ -1049,8 +1049,10 @@ enabled = true
             headers={"Content-Type": "application/json"},
             method="POST",
         )
-        with urllib.request.urlopen(request, timeout=3) as response:
-            payload = json.loads(response.read().decode("utf-8"))
+        with pytest.raises(urllib.error.HTTPError) as not_found:
+            urllib.request.urlopen(request, timeout=3)
+        payload = json.loads(not_found.value.read().decode("utf-8"))
+        assert not_found.value.code == 404
         assert payload["success"] is False
         assert payload["work_id"] == "missing"
         assert "not found" in payload["error"]
@@ -1092,7 +1094,7 @@ def test_direct_http_model_routes_share_capability_tier_registry():
     assert _http_hardware_capability_error("/api/delegate/repo", {}, balanced) is None
     assert _http_hardware_capability_error("/api/delegate/repo", {}, low)["minimum_profile"] == "balanced"
     high = {"features": {"local_semantic_analysis": True}, "hardware": {"profile": "high"}}
-    assert _http_hardware_capability_error("/api/solve/repo", {}, balanced)["minimum_profile"] == "high"
+    assert _http_hardware_capability_error("/api/solve/repo", {}, balanced)["minimum_profile"] == "medium"
     assert _http_hardware_capability_error("/api/solve/repo", {}, high) is None
     assert _http_hardware_capability_error("/api/reason", {}, {"hardware": {"profile": "high"}})["error_code"] == "capability_feature_disabled"
     assert _http_hardware_capability_error("/api/async-jobs", {"action": "submit", "job_action": "review_diff"}, balanced) is None

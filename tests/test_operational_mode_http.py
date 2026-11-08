@@ -99,10 +99,10 @@ class _OllamaRuntime:
         return {"success": True, "unloaded": unloaded, "remaining": [], "verified": True}
 
 
-def _handler(monkeypatch, tmp_path, *, method, path, payload=None, peer="127.0.0.1", auth_token="test-mode-token", manager=None, runtime=None):
+def _handler(monkeypatch, tmp_path, *, method, path, payload=None, peer="127.0.0.1", auth_token=None, manager=None, runtime=None):
     responses = []
     app = SimpleNamespace(
-        config={"server": {"state_dir": str(tmp_path), "bind": "127.0.0.1"}, "security": {"api_token": "test-mode-token"}},
+        config={"server": {"state_dir": str(tmp_path), "bind": "127.0.0.1"}, "security": {}},
         async_jobs=manager or _ModeManager(tmp_path),
         runtime=runtime or _OllamaRuntime(["fast:latest"]),
         recovery=_Recovery(),
@@ -388,32 +388,33 @@ def test_mode_api_rejects_non_loopback_peer(monkeypatch, tmp_path):
     assert responses[0][1]["error"] == "local_control_requires_loopback"
 
 
-def test_mode_api_obeys_configured_api_token(monkeypatch):
+def test_mode_api_is_loopback_only_and_tokenless(monkeypatch):
     monkeypatch.setattr(http_server, "APP", SimpleNamespace(
-        config={"security": {"api_token": "local-secret"}}
+        config={"security": {}}
     ))
     handler = object.__new__(http_server.Handler)
     handler.headers = {}
+    handler.client_address = ("127.0.0.1", 1000)
 
-    assert http_server.Handler._authorized(handler) is False
-    handler.headers = {"X-LocalAI-Token": "local-secret"}
     assert http_server.Handler._authorized(handler) is True
+    handler.client_address = ("192.0.2.10", 1000)
+    handler.headers = {"X-LocalAI-Token": "ignored-legacy-token"}
+    assert http_server.Handler._authorized(handler) is False
 
 
-def test_post_admin_mode_accepts_authorized_non_loopback_peer(monkeypatch, tmp_path):
+def test_post_admin_mode_rejects_non_loopback_peer_even_with_legacy_token(monkeypatch, tmp_path):
     handler, _app, responses = _handler(
         monkeypatch, tmp_path, method="POST", path="/api/admin/mode",
-        payload={"mode": "gaming"}, peer="192.0.2.10",
+        payload={"mode": "gaming"}, peer="192.0.2.10", auth_token="ignored-legacy-token",
     )
 
     http_server.Handler.do_POST(handler)
 
-    assert responses[0][0] == 200
-    assert responses[0][1]["mode"] == "gaming"
-    assert operational_mode.load_operational_mode(tmp_path).mode == "gaming"
+    assert responses[0][0] == 403
+    assert operational_mode.load_operational_mode(tmp_path).mode == "active"
 
 
-def test_post_admin_mode_requires_api_token(monkeypatch, tmp_path):
+def test_post_admin_mode_allows_loopback_without_api_token(monkeypatch, tmp_path):
     handler, _app, responses = _handler(
         monkeypatch, tmp_path, method="POST", path="/api/admin/mode",
         payload={"mode": "gaming"}, auth_token=None,
@@ -421,9 +422,9 @@ def test_post_admin_mode_requires_api_token(monkeypatch, tmp_path):
 
     http_server.Handler.do_POST(handler)
 
-    assert responses[0][0] == 401
-    assert responses[0][1]["error"] == "unauthorized"
-    assert operational_mode.load_operational_mode(tmp_path).mode == "active"
+    assert responses[0][0] == 200
+    assert responses[0][1]["mode"] == "gaming"
+    assert operational_mode.load_operational_mode(tmp_path).mode == "gaming"
 
 
 def test_post_mode_rejects_invalid_mode_without_persisting(monkeypatch, tmp_path):

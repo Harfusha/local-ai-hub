@@ -126,10 +126,8 @@ def _percentile(values: list[float], percentile: float) -> float | None:
     return ordered[max(0, math.ceil(percentile * len(ordered)) - 1)]
 
 
-def _request(url: str, payload: dict[str, Any], token: str, timeout: float) -> tuple[int, dict[str, Any]]:
+def _request(url: str, payload: dict[str, Any], timeout: float) -> tuple[int, dict[str, Any]]:
     headers = {"Content-Type": "application/json"}
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
     request = urllib.request.Request(
         url,
         data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
@@ -170,10 +168,8 @@ def run(
     validate_cases(root, cases)
     config = load_config(probe_hardware=False)
     server = config.get("server", {})
-    bind = str(server.get("bind", "127.0.0.1"))
-    host = "127.0.0.1" if bind in {"0.0.0.0", "::", ""} else bind
+    host = "127.0.0.1"
     port = int(server.get("port", 11435))
-    token = str(config.get("security", {}).get("api_token", ""))
     url = f"http://{host}:{port}/api/search"
     rows: list[dict[str, Any]] = []
     for mode in modes:
@@ -188,7 +184,7 @@ def run(
                 }
                 started = time.perf_counter()
                 try:
-                    status, response = _request(url, payload, token, float(timeout_seconds))
+                    status, response = _request(url, payload, float(timeout_seconds))
                     error = None
                 except (OSError, TimeoutError, urllib.error.URLError) as exc:
                     status, response, error = None, {}, type(exc).__name__

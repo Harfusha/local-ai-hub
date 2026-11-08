@@ -4,7 +4,7 @@
 
 ## HTTP authentication
 
-The HTTP server accepts loopback binds only. Protected routes require a configured credential and the permission assigned to that route. Set `security.api_token` for the service credential and optionally restrict its coarse roles with `security.api_token_permissions`. `security.supervisor_token` is limited to administrative scopes. `security.action_tokens` maps action names to individual credentials. The removed `security.users`, `security.api_token_tenant`, and `security.api_token_principal` keys reject by presence, including empty values. Credential values must be unique across supported credential types. Diagnostic config views redact every token.
+The HTTP server accepts loopback peers only and binds to `127.0.0.1`. Hub API credentials do not exist; loopback HTTP/MCP calls need no Hub token. The retired `security.api_token`, `security.supervisor_token`, `security.action_tokens`, and `security.api_token_permissions` keys reject by presence, including empty values. Retired user, tenant, and principal fields also reject by presence. `allowed_roots`, command authorization, capabilities, approvals, leases, rate limits, and audit records continue to constrain operations.
 
 ## Hardware
 

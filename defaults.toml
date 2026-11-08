@@ -15,8 +15,7 @@ overload_wait_seconds = 0.05
 max_request_body_bytes = 16777216 # 16 MiB for JSON/API requests; bundle upload has its own limit
 
 [security]
-# HTTP access is loopback-only. An empty token trusts local clients; a configured token is enforced.
-api_token = "" # optional token for trusted local integrations
+# HTTP access is loopback-only and requires no API credential.
 
 [automation]
 enabled = false
@@ -38,8 +37,7 @@ allow_physical_input = false
 [browser_bridge]
 # Capture is explicit: only the extension action click can request the current tab.
 enabled = true
-# Empty by default: operators must configure the exact extension origin (or
-# protect the route with the hub API token). Never use a wildcard origin.
+# Empty by default: operators must configure the exact extension origin. Never use a wildcard origin.
 allowed_origins = []
 capability_ttl_seconds = 60
 max_payload_bytes = 12582912

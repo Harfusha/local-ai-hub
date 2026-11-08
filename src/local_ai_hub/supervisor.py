@@ -392,13 +392,9 @@ class Supervisor:
             return False
         server = self.config["server"]
         host = "127.0.0.1"
-        headers: dict[str, str] = {}
-        token = str(self.config.get("security", {}).get("api_token", ""))
-        if token:
-            headers["X-LocalAI-Token"] = token
         try:
             timeout = max(0.1, min(10.0, float(self.cfg.get("health_probe_timeout_seconds", 5.0))))
-            with urlopen(Request(f"http://{host}:{int(server.get('port', 11435))}/health", headers=headers), timeout=timeout) as response:
+            with urlopen(Request(f"http://{host}:{int(server.get('port', 11435))}/health"), timeout=timeout) as response:
                 if response.status != 200:
                     self.last_health_error = f"http_status_{response.status}"
                     return False
@@ -448,14 +444,9 @@ class Supervisor:
             return False
         server = self.config["server"]
         host = "127.0.0.1"
-        headers: dict[str, str] = {}
-        security = self.config.get("security", {})
-        token = str(security.get("api_token", "") or "")
-        if token:
-            headers["X-LocalAI-Token"] = token
         try:
             timeout = max(0.1, min(3.0, float(self.cfg.get("readiness_probe_timeout_seconds", 1.0))))
-            with urlopen(Request(f"http://{host}:{int(server.get('port', 11435))}/ready", headers=headers), timeout=timeout) as response:
+            with urlopen(Request(f"http://{host}:{int(server.get('port', 11435))}/ready"), timeout=timeout) as response:
                 if response.status != 200:
                     return False
                 payload = json.loads(response.read().decode("utf-8"))

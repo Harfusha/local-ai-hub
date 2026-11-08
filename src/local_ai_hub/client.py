@@ -190,12 +190,6 @@ class HubClient:
         self._http_host = str(endpoint.hostname or "127.0.0.1")
         self._http_port = int(endpoint.port or 80)
         self.agent = os.environ.get("LOCAL_AI_AGENT_PROFILE") or os.environ.get("LOCAL_AI_AGENT") or "generic"
-        self.api_token = (os.environ.get("LOCAL_AI_HUB_TOKEN", "") if self.agent == "opencode-local"
-                          else str(self.config.get("security", {}).get("api_token", "")))
-        if self.agent == "opencode-local":
-            from .opencode_boundary import local_profile_config
-
-            self.config = local_profile_config(self.config, self.api_token)
         # An isolated OpenCode client may connect only to its existing Hub.
         # It must never start an unsandboxed replacement on connection failure.
         self.auto_start = bool(auto_start) and self.agent != "opencode-local"
@@ -571,8 +565,7 @@ class HubClient:
             health_timeout = self.health_timeout if timeout is None else max(0.0, float(timeout))
             if health_timeout <= 0:
                 return False
-            headers = {"X-LocalAI-Token": self.api_token} if self.api_token else {}
-            with urlopen(Request(f"{self.base_url}/ready", headers=headers), timeout=health_timeout) as response:
+            with urlopen(Request(f"{self.base_url}/ready"), timeout=health_timeout) as response:
                 try:
                     response.read()
                 except Exception:
@@ -968,8 +961,6 @@ class HubClient:
             }
             if cancel_event is not None:
                 headers["X-LocalAI-Cancel-On-Disconnect"] = "1"
-            if self.api_token:
-                headers["X-LocalAI-Token"] = self.api_token
             try:
                 open_options = {
                     "operational_action": operational_action,
@@ -1144,9 +1135,6 @@ class HubClient:
             "X-LocalAI-Agent": self.agent,
             "X-LocalAI-Request-ID": request_id,
         }
-        if self.api_token:
-            headers["X-LocalAI-Token"] = self.api_token
-
         def once(attempt_timeout: float) -> dict[str, Any]:
             try:
                 open_options = {
@@ -2168,9 +2156,6 @@ class HubClient:
             "X-LocalAI-Agent": self.agent,
             "X-LocalAI-Request-ID": request_id,
         }
-        if self.api_token:
-            headers["X-LocalAI-Token"] = self.api_token
-            headers["Authorization"] = f"Bearer {self.api_token}"
         req = Request(url, headers=headers)
         monitor_stopped = threading.Event()
         deadline_expired = threading.Event()

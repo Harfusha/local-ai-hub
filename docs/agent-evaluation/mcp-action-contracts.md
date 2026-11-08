@@ -597,7 +597,7 @@ Fields use action metadata: required, non-empty, allowed (if explicitly restrict
 | local_ai_work.get | work_id | work_id | shared schema; scoped: none declared |  | none in operation contract | read_only; retry=True; idem=True; replay=False | success, error, terminal, retryable, degraded, stale, cancelled, evidence_ids |
 | local_ai_work.cancel | work_id | work_id | shared schema; scoped: none declared |  | none in operation contract | work_order_state; retry=False; idem=False; replay=False | success, error, terminal, retryable, degraded, stale, cancelled, evidence_ids |
 
-The live schema currently exposes `local_ai_work.submit` and `local_ai_work.continue`; this source-contract snapshot has no per-action rows for them. Case 129 must capture their live input and output contracts before runtime coverage is claimed.
+Round 129 recorded `local_ai_work.submit` and `local_ai_work.continue` in one GPT-6 Luna Medium session; that observation is session-bound, not a current or universal exposure guarantee. This source-contract snapshot has no per-action rows for them. Case 134 distinguishes their source contract and gates from each session's live enum; case 129 remains the input/output contract audit.
 
 
 ## Shared validation branches
@@ -616,6 +616,6 @@ The live schema currently exposes `local_ai_work.submit` and `local_ai_work.cont
 
 ## Inventory reconciliation
 
-Rows above describe the source-contract snapshot and do not establish current MCP exposure. Use the live action inventory in mcp-action-coverage.md. Cases 114-129 provide runtime scenarios; case 129 is the field-level positive/negative contract audit.
+Rows above describe the source-contract snapshot and do not establish current MCP exposure. Use the live action inventory in mcp-action-coverage.md. Cases 114-133 provide action scenarios; case 129 audits field-level contracts, and case 134 separates source-supported `local_ai_work` actions from per-session exposure and gating.
 
-Source-contract action rows emitted: 218. The live work submit/continue actions are not represented in this index.
+Source-contract action rows emitted: 218. This generated index omits per-action rows for `local_ai_work.submit` and `.continue` even though `operation_contracts.py` declares both; live exposure remains session-specific. Case 134 verifies the exact source declaration separately.

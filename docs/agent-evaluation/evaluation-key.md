@@ -1,9 +1,9 @@
-# Local AI Hub: hodnoticí klíč ke 116 aktivním promptům
+# Local AI Hub: hodnoticí klíč ke 121 aktivním promptům
 
 **Pouze pro hodnotitele. Agentům tento soubor nepředávat.**
 Aktualizováno 8. 11. 2026. Testovací infrastruktura ani fixture nejsou tímto dokumentem implementované. Výsledky běhů jsou v `results.md`.
 
-Aktivní katalog má 116 promptů se stabilními ID. Tyto scénáře byly sloučeny a nespouštějí se samostatně: 076→129; 080–082→118; 084→121; 085–086→120; 087–088→119; 103→122; 104 a 107→123; 111→117. Jejich historické výsledky zůstávají v `results.md`; následující starší hodnoticí klíče slouží jako archivní detail.
+Aktivní katalog má 121 promptů se stabilními ID. Tyto scénáře byly sloučeny a nespouštějí se samostatně: 076→129; 080–082→118; 084→121; 085–086→120; 087–088→119; 103→122; 104 a 107→123; 111→117. Jejich historické výsledky zůstávají v `results.md`; následující starší hodnoticí klíče slouží jako archivní detail.
 
 ## Sloučené akceptační větve
 
@@ -15,6 +15,13 @@ Aktivní katalog má 116 promptů se stabilními ID. Tyto scénáře byly slouč
 - 103→122: `passed: "true"`, chybějící execution record a nesoulad task ID nesmí dokončit task.
 - 104/107→123: neúplný context artifact stránkuj přes přesný `next_offset` až po `null`; memory aliasy/chybějící pole odmítni bez zápisu.
 - 111→117: fast preprocess odmítne traversal před změnou indexu; sentinel mimo root zůstane beze změny.
+
+## Nové MCP repo scénáře 130–132
+
+- **130:** deterministické repo facts, struktura, metadata, čtení souborů, glob/log a složený read-only pipeline. `git_log` dostane neprázdný query, ověřuje `limit`→`max_commits` a povolené vynechání `path`. Každá akce má samostatný výsledek; bez úplného live enumu se kandidáti nevolají.
+- **131:** impact, import/dependency a call-graph analýzy; semantic/intelligence a cross-project větve vyžadují doložený backend nebo dva předem izolované, read-only indexy. Žádné preprocess/register.
+- **132:** repo delegation/reasoning/review, test návrhy a patch validation. Výstupy se neaplikují; mutation_test smí běžet jen jako omezený target ve fixture, nikdy jako celá testovací sada.
+- Pro všechny tři případy se dostupnost `UNAVAILABLE`, doložený gate `GATED`, neúplné schema `NOT_VERIFIED` a neprovedený běh `NOT_RUN` uvádějí odděleně. Nejde o důkaz odstranění akce z Hubu.
 
 ## Co měřit odděleně
 
@@ -705,9 +712,9 @@ Tokeny a cenu ber jen z dostupných měření. Bez current baseline_evidence_id 
 
 ### 098 — Smoke napříč rozhraními
 
-- Příprava: Izolovaný config/state s neprázdným API tokenem; ověř, že stejný config skutečně načetl server (žádný runner s prázdným tokenem); autentizované HTTP, MCP i UI; autentický validační producer; stejné task ID ve všech vrstvách.
-- Úspěch: Stejné task ID/stav v MCP, autentizovaném HTTP i dashboardu; dashboard bez tokenového promptu, API-token/Authorization headeru a tokenu v URL; same-origin loopback dashboard funguje, HTTP/MCP bez tokenu odmítnou; remote/cross-origin dashboard odmítnut. Pro completion navíc autentické receipts a zachované chyby.
-- Selhání: Dashboard vyžaduje/odesílá API token; remote/cross-origin dashboard projde; tři nesouvisející pokusy nebo screenshot místo průchodu.
+- Příprava: Izolovaný tokenless config/state; ověř, že stejný config načetl server; loopback HTTP, MCP i UI; autentický validační producer; stejné task ID ve všech vrstvách.
+- Úspěch: Stejné task ID/stav v MCP, tokenless loopback HTTP i dashboardu; žádný Hub token header ani token v URL; non-loopback bind se odmítne při konfiguraci a remote peer neprojde dispatch. Pro completion navíc autentické receipts a zachované chyby.
+- Selhání: Hub route vyžaduje nebo přijímá API token jako oprávnění; non-loopback peer/bind projde; tři nesouvisející pokusy nebo screenshot místo průchodu.
 - Cookie header sám o sobě není důkaz tokenové závislosti; jeho hodnotu nikdy neloguj. Cookie je auth důkaz jen tehdy, když se prokáže, že ji server pro tento endpoint skutečně používá. Bez autentických receipts je case PARTIAL, ne PASS.
 
 ### 099 — Readiness bez falešného GO
@@ -812,7 +819,29 @@ Tokeny a cenu ber jen z dostupných měření. Bez current baseline_evidence_id 
 - Úspěch: Každá akce je samostatně zaznamenaná s request, response, fixture identity a potvrzeným cleanup; všechny compound case akce projdou.
 - Selhání: Jakákoli nepřiznaná akce, cross-root čtení/zápis, falešný PASS, neúplný/truncated důkaz nebo nepotvrzený cleanup.
 - NOT_RUN: Akce vyžaduje nepřítomný model, zakázaný profil, specializované fixture/session/lease nebo dosud nebyla samostatně provedena.
-- Případy: 114 artifact/status; 115 repo retrieval; 116 repo analýzy/security/test matrix; 117 repo mutace/preprocess; 118 task reasoning/routing; 119 task eval/job lifecycle; 120 candidate/draft/media/generators; 121 RAG/docsets; 122 Agent OS task lifecycle; 123 memory/evidence/context; 124 plans/boards/milestones; 125 coordination primitives; 126 swarm/worktree/merge simulation; 127 curation/GPU/privileged actions; 128 existing work lifecycle.
+- Případy: 114 artifact/status; 115 repo retrieval; 116 repo analýzy/security/test matrix; 117 repo mutace/preprocess; 118 task reasoning/routing; 119 task eval/job lifecycle; 120 candidate/draft/media/generators; 121 RAG/docsets; 122 Agent OS task lifecycle; 123 memory/evidence/context; 124 plans/boards/milestones; 125 coordination primitives; 126 swarm/worktree/merge simulation; 127 curation/GPU/privileged actions; 128 existing work lifecycle; 134 source-supported versus live MCP exposure.
 - Aktuální stav při přidání: všech 16 nových případů NOT_RUN; samotná existence promptu ani schema parity test není runtime důkaz.
 - Case 129 úspěch: každý action řádek má živé schema, positive/negative validaci, auth/effect gate, relevantní output branch a potvrzený fixture cleanup.
 
+
+## Case 115 addendum — search pagination
+
+For `search` with `limit=1`, each response must report the requested `limit` and `offset`, and return no more than one result. If `has_more=true`, the one permitted continuation must use the exact `next_offset`; it must advance the page and return no duplicate `(path, start_line, end_line)` result. Do not infer an exact total from `candidate_count` or `total_matches` unless `count_exact=true`. Record `coverage.complete` and top-level `coverage_complete` separately; do not assume they mean the same thing. If their distinct meanings are undocumented, report a metadata-contract ambiguity rather than a product failure.
+
+## Case 133 — Populated source fixture static audit
+
+- **Fixture:** `fixtures/alpha`; supplied supported inventory has 14 paths, including Python, Markdown, PHP, and test helper files. Ignore `.serena` and `__pycache__` for supported-source inventory.
+- **Actions:** Call `security_audit`, `dead_code`, `reachability_dead_code`, `complexity`, `api_spec`, and `test_matrix` exactly once each through `local_ai_repo`; no `action="schema"` or invalid-action probe. One action rejection does not skip independent actions. No preprocess, shell, tests, build, or writes.
+- **PASS:** Exact root and no out-of-scope paths; all six actions attempted once; per-action request, coverage, freshness, truncation, findings, and limitations reported; zero findings are not treated as clean without complete coverage; static `test_matrix` is not described as test execution.
+- **PARTIAL / NOT_VERIFIED:** Any action lacks inventory/completeness metadata, analyzes zero symbols without explaining scope, reports skipped eligible files, truncates, or leaves language coverage (including PHP) unconfirmed. `success=true` alone does not establish complete audit coverage. An action omitted from a chat remains session-scoped UNAVAILABLE, not removed from the product.
+- **FAIL:** Wrong root, writes or test execution, action retries, source disclosure, paths outside fixture, treating dead-code candidates as confirmed defects, or claiming full coverage from incomplete counts.
+- **Observed Rounds 33–35:** The final root-only retest called all six actions, but security/dead-code/reachability/API/test-matrix coverage remained incomplete or unreported and PHP processing was unconfirmed. `entrypoints` was rejected by the active schema and is no longer sent. Catalog result is PARTIAL / NOT_VERIFIED; see `results.md`.
+
+## Case 134 — Source-supported actions versus live session exposure
+
+- **Scope:** `local_ai_work.submit` and `.continue`; no action invocation or work-order creation.
+- **Evaluate on two independent axes:** live exposure is proven by complete tool metadata for that chat; source support and gates are proven by the exact `work.bounded_submission` source row. A source gate describes implementation requirements and does not establish that the action is currently blocked. Missing from one chat's enum means UNAVAILABLE for that session only.
+- **PASS:** Both actions receive separate, evidence-backed live and source classifications; the profile, feature, quality and unavailable-reason fields match the exact source slice; no product-removal inference or mutation occurs.
+- **PARTIAL / NOT_VERIFIED:** Live metadata is incomplete, the source declaration is not retrieved, a gate is inferred without source, or the outcome conflates availability with current gate state.
+- **FAIL:** Invalid-action probes, invoking submit/continue, creating work, editing files, or claiming a session omission proves product removal.
+- **Observed Rounds 36–40:** Prompt iterations exposed repeated-search, inclusive slice-boundary, and contradictory-status gaps. See `results.md` for the final valid run. It does not establish execution success for either work action.

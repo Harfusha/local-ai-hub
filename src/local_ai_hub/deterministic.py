@@ -57,6 +57,21 @@ from .state_paths import configured_state_dir
 
 logger = logging.getLogger(__name__)
 
+
+def _is_directory_reparse_point(path: Path) -> bool:
+    try:
+        metadata = path.lstat()
+        if stat.S_ISLNK(metadata.st_mode):
+            return True
+        reparse_point = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+        if getattr(metadata, "st_file_attributes", 0) & reparse_point:
+            return True
+        is_junction = getattr(path, "is_junction", None)
+        return callable(is_junction) and is_junction()
+    except OSError:
+        return True
+
+
 _MAX_SCHEMA_SCAN_DIRS = 10_000
 _MAX_SCHEMA_SCAN_FILES = 512
 _MAX_SCHEMA_SCAN_ENTRIES = 50_000
@@ -265,8 +280,21 @@ _SECURITY_AUDIT_SMELLS: list[tuple[str, re.Pattern[str]]] = [
 ]
 
 
-def _python_shell_injection_lines(source: str) -> list[int]:
-    tree = ast.parse(source)
+def _pattern_match_lines(text: str, pattern: re.Pattern[str]) -> list[int]:
+    """Map regex matches to lines with one cumulative scan, not repeated prefixes."""
+    line_number = 1
+    previous_start = 0
+    matched_lines: set[int] = set()
+    for match in pattern.finditer(text):
+        line_number += text.count("\n", previous_start, match.start())
+        matched_lines.add(line_number)
+        previous_start = match.start()
+    return sorted(matched_lines)
+
+
+def _python_shell_injection_lines(source: str, *, tree: ast.AST | None = None) -> list[int]:
+    if tree is None:
+        tree = ast.parse(source)
     scope_types = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)
     parents: dict[ast.AST, ast.AST] = {}
     scopes: list[ast.AST] = [tree]
@@ -4190,53 +4218,79 @@ class DeterministicEngine:
         impacted_tests: list[str] = []
         symbols_to_check: list[str] = [target_symbol] if target_symbol else []
 
-        if self.code_index is not None:
-            try:
-                with self.code_index._lock, closing(self.code_index._connect()) as con:
-                    if not symbols_to_check:
-                        sym_rows = con.execute(
-                            "SELECT name FROM symbols WHERE root=? AND path=? AND kind IN ('class','function','method')",
-                            (resolved, target_path),
-                        ).fetchall()
-                        symbols_to_check = [str(r[0]) for r in sym_rows]
-                    
-                    for sym in symbols_to_check:
-                        edge_rows = con.execute(
-                            "SELECT src, dst, path, line, kind FROM edges WHERE root=? AND dst=?",
-                            (resolved, sym),
-                        ).fetchall()
-                        for r in edge_rows:
-                            caller_path = str(r[2])
-                            impacted_files.add(caller_path)
-                            callers.append({
-                                "caller_symbol": str(r[0]),
-                                "target_symbol": str(r[1]),
-                                "path": caller_path,
-                                "line": int(r[3]),
-                                "kind": str(r[4]),
-                            })
-                            if "/test" in caller_path.lower() or "test_" in caller_path.lower() or ".test." in caller_path.lower():
-                                impacted_tests.append(caller_path)
-                        
-                        ref_rows = con.execute(
-                            "SELECT path, line, kind FROM refs WHERE root=? AND name=? AND path<>?",
-                            (resolved, sym, target_path),
-                        ).fetchall()
-                        for r in ref_rows:
-                            rp = str(r[0])
-                            impacted_files.add(rp)
-                            if "/test" in rp.lower() or "test_" in rp.lower() or ".test." in rp.lower():
-                                impacted_tests.append(rp)
-            except Exception:
-                pass
+        def failure(error: str, *, index_available: bool) -> dict[str, Any]:
+            return {
+                "success": False,
+                "error": error,
+                "root": resolved,
+                "target_file": target_path,
+                "symbols_analyzed": symbols_to_check,
+                "risk_level": "UNKNOWN",
+                "impacted_files_count": 0,
+                "impacted_files": [],
+                "callers_count": 0,
+                "callers": [],
+                "impacted_tests": [],
+                "recommendations": [],
+                "index_available": index_available,
+                "freshness": {"status": "not_checked"},
+                "coverage": {
+                    "complete": False,
+                    "reason": "index_query_failed" if index_available else "index_unavailable",
+                },
+            }
+
+        if self.code_index is None:
+            return failure("code index unavailable", index_available=False)
+
+        try:
+            with self.code_index._lock, closing(self.code_index._connect()) as con:
+                if not symbols_to_check:
+                    sym_rows = con.execute(
+                        "SELECT name FROM symbols WHERE root=? AND path=? AND kind IN ('class','function','method')",
+                        (resolved, target_path),
+                    ).fetchall()
+                    symbols_to_check = [str(r[0]) for r in sym_rows]
+
+                for sym in symbols_to_check:
+                    symbol_name = sym.replace("\\", "/").rsplit("/", 1)[-1].rsplit("::", 1)[-1].rsplit(".", 1)[-1]
+                    edge_rows = con.execute(
+                        "SELECT src, dst, path, line, kind FROM edges "
+                        "WHERE root=? AND (dst=? OR (kind='calls' AND dst_name=?))",
+                        (resolved, sym, symbol_name),
+                    ).fetchall()
+                    for r in edge_rows:
+                        caller_path = str(r[2])
+                        impacted_files.add(caller_path)
+                        callers.append({
+                            "caller_symbol": str(r[0]),
+                            "target_symbol": str(r[1]),
+                            "path": caller_path,
+                            "line": int(r[3]),
+                            "kind": str(r[4]),
+                        })
+                        if "/test" in caller_path.lower() or "test_" in caller_path.lower() or ".test." in caller_path.lower():
+                            impacted_tests.append(caller_path)
+
+                    ref_rows = con.execute(
+                        "SELECT path, line, kind FROM refs WHERE root=? AND name=? AND path<>?",
+                        (resolved, sym, target_path),
+                    ).fetchall()
+                    for r in ref_rows:
+                        rp = str(r[0])
+                        impacted_files.add(rp)
+                        if "/test" in rp.lower() or "test_" in rp.lower() or ".test." in rp.lower():
+                            impacted_tests.append(rp)
+        except Exception as exc:
+            return failure(f"code index query failed: {exc}", index_available=True)
 
         ext_files = [f for f in impacted_files if f != target_path]
         if len(ext_files) == 0:
-            risk = "LOW"
+            observed_risk = "LOW"
         elif len(ext_files) <= 3:
-            risk = "MEDIUM"
+            observed_risk = "MEDIUM"
         else:
-            risk = "HIGH"
+            observed_risk = "HIGH"
 
         impacted_tests = list(dict.fromkeys(impacted_tests))
         recommendations = []
@@ -4252,13 +4306,22 @@ class DeterministicEngine:
             "root": resolved,
             "target_file": target_path,
             "symbols_analyzed": symbols_to_check,
-            "risk_level": risk,
+            "risk_level": "UNKNOWN",
+            "observed_risk_level": observed_risk,
             "impacted_files_count": len(ext_files),
             "impacted_files": sorted(ext_files),
             "callers_count": len(callers),
             "callers": callers[:30],
             "impacted_tests": impacted_tests,
             "recommendations": recommendations,
+            "index_available": True,
+            "freshness": {"status": "not_checked"},
+            "coverage": {
+                "complete": False,
+                "reason": "index_freshness_not_checked",
+                "returned_callers": min(len(callers), 30),
+                "callers_truncated": len(callers) > 30,
+            },
         }
 
     def resolve_imports(self, root: str, unknown_symbols: list[str], language: str = "auto") -> dict[str, Any]:
@@ -6313,6 +6376,15 @@ def test_{sym}_regression_edge_cases():
                             })
                             break
 
+                python_tree: ast.AST | None = None
+                if rel.lower().endswith(".py") and len(findings) < limit and time.monotonic() < deadline:
+                    try:
+                        python_tree = ast.parse(txt)
+                    except (SyntaxError, ValueError):
+                        scan_complete = False
+                        if len(scan_errors) < 20:
+                            scan_errors.append({"path": rel, "error_type": "ASTParseError"})
+
                 for name, pat in code_smell_patterns:
                     if len(findings) >= limit or time.monotonic() >= deadline:
                         scan_complete = False
@@ -6322,26 +6394,18 @@ def test_{sym}_regression_edge_cases():
                     if name == "Shell Injection Risk":
                         if not rel.lower().endswith(".py"):
                             continue
-                        try:
-                            line_numbers = _python_shell_injection_lines(txt)
-                        except (SyntaxError, ValueError):
-                            scan_complete = False
-                            if len(scan_errors) < 20:
-                                scan_errors.append({"path": rel, "error_type": "ASTParseError"})
-                            line_numbers = []
+                        line_numbers = (
+                            _python_shell_injection_lines(txt, tree=python_tree)
+                            if python_tree is not None else []
+                        )
                     elif name == "Unsafe eval/exec" and rel.lower().endswith(".py"):
-                        try:
-                            parsed = ast.parse(txt)
-                        except (SyntaxError, ValueError):
-                            scan_complete = False
-                            if len(scan_errors) < 20:
-                                scan_errors.append({"path": rel, "error_type": "ASTParseError"})
+                        if python_tree is None:
                             line_numbers = []
                         else:
                             line_numbers = sorted(
                                 {
                                     node.lineno
-                                    for node in ast.walk(parsed)
+                                    for node in ast.walk(python_tree)
                                     if isinstance(node, ast.Call)
                                     and (
                                         isinstance(node.func, ast.Name)
@@ -6354,12 +6418,7 @@ def test_{sym}_regression_edge_cases():
                                 }
                             )
                     else:
-                        line_numbers = sorted(
-                            {
-                                txt[:match.start()].count("\n") + 1
-                                for match in pat.finditer(txt)
-                            }
-                        )
+                        line_numbers = _pattern_match_lines(txt, pat)
                     for line_no in line_numbers:
                         matched_line = lines[line_no - 1].strip() if line_no <= len(lines) else ""
                         if matched_line.startswith(("#", "//", "/*", "*")):
@@ -7842,17 +7901,7 @@ def test_{sym}_regression_edge_cases():
                 if dirname.startswith(".") or dirname.lower() in ignored_dirs:
                     continue
                 child = current_path / dirname
-                try:
-                    metadata = child.lstat()
-                    if stat.S_ISLNK(metadata.st_mode):
-                        continue
-                    reparse_point = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
-                    if getattr(metadata, "st_file_attributes", 0) & reparse_point:
-                        continue
-                    is_junction = getattr(child, "is_junction", None)
-                    if callable(is_junction) and is_junction():
-                        continue
-                except OSError:
+                if _is_directory_reparse_point(child):
                     continue
                 kept_dirs.append(dirname)
             dirnames[:] = sorted(kept_dirs)

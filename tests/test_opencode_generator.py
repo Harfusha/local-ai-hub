@@ -56,7 +56,7 @@ def test_runtime_config_uses_only_hub_provider_and_secret_environment(tmp_path):
         {"action": "provider.use", "resource": "local-hub", "effect": "allow"},
     ]
     assert config["plugins"] == [{"package": str(tmp_path / "tools" / "opencode_goal"),
-        "options": {"hubURL": "http://127.0.0.1:11435", "tokenEnv": "LOCAL_AI_HUB_TOKEN"}}]
+        "options": {"hubURL": "http://127.0.0.1:11435"}}]
     assert config["mcp"]["servers"]["local-ai"]["environment"]["LOCAL_AI_AGENT_PROFILE"] == "opencode-local"
 
 

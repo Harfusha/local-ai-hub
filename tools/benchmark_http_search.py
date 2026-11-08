@@ -52,7 +52,7 @@ def run(
         config = temp / "config.toml"
         config.write_text(
             f'[server]\nbind="127.0.0.1"\nport={port}\nstate_dir={json.dumps(str(state))}\n'
-            'ollama_url="http://127.0.0.1:9"\nauto_start_ollama=false\n[security]\napi_token=""\n'
+            'ollama_url="http://127.0.0.1:9"\nauto_start_ollama=false\n'
             f'allowed_roots=[{json.dumps(str(root))}]\n'
             '[hardware]\nprofile="cpu"\nauto_tune=false\n[prewarm]\nenabled=false\n'
             '[preprocessing]\nenabled=false\nfs_watcher_enabled=false\n'

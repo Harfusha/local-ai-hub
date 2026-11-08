@@ -142,6 +142,21 @@ def test_history_route_rejects_noncanonical_filters_before_service(payload):
     assert handler.responses[0][0] == 400
 
 
+def test_history_route_allows_empty_query_for_full_commit_log():
+    app, calls = _app()
+    handler = Handler()
+    payload = {"root": "r", "query": "", "max_commits": 2}
+
+    assert handle_post_repository_analysis(
+        handler, payload, ("post_git_history_search_1",), app,
+    ) is True
+    assert calls == [(
+        "git_history_search", ("r", ""),
+        {"max_commits": 2, "author": None, "since": None, "until": None, "path": None},
+    )]
+    assert handler.responses == [(200, {"route": "git_history_search"})]
+
+
 def test_repo_state_fallback_error_and_missing_tracker_bodies():
     class BrokenTracker:
         def fingerprint(self, root):

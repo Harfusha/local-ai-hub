@@ -19,12 +19,12 @@ SINGLE_OWNER_CONTRACT = (
     "Single-owner release contract: one Local AI Hub installation on one PC serves one human. "
     "Agents, chats, projects and worktrees are not tenants. Remove tenant selection, propagation and storage partitions; "
     "no constant tenant, aliases, shims or dual contracts. Retired tenant fields and headers reject explicitly in preflight. "
-    "Preserve project/repository/clone/worktree/branch/task/session scopes, owner global scope, API token protection, command authorization, capabilities, path confinement and writer leases. "
+    "Preserve project/repository/clone/worktree/branch/task/session scopes, owner global scope, loopback-only Hub access, command authorization, capabilities, path confinement and writer leases. "
     "Scheduler jobs use model/source/priority metadata and global limits, never tenant buckets. "
     "Synthetic benchmark items use id/prompt fields; tenant fields reject explicitly. "
     "Incident records use repository provenance only; retry and negative-knowledge require an explicit root. "
     "MCP coordination has no tenant argument; LOCAL_AI_TENANT is retired; session evidence uses session_id. "
-    "HubClient options are keyword-only; requests retain API tokens without tenant headers; scope aliases reject. "
+    "HubClient options are keyword-only; requests carry no Hub API token or tenant headers; scope aliases reject. "
     "SDK checkpoint_task sends canonical nested checkpoint object with explicit phase, next_action, affected_paths, evidence_ids, blockers and state_data; malformed falsey values are not empty defaults. "
     "HTTP root binding preserves owner-global memory and explicit session IDs; task creation derives context.repository_id from resolved project coordination ID (supplied IDs must match exactly). "
     "Task ownership checks repository identity; rate limiting uses one bounded installation window. "
@@ -1221,7 +1221,7 @@ def generate_opencode_runtime_config(
         {"action": "provider.use", "resource": "local-hub", "effect": "allow"},
     ]
     result["plugins"] = [{"package": str(install_dir / "tools" / "opencode_goal"),
-                          "options": {"hubURL": f"http://127.0.0.1:{hub_port}", "tokenEnv": "LOCAL_AI_HUB_TOKEN"}}]
+                          "options": {"hubURL": f"http://127.0.0.1:{hub_port}"}}]
     return result
 
 

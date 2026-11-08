@@ -21,7 +21,7 @@ def test_live_http_search_literal_and_freshness(tmp_path):
     config = tmp_path / "config.toml"
     config.write_text(
         f'[server]\nbind="127.0.0.1"\nport={port}\nstate_dir={json.dumps(str(state))}\n'
-        'auto_start_ollama=false\n[security]\napi_token=""\n'
+        'auto_start_ollama=false\n[security]\n'
         f'allowed_roots=[{json.dumps(str(root))}]\n'
         '[hardware]\nprofile="cpu"\nauto_tune=false\n[prewarm]\nenabled=false\n'
         '[preprocessing]\nenabled=false\nfs_watcher_enabled=false\n'
@@ -48,7 +48,7 @@ def test_live_http_search_literal_and_freshness(tmp_path):
             time.sleep(0.1)
 
         def search():
-            body = json.dumps({"root": str(root), "query": "C++", "limit": 10}).encode()
+            body = json.dumps({"root": str(root), "query": "C++", "limit": 10, "exact_count": True}).encode()
             request = urllib.request.Request(f"http://127.0.0.1:{port}/api/search", data=body,
                                              headers={"Content-Type": "application/json"})
             with urllib.request.urlopen(request, timeout=15) as response:

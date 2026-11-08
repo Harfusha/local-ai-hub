@@ -50,6 +50,13 @@ def read_source_slice(
         candidate = Path(path).expanduser()
         if not candidate.is_absolute():
             candidate = root / candidate
+        try:
+            candidate.resolve(strict=False).relative_to(root)
+        except ValueError:
+            return failure(
+                "source path must be within the workspace; if the source belongs to "
+                "a different authorized workspace, provide that workspace's absolute path as root"
+            )
         target = candidate.resolve(strict=True)
         try:
             relative = target.relative_to(root)

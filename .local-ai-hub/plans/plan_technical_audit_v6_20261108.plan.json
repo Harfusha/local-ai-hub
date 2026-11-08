@@ -100,15 +100,15 @@
     },
     "task_p1_gpu_admission": {
       "acceptance_criteria": [
-        "Benchmark measures TTFT, throughput, VRAM under load for 4B and 9B models across 8k, 16k, 32k contexts",
-        "Scheduler memory bounds prevent VRAM OOM on 16GB GPU during concurrent desktop usage"
+        "Benchmark measures TTFT, throughput, VRAM under load for available installed models across verified 8k, 16k and 32k contexts; unavailable 4B model recorded as limitation.",
+        "Scheduler memory bounds prevent VRAM OOM on 16GB GPU during concurrent desktop usage."
       ],
-      "blocker": "Installed inventory has no 4B model. Latest 9B 8,192-character probe returned no prompt-token count and ended at high VRAM pressure (1,688 MB headroom), so no 16k/32k or concurrency run is justified. Ollama readiness probe timed out though local ollama list succeeded.",
+      "blocker": "No 4B model installed; model pulls remain unauthorized. Existing live runs show requested 32768 with prompt_eval_count 31029 but loaded_model_context_tokens 8192, so 32k remains unverified. Benchmark now reads /api/ps after inference, resets stale pre-request observations, and records context_qualification_status (verified/below_requested/unknown) plus context_qualified. Targeted regression suite: 26 passed. Full pytest is still running and has reported 5 failures so far; final classification pending.",
       "clarifications": [],
       "depends_on": [],
-      "description": "Stress test GPU admission and model routing on RTX 5070 Ti (16GB VRAM): verify 4B vs 9B behavior, long context, true TTFT, and switching costs",
+      "description": "Stress test RTX 5070 Ti (16GB VRAM). Hardware benchmark now accepts an optional bounded context_tokens value, forwards Ollama num_ctx, and returns actual backend prompt_eval_count. Explicit context requests require fresh VRAM budget evidence and must fit its dynamic context cap. Do not pull models.",
       "kind": "analysis",
-      "next_action": "Resume only when an installed 4B model is available and VRAM is nominal; collect backend prefill-token counts for 8k/16k/32k contexts, 20 warm samples, and concurrency/background load. No model pull.",
+      "next_action": "Finish full pytest and classify failures. Then, with fresh Hub/GPU admission, rerun installed models at requested 8k/16k/32k and accept a context only when post-inference loaded_model_context_tokens >= requested_context_tokens. No model pulls.",
       "title": "P1-6: Zátěžové testy GPU admission a model routingu",
       "work_phase": "verification",
       "work_status": "in_progress"
@@ -153,22 +153,25 @@
       "depends_on": [],
       "description": "Gradually decompose oversized modules (commands.py ~10.8k lines, services.py ~9.8k lines, mcp_server.py ~7.4k lines, code_index.py ~5.1k lines) into cohesive submodules",
       "kind": "code",
-      "next_action": "Commit this verified StreamMultiplexer extraction. Then implement the approved Hub API-token removal before selecting the next modular boundary; keep P2-3 in progress.",
+      "next_action": "Command policy extraction verified by 47 passed, 1 skipped; compileall, pyflakes, selftest and diff check pass. Continue extracting the next cohesive broker subsystem.",
       "title": "P2-3: Postupně rozdělit velké moduly",
       "work_phase": "verification",
       "work_status": "in_progress"
     },
     "task_p2_opencode_e2e": {
       "acceptance_criteria": [
-        "End-to-end test validates local model, MCP tools, transactional edits, cleanup, failure recovery in OpenCode sandbox",
-        "docs/OPENCODE.md updated from in-progress to verified isolation status"
+        "Hub token config and transport surfaces are removed and retired config fields fail explicitly.",
+        "Loopback HTTP/MCP operations work without credentials; non-loopback peers and bind configuration fail closed.",
+        "Command authorization, capability policy, project-root confinement, approval, leases, rate limits and audit behavior remain enforced.",
+        "Tokenless OpenCode workflow uses separate provider nonce credential, including cleanup and uncertainty handling.",
+        "Focused tests and static checks pass; live model E2E remains independently gated on healthy scheduler readiness and installed model availability."
       ],
-      "blocker": "Live model-driven OpenCode E2E remains unverified: current scheduler readiness probe timed out and gpu_admission_state=unknown. No model pulls authorized.",
+      "blocker": "Hub API bearer-token config/transport/auth is retired and rejected; loopback-only HTTP/MCP accepts no Hub token. Separate nonce-derived provider-session credential remains internal to provider serving. Tokenless/API focused suites pass: 212 passed, 1 skipped; context/transport subset 26 passed; isolated session/dashboard/SDK/identity subset 51 passed with one test updated and rechecked. Full pytest is not clean (10,383 passed, 179 failed, 72 errors, 109 skipped, 60 subtests passed) and pytest ended with Windows PosixPath internal error at 69%. No live OpenCode model→MCP→transactional edit→cleanup/recovery E2E has been recorded. Fresh readiness req_b09e75c9550e timed out for runtime and scheduler (gpu_admission_state unknown); reservation req_80b9b63e7c24 is free.",
       "clarifications": [],
       "depends_on": [],
-      "description": "Complete end-to-end validation of OpenCode runtime: local model, MCP tools, sandbox isolation, cleanup, recovery",
+      "description": "Complete OpenCode runtime validation and remove the Hub API bearer-token system across the single-owner installation, as approved by the operator. Enforce loopback-only access and preserve command, capability, root, approval, lease, rate-limit and audit controls; retain only the separate nonce-scoped OpenCode provider credential.",
       "kind": "code",
-      "next_action": "When Hub scheduler readiness is nominal, rerun a disposable-project model-driven OpenCode E2E with installed qwen2.5-coder:3b; verify model edit, MCP, cleanup, recovery. Configured Hub API token is not required for loopback OpenCode.",
+      "next_action": "After Hub runtime and scheduler report healthy readiness, run the tokenless OpenCode E2E using an installed model; cover provider nonce credential, loopback operations, restricted project edit, stop, cleanup and uncertainty handling. Do not benchmark or infer while admission is unknown.",
       "title": "P2-1: Dokončit OpenCode E2E integraci",
       "work_phase": "verification",
       "work_status": "in_progress"

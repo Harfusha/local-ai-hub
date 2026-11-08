@@ -5,6 +5,24 @@
   "lifecycle": "draft",
   "schema_version": 1,
   "spec_refs": [],
-  "tasks": {},
+  "tasks": {
+    "task_endpoint_reliability_audit": {
+      "acceptance_criteria": [
+        "Recent endpoint failures and latency hotspots are classified from retained telemetry and trace evidence.",
+        "Confirmed server or response-contract defects are fixed at their source with focused regression coverage.",
+        "Focused checks pass and diff check is clean.",
+        "Live process has loaded the current source and representative endpoint/trace behavior is verified after separately authorized restart."
+      ],
+      "blocker": "Live verification awaits separate restart authorization; the user authorized GPU reservation release only.",
+      "clarifications": [],
+      "depends_on": [],
+      "description": "Audit current Hub logs and latency/failure data; classify expected caller failures versus server defects; fix confirmed performance and request/response projection issues; verify focused regression tests and, after separately authorized restart, live endpoints and trace rendering.",
+      "kind": "analysis",
+      "next_action": "Continue bounded inspection of current inference and endpoint telemetry; then live-verify after restart approval.",
+      "title": "Review logs, fix confirmed endpoint defects, verify live changes",
+      "work_phase": "verification",
+      "work_status": "in_progress"
+    }
+  },
   "title": "Local AI Hub endpoint reliability audit"
 }

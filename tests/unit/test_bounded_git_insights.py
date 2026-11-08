@@ -191,6 +191,54 @@ def test_mcp_hotspots_forwards_only_canonical_window_and_limit(monkeypatch, tmp_
     assert calls == [("/api/repo/hotspots", {"root": str(tmp_path), "days": 9, "limit": 7})]
 
 
+def test_mcp_git_history_search_forwards_max_commits_without_generic_limit(monkeypatch, tmp_path):
+    _make_repo_active(monkeypatch)
+    calls = []
+    monkeypatch.setattr(mcp_server, "_client_root", lambda value: value)
+    monkeypatch.setattr(mcp_server, "_timeout", lambda _profile: 1)
+    monkeypatch.setattr(mcp_server, "_compact", lambda value, *_args, **_kwargs: value)
+    monkeypatch.setattr(
+        mcp_server, "CLIENT",
+        SimpleNamespace(post=lambda route, payload, **_kwargs: calls.append((route, payload)) or {"success": True}),
+    )
+
+    result = mcp_server._local_ai_repo_impl(
+        action="git_history_search", root=str(tmp_path), query="needle", max_commits=1,
+    )
+
+    assert result == {"success": True}
+    assert calls == [(
+        "/api/git/history_search",
+        {
+            "root": str(tmp_path), "query": "needle", "max_commits": 1,
+            "author": None, "since": None, "until": None, "path": None,
+        },
+    )]
+
+
+def test_mcp_git_log_accepts_omitted_path_and_maps_limit_to_max_commits(monkeypatch, tmp_path):
+    _make_repo_active(monkeypatch)
+    calls = []
+    monkeypatch.setattr(mcp_server, "_client_root", lambda value: value)
+    monkeypatch.setattr(mcp_server, "_timeout", lambda _profile: 1)
+    monkeypatch.setattr(mcp_server, "_compact", lambda value, *_args, **_kwargs: value)
+    monkeypatch.setattr(
+        mcp_server, "CLIENT",
+        SimpleNamespace(post=lambda route, payload, **_kwargs: calls.append((route, payload)) or {"success": True}),
+    )
+
+    result = mcp_server.local_ai_repo(action="git_log", root=str(tmp_path), limit=1)
+
+    assert result == {"success": True}
+    assert calls == [(
+        "/api/git/history_search",
+        {
+            "root": str(tmp_path), "query": "", "max_commits": 1,
+            "author": None, "since": None, "until": None, "path": None,
+        },
+    )]
+
+
 @pytest.mark.parametrize("legacy", [{"diff": "90"}, {"max_tokens": 90}])
 def test_mcp_hotspots_does_not_forward_retired_aliases(monkeypatch, tmp_path, legacy):
     _make_repo_active(monkeypatch)

@@ -841,6 +841,8 @@ def test_hybrid_exact_symbol_uses_complete_lexical_path_without_rag(monkeypatch)
         "results": [{"path": "src/search.cpp", "text": "C++"}],
         "total_matches": 7,
         "count_exact": True,
+        "truncated": False,
+        "read_errors": 0,
         "has_more": False,
     }
     monkeypatch.setattr(service, "_repo_search_lexical", lambda *args, **kwargs: lexical)

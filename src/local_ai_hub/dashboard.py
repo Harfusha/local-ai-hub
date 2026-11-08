@@ -1888,6 +1888,14 @@ function traceCaptureBadge(state,label='Capture state'){
   const safeState=['produced','empty','not_captured','redacted'].includes(String(state||''))?String(state):'not_captured';
   return `<span class="trace-capture-state ${safeState.replace('_','-')}" data-capture-state="${safeState}">${esc(label)} · ${esc(traceCaptureStateLabel(safeState))}</span>`;
 }
+function traceTimestampMs(value){
+  if(typeof value!=='number'&&typeof value!=='string')return null;
+  if(value==='')return null;
+  const numeric=Number(value);
+  if(Number.isFinite(numeric))return Math.abs(numeric)<100000000000?numeric*1000:numeric;
+  const parsed=Date.parse(String(value));
+  return Number.isFinite(parsed)?parsed:null;
+}
 function traceFirstRecorded(events,keys){
   for(const event of events||[]){
     const payload=event?.payload;
@@ -2528,7 +2536,8 @@ function traceDisplayModel(detail){
   const errors=traceRecorded(session.error)?[session.error,...eventErrors]:eventErrors;
   const modelExecutions=events.filter(event=>event?.event_type==='model_request'||event?.event_type==='output_stream'||event?.event_type==='output_delta');
   const toolCalls=events.filter(event=>event?.event_type==='tool_call'||event?.event_type==='tool_result');
-  const timing={created_at:session.created_at,updated_at:session.updated_at,finished_at:session.finished_at,duration_ms:session.duration_ms,elapsed_ms:session.elapsed_ms};
+  const createdAtMs=traceTimestampMs(session.created_at),finishedAtMs=traceTimestampMs(session.finished_at),storedDurationMs=Number(session.duration_ms),hasStoredDuration=session.duration_ms!==null&&session.duration_ms!==undefined&&session.duration_ms!==''&&Number.isFinite(storedDurationMs),derivedDurationMs=createdAtMs!==null&&finishedAtMs!==null&&finishedAtMs>=createdAtMs?finishedAtMs-createdAtMs:undefined,durationMs=hasStoredDuration?Math.max(0,storedDurationMs):derivedDurationMs;
+  const timing={created_at:session.created_at,updated_at:session.updated_at,finished_at:session.finished_at,duration_ms:durationMs,elapsed_ms:session.elapsed_ms??durationMs};
   const identity={trace_id:redactedTraceId||session.trace_id,kind:session.kind,action:session.action,source:session.source,method:session.method||requestPayload.method,path:session.path||requestPayload.path||requestPayload.url||requestPayload.endpoint,request_id:session.request_id||requestPayload.request_id};
   const lifecycle={state:traceDisplayState(session),terminal:Boolean(detail?.terminal),status_code:session.status_code};
   const actor={agent:session.agent,owner:session.owner};
@@ -4593,7 +4602,7 @@ function renderActivityMode(mode){
   document.querySelectorAll('[data-activity-mode]').forEach(button=>button.setAttribute('aria-pressed',String(valid&&button.dataset.activityMode===value)));
 }
 function activityModeFailure(response,data){
-  if(response?.status===401)return 'Unauthorized (HTTP 401); check the API token.';
+  if(response?.status===401)return 'Request rejected (HTTP 401).';
   if(response?.status===400)return `Invalid mode: ${data?.error||'server rejected request'}`;
   if(response&&!response.ok)return `Mode request failed (HTTP ${response.status}).`;
   return data?.error||'Mode request failed.';

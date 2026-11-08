@@ -25,6 +25,7 @@ def _enable_rag(monkeypatch: Any, backend: _Backend) -> None:
     monkeypatch.setattr(mcp_server._ACCOUNTING_REPORTER, "record", lambda _event: None)
     monkeypatch.setattr(mcp_server.FEATURES, "rag", True)
     monkeypatch.setattr(mcp_server.FEATURES, "tasks", False)
+    monkeypatch.setattr(mcp_server.FEATURES, "local_reranking_qualified", False)
     monkeypatch.setattr(mcp_server, "_timeout", lambda kind: {"quick": 11.0, "long": 77.0}[kind])
 
 

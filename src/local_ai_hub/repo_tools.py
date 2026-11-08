@@ -229,11 +229,6 @@ def _lower_expansion_characters() -> frozenset[str]:
     return _unicode_lower_expansions()[1]
 
 
-def _lower_expansion_sources() -> frozenset[str]:
-    """Unicode source characters that expand when lowercased."""
-    return _unicode_lower_expansions()[0]
-
-
 @lru_cache(maxsize=1)
 def _windows_file_api():
     import ctypes
@@ -1960,22 +1955,16 @@ class RepositoryTools:
         )
         # Python verifies text with .lower(), while ripgrep uses Unicode simple
         # folding. Queries containing characters emitted by lowercase expansions
-        # need expansion-source characters added to the ripgrep candidate search;
-        # Python still verifies every candidate with the exact matching rules.
+        # cannot use ripgrep as an authoritative candidate filter; scan the
+        # bounded Git inventory and verify source text with Python instead.
         lower_expansion_characters = _lower_expansion_characters()
-        expansion_sensitive_query = any(
-            char in lower_expansion_characters for char in phrase
-        )
         lower_complete_query = case_sensitive_symbol_query or not any(
             char in lower_expansion_characters for char in phrase
-        )
-        expansion_candidates_available = (
-            expansion_sensitive_query and self.use_ripgrep and bool(self._rg)
         )
         ripgrep_candidates_complete = (
             bool(terms)
             and len(terms) <= 16
-            and (lower_complete_query or expansion_candidates_available)
+            and lower_complete_query
             and (phrase.isascii() or simple_casefold_query)
         )
         if (
@@ -2091,8 +2080,6 @@ class RepositoryTools:
             ):
                 rg_cmd.extend(["-g", f"!{configured_state_relative.as_posix()}/**"])
             candidate_terms = [raw_phrase] if case_sensitive_symbol_query else terms[:16]
-            if expansion_sensitive_query and not case_sensitive_symbol_query:
-                candidate_terms.extend(sorted(_lower_expansion_sources()))
             for term in candidate_terms:
                 rg_cmd.extend(["-e", term])
             if (
@@ -2676,7 +2663,7 @@ class RepositoryTools:
             _intent_query_terms(query)
         )
         candidate_limit = max(
-            64,
+            4,
             min(
                 self.max_hits * (8 if install_intent else 4),
                 limit * (8 if install_intent else 6),

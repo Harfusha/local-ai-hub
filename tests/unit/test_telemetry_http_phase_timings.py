@@ -79,10 +79,10 @@ def test_http_handler_records_measured_execution_and_serialization_on_success_an
         request("/health")
         request("/missing")
 
-        assert statuses == [200, 401]
+        assert statuses == [200, 403]
         assert store.flush(5)
         events = store.live()["events"]
-        assert [event["status_code"] for event in events] == [200, 401]
+        assert [event["status_code"] for event in events] == [200, 403]
         for event in events:
             assert event["exec_ms"] == pytest.approx(1.0)
             assert event["exec_measured"] == 1
@@ -99,6 +99,6 @@ def test_http_handler_records_measured_execution_and_serialization_on_success_an
             request("/health")
         assert store.flush(5)
         assert len(store.live()["events"]) == 2
-        assert statuses == [200, 401]
+        assert statuses == [200, 403]
     finally:
         store.close()

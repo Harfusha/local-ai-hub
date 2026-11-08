@@ -117,5 +117,6 @@ def test_repo_canonical_operation_dispatch_payloads(
     elif action == "affected_tests":
         assert calls[0][1][payload_key] is None
     elif action == "profile_digest":
+        assert calls[0][1]["root"] == str(tmp_path)
         assert calls[0][1][payload_key].endswith("profile.prof")
 

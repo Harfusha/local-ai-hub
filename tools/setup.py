@@ -1177,7 +1177,6 @@ def prepare_opencode_components(
     """Prepare components without claiming runtime or target-GPU acceptance."""
     from local_ai_hub.opencode_hardware import inspect_opencode_hardware
     from local_ai_hub.opencode_models import ModelPreparationError, ensure_model, local_inventory, local_pull
-    from local_ai_hub.opencode_provider_service import derive_provider_token
 
     if not _opencode_platform_supported():
         raise ValueError("OpenCode component preparation currently supports Windows x64 only")
@@ -1196,10 +1195,6 @@ def prepare_opencode_components(
         local_pull(ollama, origin, name)
     model_result = ensure_model(candidate, inventory=lambda: local_inventory(origin), pull=pull_candidate, allow_pull=allow_pull)
     pending = ["runtime and GPU admission not verified", "local-only isolation and goal acceptance incomplete"]
-    try:
-        derive_provider_token(cfg.get("security", {}).get("api_token", ""), "validation-nonce-0123456789")
-    except ValueError:
-        pending.append("Hub API token of at least 32 ASCII characters required")
     return {"complete": False, "runtime_verified": False, "profile": profile["profile"],
             "candidate": candidate, "executable": str(executable), "model": model_result, "pending": pending}
 

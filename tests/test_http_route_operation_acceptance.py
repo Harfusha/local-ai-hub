@@ -37,7 +37,6 @@ def running_http_hub(tmp_path):
                 "port = 11435",
                 f'state_dir = "{state_dir.as_posix()}"',
                 "[security]",
-                'api_token = "acceptance-secret"',
                 f'allowed_roots = ["{tmp_path.as_posix()}"]',
                 "[agent_state]",
                 "enabled = true",
@@ -84,7 +83,7 @@ def test_http_get_agent_state_blackboard_forwards_board_and_section(
     monkeypatch.setattr(app, "agent_blackboard", SimpleNamespace(get=get_board))
     url = f"{base_url}/api/agent-state/blackboard?board_id=task-31&task_id=task-31&section=plan&root={quote(str(tmp_path))}"
     request = urllib_request.Request(
-        url, headers={"X-LocalAI-Token": "acceptance-secret"}, method="GET"
+        url, headers={}, method="GET"
     )
 
     with _urlopen_with_error_body(request) as response:
@@ -119,7 +118,6 @@ def test_http_post_declaration_not_found_returns_http_404(
         f"{base_url}/api/code/declaration",
         data=json.dumps({"root": str(tmp_path), "symbol": "missing_symbol"}).encode("utf-8"),
         headers={
-            "X-LocalAI-Token": "acceptance-secret",
             "Content-Type": "application/json",
         },
         method="POST",
@@ -159,7 +157,7 @@ def test_http_get_declaration_not_found_returns_http_404(
     )
     request = urllib_request.Request(
         f"{base_url}/api/code/find_declaration?root={quote(str(tmp_path))}&symbol=missing_symbol",
-        headers={"X-LocalAI-Token": "acceptance-secret"},
+        headers={},
         method="GET",
     )
 
@@ -183,7 +181,6 @@ def test_http_patch_validate_returns_successful_result_for_invalid_diff(
         f"{base_url}/api/patch/validate",
         data=json.dumps({"root": str(tmp_path), "patch": "not a unified diff"}).encode("utf-8"),
         headers={
-            "X-LocalAI-Token": "acceptance-secret",
             "Content-Type": "application/json",
         },
         method="POST",
@@ -208,7 +205,6 @@ def test_http_patch_validate_rejects_empty_patch_as_bad_request(
         f"{base_url}/api/patch/validate",
         data=json.dumps({"root": str(tmp_path), "patch": "  "}).encode("utf-8"),
         headers={
-            "X-LocalAI-Token": "acceptance-secret",
             "Content-Type": "application/json",
         },
         method="POST",
@@ -241,7 +237,7 @@ def test_http_git_diff_forwards_current_revision_contract(running_http_hub, monk
     )
     request = urllib_request.Request(
         f"{base_url}/api/git/diff?{query}",
-        headers={"X-LocalAI-Token": "acceptance-secret"},
+        headers={},
         method="GET",
     )
 
@@ -266,7 +262,7 @@ def test_http_git_diff_post_forwards_revision_pair_without_base_alias(running_ht
                "max_lines": 25, "rev1": "HEAD~1", "rev2": "HEAD", "base": "HEAD~1", "head": "HEAD"}
     request = urllib_request.Request(
         f"{base_url}/api/git/diff", data=json.dumps(payload).encode("utf-8"),
-        headers={"X-LocalAI-Token": "acceptance-secret", "Content-Type": "application/json"}, method="POST",
+        headers={"Content-Type": "application/json"}, method="POST",
     )
     with _urlopen_with_error_body(request) as response:
         result = json.loads(response.read().decode("utf-8"))
@@ -278,7 +274,7 @@ def test_http_git_diff_post_forwards_revision_pair_without_base_alias(running_ht
     payload.pop("rev2")
     request = urllib_request.Request(
         f"{base_url}/api/git/diff", data=json.dumps(payload).encode("utf-8"),
-        headers={"X-LocalAI-Token": "acceptance-secret", "Content-Type": "application/json"}, method="POST",
+        headers={"Content-Type": "application/json"}, method="POST",
     )
     with _urlopen_with_error_body(request) as response:
         result = json.loads(response.read().decode("utf-8"))
@@ -288,7 +284,7 @@ def test_http_git_diff_post_forwards_revision_pair_without_base_alias(running_ht
     payload.update(base="HEAD", head="HEAD~1")
     request = urllib_request.Request(
         f"{base_url}/api/git/diff", data=json.dumps(payload).encode("utf-8"),
-        headers={"X-LocalAI-Token": "acceptance-secret", "Content-Type": "application/json"}, method="POST",
+        headers={"Content-Type": "application/json"}, method="POST",
     )
     with _urlopen_with_error_body(request) as response:
         result = json.loads(response.read().decode("utf-8"))
@@ -298,7 +294,7 @@ def test_http_git_diff_post_forwards_revision_pair_without_base_alias(running_ht
     payload.update(base="HEAD~1", head="HEAD", rev1="HEAD~2", rev2="HEAD")
     request = urllib_request.Request(
         f"{base_url}/api/git/diff", data=json.dumps(payload).encode("utf-8"),
-        headers={"X-LocalAI-Token": "acceptance-secret", "Content-Type": "application/json"}, method="POST",
+        headers={"Content-Type": "application/json"}, method="POST",
     )
     with pytest.raises(HTTPError) as exc:
         urllib_request.urlopen(request)
@@ -328,7 +324,7 @@ def test_http_git_diff_post_compares_actual_revisions(running_http_hub, tmp_path
     payload = {"root": str(repo), "rev1": first, "rev2": second, "base": "HEAD", "head": second}
     request = urllib_request.Request(
         f"{base_url}/api/git/diff", data=json.dumps(payload).encode("utf-8"),
-        headers={"X-LocalAI-Token": "acceptance-secret", "Content-Type": "application/json"}, method="POST",
+        headers={"Content-Type": "application/json"}, method="POST",
     )
     with _urlopen_with_error_body(request) as response:
         result = json.loads(response.read().decode("utf-8"))
@@ -353,7 +349,7 @@ def test_http_rag_search_cannot_bypass_reranker_capability_gate(
     monkeypatch.setitem(
         app.config,
         "features",
-        {**app.config.get("features", {}), "local_reranking": True},
+        {**app.config.get("features", {}), "local_reranking": False},
     )
     monkeypatch.setitem(app.config, "hardware", {**app.config.get("hardware", {}), "profile": "low"})
     monkeypatch.setitem(app.config, "_hardware", {"profile": "low"})
@@ -368,7 +364,7 @@ def test_http_rag_search_cannot_bypass_reranker_capability_gate(
     request = urllib_request.Request(
         f"{base_url}/api/rag/search",
         data=json.dumps(payload).encode("utf-8"),
-        headers={"Content-Type": "application/json", "X-LocalAI-Token": "acceptance-secret"},
+        headers={"Content-Type": "application/json"},
         method="POST",
     )
 
@@ -408,7 +404,7 @@ def test_http_get_agent_state_events_forwards_stream_cursor_and_limit(
     monkeypatch.setattr(app.agent_state, "event_page", event_page)
     url = f"{base_url}/api/agent-state/events?stream_id=task%3Atask-31&after_seq=4&limit=9&root={quote(str(tmp_path))}"
     request = urllib_request.Request(
-        url, headers={"X-LocalAI-Token": "acceptance-secret"}, method="GET"
+        url, headers={}, method="GET"
     )
 
     with _urlopen_with_error_body(request) as response:
@@ -447,7 +443,7 @@ def test_http_get_agent_state_tasks_forwards_filters_and_serializes(running_http
     monkeypatch.setattr(app.agent_tasks, "list_tasks", list_tasks)
     url = f"{base_url}/api/agent-state/tasks?status=active&limit=7&offset=3&include_stale=true&root={quote(str(tmp_path))}"
     request = urllib_request.Request(
-        url, headers={"X-LocalAI-Token": "acceptance-secret"}, method="GET"
+        url, headers={}, method="GET"
     )
 
     with _urlopen_with_error_body(request) as response:
@@ -478,7 +474,7 @@ def test_http_post_agent_state_cleanup_forwards_retention_policy(running_http_hu
     request = urllib_request.Request(
         url,
         data=json.dumps({"retention_days": 21}).encode("utf-8"),
-        headers={"X-LocalAI-Token": "acceptance-secret", "Content-Type": "application/json"},
+        headers={"Content-Type": "application/json"},
         method="POST",
     )
 
@@ -521,7 +517,7 @@ def test_http_post_agent_state_swarm_dispatch_forwards_explicit_scope(running_ht
     request = urllib_request.Request(
         url,
         data=json.dumps(payload).encode("utf-8"),
-        headers={"X-LocalAI-Token": "acceptance-secret", "Content-Type": "application/json"},
+        headers={"Content-Type": "application/json"},
         method="POST",
     )
 
@@ -548,7 +544,7 @@ def test_http_get_agent_state_swarm_forwards_state_and_limit(running_http_hub, m
     monkeypatch.setattr(app, "swarm", SimpleNamespace(list_swarms=list_swarms))
     url = f"{base_url}/api/agent-state/swarm?state=running&limit=6&root={quote(str(tmp_path))}"
     request = urllib_request.Request(
-        url, headers={"X-LocalAI-Token": "acceptance-secret"}, method="GET"
+        url, headers={}, method="GET"
     )
 
     with urllib_request.urlopen(request) as response:
@@ -573,7 +569,7 @@ def test_http_get_agent_state_swarm_detail_forwards_swarm_id(running_http_hub, m
     monkeypatch.setattr(app, "swarm", SimpleNamespace(get_status=get_status))
     url = f"{base_url}/api/agent-state/swarm/swarm-31?root={quote(str(tmp_path))}"
     request = urllib_request.Request(
-        url, headers={"X-LocalAI-Token": "acceptance-secret"}, method="GET"
+        url, headers={}, method="GET"
     )
 
     with urllib_request.urlopen(request) as response:
@@ -588,11 +584,11 @@ def test_http_get_agent_state_swarm_detail_forwards_swarm_id(running_http_hub, m
     assert result["step"] == 3
 
 
-def test_http_get_config_redacts_configured_token(running_http_hub):
+def test_http_get_config_contains_no_retired_token_setting(running_http_hub):
     base_url, _app = running_http_hub
     url = f"{base_url}/api/config"
     request = urllib_request.Request(
-        url, headers={"X-LocalAI-Token": "acceptance-secret"}, method="GET"
+        url, headers={}, method="GET"
     )
 
     with urllib_request.urlopen(request) as response:
@@ -603,14 +599,14 @@ def test_http_get_config_redacts_configured_token(running_http_hub):
     assert url == f"{base_url}/api/config"
     assert status == 200
     assert result["success"] is True
-    assert result["config"]["security"]["api_token"] == "***configured***"
+    assert "api_token" not in result["config"]["security"]
 
 
 def test_http_get_capabilities_returns_surface_and_features(running_http_hub):
     base_url, _app = running_http_hub
     url = f"{base_url}/api/capabilities"
     request = urllib_request.Request(
-        url, headers={"X-LocalAI-Token": "acceptance-secret"}, method="GET"
+        url, headers={}, method="GET"
     )
 
     with urllib_request.urlopen(request) as response:
@@ -637,7 +633,7 @@ def test_http_get_audit_tail_forwards_limit(running_http_hub, monkeypatch):
     monkeypatch.setattr(app.telemetry, "tail", tail)
     url = f"{base_url}/api/audit/tail?limit=3"
     request = urllib_request.Request(
-        url, headers={"X-LocalAI-Token": "acceptance-secret"}, method="GET"
+        url, headers={}, method="GET"
     )
 
     with urllib_request.urlopen(request) as response:
@@ -664,7 +660,7 @@ def test_http_get_audit_dependencies_forwards_root(running_http_hub, monkeypatch
     )
     url = f"{base_url}/api/audit_dependencies?root={quote(str(tmp_path))}"
     request = urllib_request.Request(
-        url, headers={"X-LocalAI-Token": "acceptance-secret"}, method="GET"
+        url, headers={}, method="GET"
     )
 
     with urllib_request.urlopen(request) as response:
@@ -695,7 +691,7 @@ def test_http_get_affected_tests_forwards_root_and_repeated_paths(
         "&path=src%2Fhttp_server.py&path=tests%2Ftest_routes.py"
     )
     request = urllib_request.Request(
-        url, headers={"X-LocalAI-Token": "acceptance-secret"}, method="GET"
+        url, headers={}, method="GET"
     )
 
     with urllib_request.urlopen(request) as response:
@@ -734,7 +730,6 @@ def test_http_post_affected_tests_forwards_json_paths(running_http_hub, monkeypa
         data=body,
         headers={
             "Content-Type": "application/json",
-            "X-LocalAI-Token": "acceptance-secret",
         },
         method="POST",
     )

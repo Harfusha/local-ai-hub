@@ -58,7 +58,7 @@ def test_owned_process_cleans_up_real_descendant(tmp_path):
 
 class Client:
     def __init__(self, root):
-        self.config = {"server": {"port": 11435, "state_dir": str(root / "state"), "ollama_url": "http://127.0.0.1:11434"}, "security": {"api_token": "x" * 40}}
+        self.config = {"server": {"port": 11435, "state_dir": str(root / "state"), "ollama_url": "http://127.0.0.1:11434"}, "security": {}}
         self.calls = []
         self.responses = [
             {"success": True, "host": "127.0.0.1", "port": 12345, "model": "model-a", "nonce": "n" * 32},
@@ -109,9 +109,7 @@ def test_unavailable_inventory_fails_before_provider_start(tmp_path, monkeypatch
 
 def test_launcher_starts_child_with_isolated_config_then_stops_owned_provider(tmp_path, monkeypatch):
     client = Client(tmp_path)
-    client.config["security"]["api_token"] = ""
     client.config["_config_path"] = str(tmp_path / "owner-secret-config.toml")
-    client.config["security"]["supervisor_token"] = "secret-supervisor"
     client.config["features"] = {"repo": False, "custom_secret": "do-not-copy"}
     exe = tmp_path / "opencode.exe"
     exe.touch()
@@ -152,8 +150,8 @@ def test_launcher_starts_child_with_isolated_config_then_stops_owned_provider(tm
     assert "OPENAI_API_KEY" not in seen["env"]
     assert all(name not in seen["env"] for name in ("AWS_SECRET_ACCESS_KEY", "GOOGLE_APPLICATION_CREDENTIALS", "AZURE_CLIENT_SECRET", "CUSTOM_AUTHORIZATION"))
     assert seen["env"]["PATH"] == "test-local-path"
-    from local_ai_hub.opencode_boundary import derive_local_profile_token
-    assert seen["env"]["LOCAL_AI_HUB_TOKEN"] == derive_local_profile_token("n" * 32)
+    assert "LOCAL_AI_HUB_TOKEN" not in seen["env"]
+    assert seen["env"]["LOCAL_AI_OPENCODE_PROVIDER_TOKEN"]
     assert "x" * 40 not in seen["env"].values()
     config = json.loads(seen["env"]["OPENCODE_CONFIG_CONTENT"])
     assert config["model"] == "local-hub/model-a"

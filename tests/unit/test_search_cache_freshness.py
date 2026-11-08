@@ -20,18 +20,18 @@ def test_cached_search_observes_file_change_before_fingerprint_ttl(tmp_path):
     service.repo_flight = SingleFlightCache(MemoryLRUCache())
     service.learner = service.deterministic = service.code_index = service.preprocessor = service.evidence_store = None
 
-    first = service.repo_search(str(root), "needle", limit=10)
+    first = service.repo_search(str(root), "needle", limit=10, search_mode="lexical")
     assert first["total_matches"] == 1
-    unchanged = service.repo_search(str(root), "needle", limit=10)
+    unchanged = service.repo_search(str(root), "needle", limit=10, search_mode="lexical")
     assert unchanged["cache_hit"] is True
     path.write_text("unrelated = 42\n", encoding="utf-8")
-    second = service.repo_search(str(root), "needle", limit=10)
+    second = service.repo_search(str(root), "needle", limit=10, search_mode="lexical")
 
     assert second["success"] is True
     assert second["total_matches"] == 0
     assert second["results"] == []
     (root / "new.py").write_text("needle = 3\n", encoding="utf-8")
-    third = service.repo_search(str(root), "needle", limit=10)
+    third = service.repo_search(str(root), "needle", limit=10, search_mode="lexical")
     assert third["total_matches"] == 1
     assert [hit["path"] for hit in third["results"]] == ["new.py"]
 
@@ -62,7 +62,7 @@ def test_lexical_search_reuses_one_fresh_workspace_fingerprint(tmp_path):
     service.repo_flight = SingleFlightCache(MemoryLRUCache())
     service.learner = service.deterministic = service.code_index = service.preprocessor = service.evidence_store = None
 
-    result = service.repo_search(str(root), "needle", limit=10)
+    result = service.repo_search(str(root), "needle", limit=10, search_mode="lexical")
 
     assert result["success"] is True
     assert result["total_matches"] == 1
@@ -134,8 +134,8 @@ def test_enriched_search_has_distinct_cache_key_for_same_context_size(tmp_path):
     service.repo_flight = SingleFlightCache(MemoryLRUCache())
     service.learner = service.deterministic = service.code_index = service.preprocessor = service.evidence_store = None
 
-    plain = service.repo_search(str(root), "needle", context_lines=8, enrich=False)
-    enriched = service.repo_search(str(root), "needle", context_lines=8, enrich=True)
+    plain = service.repo_search(str(root), "needle", context_lines=8, enrich=False, search_mode="lexical")
+    enriched = service.repo_search(str(root), "needle", context_lines=8, enrich=True, search_mode="lexical")
 
     assert plain["success"] is enriched["success"] is True
     assert "enriched" not in plain

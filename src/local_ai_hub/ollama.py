@@ -947,6 +947,7 @@ class OllamaRuntime:
                     final["thinking"] = "".join(thinking_parts)
                 if final.get("done") is True and not final.get("error") and not stream_error:
                     final["_lah_retry_count"] = max(0, attempt - 1)
+                    final.setdefault("_lah_provider", provider)
                     if context_recovery is not None:
                         final["context_recovery"] = context_recovery
                     if backend_fallback:

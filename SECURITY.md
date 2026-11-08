@@ -10,16 +10,16 @@ Do not publish suspected vulnerabilities, secrets, or private repository content
 
 ## Deployment guidance
 
-- Keep the hub bound to loopback unless remote access is explicitly required.
-- Remote binding is unsupported. The HTTP server must bind to `127.0.0.1`.
-- Treat tenant IDs as scheduling/fairness labels, not authentication boundaries.
+- Keep the Hub bound to `127.0.0.1`; remote peers and non-loopback binds are rejected.
+- The single-owner loopback service has no Hub API token. Protect the OS account and machine.
+- Preserve command authorization, capability policy, root confinement, approvals, leases, rate limits, and audit records.
 - Review `[commands]` before enabling mutating or unknown commands.
 - Serena and Ollama are Hub-managed local subprocesses/services with access to repositories you point them at; apply normal local-machine trust controls. CodeGraphContext is standalone external CLI/MCP tooling and follows its own process controls.
 - Telemetry is designed to exclude prompts/source/model output, but repository indexes and RAG state contain derived local code data and should be protected like source code.
 
 ## Identity and shared coordination
 
-The supported trust boundary is a trusted local operator. X-LocalAI-Tenant and X-Tenant-ID are caller-supplied labels for fairness and supported storage scopes; neither label authenticates a caller. Remote requests require the configured API token. Do not expose tenant labels as an untrusted multi-tenant security boundary.
+The supported trust boundary is a trusted local OS account on one machine. The Hub accepts loopback peers only and does not authenticate them with API tokens. Retired tenant headers and selectors are rejected; they cannot establish caller identity or authority.
 
 Workspace memos are intentionally shared by workspace and key. A later write replaces an earlier value, and reads report scope: "workspace-shared" plus the latest writer label. A delete with a different label does not remove that row, but the label remains metadata rather than proof of identity. Repository memory IDs require the matching repository root. Global memory becomes shared only after an explicit approval marker; the memory store records that marker but cannot authenticate the human approver.
 

@@ -340,8 +340,7 @@ const result=await c.resume(info.id);assert.equal(result.status,"PAUSED");assert
                     data=json.dumps({"action": "receipt", "root": str(project),
                                      "receipt": {"task_id": tasks[0].task_id, "criterion": "pytest passes",
                                                  "passed": True, "evidence_id": "nonexistent-evidence"}}).encode(),
-                    headers={"Content-Type": "application/json", "X-LocalAI-Token": env["LOCAL_AI_HUB_TOKEN"],
-                             "X-LocalAI-Agent": "cloud-agent"}, method="POST")
+                    headers={"Content-Type": "application/json", "X-LocalAI-Agent": "cloud-agent"}, method="POST")
                 with pytest.raises(urllib.error.HTTPError) as rejected:
                     urllib.request.urlopen(forged, timeout=10)
                 assert rejected.value.code == 400
@@ -415,28 +414,28 @@ import assert from "node:assert/strict";
 import {readFileSync} from "node:fs";
 import {getCompletedTask} from "./tools/opencode_goal/transport.js";
 import {makeGoalController} from "./tools/opencode_goal/index.js";
-const {state,session,url,token}=JSON.parse(readFileSync(0,"utf8"));
-const result=await getCompletedTask(state,session,{baseURL:url,token});
+const {state,session,url}=JSON.parse(readFileSync(0,"utf8"));
+const result=await getCompletedTask(state,session,{baseURL:url});
 assert.equal(result.success,true);
 assert.equal(result.task.status,"completed");
 let stored={...state,status:"BLOCKED",turns:0,eventIds:[],pendingOperation:"task_complete",pendingEventId:"recovered-event",outcomeUnknown:true};
 let prompts=0;
 const ctx={storage:{get:async()=>structuredClone(stored),set:async(_k,v)=>{stored=structuredClone(v)}},
  session:{get:async()=>({location:{directory:state.root}}),prompt:async p=>{prompts++;return {id:p.id,sessionID:p.sessionID,type:"user",payload:{text:p.text}}}}};
-const controller=makeGoalController(ctx,{resolveRoot:async p=>p,transport:{baseURL:url,token}});
+const controller=makeGoalController(ctx,{resolveRoot:async p=>p,transport:{baseURL:url}});
 const recovered=await controller.resume(session);
 assert.equal(recovered.status,"DONE");assert.deepEqual(recovered.eventIds,["recovered-event"]);assert.equal(prompts,0);
 '''
         recovery_input = {"state": successful, "session": behavior["success_session"],
-                          "url": f"http://127.0.0.1:{hub_port}", "token": "x" * 40}
+                          "url": f"http://127.0.0.1:{hub_port}"}
         subprocess.run(["node", "--input-type=module", "-e", recovery], cwd=ROOT,
                        input=json.dumps(recovery_input), capture_output=True, text=True, check=True, timeout=15)
         stale_recovery = r'''
 import assert from "node:assert/strict";
 import {readFileSync} from "node:fs";
 import {getCompletedTask} from "./tools/opencode_goal/transport.js";
-const {state,session,url,token}=JSON.parse(readFileSync(0,"utf8"));
-const result=await getCompletedTask(state,session,{baseURL:url,token});
+const {state,session,url}=JSON.parse(readFileSync(0,"utf8"));
+const result=await getCompletedTask(state,session,{baseURL:url});
 assert.equal(result.success,false);
 '''
         evidence_file = project / "test_passing.py"
@@ -455,13 +454,13 @@ assert.equal(result.success,false);
 import assert from "node:assert/strict";
 import {readFileSync} from "node:fs";
 import {makeGoalController} from "./tools/opencode_goal/index.js";
-const {root,url,token}=JSON.parse(readFileSync(0,"utf8")),db=new Map(),prompts=[]; let committed=false;
+const {root,url}=JSON.parse(readFileSync(0,"utf8")),db=new Map(),prompts=[]; let committed=false;
 const ctx={storage:{get:async k=>db.get(k),set:async(k,v)=>db.set(k,structuredClone(v))},
  session:{get:async()=>({location:{directory:root}}),prompt:async p=>{prompts.push(p);return {id:p.id,sessionID:p.sessionID,type:"user",payload:{text:p.text}}}}};
 const fetchImpl=async (url,opts)=>{const response=await fetch(url,opts); if(JSON.parse(opts.body).action==="create"){
  const payload=await response.json(); committed=response.ok && payload.success===true;
  throw new Error("simulated lost response after server commit");} return response};
-const controller=makeGoalController(ctx,{resolveRoot:async p=>p,transport:{baseURL:url,token,fetchImpl}});
+const controller=makeGoalController(ctx,{resolveRoot:async p=>p,transport:{baseURL:url,fetchImpl}});
 await assert.rejects(controller.start("recovery-session",{goal:"Recover",criteria:["pytest"]}));
 assert.equal(committed,true,"server did not confirm task creation before the simulated response loss");
 assert.equal(prompts.length,0); const state=await controller.status("recovery-session");
@@ -472,19 +471,19 @@ import assert from "node:assert/strict";
 import {readFileSync} from "node:fs";
 import {makeGoalController} from "./tools/opencode_goal/index.js";
 import {getBoundTask} from "./tools/opencode_goal/transport.js";
-const {root,url,token,state}=JSON.parse(readFileSync(0,"utf8")),db=new Map([["goal:recovery-session",state]]),prompts=[];
+const {root,url,state}=JSON.parse(readFileSync(0,"utf8")),db=new Map([["goal:recovery-session",state]]),prompts=[];
 const ctx={storage:{get:async k=>db.get(k),set:async(k,v)=>db.set(k,structuredClone(v))},
  session:{get:async()=>({location:{directory:root}}),prompt:async p=>{prompts.push(p);return {id:p.id,sessionID:p.sessionID,type:"user",payload:{text:p.text}}}}};
-const controller=makeGoalController(ctx,{resolveRoot:async p=>p,transport:{baseURL:url,token}});
+const controller=makeGoalController(ctx,{resolveRoot:async p=>p,transport:{baseURL:url}});
 await controller.resume("recovery-session");
 if((await controller.status("recovery-session")).status!=="CONTINUE") {
- const response=await fetch(url+"/api/agent-state/tasks",{method:"POST",headers:{"Content-Type":"application/json","X-LocalAI-Token":token,"X-LocalAI-Agent":"opencode-local"},body:JSON.stringify({action:"get",root,task_id:state.taskId})});
- console.error(JSON.stringify(await response.json()),JSON.stringify(await getBoundTask(state,"recovery-session",{baseURL:url,token})));
+ const response=await fetch(url+"/api/agent-state/tasks",{method:"POST",headers:{"Content-Type":"application/json","X-LocalAI-Agent":"opencode-local"},body:JSON.stringify({action:"get",root,task_id:state.taskId})});
+ console.error(JSON.stringify(await response.json()),JSON.stringify(await getBoundTask(state,"recovery-session",{baseURL:url})));
 }
 assert.equal((await controller.status("recovery-session")).status,"CONTINUE");
 assert.equal(prompts.length,1);
 '''
-        args = {"root": str(project.resolve()), "url": f"http://127.0.0.1:{hub_port}", "token": "x" * 40}
+        args = {"root": str(project.resolve()), "url": f"http://127.0.0.1:{hub_port}"}
         pending = subprocess.run(["node", "--input-type=module", "-e", create_lost], cwd=ROOT, input=json.dumps(args),
                                  capture_output=True, text=True, check=True, timeout=20)
         resumed = subprocess.run(["node", "--input-type=module", "-e", resume], cwd=ROOT,

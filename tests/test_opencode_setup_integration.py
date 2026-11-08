@@ -19,7 +19,7 @@ def test_prepare_components_uses_one_candidate_and_never_claims_runtime(tmp_path
     plugin = tmp_path / "tools" / "opencode_goal"
     plugin.mkdir(parents=True)
     (plugin / "index.js").touch()
-    cfg = {"server": {"ollama_url": "http://127.0.0.1:11434"}, "security": {"api_token": "x" * 40}}
+    cfg = {"server": {"ollama_url": "http://127.0.0.1:11434"}}
     result = setup.prepare_opencode_components(cfg, tmp_path, gpu(12282), destination=tmp_path / "bin", allow_pull=True)
     assert result["candidate"] == "qwen3.5:9b"
     assert result["model"]["downloaded"] is False
@@ -61,7 +61,7 @@ def test_prepare_16gb_uses_provisional_9b_without_claiming_selection(tmp_path, m
                                                gpu(16376), destination=tmp_path / "bin", allow_pull=False)
     assert result["candidate"] == "qwen3.5:9b-nvfp4"
     assert result["complete"] is False and result["runtime_verified"] is False
-    assert any("token" in item for item in result["pending"])
+    assert not any("hub api token" in item.lower() for item in result["pending"])
 
 
 def test_normal_setup_invokes_opencode_preparation_and_reports_incomplete(tmp_path, monkeypatch, capsys):

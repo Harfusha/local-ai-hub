@@ -125,7 +125,7 @@ authorization and quality evidence remain separate gates.
 | Profile | Exposed local-model capability classes |
 | --- | --- |
 | `cpu`, `integrated`, `low` | Deterministic/indexed operations; bounded compression, routing, evaluation and management actions. No semantic analysis promotion or work submission. |
-| `balanced` | Above, plus search summaries with `features.search_summaries=true` and optional RAG reranking with `features.local_reranking=true`; semantic analysis/review remains hidden until `features.local_semantic_analysis=true`. No bounded work submission, vision, scaffold or speculative draft. |
+| `balanced` | Above, plus search summaries with `features.search_summaries=true`; semantic analysis/review remains hidden until `features.local_semantic_analysis=true`. No bounded work submission, vision, scaffold or speculative draft. |
 | `high` | Above, plus semantic analysis with `features.local_semantic_analysis=true`; vision, code generation and browser automation each need their own default-off flags. Bounded work needs `features.bounded_local_work=true` and `mode="bounded"`, plus task quality, explicit permissions and primary-agent review. |
 | `max` | Same authority classes as `high`; performance limits and model routes require separate measurements. |
 
@@ -167,9 +167,11 @@ provider, latency, quality and hardware measurements.
 Semantic analysis, vision, code generation and bounded local work use separate
 default-off operator release flags: `features.local_semantic_analysis`,
 `features.local_vision`, `features.local_code_generation`,
-`features.local_automation`, `features.bounded_local_work` and
-`features.local_reranking`. RAG reranking is additionally limited to `balanced`
-or higher and uses the separately configured reranker backend/device. Enable
+`features.local_automation` and `features.bounded_local_work`. RAG reranking
+uses the separately configured reranker backend/device and is available on
+every hardware profile when enabled by `features.local_reranking`. After GPU
+admission or inference failure, RAG keeps candidates and uses heuristic
+ranking; CPU inference requires CPU as the configured primary device. Enable
 each only after reviewing role-specific task evaluations. These flags do not
 establish model quality or availability. Embedding retrieval remains available
 according to its provider and device configuration; it does not imply LLM

@@ -114,7 +114,12 @@ from .agent_verification import VerificationReceipt
 from .task_context import build_context_request, compose_task_context
 from .agent_learning import ImprovementCandidate, SLOObservation
 from .operation_contracts import normalize_transport_error
-from .search_pagination import MAX_HTTP_PAGE_RESPONSE_BYTES, pagination_bounds_error
+from .search_pagination import (
+    MAX_HTTP_PAGE_RESPONSE_BYTES,
+    MAX_PAGE_SIZE,
+    MAX_PAGE_WINDOW,
+    pagination_bounds_error,
+)
 from .json_utils import dumps as json_dumps, dumps_bytes as json_dumps_bytes, loads as json_loads
 from .process_utils import process_identity, process_owner_state, process_parent_pid
 
@@ -608,21 +613,6 @@ def _redact_config_secrets(config: dict[str, Any]) -> dict[str, Any]:
         view["_config_path"] = _safe_config_file_label(view["_config_path"])
     if "_runtime_override_path" in view:
         view["_runtime_override_path"] = _safe_config_file_label(view["_runtime_override_path"])
-    security = view.get("security")
-    if not isinstance(security, dict):
-        return view
-    if security.get("api_token"):
-        security["api_token"] = "***configured***"
-    if security.get("supervisor_token"):
-        security["supervisor_token"] = "***configured***"
-    action_tokens = security.get("action_tokens")
-    if isinstance(action_tokens, dict):
-        security["action_tokens"] = {
-            str(action): "***configured***"
-            for action, token in action_tokens.items() if token
-        }
-    elif action_tokens:
-        security["action_tokens"] = "***configured***"
     _redact_config_secrets._cached = (config_stamp, json_dumps(view, default=str))
     return view
 
@@ -1504,6 +1494,10 @@ class LocalAIHTTPServer(ThreadingHTTPServer):
             self.socket.setsockopt(socket.SOL_SOCKET, exclusive, 1)
         super().server_bind()
 
+    def verify_request(self, request: Any, client_address: Any) -> bool:
+        """Reject non-loopback peers before any HTTP route, including health."""
+        return _is_loopback_client_address(client_address)
+
     def configure_rate_limit(self, requests: int, window_seconds: float) -> None:
         """Apply config-driven rate limit values after server creation."""
         with self._rate_lock:
@@ -1602,15 +1596,11 @@ def _task_create_contract(payload: Mapping[str, Any]) -> GoalContract:
 
 
 def _safe_agent(handler: Any) -> str:
-    agent_fn = getattr(handler, "_agent", None)
-    if callable(agent_fn):
-        try:
-            return agent_fn() or "generic"
-        except Exception:
-            pass
     headers = getattr(handler, "headers", None)
     if headers is not None and hasattr(headers, "get"):
-        return headers.get("X-LocalAI-Agent") or "generic"
+        value = headers.get("X-LocalAI-Agent")
+        if isinstance(value, str) and value.strip():
+            return value.strip()
     return "generic"
 
 
@@ -1718,24 +1708,11 @@ class Handler(BaseHTTPRequestHandler):
         header = lambda name, default="": request_headers.get(name, default)
         request_origin = str(header("Origin", "") or "").strip()
         bridge_path = str(getattr(self, "path", "")).startswith("/api/browser/") or str(getattr(self, "path", "")) == "/api/vision/review"
-        requested_headers = str(header("Access-Control-Request-Headers", "") or "").lower()
-        token_preflight = str(getattr(self, "command", "")) == "OPTIONS" and ("x-localai-token" in requested_headers or "authorization" in requested_headers)
         if request_origin and bridge_path and APP is not None and origin_allowed(APP.config, request_origin):
             self.send_header("Access-Control-Allow-Origin", request_origin)
             self.send_header("Access-Control-Allow-Methods", "POST, OPTIONS")
-            self.send_header("Access-Control-Allow-Headers", "Content-Type, X-LocalAI-Token, Authorization")
+            self.send_header("Access-Control-Allow-Headers", "Content-Type")
             self.send_header("Vary", "Origin")
-        elif request_origin and bridge_path and APP is not None:
-            expected_token = str(APP.config.get("security", {}).get("api_token", ""))
-            supplied_token = str(header("X-LocalAI-Token", "") or "")
-            auth_header = str(header("Authorization", "") or "")
-            if auth_header.lower().startswith("bearer "):
-                supplied_token = auth_header[7:].strip()
-            if expected_token and (hmac.compare_digest(supplied_token, expected_token) or token_preflight):
-                self.send_header("Access-Control-Allow-Origin", request_origin)
-                self.send_header("Access-Control-Allow-Methods", "POST, OPTIONS")
-                self.send_header("Access-Control-Allow-Headers", "Content-Type, X-LocalAI-Token, Authorization")
-                self.send_header("Vary", "Origin")
         if html:
             script_source = f"'nonce-{nonce}'" if nonce else "'none'"
             self.send_header("Content-Security-Policy", f"default-src 'none'; connect-src 'self'; img-src 'self' data:; style-src 'unsafe-inline'; script-src {script_source}; script-src-attr 'unsafe-inline'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'")
@@ -2002,21 +1979,26 @@ class Handler(BaseHTTPRequestHandler):
             return
         try:
             failed = status >= 400 or (isinstance(data, dict) and data.get("success") is False)
-            detail = "request failed" if failed else ""
             if isinstance(data, dict):
                 data = self._safe_debug_trace_request(data)
             else:
                 data = {"output": self._safe_debug_trace_request({"output": data}).get("output", "")}
+            trace_response = dict(data)
+            if isinstance(status, int) and not isinstance(status, bool) and 100 <= status <= 599:
+                trace_response["http_status_code"] = status
+            response_error = (data.get("error") or data.get("message")) if isinstance(data, dict) else None
+            detail = (
+                str(response_error)[:512]
+                if failed and isinstance(response_error, str) and response_error.strip()
+                else "request failed" if failed else ""
+            )
             state = "failed" if failed else "done"
             update = getattr(store, "update", None)
             if callable(update):
-                if getattr(self, "_debug_stream_capture", False):
-                    update(trace_id, response=data)
-                else:
-                    update(trace_id, output=data)
+                update(trace_id, response=trace_response)
                 finished = store.finish(trace_id, state=state, error=detail)
             else:
-                finished = store.finish(trace_id, state=state, response=data, error=detail)
+                finished = store.finish(trace_id, state=state, response=trace_response, error=detail)
             if not finished:
                 # A concurrent event writer can briefly hold SQLite's write lock.
                 # Do not mark the trace finished until the terminal write is real;
@@ -2024,10 +2006,10 @@ class Handler(BaseHTTPRequestHandler):
                 # being left visibly running without creating retry loops.
                 time.sleep(0.02)
                 if callable(update):
-                    update(trace_id, output=data)
+                    update(trace_id, response=trace_response)
                     finished = store.finish(trace_id, state=state, error=detail)
                 else:
-                    finished = store.finish(trace_id, state=state, response=data, error=detail)
+                    finished = store.finish(trace_id, state=state, response=trace_response, error=detail)
             if finished:
                 self._debug_trace_finished = True
         except Exception:
@@ -2698,35 +2680,7 @@ class Handler(BaseHTTPRequestHandler):
 
 
     def _agent(self) -> str:
-        if self._opencode_profile_credential():
-            return "opencode-local"
         return _safe_agent(self)
-
-    def _opencode_profile_credential(self) -> bool:
-        from .opencode_boundary import derive_local_profile_token
-
-        config = getattr(APP, "config", {}) if APP is not None else {}
-        security = config.get("security", {}) if isinstance(config, dict) else {}
-        supplied = self.headers.get("X-LocalAI-Token", "")
-        auth = self.headers.get("Authorization", "")
-        if isinstance(auth, str) and auth.lower().startswith("bearer "):
-            supplied = auth[7:].strip()
-        if not isinstance(supplied, str):
-            return False
-        pieces = supplied.split(".")
-        if len(pieces) != 3 or pieces[0] != "lahoc1":
-            return False
-        nonce = pieces[1]
-        expected = derive_local_profile_token(nonce) if isinstance(security, dict) else None
-        if not expected or not _token_matches(supplied, expected):
-            return False
-        try:
-            provider = getattr(APP, "opencode_provider", None)
-            status = provider.status() if provider is not None else None
-        except Exception:
-            return False
-        return bool(isinstance(status, dict) and status.get("success") is True and status.get("state") == "running"
-                    and status.get("nonce") == nonce)
 
     def _authorization_permission(self) -> str:
         path = urlparse(str(getattr(self, "path", ""))).path
@@ -2768,135 +2722,24 @@ class Handler(BaseHTTPRequestHandler):
         self._authorization_actor = "unrecognized"
         self._authorization_root = None
         self._authorization_permissions = frozenset()
-        self._authorization_status = 401
-        if APP is None:
-            return _is_loopback_client_address(getattr(self, "client_address", None))
-        security = APP.config.get("security", {})
+        self._authorization_status = 403
+        config = getattr(APP, "config", {}) if APP is not None else {}
+        security = config.get("security", {}) if isinstance(config, dict) else {}
         if not isinstance(security, dict):
             return False
-        expected = security.get("api_token", "") or ""
-        supervisor_token = security.get("supervisor_token", "") or ""
-        action_tokens = security.get("action_tokens", {}) or {}
-        if (
-            not isinstance(expected, str)
-            or not isinstance(supervisor_token, str)
-            or not isinstance(action_tokens, dict)
-            or any(not isinstance(key, str) or not isinstance(value, str) for key, value in action_tokens.items())
-            or "users" in security
-        ):
+        retired_fields = {
+            "api_token", "supervisor_token", "action_tokens", "api_token_permissions",
+            "api_token_tenant", "api_token_principal", "tenant_derivation_key", "users",
+        }
+        if retired_fields.intersection(security):
             return False
-        configured_tokens = [token for token in (expected, supervisor_token, *action_tokens.values()) if token]
-        if len(configured_tokens) != len(set(configured_tokens)):
+        is_loopback = _is_loopback_client_address(getattr(self, "client_address", None))
+        if not is_loopback:
             return False
-        dashboard_path = urlparse(str(getattr(self, "path", ""))).path
-        dashboard_method = str(getattr(self, "command", "GET")).upper()
-        dashboard_headers = getattr(self, "headers", {})
-        if not hasattr(dashboard_headers, "get"):
-            dashboard_headers = {}
-        dashboard_fetch_site = str(dashboard_headers.get("Sec-Fetch-Site", "")).strip().lower()
-        dashboard_origin = str(dashboard_headers.get("Origin", "")).strip()
-        dashboard_host = str(dashboard_headers.get("Host", "")).strip()
-        # The dashboard is tokenless only for same-origin browser calls from loopback.
-        dashboard_request = (
-            dashboard_path.startswith("/api/")
-            and dashboard_headers.get("X-LocalAI-Client", "") == "dashboard"
-            and dashboard_fetch_site == "same-origin"
-            and bool(dashboard_host)
-            and (dashboard_method in {"GET", "HEAD"} or bool(dashboard_origin))
-            and _is_loopback_client_address(getattr(self, "client_address", None))
-        )
-        host_origin_validator = getattr(self, "_validate_host_and_origin", None)
-        if dashboard_request and callable(host_origin_validator) and host_origin_validator():
-            self._authorization_actor = "dashboard"
-            self._authorization_permissions = frozenset({"monitor", "read", "write", "admin"})
-            self._authorization_status = 200
-            return True
-        if action is None:
-            action = _http_admin_action(
-                str(getattr(self, "command", "")),
-                urlparse(str(getattr(self, "path", ""))).path,
-            )
-        supplied = self.headers.get("X-LocalAI-Token", "")
-        auth = self.headers.get("Authorization", "")
-        if auth.lower().startswith("bearer "):
-            supplied = auth[7:].strip()
-        global_valid = _token_matches(supplied, expected)
-        profile_credential = getattr(self, "_opencode_profile_credential", None)
-        profile_valid = bool(profile_credential()) if callable(profile_credential) else False
-        supervisor_valid = _token_matches(supplied, supervisor_token)
-        scoped = str(action_tokens.get(action, "")) if action else ""
-        scoped_valid = len(scoped) >= 16 and _token_matches(supplied, scoped)
-        matching_credentials = int(global_valid) + int(profile_valid) + int(supervisor_valid) + int(scoped_valid)
-        if matching_credentials > 1:
-            return False
-        local_client = _is_loopback_client_address(getattr(self, "client_address", None))
-        if profile_valid:
-            path = urlparse(str(getattr(self, "path", ""))).path
-            method = str(getattr(self, "command", "GET")).upper()
-            admission_path = str(getattr(self, "path", "")) if path == "/api/live/status" else path
-            if not local_client or path.startswith("/api/opencode/provider/") or not _opencode_path_allowed("opencode-local", method, admission_path):
-                self._authorization_status = 403
-                return False
-        if supervisor_valid:
-            self._authorization_actor = "supervisor"
-            self._authorization_permissions = frozenset({"admin:read", "admin:write"})
-            required = (
-                permission.strip().lower()
-                if isinstance(permission, str) and ":" in permission
-                else action.strip().lower()
-                if isinstance(action, str) and ":" in action
-                else self._required_permission()
-            )
-            if required not in self._authorization_permissions:
-                self._authorization_status = 403
-                return False
-            self._authorization_status = 200
-            return True
-        if scoped_valid:
-            self._authorization_actor = "action_token"
-            self._authorization_permissions = frozenset({str(action)})
-            self._authorization_status = 200
-            return True
-        if global_valid or profile_valid:
-            grants = security.get("api_token_permissions", ["monitor", "read", "write", "admin"])
-            allowed = {
-                "monitor": {"monitor", "read", "write", "admin"},
-                "read": {"read", "write", "admin"},
-                "write": {"write", "admin"},
-                "admin": {"admin"},
-            }
-            requested = permission
-            if requested is None and isinstance(action, str) and ":" in action:
-                requested = action
-            if isinstance(requested, str) and ":" in requested:
-                resource, _, verb = requested.partition(":")
-                needed = "admin" if resource == "admin" else "monitor" if resource == "dashboard" and verb == "read" else verb
-            elif isinstance(requested, str):
-                needed = requested
-            elif requested is not None:
-                needed = None
-            else:
-                needed = self._authorization_permission()
-            self._authorization_actor = "api_token"
-            self._authorization_permissions = frozenset(
-                item.strip().lower() for item in grants if isinstance(item, str)
-            ) if isinstance(grants, list) else frozenset()
-            if (
-                not isinstance(grants, list)
-                or any(not isinstance(item, str) for item in grants)
-                or needed not in allowed
-                or not ({item.strip().lower() for item in grants} & allowed[needed])
-            ):
-                self._authorization_status = 403
-                return False
-            self._authorization_status = 200
-            return True
-        if expected or supervisor_token or action_tokens:
-            return False
-        self._authorization_actor = "local" if local_client else "unrecognized"
-        if local_client:
-            self._authorization_status = 200
-        return local_client
+        self._authorization_actor = "local"
+        self._authorization_permissions = frozenset()
+        self._authorization_status = 200
+        return True
 
     def _audit_admin_authorization(self, action: str, *, allowed: bool) -> bool:
         if APP is None:
@@ -3013,6 +2856,19 @@ class Handler(BaseHTTPRequestHandler):
         if not hasattr(request_headers, "get"):
             request_headers = {}
         header = lambda name, default="": request_headers.get(name, default)
+        if (
+            header("X-LocalAI-Client", "") == "dashboard"
+            and str(header("Sec-Fetch-Site", "")).strip().lower() != "same-origin"
+        ):
+            self._send(403, {"success": False, "error": "forbidden: dashboard requests must be same-origin"})
+            return False
+        if (
+            header("X-LocalAI-Client", "") == "dashboard"
+            and str(getattr(self, "command", "GET")).upper() not in {"GET", "HEAD"}
+            and not str(header("Origin", "")).strip()
+        ):
+            self._send(403, {"success": False, "error": "forbidden: dashboard mutation requires Origin"})
+            return False
         host_header = str(header("Host", "") or "").strip()
         if host_header:
             host_name = host_header.split(":", 1)[0].strip("[]").lower()
@@ -3037,18 +2893,9 @@ class Handler(BaseHTTPRequestHandler):
                 allowed_origins.add(bind)
 
             bridge_origin = False
-            bridge_token = False
             if str(getattr(self, "path", "")).startswith("/api/browser/") or str(getattr(self, "path", "")) == "/api/vision/review":
                 bridge_origin = origin_allowed(APP.config, origin_header)
-                expected_token = str(APP.config.get("security", {}).get("api_token", ""))
-                supplied_token = str(header("X-LocalAI-Token", "") or "")
-                auth_header = str(header("Authorization", "") or "")
-                if auth_header.lower().startswith("bearer "):
-                    supplied_token = auth_header[7:].strip()
-                requested_headers = str(header("Access-Control-Request-Headers", "") or "").lower()
-                token_preflight = str(getattr(self, "command", "")) == "OPTIONS" and ("x-localai-token" in requested_headers or "authorization" in requested_headers)
-                bridge_token = bool(expected_token and (hmac.compare_digest(supplied_token, expected_token) or token_preflight))
-            if origin_host not in allowed_origins and not bridge_origin and not bridge_token:
+            if origin_host not in allowed_origins and not bridge_origin:
                 self._send(403, {"success": False, "error": "forbidden: cross-origin requests are not allowed"})
                 return False
         return True
@@ -3058,11 +2905,6 @@ class Handler(BaseHTTPRequestHandler):
             return False
         if not self._reject_identity_fields(parse_qs(urlparse(str(getattr(self, "path", ""))).query, keep_blank_values=True)):
             return False
-        local_mode_read = (
-            str(getattr(self, "command", "")).upper() == "GET"
-            and urlparse(str(getattr(self, "path", ""))).path == "/api/mode"
-            and _is_loopback_client_address(getattr(self, "client_address", None))
-        )
         action = _http_admin_action(
             str(getattr(self, "command", "")),
             urlparse(str(getattr(self, "path", ""))).path,
@@ -3070,9 +2912,6 @@ class Handler(BaseHTTPRequestHandler):
         self._admin_action = action or ""
         self._admin_result_audited = False
         authorized = self._authorized(action, permission=permission)
-        if not authorized and local_mode_read:
-            self._authorization_actor = "local"
-            authorized = True
         if not authorized:
             if action:
                 self._audit_admin_authorization(action, allowed=False)
@@ -3207,6 +3046,18 @@ class Handler(BaseHTTPRequestHandler):
                 or not minimum <= value <= maximum
             ):
                 raise RequestBodyError(f"{name} must be a finite number from {minimum:g} to {maximum:g}")
+
+        if path == "/api/search":
+            if "top_k" in payload:
+                bounded_integer(payload["top_k"], "top_k", 1, MAX_PAGE_SIZE)
+            if payload.get("context_lines") is not None:
+                bounded_integer(payload["context_lines"], "context_lines", 0, 40)
+            if payload.get("limit") is not None:
+                bounded_integer(payload["limit"], "limit", 1, MAX_PAGE_SIZE)
+            if "offset" in payload:
+                bounded_integer(payload["offset"], "offset", 0, MAX_PAGE_WINDOW - 1)
+            if "enrich" in payload and type(payload["enrich"]) is not bool:
+                raise RequestBodyError("enrich must be a boolean")
 
         if path.startswith("/api/agent-state/") and "action" in payload:
             action = _agent_action_selector(payload)
@@ -6195,8 +6046,6 @@ class Handler(BaseHTTPRequestHandler):
             request_id = self.headers.get("X-LocalAI-Request-ID", "")
             if not isinstance(request_id, str) or not re.fullmatch(r"[0-9a-f]{32}", request_id):
                 self._send(400, {"success": False, "error": "project_command requires a 32-character request id", "terminal": True, "retryable": False}); return
-            if not self._opencode_profile_credential():
-                self._send(403, {"success": False, "error_code": "opencode_profile_required", "terminal": True, "retryable": False}); return
             recovery = getattr(APP, "recovery", None)
             if not isinstance(recovery, RecoveryJournal):
                 self._send(503, {"success": False, "error_code": "request_journal_unavailable", "terminal": True, "retryable": False}); return
@@ -6445,7 +6294,7 @@ class Handler(BaseHTTPRequestHandler):
                     self._send(501, capture_failure("unsupported")); return
                 origin = str(payload.get("origin", ""))
                 try:
-                    capability = issue_capture_capability(APP.config, origin=origin, tab_id=payload.get("tab_id"), window_id=payload.get("window_id"), api_token_authorized=bool(APP.config.get("security", {}).get("api_token")) and self._authorized())
+                    capability = issue_capture_capability(APP.config, origin=origin, tab_id=payload.get("tab_id"), window_id=payload.get("window_id"))
                 except Exception as exc:
                     code = getattr(exc, "error_code", "permission_denied")
                     status = int(getattr(exc, "status", 403))
@@ -7881,7 +7730,12 @@ class Handler(BaseHTTPRequestHandler):
                 model = str(payload.get("model", ""))
                 prompt = str(payload.get("prompt", payload.get("task", "")))
                 num_tokens = int(payload.get("num_tokens", payload.get("max_tokens", 40)))
-                res = APP.benchmark_runner.run(model=model, prompt=prompt or "def test(): pass\n", num_tokens=num_tokens)
+                res = APP.benchmark_runner.run(
+                    model=model,
+                    prompt=prompt or "def test(): pass\n",
+                    num_tokens=num_tokens,
+                    context_tokens=payload.get("context_tokens"),
+                )
                 self._send(200, res); return
             if 'post_gpu_reservation_1' in post_route_ids:
                 scheduler = getattr(APP, "scheduler", None)

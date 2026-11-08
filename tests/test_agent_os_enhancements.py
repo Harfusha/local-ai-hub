@@ -205,8 +205,6 @@ state_dir = "{state_dir.as_posix()}"
 enabled = true
 
 [security]
-api_token = "test-api-token-long-enough"
-api_token_permissions = ["read", "write"]
 allowed_roots = ["{tmp_path.as_posix()}"]
 """, encoding="utf-8")
 
@@ -226,7 +224,6 @@ allowed_roots = ["{tmp_path.as_posix()}"]
             data=json.dumps(data).encode("utf-8"),
             headers={
                 "Content-Type": "application/json",
-                "X-LocalAI-Token": "test-api-token-long-enough",
             },
             method="POST",
         )
@@ -244,7 +241,6 @@ allowed_roots = ["{tmp_path.as_posix()}"]
             data=json.dumps(data).encode("utf-8"),
             headers={
                 "Content-Type": "application/json",
-                "X-LocalAI-Token": "test-api-token-long-enough",
             },
             method="POST",
         )

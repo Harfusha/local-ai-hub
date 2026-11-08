@@ -259,7 +259,11 @@ class Reranker:
             if self._load_error is not None and start >= len(candidates) and time.time() - self._load_error_time < 15.0:
                 return False
             for index in range(start, len(candidates)):
-                if not allow_cpu_fallback and str(candidates[index][1]).strip().lower().startswith("cpu"):
+                if (
+                    not allow_cpu_fallback
+                    and index > 0
+                    and str(candidates[index][1]).strip().lower().startswith("cpu")
+                ):
                     continue
                 if self._load_candidate(index):
                     return True

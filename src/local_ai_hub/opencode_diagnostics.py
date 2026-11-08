@@ -21,14 +21,11 @@ def inspect_components(cfg: dict[str, Any], hardware: dict[str, Any], install_ro
             verified = digest.hexdigest() == expected_digest
     except OSError:
         pass
-    security = cfg.get("security", {})
-    api_auth_configured = isinstance(security, dict) and bool(security.get("api_token"))
     candidates = profile["candidates"]
     return {
         "hardware_profile": profile["profile"],
         "executable_verified": verified,
         "goal_plugin_present": (install_root / "tools" / "opencode_goal" / "index.js").is_file(),
-        "hub_api_auth_configured": api_auth_configured,
         "available_candidates": [name for name in candidates if name in installed] if installed else None,
         "inventory_source": "doctor status or local runtime" if installed else "unavailable_or_empty",
         "runtime_verified": False,

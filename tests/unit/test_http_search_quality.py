@@ -121,6 +121,56 @@ def test_http_search_rejects_non_boolean_exact_count(tmp_path, monkeypatch):
     assert responses[0][1]["error"] == "exact_count must be a boolean"
 
 
+@pytest.mark.parametrize(
+    "payload,error",
+    [
+        ({"top_k": "12"}, "top_k must be an integer from 1 to 200"),
+        ({"top_k": True}, "top_k must be an integer from 1 to 200"),
+        ({"top_k": 201}, "top_k must be an integer from 1 to 200"),
+        ({"context_lines": "4"}, "context_lines must be an integer from 0 to 40"),
+        ({"context_lines": 41}, "context_lines must be an integer from 0 to 40"),
+        ({"limit": "8"}, "limit must be an integer from 1 to 200"),
+        ({"limit": True}, "limit must be an integer from 1 to 200"),
+        ({"limit": 201}, "limit must be an integer from 1 to 200"),
+        ({"offset": "1"}, "offset must be an integer from 0 to 2047"),
+        ({"offset": True}, "offset must be an integer from 0 to 2047"),
+        ({"offset": 2048}, "offset must be an integer from 0 to 2047"),
+        ({"enrich": "false"}, "enrich must be a boolean"),
+    ],
+)
+def test_http_search_rejects_malformed_tuning_fields(payload, error):
+    with pytest.raises(http_server.RequestBodyError, match=error):
+        http_server.Handler._validate_payload("/api/search", payload)
+
+
+def test_http_search_rejects_malformed_top_k_before_search(tmp_path, monkeypatch):
+    root = tmp_path / "repo"
+    root.mkdir()
+    service = SimpleNamespace(
+        config={"server": {"state_dir": str(tmp_path / "state")}},
+        repo_search=lambda *_args, **_kwargs: pytest.fail("invalid request must not search"),
+    )
+    monkeypatch.setattr(
+        http_server, "APP", SimpleNamespace(config=service.config, recovery=None, services=service)
+    )
+
+    handler = http_server.Handler.__new__(http_server.Handler)
+    handler.path, handler.headers, handler._authorization_root = "/api/search", {}, str(root)
+    handler._begin_trace = lambda _path: None
+    handler._require_authorized = lambda: True
+    handler._read_json = lambda: {
+        "root": str(root), "query": "install", "top_k": "twelve", "limit": 8,
+    }
+    handler._bind_repository_root_payload = lambda _payload: True
+    responses = []
+    handler._send = lambda status, body: responses.append((status, body))
+
+    handler.do_POST()
+
+    assert responses[0][0] == 400
+    assert responses[0][1]["error"] == "top_k must be an integer from 1 to 200"
+
+
 def test_service_keeps_engine_order_when_a_path_has_multiple_hits(tmp_path):
     root = tmp_path / "repo"
     root.mkdir()

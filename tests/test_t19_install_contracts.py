@@ -219,7 +219,7 @@ def test_install_update_security_prompts_match_current_http_contract() -> None:
         assert "overrides are removed and rejected" in normalized
         assert "there is no remote-access switch" in normalized
         assert "at least 16 characters" not in normalized
-        assert "empty api_token" in normalized and "unauthenticated" in normalized
+        assert "loopback http/mcp requests are tokenless" in normalized
         assert "agents, chats, projects and worktrees are not tenants" in normalized
         assert "retired fields/headers reject explicitly" in normalized
         for unsupported_claim in (

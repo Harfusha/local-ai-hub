@@ -96,8 +96,9 @@ def test_mcp_forwards_session_repair(monkeypatch, tmp_path: Path):
     assert calls[0]["reason"] == "repair"
 
 
-@pytest.mark.parametrize("permissions,expected", [(["read"], 403), (["write"], 200)])
-def test_http_session_repair_uses_verified_authority(tmp_path: Path, monkeypatch, permissions, expected):
+@pytest.mark.parametrize("retired_token_config,expected", [(False, 200), (True, 403)])
+def test_http_session_repair_uses_loopback_authority_and_rejects_retired_config(
+        tmp_path: Path, monkeypatch, retired_token_config, expected):
     from local_ai_hub import http_server
 
     root = tmp_path / "repository"
@@ -106,14 +107,17 @@ def test_http_session_repair_uses_verified_authority(tmp_path: Path, monkeypatch
     task = store.create(GoalContract(goal="repair"), ScopeContext(repository_id="repository"), repo_root=str(root))
     broker = object.__new__(CommandBroker)
     broker.task_store = store
-    config = {"security": {"api_token": "owner-token-at-least-sixteen", "api_token_permissions": permissions, "allowed_roots": [str(root)]}}
+    security = {"allowed_roots": [str(root)]}
+    if retired_token_config:
+        security["api_token"] = "retired"
+    config = {"security": security}
     monkeypatch.setattr(http_server, "APP", SimpleNamespace(config=config, agent_tasks=store, commands=broker))
     monkeypatch.setattr(http_server, "_trusted_project_context", lambda _: SimpleNamespace(coordination_id="repository"))
     handler = http_server.Handler.__new__(http_server.Handler)
     handler.path = "/api/agent-state/tasks"
     handler.command = "POST"
     handler.client_address = ("127.0.0.1", 0)
-    handler.headers = {"X-LocalAI-Token": config["security"]["api_token"]}
+    handler.headers = {}
     replies = []
     handler._send = lambda status, payload: replies.append((status, payload))
     handler._task_repair_session({"action": "repair_session", "root": str(root), "task_id": task.task_id, "session_id": "session-1", "reason": "repair"})

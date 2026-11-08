@@ -51,7 +51,6 @@ class _App:
                 "max_request_body_bytes": 1024,
             },
             "security": {
-                "api_token": "test-secret",
                 "allowed_roots": [str(state_dir.parent)],
                 "rate_limit_requests": 600,
                 "rate_limit_window_seconds": 60.0,
@@ -96,9 +95,11 @@ def inprocess_client(tmp_path, monkeypatch):
     from local_ai_hub.client import HubClient
     from local_ai_hub.inprocess_transport import InProcessTransport
     from local_ai_hub.operational_mode import set_operational_mode
+    from local_ai_hub.state_lifecycle import ensure_state_version
 
     state_dir = tmp_path / "state"
     state_dir.mkdir()
+    ensure_state_version(state_dir)
     config_path = tmp_path / "config.toml"
     config_path.write_text(
         "[server]\n"
@@ -106,7 +107,6 @@ def inprocess_client(tmp_path, monkeypatch):
         "port = 11435\n"
         f'state_dir = "{state_dir.as_posix()}"\n'
         "[security]\n"
-        'api_token = "test-secret"\n'
         f'allowed_roots = ["{tmp_path.as_posix()}"]\n'
         "rate_limit_requests = 600\n"
         "rate_limit_window_seconds = 60.0\n",
@@ -170,10 +170,15 @@ def test_inprocess_transport_lazily_creates_app_without_http_or_process(inproces
     from local_ai_hub.inprocess_transport import InProcessTransport
 
     created = []
+    creation_errors = []
     create_app = InProcessTransport._create_app.__get__(transport, InProcessTransport)
 
     def create_real_app():
-        app = create_app()
+        try:
+            app = create_app()
+        except Exception as exc:
+            creation_errors.append(f"{type(exc).__name__}: {exc}")
+            raise
         app.services.repo_topology = lambda root: {
             "success": True,
             "root": root,
@@ -216,7 +221,7 @@ def test_inprocess_transport_lazily_creates_app_without_http_or_process(inproces
         requires_heavy_work=False,
     )
 
-    assert len(created) == 1
+    assert len(created) == 1, (result.get("error"), creation_errors)
     assert result["success"] is True, result
     assert Path(result["root"]) == _state_dir.parent
     assert result["source"] == "real-app-service"
@@ -265,22 +270,19 @@ def test_inprocess_transport_keeps_http_rate_limit_across_requests(inprocess_cli
     assert second["retryable"] is True
 
 
-def test_inprocess_transport_preserves_auth_and_payload_validation(inprocess_client):
+def test_inprocess_transport_preserves_operational_mode_and_payload_validation(inprocess_client):
     client, _transport, _app, _state_dir = inprocess_client
     from local_ai_hub.operational_mode import set_operational_mode
 
     set_operational_mode(_state_dir, "gaming")
-    client.api_token = "wrong-token"
-
-    unauthorized = client.get(
+    blocked = client.get(
         "/api/repo/topology?root=fixture-root",
         operational_action="repo_topology",
     )
-    assert unauthorized["status_code"] == 401
-    assert unauthorized["success"] is False
+    assert blocked["success"] is False
+    assert blocked["status_code"] in {403, 423, 503}
 
     set_operational_mode(_state_dir, "active")
-    client.api_token = "test-secret"
     invalid_action = client.request(
         "/api/work-orders",
         {"action": "not-a-work-order-action"},

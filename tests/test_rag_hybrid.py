@@ -380,6 +380,19 @@ def test_semantic_only_search_skips_embedder_for_known_stale_index(tmp_path):
     assert store.services.calls == []
 
 
+def test_semantic_search_skips_embedder_for_empty_workspace(tmp_path):
+    store = _store(tmp_path)
+    workspace = "empty-workspace"
+
+    result = store.search("query", workspace=workspace, use_reranker=False, semantic_only=True)
+
+    assert result["success"] is True
+    assert result["results"] == []
+    assert result["fallback"] == "empty_index"
+    assert result["index_state"] == "empty"
+    assert store.services.calls == []
+
+
 def test_semantic_only_uses_runtime_identity_when_configured_digest_is_stale(tmp_path):
     store = _store(tmp_path)
     store.config["models"]["embedding_digest"] = "configured-digest"
@@ -578,7 +591,7 @@ def test_public_search_cache_tracks_runtime_embedding_dimension(tmp_path):
     store.services.embeddings = runtime
     calls = []
 
-    def uncached(query, workspace,  top_k=8, use_reranker=True, priority=3, scope_path=None):
+    def uncached(query, workspace,  top_k=8, use_reranker=True, priority=3, scope_path=None, **_kwargs):
         calls.append(runtime._active_embedding_dimension)
         return {"success": True, "results": [{"path": f"dimension-{runtime._active_embedding_dimension}"}]}
 

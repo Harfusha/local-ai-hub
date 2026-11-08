@@ -6,29 +6,28 @@ from local_ai_hub import http_server
 from local_ai_hub.config import ConfigError, validate_config
 
 
-def _handler(monkeypatch, security, token):
+def _handler(monkeypatch, security=None, token=None, peer="127.0.0.1"):
     monkeypatch.setattr(
         http_server,
         "APP",
-        SimpleNamespace(config={"security": security}),
+        SimpleNamespace(config={"security": security or {}}),
     )
     handler = SimpleNamespace(
         headers={"X-LocalAI-Token": token or ""},
         command="GET",
         path="/api/metrics",
+        client_address=(peer, 1234),
     )
     return handler
 
 
-def test_empty_or_missing_credentials_fail_closed(monkeypatch):
-    handler = _handler(monkeypatch, {"api_token": ""}, None)
+def test_loopback_access_ignores_legacy_hub_token_header(monkeypatch):
+    handler = _handler(monkeypatch)
+    assert http_server.Handler._authorized(handler, action="dashboard:read") is True
 
-    assert http_server.Handler._authorized(handler, action="dashboard:read") is False
 
-
-def test_invalid_credentials_fail_closed(monkeypatch):
-    handler = _handler(monkeypatch, {"api_token": "service-secret"}, "wrong-secret")
-
+def test_remote_peer_is_rejected_even_with_legacy_hub_token_header(monkeypatch):
+    handler = _handler(monkeypatch, token="ignored-secret", peer="203.0.113.7")
     assert http_server.Handler._authorized(handler, action="dashboard:read") is False
 
 
@@ -39,54 +38,23 @@ def test_retired_user_credentials_are_rejected_by_config():
         }})
 
 
-def test_owner_supervisor_and_action_tokens_keep_separate_permissions(monkeypatch):
-    security = {
-        "api_token": "service-secret",
-        "supervisor_token": "supervisor-secret",
-        "action_tokens": {"dashboard:read": "long-enough-action-secret"},
-    }
-    service = _handler(monkeypatch, security, "service-secret")
-    supervisor = _handler(monkeypatch, security, "supervisor-secret")
-    action = _handler(monkeypatch, security, "long-enough-action-secret")
-
-    assert http_server.Handler._authorized(service, action="admin:write") is True
-    assert service._authorization_actor == "api_token"
-    assert http_server.Handler._authorized(supervisor, action="admin:write") is True
-    assert supervisor._authorization_actor == "supervisor"
-    assert http_server.Handler._authorized(action, action="dashboard:read") is True
-    assert action._authorization_actor == "action_token"
-    assert http_server.Handler._authorized(action, action="admin:write") is False
-
-
-def test_duplicate_credentials_fail_config_validation():
-    with pytest.raises(ConfigError, match="credentials must be unique"):
-        validate_config({"security": {
-            "api_token": "shared-secret",
-            "supervisor_token": "shared-secret",
-        }})
+@pytest.mark.parametrize("field", ["api_token", "supervisor_token", "action_tokens", "api_token_permissions"])
+def test_retired_hub_auth_configuration_is_rejected(field):
+    with pytest.raises(ConfigError, match="was removed"):
+        validate_config({"security": {field: "legacy-value"}})
 
 
 def test_security_config_rejects_duplicate_credentials_and_retired_user_scopes():
-    with pytest.raises(ConfigError, match="credentials must be unique"):
-        validate_config({"security": {"api_token": "shared-secret", "supervisor_token": "shared-secret"}})
-
     with pytest.raises(ConfigError, match="security.users was removed"):
         validate_config({"security": {
             "users": {"viewer": {"token": "viewer-secret", "permissions": ["dashboard:admin"]}},
         }})
 
 
-def test_diagnostic_config_redacts_every_authentication_secret():
-    redacted = http_server._redact_config_secrets({"security": {
-        "api_token": "api-secret",
-        "supervisor_token": "supervisor-secret",
-        "action_tokens": {"dashboard:read": "long-enough-action-secret"},
-    }})
-
-    security = redacted["security"]
-    assert security["api_token"] == "***configured***"
-    assert security["supervisor_token"] == "***configured***"
-    assert security["action_tokens"]["dashboard:read"] == "***configured***"
+def test_empty_or_false_retired_auth_fields_are_still_rejected():
+    for value in (None, "", False, {}):
+        with pytest.raises(ConfigError, match="was removed"):
+            validate_config({"security": {"api_token": value}})
 
 
 @pytest.mark.parametrize("bind", ["0.0.0.0", "localhost", "::1"])
@@ -128,10 +96,12 @@ def test_config_redaction_rejects_retired_users_by_presence(retired_value):
         http_server._redact_config_secrets({"security": {"users": retired_value}})
 
 
-def test_config_redaction_cache_cannot_hide_retired_users_after_config_mutation():
+def test_config_validation_rejects_retired_auth_fields_after_mutation():
     config = {"security": {"api_token": "secret"}}
-    assert http_server._redact_config_secrets(config)["security"]["api_token"] == "***configured***"
+    with pytest.raises(ConfigError, match="security.api_token was removed"):
+        validate_config(config)
+    config["security"].pop("api_token")
     config["security"]["users"] = False
 
-    with pytest.raises(ValueError, match="security.users was removed"):
-        http_server._redact_config_secrets(config)
+    with pytest.raises(ConfigError, match="security.users was removed"):
+        validate_config(config)

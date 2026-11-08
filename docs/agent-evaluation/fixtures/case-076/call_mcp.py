@@ -38,7 +38,7 @@ if not isinstance(arguments, dict) or (tool, arguments.get("action")) not in {
 if Path(arguments.get("root", "")).resolve() != WORKSPACE:
     raise SystemExit("explicit fixture workspace root required")
 env = os.environ.copy()
-for key in ("LOCAL_AI_TENANT", "LOCAL_AI_HUB_TOKEN", "LOCAL_AI_AGENT", "LOCAL_AI_AGENT_PROFILE"):
+for key in ("LOCAL_AI_TENANT", "LOCAL_AI_AGENT", "LOCAL_AI_AGENT_PROFILE"):
     env.pop(key, None)
 env.update(LOCAL_AI_CONFIG=str(CONFIG), PYTHONPATH=str(SOURCE / "src"), PYTHONDONTWRITEBYTECODE="1")
 server = StdioServerParameters(command=sys.executable, args=["-B", "-m", "local_ai_hub.mcp_server"], env=env, cwd=str(HERE))

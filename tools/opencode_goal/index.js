@@ -425,10 +425,8 @@ export function makeGoalController(ctx, { resolveRoot = realpath, completeTaskIm
 export default {
   id: "local-ai-hub.goal",
   async setup(ctx) {
-    const tokenEnv = ctx.options?.tokenEnv
-    if (tokenEnv !== undefined && (typeof tokenEnv !== "string" || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(tokenEnv))) throw new Error("invalid token environment name")
-    if (tokenEnv && !process.env[tokenEnv]) throw new Error("configured Hub token environment variable is empty or missing")
-    const settings = { baseURL: ctx.options?.hubURL, token: tokenEnv ? process.env[tokenEnv] : "", actor: ctx.options?.actor ?? "opencode-local" }
+    if (ctx.options && Object.hasOwn(ctx.options, "tokenEnv")) throw new Error("Hub tokenEnv option was removed")
+    const settings = { baseURL: ctx.options?.hubURL, actor: ctx.options?.actor ?? "opencode-local" }
     validateTransportOptions(settings)
     const controller = makeGoalController(ctx, { transport: settings })
     await ctx.tool.transform((editor) => editor.add({

@@ -20,8 +20,7 @@ def live_api(tmp_path, monkeypatch):
     config.write_text(
         f'[server]\nbind = "127.0.0.1"\nport = {server.server_address[1]}\n'
         f'state_dir = "{state_dir.as_posix()}"\n'
-        f'\n[security]\napi_token = "test-api-token"\n'
-        f'allowed_roots = ["{tmp_path.as_posix()}"]\n',
+        f'\n[security]\nallowed_roots = ["{tmp_path.as_posix()}"]\n',
         encoding="utf-8",
     )
     app = LocalAIApp(str(config))
@@ -287,17 +286,11 @@ def test_lean_work_description_lists_continuation_and_response_controls(monkeypa
     monkeypatch.setattr(mcp_server, "LEAN_SCHEMAS", True)
     description = mcp_server._desc_work()
 
-    for control in (
-        "continue",
-        "return_fields",
-        "max_output_tokens",
-        "max_response_tokens",
-        "response_profile",
-        "reuse_key",
-        "extra_fields",
-        "delta",
-    ):
+    for control in ("max_output_tokens", "max_response_tokens", "response_profile", "reuse_key"):
         assert control in description
+    assert "Actions: status, wait, get, cancel." in description
+    assert "continue" not in description
+    assert "return_fields" in description
 
 
 def test_semantic_diff_action_uses_public_call_graph_diff_route(monkeypatch, tmp_path):

@@ -72,7 +72,7 @@ def test_document_ingest_maps_explicit_content_on_first_call(monkeypatch, tmp_pa
 
 @pytest.mark.parametrize(
     ("profile", "qualified", "expected"),
-    [("low", True, False), ("balanced", False, False), ("balanced", True, True), ("high", True, True)],
+    [("low", True, True), ("balanced", False, False), ("balanced", True, True), ("high", True, True)],
 )
 def test_rag_search_only_requests_reranking_when_capability_is_available(
     monkeypatch, tmp_path, profile, qualified, expected

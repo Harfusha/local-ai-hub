@@ -33,6 +33,16 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from . import command_streams as _command_streams
+from .command_policy import (
+    DANGEROUS_EXES,
+    KNOWN_PYTHON_MODULES,
+    MUTATING_WORDS,
+    PURE_VALIDATORS,
+    READ_FILTERS,
+    READ_ONLY,
+    VALIDATORS,
+    VOLATILE_READS,
+)
 MultiplexEvent = _command_streams.MultiplexEvent
 StreamMultiplexer = _command_streams.StreamMultiplexer
 from .cache import SQLiteCache, TieredCache, stable_hash
@@ -3080,47 +3090,15 @@ class _CommandSingleflightEvent(threading.Event):
 class CommandBroker:
     """Safe shared command runner with repo-state-aware cache and single-flight."""
 
-    READ_ONLY = {
-        "git", "rg", "ripgrep", "grep", "findstr", "where", "which",
-        "fd", "fdfind", "find", "cat", "type", "head", "tail", "wc",
-        "diff", "cmp", "sort", "uniq", "cut", "tr", "file", "stat",
-        "echo", "pwd", "tree", "jq", "yq", "ls", "dir",
-        "tasklist", "whoami", "hostname", "systeminfo", "ver", "ipconfig", "netstat",
-        "fc", "comp", "attrib", "set", "env", "printenv",
-    }
-    READ_FILTERS = {
-        "grep", "ripgrep", "rg", "findstr", "select-string", "find", "head", "tail", "wc", "sort", "uniq", "cut", "tr", "jq", "yq",
-        "cat", "type", "format-table", "select-object", "convertto-json", "convertfrom-json", "out-string", "out-null", "tee", "more", "less",
-    }
-    # Repository snapshots cannot establish freshness for host/process/network
-    # observations. These commands remain allowed reads, never cached results.
-    VOLATILE_READS = frozenset({
-        "tasklist", "whoami", "hostname", "systeminfo", "ver", "ipconfig", "netstat",
-        "set", "env", "printenv",
-    })
-    VALIDATORS = {
-        "pytest", "phpunit", "phpstan", "ruff", "mypy", "eslint", "tsc", "cargo",
-        "dotnet", "go", "npm", "pnpm", "yarn", "bun", "composer", "make", "cmake",
-        "ctest", "mvn", "mvnw", "gradle", "gradlew", "gradlew.bat", "flake8", "pylint",
-        "black", "isort", "bandit", "shellcheck", "yamllint",
-    }
-    PURE_VALIDATORS = {
-        "pytest", "phpunit", "phpstan", "pest", "ruff", "mypy", "eslint", "tsc",
-        "pyflakes", "flake8", "pylint", "bandit", "radon", "yamllint", "shellcheck",
-        "markdownlint", "biome", "oxlint", "clippy", "coverage", "vitest", "jest",
-        "mocha", "ava", "playwright", "cypress", "tox", "nox", "pre-commit",
-    }
-    KNOWN_PYTHON_MODULES = {
-        "pytest", "ruff", "mypy", "unittest", "compileall", "pyflakes", "flake8",
-        "pylint", "bandit", "coverage", "tox", "nox", "pre_commit", "pre-commit",
-        "build", "wheel", "setuptools", "flit", "local_ai_hub", "local_ai_hub.generator",
-        "pip", "json.tool", "platform", "sysconfig", "site", "venv", "pydoc", "black", "isort",
-    }
-    MUTATING_WORDS = {
-        "commit", "push", "pull", "merge", "rebase", "reset", "clean", "checkout", "switch", "restore", "add", "stash", "apply",
-        "install", "update", "upgrade", "publish", "deploy", "migrate", "migration", "seed", "format", "fix", "write", "delete", "remove",
-    }
-    DANGEROUS_EXES = {"rm", "del", "erase", "rmdir", "shutdown", "reboot", "poweroff", "mkfs", "diskpart", "format"}
+    # Keep the historical class-level surface while policy data lives separately.
+    READ_ONLY = READ_ONLY
+    READ_FILTERS = READ_FILTERS
+    VOLATILE_READS = VOLATILE_READS
+    VALIDATORS = VALIDATORS
+    PURE_VALIDATORS = PURE_VALIDATORS
+    KNOWN_PYTHON_MODULES = KNOWN_PYTHON_MODULES
+    MUTATING_WORDS = MUTATING_WORDS
+    DANGEROUS_EXES = DANGEROUS_EXES
 
     def __init__(self, config: dict[str, Any], artifacts: Any = None, repo_state: Any = None):
         self.config = config
@@ -3245,11 +3223,7 @@ class CommandBroker:
         """Repair only a sessionless task through verified write authority."""
         if (type(authorization_actor) is not str
                 or type(authorization_permissions) is not frozenset
-                or not (
-                    authorization_actor == "local" and not authorization_permissions
-                    or authorization_actor == "api_token" and bool(authorization_permissions & {"write", "admin"})
-                    or authorization_actor == "action_token" and "api:write" in authorization_permissions
-                )):
+                or authorization_actor != "local" or authorization_permissions):
             raise PermissionError("task session write authorization required")
         if self.task_store is None:
             raise RuntimeError("task authority unavailable")
@@ -3273,17 +3247,12 @@ class CommandBroker:
     ) -> dict[str, Any]:
         """Ordinary authorized write, separate from exhausted execution admission.
 
-        Authorization values must come from the transport's verified credential
-        context, never request fields or the advisory agent profile header.
+        Authorization values come from the loopback transport context, never
+        request fields or the advisory agent profile header.
         """
         if (type(authorization_actor) is not str
                 or type(authorization_permissions) is not frozenset
-                or not (
-                    authorization_actor == "local" and not authorization_permissions
-                    or authorization_actor == "api_token" and bool(
-                        authorization_permissions & {"write", "admin"})
-                    or authorization_actor == "action_token" and "api:write" in authorization_permissions
-                )):
+                or authorization_actor != "local" or authorization_permissions):
             raise PermissionError("task budget write authorization required")
         if self.task_store is None or self.policy_engine is None:
             raise RuntimeError("task budget authority unavailable")

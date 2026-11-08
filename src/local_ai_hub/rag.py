@@ -2855,11 +2855,13 @@ class RAGStore:
             if deadline is not None or cancel_event is not None:
                 raw_result = self._search_uncached(
                     clean_query, workspace, top_k, use_reranker, priority, scope_path,
-                    deadline=deadline, cancel_event=cancel_event, **semantic_search_options,
+                    deadline=deadline, cancel_event=cancel_event,
+                    allow_cpu_fallback=False, **semantic_search_options,
                 )
             else:
                 raw_result = self._search_uncached(
-                    clean_query, workspace, top_k, use_reranker, priority, scope_path, **semantic_search_options,
+                    clean_query, workspace, top_k, use_reranker, priority, scope_path,
+                    allow_cpu_fallback=False, **semantic_search_options,
                 )
             observed_identity["space"] = self._embedding_space_id()
             observed_identity["dimension"] = self._embedding_dimension_cache_identity()
@@ -2886,16 +2888,23 @@ class RAGStore:
             if deadline is not None or cancel_event is not None:
                 raw = self._search_uncached(
                     clean_query, workspace, top_k, use_reranker, priority, scope_path,
-                    deadline=deadline, cancel_event=cancel_event, **semantic_search_options,
+                    deadline=deadline, cancel_event=cancel_event,
+                    allow_cpu_fallback=False, **semantic_search_options,
                 )
             else:
-                raw = self._search_uncached(clean_query, workspace, top_k, use_reranker, priority, scope_path, **semantic_search_options)
+                raw = self._search_uncached(
+                    clean_query, workspace, top_k, use_reranker, priority, scope_path,
+                    allow_cpu_fallback=False, **semantic_search_options,
+                )
             hit, coalesced = False, False
         with closing(self._connect()) as con:
             latest_generation = self._workspace_index_generation(con, workspace)
             latest_chunker_index_current = self._workspace_chunker_index_is_current(con, workspace)
         if latest_generation != generation:
-            raw = self._search_uncached(clean_query, workspace, top_k, use_reranker, priority, scope_path, **semantic_search_options)
+            raw = self._search_uncached(
+                clean_query, workspace, top_k, use_reranker, priority, scope_path,
+                allow_cpu_fallback=False, **semantic_search_options,
+            )
             hit, coalesced = False, False
         result = dict(raw) if isinstance(raw, dict) else {"success": False, "error": "search failed"}
         result["index_revision"] = revision
@@ -3160,9 +3169,12 @@ class RAGStore:
                 return None
         return centers_array, {key: tuple(value) for key, value in buckets.items()}, retained_bytes
 
-    def _search_uncached(self, query: str, workspace: str, top_k: int = 8, use_reranker: bool = True, priority: int = 3, scope_path: str | None = None, deadline: float | None = None, cancel_event: Any | None = None, *, lexical_only: bool = False, semantic_only: bool = False, embedding_query: str | None = None) -> dict[str, Any]:
+    def _search_uncached(self, query: str, workspace: str, top_k: int = 8, use_reranker: bool = True, priority: int = 3, scope_path: str | None = None, deadline: float | None = None, cancel_event: Any | None = None, *, lexical_only: bool = False, semantic_only: bool = False, embedding_query: str | None = None, allow_cpu_fallback: bool = True) -> dict[str, Any]:
         with closing(self._connect()) as con:
             uncertain_paths = self._workspace_read_uncertain_paths(con, workspace)
+            has_chunks = con.execute(
+                "SELECT 1 FROM chunks WHERE workspace=? LIMIT 1", (workspace,)
+            ).fetchone() is not None
             stored_embedding_space = (
                 self._stored_workspace_embedding_space(con, workspace)
                 if semantic_only else None
@@ -3187,6 +3199,18 @@ class RAGStore:
                 "degraded": True, "fallback": "embedding_space_mismatch",
                 "reason": "indexed vectors do not match the active query embedding space",
                 "reindex_required": True,
+            }
+
+        if semantic_only and not has_chunks:
+            if uncertain_paths:
+                return {
+                    "success": True, "workspace": workspace, "results": [],
+                    "degraded": True, "fallback": "source_read_uncertain",
+                    "index_state": "stale", "reindex_required": True,
+                }
+            return {
+                "success": True, "workspace": workspace, "results": [],
+                "degraded": True, "fallback": "empty_index", "index_state": "empty",
             }
 
         def visible(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -3576,7 +3600,7 @@ class RAGStore:
                             [c["text"] for c in candidates],
                             top_k=top_k,
                             priority=priority,
-                            allow_cpu_fallback=True,
+                            allow_cpu_fallback=allow_cpu_fallback,
                         )
                         if rr.get("success"):
                             ordered: list[dict[str, Any]] = []

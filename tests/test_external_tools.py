@@ -578,7 +578,45 @@ def test_query_serena_bounds_optional_search_timeout(
     try:
         result = ext.query_serena(str(root), action, query="needle")
         assert result["success"] is True
-        assert captured == [expected_soft_timeout]
+        assert len(captured) == 1
+        assert captured[0] is not None
+        assert expected_soft_timeout - 0.05 <= captured[0] <= expected_soft_timeout
+    finally:
+        ext.close()
+
+
+def test_query_serena_search_timeout_includes_backend_lock_wait(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(ExternalCodeIntelligence, "_startup_preflight", lambda self: None)
+    root = tmp_path / "repo"
+    root.mkdir()
+    ext = ExternalCodeIntelligence({
+        "server": {"state_dir": str(tmp_path / "state")},
+        "code_intelligence": {
+            "enabled": True,
+            "serena_enabled": True,
+            "soft_timeout_seconds": 4.0,
+        },
+    })
+    captured: list[float | None] = []
+
+    class DelayedBackendOperation:
+        def __enter__(self):
+            time.sleep(0.05)
+
+        def __exit__(self, exc_type, exc, traceback):
+            return False
+
+    def capture_query(root, action, query, path, limit, *, timeout=None, soft_timeout=None):
+        captured.append(soft_timeout)
+        return {"success": True, "backend": "serena"}
+
+    monkeypatch.setattr(ext, "_backend_operation", lambda *args, **kwargs: DelayedBackendOperation())
+    monkeypatch.setattr(ext, "_query_serena_locked", capture_query)
+    try:
+        result = ext.query_serena(str(root), "search", query="needle")
+        assert result["success"] is True
+        assert len(captured) == 1
+        assert captured[0] is not None and 0 < captured[0] <= 1.95
     finally:
         ext.close()
 

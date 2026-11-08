@@ -90,7 +90,9 @@ def test_evidence_store_nan_inf_surrogates_and_helpers(tmp_path: Path) -> None:
     assert fetched["start_line"] == 1
     assert fetched["end_line"] == 1
     assert "\ud800" not in fetched["text"]
-    assert is_current_evidence_id(eid, store) is True
+    # The sanitized stored snippet contains U+FFFD, while the source does not.
+    # It remains retrievable, but it cannot prove current exact provenance.
+    assert is_current_evidence_id(eid, store) is False
 
     batch = store.put_many(
         str(repo),
@@ -114,3 +116,64 @@ def test_evidence_store_nan_inf_surrogates_and_helpers(tmp_path: Path) -> None:
     store.clear()
     assert store.count() == 0
     assert store.has(eid) is False
+
+
+def test_validate_current_many_hashes_shared_source_once(tmp_path: Path, monkeypatch) -> None:
+    store = EvidenceStore(tmp_path / "state")
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    src = repo / "mod.py"
+    src.write_text("first = 1\nsecond = 2\n", encoding="utf-8")
+    file_hash = hashlib.sha256(src.read_bytes()).hexdigest()
+    stored = store.put_many(
+        str(repo),
+        [
+            {"path": "mod.py", "file_sha256": file_hash, "start_line": 1, "end_line": 1, "text": "first = 1"},
+            {"path": "mod.py", "file_sha256": file_hash, "start_line": 2, "end_line": 2, "text": "second = 2"},
+        ],
+    )
+    evidence_ids = [item["evidence_id"] for item in stored]
+    hash_count = 0
+    original_hash = getattr(store, "_hash_source_file", None)
+
+    def count_hashes(path: Path) -> str:
+        nonlocal hash_count
+        hash_count += 1
+        if callable(original_hash):
+            return original_hash(path)
+        digest = hashlib.sha256()
+        with path.open("rb") as source:
+            while chunk := source.read(65536):
+                digest.update(chunk)
+        return digest.hexdigest()
+
+    monkeypatch.setattr(store, "_hash_source_file", count_hashes, raising=False)
+    assert store.validate_current_many(evidence_ids) is True
+    assert hash_count == 1
+
+    src.write_text("first = 1\nsecond = 3\n", encoding="utf-8")
+    assert store.validate_current_many(evidence_ids) is False
+
+
+def test_context_evidence_current_uses_batch_validator() -> None:
+    from local_ai_hub.services import LocalAIServices
+
+    class BatchStore:
+        received: list[str] = []
+
+        def validate_current_many(self, evidence_ids: list[str]) -> bool:
+            self.received = evidence_ids
+            return True
+
+        def validate_current(self, evidence_id: str) -> bool:
+            raise AssertionError("single-item validation should not be used when batch validation exists")
+
+    store = BatchStore()
+
+    class Service:
+        evidence_store = store
+
+    evidence_ids = ["E0123456789abcdef0123", "Eabcdef0123456789abcd"]
+    payload = {"success": True, "evidence": [{"evidence_id": eid} for eid in evidence_ids]}
+    assert LocalAIServices._context_evidence_current(Service(), payload) is True
+    assert store.received == evidence_ids

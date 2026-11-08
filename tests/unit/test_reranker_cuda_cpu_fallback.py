@@ -27,6 +27,24 @@ def test_reranker_cuda_includes_cpu_candidate_spec() -> None:
     assert specs == [("torch", "cuda"), ("torch", "cpu")]
 
 
+def test_explicit_cpu_primary_device_is_allowed_without_cpu_fallback() -> None:
+    rr = Reranker({"models": {"reranker_device": "cpu", "reranker_backend": "torch"}})
+    loaded: list[int] = []
+    rr._load_candidate = lambda index: loaded.append(index) or True
+
+    assert rr._ensure_model(allow_cpu_fallback=False) is True
+    assert loaded == [0]
+
+
+def test_cuda_route_does_not_load_cpu_candidate_when_fallback_is_disabled() -> None:
+    rr = Reranker({"models": {"reranker_device": "cuda", "reranker_backend": "torch"}})
+    loaded: list[int] = []
+    rr._load_candidate = lambda index: loaded.append(index) and False
+
+    assert rr._ensure_model(allow_cpu_fallback=False) is False
+    assert loaded == [0]
+
+
 def test_reranker_cuda_prediction_failure_falls_back_to_cpu() -> None:
     rr = Reranker({"models": {"reranker_device": "cuda", "reranker_backend": "torch"}})
     

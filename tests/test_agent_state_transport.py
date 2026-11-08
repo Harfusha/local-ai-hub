@@ -218,26 +218,36 @@ def test_mcp_actions_dispatch_and_compact(monkeypatch, tmp_path, mcp_diagnostics
 
     c_res2 = mcp_mod.local_ai_coord(
         action="memory_record",
-        record={"key": "k", "value": "v", "expires_at": 12345.0},
+        root=str(tmp_path),
+        scope="repository",
+        key="k",
+        value="v",
+        ttl_seconds=3600,
     )
     assert c_res2["success"] is True
     memory_payload = next(
         call[2] for call in calls
         if call[0] == "COORD" and call[1] == "memory_record"
     )
-    assert memory_payload["record"]["expires_at"] == 12345.0
-    assert "ttl_seconds" not in memory_payload
+    assert memory_payload["root"] == str(tmp_path)
+    assert memory_payload["scope"] == "repository"
+    assert memory_payload["key"] == "k"
+    assert memory_payload["value"] == "v"
+    assert memory_payload["ttl_seconds"] == 3600
 
     c_res2_default = mcp_mod.local_ai_coord(
         action="memory_record",
-        record={"key": "no-expiry-by-default", "value": "v"},
+        root=str(tmp_path),
+        scope="repository",
+        key="no-expiry-by-default",
+        value="v",
     )
     assert c_res2_default["success"] is True
     default_memory_payload = next(
         call[2] for call in calls
         if call[0] == "COORD"
         and call[1] == "memory_record"
-        and call[2]["record"]["key"] == "no-expiry-by-default"
+        and call[2]["key"] == "no-expiry-by-default"
     )
     assert "ttl_seconds" not in default_memory_payload
 
@@ -248,7 +258,6 @@ def test_mcp_actions_dispatch_and_compact(monkeypatch, tmp_path, mcp_diagnostics
         scope_id="task-1",
         task_id="task-1",
         root=str(tmp_path),
-        repository_id="repository-1",
         clone_id="clone-1",
         worktree_id="worktree-1",
         branch="branch-1",
@@ -259,18 +268,18 @@ def test_mcp_actions_dispatch_and_compact(monkeypatch, tmp_path, mcp_diagnostics
         if call[0] == "COORD" and call[1] == "memory_get"
     )
     assert {key: memory_get_payload[key] for key in (
-        "record_id", "scope", "scope_id", "task_id", "repository_id",
+        "record_id", "scope", "scope_id", "task_id",
         "clone_id", "worktree_id", "branch",
     )} == {
         "record_id": "mem-task-1",
         "scope": "task",
         "scope_id": "task-1",
         "task_id": "task-1",
-        "repository_id": "repository-1",
         "clone_id": "clone-1",
         "worktree_id": "worktree-1",
         "branch": "branch-1",
     }
+    assert "repository_id" not in memory_get_payload
 
     c_res3 = mcp_mod.local_ai_coord(
         action="incident_decision", root=str(tmp_path),
@@ -1164,6 +1173,7 @@ def test_http_memory_transport_preserves_expiry_and_ttl(tmp_path: Path):
         expires_at = time.time() + 600
         explicit = post({
             "action": "record",
+            "root": str(tmp_path),
             "idempotency_key": "expiry-explicit",
             "record": {
                 "kind": "finding",
@@ -1179,6 +1189,7 @@ def test_http_memory_transport_preserves_expiry_and_ttl(tmp_path: Path):
         before = time.time()
         ttl_result = post({
             "action": "record",
+            "root": str(tmp_path),
             "idempotency_key": "expiry-ttl",
             "ttl_seconds": 120,
             "record": {
@@ -1193,6 +1204,7 @@ def test_http_memory_transport_preserves_expiry_and_ttl(tmp_path: Path):
 
         no_ttl = post({
             "action": "record",
+            "root": str(tmp_path),
             "idempotency_key": "expiry-unspecified",
             "record": {
                 "kind": "finding",

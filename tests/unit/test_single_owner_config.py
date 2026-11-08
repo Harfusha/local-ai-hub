@@ -1,4 +1,4 @@
-"""Retired tenancy settings must reject without weakening credential protection."""
+"""Retired tenancy and Hub token settings must reject explicitly."""
 
 import pytest
 
@@ -28,12 +28,13 @@ def test_removed_security_users_setting_rejects_by_presence(value):
         validate_config({"security": {"users": value}})
 
 
-def test_single_owner_keeps_api_tokens_and_resource_permissions():
-    validate_config({
-        "security": {
-            "api_token": "a" * 32,
-            "api_token_permissions": ["read", "write"],
-            "supervisor_token": "s" * 32,
-            "action_tokens": {"admin": "b" * 32},
-        },
-    })
+@pytest.mark.parametrize("field", ("api_token", "supervisor_token", "action_tokens", "api_token_permissions"))
+@pytest.mark.parametrize("value", (None, "", "retired", False, {}))
+def test_removed_hub_api_token_settings_reject_by_presence(field, value):
+    with pytest.raises(ConfigError, match=rf"security\.{field}.*removed"):
+        validate_config({"security": {field: value}})
+
+
+def test_non_loopback_server_bind_is_rejected():
+    with pytest.raises(ConfigError, match="server.bind.*127.0.0.1"):
+        validate_config({"server": {"bind": "0.0.0.0"}})

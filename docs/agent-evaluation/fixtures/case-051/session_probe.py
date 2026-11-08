@@ -27,7 +27,7 @@ if (server.get("bind") != "127.0.0.1" or type(server.get("port")) is not int
     raise SystemExit("fixture config does not match the isolated root and state")
 
 env = os.environ.copy()
-for key in ("LOCAL_AI_TENANT", "LOCAL_AI_HUB_TOKEN", "LOCAL_AI_AGENT", "LOCAL_AI_AGENT_PROFILE"):
+for key in ("LOCAL_AI_TENANT", "LOCAL_AI_AGENT", "LOCAL_AI_AGENT_PROFILE"):
     env.pop(key, None)
 env.update(LOCAL_AI_CONFIG=str(CONFIG), PYTHONPATH=str(SOURCE / "src"), PYTHONDONTWRITEBYTECODE="1")
 params = StdioServerParameters(command=sys.executable, args=["-B", "-m", "local_ai_hub.mcp_server"], env=env, cwd=str(HERE))

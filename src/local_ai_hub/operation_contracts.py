@@ -766,7 +766,7 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
             "automation": ("root", "task_id", "automation"),
             "candidate_create": ("candidate_data",),
             "candidate_promote": ("candidate", "approver"),
-            "hardware_benchmark": ("model", "prompt", "max_tokens"),
+            "hardware_benchmark": ("model", "prompt", "max_tokens", "context_tokens"),
             "speculative_draft": ("task", "candidate", "context", "root"),
             "vision": (
                 "prompt", "candidate", "model", "image_artifact_id", "screenshot_artifact_id",
@@ -806,6 +806,7 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
                 "description": "Operation to run for action=submit; submit itself is asynchronous.",
             },
             "max_tokens": {"type": "integer", "default": 0},
+            "context_tokens": {"type": "integer", "minimum": 4096, "maximum": 32768},
             "evaluation_days": {"type": "integer", "default": 30},
             "latency_budget_ms": {"type": "number", "default": 0},
             "timeout_seconds": {"type": "number", "default": 90},

@@ -21,13 +21,14 @@ function identity() {
 }
 
 const context = {
+  __LOCAL_AI_HUB_API_TOKEN__: "retired-test-token",
   AbortController,
   URL,
   console,
   fetch: async (url, options) => {
     const path = new URL(url).pathname;
     const body = JSON.parse(options.body);
-    posts.push({path, body});
+    posts.push({path, body, headers: options.headers});
     let value;
     let responseStatus = 200;
     let responseOk = true;
@@ -104,6 +105,7 @@ vm.runInNewContext(backgroundSource, context, {filename: sourcePath});
 
 (async () => {
   const result = await context.captureCurrentTab({id: 7, windowId: 3});
+  assert.equal(posts.every((post) => !("X-LocalAI-Token" in post.headers)), true);
   assert.equal(changedAfterStage, true);
   if (changeKind === "artifact-failure") {
     assert.equal(result.success, false);

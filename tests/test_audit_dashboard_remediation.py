@@ -18,7 +18,7 @@ def dashboard_server(tmp_path, monkeypatch):
     import local_ai_hub.http_server as module
     config = tmp_path / "config.toml"
     config.write_text('[server]\nstate_dir=' + json.dumps(str(tmp_path / "state")) +
-        '\n[security]\napi_token="audit-dashboard-test-token"\napi_token_permissions=["read","write"]\nallowed_roots=[' + json.dumps(str(tmp_path)) +
+        '\n[security]\nallowed_roots=[' + json.dumps(str(tmp_path)) +
         ']\n[hardware]\nprofile="cpu"\n[prewarm]\nenabled=false\n[headless]\nmanage_ollama=false\n', encoding="utf-8")
     app = LocalAIApp(str(config))
     monkeypatch.setattr(module, "APP", app)
@@ -37,7 +37,7 @@ def test_dashboard_boolean_settings_reject_non_booleans(dashboard_server, value)
     endpoint, config = dashboard_server
     request = urllib.request.Request(endpoint + "/api/config/update", method="POST",
         data=json.dumps({"settings": {"debug_traces.enabled": value}}).encode(),
-        headers={"Content-Type": "application/json", "X-LocalAI-Token": "audit-dashboard-test-token"})
+        headers={"Content-Type": "application/json"})
     try:
         with urllib.request.urlopen(request, timeout=5) as response:
             status = response.status
