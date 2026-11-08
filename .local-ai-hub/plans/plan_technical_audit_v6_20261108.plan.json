@@ -163,15 +163,15 @@
         "End-to-end test validates local model, MCP tools, transactional edits, cleanup, failure recovery in OpenCode sandbox",
         "docs/OPENCODE.md updated from in-progress to verified isolation status"
       ],
-      "blocker": null,
+      "blocker": "Focused Windows E2E passes against the fake backend, but model-driven OpenCode remains unverified. The current implicit Hub config has no API token; the launcher requires an authorized token of at least 32 ASCII characters and stopped before inference.",
       "clarifications": [],
       "depends_on": [],
       "description": "Complete end-to-end validation of OpenCode runtime: local model, MCP tools, sandbox isolation, cleanup, recovery",
       "kind": "code",
-      "next_action": "",
+      "next_action": "Run a model-driven OpenCode edit with an authorized active Hub config and disposable project; verify tool edit, cleanup and failure recovery. Keep shell/network isolation claims fail-closed.",
       "title": "P2-1: Dokončit OpenCode E2E integraci",
-      "work_phase": "discovery",
-      "work_status": "planned"
+      "work_phase": "verification",
+      "work_status": "in_progress"
     },
     "task_p2_sqlite_factory": {
       "acceptance_criteria": [

@@ -8,6 +8,7 @@ from __future__ import annotations
 import secrets
 import threading
 import math
+import time
 from typing import Any
 
 from .opencode_model_names import validate_local_model_name
@@ -180,7 +181,15 @@ class ExternalInferenceSession:
             else:
                 token = self._token
                 try:
-                    released = not token or self._scheduler.release_external_gpu(token) is True
+                    renew = getattr(self._scheduler, "renew_external_gpu", None)
+                    idle_confirmed = (
+                        not token
+                        or not callable(renew)
+                        or renew(token, state="idle") is True
+                    )
+                    released = idle_confirmed and (
+                        not token or self._scheduler.release_external_gpu(token) is True
+                    )
                 except Exception:
                     released = False
                 if not released:
@@ -215,6 +224,8 @@ class ExternalInferenceSession:
 
     def close(self) -> None:
         with self._lock:
+            if self._uncertain:
+                raise InferenceSessionError("session outcome is uncertain; GPU reservation remains fenced")
             if self._closed or self._request is not None:
                 raise InferenceSessionError("session cannot safely release GPU")
             self._cancel_idle_timer()

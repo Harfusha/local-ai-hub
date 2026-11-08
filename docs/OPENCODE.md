@@ -302,6 +302,11 @@ the agent to read project `AGENTS.md` instructions. Normal setup prepares its
 components only when requested; it does not run the launcher. The launcher does
 not sandbox shell network access or establish VRAM
 admission. An isolated end-to-end test used OpenCode with a fake backend only.
+Focused Windows verification on 2026-11-08 ran
+`python -m pytest -q tests/test_opencode_inference_session.py tests/test_opencode_launcher_integration.py tests/test_opencode_container_integration.py tests/test_opencode_mcp_container_integration.py tests/test_opencode_project_verification.py`;
+20 tests passed. This covers the pinned CLI, provider cleanup, and authenticated
+sandbox MCP bridge with a fake backend. It does not verify model-driven edits or
+complete local-only isolation.
 `python tools/setup.py --prepare-opencode-model MODEL` checks the running
 loopback Ollama inventory, downloads that one model only when absent, and checks
 the inventory again. `--skip-model-pull` makes this a presence check;
