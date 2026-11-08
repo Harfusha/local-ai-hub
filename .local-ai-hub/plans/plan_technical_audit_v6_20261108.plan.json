@@ -182,8 +182,8 @@
       "kind": "code",
       "next_action": "",
       "title": "P2-2: Sjednotit SQLite přístup přes sqlite_support.py",
-      "work_phase": "discovery",
-      "work_status": "planned"
+      "work_phase": "verification",
+      "work_status": "completed"
     }
   },
   "title": "Technický audit v6.0.0 a prioritizovaný plán oprav (commit 2176b0e)"
