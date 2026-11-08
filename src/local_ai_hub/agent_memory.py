@@ -1866,7 +1866,7 @@ class MemoryStore:
                             "SELECT record_id, embedding, embedding_space_id, model_name, dimension "
                             "FROM agent_memory_embeddings "
                             f"WHERE record_id IN ({base_id_sql}) "
-                            "ORDER BY created_at DESC LIMIT 500"
+                            "ORDER BY created_at DESC LIMIT 5000"
                         )
                         cur_emb = con.execute(emb_sql, tuple(base_params))
                         rows = cur_emb.fetchall()

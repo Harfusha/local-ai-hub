@@ -234,37 +234,34 @@ class ContextLedger:
         )
         artifact_id = ""
         fresh_until = 0.0
-        if artifact_store is not None:
-            artifact_id = str(artifact_store.put(raw_context, kind="agent-context"))
-            artifact_ttl = _safe_positive_int(getattr(artifact_store, "ttl_seconds", self._pointer_ttl_seconds), self._pointer_ttl_seconds)
-            fresh_until = time.time() + min(self._pointer_ttl_seconds, artifact_ttl)
-        current = {
-            "root": normalized_root,
-            "task_id": task,
-            "session_id": _clean_str(session_id),
-            "revision": rev[:200],
-            "phase": _clean_str(phase)[:64],
-            "evidence_ids": ids,
-            "digest": digest,
-            "reuse_key": reuse_key,
-            "scope_key": scope_key,
-            "artifact_id": artifact_id,
-            "fresh_until": fresh_until,
-        }
         with self._lock:
             previous_key = self._compiled_by_scope.get(scope_key)
             previous = self._compiled.get(previous_key) if previous_key else None
             if (
-                not artifact_id
-                and previous
+                previous
                 and previous.get("digest") == digest
                 and previous.get("artifact_id")
                 and float(previous.get("fresh_until") or 0.0) > time.time()
             ):
                 artifact_id = str(previous["artifact_id"])
                 fresh_until = float(previous["fresh_until"])
-                current["artifact_id"] = artifact_id
-                current["fresh_until"] = fresh_until
+            elif artifact_store is not None:
+                artifact_id = str(artifact_store.put(raw_context, kind="agent-context"))
+                artifact_ttl = _safe_positive_int(getattr(artifact_store, "ttl_seconds", self._pointer_ttl_seconds), self._pointer_ttl_seconds)
+                fresh_until = time.time() + min(self._pointer_ttl_seconds, artifact_ttl)
+            current = {
+                "root": normalized_root,
+                "task_id": task,
+                "session_id": _clean_str(session_id),
+                "revision": rev[:200],
+                "phase": _clean_str(phase)[:64],
+                "evidence_ids": ids,
+                "digest": digest,
+                "reuse_key": reuse_key,
+                "scope_key": scope_key,
+                "artifact_id": artifact_id,
+                "fresh_until": fresh_until,
+            }
             if reuse_key not in self._compiled and len(self._compiled) >= self._max_entries:
                 evicted_key = next(iter(self._compiled))
                 self._compiled.pop(evicted_key)
