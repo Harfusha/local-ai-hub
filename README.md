@@ -242,7 +242,7 @@ python tools/telemetry_report.py --days 30
 
 ## Evidence-gated rollout controls
 
-Cost-bearing adoption capabilities are disabled by default: `features.enriched_search`, `features.batch_replacement`, `features.diagnostic_artifacts`, and `features.local_diagnostic_dispatch`. Set only one flag to literal TOML `true` for a 10–20% suitable-task pilot. Other values, including strings such as `"true"`, remain disabled.
+In the default configuration, `features.enriched_search`, `features.batch_replacement`, and `features.diagnostic_artifacts` are enabled, while `features.local_diagnostic_dispatch` is disabled by default. Each retains an independent rollback switch. Set a flag to literal TOML `true` or `false` to configure. Other values, including strings such as `"true"`, remain disabled.
 
 Capture a 14-day read-only baseline first. Compare the pilot with `/api/adoption` for token reduction, latency, first-pass validation, terminal Hub failures, and native fallback rate. Promote a flag only when quality does not regress and the measured benefit persists. Roll back immediately by setting that flag to `false`, restarting the Hub, and regenerating agent instructions with `python tools/hubctl.py generate`. Disabled features return a structured unavailable result before search enrichment, replacement writes, artifact persistence, or local diagnostic dispatch can begin. A `local_diagnostic_dispatch` pilot alone stores only its bounded failure preview as context; it never stores raw command output and does not require `diagnostic_artifacts=true`.
 
