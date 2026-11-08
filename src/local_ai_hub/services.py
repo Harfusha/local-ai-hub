@@ -1356,14 +1356,24 @@ class LocalAIServices:
         semantic_scope_data = {
             "model": model, "system": system, "options": options, "think": base_payload.get("think"), "execution": execution_scope,
             "context": norm_context_fp, "source": source.split(":", 1)[0], "app_version": __version__,
+            "repository_revision": repository_revision,
         }
         if project_config_digest or project_namespace:
             semantic_scope_data.update({
-                "repository_revision": repository_revision,
                 "project_config_digest": project_config_digest,
                 "project_namespace": project_namespace,
             })
         semantic_scope = stable_hash(semantic_scope_data)
+        is_code_bound = (
+            admission_action in {
+                "review", "review_diff", "solve", "complete_code", "generate_tests", "scaffold",
+            }
+            or source.startswith("code_")
+            or source.startswith("repo:")
+            or bool(project_namespace)
+            or bool(semantic_context_fingerprint)
+        )
+        allow_semantic_cache = use_cache and not (is_code_bound and not repository_revision)
         started = time.perf_counter()
         cache_layer = "miss"
         semantic_score = 0.0
@@ -1371,7 +1381,7 @@ class LocalAIServices:
 
         def compute_inner() -> dict[str, Any]:
             nonlocal semantic_score
-            if use_cache and semantic_query:
+            if allow_semantic_cache and semantic_query:
                 semantic, semantic_score = self.semantic_cache.get(semantic_scope, semantic_query)
                 if isinstance(semantic, dict):
                     reused = copy.deepcopy(semantic)
@@ -1776,7 +1786,7 @@ class LocalAIServices:
 
         def compute() -> dict[str, Any]:
             nonlocal semantic_score
-            if not semantic_query:
+            if not semantic_query or not allow_semantic_cache:
                 return compute_inner()
             # Different phrasings with the same strict semantic scope serialize only on a cache miss.
             # The second request rechecks semantic cache after the first completes, coalescing paraphrases.
@@ -1788,7 +1798,7 @@ class LocalAIServices:
                     reused["_lah_semantic_similarity"] = semantic_score
                     return reused
                 result = compute_inner()
-                if isinstance(result, dict) and result.get("success", "error" not in result) and not result.get("fallback_used", False) and result.get("_cacheable", True) and not result.get("context_recovery"):
+                if allow_semantic_cache and isinstance(result, dict) and result.get("success", "error" not in result) and not result.get("fallback_used", False) and result.get("_cacheable", True) and not result.get("context_recovery"):
                     clean = {k: v for k, v in result.items() if not str(k).startswith("_lah_")}
                     try:
                         self.semantic_cache.set(semantic_scope, semantic_query, clean)
