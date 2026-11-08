@@ -129,7 +129,7 @@ export default {id:"test.event-spy",async setup(ctx){
     config = tmp_path / "config.toml"
     config.write_text(
         f'[server]\nstate_dir="{(tmp_path / "state").as_posix()}"\nport={hub_port}\nollama_url="http://127.0.0.1:{backend.server_port}"\nauto_start_ollama=false\n'
-        f'[security]\napi_token="{"x" * 40}"\nallowed_roots=["{project.as_posix()}"]\n[ollama]\nenabled=false\n[llama_cpp]\nmode="off"\n'
+        f'[security]\nallowed_roots=["{project.as_posix()}"]\n[ollama]\nenabled=false\n[llama_cpp]\nmode="off"\n'
         '[background_gpu]\nenabled=false\n[preprocessing]\nenabled=false\n', encoding="utf-8",
     )
     app = LocalAIApp(str(config))

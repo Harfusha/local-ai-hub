@@ -163,12 +163,12 @@
         "End-to-end test validates local model, MCP tools, transactional edits, cleanup, failure recovery in OpenCode sandbox",
         "docs/OPENCODE.md updated from in-progress to verified isolation status"
       ],
-      "blocker": "Focused Windows E2E passes against the fake backend, but model-driven OpenCode remains unverified. The current implicit Hub config has no API token; the launcher requires an authorized token of at least 32 ASCII characters and stopped before inference.",
+      "blocker": "Live model-driven OpenCode E2E remains unverified: current scheduler readiness probe timed out and gpu_admission_state=unknown. No model pulls authorized.",
       "clarifications": [],
       "depends_on": [],
       "description": "Complete end-to-end validation of OpenCode runtime: local model, MCP tools, sandbox isolation, cleanup, recovery",
       "kind": "code",
-      "next_action": "Run a model-driven OpenCode edit with an authorized active Hub config and disposable project; verify tool edit, cleanup and failure recovery. Keep shell/network isolation claims fail-closed.",
+      "next_action": "When Hub scheduler readiness is nominal, rerun a disposable-project model-driven OpenCode E2E with installed qwen2.5-coder:3b; verify model edit, MCP, cleanup, recovery. Configured Hub API token is not required for loopback OpenCode.",
       "title": "P2-1: Dokončit OpenCode E2E integraci",
       "work_phase": "verification",
       "work_status": "in_progress"

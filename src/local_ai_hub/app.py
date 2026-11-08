@@ -449,7 +449,6 @@ class LocalAIApp:
         self.opencode_provider = ProviderService(
             self.scheduler,
             upstream_url=self.config.get("server", {}).get("ollama_url", ""),
-            hub_token=self.config.get("security", {}).get("api_token", ""),
             peer_verifier=lambda connection: verify_supervised_peer(connection, state_dir),
         )
         self.background_gpu = IdleGPUWorker(self.config, self.scheduler)

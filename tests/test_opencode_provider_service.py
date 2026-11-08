@@ -27,10 +27,10 @@ def scheduler(tmp_path):
 
 def test_service_rejects_other_resident_model_and_releases_reservation(scheduler, monkeypatch):
     def loaded(origin):
-        assert scheduler.foreground_busy()
+        assert not scheduler.foreground_busy()
         return {"different-model"}
     monkeypatch.setattr("local_ai_hub.opencode_models.local_loaded_models", loaded)
-    service = ProviderService(scheduler, upstream_url="http://127.0.0.1:11434", hub_token="x" * 40)
+    service = ProviderService(scheduler, upstream_url="http://127.0.0.1:11434")
     with pytest.raises(RuntimeError, match="another model"):
         service.start("model-a")
     assert service.status()["state"] == "stopped"
@@ -40,10 +40,10 @@ def test_service_rejects_other_resident_model_and_releases_reservation(scheduler
 def test_service_inventory_unavailable_releases_reservation(scheduler, monkeypatch):
     from local_ai_hub.opencode_models import ModelPreparationError
     def unavailable(origin):
-        assert scheduler.foreground_busy()
+        assert not scheduler.foreground_busy()
         raise ModelPreparationError("inventory unavailable")
     monkeypatch.setattr("local_ai_hub.opencode_models.local_inventory", unavailable)
-    service = ProviderService(scheduler, upstream_url="http://127.0.0.1:11434", hub_token="x" * 40)
+    service = ProviderService(scheduler, upstream_url="http://127.0.0.1:11434")
     with pytest.raises(RuntimeError, match="inventory unavailable"):
         service.start("model-a")
     assert not scheduler.foreground_busy()
@@ -54,7 +54,7 @@ def test_unverified_version_never_reserves_gpu(scheduler, monkeypatch):
     def unsupported(origin):
         raise ModelPreparationError("Ollama version is not verified")
     monkeypatch.setattr("local_ai_hub.opencode_models.require_local_source_version", unsupported)
-    service = ProviderService(scheduler, upstream_url="http://127.0.0.1:11434", hub_token="x" * 40)
+    service = ProviderService(scheduler, upstream_url="http://127.0.0.1:11434")
     with pytest.raises(ModelPreparationError, match="version"):
         service.start("model-a")
     assert service.status()["state"] == "stopped"
@@ -79,7 +79,7 @@ def test_service_checks_real_loopback_inventory_before_start(scheduler, monkeypa
     thread = threading.Thread(target=backend.serve_forever, daemon=True)
     thread.start()
     try:
-        service = ProviderService(scheduler, upstream_url=f"http://127.0.0.1:{backend.server_port}", hub_token="x" * 40)
+        service = ProviderService(scheduler, upstream_url=f"http://127.0.0.1:{backend.server_port}")
         with pytest.raises(RuntimeError, match="another model"):
             service.start("model-a")
         assert seen == ["/api/tags", "/api/ps"]
@@ -91,15 +91,13 @@ def test_service_checks_real_loopback_inventory_before_start(scheduler, monkeypa
 
 
 def test_provider_service_starts_and_closes_without_disclosing_secret(scheduler):
-    token_val = "test-token-" + "x" * 40
-    service = ProviderService(scheduler, upstream_url="http://127.0.0.1:11434", hub_token=token_val)
+    service = ProviderService(scheduler, upstream_url="http://127.0.0.1:11434")
     started = service.start("model-a")
     assert started["port"] > 0
     assert started["model"] == "model-a"
-    assert token_val not in str(started)
-    token = derive_provider_token(token_val, started["nonce"])
+    token = derive_provider_token(started["nonce"])
     assert len(token) >= 32 and token not in str(started)
-    assert scheduler.foreground_busy()
+    assert not scheduler.foreground_busy()
     status = service.status()
     assert status["state"] == "running" and status["nonce"] == started["nonce"]
     with pytest.raises(RuntimeError):
@@ -109,8 +107,16 @@ def test_provider_service_starts_and_closes_without_disclosing_secret(scheduler)
     service.close()
 
 
+def test_session_credentials_are_derived_from_nonce_only():
+    from local_ai_hub.opencode_boundary import derive_local_profile_token
+
+    first, second = "a" * 32, "b" * 32
+    assert derive_provider_token(first) != derive_provider_token(second)
+    assert derive_local_profile_token(first) != derive_local_profile_token(second)
+
+
 def test_request_stop_is_nonblocking_and_reports_completion(scheduler):
-    service = ProviderService(scheduler, upstream_url="http://127.0.0.1:11434", hub_token="x" * 40)
+    service = ProviderService(scheduler, upstream_url="http://127.0.0.1:11434")
     service.start("model-a")
     done = service.request_stop()
     assert done.wait(timeout=3)
@@ -121,18 +127,16 @@ def test_request_stop_is_nonblocking_and_reports_completion(scheduler):
 
 @pytest.mark.parametrize("url", ["https://127.0.0.1:11434", "http://localhost:11434", "http://127.0.0.1:11434/path", "http://example.com:11434", "http://user@127.0.0.1:11434"])
 def test_service_rejects_noncanonical_upstream_before_reserving(scheduler, url):
-    service = ProviderService(scheduler, upstream_url=url, hub_token="x" * 40)
+    service = ProviderService(scheduler, upstream_url=url)
     with pytest.raises(ValueError):
         service.start("model-a")
     assert not scheduler.foreground_busy()
 
 
-def test_service_requires_configured_secret_before_reserving(scheduler):
-    for secret in ("", "short", "x" * 31, None):
-        service = ProviderService(scheduler, upstream_url="http://127.0.0.1:11434", hub_token=secret)
-        with pytest.raises(ValueError):
-            service.start("model-a")
-        assert not scheduler.foreground_busy()
+def test_provider_token_rejects_invalid_nonce():
+    for nonce in ("", "short", "n" * 19, "n" * 129, "bad nonce"):
+        with pytest.raises(ValueError, match="invalid provider nonce"):
+            derive_provider_token(nonce)
 
 
 def test_app_owns_provider_lifecycle_without_starting_it(tmp_path):
@@ -171,11 +175,10 @@ def test_uncertain_stream_prevents_service_stop_from_releasing_fence(scheduler):
     backend = ThreadingHTTPServer(("127.0.0.1", 0), Backend)
     thread = threading.Thread(target=backend.serve_forever, daemon=True)
     thread.start()
-    secret = "x" * 40
-    service = ProviderService(scheduler, upstream_url=f"http://127.0.0.1:{backend.server_port}", hub_token=secret, peer_verifier=lambda sock: None)
+    service = ProviderService(scheduler, upstream_url=f"http://127.0.0.1:{backend.server_port}", peer_verifier=lambda sock: None)
     try:
         info = service.start("model-a")
-        token = derive_provider_token(secret, info["nonce"])
+        token = derive_provider_token(info["nonce"])
         request = urllib.request.Request(f'http://127.0.0.1:{info["port"]}/v1/chat/completions',
             data=json.dumps({"model": "model-a", "stream": True}).encode(),
             headers={"Content-Type": "application/json", "Authorization": "Bearer " + token}, method="POST")
@@ -214,9 +217,9 @@ def test_stop_waits_for_active_response_before_releasing_fence(scheduler):
     backend = ThreadingHTTPServer(("127.0.0.1", 0), Backend)
     backend_thread = threading.Thread(target=backend.serve_forever, daemon=True)
     backend_thread.start()
-    service = ProviderService(scheduler, upstream_url=f"http://127.0.0.1:{backend.server_port}", hub_token="x" * 40, peer_verifier=lambda sock: None)
+    service = ProviderService(scheduler, upstream_url=f"http://127.0.0.1:{backend.server_port}", peer_verifier=lambda sock: None)
     info = service.start("model-a")
-    token = derive_provider_token("x" * 40, info["nonce"])
+    token = derive_provider_token(info["nonce"])
     response = []
     def fetch():
         request = urllib.request.Request(f'http://127.0.0.1:{info["port"]}/v1/chat/completions',
@@ -277,14 +280,14 @@ def test_http_lifecycle_requires_hub_token_and_never_returns_provider_secret(tmp
         with post("/api/opencode/provider/start", {"model": "model-a"}, secret) as response:
             started = json.load(response)
         assert started["success"] and secret not in str(started)
-        restricted = derive_local_profile_token(secret, started["nonce"])
+        restricted = derive_local_profile_token(started["nonce"])
         with readiness(restricted) as response:
             assert response.status == 200
         with pytest.raises(urllib.error.HTTPError) as scoped_denial:
             post("/api/opencode/provider/status", {}, restricted, actor="cloud-agent")
         assert scoped_denial.value.code == 403
         scoped_denial.value.close()
-        derived = derive_provider_token(secret, started["nonce"])
+        derived = derive_provider_token(started["nonce"])
         assert derived not in str(started)
         with pytest.raises(urllib.error.HTTPError) as duplicate:
             post("/api/opencode/provider/start", {"model": "other-model"}, secret)
@@ -311,7 +314,7 @@ def test_http_lifecycle_requires_hub_token_and_never_returns_provider_secret(tmp
             readiness(restricted)
         assert stale_token.value.code == 401
         stale_token.value.close()
-        with readiness(derive_local_profile_token(secret, restarted["nonce"])) as response:
+        with readiness(derive_local_profile_token(restarted["nonce"])) as response:
             assert response.status == 200
         with pytest.raises(urllib.error.HTTPError) as stale:
             post("/api/opencode/provider/stop", {"nonce": started["nonce"]}, secret)

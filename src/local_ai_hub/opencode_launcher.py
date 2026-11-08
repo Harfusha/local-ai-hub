@@ -101,9 +101,7 @@ def launch_opencode(
     if not project.is_dir() or not executable.is_file() or not (install_dir / "tools" / "opencode_goal" / "index.js").is_file():
         raise LaunchError("project, OpenCode executable or goal plugin is unavailable")
     cfg = client.config
-    hub_token = cfg.get("security", {}).get("api_token", "")
     hub_port = cfg.get("server", {}).get("port")
-    derive_provider_token(hub_token, "validation-nonce-0123456789")
     generate_opencode_runtime_config(cfg, install_dir, hub_python, model=model, provider_port=1, hub_port=hub_port)
     try:
         ensure_model(model, inventory=lambda: local_inventory(cfg.get("server", {}).get("ollama_url", "")),
@@ -123,8 +121,8 @@ def launch_opencode(
         raise LaunchError("provider start was not confirmed; inspect provider status")
     nonce = started["nonce"]
     try:
-        provider_token = derive_provider_token(hub_token, nonce)
-        profile_token = derive_local_profile_token(hub_token, nonce)
+        provider_token = derive_provider_token(nonce)
+        profile_token = derive_local_profile_token(nonce)
         if profile_token is None:
             raise ValueError("invalid OpenCode profile credential")
     except ValueError:

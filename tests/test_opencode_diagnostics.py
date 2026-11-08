@@ -15,7 +15,7 @@ def test_reports_verified_components_but_not_runtime_acceptance(tmp_path):
     assert result["hardware_profile"] == "12gb"
     assert result["executable_verified"] is True
     assert result["goal_plugin_present"] is True
-    assert result["hub_token_configured"] is True
+    assert result["hub_api_auth_configured"] is True
     assert result["available_candidates"] == ["qwen3.5:9b"]
     assert result["ready"] is False and result["runtime_verified"] is False
     assert "x" * 40 not in str(result)
@@ -28,7 +28,7 @@ def test_empty_inventory_is_unknown_and_bad_binary_is_not_accepted(tmp_path):
     assert result["hardware_profile"] == "unsupported"
     assert result["executable_verified"] is False
     assert result["available_candidates"] is None
-    assert result["hub_token_configured"] is False
+    assert result["hub_api_auth_configured"] is False
 
 
 def test_doctor_uses_bundled_installer_metadata_without_activating_runtime(tmp_path, monkeypatch):

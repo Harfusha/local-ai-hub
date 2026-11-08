@@ -109,6 +109,7 @@ def test_unavailable_inventory_fails_before_provider_start(tmp_path, monkeypatch
 
 def test_launcher_starts_child_with_isolated_config_then_stops_owned_provider(tmp_path, monkeypatch):
     client = Client(tmp_path)
+    client.config["security"]["api_token"] = ""
     client.config["_config_path"] = str(tmp_path / "owner-secret-config.toml")
     client.config["security"]["supervisor_token"] = "secret-supervisor"
     client.config["features"] = {"repo": False, "custom_secret": "do-not-copy"}
@@ -152,7 +153,7 @@ def test_launcher_starts_child_with_isolated_config_then_stops_owned_provider(tm
     assert all(name not in seen["env"] for name in ("AWS_SECRET_ACCESS_KEY", "GOOGLE_APPLICATION_CREDENTIALS", "AZURE_CLIENT_SECRET", "CUSTOM_AUTHORIZATION"))
     assert seen["env"]["PATH"] == "test-local-path"
     from local_ai_hub.opencode_boundary import derive_local_profile_token
-    assert seen["env"]["LOCAL_AI_HUB_TOKEN"] == derive_local_profile_token("x" * 40, "n" * 32)
+    assert seen["env"]["LOCAL_AI_HUB_TOKEN"] == derive_local_profile_token("n" * 32)
     assert "x" * 40 not in seen["env"].values()
     config = json.loads(seen["env"]["OPENCODE_CONFIG_CONTENT"])
     assert config["model"] == "local-hub/model-a"

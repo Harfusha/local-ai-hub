@@ -17,14 +17,11 @@ _PROFILE = "opencode-local"
 _LOCAL_GENERATION_BLOCKED: ContextVar[bool] = ContextVar("opencode_local_generation_blocked", default=False)
 
 
-def derive_local_profile_token(master: str, nonce: str) -> str | None:
+def derive_local_profile_token(nonce: str) -> str | None:
     """Derive a restricted credential for one provider session."""
-    if (not isinstance(master, str) or not master.isascii() or not 32 <= len(master) <= 1024
-            or any(character.isspace() for character in master)):
-        return None
     if not isinstance(nonce, str) or not re.fullmatch(r"[A-Za-z0-9_-]{20,128}", nonce):
         return None
-    signature = hmac.new(master.encode("ascii"), b"local-ai-hub-opencode-profile-v1\0" + nonce.encode("ascii"), hashlib.sha256).hexdigest()
+    signature = hmac.new(nonce.encode("ascii"), b"local-ai-hub-opencode-profile-v1\0" + nonce.encode("ascii"), hashlib.sha256).hexdigest()
     return f"lahoc1.{nonce}.{signature}"
 
 

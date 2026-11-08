@@ -111,7 +111,7 @@ def test_goal_verification_uses_real_broker_and_persisted_receipts(tmp_path, mon
         monkeypatch.setattr(http_server, "APP", app)
         nonce = "n" * 32
         monkeypatch.setattr(app.opencode_provider, "status", lambda: {"success": True, "state": "running", "nonce": nonce})
-        restricted = derive_local_profile_token("x" * 40, nonce)
+        restricted = derive_local_profile_token(nonce)
         server = http_server.LocalAIHTTPServer(("127.0.0.1", 0), http_server.Handler)
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()

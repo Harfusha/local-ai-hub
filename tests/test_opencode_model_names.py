@@ -17,7 +17,7 @@ def test_local_profile_rejects_explicit_cloud_names_before_any_external_action(t
     with pytest.raises(InferenceSessionError):
         ExternalInferenceSession.open(Scheduler(), model)
     monkeypatch.setattr("local_ai_hub.opencode_models.require_local_source_version", lambda _: pytest.fail("queried"))
-    service = ProviderService(Scheduler(), upstream_url="http://127.0.0.1:11434", hub_token="x" * 40)
+    service = ProviderService(Scheduler(), upstream_url="http://127.0.0.1:11434")
     with pytest.raises(InferenceSessionError):
         service.start(model)
     assert service.status()["state"] == "stopped"

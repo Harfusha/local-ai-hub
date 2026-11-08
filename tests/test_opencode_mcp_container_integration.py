@@ -11,7 +11,7 @@ import pytest
 
 from local_ai_hub.opencode_boundary import derive_local_profile_token
 from local_ai_hub.opencode_sandbox_session import SandboxSession
-from tools.opencode_install import VERSION, WINDOWS_X64_EXECUTABLE_SHA256, _file_digest
+from tools.opencode_install import VERSION, WINDOWS_X64_EXECUTABLE_SHA256
 
 pytestmark = pytest.mark.skipif(os.name != "nt", reason="Windows AppContainer")
 ROOT = Path(__file__).resolve().parents[1]
@@ -31,7 +31,7 @@ def test_existing_mcp_adapter_imports_in_appcontainer_without_live_hub(tmp_path)
                 "PYTHONPATH": os.pathsep.join(str(path) for path in (tmp_path / "src", site / "win32", site / "win32" / "lib", site / "pythonwin")),
                 "PYTHONNOUSERSITE": "1", "PYTHONDONTWRITEBYTECODE": "1", "LOCAL_AI_AGENT": "opencode-local",
                 "LOCAL_AI_AGENT_PROFILE": "opencode-local", "LOCAL_AI_CONFIG": str(config),
-                "LOCAL_AI_HUB_TOKEN": derive_local_profile_token("x" * 40, "n" * 32)})
+                "LOCAL_AI_HUB_TOKEN": derive_local_profile_token("n" * 32)})
     with SandboxSession(1, 1) as session:
         profile = session.profile
         runtime, client_toml = session.build_runtime_config({"server": {"port": 1}}, install_dir=tmp_path,
@@ -68,7 +68,7 @@ def test_mcp_search_and_status_cross_authenticated_sandbox_bridge(tmp_path):
     bridge = tmp_path / "bridge.cjs"
     shutil.copyfile(ROOT / "tools" / "opencode_sandbox_bootstrap.cjs", bootstrap)
     shutil.copyfile(ROOT / "tools" / "opencode_pipe_client.cjs", bridge)
-    token = derive_local_profile_token("x" * 40, "n" * 32)
+    token = derive_local_profile_token("n" * 32)
     received = []
 
     class FakeHub(BaseHTTPRequestHandler):
@@ -196,7 +196,7 @@ def test_opencode_invokes_mcp_search_inside_sandbox(private_stage):
     python = staged["python"]
     # The shim is limited to this offline test and is not production isolation.
     (tmp_path / "taskkill.cmd").write_text('@powershell.exe -NoProfile -Command "Stop-Process -Id %2 -Force -ErrorAction Stop"\r\n', encoding="ascii")
-    token = derive_local_profile_token("x" * 40, "n" * 32)
+    token = derive_local_profile_token("n" * 32)
     calls = []
     traffic = []
     invoked = threading.Event()

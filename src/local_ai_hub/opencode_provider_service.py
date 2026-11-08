@@ -16,13 +16,10 @@ from .opencode_inference_session import InferenceSessionError
 from .opencode_model_names import validate_local_model_name
 
 
-def derive_provider_token(hub_token: str, nonce: str) -> str:
-    if (not isinstance(hub_token, str) or not hub_token.isascii() or not 32 <= len(hub_token) <= 1024
-            or any(character.isspace() for character in hub_token)):
-        raise ValueError("a configured Hub token of at least 32 ASCII characters is required")
+def derive_provider_token(nonce: str) -> str:
     if not isinstance(nonce, str) or not re.fullmatch(r"[A-Za-z0-9_-]{20,128}", nonce):
         raise ValueError("invalid provider nonce")
-    digest = hmac.new(hub_token.encode("ascii"), b"local-ai-hub-opencode-provider-v1\0" + nonce.encode("ascii"), hashlib.sha256).digest()
+    digest = hmac.new(nonce.encode("ascii"), b"local-ai-hub-opencode-provider-v1\0" + nonce.encode("ascii"), hashlib.sha256).digest()
     return base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
 
 
@@ -42,10 +39,9 @@ def _upstream_port(url: str) -> int:
 
 
 class ProviderService:
-    def __init__(self, scheduler: Any, *, upstream_url: str, hub_token: str, peer_verifier: Any = None) -> None:
+    def __init__(self, scheduler: Any, *, upstream_url: str, peer_verifier: Any = None) -> None:
         self._scheduler = scheduler
         self._upstream_url = upstream_url
-        self._hub_token = hub_token
         self._peer_verifier = peer_verifier
         self._lock = threading.Lock()
         self._server: ProviderBridge | None = None
@@ -67,7 +63,7 @@ class ProviderService:
                 raise InferenceSessionError(str(exc)) from exc
             port = _upstream_port(self._upstream_url)
             nonce = secrets.token_urlsafe(24)
-            token = derive_provider_token(self._hub_token, nonce)
+            token = derive_provider_token(nonce)
             from .opencode_models import require_local_source_version
             require_local_source_version(self._upstream_url)
             server = ProviderBridge(self._scheduler, model, token=token, upstream_port=port, peer_verifier=self._peer_verifier)

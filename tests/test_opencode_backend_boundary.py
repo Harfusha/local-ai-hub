@@ -11,7 +11,7 @@ def test_scoped_token_forces_local_profile_and_cannot_authorize_other_routes(mon
 
     master = "x" * 40
     nonce = "n" * 32
-    scoped = derive_local_profile_token(master, nonce)
+    scoped = derive_local_profile_token(nonce)
     assert scoped != master
     provider = SimpleNamespace(status=lambda: {"success": True, "state": "running", "nonce": nonce})
     monkeypatch.setattr(http_server, "APP", SimpleNamespace(config={"security": {"api_token": master}}, opencode_provider=provider))
@@ -65,7 +65,7 @@ def test_local_client_never_falls_back_to_config_master_token(monkeypatch):
     monkeypatch.setenv("LOCAL_AI_HUB_TOKEN", master)
     with pytest.raises(ValueError, match="restricted"):
         client.HubClient(auto_start=False)
-    scoped = derive_local_profile_token(master, "n" * 32)
+    scoped = derive_local_profile_token("n" * 32)
     monkeypatch.setenv("LOCAL_AI_HUB_TOKEN", scoped)
     local = client.HubClient(auto_start=False)
     assert local.api_token == scoped and local.config["security"]["api_token"] == scoped
@@ -79,7 +79,7 @@ def test_local_mcp_configuration_does_not_retain_owner_credentials(tmp_path):
     from local_ai_hub.opencode_boundary import derive_local_profile_token
 
     master = "m" * 40
-    scoped = derive_local_profile_token(master, "n" * 32)
+    scoped = derive_local_profile_token("n" * 32)
     config = tmp_path / "config.toml"
     config.write_text(f'[server]\nstate_dir = "{(tmp_path / "state").as_posix()}"\n'
                       f'[security]\napi_token = "{master}"\nsupervisor_token = "{"s" * 40}"\n'

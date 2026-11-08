@@ -2717,7 +2717,7 @@ class Handler(BaseHTTPRequestHandler):
         if len(pieces) != 3 or pieces[0] != "lahoc1":
             return False
         nonce = pieces[1]
-        expected = derive_local_profile_token(security.get("api_token", ""), nonce) if isinstance(security, dict) else None
+        expected = derive_local_profile_token(nonce) if isinstance(security, dict) else None
         if not expected or not _token_matches(supplied, expected):
             return False
         try:
