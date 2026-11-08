@@ -3867,7 +3867,7 @@ class LocalAIServices:
             tracker = getattr(self, "repo_state", None)
             fingerprint = getattr(tracker, "fingerprint", None)
             workspace_state = (
-                fingerprint(root, force=True) or {}
+                fingerprint(root) or {}
                 if callable(fingerprint)
                 else self._repo_cache_state(root) or {}
             )

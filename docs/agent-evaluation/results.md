@@ -3175,4 +3175,6 @@ These were advisory `local_ai_task(action="compress")` calls using the authentic
 
 ### Round 41 — CASE134 final evidence-bound retest
 
-- Pending.
+- Projectless isolated GPT-6 Luna Low chat `01a1bd42-5dfc-7390-b5c6-cb5b02b81dc1` used the explicit repository root. It made exactly one `local_ai_repo(search)` call (`req_4bd85b21bc14`) and two non-overlapping `local_ai_artifact(source)` calls for `src/local_ai_hub/operation_contracts.py:178–182` and `183–183`; each slice is within the inclusive five-line bound. Source SHA-256: `2472b26741bc17ea0e7264f077aa21f3f920a667a2010a74d23bbce11d7c2160`. Artifact request ID was not returned and is recorded as `NOT_RETURNED`.
+- The final table consistently classifies both actions `EXPOSED` and `DECLARED`, with exact raw values: `minimum_profile=high`, `feature_gate=bounded_local_work`, `quality_gate=implementation_case_and_overall_gate`, `unavailable_reason=requires_high_profile_task_qualification_and_explicit_permissions`. Metadata claims are session-bound; source gates do not establish current blocking. No `local_ai_work` action, work order, repo shell, edit, test, install or restart ran.
+- **PASS for CASE134's bounded two-axis classification and evidence capture.** It does not verify submit/continue execution quality or imply removal/availability in other sessions.
