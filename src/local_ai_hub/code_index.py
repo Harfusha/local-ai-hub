@@ -1350,7 +1350,7 @@ class CodeIndex:
     def _connect(self, *, register_archive_function: bool = True) -> sqlite3.Connection:
         if self._read_only:
             uri = self.db_path.resolve(strict=True).as_uri() + "?mode=ro"
-            con = sqlite3.connect(uri, uri=True, timeout=5.0)
+            con = connect_sqlite(uri, uri=True, timeout_seconds=5.0, row_factory=sqlite3.Row, read_only=True)
             con.row_factory = sqlite3.Row
             con.execute("PRAGMA busy_timeout=5000")
             con.execute("PRAGMA query_only=ON")

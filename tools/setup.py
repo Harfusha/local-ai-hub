@@ -1391,7 +1391,7 @@ def main() -> int:
         raise SystemExit("Python 3.11+ is required. Use install.ps1/install.sh to bootstrap a supported Python automatically.")
     parser = argparse.ArgumentParser(description="Install Local AI Hub")
     parser.add_argument("--config", type=Path, default=None, help="Import/replace config from this path. Without it, reruns preserve the installed config.")
-    parser.add_argument("--profile", choices=["auto", "cpu", "integrated", "low", "balanced", "high", "max"])
+    parser.add_argument("--profile", choices=["auto", "cpu", "integrated", "low", "balanced", "medium", "high", "max"])
     parser.add_argument("--skip-model-pull", action="store_true")
     parser.add_argument("--skip-local-nlp-preload", action="store_true")
     parser.add_argument("--skip-tools", action="store_true", help="Do not install Serena")

@@ -951,7 +951,7 @@ class WorkOrchestrator:
         }
         if self.path.exists():
             read_only_uri = self.path.resolve().as_uri() + "?mode=ro"
-            with closing(sqlite3.connect(read_only_uri, uri=True, timeout=2.0)) as check:
+            with closing(connect_sqlite(read_only_uri, uri=True, timeout_seconds=2.0, read_only=True)) as check:
                 check.execute("PRAGMA query_only=ON")
                 table = check.execute(
                     "SELECT 1 FROM sqlite_master WHERE type='table' AND name='work_orders'"

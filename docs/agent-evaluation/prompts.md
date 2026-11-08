@@ -1,6 +1,6 @@
-# Local AI Hub: 128 praktických promptů pro izolované agenty
+# Local AI Hub: 129 praktických promptů pro izolované agenty
 
-Aktualizováno 8. 11. 2026. **Návrh 128 testovacích scénářů; stav pilotních běhů je v `results.md`.**
+Aktualizováno 8. 11. 2026. **Návrh 129 testovacích scénářů; stav pilotních běhů je v `results.md`.**
 Cíl: správnost výsledku, volba nástrojů, porozumění instrukcím, přiměřenost práce, poctivost důkazů a chování při poruchách. Průchod konečnou sadou neprokazuje úplnou bezchybnost Hubu.
 
 ## Jak zadávat
@@ -1057,7 +1057,7 @@ Otestuj všech sedm local_ai_rag akcí: index, search, list, docset_index, docse
 Režim: disposable repository ID a syntetické tasky.
 
 ~~~text
-V izolovaném task scope otestuj všechny task lifecycle akce local_ai_coord z případu 122 v mcp-action-coverage.md. Pokryj validní sekvenci i chybný owner/root/revision/session, stale CAS, deadline a cancellation. Ověř skutečný session binding, že zamítnutí nemění state, fail status zůstává zachován a cleanup používá jen autorizovaný disposable root. Nikdy nemaž cizí task/worktree a nevymýšlej receipt. Admin zásah bez fixture = NOT_RUN.
+V izolovaném task scope otestuj všechny task lifecycle akce local_ai_coord z případu 122 v mcp-action-coverage.md, včetně checkpoint. Pokryj validní sekvenci i chybný owner/root/revision/session, stale CAS, deadline a cancellation. Ověř skutečný session binding, že zamítnutí nemění state, fail status zůstává zachován a cleanup používá jen autorizovaný disposable root. Nikdy nemaž cizí task/worktree a nevymýšlej receipt. Admin zásah bez fixture = NOT_RUN.
 ~~~
 
 ### 123 — Memory, evidence a compiled context
@@ -1081,7 +1081,7 @@ Otestuj všechny plan, board item, board summary a milestone akce z případu 12
 Režim: disposable scope a dvě logické identity; bez sdílených zdrojů.
 
 ~~~text
-Otestuj blackboard CRUD/merge, pubsub publish/poll, ask/answer, claim/renew/release, lease listing, semaphore acquire/status/release, wait_for_event a incident decision dle případu 125 v mcp-action-coverage.md. Ověř CAS, pořadí/cursor, falsey/null payload, owner identity, expiry, timeout/cancel a odmítnutí cross-root. Dva vlastníci soutěží jen o nový synthetic resource; právě jeden získá lease. Nepoužívej uživatelský lease/reservation/blackboard/topic a nepolluj dlouhodobě.
+Otestuj blackboard CRUD/merge, pubsub publish/poll, ask/answer, claim/renew/release, lease listing, semaphore acquire/status/release a wait_for_event dle případu 125 v mcp-action-coverage.md. Ověř CAS, pořadí/cursor, falsey/null payload, owner identity, expiry, timeout/cancel a odmítnutí cross-root. Dva vlastníci soutěží jen o nový synthetic resource; právě jeden získá lease. Nepoužívej uživatelský lease/reservation/blackboard/topic a nepolluj dlouhodobě.
 ~~~
 
 ### 126 — Swarm, worktree a merge simulace
@@ -1106,4 +1106,12 @@ Režim: existující syntetické work ID; bez nového submitu.
 
 ~~~text
 Otestuj local_ai_work status/get/wait/cancel nad existujícím disposable work item, pokud jej profil zpřístupní. Ověř přesné ID/root/task/session, unknown/in_progress/timed_out/cancelled a artifact retrieval; žádný opakovaný wait/poll, retry téhož jobu ani nový submit. Profil zakazující submit se nesmí obcházet jiným nástrojem. Bez bezpečného synthetic work ID označ podscénáře NOT_RUN.
+~~~
+
+### 129 — Input schema, subfunction branches a MCP contracts
+
+Režim: izolovaný checkout; nejdřív schema-only, runtime calls pouze na synthetic fixtures.
+
+~~~text
+Pro všech 7 právě vystavených MCP tools a každou action jejich aktuálního live schema vytvoř jeden řádek výsledků: input fields, required/non-empty, action-scoped/forbidden fields, type/enum/bounds/defaults, feature/authorization requirements, read-only vs mutation effect, output schema a explicitní failure/unknown branches. Porovnej s mcp-action-contracts.md a tests/test_operation_contracts.py; ty jsou source/schema evidence, ne důkaz runtime chování. U každé akce ověř bez side effectu minimálně chybějící required, prázdnou required/non-empty hodnotu, špatný typ/enum/boundary, pole určené jiné action a unknown field. Pak proveď nejmenší validní operaci jen pokud existuje disposable fixture a autorizovaný synthetic scope; ověř success i error/degraded/truncated/cancel branch relevantní pro danou action. Mutace, GPU, memory, plan, worktree, candidate promotion a RAG docset nikdy netestuj na uživatelských datech. Action neexponovaná live profilem označ UNAVAILABLE, ne PASS. Každý výsledek musí mít tool/action/schema revision/fixture/request/result/cleanup. Celý pytest ani kompletní stress suite nespouštěj; chybějící schema nebo fixture = NOT_RUN.
 ~~~

@@ -644,7 +644,7 @@ class RAGStore:
             ) from exc
         uri = db_path.resolve().as_uri() + "?mode=ro"
         try:
-            with closing(sqlite3.connect(uri, uri=True, timeout=1.0)) as con:
+            with closing(connect_sqlite(uri, uri=True, timeout_seconds=1.0, read_only=True)) as con:
                 known_tables = ("chunks", "files", "project_file_owners", "rag_meta", "chunk_fts")
                 tables = {str(row[0]) for row in con.execute(
                     "SELECT name FROM sqlite_master WHERE type='table' AND name IN (?,?,?,?,?)",
@@ -1011,10 +1011,11 @@ class RAGStore:
                                 if len(sub) <= size:
                                     chunks.append(sub)
                                 else:
-                                    sub_chunks = self._text_chunks(sub, size, overlap)
                                     header_prefix = f"# [Enclosing: class {node.name} -> def {item.name}]\n"
+                                    chunk_size = max(32, size - len(header_prefix)) if len(header_prefix) < size else size
+                                    sub_chunks = self._text_chunks(sub, chunk_size, overlap)
                                     for idx, sc in enumerate(sub_chunks):
-                                        if idx > 0 and header_prefix.strip() not in sc:
+                                        if idx > 0 and header_prefix.strip() not in sc and len(header_prefix) + len(sc) <= size:
                                             sc = f"{header_prefix}{sc}"
                                         chunks.append(sc)
                     else:
@@ -1023,9 +1024,10 @@ class RAGStore:
                         if not fn_sig:
                             fn_sig = f"def {getattr(node, 'name', 'function')}"
                         header_prefix = f"# [Enclosing: {fn_sig}]\n"
-                        sub_chunks = self._text_chunks(full_chunk, size, overlap)
+                        chunk_size = max(32, size - len(header_prefix)) if len(header_prefix) < size else size
+                        sub_chunks = self._text_chunks(full_chunk, chunk_size, overlap)
                         for idx, sc in enumerate(sub_chunks):
-                            if idx > 0 and header_prefix.strip() not in sc:
+                            if idx > 0 and header_prefix.strip() not in sc and len(header_prefix) + len(sc) <= size:
                                 sc = f"{header_prefix}{sc}"
                             chunks.append(sc)
 

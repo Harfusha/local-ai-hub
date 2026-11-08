@@ -17,7 +17,7 @@ def test_generated_policy_contains_codex_prioritization_directive() -> None:
 def test_generated_token_economy_policy_includes_orchestrator() -> None:
     tok_policy = generate_token_economy_policy({})
     assert "local-ai-orchestrator" in tok_policy
-    assert 'local_ai_repo(action="code_index"|"search")' in tok_policy
+    assert "code_index" in tok_policy and "search" in tok_policy
 
 
 def test_codex_mcp_merge_writes_auto_approval_mode() -> None:

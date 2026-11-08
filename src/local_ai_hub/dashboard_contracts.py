@@ -13,7 +13,7 @@ _FEATURES = ("status", "repo", "tasks", "rag", "commands", "coord", "artifacts",
 _BOOLEAN_SETTINGS = frozenset({"debug_traces.enabled", "preprocessing.enabled",
     "code_intelligence.enabled", "code_intelligence.serena_enabled", "monitoring.dashboard_enabled",
     *(f"features.{name}" for name in _FEATURES)})
-_PROFILES = frozenset({"auto", "cpu", "integrated", "low", "balanced", "high", "max"})
+_PROFILES = frozenset({"auto", "cpu", "integrated", "low", "balanced", "medium", "high", "max"})
 
 
 def dashboard_settings_patch(requested: Any) -> dict[str, Any]:

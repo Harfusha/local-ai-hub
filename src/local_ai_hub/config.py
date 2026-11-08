@@ -194,8 +194,8 @@ def validate_config(data: dict[str, Any]) -> None:
     if not isinstance(models.get("allow_hf_downloads", False), bool):
         raise ConfigError("models.allow_hf_downloads must be boolean")
     profile = str(hardware.get("profile", "auto") or "auto").lower()
-    if profile not in {"auto", "cpu", "integrated", "low", "balanced", "high", "max"}:
-        raise ConfigError("hardware.profile must be one of auto, cpu, integrated, low, balanced, high, max")
+    if profile not in {"auto", "cpu", "integrated", "low", "balanced", "medium", "high", "max"}:
+        raise ConfigError("hardware.profile must be one of auto, cpu, integrated, low, balanced, medium, high, max")
 
     openvino = data.get("openvino", {})
     if isinstance(openvino, dict):

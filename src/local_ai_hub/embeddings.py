@@ -523,7 +523,11 @@ class EmbeddingModel:
     def _encode_st_batch_locked(
         self, batch_texts: list[str], *, query: bool, priority: int
     ) -> tuple[list[list[float]] | None, str]:
+        attempts = 0
         while True:
+            attempts += 1
+            if attempts > 3:
+                return None, self.active_backend or "sentence-transformers"
             fenced = bool(getattr(self._execution_local, "ollama_gpu_fenced", False))
             if fenced and self._model is not None and uses_torch_cuda(
                 self.active_backend or "sentence-transformers", self.active_device or self.device

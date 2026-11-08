@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from .json_utils import dumps as json_dumps
 
+import logging
 import os
 from pathlib import Path
 from typing import Any
@@ -154,7 +155,7 @@ def context_pack_guidance() -> str:
 def context_economy_contract(cfg: dict[str, Any] | None = None) -> str:
     """Single short contract shared by skills, policies, and routing references."""
     features = FeatureSet.from_config(cfg or {})
-    budget = 3200
+    budget = 8192
     try:
         section = (cfg or {}).get("mcp", {}).get("response_budget", {})
         budget = int(section.get("default_tokens", budget)) if isinstance(section, dict) else budget
@@ -1412,7 +1413,9 @@ def main(argv: list[str] | None = None) -> int:
                     res["agents_synced"] = True
         except Exception as exc:
             res["agents_synced_error"] = str(exc)
-    print(json_dumps({"success": True, "target": str(target), "generated": res}, indent=2, ensure_ascii=False))
+    output_json = json_dumps({"success": True, "target": str(target), "generated": res}, indent=2, ensure_ascii=False)
+    logging.getLogger(__name__).info("Generation complete for %s", target)
+    sys.stdout.write(output_json + "\n")
     return 0
 
 

@@ -29,7 +29,11 @@ _SESSION_ASSETS = (
 
 def _reject_reparse_ancestors(path: Path, stop: Path) -> None:
     current = path
+    depth = 0
     while True:
+        depth += 1
+        if depth > 256:
+            raise ValueError("runtime path depth exceeds limit")
         info = current.lstat()
         if current.is_symlink() or getattr(info, "st_file_attributes", 0) & 0x400:
             raise ValueError("runtime path contains a reparse point")

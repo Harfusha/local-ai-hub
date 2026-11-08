@@ -269,11 +269,11 @@ def _review_text_error(value: Any) -> str | None:
     # Match SUMMARY: with tolerance for markdown headers (#, ##), bullet points (- , * ),
     # bolding (**SUMMARY:** or **SUMMARY**), backticks (`SUMMARY:`), or 1 introductory line.
     match = re.search(
-        r"(?:^|\n)(?:#{1,6}\s*)?(?:\*{1,2}|`{1,3})?(?:(?:\d+[\.\)]|[-*+])\s+)?(?:\*{1,2}|`{1,3})?SUMMARY(?:\*{1,2}|`{1,3})?:?[ \t]*(.*)$",
+        r"(?:^|\n)(?:#{1,6}\s*)?(?:\*{1,2}|`{1,3})?(?:(?:\d+[\.\)]|[-*+])\s+)?(?:\*{1,2}|`{1,3})?(?:SUMMARY|SYNTHESIS|OVERALL SUMMARY)(?:\*{1,2}|`{1,3})?:?[ \t]*(.*)$",
         text,
         re.IGNORECASE | re.DOTALL,
     )
-    if match is None or match.start() > 250:
+    if match is None or match.start() > 1000:
         return "Model output did not start with the required SUMMARY: header."
     words = re.findall(r"[^\W\d_]+", match.group(1), flags=re.UNICODE)
     if len(words) < 1:
@@ -5612,6 +5612,13 @@ class LocalAIServices:
         if task_data and "status" in task_data and "work_status" not in task_data:
             task_data = dict(task_data)
             task_data["work_status"] = task_data.pop("status")
+        if task_data and "verification" in task_data and "results" not in task_data:
+            task_data = dict(task_data)
+            ver = task_data.pop("verification")
+            if isinstance(ver, str) and ver.strip():
+                task_data["results"] = [{"kind": "evidence_reference", "evidence_id": "inline", "summary": ver.strip()[:2048]}]
+            elif isinstance(ver, list):
+                task_data["results"] = ver
         arguments = dict(plan_id=plan_id, task_id=task_id, task_data=task_data,
                          expected_revision=expected_revision, idempotency_key=idempotency_key, owner=owner)
         ws = self._plan_workspace(root, "plan_task_edit", arguments)

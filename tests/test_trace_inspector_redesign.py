@@ -143,3 +143,45 @@ def test_enabled_trace_store_preserves_complete_payload_and_token_usage(tmp_path
     assert "stored-access-secret" in stored
     assert "event-secret" in stored
     assert "[redacted]" not in stored
+
+
+def test_trace_content_text_pretty_prints_minified_json_for_human():
+    assert which("node"), "Dashboard JavaScript tests require Node.js"
+    start = DASHBOARD_HTML.index("function traceMainContent(")
+    end = DASHBOARD_HTML.index("function traceMetricRow(", start)
+    source = DASHBOARD_HTML[start:end]
+    script = (
+        "const esc=s=>String(s??'').replace(/[&<>\"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',\"'\":'&#39;'}[c]));\n"
+        "const traceRecorded=v=>v!=null&&v!=='';\n"
+        + source
+        + "const minifiedObj = '{\"status\":\"ok\",\"items\":[1,2]}';\n"
+        + "const minifiedArr = '[{\"id\":1},{\"id\":2}]';\n"
+        + "const plainText = 'normal string output';\n"
+        + "const invalidJson = '{broken json';\n"
+        + "const jsObj = {count: 42};\n"
+        + "console.log(JSON.stringify([\n"
+        + "  traceContentText(minifiedObj),\n"
+        + "  traceContentText(minifiedArr),\n"
+        + "  traceContentText(plainText),\n"
+        + "  traceContentText(invalidJson),\n"
+        + "  traceContentText(jsObj),\n"
+        + "  traceMainContent('Output', 'output', minifiedObj)\n"
+        + "]));"
+    )
+    result = subprocess.run(
+        ["node"], input=script, check=True, capture_output=True, text=True, encoding="utf-8"
+    )
+    import json
+
+    out_obj, out_arr, out_plain, out_invalid, out_jsobj, main_content = json.loads(result.stdout)
+    assert out_obj == '{\n  "status": "ok",\n  "items": [\n    1,\n    2\n  ]\n}'
+    assert out_arr == '[\n  {\n    "id": 1\n  },\n  {\n    "id": 2\n  }\n]'
+    assert out_plain == "normal string output"
+    assert out_invalid == "{broken json"
+    assert out_jsobj == '{\n  "count": 42\n}'
+    assert '<section class="trace-primary-card output">' in main_content
+    assert (
+        "<pre>{\n  &quot;status&quot;: &quot;ok&quot;,\n  &quot;items&quot;: [\n    1,\n    2\n  ]\n}</pre>"
+        in main_content
+    )
+

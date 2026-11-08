@@ -119,7 +119,7 @@ _STATUS_ACTIONS = ("brief",)
 # Keep action IDs here so MCP schemas and direct runtime validation share one
 # policy table. Unlisted operations retain their existing feature/authority
 # gates and are not made GPU-dependent by implication.
-HARDWARE_PROFILE_ORDER = ("cpu", "integrated", "low", "balanced", "high", "max")
+HARDWARE_PROFILE_ORDER = ("cpu", "integrated", "low", "balanced", "medium", "high", "max")
 _HARDWARE_PROFILE_RANK = {name: rank for rank, name in enumerate(HARDWARE_PROFILE_ORDER)}
 CAPABILITY_REGISTRY = {
     "repo.search_summary": {
@@ -135,7 +135,7 @@ CAPABILITY_REGISTRY = {
         "unavailable_reason": "requires_balanced_profile_and_role_qualification",
     },
     "repo.solve": {
-        "operations": (("local_ai_repo", "solve"),), "minimum_profile": "high",
+        "operations": (("local_ai_repo", "solve"),), "minimum_profile": "medium",
         "backend": "local_model", "authority": "advisory", "quality_gate": "task_specific_evaluation",
         "feature_gate": "local_semantic_analysis",
         "unavailable_reason": "requires_high_profile_and_task_qualification",
@@ -148,7 +148,7 @@ CAPABILITY_REGISTRY = {
         "unavailable_reason": "requires_balanced_profile",
     },
     "task.vision": {
-        "operations": (("local_ai_task", "vision"),), "minimum_profile": "high",
+        "operations": (("local_ai_task", "vision"),), "minimum_profile": "cpu",
         "backend": "vision_model", "authority": "advisory", "quality_gate": "vision_role_evaluation",
         "feature_gate": "local_vision",
         "unavailable_reason": "requires_high_profile_and_vision_role_qualification",
@@ -156,12 +156,12 @@ CAPABILITY_REGISTRY = {
     "task.code_generation": {
         "operations": tuple(("local_ai_task", action) for action in (
             "complete_code", "scaffold", "speculative_draft", "speculative_lint"
-        )), "minimum_profile": "high", "backend": "local_model", "authority": "proposal",
+        )), "minimum_profile": "medium", "backend": "local_model", "authority": "proposal",
         "quality_gate": "task_specific_evaluation", "feature_gate": "local_code_generation",
         "unavailable_reason": "requires_high_profile_and_task_qualification",
     },
     "task.automation": {
-        "operations": (("local_ai_task", "automation"),), "minimum_profile": "high",
+        "operations": (("local_ai_task", "automation"),), "minimum_profile": "medium",
         "backend": "browser_automation", "authority": "explicitly_authorized_action",
         "quality_gate": "automation_task_evaluation", "feature_gate": "local_automation",
         "unavailable_reason": "requires_high_profile_and_automation_qualification",

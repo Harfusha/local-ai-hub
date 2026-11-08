@@ -48,3 +48,6 @@ def test_gpu_telemetry_lock_contention_fails_closed_without_waiting(monkeypatch)
     assert result["available"] is False
     assert result["telemetry_error"] == "sampling_lock_timeout"
     assert result["telemetry_stale"] is True
+
+
+pytestmark = pytest.mark.slow

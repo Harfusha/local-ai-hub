@@ -29,6 +29,8 @@ def test_exact_git_inventory_closes_pipe_on_success_and_bound_failure(
         monkeypatch.setattr(repo_tools, "MAX_EXACT_GIT_PATHS", 1)
     tools = repo_tools.RepositoryTools({"server": {"state_dir": str(tmp_path / "state")}})
     if exact:
+        tools.use_git_grep = False
+        tools.use_ripgrep = False
         result = tools.search(str(root), "needle", limit=1, exact_count=True)
         assert result["success"] is (not exceed_inventory_bound), result
         if not exceed_inventory_bound:

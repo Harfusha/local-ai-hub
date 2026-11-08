@@ -175,7 +175,11 @@ def run(*, repeats: int = 3, config_path: str | None = None) -> dict[str, Any]:
                 if isinstance(item, dict) and type(item.get("index")) is int
             ]
             inference_valid.sort(key=lambda item: -float(item.get("score", 0.0)))
-            last_ranked = [ids[item["index"]] for item in inference_valid if 0 <= item["index"] < len(ids)]
+            if inference_result.get("success") is True:
+                inference_ranked = [ids[item["index"]] for item in inference_valid if 0 <= item["index"] < len(ids)]
+            else:
+                inference_ranked = None
+            latency_by_cache_state: dict[str, dict[str, Any]] = {}
             for _ in range(repeats):
                 model_load_included = not reranker.is_loaded()
                 started = time.perf_counter()
@@ -187,28 +191,39 @@ def run(*, repeats: int = 3, config_path: str | None = None) -> dict[str, Any]:
                 ranked_rows = result.get("results", []) if isinstance(result, dict) else []
                 valid = [item for item in ranked_rows if isinstance(item, dict) and type(item.get("index")) is int]
                 valid.sort(key=lambda item: -float(item.get("score", 0.0)))
-                last_ranked = [ids[item["index"]] for item in valid if 0 <= item["index"] < len(ids)]
+                sample_ranked = [ids[item["index"]] for item in valid if 0 <= item["index"] < len(ids)]
+                st = cache_state(result, len(documents))
                 samples.append({
                     "latency_ms": round(elapsed_ms, 3),
-                    "cache_state": cache_state(result, len(documents)),
+                    "cache_state": st,
                     "cache_hits": cache_hits,
                     "computed": computed,
                     "model_load_included": model_load_included,
                     "success": isinstance(result, dict) and result.get("success") is True,
+                    "ranked_order": sample_ranked,
                 })
+                group = latency_by_cache_state.setdefault(st, {"latencies_ms": [], "sample_count": 0})
+                group["latencies_ms"].append(round(elapsed_ms, 3))
+                group["sample_count"] += 1
+            for group in latency_by_cache_state.values():
+                latencies = group.pop("latencies_ms", [])
+                group["median_ms"] = round(statistics.median(latencies), 3) if latencies else None
+                group["p95_ms"] = round(_percentile(latencies, 0.95), 3) if latencies else None
             rows.append({
                 "query": case["query"],
                 "relevant_ids": case["relevant_ids"],
                 "baseline_order": ids,
                 "baseline": baseline,
-                "reranked_order": last_ranked,
-                "reranked": evaluate_ranking(last_ranked, case["relevant_ids"]),
+                "reranked_order": inference_ranked,
+                "reranked": evaluate_ranking(inference_ranked, case["relevant_ids"]) if inference_ranked is not None else None,
+                "latency_by_cache_state": latency_by_cache_state,
                 "inference_sample": {
                     "latency_ms": round(inference_ms, 3),
                     "cache_state": "bypassed_for_inference",
                     "model_load_included": inference_model_load_included,
                     "success": inference_result.get("success") is True,
                     "computed": inference_result.get("computed"),
+                    **({"error": inference_result["error"]} if "error" in inference_result else {}),
                 },
                 "reranker_success": (
                     inference_result.get("success") is True

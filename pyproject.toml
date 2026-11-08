@@ -65,6 +65,10 @@ local_ai_hub = ["defaults.toml", "automation_browser.js"]
 testpaths = ["tests"]
 pythonpath = [".", "src"]
 addopts = "-ra"
+markers = [
+  "slow: marks tests as slow or resource-intensive (deselect with -m not slow)",
+  "integration: marks tests as integration tests",
+]
 filterwarnings = [
   "error::ResourceWarning",
   "error::pytest.PytestUnraisableExceptionWarning",

@@ -18,6 +18,7 @@ except ImportError:  # pragma: no cover - exercised when launched as a script
         return _stdlib_dumps(value, **kwargs)
 
 import argparse
+import logging
 import os
 import re
 import shutil
@@ -27,6 +28,8 @@ from collections import deque
 from pathlib import Path
 from functools import lru_cache
 from typing import Any, Iterable
+
+logger = logging.getLogger(__name__)
 
 from local_ai_hub.process_utils import hidden_run_kwargs, popen_managed
 
@@ -125,7 +128,7 @@ def tokcount_main(argv: list[str] | None = None) -> int:
                     print(f"{p} | Lines: {lines:,} | Chars: {chars:,} | Tokens: {o200k:,}")
             except Exception as exc:
                 if not args.quiet:
-                    print(f"Error reading {p}: {exc}", file=sys.stderr)
+                    logger.error("Error reading %s: %s", p, exc); sys.stderr.write(f"Error reading {p}: {exc}\n")
         elif p.is_dir():
             for root, dirs, files in os.walk(p):
                 rel_parts = Path(root).relative_to(p).parts
@@ -234,25 +237,25 @@ def trim_run_main(argv: list[str] | None = None) -> int:
     # shell wrapper: use the agent host's native command tool for arbitrary validation commands.
     command_name = os.path.basename(args[0]).lower()
     if os.path.basename(args[0]) != args[0]:
-        print("trim-run: command is not in the safe read/validation allowlist", file=sys.stderr)
+        logger.warning("trim-run: command is not in allowlist"); sys.stderr.write("trim-run: command is not in the safe read/validation allowlist\n")
         return 2
     if command_name in _TRIM_RUN_BUNDLED_COMMANDS:
         command_args = [sys.executable, __file__, _TRIM_RUN_BUNDLED_COMMANDS[command_name], *args[1:]]
     elif command_name in _TRIM_RUN_ALLOWED_COMMANDS:
         lowered_args = [arg.lower() for arg in args[1:]]
         if command_name == "rg" and any(arg == "--pre" or arg.startswith("--pre=") for arg in lowered_args):
-            print("trim-run: rg preprocessors are not allowed", file=sys.stderr)
+            logger.warning("trim-run: rg preprocessors not allowed"); sys.stderr.write("trim-run: rg preprocessors are not allowed\n")
             return 2
         if command_name == "fd" and any(
             arg in {"-x", "-X", "--exec", "--exec-batch"}
             or arg.startswith(("--exec=", "--exec-batch="))
             for arg in lowered_args
         ):
-            print("trim-run: fd command execution options are not allowed", file=sys.stderr)
+            logger.warning("trim-run: fd execution options not allowed"); sys.stderr.write("trim-run: fd command execution options are not allowed\n")
             return 2
         command_args = args
     else:
-        print("trim-run: command is not in the safe read/validation allowlist", file=sys.stderr)
+        logger.warning("trim-run: command is not in allowlist"); sys.stderr.write("trim-run: command is not in the safe read/validation allowlist\n")
         return 2
 
     safe_env = os.environ.copy()
@@ -283,7 +286,7 @@ def trim_run_main(argv: list[str] | None = None) -> int:
         filter_and_print_trimmed(lines, max_lines)
         return ret
     except Exception as exc:
-        print(f"trim-run failed to execute command: {exc}", file=sys.stderr)
+        logger.error("trim-run failed to execute command: %s", exc); sys.stderr.write(f"trim-run failed to execute command: {exc}\n")
         return 1
 
 

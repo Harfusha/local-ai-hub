@@ -64,10 +64,6 @@ _CAPABILITIES = {
         "qwen2.5-coder:32b", "heavy", ("bounded_review", "root_cause", "cross_file_reasoning", "test_plan", "patch_plan", "compare"),
         ("security_decision", "apply_changes", "final_verification"),
     ),
-    "deepseek-r1:14b": ModelCapability(
-        "deepseek-r1:14b", "reasoning", ("root_cause", "cross_file_reasoning", "test_plan", "compare"),
-        ("apply_changes", "security_decision", "final_verification"),
-    ),
     "mistral-nemo:12b": ModelCapability(
         "mistral-nemo:12b", "smart", ("single_file_explain", "bounded_review", "test_plan", "simple_patch_plan", "compare"),
         ("architecture", "security_decision", "high_risk_migration", "apply_changes"),

@@ -69,3 +69,6 @@ def test_matrix_stops_after_unconfirmed_scenario():
     assert report["outcome_unknown"] is True
     assert report["job_id"] == "job-42"
     assert report["accepted"] is False
+
+
+pytestmark = pytest.mark.slow

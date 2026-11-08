@@ -90,6 +90,121 @@ _SENSITIVE_METADATA_VALUE_RE = re.compile(
     r"response(?:_body)?|request(?:_body)?|body|payload|content|api[_-]?key|token|"
     r"password|secret|authorization)[\"']?\s*([=:])\s*.*$"
 )
+CLOUD_PRICING_PROFILES: dict[str, dict[str, Any]] = {
+    "claude-5-sonnet": {
+        "id": "claude-5-sonnet",
+        "name": "Claude 5 Sonnet",
+        "input": 2.50,
+        "output": 12.50,
+        "cache_read": 0.25,
+        "cache_write": 3.125,
+    },
+    "claude-5-haiku": {
+        "id": "claude-5-haiku",
+        "name": "Claude 5 Haiku",
+        "input": 0.50,
+        "output": 2.50,
+        "cache_read": 0.05,
+        "cache_write": 0.625,
+    },
+    "claude-5-opus": {
+        "id": "claude-5-opus",
+        "name": "Claude 5 Opus",
+        "input": 10.0,
+        "output": 50.0,
+        "cache_read": 1.00,
+        "cache_write": 12.50,
+    },
+    "gpt-6": {
+        "id": "gpt-6",
+        "name": "GPT-6",
+        "input": 2.00,
+        "output": 8.00,
+        "cache_read": 0.80,
+        "cache_write": 2.00,
+    },
+    "gpt-6-mini": {
+        "id": "gpt-6-mini",
+        "name": "GPT-6 mini",
+        "input": 0.10,
+        "output": 0.40,
+        "cache_read": 0.04,
+        "cache_write": 0.10,
+    },
+    "gemini-3-flash": {
+        "id": "gemini-3-flash",
+        "name": "Gemini 3 Flash",
+        "input": 0.05,
+        "output": 0.20,
+        "cache_read": 0.0125,
+        "cache_write": 0.05,
+    },
+    "gemini-3-pro": {
+        "id": "gemini-3-pro",
+        "name": "Gemini 3 Pro",
+        "input": 1.00,
+        "output": 4.00,
+        "cache_read": 0.20,
+        "cache_write": 1.00,
+    },
+    "claude-3-5-sonnet": {
+        "id": "claude-3-5-sonnet",
+        "name": "Claude 3.5 / 3.7 Sonnet",
+        "input": 3.0,
+        "output": 15.0,
+        "cache_read": 0.30,
+        "cache_write": 3.75,
+    },
+    "claude-3-5-haiku": {
+        "id": "claude-3-5-haiku",
+        "name": "Claude 3.5 Haiku",
+        "input": 0.80,
+        "output": 4.0,
+        "cache_read": 0.08,
+        "cache_write": 1.0,
+    },
+    "claude-3-opus": {
+        "id": "claude-3-opus",
+        "name": "Claude 3 Opus",
+        "input": 15.0,
+        "output": 75.0,
+        "cache_read": 1.50,
+        "cache_write": 18.75,
+    },
+    "gpt-4o": {
+        "id": "gpt-4o",
+        "name": "GPT-4o",
+        "input": 2.50,
+        "output": 10.0,
+        "cache_read": 1.25,
+        "cache_write": 2.50,
+    },
+    "gpt-4o-mini": {
+        "id": "gpt-4o-mini",
+        "name": "GPT-4o mini",
+        "input": 0.15,
+        "output": 0.60,
+        "cache_read": 0.075,
+        "cache_write": 0.15,
+    },
+    "gemini-2-flash": {
+        "id": "gemini-2-flash",
+        "name": "Gemini 2.0 / 1.5 Flash",
+        "input": 0.10,
+        "output": 0.40,
+        "cache_read": 0.025,
+        "cache_write": 0.10,
+    },
+    "gemini-2-pro": {
+        "id": "gemini-2-pro",
+        "name": "Gemini 2.0 / 1.5 Pro",
+        "input": 1.25,
+        "output": 5.0,
+        "cache_read": 0.3125,
+        "cache_write": 1.25,
+    },
+}
+
 _SAVINGS_SOURCE_ALLOWLIST = frozenset({
     "cache_hit", "cache_or_local_reuse", "context_compaction", "delegated_context",
     "deterministic_outline", "local_compute", "measured_context", "reused",
@@ -559,6 +674,10 @@ class TelemetryStore:
         rollup_retention_days: int = 365,
         cloud_input_token_cost_usd_per_million: float = 3.0,
         cloud_output_token_cost_usd_per_million: float = 3.0,
+        pricing_profile: str = "claude-5-sonnet",
+        cloud_cache_read_token_cost_usd_per_million: float = 0.30,
+        cloud_cache_write_token_cost_usd_per_million: float = 3.75,
+        config: dict[str, Any] | None = None,
         batch_size: int = 64,
         flush_interval_seconds: float = 0.5,
         queue_size: int = 10000,
@@ -574,6 +693,14 @@ class TelemetryStore:
         self.cloud_output_token_cost_usd_per_million = _validate_token_cost_rate(
             "cloud_output_token_cost_usd_per_million", cloud_output_token_cost_usd_per_million
         )
+        self.cloud_cache_read_token_cost_usd_per_million = _validate_token_cost_rate(
+            "cloud_cache_read_token_cost_usd_per_million", cloud_cache_read_token_cost_usd_per_million
+        )
+        self.cloud_cache_write_token_cost_usd_per_million = _validate_token_cost_rate(
+            "cloud_cache_write_token_cost_usd_per_million", cloud_cache_write_token_cost_usd_per_million
+        )
+        self.pricing_profile = str(pricing_profile or "claude-5-sonnet")
+        self.config = dict(config or {})
         self.batch_size = max(1, min(int(batch_size), 1000))
         self.flush_interval_seconds = max(0.05, float(flush_interval_seconds))
         self.path = state_dir / "telemetry.sqlite3"
@@ -643,7 +770,7 @@ class TelemetryStore:
             return 0
 
         try:
-            with closing(sqlite3.connect(uri, uri=True, timeout=1.0)) as con:
+            with closing(connect_sqlite(uri, uri=True, timeout_seconds=1.0, read_only=True)) as con:
                 con.set_progress_handler(stop_long_scan, 5000)
                 tables = {
                     str(row[0]) for row in con.execute(
@@ -717,7 +844,7 @@ class TelemetryStore:
             },
         }
         try:
-            with closing(sqlite3.connect(f"{self.path.as_uri()}?mode=ro", uri=True, timeout=1.0)) as con:
+            with closing(connect_sqlite(self.path, timeout_seconds=1.0, read_only=True)) as con:
                 tables = {
                     str(row[0]) for row in con.execute("SELECT name FROM sqlite_master WHERE type='table'")
                     if not str(row[0]).startswith("sqlite_")
@@ -1143,6 +1270,7 @@ class TelemetryStore:
             "cache_reuse_breakdown": history.get("cache_reuse_breakdown", {}),
             "http_outcomes": history.get("http_outcomes", {}),
             "net_cloud_token_delta_est": int(history.get("net_cloud_token_delta_est", 0) or 0),
+            "realistic_net_cloud_token_delta_est": int(history.get("realistic_net_cloud_token_delta_est", history.get("net_cloud_token_delta_est", 0)) or 0),
             "cloud_token_overhead_est": int(history.get("cloud_token_overhead_est", 0) or 0),
             "gross_cloud_tokens_avoided_est": int(history.get("gross_cloud_tokens_avoided_est", 0) or 0),
             "gross_input_cloud_tokens_avoided_est": int(history.get("gross_input_cloud_tokens_avoided_est", 0) or 0),
@@ -1159,11 +1287,19 @@ class TelemetryStore:
             "accounting_boundary_incomplete": bool(history.get("accounting_boundary_incomplete", False)),
             "token_accounting_storage": history.get("token_accounting_storage", "retained_process_events"),
             "estimated_savings_usd": history.get("estimated_savings_usd"),
+            "realistic_savings_usd": history.get("realistic_savings_usd"),
             "estimated_input_savings_usd": history.get("estimated_input_savings_usd"),
             "estimated_output_savings_usd": history.get("estimated_output_savings_usd"),
             "estimated_savings_pricing_mode": str(history.get("estimated_savings_pricing_mode", "unknown")),
             "cloud_input_token_cost_usd_per_million": history.get("cloud_input_token_cost_usd_per_million"),
             "cloud_output_token_cost_usd_per_million": history.get("cloud_output_token_cost_usd_per_million"),
+            "cloud_cache_read_token_cost_usd_per_million": history.get("cloud_cache_read_token_cost_usd_per_million"),
+            "cloud_cache_write_token_cost_usd_per_million": history.get("cloud_cache_write_token_cost_usd_per_million"),
+            "active_pricing_profile": str(history.get("active_pricing_profile", self.pricing_profile)),
+            "pricing_profiles": history.get("pricing_profiles", CLOUD_PRICING_PROFILES),
+            "realistic_savings_breakdown": history.get("realistic_savings_breakdown", {}),
+            "dynamic_depth_tokens": int(history.get("dynamic_depth_tokens", 25000) or 25000),
+            "call_categories": history.get("call_categories", {}),
             "fallback_count": int(history.get("fallback_count", 0) or 0),
             "degraded_count": int(history.get("degraded_count", 0) or 0),
             "retry_count": int(history.get("retry_count", 0) or 0),
@@ -2062,15 +2198,22 @@ class TelemetryStore:
             refreshed["decision_grade"] = decision_grade
         return refreshed
 
-    def summary(self, days: int = 30, *, scope: str = "window", _flush: bool = True, session_limit: int = 10) -> dict[str, Any]:
+    def summary(self, days: int = 30, *, scope: str = "window", _flush: bool = True, session_limit: int = 10, detailed_diagnostics: bool | None = None) -> dict[str, Any]:
         if not self.enabled:
             return {"enabled": False}
         now = time.monotonic()
         bounded_days = max(1, min(int(days), _MAX_QUERY_WINDOW_DAYS))
         cutoff, scope = self._scope_cutoff(bounded_days, scope)
+        detailed = detailed_diagnostics
+        if detailed is None:
+            try:
+                from .agent_diagnostics import detailed_diagnostics_enabled
+                detailed = detailed_diagnostics_enabled(getattr(self, "config", {}))
+            except Exception:
+                detailed = False
         # Keep the established rolling-window cache key stable for lightweight
         # callers; process cohorts need the start boundary in their own key.
-        key: Any = bounded_days if scope == "window" else (bounded_days, scope, int(self.process_started_at))
+        key: Any = (bounded_days, bool(detailed)) if scope == "window" else (bounded_days, scope, int(self.process_started_at), bool(detailed))
         with self._summary_cache_lock:
             cached = self._summary_cache.get(key)
         if cached and now - cached["time"] < 3.0:
@@ -2224,6 +2367,27 @@ class TelemetryStore:
                     f"SELECT COUNT(*) FROM events WHERE created_at>=? AND created_at<? AND event_type='tool_accounting' AND ({unpriced_row})",
                     (cutoff, boundary_end),
                 ).fetchone()[0])
+                cat_rows = con.execute(
+                    """SELECT
+                           CASE
+                               WHEN action IN ('local_ai_repo', 'local_ai_artifact', 'local_ai_rag') THEN 'discovery'
+                               WHEN action IN ('local_ai_coord') THEN 'agent_os'
+                               WHEN action IN ('local_ai_task', 'local_ai_work') THEN 'local_inference'
+                               ELSE 'system'
+                           END AS category,
+                           COALESCE(SUM(events),0),
+                           COALESCE(SUM(agent_protocol_tokens),0),
+                           COALESCE(SUM(gross_avoided_cloud_tokens),0),
+                           COALESCE(SUM(net_cloud_token_delta),0)
+                       FROM (
+                           SELECT action, events, agent_protocol_tokens, gross_avoided_cloud_tokens, net_cloud_token_delta
+                           FROM daily_rollups WHERE day>? AND event_type='tool_accounting'
+                           UNION ALL
+                           SELECT action, 1 AS events, agent_protocol_tokens, gross_avoided_cloud_tokens, net_cloud_token_delta
+                           FROM events WHERE created_at>=? AND created_at<? AND event_type='tool_accounting'
+                       ) GROUP BY 1""",
+                    (day, cutoff, boundary_end),
+                ).fetchall()
             else:
                 tool_accounting = con.execute(
                     """SELECT COUNT(*), COALESCE(SUM(gross_avoided_cloud_tokens),0),
@@ -2247,6 +2411,23 @@ class TelemetryStore:
                     f"SELECT COUNT(*) FROM events WHERE created_at>=? AND event_type='tool_accounting' AND ({unpriced_row})",
                     (cutoff,),
                 ).fetchone()[0])
+                cat_rows = con.execute(
+                    """SELECT
+                           CASE
+                               WHEN action IN ('local_ai_repo', 'local_ai_artifact', 'local_ai_rag') THEN 'discovery'
+                               WHEN action IN ('local_ai_coord') THEN 'agent_os'
+                               WHEN action IN ('local_ai_task', 'local_ai_work') THEN 'local_inference'
+                               ELSE 'system'
+                           END AS category,
+                           COUNT(*),
+                           COALESCE(SUM(agent_protocol_tokens),0),
+                           COALESCE(SUM(gross_avoided_cloud_tokens),0),
+                           COALESCE(SUM(net_cloud_token_delta),0)
+                       FROM events
+                       WHERE created_at>=? AND event_type='tool_accounting'
+                       GROUP BY 1""",
+                    (cutoff,),
+                ).fetchall()
             known_channel_rows = con.execute(
                 f"""SELECT COALESCE(SUM(events),0),
                            COALESCE(SUM(CASE
@@ -2279,6 +2460,16 @@ class TelemetryStore:
                    ) GROUP BY source ORDER BY 2 DESC, source LIMIT ?""",
                 (cutoff, cutoff, _REPORT_GROUP_LIMIT),
             ).fetchall()
+            if scope == "process":
+                session_count_raw = con.execute(
+                    "SELECT COUNT(DISTINCT trace_id) FROM events WHERE created_at>=? AND trace_id<>''",
+                    (cutoff,),
+                ).fetchone()[0]
+            else:
+                session_count_raw = con.execute(
+                    "SELECT COUNT(*) FROM process_sessions WHERE started_at>=?",
+                    (cutoff,),
+                ).fetchone()[0]
             decision_grade = self._decision_grade(con, cutoff)
         total = int(row[0]); cached = int(row[1]); http_total = int(http[0])
         cache_domains: dict[str, dict[str, Any]] = {}
@@ -2356,6 +2547,63 @@ class TelemetryStore:
                 estimated_savings_usd = round(estimated_input_savings_usd + estimated_output_savings_usd, 4)
                 pricing_mode = "input_output"
 
+        call_categories = {
+            "discovery": {"events": 0, "protocol_tokens": 0, "gross_avoided": 0, "net_delta": 0},
+            "agent_os": {"events": 0, "protocol_tokens": 0, "gross_avoided": 0, "net_delta": 0},
+            "local_inference": {"events": 0, "protocol_tokens": 0, "gross_avoided": 0, "net_delta": 0},
+            "system": {"events": 0, "protocol_tokens": 0, "gross_avoided": 0, "net_delta": 0},
+        }
+        for cat_name, cat_events, cat_proto, cat_avoided, cat_net in cat_rows:
+            if cat_name in call_categories:
+                call_categories[cat_name] = {
+                    "events": int(cat_events or 0),
+                    "protocol_tokens": int(cat_proto or 0),
+                    "gross_avoided": int(cat_avoided or 0),
+                    "net_delta": int(cat_net or 0),
+                }
+        discovery_events = call_categories["discovery"]["events"]
+
+        session_count = max(1, int(session_count_raw or 0))
+        calls_per_session = max(1, round(tool_accounting_events / session_count)) if tool_accounting_events else 1
+        dynamic_depth_tokens = int(min(128_000, max(6_000, 6_000 + (calls_per_session * 1_800))))
+
+        avoided_turns = discovery_events
+        avoided_turn_output_tokens = avoided_turns * 250
+        avoided_cache_read_tokens = avoided_turns * dynamic_depth_tokens
+        avoided_slice_tokens = avoided_turns * 600
+
+        realistic_gross_tokens = gross_avoided_cloud_tokens + (avoided_turn_output_tokens + avoided_slice_tokens)
+        realistic_net_cloud_token_delta = realistic_gross_tokens - agent_protocol_tokens
+
+        sonnet_output_rate = max(self.cloud_output_token_cost_usd_per_million, 12.50)
+
+        realistic_output_savings_usd = round(
+            (gross_output_tokens_avoided + avoided_turn_output_tokens - priced_tool_request_tokens)
+            * sonnet_output_rate / 1_000_000, 4
+        )
+        realistic_cache_read_savings_usd = round(
+            avoided_cache_read_tokens * self.cloud_cache_read_token_cost_usd_per_million / 1_000_000, 4
+        )
+        realistic_input_savings_usd = round(
+            (gross_input_tokens_avoided + avoided_slice_tokens - priced_tool_response_tokens)
+            * self.cloud_input_token_cost_usd_per_million / 1_000_000, 4
+        )
+
+        if pricing_incomplete:
+            realistic_savings_usd = None
+        else:
+            realistic_savings_usd = round(
+                realistic_output_savings_usd + realistic_cache_read_savings_usd + realistic_input_savings_usd, 4
+            )
+
+        detailed = detailed_diagnostics
+        if detailed is None:
+            try:
+                from .agent_diagnostics import detailed_diagnostics_enabled
+                detailed = detailed_diagnostics_enabled(getattr(self, "config", {}))
+            except Exception:
+                detailed = False
+
         prep_events = int(prep_query[0] or 0)
         prep_hits = int(prep_query[1] or 0)
         prep_hit_rate = round(prep_hits / prep_events, 4) if prep_events else 0.0
@@ -2386,6 +2634,7 @@ class TelemetryStore:
             "local_output_tokens_est": int(row[4]),
             "context_tokens_avoided_est": int(row[5]),
             "net_cloud_token_delta_est": net_cloud_token_delta,
+            "realistic_net_cloud_token_delta_est": realistic_net_cloud_token_delta,
             "cloud_token_overhead_est": cloud_token_overhead,
             "gross_cloud_tokens_avoided_est": gross_avoided_cloud_tokens,
             "gross_input_cloud_tokens_avoided_est": gross_input_tokens_avoided,
@@ -2403,10 +2652,17 @@ class TelemetryStore:
             "token_accounting_storage": "daily_rollups_and_boundary_events" if scope == "window" else "retained_process_events",
             "cloud_input_token_cost_usd_per_million": self.cloud_input_token_cost_usd_per_million,
             "cloud_output_token_cost_usd_per_million": self.cloud_output_token_cost_usd_per_million,
+            "cloud_cache_read_token_cost_usd_per_million": self.cloud_cache_read_token_cost_usd_per_million,
+            "cloud_cache_write_token_cost_usd_per_million": self.cloud_cache_write_token_cost_usd_per_million,
+            "dynamic_depth_tokens": dynamic_depth_tokens,
+            "call_categories": call_categories,
+            "active_pricing_profile": self.pricing_profile,
+            "pricing_profiles": CLOUD_PRICING_PROFILES,
             "estimated_input_savings_usd": estimated_input_savings_usd,
             "estimated_output_savings_usd": estimated_output_savings_usd,
             "estimated_savings_pricing_mode": pricing_mode,
             "estimated_savings_usd": estimated_savings_usd,
+            "realistic_savings_usd": realistic_savings_usd,
             "avg_duration_ms": round(float(row[6]), 1), "p50_duration_ms": _percentile(durations, 0.50),
             "p95_duration_ms": _percentile(durations, 0.95), "p99_duration_ms": _percentile(durations, 0.99),
             "aggregate_duration_scope": "inference_only", "cohorts": cohorts,
@@ -2442,6 +2698,21 @@ class TelemetryStore:
             "decision_grade": decision_grade,
             "summary_cache_stale": False,
         }
+        if detailed:
+            res["realistic_savings_breakdown"] = {
+                "avoided_turns": avoided_turns,
+                "avoided_agent_output_tokens": avoided_turn_output_tokens,
+                "avoided_cache_read_tokens": avoided_cache_read_tokens,
+                "avoided_slice_tokens": avoided_slice_tokens,
+                "dynamic_depth_tokens": dynamic_depth_tokens,
+                "calls_per_session_est": calls_per_session,
+                "sonnet_output_rate": sonnet_output_rate,
+                "cache_read_rate": self.cloud_cache_read_token_cost_usd_per_million,
+                "input_rate": self.cloud_input_token_cost_usd_per_million,
+                "realistic_output_savings_usd": realistic_output_savings_usd,
+                "realistic_cache_read_savings_usd": realistic_cache_read_savings_usd,
+                "realistic_input_savings_usd": realistic_input_savings_usd,
+            }
         with self._summary_cache_lock:
             self._summary_cache[key] = {"time": now, "data": res, "writer_snapshot": dict(writer)}
             while len(self._summary_cache) > _SUMMARY_CACHE_LIMIT:

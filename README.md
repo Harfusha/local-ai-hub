@@ -107,7 +107,7 @@ Run `python tools/hubctl.py generate` (or `python tools/setup.py --generate-only
 
 `[hardware].profile = "auto"` is the default. Detection considers OS, CPU architecture, RAM and available NVIDIA/AMD/Intel/Apple graphics. The selected profile overlays conservative scheduler, context, background-work and batch defaults **before** `config.toml` is merged, so explicit user configuration always wins.
 
-Profiles: `cpu`, `integrated`, `low`, `balanced`, `high`, `max`.
+Profiles: `cpu`, `integrated`, `low`, `balanced`, `medium`, `high`, `max`.
 
 `integrated` is selected for shared-memory iGPUs (for example Intel Arc Graphics on Core Ultra notebooks) instead of sizing the machine from the tiny `AdapterRAM` aperture value reported by Windows. It keeps one LLM/model resident at a time, uses `qwen2.5-coder:1.5b` for preprocessing, 3b for background and quick requests, 7b for heavy/general code tasks, 9b for hard reasoning, and `qwen3-vl:4b` for vision. The balanced profile uses 1.5b preprocessing, 3b fast, 7b heavy/general and 9b reasoning/vision. High uses 1.5b preprocessing, 3b fast, 7b heavy and 9b general/reasoning/vision. Max uses 1.5b preprocessing, 3b fast and 9b heavy/general/reasoning/vision.
 

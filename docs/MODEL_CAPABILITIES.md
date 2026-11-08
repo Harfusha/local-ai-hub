@@ -59,7 +59,8 @@ names do not establish cached-weight availability, transcription quality or WER.
 | `integrated` | `qwen2.5-coder:3b` | `qwen2.5-coder:3b` | `qwen2.5-coder:7b` | `qwen3.5:9b` | `qwen2.5-coder:7b` | `qwen3-vl:4b` |
 | `low` | `qwen2.5-coder:3b` | `qwen2.5-coder:3b` | `qwen2.5-coder:7b` | `qwen3.5:9b` | `qwen2.5-coder:7b` | `qwen3-vl:4b` |
 | `balanced` | `qwen2.5-coder:3b` | `qwen2.5-coder:3b` | `qwen2.5-coder:7b` | `qwen3.5:9b` | `qwen2.5-coder:7b` | `minicpm-v:8b` |
-| `high` | `qwen2.5-coder:3b` | `qwen2.5-coder:3b` | `qwen2.5-coder:7b` | `qwen3.5:9b` | `qwen3.5:9b` | `minicpm-v:8b` |
+| `medium` | `qwen2.5-coder:3b` | `qwen2.5-coder:7b` | `qwen2.5-coder:7b` | `qwen3.5:9b` | `qwen3.5:9b` | `minicpm-v:8b` |
+| `high` | `qwen2.5-coder:3b` | `qwen2.5-coder:7b` | `qwen2.5-coder:14b` | `qwen3.5:9b` | `qwen3.5:9b` | `minicpm-v:8b` |
 | `max` | `qwen2.5-coder:7b` | `qwen2.5-coder:7b` | `qwen2.5-coder:32b` | `qwen3.5:9b` | `qwen3.5:9b` | `minicpm-v:8b` |
 
 These are profile routing targets from `hardware.py`. They do not prove a model
@@ -68,9 +69,9 @@ availability must be checked separately.
 
 Preprocessing routes: cpu=`qwen2.5-coder:0.5b`; integrated=`qwen2.5-coder:1.5b`;
 low=`qwen2.5-coder:1.5b`; balanced=`qwen2.5-coder:1.5b`;
-high=`qwen2.5-coder:3b`; max=`qwen2.5-coder:7b`.
-CPU and low profiles disable search summaries and vision; balanced, high and max
-enable them. Integrated inherits configured feature defaults. These flags do not
+medium=`qwen2.5-coder:3b`; high=`qwen2.5-coder:3b`; max=`qwen2.5-coder:7b`.
+CPU, integrated and low profiles disable search summaries; vision is supported
+across all profiles; balanced, medium, high and max enable search summaries. Integrated inherits configured feature defaults. These flags do not
 qualify model quality, availability, or image support.
 
 ## Static operation contracts

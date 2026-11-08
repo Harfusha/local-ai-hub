@@ -217,7 +217,7 @@ class RecoveryJournal:
         def read_columns(path: Path, *, immutable: bool) -> set[str]:
             options = "mode=ro&immutable=1" if immutable else "mode=ro"
             uri = f"{path.resolve().as_uri()}?{options}"
-            with closing(sqlite3.connect(uri, uri=True, timeout=5.0, isolation_level=None)) as con:
+            with closing(connect_sqlite(uri, uri=True, timeout_seconds=5.0, isolation_level=None, read_only=True)) as con:
                 return {str(row[1]) for row in con.execute("PRAGMA table_info(requests)")}
 
         # immutable avoids SQLite updating original WAL shared-memory metadata.

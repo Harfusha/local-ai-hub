@@ -306,7 +306,7 @@ def _safe_vram(val: Any) -> int:
 
 def choose_profile(gpus: list[dict[str, Any]], ram_gb: float, requested: str = "auto") -> str:
     requested = str(requested or "auto").strip().lower()
-    if requested in {"cpu", "integrated", "low", "balanced", "high", "max"}:
+    if requested in {"cpu", "integrated", "low", "balanced", "medium", "high", "max"}:
         return requested
     clean_gpus = [g for g in gpus if isinstance(g, dict)] if isinstance(gpus, list) else []
     try:
@@ -322,6 +322,8 @@ def choose_profile(gpus: list[dict[str, Any]], ram_gb: float, requested: str = "
             return "max"
         if unified >= 32:
             return "high"
+        if unified >= 24:
+            return "medium"
         if unified >= 16:
             return "balanced"
         return "low"
@@ -329,8 +331,10 @@ def choose_profile(gpus: list[dict[str, Any]], ram_gb: float, requested: str = "
     dedicated = max((_safe_vram(g.get("vram_mb", 0)) for g in clean_gpus if not bool(g.get("integrated"))), default=0)
     if dedicated >= 20 * 1024:
         return "max"
-    if dedicated >= 12 * 1024:
+    if dedicated >= 15 * 1024:
         return "high"
+    if dedicated >= 10 * 1024:
+        return "medium"
     if dedicated >= 6 * 1024:
         return "balanced"
     if dedicated > 0:
@@ -397,7 +401,7 @@ PROFILE_OVERRIDES: dict[str, dict[str, Any]] = {
             "general": "qwen2.5-coder:7b",
             "vision": "qwen3-vl:4b",
         },
-        "features": {"reranker": True, "search_summaries": False, "vision": False},
+        "features": {"reranker": True, "search_summaries": False, "vision": True},
         "scheduler": {"max_parallel": 1, "max_loaded_models": 1},
         "ollama": {
             "num_parallel": 1,
@@ -427,8 +431,8 @@ PROFILE_OVERRIDES: dict[str, dict[str, Any]] = {
             "same_model_worker_passes": 1,
         },
         "ollama_subagents": {"profiles": {
-            "qwen-explorer": {"model": "qwen2.5-coder:3b"},
-            "qwen-drafter": {"model": "qwen2.5-coder:7b"},
+            "qwen-explorer": {"model": "qwen2.5-coder:1.5b"},
+            "qwen-drafter": {"model": "qwen2.5-coder:3b"},
             "qwen-critic": {"model": "qwen2.5-coder:7b"},
         }},
     },
@@ -472,12 +476,12 @@ PROFILE_OVERRIDES: dict[str, dict[str, Any]] = {
         },
         "ollama_subagents": {
             "profiles": {
-                "qwen-explorer": {"model": "qwen2.5-coder:3b"},
+                "qwen-explorer": {"model": "qwen2.5-coder:1.5b"},
                 "qwen-drafter": {"model": "qwen2.5-coder:3b"},
                 "qwen-critic": {"model": "qwen2.5-coder:7b"},
             }
         },
-        "features": {"reranker": True, "search_summaries": False, "vision": False},
+        "features": {"reranker": True, "search_summaries": False, "vision": True},
         "preprocessing": {
             "model": "qwen2.5-coder:1.5b",
             "idle_grace_seconds": 30.0,
@@ -498,7 +502,7 @@ PROFILE_OVERRIDES: dict[str, dict[str, Any]] = {
         },
     },
     "low": {
-        "features": {"reranker": True, "search_summaries": False, "vision": False},
+        "features": {"reranker": True, "search_summaries": False, "vision": True},
         "preprocessing": {"model": "qwen2.5-coder:1.5b"},
         "models": {
             "background_code": "qwen2.5-coder:3b",
@@ -509,7 +513,8 @@ PROFILE_OVERRIDES: dict[str, dict[str, Any]] = {
             "vision": "qwen3-vl:4b",
         },
         "scheduler": {"max_parallel": 1},
-        "ollama": {"num_parallel": 1},
+        "ollama": {"num_parallel": 1, "kv_cache_type": "q4_0"},
+        "llama_cpp": {"cache_type_k": "q4_0", "cache_type_v": "q4_0"},
         "background_gpu": {"parallel": 1, "file_batch_size": 1, "module_batch_size": 1},
         "cpu_retrieval": {"embedding_batch_size": 6, "reranker_batch_size": 2},
         "model_execution": {
@@ -518,8 +523,8 @@ PROFILE_OVERRIDES: dict[str, dict[str, Any]] = {
             "smart": {"parallel": 1, "context_tokens": 24576, "max_context_tokens": 32768, "max_prompt_tokens": 22000},
         },
         "ollama_subagents": {"profiles": {
-            "qwen-explorer": {"model": "qwen2.5-coder:3b"},
-            "qwen-drafter": {"model": "qwen2.5-coder:7b"},
+            "qwen-explorer": {"model": "qwen2.5-coder:1.5b"},
+            "qwen-drafter": {"model": "qwen2.5-coder:3b"},
             "qwen-critic": {"model": "qwen2.5-coder:7b"},
         }},
     },
@@ -535,28 +540,127 @@ PROFILE_OVERRIDES: dict[str, dict[str, Any]] = {
             "vision": "minicpm-v:8b",
         },
         "scheduler": {"max_parallel": 2},
-        "ollama": {"num_parallel": 2, "kv_cache_type": "q8_0"},
+        "ollama": {"num_parallel": 2, "kv_cache_type": "q4_0"},
+        "llama_cpp": {"cache_type_k": "q4_0", "cache_type_v": "q4_0"},
         "background_gpu": {"parallel": 2, "file_batch_size": 2, "module_batch_size": 2},
         "cpu_retrieval": {"embedding_batch_size": 12, "reranker_batch_size": 4},
+        "ollama_subagents": {"profiles": {
+            "qwen-explorer": {"model": "qwen2.5-coder:1.5b"},
+            "qwen-drafter": {"model": "qwen2.5-coder:3b"},
+            "qwen-critic": {"model": "qwen2.5-coder:7b"},
+        }},
     },
-    "high": {
+    "medium": {
         "models": {
             "background_code": "qwen2.5-coder:3b",
-            "fast_code": "qwen2.5-coder:3b",
+            "fast_code": "qwen2.5-coder:7b",
             "heavy_code": "qwen2.5-coder:7b",
             "reasoning": "qwen3.5:9b",
             "general": "qwen3.5:9b",
             "vision": "minicpm-v:8b",
         },
-        "features": {"reranker": True, "search_summaries": True, "vision": True, "local_semantic_analysis": True, "cross_file_design": True},
+        "features": {
+            "reranker": True,
+            "search_summaries": True,
+            "vision": True,
+            "local_semantic_analysis": True,
+            "cross_file_design": True,
+            "local_reranking": True,
+            "local_vision": True,
+            "local_code_generation": True,
+            "local_automation": True,
+        },
         "preprocessing": {"model": "qwen2.5-coder:3b"},
         "scheduler": {"max_parallel": 2},
         "ollama": {"num_parallel": 2, "kv_cache_type": "q4_0"},
         "llama_cpp": {"cache_type_k": "q4_0", "cache_type_v": "q4_0"},
         "background_gpu": {"parallel": 4, "file_batch_size": 8, "module_batch_size": 6},
         "cpu_retrieval": {"embedding_batch_size": 20, "reranker_batch_size": 6},
+        "routing": {
+            "max_fast_context_chars": 120000,
+            "reasoning_resident_fallback": True,
+        },
+        "token_saving": {
+            "default_repo_context_tokens": 16000,
+            "max_diff_tokens": 32000,
+            "max_local_input_tokens": 64000,
+            "max_inline_chars": 4000,
+        },
+        "local_tools": {
+            "auto_register_project": True,
+            "max_tool_result_chars": 12000,
+            "preprocessed_context_chars": 8000,
+        },
+        "resilience": {
+            "max_model_fallbacks": 2,
+        },
+        "ollama_subagents": {
+            "profiles": {
+                "qwen-explorer": {"model": "qwen2.5-coder:7b", "timeout_seconds": 180},
+                "qwen-drafter": {"model": "qwen2.5-coder:7b", "timeout_seconds": 300},
+                "qwen-critic": {"model": "qwen3.5:9b", "timeout_seconds": 420},
+            }
+        },
         "model_execution": {
             "background": {"parallel": 1, "context_tokens": 16384, "max_context_tokens": 24576, "max_prompt_tokens": 14000},
+            "fast": {"parallel": 2, "context_tokens": 32768, "max_context_tokens": 32768, "max_prompt_tokens": 28000},
+            "smart": {"parallel": 1, "context_tokens": 65536, "large_context_tokens": 65536, "max_context_tokens": 65536, "max_prompt_tokens": 52000},
+            "generic": {"parallel": 1, "context_tokens": 32768, "max_context_tokens": 32768, "max_prompt_tokens": 24000},
+        },
+    },
+    "high": {
+        "models": {
+            "background_code": "qwen2.5-coder:3b",
+            "fast_code": "qwen2.5-coder:7b",
+            "heavy_code": "qwen2.5-coder:14b",
+            "reasoning": "qwen3.5:9b",
+            "general": "qwen3.5:9b",
+            "vision": "minicpm-v:8b",
+        },
+        "features": {
+            "reranker": True,
+            "search_summaries": True,
+            "vision": True,
+            "local_semantic_analysis": True,
+            "cross_file_design": True,
+            "local_reranking": True,
+            "local_vision": True,
+            "local_code_generation": True,
+            "local_automation": True,
+        },
+        "preprocessing": {"model": "qwen2.5-coder:3b"},
+        "scheduler": {"max_parallel": 2},
+        "ollama": {"num_parallel": 2, "kv_cache_type": "q4_0"},
+        "llama_cpp": {"cache_type_k": "q4_0", "cache_type_v": "q4_0"},
+        "background_gpu": {"parallel": 4, "file_batch_size": 8, "module_batch_size": 6},
+        "cpu_retrieval": {"embedding_batch_size": 20, "reranker_batch_size": 6},
+        "routing": {
+            "max_fast_context_chars": 120000,
+            "reasoning_resident_fallback": True,
+        },
+        "token_saving": {
+            "default_repo_context_tokens": 16000,
+            "max_diff_tokens": 32000,
+            "max_local_input_tokens": 64000,
+            "max_inline_chars": 4000,
+        },
+        "local_tools": {
+            "auto_register_project": True,
+            "max_tool_result_chars": 12000,
+            "preprocessed_context_chars": 8000,
+        },
+        "resilience": {
+            "max_model_fallbacks": 2,
+        },
+        "ollama_subagents": {
+            "profiles": {
+                "qwen-explorer": {"model": "qwen2.5-coder:7b", "timeout_seconds": 180},
+                "qwen-drafter": {"model": "qwen2.5-coder:14b", "timeout_seconds": 300},
+                "qwen-critic": {"model": "qwen2.5-coder:14b", "timeout_seconds": 420},
+            }
+        },
+        "model_execution": {
+            "background": {"parallel": 1, "context_tokens": 32768, "max_context_tokens": 32768, "max_prompt_tokens": 28000},
             "fast": {"parallel": 2, "context_tokens": 32768, "max_context_tokens": 32768, "max_prompt_tokens": 28000},
             "smart": {"parallel": 1, "context_tokens": 65536, "large_context_tokens": 65536, "max_context_tokens": 65536, "max_prompt_tokens": 52000},
             "generic": {"parallel": 1, "context_tokens": 32768, "max_context_tokens": 32768, "max_prompt_tokens": 24000},
@@ -571,13 +675,32 @@ PROFILE_OVERRIDES: dict[str, dict[str, Any]] = {
             "general": "qwen3.5:9b",
             "vision": "minicpm-v:8b",
         },
-        "features": {"reranker": True, "search_summaries": True, "vision": True, "local_semantic_analysis": True, "cross_file_design": True, "code_generation": True, "automation": True},
+        "features": {
+            "reranker": True,
+            "search_summaries": True,
+            "vision": True,
+            "local_semantic_analysis": True,
+            "cross_file_design": True,
+            "code_generation": True,
+            "local_code_generation": True,
+            "automation": True,
+            "local_automation": True,
+            "local_reranking": True,
+            "local_vision": True,
+        },
         "preprocessing": {"model": "qwen2.5-coder:7b"},
         "scheduler": {"max_parallel": 2},
         "ollama": {"num_parallel": 2, "kv_cache_type": "q8_0"},
         "llama_cpp": {"cache_type_k": "q8_0", "cache_type_v": "q8_0"},
         "background_gpu": {"parallel": 6, "file_batch_size": 12, "module_batch_size": 8},
         "cpu_retrieval": {"embedding_batch_size": 32, "reranker_batch_size": 8},
+        "ollama_subagents": {
+            "profiles": {
+                "qwen-explorer": {"model": "qwen2.5-coder:7b", "timeout_seconds": 180},
+                "qwen-drafter": {"model": "qwen2.5-coder:14b", "timeout_seconds": 300},
+                "qwen-critic": {"model": "qwen2.5-coder:14b", "timeout_seconds": 420},
+            }
+        },
         "model_execution": {
             "background": {"parallel": 1, "context_tokens": 16384, "max_context_tokens": 24576, "max_prompt_tokens": 14000},
             "fast": {"parallel": 2, "context_tokens": 32768, "max_context_tokens": 32768, "max_prompt_tokens": 28000},
@@ -648,15 +771,30 @@ def profile_overrides(profile_name: str, detected: dict[str, Any] | None = None)
         default=0,
     )
     has_fp4 = any(bool(g.get("has_fp4")) for g in gpus if isinstance(g, dict))
-    if profile_name in {"high", "max"} and nvidia_vram >= 15 * 1024:
-        nv_models: dict[str, Any] = {
-            "heavy_code": "qwen2.5-coder:14b",
-            "embedding_device": "cuda",
-            "reranker_device": "cuda",
-        }
-        if has_fp4:
-            nv_models["general"] = "qwen3.5:9b-nvfp4"
-        result = _deep_merge_dict(result, {"models": nv_models})
+    has_nvidia = any(
+        "nvidia" in str(gpu.get("vendor", "")).lower()
+        or "nvidia" in str(gpu.get("name", "")).lower()
+        for gpu in gpus
+    )
+    if profile_name in {"high", "max"} and has_nvidia:
+        result = _deep_merge_dict(result, {
+            "models": {
+                "embedding_device": "cuda",
+                "reranker_device": "cuda",
+            }
+        })
+
+    if has_fp4 and profile_name not in ("cpu", "integrated"):
+        # Prefer FP4 quantized variants whenever hardware-accelerated (e.g. Blackwell / compute capability >= 12.0)
+        fp4_models: dict[str, Any] = {}
+        curr_models = result.get("models", {})
+        if curr_models.get("general") == "qwen3.5:9b":
+            fp4_models["general"] = "qwen3.5:9b-nvfp4"
+        if fp4_models:
+            result = _deep_merge_dict(result, {"models": fp4_models})
+        sub_critic = result.get("ollama_subagents", {}).get("profiles", {}).get("qwen-critic", {})
+        if sub_critic.get("model") == "qwen3.5:9b":
+            result = _deep_merge_dict(result, {"ollama_subagents": {"profiles": {"qwen-critic": {"model": "qwen3.5:9b-nvfp4"}}}})
     if has_npu:
         # NPU takes priority in ANY profile: offload embeddings and reranker to dedicated NPU hardware,
         # freeing GPU VRAM and CPU cores for LLM inference.

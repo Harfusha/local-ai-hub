@@ -415,9 +415,11 @@ def test_nvidia_hardware_metrics_include_total_and_free_vram(monkeypatch):
             "vram_free_mb": 12000,
             "driver": "560.00",
             "backend": "cuda",
+            "compute_cap": None,
+            "has_fp4": False,
         }
     ]
-    assert calls[0][1] == "--query-gpu=name,memory.total,memory.free,driver_version"
+    assert calls[0][1] == "--query-gpu=name,memory.total,memory.free,driver_version,compute_cap"
 
 
 def test_nvidia_hardware_metrics_keep_total_when_free_vram_query_fails(monkeypatch):
@@ -447,8 +449,10 @@ def test_nvidia_hardware_metrics_keep_total_when_free_vram_query_fails(monkeypat
             "vram_free_mb": None,
             "driver": "560.00",
             "backend": "cuda",
+            "compute_cap": None,
+            "has_fp4": False,
         }
     ]
-    assert calls[0][1] == "--query-gpu=name,memory.total,memory.free,driver_version"
-    assert calls[1][1] == "--query-gpu=name,memory.total,driver_version"
+    assert calls[0][1] == "--query-gpu=name,memory.total,memory.free,driver_version,compute_cap"
+    assert calls[1][1] == "--query-gpu=name,memory.total,driver_version,compute_cap"
 

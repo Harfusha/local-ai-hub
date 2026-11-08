@@ -60,9 +60,11 @@ class SQLiteChangeObserver:
                 identity = (metadata.st_dev, metadata.st_ino, metadata.st_ctime_ns)
                 if identity != self._identity or self._connection is None:
                     self._disconnect_locked()
-                    connection = sqlite3.connect(
-                        self.path.resolve().as_uri() + "?mode=ro", uri=True,
-                        timeout=0.05, check_same_thread=False,
+                    connection = connect_sqlite(
+                        self.path,
+                        timeout_seconds=0.05,
+                        check_same_thread=False,
+                        read_only=True,
                     )
                     self._connection = connection
                     self._finalizer = weakref.finalize(self, sqlite3.Connection.close, connection)
@@ -102,34 +104,67 @@ def connect_sqlite(
     timeout_seconds: float = 5.0,
     isolation_level: str | None = "DEFERRED",
     row_factory: Any | None = None,
+    read_only: bool = False,
+    uri: bool = False,
+    wal: bool = False,
+    foreign_keys: bool = True,
+    check_same_thread: bool = True,
 ) -> sqlite3.Connection:
-    """Open a short-lived derived-state connection with bounded lock waits.
+    """Open a short-lived or long-lived SQLite connection with bounded lock waits and standard pragmas."""
+    target: str | Path
+    is_uri = bool(uri)
+    if path == ":memory:":
+        target = ":memory:"
+        is_uri = False
+    elif isinstance(path, str) and (path.startswith("file:") or is_uri):
+        is_uri = True
+        target = path
+        if read_only and "mode=ro" not in target:
+            sep = "&" if "?" in target else "?"
+            target = f"{target}{sep}mode=ro"
+    else:
+        if isinstance(path, str) and "\0" in path:
+            raise ValueError("database path contains embedded null byte")
+        p = Path(path)
+        if read_only:
+            is_uri = True
+            target = f"{p.resolve().as_uri()}?mode=ro"
+        else:
+            target = p
 
-    WAL is deliberately *not* selected here. ``PRAGMA journal_mode=WAL`` can itself
-    require an exclusive lock, so schemas enable WAL once during initialization and
-    hot-path connections only apply non-exclusive pragmas.
-    """
-    if isinstance(path, str) and "\0" in path:
-        raise ValueError("database path contains embedded null byte")
-    p = Path(path)
     try:
         val_timeout = float(timeout_seconds)
         if isinstance(timeout_seconds, bool) or not math.isfinite(val_timeout):
             timeout = 5.0
         else:
-            timeout = max(0.01, val_timeout)
+            timeout = max(0.001, val_timeout)
     except (TypeError, ValueError, OverflowError):
         timeout = 5.0
-    con = sqlite3.connect(p, timeout=timeout, isolation_level=isolation_level)
+
+    kwargs: dict[str, Any] = {
+        "timeout": timeout,
+        "isolation_level": isolation_level,
+        "check_same_thread": check_same_thread,
+    }
+    if is_uri:
+        kwargs["uri"] = True
+
+    con = sqlite3.connect(target, **kwargs)
 
     try:
         if row_factory is not None:
             con.row_factory = row_factory
         con.execute(f"PRAGMA busy_timeout={max(1, int(timeout * 1000))}")
-        # SQLite disables foreign-key enforcement per connection by default.
-        # All Local AI Hub stores are application-owned, so enabling it here
-        # preserves declared cascade/integrity rules consistently on every path.
-        con.execute("PRAGMA foreign_keys=ON")
+        if read_only:
+            try:
+                con.execute("PRAGMA query_only=ON")
+            except sqlite3.OperationalError:
+                pass
+        if foreign_keys:
+            try:
+                con.execute("PRAGMA foreign_keys=ON")
+            except sqlite3.OperationalError:
+                pass
         try:
             con.execute("PRAGMA synchronous=NORMAL")
             con.execute("PRAGMA temp_store=MEMORY")
@@ -138,6 +173,12 @@ def connect_sqlite(
         except sqlite3.OperationalError as exc:
             if not is_busy_error(exc):
                 raise
+        if wal and not read_only and target != ":memory:":
+            try:
+                initialize_wal(con)
+            except sqlite3.OperationalError as exc:
+                if not is_busy_error(exc):
+                    raise
         return con
     except Exception:
         con.close()
@@ -320,8 +361,8 @@ def backup_durable_database(path: Path | str, *, purpose: str = "schema-mismatch
     backup_path = source_path.with_name(
         f"{source_path.name}.{purpose}-{time.time_ns()}.sqlite3"
     )
-    source = sqlite3.connect(str(source_path), timeout=5.0)
-    destination = sqlite3.connect(str(backup_path), timeout=5.0)
+    source = connect_sqlite(source_path, timeout_seconds=5.0, read_only=True)
+    destination = connect_sqlite(backup_path, timeout_seconds=5.0, wal=True)
     try:
         source.backup(destination)
         check = destination.execute("PRAGMA quick_check").fetchone()
@@ -411,10 +452,11 @@ def readonly_sqlite_connection(
     uri = f"{database.resolve().as_uri()}?mode=ro"
     if immutable:
         uri += "&immutable=1"
-    connection = sqlite3.connect(
+    connection = connect_sqlite(
         uri,
         uri=True,
-        timeout=max(0.01, float(timeout_seconds)),
+        timeout_seconds=max(0.01, float(timeout_seconds)),
+        read_only=True,
     )
     remaining_steps = [max(1, int(max_vm_steps))]
 
@@ -626,7 +668,7 @@ def ensure_incremental_vacuum(path: Path | str, *, timeout_seconds: float = 5.0)
     deadline = time.monotonic() + timeout
     try:
         p.parent.mkdir(parents=True, exist_ok=True)
-        con = sqlite3.connect(p, timeout=timeout)
+        con = connect_sqlite(p, timeout_seconds=timeout)
         try:
             con.execute(f"PRAGMA busy_timeout={int(timeout * 1000)}")
             current = con.execute("PRAGMA auto_vacuum").fetchone()
@@ -658,7 +700,7 @@ def incremental_vacuum(
         return {"success": False, "error": "file_not_found", "path": str(p)}
     timeout = max(0.1, float(timeout_seconds))
     try:
-        con = sqlite3.connect(p, timeout=timeout)
+        con = connect_sqlite(p, timeout_seconds=timeout)
         try:
             con.execute(f"PRAGMA busy_timeout={int(timeout * 1000)}")
             freelist_row = con.execute("PRAGMA freelist_count").fetchone()
@@ -719,8 +761,7 @@ def compact_sqlite_database(
         )
 
     def open_read_only() -> sqlite3.Connection:
-        uri = database.resolve(strict=True).as_uri() + "?mode=ro"
-        return sqlite3.connect(uri, uri=True, timeout=5.0)
+        return connect_sqlite(database, timeout_seconds=5.0, read_only=True)
 
     def measure() -> dict[str, int]:
         with closing(open_read_only()) as connection:
@@ -764,7 +805,7 @@ def compact_sqlite_database(
     connection: sqlite3.Connection | None = None
     deadline = time.monotonic() + float(timeout_seconds)
     try:
-        connection = sqlite3.connect(database, timeout=5.0)
+        connection = connect_sqlite(database, timeout_seconds=5.0)
         connection.execute("PRAGMA busy_timeout=5000")
         checkpoint = connection.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
         if checkpoint and int(checkpoint[0]) != 0:
@@ -848,7 +889,7 @@ def optimize_db(
     }
 
     try:
-        con = sqlite3.connect(p, timeout=timeout)
+        con = connect_sqlite(p, timeout_seconds=timeout)
         try:
             con.execute(f"PRAGMA busy_timeout={int(timeout * 1000)}")
             if wal_checkpoint:
@@ -891,7 +932,7 @@ def wal_checkpoint_truncate(
     wal_size_before = wal_path.stat().st_size if wal_path.exists() else 0
     timeout = max(0.1, float(timeout_seconds))
     try:
-        con = sqlite3.connect(p, timeout=timeout)
+        con = connect_sqlite(p, timeout_seconds=timeout)
         try:
             con.execute(f"PRAGMA busy_timeout={int(timeout * 1000)}")
             row = con.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()

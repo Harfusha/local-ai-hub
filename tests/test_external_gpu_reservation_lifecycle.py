@@ -617,3 +617,6 @@ def test_coordination_mcp_contract_exposes_status_and_consented_release():
     assert validate_operation_arguments("local_ai_coord", "gpu_reservation_release_authorized", {
         "action": "gpu_reservation_release_authorized",
     })
+
+
+pytestmark = pytest.mark.slow

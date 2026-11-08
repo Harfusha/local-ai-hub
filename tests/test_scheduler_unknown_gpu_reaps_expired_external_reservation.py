@@ -1,4 +1,5 @@
 from __future__ import annotations
+import pytest
 
 import os
 import time
@@ -21,3 +22,6 @@ def test_unknown_internal_gpu_state_still_reaps_expired_external_reservation(tmp
 
     assert scheduler._external_gpu_reserved() is True
     assert not reservation_path.exists()
+
+
+pytestmark = pytest.mark.slow

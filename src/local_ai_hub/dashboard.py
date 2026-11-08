@@ -353,6 +353,14 @@ pre,.code-box{font-size:12px;line-height:1.7;tab-size:2}
 .btn.is-loading,.action-btn-sm.is-loading{position:relative;pointer-events:none;opacity:0.8}
 .btn-spinner{display:inline-block;width:11px;height:11px;border:2px solid rgba(255,255,255,0.3);border-top-color:currentColor;border-radius:50%;animation:btn-spin 0.6s linear infinite;vertical-align:middle;margin-right:4px}
 @keyframes btn-spin{to{transform:rotate(360deg)}}
+.kanban-card.compact{padding:7px 10px;gap:4px}
+.kanban-card.compact .kanban-card-collapsible{display:none}
+.kanban-card.compact.expanded .kanban-card-collapsible{display:block;margin-top:4px}
+.kanban-card-toggle{background:none;border:none;color:var(--muted);cursor:pointer;padding:1px 5px;font-size:10px;border-radius:3px}
+.kanban-card-toggle:hover{color:var(--fg-bright);background:rgba(255,255,255,0.08)}
+.btn.is-loading,.action-btn-sm.is-loading{position:relative;pointer-events:none;opacity:0.8}
+.btn-spinner{display:inline-block;width:11px;height:11px;border:2px solid rgba(255,255,255,0.3);border-top-color:currentColor;border-radius:50%;animation:btn-spin 0.6s linear infinite;vertical-align:middle;margin-right:4px}
+@keyframes btn-spin{to{transform:rotate(360deg)}}
 .milestone-card{background:#1c2217;border:1px solid #1f2e42;border-radius:8px;padding:16px;display:flex;flex-direction:column;gap:10px}
 .progress-bar{background:#343b2d;border-radius:999px;height:8px;overflow:hidden;margin:6px 0}
 .progress-fill{background:var(--accent);height:100%;border-radius:999px;transition:width .3s ease}
@@ -504,7 +512,7 @@ button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-vis
     <div class="grid grid-6">
       <div class="card"><div class="label">Requests handled</div><div class="value primary-metric" id="handledRequests">…</div><div class="sub" id="handledRequestsSub"></div><canvas id="throughputSpark" class="spark-canvas" width="160" height="30"></canvas></div>
       <div class="card"><div class="label">Net cloud token delta</div><div class="value primary-metric" id="tokensSaved">…</div><div class="sub" id="tokensSavedSub"></div></div>
-      <div class="card"><div class="label">Estimated savings</div><div class="value primary-metric" id="dollarsSaved">…</div><div class="sub" id="dollarsSavedSub"></div></div>
+      <div class="card"><div class="label" style="display:flex;justify-content:space-between;align-items:center"><span>Estimated savings</span><select id="pricingProfileSelect" class="dash-select tiny" style="background:#111;color:var(--fg-bright);border:1px solid #333;border-radius:4px;padding:1px 4px;font-size:10px;cursor:pointer" title="Select cloud pricing model"></select></div><div class="value primary-metric" id="dollarsSaved">…</div><div class="sub" id="dollarsSavedSub"></div></div>
       <div class="card"><div class="label">Generation cache hit rate</div><div class="value primary-metric" id="cache">…</div><div class="sub" id="cacheSub"></div></div>
       <div class="card"><div class="label">Latency p50 / p95 / p99</div><div class="value" id="latency">…</div><div class="sub" id="queueWait"></div><canvas id="latencySpark" class="spark-canvas" width="160" height="30"></canvas></div>
       <div class="card"><div class="label">Recorded request failures</div><div class="value primary-metric" id="reliabilityValue">…</div><div class="sub" id="reliabilitySub"></div></div>
@@ -897,7 +905,7 @@ button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-vis
   <section class="section">
     <h2>Runtime configuration <span class="tiny">Saved changes apply after restart</span></h2>
     <div style="padding:14px">
-      <div class="dash-group"><div class="group-title">Hardware &amp; Engine</div><div class="kv" style="padding:0;margin-bottom:12px"><div>Hardware profile</div><div><select id="cfgProfile" aria-label="Hardware profile" ><option>auto</option><option>cpu</option><option>integrated</option><option>low</option><option>balanced</option><option>high</option><option>max</option></select></div></div></div>
+      <div class="dash-group"><div class="group-title">Hardware &amp; Engine</div><div class="kv" style="padding:0;margin-bottom:12px"><div>Hardware profile</div><div><select id="cfgProfile" aria-label="Hardware profile" ><option>auto</option><option>cpu</option><option>integrated</option><option>low</option><option>balanced</option><option>medium</option><option>high</option><option>max</option></select></div></div></div>
       <div class="dash-group"><div class="group-title">Core MCP Tools</div><div class="settings-options"><label><input type="checkbox" id="cfgFeatStatus"> Status checks</label><label><input type="checkbox" id="cfgFeatRepo"> Repository tools</label><label><input type="checkbox" id="cfgFeatTasks"> Local AI tasks</label><label><input type="checkbox" id="cfgFeatRag"> RAG search</label><label><input type="checkbox" id="cfgFeatCommands"> Command broker</label><label><input type="checkbox" id="cfgFeatCoord"> Coordination</label><label><input type="checkbox" id="cfgFeatArtifacts"> Artifacts</label></div></div>
       <div class="dash-group"><div class="group-title">Code Intelligence &amp; Indexing</div><div class="settings-options"><label><input type="checkbox" id="cfgPreprocess"> Preprocessing enabled</label><label><input type="checkbox" id="cfgIntel"> Managed code intelligence</label><label><input type="checkbox" id="cfgSerena"> Serena backend</label></div></div>
       <div class="dash-group"><div class="group-title">Advanced Subsystems</div><div class="settings-options"><label><input type="checkbox" id="cfgFeatSubagents"> Local AI workers</label><label><input type="checkbox" id="cfgFeatAgentOs"> Agent OS</label><label><input type="checkbox" id="cfgFeatDashboard"> Dashboard</label></div></div>
@@ -1047,14 +1055,116 @@ function renderTelemetryMetrics(observability={}){
     return;
   }
   const netDelta=observedMetric(observability.net_cloud_token_delta_est);
-  if($('tokensSaved'))$('tokensSaved').textContent=metricText(netDelta);
-  if($('tokensSavedSub'))$('tokensSavedSub').textContent=period+' · '+(calls===null?'Accounted call count unavailable':calls?n(calls)+' accounted calls':'No accounted calls yet')+(!state.complete?' · partial estimate':'');
-  if($('dollarsSaved'))$('dollarsSaved').textContent=observability.estimated_savings_pricing_mode==='incomplete'||observability.estimated_savings_usd==null?'Unknown':formatEstimatedUsd(observability.estimated_savings_usd);
-  if($('dollarsSavedSub'))$('dollarsSavedSub').textContent=(observability.estimated_savings_pricing_mode==='incomplete'?'Known channel subtotals: input '+formatChannelSavings(observability.estimated_input_savings_usd,observability.cloud_input_token_cost_usd_per_million)+' · output '+formatChannelSavings(observability.estimated_output_savings_usd,observability.cloud_output_token_cost_usd_per_million)+' · historical channel costs unknown':observability.estimated_savings_pricing_mode==='input_output'?'Separate input/output rates':'Cost unavailable')+' · '+period+(!state.complete?' · incomplete data':'');
+  const realisticDelta=observedMetric(observability.realistic_net_cloud_token_delta_est);
+  if($('tokensSaved')){
+    if(realisticDelta!==null && realisticDelta!==netDelta){
+      $('tokensSaved').textContent=metricText(netDelta)+' .. '+(realisticDelta>0?'+':'')+metricText(realisticDelta);
+    } else {
+      $('tokensSaved').textContent=metricText(netDelta);
+    }
+  }
+  if($('tokensSavedSub'))$('tokensSavedSub').textContent=period+' · '+(calls===null?'Accounted call count unavailable':calls?n(calls)+' accounted calls':'No accounted calls yet')+(realisticDelta!==null && realisticDelta!==netDelta?' · strict min to realistic':'')+(!state.complete?' · partial estimate':'');
+
+  const pricingProfiles = observability.pricing_profiles || {
+    'claude-5-sonnet': {id:'claude-5-sonnet',name:'Claude 5 Sonnet',input:2.50,output:12.50,cache_read:0.25,cache_write:3.125},
+    'claude-5-haiku': {id:'claude-5-haiku',name:'Claude 5 Haiku',input:0.50,output:2.50,cache_read:0.05,cache_write:0.625},
+    'claude-5-opus': {id:'claude-5-opus',name:'Claude 5 Opus',input:10.0,output:50.0,cache_read:1.00,cache_write:12.50},
+    'gpt-6': {id:'gpt-6',name:'GPT-6',input:2.00,output:8.00,cache_read:0.80,cache_write:2.00},
+    'gpt-6-mini': {id:'gpt-6-mini',name:'GPT-6 mini',input:0.10,output:0.40,cache_read:0.04,cache_write:0.10},
+    'gemini-3-flash': {id:'gemini-3-flash',name:'Gemini 3 Flash',input:0.05,output:0.20,cache_read:0.0125,cache_write:0.05},
+    'gemini-3-pro': {id:'gemini-3-pro',name:'Gemini 3 Pro',input:1.00,output:4.00,cache_read:0.20,cache_write:1.00},
+    'claude-3-5-sonnet': {id:'claude-3-5-sonnet',name:'Claude 3.5 Sonnet',input:3.0,output:15.0,cache_read:0.30,cache_write:3.75},
+    'claude-3-5-haiku': {id:'claude-3-5-haiku',name:'Claude 3.5 Haiku',input:0.80,output:4.0,cache_read:0.08,cache_write:1.0},
+    'gpt-4o': {id:'gpt-4o',name:'GPT-4o',input:2.50,output:10.0,cache_read:1.25,cache_write:2.50},
+    'gpt-4o-mini': {id:'gpt-4o-mini',name:'GPT-4o mini',input:0.15,output:0.60,cache_read:0.075,cache_write:0.15},
+    'gemini-2-flash': {id:'gemini-2-flash',name:'Gemini 2.0 Flash',input:0.10,output:0.40,cache_read:0.025,cache_write:0.10},
+    'custom': {id:'custom',name:'Custom Configured',input:Number(observability.cloud_input_token_cost_usd_per_million||3.0),output:Number(observability.cloud_output_token_cost_usd_per_million||3.0),cache_read:Number(observability.cloud_cache_read_token_cost_usd_per_million||0.25),cache_write:Number(observability.cloud_cache_write_token_cost_usd_per_million||3.125)}
+  };
+  const profileSel = typeof document !== 'undefined' ? $('pricingProfileSelect') : null;
+  if(profileSel && (!profileSel.options || profileSel.options.length === 0)){
+    let opts = '';
+    for(const [pid, p] of Object.entries(pricingProfiles)){
+      opts += '<option value="' + pid + '">' + p.name + '</option>';
+    }
+    profileSel.innerHTML = opts;
+    const savedPid = (typeof localStorage!=='undefined' && localStorage.getItem('telemetryPricingProfile')) || observability.active_pricing_profile || 'claude-5-sonnet';
+    if(pricingProfiles[savedPid]) profileSel.value = savedPid;
+    profileSel.onchange = function(){
+      if(typeof localStorage!=='undefined') localStorage.setItem('telemetryPricingProfile', profileSel.value);
+      renderTelemetryMetrics(observability);
+    };
+  }
+  const activePid = (profileSel && profileSel.value && pricingProfiles[profileSel.value]) ? profileSel.value : ((typeof localStorage!=='undefined' && localStorage.getItem('telemetryPricingProfile')) || observability.active_pricing_profile || 'claude-5-sonnet');
+  const activeProfile = pricingProfiles[activePid] || pricingProfiles['claude-5-sonnet'] || pricingProfiles['claude-3-5-sonnet'];
+
+  const pricedReq = Number(observability.agent_tool_request_tokens_est || 0);
+  const pricedResp = Number(observability.agent_tool_response_tokens_est || 0);
+  const grossIn = Number(observability.gross_input_cloud_tokens_avoided_est || 0);
+  const grossOut = Number(observability.gross_output_cloud_tokens_avoided_est || 0);
+  const avoidedTurns = Number(observability.realistic_savings_breakdown?.avoided_turns ?? (calls > 0 ? Math.round(calls * 0.3) : 0));
+  const dynamicDepth = Number(observability.dynamic_depth_tokens || observability.realistic_savings_breakdown?.dynamic_depth_tokens || 25000);
+
+  let minUsd = null;
+  if(observability.estimated_savings_pricing_mode !== 'incomplete'){
+    minUsd = ((grossIn - pricedResp) * activeProfile.input / 1000000) + ((grossOut - pricedReq) * activeProfile.output / 1000000);
+  }
+  const realOutUsd = (grossOut + avoidedTurns * 250 - pricedReq) * activeProfile.output / 1000000;
+  const realCacheUsd = (avoidedTurns * dynamicDepth) * activeProfile.cache_read / 1000000;
+  const realInUsd = (grossIn + avoidedTurns * 600 - pricedResp) * activeProfile.input / 1000000;
+  const realisticUsd = (observability.estimated_savings_pricing_mode === 'incomplete') ? null : (realOutUsd + realCacheUsd + realInUsd);
+
+  if($('dollarsSaved')){
+    if(observability.estimated_savings_pricing_mode==='incomplete'||minUsd==null){
+      $('dollarsSaved').textContent='Unknown';
+    } else if(realisticUsd!=null && realisticUsd!==minUsd){
+      $('dollarsSaved').textContent=formatEstimatedUsd(minUsd)+' .. '+formatEstimatedUsd(realisticUsd);
+    } else {
+      $('dollarsSaved').textContent=formatEstimatedUsd(minUsd);
+    }
+  }
+  if($('dollarsSavedSub')){
+    if(observability.estimated_savings_pricing_mode==='incomplete'){
+      $('dollarsSavedSub').textContent='Known channel subtotals: input '+formatChannelSavings(observability.estimated_input_savings_usd,activeProfile.input)+' · output '+formatChannelSavings(observability.estimated_output_savings_usd,activeProfile.output)+' · historical channel costs unknown · '+period+(!state.complete?' · incomplete data':'');
+    } else if(realisticUsd!=null && realisticUsd!==minUsd){
+      $('dollarsSavedSub').textContent=activeProfile.name+' · Strict min to realistic';
+    } else {
+      $('dollarsSavedSub').textContent=activeProfile.name+' rates · '+period+(!state.complete?' · incomplete data':'');
+    }
+  }
   if(period==='Last 30 days'){
     for(const id of ['handledRequestsSub','cacheSub','queueWait'])if($(id))$(id).textContent='Retained samples · '+$(id).textContent;
   }
-  if(breakdown)breakdown.textContent+='\nUSD input rate: '+(observability.cloud_input_token_cost_usd_per_million==null?'unknown':'$'+Number(observability.cloud_input_token_cost_usd_per_million).toFixed(2)+' / 1M')+'\nUSD output rate: '+(observability.cloud_output_token_cost_usd_per_million==null?'unknown':'$'+Number(observability.cloud_output_token_cost_usd_per_million).toFixed(2)+' / 1M');
+  if(breakdown){
+    breakdown.textContent+='\nUSD input rate: '+(observability.cloud_input_token_cost_usd_per_million==null?'unknown':'$'+Number(observability.cloud_input_token_cost_usd_per_million).toFixed(2)+' / 1M')+'\nUSD output rate: '+(observability.cloud_output_token_cost_usd_per_million==null?'unknown':'$'+Number(observability.cloud_output_token_cost_usd_per_million).toFixed(2)+' / 1M');
+    if(observability.cloud_cache_read_token_cost_usd_per_million!=null){
+      breakdown.textContent+='\nUSD prompt cache read rate: $'+Number(observability.cloud_cache_read_token_cost_usd_per_million).toFixed(2)+' / 1M';
+    }
+    if(observability.call_categories){
+      const cats=observability.call_categories;
+      breakdown.textContent+='\nTool call categorization:\n'+
+        '  • Discovery (repo/artifact/rag): '+metricText(cats.discovery?.events||0)+' calls, net '+metricText(cats.discovery?.net_delta||0)+' tokens\n'+
+        '  • Agent OS (contracts/memory):  '+metricText(cats.agent_os?.events||0)+' calls, '+metricText(cats.agent_os?.protocol_tokens||0)+' protocol tokens (infrastructure)\n'+
+        '  • Local Inference (task/work):   '+metricText(cats.local_inference?.events||0)+' calls, net '+metricText(cats.local_inference?.net_delta||0)+' tokens\n'+
+        '  • System / Health:               '+metricText(cats.system?.events||0)+' calls\n';
+    }
+    if(observability.realistic_savings_breakdown){
+      const b=observability.realistic_savings_breakdown;
+      breakdown.textContent+='\nRealistic model breakdown ('+activeProfile.name+' prompt cache):\n'+
+        '  Avoided turns: '+metricText(avoidedTurns)+'\n'+
+        '  Dynamic history depth: ~'+metricText(dynamicDepth)+' tokens / turn\n'+
+        '  Avoided output tokens: '+metricText(avoidedTurns * 250)+' (@ $'+Number(activeProfile.output).toFixed(2)+'/1M)\n'+
+        '  Avoided cache read tokens: '+metricText(avoidedTurns * dynamicDepth)+' (@ $'+Number(activeProfile.cache_read).toFixed(2)+'/1M)\n'+
+        '  Avoided slice context: '+metricText(avoidedTurns * 600)+' tokens\n'+
+        '  Realistic net delta: '+metricText(b.realistic_net_token_delta_est)+' tokens (≈ '+formatEstimatedUsd(realisticUsd)+')';
+      breakdown.textContent+='\nMulti-model comparison (Strict min .. Realistic):\n';
+      for(const [pid, p] of Object.entries(pricingProfiles)){
+        if(pid === 'custom') continue;
+        const pMin = ((grossIn - pricedResp) * p.input / 1000000) + ((grossOut - pricedReq) * p.output / 1000000);
+        const pReal = ((grossOut + avoidedTurns * 250 - pricedReq) * p.output / 1000000) + ((avoidedTurns * dynamicDepth) * p.cache_read / 1000000) + ((grossIn + avoidedTurns * 600 - pricedResp) * p.input / 1000000);
+        breakdown.textContent+='  • '+p.name.padEnd(23)+': '+formatEstimatedUsd(pMin)+' .. '+formatEstimatedUsd(pReal)+'\n';
+      }
+    }
+  }
 }
 
 function preprocessingSummary(preprocessing={},dependencies={},features={}){
@@ -1165,6 +1275,10 @@ function renderOverviewHealth(snapshot={},receivedAt=Date.now(),now=Date.now()){
   let health=dashboardHealth(snapshot);
   const timestamp=snapshot.updated_at??snapshot.generated_at??snapshot.timestamp??runtime.updated_at;
   let freshness=dashboardFreshness(timestamp,now);
+  if(snapshot.snapshot_stale===true){
+    const cachedAge=Number(snapshot.status_age_ms);
+    freshness={state:'stale',label:'Stale',ageMs:Number.isFinite(cachedAge)?cachedAge:freshness.ageMs};
+  }
   if(freshness.state==='unknown'&&Number.isFinite(Number(receivedAt)))freshness=dashboardFreshness(receivedAt,now);
   if(freshness.state!=='fresh'||snapshot.snapshot_stale===true)health={...health,level:'attention',label:'Status stale',reason:'Live status is stale; current health cannot be verified.'};
   const level=$('overviewHealthLevel'),evidence=$('overviewHealthEvidence'),freshnessEl=$('overviewFreshness'),action=$('overviewHealthAction'),summary=$('overviewHealthSummary'),announcement=$('overviewAnnouncement');
@@ -2472,7 +2586,13 @@ function traceMainContent(title,field,value){
   return `<section class="trace-primary-card ${field}"><div class="trace-primary-card-head"><h2>${title}</h2>${copy}</div>${content}</section>`;
 }
 function traceContentText(value){
-  if(typeof value==='string')return value;
+  if(typeof value==='string'){
+    const trimmed=value.trim();
+    if((trimmed.startsWith('{')&&trimmed.endsWith('}'))||(trimmed.startsWith('[')&&trimmed.endsWith(']'))){
+      try{return JSON.stringify(JSON.parse(trimmed),null,2)}catch{}
+    }
+    return value;
+  }
   try{return JSON.stringify(value,null,2)??String(value)}catch{return String(value)}
 }
 function traceMetricRow(metrics){
@@ -3071,6 +3191,8 @@ async function submitCreateTask(e){
   e.preventDefault();
   const goal=$('newTaskGoal')?.value?.trim();
   if(!goal)return;
+  const btn = e?.submitter || e?.target?.querySelector?.('button[type="submit"]');
+  if(typeof setButtonLoading==='function')setButtonLoading(btn, true, 'Creating…');
   const root=$('newTaskRoot')?.value?.trim()||$('agentOsRoot')?.value?.trim()||$('agentOsRepoSelect')?.value?.trim();
   const rawCrit=$('newTaskCriteria')?.value||'';
   const criteria=rawCrit.split(/[\n,]/).map(s=>s.trim()).filter(Boolean);
@@ -3094,6 +3216,8 @@ async function submitCreateTask(e){
     }
   }catch(err){
     if(statusEl)statusEl.innerHTML=`<span class="bad-t">Error: ${esc(err.message||err)}</span>`;
+  }finally{
+    if(typeof setButtonLoading==='function')setButtonLoading(btn, false);
   }
 }
 
@@ -3661,6 +3785,8 @@ async function submitRegisterProject(e){
   e.preventDefault();
   const root=$('regProjRoot')?.value?.trim();
   if(!root)return;
+  const btn = e?.submitter || e?.target?.querySelector?.('button[type="submit"]');
+  if(typeof setButtonLoading==='function')setButtonLoading(btn, true, 'Registering…');
   const force=$('regProjForce')?.checked||false;
   const statusEl=$('regProjStatus');
   if(statusEl)statusEl.textContent='Registering project…';
@@ -3675,6 +3801,8 @@ async function submitRegisterProject(e){
     }
   }catch(err){
     if(statusEl)statusEl.innerHTML=`<span class="bad-t">Error: ${esc(err.message||err)}</span>`;
+  }finally{
+    if(typeof setButtonLoading==='function')setButtonLoading(btn, false);
   }
 }
 
@@ -3721,6 +3849,8 @@ function openDeleteProjectModal(root,name){
 
 async function confirmDeleteProject(root){
   const purge=$('delOpt2')?.checked||false;
+  const confirmBtn=$('confirmDeleteProjectBtn');
+  if(typeof setButtonLoading==='function')setButtonLoading(confirmBtn, true, 'Processing…');
   const statusEl=$('delProjStatus');
   if(statusEl)statusEl.textContent='Processing…';
   try{
@@ -3733,6 +3863,8 @@ async function confirmDeleteProject(root){
     await pollStatus();
   }catch(e){
     if(statusEl)statusEl.innerHTML=`<span class="bad-t">Error: ${esc(e.message||e)}</span>`;
+  }finally{
+    if(typeof setButtonLoading==='function')setButtonLoading(confirmBtn, false);
   }
 }
 
@@ -3751,7 +3883,7 @@ function openCleanMissingModal(){
       <div id="cleanMissingStatus" class="tiny"></div>
       <div class="modal-actions-bar" style="justify-content:flex-end">
         <button class="btn" onclick="$('modalClose')?.click()">Cancel</button>
-        <button class="btn warn" onclick="confirmCleanMissing()">🧹 Prune Missing Projects</button>
+        <button class="btn warn" id="confirmCleanMissingBtn" onclick="confirmCleanMissing()">🧹 Prune Missing Projects</button>
       </div>
     </div>
   `;
@@ -3760,6 +3892,8 @@ function openCleanMissingModal(){
 
 async function confirmCleanMissing(){
   const statusEl=$('cleanMissingStatus');
+  const confirmBtn=$('confirmCleanMissingBtn');
+  if(typeof setButtonLoading==='function')setButtonLoading(confirmBtn, true, 'Pruning…');
   if(statusEl)statusEl.textContent='Scanning and cleaning…';
   try{
     const r=await post('/api/preprocess',{action:'cleanup_deleted'},{timeoutMs:120000});
@@ -3767,6 +3901,8 @@ async function confirmCleanMissing(){
     await pollStatus();
   }catch(e){
     if(statusEl)statusEl.innerHTML=`<span class="bad-t">Error: ${esc(e.message||e)}</span>`;
+  }finally{
+    if(typeof setButtonLoading==='function')setButtonLoading(confirmBtn, false);
   }
 }
 
@@ -4735,9 +4871,10 @@ function renderProjects(items){
     return clickableRow(x,`<td><div class="project-name"><b>${esc(x.project)}</b>${isWorktree?'<span class="chip" style="font-size:9px;color:var(--accent2);border-color:#584578">worktree</span>':''}${variantLabel}</div><div class="tiny muted">Repository identity</div><div class="tiny muted mono project-root" title="${esc(x.repository_identity||x.root)}">${esc(x.repository_identity||x.root)}</div></td><td><span class="badge-status ${badge[0]}">${badge[2]}${badge[1]}</span><div class="tiny ${activityCls} project-activity" title="${esc(x.active_detail||activityText)}">${esc(activityText)}</div><div class="tiny muted">${esc(progressHint)}</div></td><td><div class="project-progress-line"><b>${phaseTitle}</b><span>${overall}%</span></div><div class="bar project-progress"><i style="width:${overall}%;background:${state==='error'?'var(--bad)':isComplete?'var(--ok)':'var(--accent)'}"></i></div><div class="tiny muted">${esc(phaseDetailText)}</div></td><td><div class="project-index"><span class="${ragFiles>=tot?'ok':''}">🧠 RAG ${ragPct}%</span><span class="${cards>=tot*0.9?'ok':''}">📄 Cards ${cardPct}%</span></div></td><td>${actions}</td>`,'project',x.root);
   },5,query||projectFilter!=='all'?'No projects match the current filters.':'No projects registered. Register a repository to begin.');
 }
-async function projectAction(root, action, btn) {
-  if(btn) setButtonLoading(btn, true, '…');
-  try { const result=await post('/api/preprocess', { root, action }); if(!result.success)throw new Error(result.error||'Project action failed'); await pollStatus(); } catch(e) { alert('Action error: ' + e); } finally { if(btn) setButtonLoading(btn, false); }
+async function projectAction(root, action) {
+  const btn = arguments[2];
+  if(btn) if(typeof setButtonLoading==='function')setButtonLoading(btn, true, '…');
+  try { const result=await post('/api/preprocess', { root, action }); if(!result.success)throw new Error(result.error||'Project action failed'); await pollStatus(); } catch(e) { alert('Action error: ' + e); } finally { if(btn) if(typeof setButtonLoading==='function')setButtonLoading(btn, false); }
 }
 $('regProjectBtn').onclick = openRegisterProjectModal;
 $('cleanMissingBtn').onclick = openCleanMissingModal;
@@ -4748,6 +4885,7 @@ async function deleteProjectDialog(root, name) {
 function openControlConfirmation(action){
   const details={
     purge_cache:{title:'Purge expired cache',scope:'Cache entries older than 7 days in configured state directory.',impact:'Expired cached responses removed. Project source and indexes remain intact.'},
+    purge_stats:{title:'Purge all statistics',scope:'All recorded telemetry, token savings metrics, latency rollups, endpoint counters and live traces.',impact:'All accumulated metrics reset to zero across all repositories. Current projects and plans are unaffected.'},
   }[action];
   if(!details)return;
   if($('modalTitle'))$('modalTitle').textContent=details.title;
@@ -4755,10 +4893,28 @@ function openControlConfirmation(action){
   if($('modalBody'))$('modalBody').innerHTML=`<div class="modal-body-wrap"><div class="modal-card"><div class="modal-card-head"><span>Scope and impact</span></div><div class="modal-card-body"><p><b>Scope:</b> ${esc(details.scope)}</p><p style="margin-bottom:0"><b>Impact:</b> ${esc(details.impact)}</p></div></div><div class="modal-actions-bar" style="justify-content:flex-end"><button class="btn" onclick="$('modalClose')?.click()">Cancel</button><button class="btn warn" id="confirmControlAction">${esc(details.title)}</button></div></div>`;
   if($('modalBg'))$('modalBg').classList.add('open');
   const confirmBtn=$('confirmControlAction');
-  if(confirmBtn)confirmBtn.onclick=async()=>{try{await post('/api/maintenance/purge_cache',{days:7});$('modalClose')?.click();}catch(error){if($('modalLive'))$('modalLive').textContent='Action failed: '+String(error?.message||error);}};
+  if(confirmBtn)confirmBtn.onclick=async()=>{
+    if(typeof setButtonLoading==='function')setButtonLoading(confirmBtn, true, 'Purging…');
+    try{
+      if(action==='purge_cache'){
+        await post('/api/maintenance/purge_cache',{days:7});
+      }else if(action==='purge_stats'){
+        await post('/api/telemetry/endpoint-stats/reset',{root:'',purge_telemetry:true});
+        if(typeof loadOverview==='function')loadOverview();
+        if(typeof loadTelemetry==='function')loadTelemetry();
+        if(typeof render==='function'&&last)render(last);
+      }
+      $('modalClose')?.click();
+    }catch(error){
+      if($('modalLive'))$('modalLive').textContent='Action failed: '+String(error?.message||error);
+    }finally{
+      if(typeof setButtonLoading==='function')setButtonLoading(confirmBtn, false);
+    }
+  };
 }
 $('optDbBtn').onclick=async()=>{try{const r=await post('/api/maintenance/optimize_db',{});openModal(r,'Database Optimization & WAL Checkpoint Results','db_opt')}catch(e){openModal({error:String(e)},'Error')}};
 $('purgeCacheBtn').onclick=()=>openControlConfirmation('purge_cache');
+if($('purgeStatsBtn'))$('purgeStatsBtn').onclick=()=>openControlConfirmation('purge_stats');
 $('doctorBtn').onclick=openDoctorModal;
 
 function ensureHttpTailTable(){
@@ -5307,7 +5463,7 @@ document.addEventListener('click',event=>{
   if(button.dataset.exportRoot!==undefined){exportBundle(button.dataset.exportRoot);return}
   const root=button.dataset.projectRoot||'';
   if(button.dataset.projectAction==='delete')deleteProjectDialog(root,button.dataset.projectName||'');
-  else projectAction(root,button.dataset.projectAction);
+  else projectAction(root,button.dataset.projectAction,button);
 });
 async function exportBundle(root){
   try{
@@ -6399,6 +6555,22 @@ async function loadCoordinationView(preferredPlanId){
     updateCoordOverviewCards();
 }
 
+let kanbanCompact = true;
+const expandedCardIds = new Set();
+
+function toggleKanbanCompact(){
+  kanbanCompact = !kanbanCompact;
+  const btn = $('coordCompactBtn');
+  if(btn) btn.textContent = kanbanCompact ? '▤ Compact (On)' : '▤ Compact (Off)';
+  renderKanbanBoard();
+}
+
+function toggleCardCompact(taskId){
+  if(expandedCardIds.has(taskId)) expandedCardIds.delete(taskId);
+  else expandedCardIds.add(taskId);
+  renderKanbanBoard();
+}
+
 function renderKanbanBoard(){
   const query = String($('coordBoardSearch')?.value || '').trim().toLowerCase();
   const container = $('kanbanBoardContainer');
@@ -6434,20 +6606,31 @@ function renderKanbanBoard(){
         ?`<select class="action-btn-sm" aria-label="Move task status" style="font-size:11px;padding:2px 6px;height:26px" onchange="updateCardStatus(this.dataset.planId,this.dataset.taskId,this.value)" data-plan-id="${esc(item.plan_id)}" data-task-id="${esc(item.task_id)}">${moveOptions}</select>`
         :`<span class="chip ${item.verified===true?'ok':'warn-t'}" title="${item.verified===true?'Verification confirmed':'File status is a declaration; verification is pending'}">${esc(labels[c.key]||c.key)} · ${item.verified===true?'Verified':'Unverified'}</span>`;
 
+      const isCompact = typeof kanbanCompact !== 'undefined' ? kanbanCompact : true;
+      const isExpanded = typeof expandedCardIds !== 'undefined' && expandedCardIds.has(item.task_id);
+      const hasCollapsible = Boolean(item.description || item.next_action || item.blocker);
+
       return `
-        <div class="kanban-card" data-item-id="${esc(item.task_id)}">
+        <div class="kanban-card ${isCompact ? 'compact' : ''} ${isExpanded ? 'expanded' : ''}" data-item-id="${esc(item.task_id)}">
           <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:6px">
             <button type="button" class="kanban-card-title" style="border:0;background:none;color:inherit;text-align:left;cursor:pointer;padding:0" onclick="editPlanTask(this.dataset.planId,this.dataset.taskId)" data-plan-id="${esc(item.plan_id)}" data-task-id="${esc(item.task_id)}">${esc(item.title||item.task_id)}</button>
-            <span class="chip mono" style="font-size:10px">${esc(item.task_id)}</span>
+            <div style="display:flex;align-items:center;gap:4px">
+              <span class="chip mono" style="font-size:10px">${esc(item.task_id)}</span>
+              ${isCompact && hasCollapsible ? `<button type="button" class="kanban-card-toggle" data-task-id="${esc(item.task_id)}" onclick="toggleCardCompact(this.dataset.taskId)" title="${isExpanded ? 'Collapse card' : 'Expand card'}">${isExpanded ? '▲' : '▼'}</button>` : ''}
+            </div>
           </div>
           <div class="kanban-card-meta">
             <span class="chip" title="Plan">📁 ${esc(item.plan_title||item.plan_id)}</span>
             ${accountable?`<span class="chip" title="Accountable role">👤 ${esc(accountable)}</span>`:''}
             ${item.work_phase?`<span class="chip">${esc(String(item.work_phase).replaceAll('_',' '))}</span>`:''}
           </div>
-          ${item.description?`<p class="tiny muted">${esc(item.description)}</p>`:''}
-          ${item.next_action?`<p class="tiny"><b>Next:</b> ${esc(item.next_action)}</p>`:''}
-          ${item.blocker?`<p class="tiny bad-t"><b>Blocked:</b> ${esc(item.blocker)}</p>`:''}
+          ${hasCollapsible ? `
+          <div class="kanban-card-collapsible">
+            ${item.description?`<p class="tiny muted" style="margin:2px 0">${esc(item.description)}</p>`:''}
+            ${item.next_action?`<p class="tiny" style="margin:2px 0"><b>Next:</b> ${esc(item.next_action)}</p>`:''}
+            ${item.blocker?`<p class="tiny bad-t" style="margin:2px 0"><b>Blocked:</b> ${esc(item.blocker)}</p>`:''}
+          </div>
+          ` : ''}
           <div class="kanban-card-actions">
             ${statusControl}
             <button class="action-btn-sm danger" style="padding:2px 7px;font-size:11px" onclick="deletePlanTask(this.dataset.planId,this.dataset.taskId)" data-plan-id="${esc(item.plan_id)}" data-task-id="${esc(item.task_id)}">Delete</button>
@@ -6655,12 +6838,15 @@ async function submitCreatePlan(e){
   const title=$('newPlanTitle')?.value?.trim();
   const description=$('newPlanDescription')?.value||'';
   if(!root||!plan_id||!title)return;
+  const btn = e?.submitter || e?.target?.querySelector?.('button[type="submit"]');
+  if(typeof setButtonLoading==='function')setButtonLoading(btn, true, 'Creating…');
   try{
     const res=await post('/api/coord/plan_create',{root,plan_id,title,description,lifecycle:'active',owner:'dashboard',idempotency_key:coordOperationId(`create-${plan_id}`)});
     if(res.success===false)throw new Error(res.error||'Could not create plan');
     $('modalClose')?.click();
     await loadCoordinationView(plan_id);
   }catch(error){alert('Create plan failed: '+(error.message||error))}
+  finally{if(typeof setButtonLoading==='function')setButtonLoading(btn, false);}
 }
 
 function openEditPlanModal(){
@@ -6685,12 +6871,15 @@ async function submitPlanUpdate(e){
   const plan=cachedPlanItems.find(item=>item.id===planId);
   const root=String($('coordBoardRoot')?.value||'').trim();
   if(!root||!plan)return;
+  const btn = e?.submitter || e?.target?.querySelector?.('button[type="submit"]');
+  if(typeof setButtonLoading==='function')setButtonLoading(btn, true, 'Saving…');
   try{
     const res=await post('/api/coord/plan_update',{root,plan_id:planId,expected_revision:plan.file_revision,title:$('editPlanTitle')?.value?.trim(),description:$('editPlanDescription')?.value||'',owner:'dashboard',idempotency_key:coordOperationId(`update-${planId}`)});
     if(res.success===false)throw new Error(res.error||'Could not update plan');
     $('modalClose')?.click();
     await loadCoordinationView();
   }catch(error){alert('Update plan failed: '+(error.message||error))}
+  finally{if(typeof setButtonLoading==='function')setButtonLoading(btn, false);}
 }
 
 function openAddCardModal(){
@@ -6720,6 +6909,8 @@ async function submitAddCard(e){
   const plan=cachedPlanItems.find(item=>item.id===planId);
   const title=$('newCardTitle')?.value?.trim();
   if(!root||!plan||!title)return;
+  const btn = e?.submitter || e?.target?.querySelector?.('button[type="submit"]');
+  if(typeof setButtonLoading==='function')setButtonLoading(btn, true, 'Creating…');
   const task_id=`task_${coordOperationId('dashboard').replace(/[^a-zA-Z0-9_-]/g,'_')}`;
   const task_data={title,description:$('newCardDescription')?.value||'',kind:'code',work_status:$('newCardStatus')?.value||'planned',depends_on:[],clarifications:[],acceptance_criteria:String($('newCardAcceptance')?.value||'').split(/\r?\n/).map(line=>line.trim()).filter(Boolean),next_action:$('newCardNextAction')?.value?.trim()||'',blocker:null,accountable_role:$('newCardOwner')?.value?.trim()||undefined};
   try{
@@ -6728,6 +6919,7 @@ async function submitAddCard(e){
     $('modalClose')?.click();
     await loadCoordinationView();
   }catch(error){alert('Create task failed: '+(error.message||error))}
+  finally{if(typeof setButtonLoading==='function')setButtonLoading(btn, false);}
 }
 
 async function editPlanTask(planId,taskId){
@@ -6766,6 +6958,8 @@ async function submitPlanTaskEdit(e){
   e.preventDefault();
   if(!activePlanTaskEdit)return;
   const edit=activePlanTaskEdit;
+  const btn = e?.submitter || e?.target?.querySelector?.('button[type="submit"]');
+  if(typeof setButtonLoading==='function')setButtonLoading(btn, true, 'Saving…');
   const task_data={title:$('editTaskTitle')?.value?.trim(),description:$('editTaskDescription')?.value||'',accountable_role:$('editTaskOwner')?.value?.trim()||'',next_action:$('editTaskNextAction')?.value?.trim()||'',blocker:$('editTaskBlocker')?.value?.trim()||null,acceptance_criteria:String($('editTaskAcceptance')?.value||'').split(/\r?\n/).map(line=>line.trim()).filter(Boolean)};
   const status=$('editTaskStatus');
   if(status)task_data.work_status=status.value;
@@ -6776,6 +6970,7 @@ async function submitPlanTaskEdit(e){
     $('modalClose')?.click();
     await loadCoordinationView();
   }catch(error){alert('Save task failed: '+(error.message||error))}
+  finally{if(typeof setButtonLoading==='function')setButtonLoading(btn, false);}
 }
 
 function openAcquireSemModal(){
@@ -6826,6 +7021,8 @@ async function submitAcquireSem(e){
   const ttl_seconds = parseFloat($('newSemTtl')?.value || '300');
   const timeout = parseFloat($('newSemTimeout')?.value || '0');
   if(!name) return;
+  const btn = e?.submitter || e?.target?.querySelector?.('button[type="submit"]');
+  if(typeof setButtonLoading==='function')setButtonLoading(btn, true, 'Acquiring…');
   try{
     const res = await post('/api/coord/semaphore_acquire', {
       name, owner, capacity, ttl_seconds, timeout
@@ -6839,6 +7036,8 @@ async function submitAcquireSem(e){
     await loadCoordinationView();
   }catch(err){
     alert('Acquire semaphore error: ' + (err.message || err));
+  }finally{
+    if(typeof setButtonLoading==='function')setButtonLoading(btn, false);
   }
 }
 
@@ -6896,6 +7095,7 @@ $('coordRefreshBoardBtn')?.addEventListener('click', loadCoordinationView);
 $('coordBoardRoot')?.addEventListener('change', loadCoordinationView);
 $('coordBoardPlan')?.addEventListener('change', loadCoordinationView);
 $('coordBoardSearch')?.addEventListener('input', renderKanbanBoard);
+$('coordCompactBtn')?.addEventListener('click', toggleKanbanCompact);
 $('coordNewPlanBtn')?.addEventListener('click', openCreatePlanModal);
 $('coordEditPlanBtn')?.addEventListener('click', openEditPlanModal);
 $('coordNewCardBtn')?.addEventListener('click', openAddCardModal);

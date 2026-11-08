@@ -473,6 +473,10 @@ class LocalAIApp:
             rollup_retention_days=int(obs.get("rollup_retention_days", 365)),
             cloud_input_token_cost_usd_per_million=saving.get("cloud_input_token_cost_usd_per_million", 3.0),
             cloud_output_token_cost_usd_per_million=saving.get("cloud_output_token_cost_usd_per_million", 3.0),
+            pricing_profile=str(saving.get("pricing_profile", "claude-5-sonnet")),
+            cloud_cache_read_token_cost_usd_per_million=saving.get("cloud_cache_read_token_cost_usd_per_million", 0.30),
+            cloud_cache_write_token_cost_usd_per_million=saving.get("cloud_cache_write_token_cost_usd_per_million", 3.75),
+            config=self.config,
             batch_size=int(obs.get("batch_size", 64)),
             flush_interval_seconds=float(obs.get("flush_interval_seconds", 0.5)),
             queue_size=int(obs.get("queue_size", 10000)),
@@ -960,7 +964,9 @@ class LocalAIApp:
             return cached_snapshot(cached, now)
         cache_lock = ExitStack()
         if cached:
-            if not self._live_status_lock.acquire(blocking=False):
+            # Wait within the bounded status-probe budget for the in-flight
+            # refresh before falling back to a stale copy.
+            if not self._live_status_lock.acquire(timeout=1.0):
                 return cached_snapshot(cached, now, stale=True)
             cache_lock.callback(self._live_status_lock.release)
         else:

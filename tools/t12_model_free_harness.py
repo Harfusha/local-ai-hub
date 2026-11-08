@@ -19,7 +19,7 @@ from local_ai_hub.router import ModelRouter
 from local_ai_hub.scheduler import AffinityScheduler, Job, QueueFullError
 
 
-_PROFILES = ("integrated", "balanced", "high", "max")
+_PROFILES = ("integrated", "balanced", "medium", "high", "max")
 
 
 def _measure_same_priority_wait() -> dict[str, float]:

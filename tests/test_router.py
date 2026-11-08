@@ -118,8 +118,9 @@ def test_reasoning_profiles_reject_override_below_reasoning_tier(profile):
     [
         ("integrated", [{"integrated": True, "vendor": "intel"}], 16, "qwen2.5-coder:7b", "qwen3.5:9b"),
         ("balanced", [{"integrated": False, "vram_mb": 8 * 1024}], 16, "qwen2.5-coder:7b", "qwen3.5:9b"),
-        ("high", [{"integrated": False, "vram_mb": 12 * 1024}], 16, "qwen2.5-coder:7b", "qwen3.5:9b"),
-        ("max", [{"integrated": False, "vram_mb": 20 * 1024}], 16, "qwen3.5:9b", "qwen3.5:9b"),
+        ("medium", [{"integrated": False, "vram_mb": 12 * 1024}], 16, "qwen2.5-coder:7b", "qwen3.5:9b"),
+        ("high", [{"integrated": False, "vram_mb": 16 * 1024}], 16, "qwen2.5-coder:14b", "qwen3.5:9b"),
+        ("max", [{"integrated": False, "vram_mb": 20 * 1024}], 16, "qwen2.5-coder:32b", "qwen3.5:9b"),
     ],
 )
 def test_detected_hardware_profile_feeds_profile_models_to_router(
@@ -215,7 +216,7 @@ def test_cpu_and_low_profiles_keep_integrated_model_role_map(profile):
     assert PROFILE_OVERRIDES[profile]["models"] == PROFILE_OVERRIDES["integrated"]["models"]
 
 
-@pytest.mark.parametrize("profile", ["cpu", "low", "integrated", "balanced", "high", "max"])
+@pytest.mark.parametrize("profile", ["cpu", "low", "integrated", "balanced", "medium", "high", "max"])
 def test_fast_route_rejects_background_model_override(profile):
     from local_ai_hub.hardware import PROFILE_OVERRIDES
     from local_ai_hub.router import ModelRouter

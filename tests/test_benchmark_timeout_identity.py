@@ -149,3 +149,6 @@ def test_scenario_preserves_uncertainty_before_next_scenario(tmp_path, raised):
     assert result["retryable"] is False
     if not raised:
         assert result["job_id"] == 321
+
+
+pytestmark = pytest.mark.slow

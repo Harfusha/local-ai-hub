@@ -1,0 +1,77 @@
+{
+  "default_target_ref": "refs/heads/master",
+  "description": "Sjednocení SQLite volání, správa plánů, logování, testy a smyčky",
+  "id": "plan_sqlite_unify_and_performance_20261108",
+  "lifecycle": "draft",
+  "schema_version": 1,
+  "spec_refs": [],
+  "tasks": {
+    "task_audit_loops": {
+      "acceptance_criteria": [],
+      "blocker": null,
+      "clarifications": [],
+      "depends_on": [],
+      "description": "Prověřit 83 while True smyček v src a doplnit deadline/timeout pojistky.",
+      "kind": "code",
+      "next_action": "",
+      "title": "Prověrka 83 smyček while True",
+      "work_status": "planned"
+    },
+    "task_logging": {
+      "acceptance_criteria": [],
+      "blocker": null,
+      "clarifications": [],
+      "depends_on": [],
+      "description": "Nahradit print() v produkčních/knihovních modulech src logováním.",
+      "kind": "code",
+      "next_action": "",
+      "title": "Nahradit print logováním",
+      "work_status": "planned"
+    },
+    "task_plan_rules": {
+      "acceptance_criteria": [],
+      "blocker": null,
+      "clarifications": [],
+      "depends_on": [],
+      "description": "Nastavit pravidla správy plánů a .gitignore pro ephemeral/smoke plány.",
+      "kind": "code",
+      "next_action": "",
+      "title": "Pravidla správy generovaných plánů",
+      "work_status": "planned"
+    },
+    "task_sqlite_unify": {
+      "acceptance_criteria": [],
+      "blocker": null,
+      "clarifications": [],
+      "depends_on": [],
+      "description": "Rozšířit connect_sqlite v sqlite_support.py o read_only, uri, wal a aplikovat na všech 32 přímých volání v src.",
+      "kind": "code",
+      "next_action": "",
+      "title": "Sjednotit SQLite připojení přes továrnu",
+      "work_status": "planned"
+    },
+    "task_test_suite": {
+      "acceptance_criteria": [],
+      "blocker": null,
+      "clarifications": [],
+      "depends_on": [],
+      "description": "Zavést pytest marker slow v pyproject.toml a označit pomalé testy.",
+      "kind": "code",
+      "next_action": "",
+      "title": "Pomalé testy a rychlá testovací sada",
+      "work_status": "planned"
+    },
+    "task_verify": {
+      "acceptance_criteria": [],
+      "blocker": null,
+      "clarifications": [],
+      "depends_on": [],
+      "description": "Validace, compileall, selftest a testy.",
+      "kind": "code",
+      "next_action": "",
+      "title": "Finální verifikace a testy",
+      "work_status": "planned"
+    }
+  },
+  "title": "SQLite továrna a optimalizace"
+}

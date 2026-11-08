@@ -185,6 +185,10 @@ DEFAULT_GITIGNORE_CONTENT = """# Local AI Hub workspace ignores
 local/
 .tmp_*
 *.tmp
+plans/*smoke*.plan.json
+plans/*_smoke_*.plan.json
+plans/*tmp*.plan.json
+plans/*temp*.plan.json
 """
 
 

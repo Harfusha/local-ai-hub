@@ -266,7 +266,7 @@ class ArtifactStore:
     def _connect_for_initialization(self, *, fresh: bool) -> sqlite3.Connection:
         mode = "rwc" if fresh else "rw"
         uri = f"{self.path.resolve().as_uri()}?mode={mode}"
-        con = sqlite3.connect(uri, uri=True, timeout=0.75)
+        con = connect_sqlite(uri, uri=True, timeout_seconds=0.75, wal=fresh)
         try:
             con.execute("PRAGMA busy_timeout=750")
             con.execute("PRAGMA foreign_keys=ON")
@@ -672,7 +672,7 @@ class ArtifactStore:
                         raise UnsupportedArtifactSchema("artifact WAL state cannot be inspected without side effects")
                     if not wal_exists:
                         uri += "&immutable=1"
-                with closing(sqlite3.connect(uri, uri=True)) as con:
+                with closing(connect_sqlite(uri, uri=True, timeout_seconds=5.0, read_only=True)) as con:
                     _validate_connection(con)
 
             fresh = not self.path.exists() or self.path.stat().st_size == 0

@@ -104,7 +104,7 @@ class WorkspaceMemoryStore:
             if self.path.exists() and self.path.stat().st_size:
                 uri = f"{self.path.resolve().as_uri()}?mode=ro"
                 try:
-                    with closing(sqlite3.connect(uri, uri=True, timeout=5.0)) as read_only:
+                    with closing(connect_sqlite(uri, uri=True, timeout_seconds=5.0, read_only=True)) as read_only:
                         tables = {
                             str(row[0])
                             for row in read_only.execute(

@@ -326,12 +326,7 @@ class FeatureSet:
             lines.append(f"- image understanding/frontend review via `{self.vision_model}`: `local_ai_task(action=\"vision\")`")
         if "transcribe" in task_actions:
             lines.append("- audio transcription: `local_ai_task(action=\"transcribe\")`")
-        if task_actions & {"benchmark", "hardware_benchmark"}:
-            lines.append("- local-model or device benchmarking: `local_ai_task` benchmark actions")
-        if task_actions & {"eval_suite", "prompt_eval", "eval_drift", "evaluation_record", "evaluation_report"}:
-            lines.append("- model/prompt evaluation and drift checks: `local_ai_task` evaluation actions")
-        if task_actions & {"candidate_create", "candidate_promote", "speculative_draft"}:
-            lines.append("- model/prompt candidate and speculative-draft workflows: `local_ai_task` candidate actions")
+
         if task_actions & {"submit", "wait", "result", "cancel"}:
             lines.append("- durable asynchronous local jobs: `local_ai_task` submit/status/wait/result/cancel; wait once, never poll")
         if self.subagents and self.subagent_profiles:

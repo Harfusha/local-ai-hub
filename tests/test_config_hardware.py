@@ -57,7 +57,7 @@ def test_cpu_profile_respects_supported_model_roles(tmp_path: Path):
     assert cfg["background_gpu"]["enabled"] is False
 
 
-@pytest.mark.parametrize("profile", ("cpu", "integrated", "low", "balanced", "high", "max"))
+@pytest.mark.parametrize("profile", ("cpu", "integrated", "low", "balanced", "medium", "high", "max"))
 def test_hardware_profiles_do_not_use_preprocess_model_for_inference(profile: str) -> None:
     models = PROFILE_OVERRIDES[profile]["models"]
     inference_roles = ("background_code", "fast_code", "heavy_code", "reasoning", "general")
@@ -79,8 +79,10 @@ def test_profile_selection_thresholds():
     assert choose_profile([], 8, "auto") == "cpu"
     assert choose_profile([], 32, "auto") == "low"
     assert choose_profile([{"vendor": "nvidia", "vram_mb": 8 * 1024}], 32, "auto") == "balanced"
+    assert choose_profile([{"vendor": "nvidia", "vram_mb": 10 * 1024}], 32, "auto") == "medium"
     assert choose_profile([{"vendor": "nvidia", "vram_mb": 16 * 1024}], 32, "auto") == "high"
     assert choose_profile([{"vendor": "nvidia", "vram_mb": 24 * 1024}], 64, "auto") == "max"
+    assert choose_profile([{"vendor": "apple", "unified_memory_mb": 24 * 1024}], 24, "auto") == "medium"
     assert choose_profile([{"vendor": "apple", "unified_memory_mb": 32 * 1024}], 32, "auto") == "high"
 
 

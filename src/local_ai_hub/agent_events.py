@@ -337,7 +337,7 @@ class AgentStateStore:
                 existed_before_open = self.db_path.exists()
                 if existed_before_open and self.db_path.stat().st_size > 0:
                     self._preflight_schema_read_only()
-                con = sqlite3.connect(self.db_path, timeout=5.0)
+                con = connect_sqlite(self.db_path, timeout_seconds=5.0, wal=True)
                 try:
                     if not con.in_transaction:
                         con.execute("BEGIN IMMEDIATE")
@@ -496,7 +496,7 @@ class AgentStateStore:
                 try:
                     uri = f"{snapshot_db.resolve().as_uri()}?mode=ro"
                     remaining = max(0.001, deadline - time.monotonic())
-                    with closing(sqlite3.connect(uri, uri=True, timeout=min(0.01, remaining))) as con:
+                    with closing(connect_sqlite(uri, uri=True, timeout_seconds=min(0.01, remaining), read_only=True)) as con:
                         busy_ms = max(1, min(10, int(remaining * 1000)))
                         con.execute(f"PRAGMA busy_timeout={busy_ms}")
                         con.set_progress_handler(lambda: 1 if time.monotonic() >= deadline else 0, 1000)

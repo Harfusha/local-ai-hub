@@ -1,3 +1,4 @@
+import pytest
 from pathlib import Path
 import os
 import sys
@@ -143,3 +144,6 @@ class GpuMonitorTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+pytestmark = pytest.mark.slow

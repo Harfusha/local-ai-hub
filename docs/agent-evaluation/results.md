@@ -2,11 +2,15 @@
 
 ### Current coverage reconciliation — 2026-11-08
 
-Across prompts 001–128: **52 PASS, 3 PARTIAL, 72 NOT_RUN, 1 BLOCKED**. NOT_RUN and BLOCKED are not passes. Cases 102 and 105 passed in isolated practical chats. Cases 103 and 104 passed in prepared isolated sandboxes. Case 098 remains PARTIAL overall; its tokenless dashboard path previously passed without API token headers. Cases 101, 107, and 108 passed in isolated chats after this iteration. Cases 109–128 were added from confirmed regression and MCP action-coverage gaps; they remain NOT_RUN until their disposable fixtures are exercised. Focused tests only; full pytest suite not run by user instruction.
+Across prompts 001–129: **52 PASS, 3 PARTIAL, 73 NOT_RUN, 1 BLOCKED**. NOT_RUN and BLOCKED are not passes. Cases 102 and 105 passed in isolated practical chats. Cases 103 and 104 passed in prepared isolated sandboxes. Case 098 remains PARTIAL overall; its tokenless dashboard path previously passed without API token headers. Cases 101, 107, and 108 passed in isolated chats after this iteration. Cases 109–129 were added from confirmed regression and MCP action/subfunction coverage gaps; they remain NOT_RUN until their disposable fixtures are exercised. Focused tests only; full pytest suite not run by user instruction.
 
 ### MCP action coverage expansion — 2026-11-08
 
-Cases 114–128 and mcp-action-coverage.md now map each active local_ai_status, artifact, repo, task, RAG, coordination, and work action to a bounded isolated scenario. **All 15 new cases are NOT_RUN.** Schema inventory and prompt-contract checks do not count as practical execution of the MCP operations. Do not claim that all MCP functionality has passed until each action has its own result and fixture identity.
+Cases 114–129 and mcp-action-coverage.md now map each active local_ai_status, artifact, repo, task, RAG, coordination, and work action to a bounded isolated scenario. mcp-action-contracts.md maps declared per-action required/non-empty/allowed fields, feature gates, effects, retry semantics, output flags and special validator branches. **All 16 new cases are NOT_RUN.** Schema inventory and prompt-contract checks do not count as practical execution of the MCP operations. Do not claim that all MCP functionality has passed until each action has its own result and fixture identity.
+
+### Focused schema-contract check — 2026-11-08
+
+`python -m pytest -q --tb=short tests/test_operation_contracts.py` — **74 passed**. The test checks generated schemas against declared operation contracts and includes action-specific field/range validation. This is source/schema evidence, not live execution of every MCP subfunction; cases 114–129 remain NOT_RUN.
 
 ### Case 108 — Dashboard bez API tokenu
 

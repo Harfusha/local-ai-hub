@@ -1,0 +1,32 @@
+{
+  "accountable_role": "primary",
+  "default_target_ref": "refs/heads/master",
+  "description": "Audit the current prompt and result catalog; add dedicated isolated scenarios for confirmed regression classes not yet covered; sync counts.",
+  "id": "plan_eval_prompt_gaps_20261108",
+  "lifecycle": "active",
+  "schema_version": 1,
+  "spec_refs": [],
+  "tasks": {
+    "task_coverage": {
+      "acceptance_criteria": [
+        "Every active MCP action maps to a prompt scenario and declared source contract.",
+        "Every tool property and action required/non-empty/allowed contract is indexed with type/default/bounds where declared.",
+        "Validation, feature/auth gates, side effects, retry semantics and important result branches have explicit coverage criteria.",
+        "Prompt, key, README, results, action map and contract index counts reconcile.",
+        "Focused contract/prompt tests pass; full test suite remains unrun and practical cases remain honestly NOT_RUN."
+      ],
+      "accountable_role": "primary",
+      "blocker": null,
+      "clarifications": [],
+      "depends_on": [],
+      "description": "Completed active MCP subfunction coverage: 218 active action rows mapped, 346 declared tool input properties indexed, per-action required/non-empty/allowed fields, bounds, feature/effect/retry/output metadata, shared validators and auth/effect gates documented. Added case 129 for live schema branch audit. Focused contract tests and release checks pass; cases 114-129 remain NOT_RUN.",
+      "kind": "documentation",
+      "next_action": "Run selected prompt cases 114-129 in isolated chats when fixtures are available; retain NOT_RUN until each run has live per-action evidence; do not run the full suite.",
+      "order": 1,
+      "title": "Add missing prompt scenarios",
+      "work_phase": "verification",
+      "work_status": "done"
+    }
+  },
+  "title": "Close missing evaluation prompt scenarios"
+}

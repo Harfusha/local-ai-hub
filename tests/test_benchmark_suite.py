@@ -610,3 +610,6 @@ def test_run_t12_case_reports_model_reuse_only_from_zero_backend_load(tmp_path: 
     assert result["model_load_event"] is False
     assert result["model_reuse_event"] is True
     assert result["routed_profile"] == "fast_code"
+
+
+pytestmark = pytest.mark.slow

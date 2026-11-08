@@ -553,3 +553,126 @@ let apiFetch=()=>new Promise(resolve=>{finish=resolve});
   assert.match(nodes.cfgStatus.textContent,/offline/);
 })().catch(error=>{console.error(error);process.exitCode=1});
 """)
+
+
+
+def test_kanban_compact_mode_toggle_and_card_expansion():
+    assert 'id="coordCompactBtn"' in DASHBOARD_HTML
+    assert ".kanban-card.compact" in DASHBOARD_HTML
+    assert ".kanban-card-collapsible" in DASHBOARD_HTML
+    assert "toggleKanbanCompact" in DASHBOARD_HTML
+    assert "toggleCardCompact" in DASHBOARD_HTML
+
+    source = extract("let kanbanCompact = true;", "function renderSemaphoresTable(){")
+    run_javascript(source, """
+const nodes={
+  coordCompactBtn:{textContent:'▤ Compact (On)'},
+  kanbanBoardContainer:{innerHTML:''},
+  coordBoardSearch:{value:''},
+  coordBoardSummaryText:{textContent:''}
+};
+const $=id=>nodes[id]||null;
+const esc=s=>String(s);
+const coordinationLoadErrors={};
+const cachedPlanBoard={project_root:'repo',columns:{in_progress:[]}};
+const cachedBoardItems=[
+  {plan_id:'p1',task_id:'t1',title:'First Task',description:'Deep description here',next_action:'Fix bug',status:'in_progress'}
+];
+
+renderKanbanBoard();
+assert.match(nodes.kanbanBoardContainer.innerHTML, /class="kanban-card compact/);
+assert.match(nodes.kanbanBoardContainer.innerHTML, /class="kanban-card-collapsible"/);
+assert.match(nodes.kanbanBoardContainer.innerHTML, /toggleCardCompact/);
+assert.match(nodes.kanbanBoardContainer.innerHTML, /▼/);
+
+// Expand card t1
+toggleCardCompact('t1');
+assert.match(nodes.kanbanBoardContainer.innerHTML, /class="kanban-card compact expanded/);
+assert.match(nodes.kanbanBoardContainer.innerHTML, /▲/);
+
+// Toggle global compact mode off
+toggleKanbanCompact();
+assert.equal(nodes.coordCompactBtn.textContent, '▤ Compact (Off)');
+assert(!nodes.kanbanBoardContainer.innerHTML.includes('class="kanban-card compact'));
+""")
+
+
+def test_purge_all_statistics_control_and_modal_confirmation():
+    assert 'id="purgeStatsBtn"' in DASHBOARD_HTML
+    assert 'data-control-action="purge_stats"' in DASHBOARD_HTML
+
+    source = extract("function openControlConfirmation(action){", "$('optDbBtn').onclick")
+    run_javascript(source, """
+const nodes={
+  modalTitle:{textContent:''},
+  modalLive:{textContent:''},
+  modalBody:{innerHTML:''},
+  modalBg:{classList:{add(c){this.open=true}}},
+  modalClose:{click(){this.closed=true}},
+  confirmControlAction:{onclick:null}
+};
+const $=id=>nodes[id]||null;
+const esc=s=>String(s);
+let posted=null;
+const post=async(url,payload)=>{posted={url,payload};return {success:true}};
+
+openControlConfirmation('purge_stats');
+assert.equal(nodes.modalTitle.textContent, 'Purge all statistics');
+assert.match(nodes.modalBody.innerHTML, /All recorded telemetry/);
+assert(nodes.confirmControlAction);
+
+(async()=>{
+  await nodes.confirmControlAction.onclick();
+  assert.equal(posted.url, '/api/telemetry/endpoint-stats/reset');
+  assert.equal(posted.payload.purge_telemetry, true);
+  assert.equal(nodes.modalClose.closed, true);
+})().catch(error=>{console.error(error);process.exitCode=1});
+""")
+
+
+def test_preprocessing_progress_weighted_and_phase_step_display():
+    from local_ai_hub.preprocess import ProjectPreprocessor
+    # Test non-linear weights: RAG has high weight (40), AST code_index has 10
+    assert ProjectPreprocessor.calculate_overall_progress("inventory", 100.0) == 2.0
+    assert ProjectPreprocessor.calculate_overall_progress("code_index", 50.0) == 10.0
+    assert ProjectPreprocessor.calculate_overall_progress("rag", 50.0) == 50.0
+    assert ProjectPreprocessor.calculate_overall_progress("complete", 100.0, is_complete=True) == 100.0
+
+    # In dashboard: ensure phase step derived from PHASES.findIndex + 1 (not stuck at 1/13)
+    assert "currentStep=phaseIndex>=0?phaseIndex+1" in DASHBOARD_HTML
+    assert "phaseDetailText=isComplete?'100% complete'" in DASHBOARD_HTML
+    assert "${esc(phaseDetailText)}" in DASHBOARD_HTML
+
+
+def test_button_loading_state_helper_and_feedback():
+    assert "function setButtonLoading" in DASHBOARD_HTML
+    assert ".btn.is-loading" in DASHBOARD_HTML
+    assert ".btn-spinner" in DASHBOARD_HTML
+
+    source = extract("function setButtonLoading(btn, isLoading, loadingText){", "function dashboardPreprocessingHealth")
+    run_javascript(source, """
+const btn={
+  textContent:'Save Changes',
+  innerHTML:'<b>Save Changes</b>',
+  disabled:false,
+  classList:{
+    add(c){this[c]=true},
+    remove(c){this[c]=false}
+  },
+  dataset:{}
+};
+const esc=s=>String(s);
+
+// Activate loading
+setButtonLoading(btn, true, 'Saving…');
+assert.equal(btn.disabled, true);
+assert.equal(btn.classList['is-loading'], true);
+assert.match(btn.innerHTML, /btn-spinner/);
+assert.match(btn.innerHTML, /Saving…/);
+
+// Deactivate loading
+setButtonLoading(btn, false);
+assert.equal(btn.disabled, false);
+assert.equal(btn.classList['is-loading'], false);
+assert.equal(btn.innerHTML, '<b>Save Changes</b>');
+""")

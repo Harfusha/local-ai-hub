@@ -644,16 +644,16 @@ def test_coord_description_and_prompts_expose_plan_workflow() -> None:
 
 def test_public_action_parameters_are_explicit_literals() -> None:
     expected = {
-        "local_ai_task": {"delegate", "explore", "reason", "continue", "review", "second_opinion", "compress", "route", "batch", "benchmark", "hardware_benchmark", "evaluation_record", "evaluation_report", "submit", "status", "wait", "result", "cancel", "candidate_create", "candidate_promote", "speculative_draft", "vision", "transcribe", "eval_suite", "prompt_eval", "eval_drift", "complete_code", "scaffold"},
+        "local_ai_task": {"delegate", "explore", "reason", "continue", "review", "second_opinion", "compress", "route", "batch", "submit", "status", "wait", "result", "cancel", "vision", "transcribe", "complete_code", "scaffold"},
         "local_ai_rag": {"index", "search", "list", "docset_index", "docset_search", "ingest_document", "ingest_diagram"},
-        "local_ai_coord": {"claim", "renew", "release", "leases", "gpu_reservation_status", "gpu_reservation_release", "gpu_reservation_release_authorized", "task_create", "task_get", "task_checkpoint", "task_rollback", "task_transition", "task_resume", "task_list", "task_budget_increase", "task_complete", "task_fail", "task_heartbeat", "ask", "answer", "memory_record", "memory_get", "memory_find", "memory_delete", "memory_promote", "context_compile", "verify_receipt", "verify_completion", "verify_export", "negative_knowledge_record", "negative_knowledge_find", "incident_decision", "blackboard_update", "blackboard_get", "blackboard_list", "blackboard_delete", "blackboard_merge", "swarm_dispatch", "swarm_step", "swarm_status", "swarm_list", "swarm_cancel", "worktree_lease", "worktree_release", "pubsub_publish", "pubsub_poll", "simulate_merge", "curate_dataset", "task_sync", "task_zombie_reap", "task_cleanup_worktree", "wait_for_event", "semaphore_acquire", "semaphore_release", "semaphore_status", "board_item_create", "board_item_update", "board_item_get", "board_item_delete", "board_item_list", "board_summary", "milestone_create", "milestone_status", "session_briefing"},
+        "local_ai_coord": {"claim", "renew", "release", "leases", "gpu_reservation_status", "gpu_reservation_release", "gpu_reservation_release_authorized", "task_create", "task_get", "task_checkpoint", "task_rollback", "task_transition", "task_resume", "task_list", "task_budget_increase", "task_complete", "task_fail", "ask", "answer", "memory_record", "memory_get", "memory_find", "memory_delete", "memory_promote", "context_compile", "verify_receipt", "verify_completion", "verify_export", "negative_knowledge_record", "negative_knowledge_find", "incident_decision", "blackboard_update", "blackboard_get", "blackboard_list", "blackboard_delete", "blackboard_merge", "swarm_dispatch", "swarm_step", "swarm_status", "swarm_list", "swarm_cancel", "worktree_lease", "worktree_release", "pubsub_publish", "pubsub_poll", "simulate_merge", "task_sync", "wait_for_event", "semaphore_acquire", "semaphore_release", "semaphore_status", "board_item_create", "board_item_update", "board_item_get", "board_item_delete", "board_item_list", "board_summary", "milestone_create", "milestone_status", "session_briefing"},
     }
     expected["local_ai_task"].update({"browser", "automation"})
     expected["local_ai_coord"].update({
         "plan_init", "plan_list", "plan_get", "plan_create", "plan_update",
         "plan_task_edit", "plan_task_delete", "plan_validate", "plan_archive",
         "plan_board_view", "plan_adopt_legacy_board", "plan_bind_task",
-        "plan_reconcile_steering", "task_claim", "task_repair_session", "record_native_receipt",
+        "plan_reconcile_steering", "task_claim", "record_native_receipt",
     })
     if not getattr(local_ai_mcp.FEATURES, "vision", False):
         expected["local_ai_task"].discard("vision")
@@ -1358,64 +1358,10 @@ def test_invalid_task_action_excludes_orchestration() -> None:
     assert "peer subagents" in result["error"]
 
 
-def test_eval_suite_forwards_bounded_cases_and_model(monkeypatch) -> None:
-    calls = {}
-
-    def fake_post(endpoint, payload, **kwargs):
-        calls.update(endpoint=endpoint, payload=payload)
-        return {
-            "success": True,
-            "summary": {"total": 1, "passed": 1, "failed": 0},
-            "cases": [{"case_id": "grounded", "response_text": "facts", "response_text_truncated": False}],
-        }
-
-    monkeypatch.setattr(local_ai_mcp.CLIENT, "post", fake_post)
-
-    result = local_ai_mcp.local_ai_task(
-        action="eval_suite",
-        task="synthetic_quality",
-        model="test-model",
-        cases=[{
-            "id": "grounded", "input": "facts", "expected": "facts", "max_words": 80,
-            "include_response_text": True,
-            "allowed_citations": ["[src/a.py:1-3]"],
-            "required_citations": ["[src/a.py:1-3]"],
-            "forbidden_phrases": ["invented result count"],
-        }],
-    )
-
-    assert result["success"] is True
-    assert result["cases"][0]["response_text"] == "facts"
-    assert result["cases"][0]["response_text_truncated"] is False
-    assert calls["endpoint"] == "/api/task/eval_suite"
-    assert calls["payload"]["suite_name"] == "synthetic_quality"
-    assert calls["payload"]["model"] == "test-model"
-    assert calls["payload"]["cases"] == [{
-        "id": "grounded", "input": "facts", "expected": "facts", "max_words": 80,
-        "include_response_text": True,
-        "allowed_citations": ["[src/a.py:1-3]"],
-        "required_citations": ["[src/a.py:1-3]"],
-        "forbidden_phrases": ["invented result count"],
-    }]
-
-
-def test_eval_suite_rejects_invalid_rubric_before_dispatch(monkeypatch) -> None:
-    monkeypatch.setattr(local_ai_mcp.CLIENT, "post", lambda *args, **kwargs: pytest.fail("must not dispatch"))
-
-    for case in (
-        {"id": "bad-limit", "input": "facts", "expected": "facts", "max_words": True},
-        {"id": "bad-response-opt-in", "input": "facts", "expected": "facts", "include_response_text": "yes"},
-        {"id": "bad-field", "input": "facts", "expected": "facts", "task_id": "not-a-case-field"},
-    ):
-        result = local_ai_mcp.local_ai_task(action="eval_suite", task="invalid_rubric", cases=[case])
-
-        assert result["success"] is False
-        assert result["error_code"] == "invalid_eval_case_rubric"
-    for cases in ([], [None], [{"id": str(index), "input": "x", "expected": "x"} for index in range(33)]):
-        result = local_ai_mcp.local_ai_task(action="eval_suite", task="invalid_cases", cases=cases)
-
-        assert result["success"] is False
-        assert result["error_code"] == "invalid_eval_suite_cases"
+def test_eval_suite_rejected_from_mcp() -> None:
+    result = local_ai_mcp.local_ai_task(action="eval_suite", task="synthetic_quality")
+    assert result["success"] is False
+    assert "Unknown local_ai_task action 'eval_suite'" in result.get("error", "")
 
 
 def test_local_ai_task_exposes_named_profile_fields() -> None:

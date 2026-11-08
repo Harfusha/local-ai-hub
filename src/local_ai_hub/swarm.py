@@ -97,7 +97,7 @@ class SwarmCoordinator:
         if self.db_path.exists():
             uri = f"{self.db_path.resolve().as_uri()}?mode=ro"
             try:
-                with closing(sqlite3.connect(uri, uri=True, timeout=5.0)) as con:
+                with closing(connect_sqlite(uri, uri=True, timeout_seconds=5.0, read_only=True)) as con:
                     validate_durable_schema(
                         con,
                         self.db_path,

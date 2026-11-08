@@ -2042,9 +2042,10 @@ class AffinityScheduler:
             by_model: dict[str, int] = {}
             background_queued = 0
             now = time.monotonic()
+            external_reserved = self._external_gpu_reserved()
             if self._internal_gpu_uncertain:
                 gpu_admission_state = "outcome_unknown"
-            elif self._external_gpu_reserved():
+            elif external_reserved:
                 gpu_admission_state = "external_reservation"
             elif self._background_gpu_lease:
                 gpu_admission_state = "background_lease"

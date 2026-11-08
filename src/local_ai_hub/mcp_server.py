@@ -309,7 +309,7 @@ try:
     LEAN_SCHEMAS = bool(MCP_CFG.get("lean_schemas", True))
     RESPONSE_BUDGET_CFG = MCP_CFG.get("response_budget", {}) if isinstance(MCP_CFG.get("response_budget", {}), dict) else {}
     RESPONSE_BUDGET_ENABLED = bool(RESPONSE_BUDGET_CFG.get("enabled", True))
-    RESPONSE_DEFAULT_TOKENS = max(128, int(RESPONSE_BUDGET_CFG.get("default_tokens", 3200)))
+    RESPONSE_DEFAULT_TOKENS = max(128, int(RESPONSE_BUDGET_CFG.get("default_tokens", 8192)))
     RESPONSE_TOOL_TOKENS = RESPONSE_BUDGET_CFG.get("tool_tokens", {}) if isinstance(RESPONSE_BUDGET_CFG.get("tool_tokens", {}), dict) else {}
     RESPONSE_REUSE_LIMIT = max(16, int(RESPONSE_BUDGET_CFG.get("reuse_cache_size", 256)))
     CONTEXT_LEDGER = ContextLedger(max_entries=int(RESPONSE_BUDGET_CFG.get("ledger_size", 512)))
@@ -320,8 +320,9 @@ try:
     ADOPTION_METRICS = AdoptionMetricsStore(configured_state_dir(CFG))
     ENDPOINT_STATS = EndpointStatsStore(configured_state_dir(CFG))
 except Exception as _init_exc:  # pragma: no cover
-    import sys
-    print(f"[local-ai-hub] MCP server init failed: {_init_exc}", file=sys.stderr)
+    import logging, sys
+    logging.getLogger("local_ai_hub.mcp_server").critical("MCP server init failed: %s", _init_exc, exc_info=True)
+    sys.stderr.write(f"[local-ai-hub] MCP server init failed: {_init_exc}\n")
     raise SystemExit(1) from _init_exc
 
 
@@ -969,12 +970,12 @@ _REPO_ACTIONS = (
     "call_graph_diff", "semantic_diff",
     "affected_tests", "topology", "ast_refactor",
     "generate_mocks", "split_changes", "synthesize_rules",
-    "code_invariants", "generate_dataset", "profile_digest",
+    "code_invariants", "profile_digest",
     "callers", "callees", "implementations", "declaration", "dead_code", "secret_scan", "schema_inspect", "explain_query", "env_compat",
     "circular_dependencies", "generate_types", "complexity", "api_spec", "dependency_slice", "migration_drift", "package_audit",
     "structural_search", "context_budget",
     "git_diff", "git_history_search", "hotspots", "generate_tests_for_diff", "cross_repo_contract",
-    "reachability_dead_code", "mutation_test", "type_stubs", "skeletonize", "investigate",
+    "investigate",
     "diagnose", "briefing", "pipeline", "definition", "references", "find_references", "find_symbol",
 )
 

@@ -341,6 +341,14 @@ def test_antigravity_hook_pre_tool_use_read_file(tmp_path):
     assert res["decision"] == "deny"
     assert "100 lines" in res["reason"]
 
+    # Slice >80 lines on disk file includes total line count
+    res_slice = antigravity_hook.handle_pre_tool_use({
+        "toolCall": {"name": "read_file", "args": {"Path": str(large_file), "StartLine": 1, "EndLine": 85}}
+    })
+    assert res_slice["decision"] == "deny"
+    assert "85 lines" in res_slice["reason"]
+    assert "100 lines total" in res_slice["reason"]
+
     # File on disk with <=80 lines allowed on full read
     small_file = tmp_path / "small.py"
     small_file.write_text("\n".join(f"line_{i} = {i}" for i in range(20)), encoding="utf-8")

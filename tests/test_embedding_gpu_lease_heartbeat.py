@@ -1,4 +1,5 @@
 from __future__ import annotations
+import pytest
 
 import threading
 import time
@@ -66,3 +67,6 @@ def test_embedding_renews_gpu_fence_until_long_inference_finishes(tmp_path, monk
     assert observation["active"]["state"] == "active"
     assert observation["renewals_during_inference"] >= 1
     assert store.read() is None
+
+
+pytestmark = pytest.mark.slow

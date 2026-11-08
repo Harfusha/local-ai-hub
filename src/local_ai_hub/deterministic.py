@@ -3,6 +3,7 @@ from __future__ import annotations
 from .json_utils import dumps as json_dumps
 
 import ast
+import hashlib
 import io
 import json
 import logging
@@ -7839,7 +7840,11 @@ def test_{sym}_regression_edge_cases():
         else:
             for ext in ("*.sqlite3", "*.db", "*.sqlite"):
                 for cand in p_root.rglob(ext):
-                    if not any(part.startswith((".", "node_modules", "venv")) for part in cand.parts):
+                    try:
+                        rel_parts = cand.resolve(strict=False).relative_to(p_root).parts[:-1]
+                    except (ValueError, OSError):
+                        rel_parts = cand.parts[:-1]
+                    if not any(part.startswith((".", "node_modules", "venv")) or part in {"tool-envs", "site-packages", ".venv"} for part in rel_parts):
                         target_db = cand
                         break
                 if target_db:
@@ -7857,7 +7862,7 @@ def test_{sym}_regression_edge_cases():
         tables: dict[str, Any] = {}
         try:
             database_uri = f"{resolved_db.as_uri()}?mode=ro"
-            with closing(sqlite3.connect(database_uri, uri=True)) as con:
+            with closing(connect_sqlite(database_uri, uri=True, timeout_seconds=5.0, read_only=True)) as con:
                 tbl_rows = con.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").fetchall()
                 for (tbl_name,) in tbl_rows:
                     safe_tbl = tbl_name.replace('"', '""')
@@ -7888,7 +7893,11 @@ def test_{sym}_regression_edge_cases():
         else:
             for ext in ("*.sqlite3", "*.db", "*.sqlite"):
                 for cand in p_root.rglob(ext):
-                    if not any(part.startswith((".", "node_modules", "venv")) for part in cand.parts):
+                    try:
+                        rel_parts = cand.resolve(strict=False).relative_to(p_root).parts[:-1]
+                    except (ValueError, OSError):
+                        rel_parts = cand.parts[:-1]
+                    if not any(part.startswith((".", "node_modules", "venv")) or part in {"tool-envs", "site-packages", ".venv"} for part in rel_parts):
                         target_db = cand
                         break
                 if target_db:
@@ -7909,7 +7918,7 @@ def test_{sym}_regression_edge_cases():
         try:
             resolved_db = target_db.resolve(strict=True)
             relative_db = resolved_db.relative_to(p_root)
-            with closing(sqlite3.connect(f"{resolved_db.as_uri()}?mode=ro", uri=True)) as con:
+            with closing(connect_sqlite(resolved_db, timeout_seconds=5.0, read_only=True)) as con:
                 rows = con.execute(f"EXPLAIN QUERY PLAN {clean_query}").fetchall()
                 plan_items = [{"id": r[0], "parent": r[1], "detail": r[3]} for r in rows]
                 uses_index = any("USING INDEX" in item["detail"] or "USING COVERING INDEX" in item["detail"] for item in plan_items)
@@ -8976,10 +8985,10 @@ def test_{sym}_regression_edge_cases():
         db_tables: dict[str, set[str]] = {}
         try:
             with closing(
-                sqlite3.connect(
-                    f"{db_file.as_uri()}?mode=ro",
-                    uri=True,
-                    timeout=_SCHEMA_DB_TIMEOUT_SECONDS,
+                connect_sqlite(
+                    db_file,
+                    timeout_seconds=_SCHEMA_DB_TIMEOUT_SECONDS,
+                    read_only=True,
                 )
             ) as con:
                 db_deadline = time.monotonic() + _MAX_SCHEMA_SCAN_SECONDS
@@ -9050,7 +9059,7 @@ def test_{sym}_regression_edge_cases():
             }
         if migration_files:
             schema_source = "sql_migrations"
-            migration_db = sqlite3.connect(":memory:")
+            migration_db = connect_sqlite(":memory:", timeout_seconds=5.0)
             migration_db.setlimit(sqlite3.SQLITE_LIMIT_LENGTH, _MAX_SCHEMA_FILE_BYTES)
             migration_db.setlimit(sqlite3.SQLITE_LIMIT_SQL_LENGTH, _MAX_SCHEMA_FILE_BYTES)
 
@@ -10242,6 +10251,19 @@ def test_{sym}_regression_edge_cases():
             fpath = resolved_files[p_str]
             current_text = file_contents[fpath]
 
+            expected_sha = edit.get("expected_sha256") or edit.get("expected_sha")
+            if expected_sha:
+                cur_sha = hashlib.sha256(current_text.encode("utf-8")).hexdigest()
+                if cur_sha.lower() != str(expected_sha).lower():
+                    return {
+                        "success": False,
+                        "applied": False,
+                        "error": f"CAS conflict for {p_str}: expected sha256 {str(expected_sha)[:12]}, file has {cur_sha[:12]}",
+                        "conflict": True,
+                        "current_sha256": cur_sha,
+                        "path": p_str,
+                    }
+
             count = current_text.count(old_str)
             if count == 0:
                 return {
@@ -10306,10 +10328,15 @@ def test_{sym}_regression_edge_cases():
                 written.write_text(backups[written], encoding="utf-8")
             return {"success": False, "applied": False, "error": f"Failed during disk write, rolled back: {exc}"}
 
+        new_hashes = {
+            str(p.relative_to(p_root)).replace("\\", "/"): hashlib.sha256(txt.encode("utf-8")).hexdigest()
+            for p, txt in file_contents.items()
+        }
         return {
             "success": True,
             "applied": True,
             "edits_count": len(edits),
             "modified_files": [str(p.relative_to(p_root)).replace("\\", "/") for p in file_contents],
+            "sha256": new_hashes,
         }
 

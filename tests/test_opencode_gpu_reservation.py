@@ -1239,3 +1239,6 @@ def test_external_reservation_rejects_existing_gpu_work(field, value, tmp_path):
             setattr(scheduler, field, original)
     finally:
         scheduler.close()
+
+
+pytestmark = pytest.mark.slow

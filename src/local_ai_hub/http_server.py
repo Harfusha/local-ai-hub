@@ -94,7 +94,7 @@ from .dashboard import DASHBOARD_HTML
 from .config import ConfigError, deep_merge, load_config, save_runtime_overrides, validate_config
 from .delivery import decide_delivery
 from .resilience import RecoveryJournal
-from .sqlite_support import is_busy_error
+from .sqlite_support import connect_sqlite, is_busy_error
 from .agent_identity import AgentScope, ScopeContext
 from .project_config import resolve_project_context
 from .state_paths import configured_state_dir
@@ -1794,7 +1794,7 @@ class Handler(BaseHTTPRequestHandler):
         work_limit_reached = False
         try:
             uri = f"file:{target_db.as_posix()}?mode=ro"
-            con = sqlite3.connect(uri, uri=True, timeout=3.0)
+            con = connect_sqlite(uri, uri=True, timeout_seconds=3.0, read_only=True)
             try:
                 con.setlimit(sqlite3.SQLITE_LIMIT_LENGTH, _DB_QUERY_MAX_RESPONSE_BYTES)
                 con.set_authorizer(_readonly_authorizer)
@@ -7232,7 +7232,7 @@ class Handler(BaseHTTPRequestHandler):
                     if not rec:
                         if not payload.get("scope") and getattr(APP, "agent_memory", None) and getattr(APP.agent_memory, "state_store", None) and APP.agent_memory.state_store.db_path.exists():
                             try:
-                                con = sqlite3.connect(APP.agent_memory.state_store.db_path)
+                                con = connect_sqlite(APP.agent_memory.state_store.db_path, timeout_seconds=5.0, read_only=True)
                                 try:
                                     row = con.execute("SELECT scope FROM agent_memory_records WHERE record_id = ?", (record_id_val,)).fetchone()
                                     if row:
@@ -8322,7 +8322,7 @@ class Handler(BaseHTTPRequestHandler):
                     limit=payload.get("limit", 24),
                     offset=payload.get("offset", 0),
                     path_hints=payload.get("path_hints"),
-                    search_mode=payload.get("search_mode", "lexical"),
+                    search_mode=payload.get("search_mode"),
                 )
                 status = int(result.pop("status_code", 200))
                 self._send(status, result); return
