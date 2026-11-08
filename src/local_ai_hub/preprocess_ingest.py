@@ -27,7 +27,7 @@ class SinglePassIngestCache:
 
     def __init__(self, max_entries: int = 500, max_bytes: int = 64 * 1024 * 1024) -> None:
         self.max_entries = max(1, int(max_entries))
-        self.max_bytes = max(1024, int(max_bytes))
+        self.max_bytes = max(1, int(max_bytes))
         self._cache: dict[str, IngestedFile] = {}
         self._total_bytes: int = 0
         self._lock = threading.RLock()
@@ -37,33 +37,69 @@ class SinglePassIngestCache:
         with self._lock:
             return len(self._cache)
 
-    def has(self, rel_path: str) -> bool:
-        normalized = rel_path.replace("\\", "/")
-        with self._lock:
-            return normalized in self._cache
+    @staticmethod
+    def _key(rel_path: str, root: str | None = None) -> str:
+        norm = rel_path.replace("\\", "/").lstrip("/")
+        if root:
+            norm_root = str(Path(root).resolve()).replace("\\", "/").rstrip("/")
+            return f"{norm_root}:{norm}"
+        return norm
 
-    def get(self, rel_path: str) -> IngestedFile | None:
-        normalized = rel_path.replace("\\", "/")
+    def has(self, rel_path: str, root: str | None = None) -> bool:
+        norm = rel_path.replace("\\", "/").lstrip("/")
         with self._lock:
-            item = self._cache.get(normalized)
-            if item is not None:
-                # Refresh LRU position
-                self._cache.pop(normalized, None)
-                self._cache[normalized] = item
-            return item
+            if root is not None:
+                return self._key(norm, root) in self._cache
+            return any(k == norm or k.endswith(f":{norm}") for k in self._cache)
 
-    def invalidate(self, rel_path: str | None = None) -> None:
+    def get(self, rel_path: str, root: str | None = None) -> IngestedFile | None:
+        norm = rel_path.replace("\\", "/").lstrip("/")
         with self._lock:
-            if rel_path is None:
+            if root is not None:
+                k = self._key(norm, root)
+                item = self._cache.get(k)
+                if item is not None:
+                    self._cache.pop(k, None)
+                    self._cache[k] = item
+                return item
+            matches = [k for k in self._cache if k == norm or k.endswith(f":{norm}")]
+            if len(matches) == 1:
+                k = matches[0]
+                item = self._cache.pop(k)
+                self._cache[k] = item
+                return item
+            return None
+
+    def invalidate(self, rel_path: str | None = None, root: str | None = None) -> None:
+        with self._lock:
+            if rel_path is None and root is None:
                 self._cache.clear()
                 self._total_bytes = 0
                 return
-            normalized = rel_path.replace("\\", "/")
-            item = self._cache.pop(normalized, None)
-            if item is not None:
-                self._total_bytes = max(0, self._total_bytes - item.size_bytes)
+            if rel_path is None and root is not None:
+                norm_root = str(Path(root).resolve()).replace("\\", "/").rstrip("/")
+                prefix = f"{norm_root}:"
+                keys_to_remove = [k for k in self._cache if k.startswith(prefix)]
+                for k in keys_to_remove:
+                    evicted = self._cache.pop(k, None)
+                    if evicted is not None:
+                        self._total_bytes = max(0, self._total_bytes - evicted.size_bytes)
+                return
+            if rel_path is not None and root is not None:
+                k = self._key(rel_path, root)
+                evicted = self._cache.pop(k, None)
+                if evicted is not None:
+                    self._total_bytes = max(0, self._total_bytes - evicted.size_bytes)
+                return
+            if rel_path is not None and root is None:
+                norm = rel_path.replace("\\", "/").lstrip("/")
+                keys_to_remove = [k for k in self._cache if k == norm or k.endswith(f":{norm}")]
+                for k in keys_to_remove:
+                    evicted = self._cache.pop(k, None)
+                    if evicted is not None:
+                        self._total_bytes = max(0, self._total_bytes - evicted.size_bytes)
 
-    def put(self, ingested: IngestedFile | str, text: str | None = None, content_hash: str | None = None) -> None:
+    def put(self, ingested: IngestedFile | str, text: str | None = None, content_hash: str | None = None, root: str | None = None) -> None:
         if isinstance(ingested, str):
             rel = ingested
             text_val = text or ""
@@ -74,10 +110,13 @@ class SinglePassIngestCache:
                     tree = ast.parse(text_val)
                 except Exception:
                     tree = None
+            size_b = len(text_val.encode("utf-8", errors="replace"))
+            if size_b > self.max_bytes:
+                return
             item = IngestedFile(
                 path=rel,
                 content_hash=chash,
-                size_bytes=len(text_val.encode("utf-8", errors="replace")),
+                size_bytes=size_b,
                 text=text_val,
                 lines=tuple(text_val.splitlines()),
                 ast_tree=tree,
@@ -85,42 +124,46 @@ class SinglePassIngestCache:
             )
         else:
             item = ingested
+            if item.size_bytes > self.max_bytes:
+                return
         with self._lock:
-            norm = item.path.replace("\\", "/")
-            existing = self._cache.pop(norm, None)
+            k = self._key(item.path, root)
+            existing = self._cache.pop(k, None)
             if existing is not None:
                 self._total_bytes = max(0, self._total_bytes - existing.size_bytes)
-            self._cache[norm] = item
+            self._cache[k] = item
             self._total_bytes += item.size_bytes
             self._evict_if_needed()
 
     def _evict_if_needed(self) -> None:
-        while len(self._cache) > self.max_entries or (self._total_bytes > self.max_bytes and len(self._cache) > 1):
+        while self._cache and (len(self._cache) > self.max_entries or self._total_bytes > self.max_bytes):
             oldest_key = next(iter(self._cache))
             evicted = self._cache.pop(oldest_key)
             self._total_bytes = max(0, self._total_bytes - evicted.size_bytes)
 
     def get_or_ingest(self, base: Path, rel_path: str, repo_tools: Any) -> IngestedFile:
-        normalized = rel_path.replace("\\", "/")
-        cached = self.get(normalized)
+        root_str = str(base)
+        normalized = rel_path.replace("\\", "/").lstrip("/")
+        cached = self.get(normalized, root=root_str)
         if cached is not None:
             return cached
 
+        event_key = self._key(normalized, root_str)
         with self._lock:
-            cached = self.get(normalized)
+            cached = self.get(normalized, root=root_str)
             if cached is not None:
                 return cached
-            event = self._in_flight.get(normalized)
+            event = self._in_flight.get(event_key)
             if event is None:
                 event = threading.Event()
-                self._in_flight[normalized] = event
+                self._in_flight[event_key] = event
                 is_leader = True
             else:
                 is_leader = False
 
         if not is_leader:
             event.wait(timeout=30.0)
-            cached = self.get(normalized)
+            cached = self.get(normalized, root=root_str)
             if cached is not None:
                 return cached
 
@@ -148,10 +191,10 @@ class SinglePassIngestCache:
                 ast_tree=tree,
                 timestamp=time.time(),
             )
-            self.put(ingested)
+            self.put(ingested, root=root_str)
             return ingested
         finally:
             if is_leader:
                 with self._lock:
-                    self._in_flight.pop(normalized, None)
+                    self._in_flight.pop(event_key, None)
                 event.set()

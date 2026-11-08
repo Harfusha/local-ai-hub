@@ -1141,7 +1141,7 @@ class ProjectPreprocessor:
         new_hash = hashlib.sha256(text.encode("utf-8", errors="replace")).hexdigest()
 
         if hasattr(self, "ingest_cache") and self.ingest_cache is not None:
-            self.ingest_cache.put(clean_rel, text, new_hash)
+            self.ingest_cache.put(clean_rel, text, new_hash, root=resolved)
 
         now = time.time()
         def _update_db(con: sqlite3.Connection) -> None:
@@ -1228,7 +1228,7 @@ class ProjectPreprocessor:
                 first = not paths
                 paths.add(rel)
             if hasattr(self, "ingest_cache") and self.ingest_cache is not None:
-                self.ingest_cache.invalidate(rel)
+                self.ingest_cache.invalidate(rel, root=root)
                 self._watch_revisions[root] = self._watch_revisions.get(root, 0) + 1
             with self._hash_git_maps_lock:
                 for key in [key for key in self._hash_git_maps if key[0] == root]:
@@ -3325,8 +3325,8 @@ class ProjectPreprocessor:
                             content_overrides[p] = cas_map[h]
         if hasattr(self, "ingest_cache") and self.ingest_cache is not None:
             for p in paths:
-                if p not in content_overrides and self.ingest_cache.has(p):
-                    item = self.ingest_cache.get(p)
+                if p not in content_overrides and self.ingest_cache.has(p, root=root):
+                    item = self.ingest_cache.get(p, root=root)
                     if item is not None:
                         content_overrides[p] = item.text
         result = self.rag.index_paths_step(
@@ -3562,7 +3562,6 @@ class ProjectPreprocessor:
         """Discover proactive initial seeds: git status, branch changes, and entrypoints."""
         from pathlib import PurePosixPath
         proactive: list[str] = []
-        base = Path(root)
         try:
             status = getattr(self.repo_tools, "git_status", None)
             if callable(status):
@@ -4429,9 +4428,8 @@ class ProjectPreprocessor:
             if generated.get("preempted"):
                 continue
             if not generated.get("success"):
-                fallback_data = {"purpose": f"generation error: {str(generated.get('error', ''))[:200]}", "symbols": [], "dependencies": [], "side_effects": [], "risks": [], "tests": [], "keywords": []}
-                self._store_file_card(root, item, card_key, fallback_data, "fallback-error")
-                progressed = True
+                with self._stats_lock:
+                    self._stats["file_card_failures"] = self._stats.get("file_card_failures", 0) + 1
                 continue
             self._store_file_card(root, item, card_key, self._generated_card_data(generated), background_model)
             progressed = True
@@ -4536,9 +4534,8 @@ class ProjectPreprocessor:
                 preempted = True
                 continue
             if not generated.get("success"):
-                fallback_data = {"summary": f"module generation error: {str(generated.get('error', ''))[:200]}", "responsibilities": [], "entry_points": [], "key_symbols": [], "dependencies": [], "tests": []}
-                self._store_module_card(root, module, revision, fallback_data)
-                progressed = True
+                with self._stats_lock:
+                    self._stats["module_failures"] = self._stats.get("module_failures", 0) + 1
                 continue
             self._store_module_card(root, module, revision, self._generated_card_data(generated))
             progressed = True
