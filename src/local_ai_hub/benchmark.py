@@ -808,10 +808,9 @@ class HardwareBenchmarkRunner:
 
         def observe_loaded_model_vram() -> None:
             nonlocal loaded_model_vram_bytes, loaded_model_vram_status, loaded_model_context_tokens
-            # Each observation is a fresh snapshot. Never reuse a pre-inference
-            # context/VRAM value if the post-inference provider query is unavailable.
-            loaded_model_vram_bytes = None
-            loaded_model_vram_status = "unavailable"
+            # Context qualification must use the post-request runner snapshot.
+            # VRAM observed while the scheduler owns execution remains valid even
+            # when the runner has already been released by the time we recheck.
             loaded_model_context_tokens = None
             details_provider = getattr(self.runtime, "loaded_model_details", None)
             if not callable(details_provider):
