@@ -132,6 +132,24 @@ class SemanticGenerationCache:
             con.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_sem_scope_query ON semantic_entries(scope_key, query_hash)")
             con.commit()
 
+    def _embedding_space(self) -> str:
+        fn = getattr(self.embeddings, "embedding_space_id", None)
+        if callable(fn):
+            try:
+                space = str(fn() or "").strip()
+                if space:
+                    return space
+            except Exception:
+                pass
+        model_name = getattr(self.embeddings, "model_name", None)
+        if model_name:
+            return str(model_name).strip()
+        return "default"
+
+    def _scoped_key(self, scope: str, space: str | None = None) -> str:
+        active_space = str(space or self._embedding_space()).strip()
+        return f"{scope}:{active_space}"
+
     def _vector(self, text: str) -> list[float] | None:
         try:
             result = self.embeddings.encode([text], query=True)
@@ -161,7 +179,7 @@ class SemanticGenerationCache:
         query_text = normalize_query(query_text)
         if not self.enabled or len(query_text) < self.min_query_chars:
             return None, 0.0
-        exact_recent = self._recent.get(stable_hash({"s": scope, "q": query_text}))
+        exact_recent = self._recent.get(stable_hash({"s": self._scoped_key(scope), "q": query_text}))
         if isinstance(exact_recent, dict):
             self.hits += 1
             return exact_recent, 1.0
@@ -170,7 +188,7 @@ class SemanticGenerationCache:
         with self._lock, closing(self._connect()) as con:
             exact_row = con.execute(
                 "SELECT id,value_json FROM semantic_entries WHERE scope_key=? AND query_hash=? AND created_at>=? LIMIT 1",
-                (scope, query_hash, cutoff),
+                (self._scoped_key(scope), query_hash, cutoff),
             ).fetchone()
             if exact_row:
                 value_dict = json.loads(exact_row[1]) if isinstance(exact_row[1], str) else exact_row[1]
@@ -195,7 +213,7 @@ class SemanticGenerationCache:
                                 con.rollback()
                             except sqlite3.Error:
                                 pass
-                    self._recent.set(stable_hash({"s": scope, "q": query_text}), value_dict)
+                    self._recent.set(stable_hash({"s": self._scoped_key(scope), "q": query_text}), value_dict)
                     self.hits += 1
                     return value_dict, 1.0
 
@@ -210,7 +228,7 @@ class SemanticGenerationCache:
         with self._lock, closing(self._connect()) as con:
             rows = con.execute(
                 "SELECT id,vector_blob,value_json,created_at FROM semantic_entries WHERE scope_key=? AND created_at>=? ORDER BY accessed_at DESC LIMIT ?",
-                (scope, cutoff, self.max_candidates),
+                (self._scoped_key(scope), cutoff, self.max_candidates),
             ).fetchall()
             if not rows:
                 self.misses += 1
@@ -301,9 +319,9 @@ class SemanticGenerationCache:
                        VALUES(?,?,?,?,?,?,?,0)
                        ON CONFLICT(scope_key,query_hash) DO UPDATE SET
                          vector_blob=excluded.vector_blob,value_json=excluded.value_json,created_at=excluded.created_at,accessed_at=excluded.accessed_at""",
-                    (scope, qhash, query_text, vec_blob, json_dumps(value, ensure_ascii=False, separators=(",", ":"), default=str), now, now),
+                    (self._scoped_key(scope), qhash, query_text, vec_blob, json_dumps(value, ensure_ascii=False, separators=(",", ":"), default=str), now, now),
                 )
-                count = int(con.execute("SELECT COUNT(*) FROM semantic_entries WHERE scope_key=?", (scope,)).fetchone()[0])
+                count = int(con.execute("SELECT COUNT(*) FROM semantic_entries WHERE scope_key=?", (self._scoped_key(scope),)).fetchone()[0])
                 if count > self.max_entries:
                     con.execute("DELETE FROM semantic_entries WHERE id IN (SELECT id FROM semantic_entries WHERE scope_key=? ORDER BY accessed_at ASC LIMIT ?)", (scope, count - self.max_entries + 32))
                 if self.ttl_seconds > 0:
@@ -318,7 +336,7 @@ class SemanticGenerationCache:
                 except sqlite3.Error:
                     pass
                 return
-        self._recent.set(stable_hash({"s": scope, "q": query_text}), value)
+        self._recent.set(stable_hash({"s": self._scoped_key(scope), "q": query_text}), value)
 
     def is_enabled(self) -> bool:
         return bool(self.enabled)

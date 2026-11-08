@@ -773,7 +773,10 @@ class MemoryStore:
                             CREATE TABLE IF NOT EXISTS agent_memory_embeddings (
                                 record_id TEXT PRIMARY KEY,
                                 embedding TEXT NOT NULL,
-                                created_at REAL NOT NULL
+                                created_at REAL NOT NULL,
+                                embedding_space_id TEXT NOT NULL DEFAULT '',
+                                model_name TEXT NOT NULL DEFAULT '',
+                                dimension INTEGER NOT NULL DEFAULT 0
                             );
                             """
                         )
@@ -1808,8 +1811,9 @@ class MemoryStore:
         base_params = list(params)
 
         if query:
-            sql += " AND (key LIKE ? OR value LIKE ?)"
-            pat = f"%{query}%"
+            escaped_q = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            sql += " AND (key LIKE ? ESCAPE '\\' OR value LIKE ? ESCAPE '\\')"
+            pat = f"%{escaped_q}%"
             params.extend([pat, pat])
 
         sql += " ORDER BY updated_at DESC LIMIT ?"
@@ -1856,17 +1860,28 @@ class MemoryStore:
                     emb_res = embed_fn([query])
                     q_vec = emb_res.get("embeddings", [[]])[0]
                     if q_vec:
+                        q_space = str(emb_res.get("embedding_space_id") or emb_res.get("model") or "").strip()
+                        q_dim = len(q_vec)
                         emb_sql = (
-                            "SELECT record_id, embedding FROM agent_memory_embeddings "
+                            "SELECT record_id, embedding, embedding_space_id, model_name, dimension "
+                            "FROM agent_memory_embeddings "
                             f"WHERE record_id IN ({base_id_sql}) "
                             "ORDER BY created_at DESC LIMIT 500"
                         )
                         cur_emb = con.execute(emb_sql, tuple(base_params))
                         rows = cur_emb.fetchall()
-                        if rows:
-                            if _NUMPY_AVAILABLE and len(rows) > 4:
-                                rec_ids = [r[0] for r in rows]
-                                rec_vecs = [json.loads(r[1]) for r in rows]
+                        valid_rows = []
+                        for r in rows:
+                            r_id, r_emb, r_space, _, r_dim = r[0], r[1], str(r[2] or "").strip(), str(r[3] or "").strip(), int(r[4] or 0)
+                            if r_dim and r_dim != q_dim:
+                                continue
+                            if q_space and r_space and q_space != r_space:
+                                continue
+                            valid_rows.append((r_id, r_emb))
+                        if valid_rows:
+                            if _NUMPY_AVAILABLE and len(valid_rows) > 4:
+                                rec_ids = [r[0] for r in valid_rows]
+                                rec_vecs = [json.loads(r[1]) for r in valid_rows]
                                 mat = np.array(rec_vecs, dtype=np.float32)
                                 q = np.array(q_vec, dtype=np.float32)
                                 q_norm = float(np.linalg.norm(q))
@@ -1879,7 +1894,7 @@ class MemoryStore:
                                         if sim >= min_score:
                                             vec_scores[r_id] = float(sim)
                             else:
-                                for r_id, emb_json in rows:
+                                for r_id, emb_json in valid_rows:
                                     rec_vec = json.loads(emb_json)
                                     sim = self._cosine_similarity(q_vec, rec_vec)
                                     if sim >= min_score:
@@ -1952,12 +1967,23 @@ class MemoryStore:
         nb = math.sqrt(sum(y * y for y in b))
         return dot / (na * nb) if na and nb else 0.0
 
-    def set_embedding(self, record_id: str, embedding: list[float]) -> bool:
+    def set_embedding(
+        self,
+        record_id: str,
+        embedding: list[float],
+        *,
+        model_name: str = "",
+        embedding_space_id: str = "",
+        dimension: int | None = None,
+    ) -> bool:
         if not self.state_store.enabled or not self.state_store.db_path.exists():
             return False
         self._init_table()
         now = time.time()
         emb_json = json_dumps([round(float(x), 5) for x in embedding])
+        dim = int(dimension if dimension is not None else len(embedding))
+        m_name = str(model_name or "").strip()
+        space_id = str(embedding_space_id or m_name or "").strip()
         with self._lock:
             def _insert():
                 con = connect_sqlite(self.state_store.db_path)
@@ -1965,13 +1991,18 @@ class MemoryStore:
                     with con:
                         con.execute(
                             """
-                            INSERT INTO agent_memory_embeddings(record_id, embedding, created_at)
-                            VALUES (?, ?, ?)
+                            INSERT INTO agent_memory_embeddings(
+                                record_id, embedding, created_at, embedding_space_id, model_name, dimension
+                            )
+                            VALUES (?, ?, ?, ?, ?, ?)
                             ON CONFLICT(record_id) DO UPDATE SET
                                 embedding = excluded.embedding,
-                                created_at = excluded.created_at
+                                created_at = excluded.created_at,
+                                embedding_space_id = excluded.embedding_space_id,
+                                model_name = excluded.model_name,
+                                dimension = excluded.dimension
                             """,
-                            (record_id, emb_json, now),
+                            (record_id, emb_json, now, space_id, m_name, dim),
                         )
                 finally:
                     con.close()
@@ -2901,12 +2932,13 @@ class MemoryStore:
           r.metadata,
           r.updated_at
         FROM agent_entity_relations r
-        JOIN bounded_nodes b1 ON (r.source_entity = b1.entity OR r.target_entity = b1.entity)
-        WHERE b1.min_depth < ?
+        JOIN bounded_nodes b1 ON r.source_entity = b1.entity
+        JOIN bounded_nodes b2 ON r.target_entity = b2.entity
+        WHERE b1.min_depth < ? AND b2.min_depth <= ?
         ORDER BY record_type DESC, weight DESC, updated_at DESC
         """
 
-        params = [start, limit_depth, limit_nodes, limit_depth]
+        params = [start, limit_depth, limit_nodes, limit_depth, limit_depth]
 
         def _fetch():
             con = connect_sqlite(self.state_store.db_path)
