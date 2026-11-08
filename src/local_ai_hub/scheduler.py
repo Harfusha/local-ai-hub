@@ -2199,3 +2199,23 @@ class AffinityScheduler:
         self._executor.shutdown(wait=False, cancel_futures=True)
         if self._dispatcher.is_alive() and threading.current_thread() is not self._dispatcher:
             self._dispatcher.join(timeout=1.0)
+
+
+class Scheduler(AffinityScheduler):
+    """Backwards-compatible alias for AffinityScheduler."""
+
+    def __init__(
+        self,
+        runtime: Any = None,
+        config: dict[str, Any] | None = None,
+        *,
+        max_concurrent: int = 1,
+        max_queue: int = 256,
+        **kwargs: Any,
+    ):
+        cfg = dict(config) if isinstance(config, dict) else {}
+        sched_cfg = dict(cfg.get("scheduler", {})) if isinstance(cfg.get("scheduler"), dict) else {}
+        sched_cfg.setdefault("max_parallel", max_concurrent)
+        sched_cfg.setdefault("max_queue", max_queue)
+        cfg["scheduler"] = sched_cfg
+        super().__init__(runtime, cfg)
