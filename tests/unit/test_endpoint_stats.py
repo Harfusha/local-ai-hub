@@ -225,3 +225,21 @@ def test_get_registered_surface_catalog_covers_safe_get_and_operation_contracts(
         assert ("mcp", tool) in catalog_map, f"Missing tool {tool} in catalog"
         for action in OPERATION_CONTRACTS[tool]["actions"]:
             assert ("mcp", f"{tool}:{action}") in catalog_map, f"Missing action {tool}:{action} in catalog"
+
+
+def test_slow_and_failing_endpoint_reports_both_dimensions(tmp_path: Path):
+    store = EndpointStatsStore(tmp_path / "state")
+    store.record_call(
+        item_type="mcp",
+        item_name="local_ai_repo:search",
+        duration_ms=1500.0,
+        success=False,
+    )
+
+    report = store.get_stats(include_unused=False)
+    item = report["items"][0]
+
+    assert item["status"] == "failing"
+    assert item["issues"] == ["failing", "slow"]
+    assert report["failing_count"] == 1
+    assert report["slow_count"] == 1

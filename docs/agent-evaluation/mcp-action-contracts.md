@@ -1,8 +1,8 @@
 # MCP action input-contract index
 
-Generated 2026-11-08 from the active action inventory in mcp-action-coverage.md and declared contracts in src/local_ai_hub/operation_contracts.py.
+Generated 2026-11-08 from the then-current action inventory and declared contracts in src/local_ai_hub/operation_contracts.py. This is a source-contract snapshot, not a live MCP inventory; use mcp-action-coverage.md for this session's exposed actions.
 
-This is source/schema evidence, not runtime acceptance. The active MCP schema controls exposure. A source action absent from the active schema is gated/unavailable and is not counted as covered functionality. Runtime permissions, root authorization, consent and cleanup must still be verified by the matching prompt.
+This is source/schema evidence, not runtime acceptance. The live MCP schema controls exposure. Actions present only in this snapshot are unavailable unless the live schema exposes them; runtime permissions, root authorization, consent and cleanup must still be verified by the matching prompt.
 
 ## Tool-level gates
 
@@ -597,7 +597,7 @@ Fields use action metadata: required, non-empty, allowed (if explicitly restrict
 | local_ai_work.get | work_id | work_id | shared schema; scoped: none declared |  | none in operation contract | read_only; retry=True; idem=True; replay=False | success, error, terminal, retryable, degraded, stale, cancelled, evidence_ids |
 | local_ai_work.cancel | work_id | work_id | shared schema; scoped: none declared |  | none in operation contract | work_order_state; retry=False; idem=False; replay=False | success, error, terminal, retryable, degraded, stale, cancelled, evidence_ids |
 
-**local_ai_work source-only actions absent from the active MCP schema:** continue, submit. Do not count these as active coverage.
+The live schema currently exposes `local_ai_work.submit` and `local_ai_work.continue`; this source-contract snapshot has no per-action rows for them. Case 129 must capture their live input and output contracts before runtime coverage is claimed.
 
 
 ## Shared validation branches
@@ -607,6 +607,7 @@ Fields use action metadata: required, non-empty, allowed (if explicitly restrict
 - Unknown arguments and arguments scoped to another action reject. Required and non-empty fields are checked before dispatch; booleans do not pass integer checks; non-finite numbers, wrong JSON types, enum/range and array-size violations reject.
 - local_ai_status bypass adoption requires both supported target_tool and target_action; target fields reject unless adoption_signal=bypassed.
 - local_ai_repo context path hints/directories/exclusions require adaptive mode; search/code_index/callers/callees/implementations enforce pagination bounds; hotspots enforces days 1..3650 and limit 1..50; nested path hints validate their own schema.
+- For local_ai_repo search, `path` is normalized into a `path_hints` ranking signal; it does not confine results. `path_hints` likewise are hints, not authorization boundaries. Fixture-isolated search must use the fixture itself as `root` and verify every returned path stays beneath it.
 - local_ai_coord memory record/delete/promote require explicit absolute root and canonical scope; record validates non-empty key and string value; delete/promote require record ID; promote requires canonical target scope.
 - local_ai_coord plans require canonical repository root; plan_list limit is 1..1000; supplied expected_revision must be a non-empty trimmed revision. task_sync export/import fields are mutually exclusive; limit is 1..1000.
 - local_ai_coord negative_knowledge_find requires canonical non-empty root/query and limit 1..100; nested incident/negative-knowledge records validate their schemas; ask requires question or question_id; verify_receipt requires a schema-valid receipt object.
@@ -615,6 +616,6 @@ Fields use action metadata: required, non-empty, allowed (if explicitly restrict
 
 ## Inventory reconciliation
 
-Only current active action rows above count. Source-only actions are preserved as unavailable/gated for this session. Cases 114-129 provide the runtime scenarios; case 129 is the field-level positive/negative contract audit.
+Rows above describe the source-contract snapshot and do not establish current MCP exposure. Use the live action inventory in mcp-action-coverage.md. Cases 114-129 provide runtime scenarios; case 129 is the field-level positive/negative contract audit.
 
-Active action rows emitted: 218. Missing declared contracts: none.
+Source-contract action rows emitted: 218. The live work submit/continue actions are not represented in this index.

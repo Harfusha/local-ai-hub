@@ -242,7 +242,7 @@ def test_hybrid_candidate_budget_scales_with_requested_page(tmp_path, monkeypatc
     assert max(budgets) <= 81
 
 
-def test_repository_search_defaults_to_lexical_for_natural_language(monkeypatch):
+def test_repository_search_defaults_to_hybrid_for_natural_language(monkeypatch):
     service = _service(monkeypatch, [{"path": "docs/semantic-only.md", "text": "semantic"}])
     rag_calls = []
     lexical_calls = []
@@ -262,9 +262,9 @@ def test_repository_search_defaults_to_lexical_for_natural_language(monkeypatch)
 
     result = service.repo_search(".", "natural language query")
 
-    assert result["search_mode"] == "lexical"
+    assert result["search_mode"] == "hybrid"
     assert lexical_calls == ["natural language query"]
-    assert rag_calls == []
+    assert rag_calls == ["natural language query"]
 
 
 @pytest.mark.parametrize("query", ["repo_search", "C++"])

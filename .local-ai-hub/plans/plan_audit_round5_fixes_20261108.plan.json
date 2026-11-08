@@ -1,0 +1,165 @@
+{
+  "default_target_ref": "refs/heads/master",
+  "description": "19 nálezů z pátého kola hloubkového auditu (commit 2176b0e, 2026-11-08). Pokrývá: model memory policy (B02), root-family admission (B01), output integrity (B10), circuit breaker (B09), recovery journal CAS (B13), PHP PSR-4 imports (B03), unified language registry (B04, B05), TS/Rust/Go import resolvers (B06, B07, B18), indexed dependencies (B08, B19), retrieval evaluation (B14), response budget (B12), vision contracts (B15, B16), warmup lifecycle (B17) a speculative inference (B11).",
+  "id": "plan_audit_round5_fixes_20261108",
+  "lifecycle": "draft",
+  "schema_version": 1,
+  "spec_refs": [],
+  "tasks": {
+    "task_b01_root_family_admission": {
+      "acceptance_criteria": [],
+      "blocker": null,
+      "clarifications": [],
+      "depends_on": [],
+      "description": "B01: RootFamilyBudget coalesced scope nesmí umožnit volajícímu uvolnit cizí rezervaci. Zavést reservation_id a explicitního vlastníka rezervace v mcp_server.py a budget.py.",
+      "kind": "code",
+      "next_action": "",
+      "title": "B01 — Root-family reservation ownership: zamezení dvojímu uvolnění",
+      "work_status": "planned"
+    },
+    "task_b02_model_policy": {
+      "acceptance_criteria": [],
+      "blocker": null,
+      "clarifications": [],
+      "depends_on": [],
+      "description": "B02: ModelExecutionPolicy._is_small_model() používá podřetězec '3b', což chybně klasifikuje 13B/23B/33B jako malé modely. Opravit parsing velikosti modelu a VRAM admission pravidla.",
+      "kind": "code",
+      "next_action": "",
+      "title": "B02 — Model memory policy: přesná klasifikace velikosti modelu",
+      "work_status": "planned"
+    },
+    "task_b03_php_psr4_discovery": {
+      "acceptance_criteria": [],
+      "blocker": null,
+      "clarifications": [],
+      "depends_on": [],
+      "description": "B03: code_index_demand.py rozšířit PHP větev o parsování composer.json autoload.psr-4 / autoload-dev.psr-4 a regex/AST analýzu 'use Namespace\\\\Class;' včetně aliasů 'as ...'.",
+      "kind": "code",
+      "next_action": "",
+      "title": "B03 — PHP dependency resolver: podpora Composer PSR-4 use imports",
+      "work_status": "planned"
+    },
+    "task_b04_b05_unified_language_registry": {
+      "acceptance_criteria": [],
+      "blocker": null,
+      "clarifications": [],
+      "depends_on": [],
+      "description": "B04+B05: retrieval.py doplnit .php, .rb, .vue, .svelte do _SOURCE_SUFFIXES. Doplnit explicitní intent=source_analysis parametr a deterministické signály (přípony, cesty, symboly) pro source-first režim nezávisle na jazyku dotazu.",
+      "kind": "code",
+      "next_action": "",
+      "title": "B04+B05 — Unified language registry a multilingvální source-context detekce",
+      "work_status": "planned"
+    },
+    "task_b06_b07_b18_import_resolvers": {
+      "acceptance_criteria": [],
+      "blocker": null,
+      "clarifications": [],
+      "depends_on": [],
+      "description": "B06+B07+B18: code_index_demand.py opravit TS NodeNext .js->.ts resoluci, Rust vnořené moduly (parent/stem/mod.rs i parent/stem.rs) a Go přesnou shodu imp == module_name pro root package.",
+      "kind": "code",
+      "next_action": "",
+      "title": "B06+B07+B18 — Import resolvery: TypeScript NodeNext, Rust nested mod a Go root package",
+      "work_status": "planned"
+    },
+    "task_b08_b19_indexed_dependency_lookup": {
+      "acceptance_criteria": [],
+      "blocker": null,
+      "clarifications": [],
+      "depends_on": [],
+      "description": "B08+B19: code_index_demand.py předpočítat index způsobilých souborů (by_dir, by_stem, by_ext) pro eliminaci O(N*M) průchodů u Go, C#, Java a C/C++. V C# odstranit slabou shodu pouhého stemu.",
+      "kind": "code",
+      "next_action": "",
+      "title": "B08+B19 — Indexed dependency lookup a přesný C# namespace matching",
+      "work_status": "planned"
+    },
+    "task_b09_circuit_breaker_generations": {
+      "acceptance_criteria": [],
+      "blocker": null,
+      "clarifications": [],
+      "depends_on": [],
+      "description": "B09: CircuitBreakerRegistry allow() musí vracet probe generation token; success()/failure() smí měnit stav pouze pro odpovídající generaci, aby opožděný probe neresetoval novější aktivní stav.",
+      "kind": "code",
+      "next_action": "",
+      "title": "B09 — Circuit breaker generations: ochrana před opožděnými half-open výsledky",
+      "work_status": "planned"
+    },
+    "task_b10_output_integrity": {
+      "acceptance_criteria": [],
+      "blocker": null,
+      "clarifications": [],
+      "depends_on": [],
+      "description": "B10: normalizer.py postprocess_model_output nesmí globálně odstraňovat [DONE] ani tagy <plan> uvnitř kódu či fixture textů. Oddělit režimy zpracování pro kód, diff, JSON a obecný text.",
+      "kind": "code",
+      "next_action": "",
+      "title": "B10 — Runtime output integrity: ochrana zdrojového kódu před nežádoucí substitucí",
+      "work_status": "planned"
+    },
+    "task_b11_speculative_inference_observability": {
+      "acceptance_criteria": [],
+      "blocker": null,
+      "clarifications": [],
+      "depends_on": [],
+      "description": "B11: vram_balancer.py rozlišit speculative decoding stavy recommended, configured a runtime_active. Ověřit konfiguraci draft vs target modelu (draft menší/rychlejší než target).",
+      "kind": "code",
+      "next_action": "",
+      "title": "B11 — Speculative inference observability: reálný stav a správná volba modelů",
+      "work_status": "planned"
+    },
+    "task_b12_response_size_contract": {
+      "acceptance_criteria": [],
+      "blocker": null,
+      "clarifications": [],
+      "depends_on": [],
+      "description": "B12: response_protocol.py project_response() doplnit závěrečný hard-cap validátor délky serializovaného JSON v bajtech/tokenech. Při překročení rozpočtu vrátit explicitní budget_rejected obálku.",
+      "kind": "code",
+      "next_action": "",
+      "title": "B12 — Response size contract: tvrdý limit výstupní obálky a budget_rejected",
+      "work_status": "planned"
+    },
+    "task_b13_recovery_journal_cas": {
+      "acceptance_criteria": [],
+      "blocker": null,
+      "clarifications": [],
+      "depends_on": [],
+      "description": "B13: RecoveryJournal.finish() a dávkový zápis musí používat CAS s kontrolou AND state = 'running'. Replay identického výsledku vrátí původní receipt; pokus o přepis na protichůdný stav selže.",
+      "kind": "code",
+      "next_action": "",
+      "title": "B13 — Recovery journal terminal CAS: ochrana neměnnosti dokončených výsledků",
+      "work_status": "planned"
+    },
+    "task_b14_retrieval_evaluation_contract": {
+      "acceptance_criteria": [],
+      "blocker": null,
+      "clarifications": [],
+      "depends_on": [],
+      "description": "B14: evaluation_quality.py paired_retrieval_delta validovat konzistenci scope napříč všemi případy, ošetřit KeyError a pro smíšené sady vracet oddělené agregáty místo chybného průměrování.",
+      "kind": "code",
+      "next_action": "",
+      "title": "B14 — Retrieval evaluation contract: oddělení path_only a symbol_ast benchmarků",
+      "work_status": "planned"
+    },
+    "task_b15_b16_vision_contracts": {
+      "acceptance_criteria": [],
+      "blocker": null,
+      "clarifications": [],
+      "depends_on": [],
+      "description": "B15+B16: vision_request.py při vlastním json_schema generovat odpovídající instrukce místo fixního review promptu. vision_service.py doplnit explicitní operation=fix|review|describe parametr pro spolehlivou aktivaci repo kontextu bez závislosti na anglických slovech.",
+      "kind": "code",
+      "next_action": "",
+      "title": "B15+B16 — Vision contracts: podpora custom JSON schema a multilingvální fix intent",
+      "work_status": "planned"
+    },
+    "task_b17_warmup_lifecycle": {
+      "acceptance_criteria": [],
+      "blocker": null,
+      "clarifications": [],
+      "depends_on": [],
+      "description": "B17: context_warmup.py rozlišit stavy enqueued, running, succeeded, failed a expired. 60s cooldown aplikovat výhradně po úspěchu; po výjimce nebo vypršení ve frontě povolit kratší retry/backoff.",
+      "kind": "code",
+      "next_action": "",
+      "title": "B17 — Context warmup lifecycle: zamezení blokování po chybě nebo timeoutu",
+      "work_status": "planned"
+    }
+  },
+  "title": "Audit Round 5: Opravy a regresní testy (commit 2176b0e)"
+}

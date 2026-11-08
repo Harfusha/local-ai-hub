@@ -52,18 +52,21 @@
     },
     "task_p1_ab_evaluation": {
       "acceptance_criteria": [
-        "Documented A/B measurement measuring cloud tokens, tool calls, task duration, validation success with and without Hub",
-        "Empirical evidence recorded in docs/agent-evaluation/"
+        "Same tasks run with and without Hub using the same agent/model, prompts, repository revision, fixtures, and validation commands.",
+        "Record cloud input/output tokens, repeated tool-result tokens, tool-call counts, total completion time, validation success, and follow-up repairs per run.",
+        "Use separate authorized disposable roots and isolated Hub config/state; preserve run IDs and exact environment fingerprints.",
+        "Show no validation-quality regression and identify measurable token or time savings, or report neutral/negative results without retaining unsupported 80–95% claims.",
+        "Record evidence-bound results under docs/agent-evaluation/ and reconcile docs/TOKEN_ECONOMY.md."
       ],
       "blocker": null,
       "clarifications": [],
       "depends_on": [],
-      "description": "Conduct rigorous A/B benchmark comparing coding agent performance and token usage with and without Hub on identical tasks",
+      "description": "Run identical end-to-end coding tasks against a modern native-efficiency agent with and without Local AI Hub, using isolated roots and Hub state. Compare cloud input/output and repeated tool-result tokens, tool calls, duration, validation success, and follow-up repairs. Preserve honest neutral/negative results and revise unsupported savings claims.",
       "kind": "analysis",
       "next_action": "",
       "title": "P1-5: Provést A/B evaluaci reálné úspory tokenů a latence Hubu",
-      "work_phase": "discovery",
-      "work_status": "planned"
+      "work_phase": "verification",
+      "work_status": "completed"
     },
     "task_p1_feature_defaults": {
       "acceptance_criteria": [
@@ -100,15 +103,15 @@
         "Benchmark measures TTFT, throughput, VRAM under load for 4B and 9B models across 8k, 16k, 32k contexts",
         "Scheduler memory bounds prevent VRAM OOM on 16GB GPU during concurrent desktop usage"
       ],
-      "blocker": null,
+      "blocker": "Installed inventory has no 4B model. Latest 9B 8,192-character probe returned no prompt-token count and ended at high VRAM pressure (1,688 MB headroom), so no 16k/32k or concurrency run is justified. Ollama readiness probe timed out though local ollama list succeeded.",
       "clarifications": [],
       "depends_on": [],
       "description": "Stress test GPU admission and model routing on RTX 5070 Ti (16GB VRAM): verify 4B vs 9B behavior, long context, true TTFT, and switching costs",
       "kind": "analysis",
-      "next_action": "",
+      "next_action": "Resume only when an installed 4B model is available and VRAM is nominal; collect backend prefill-token counts for 8k/16k/32k contexts, 20 warm samples, and concurrency/background load. No model pull.",
       "title": "P1-6: Zátěžové testy GPU admission a model routingu",
-      "work_phase": "discovery",
-      "work_status": "planned"
+      "work_phase": "verification",
+      "work_status": "in_progress"
     },
     "task_p1_query_classification": {
       "acceptance_criteria": [

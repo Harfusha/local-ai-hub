@@ -456,7 +456,6 @@ class EmbeddingModel:
             self._load_error = None
             return True
         except Exception as exc:
-            import time
             self._load_error = f"{backend}/{device}: {exc}"
             self._load_error_time = time.time()
             self._model = None
@@ -510,7 +509,6 @@ class EmbeddingModel:
         if self._model is not None:
             return True
         if self._load_error is not None:
-            import time
             if time.time() - self._load_error_time < 15.0 and self._st_candidates is not None and self._st_candidate_index >= len(self._st_candidates) - 1:
                 return False
         return self._ensure_st_model()
@@ -608,14 +606,11 @@ class EmbeddingModel:
                 elif self.active_backend == "sentence-transformers" and uses_torch_cuda(
                     self.active_backend, self.active_device or self.device
                 ):
-                    failed_model = self._model
                     self._load_error = f"sentence-transformers/cuda inference failed: {exc}"
-                    import time
                     self._load_error_time = time.time()
                     self._model = None
                     self.active_backend = None
                     self.active_device = None
-                    del failed_model
                     release_model(self, used_cuda=True)
                     if self._ensure_st_model():
                         continue
@@ -715,11 +710,6 @@ class EmbeddingModel:
                 return None
             if isinstance(claim, tuple):
                 owned_reservation = claim
-                digest = claim[0]
-            else:
-                digest = None
-        else:
-            digest = inherited
         if inherited is not None and _read_external_reservation(path) != inherited:
             if local is not None:
                 local.ollama_gpu_fenced = True

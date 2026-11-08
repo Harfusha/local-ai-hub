@@ -96,3 +96,33 @@ def test_single_character_identifier_uses_exact_lookup(tmp_path: Path) -> None:
 
     assert result["total_matches"] == 1
     assert result["symbols"][0]["name"] == "x"
+
+
+def test_missing_declaration_has_terminal_not_found_contract(tmp_path: Path) -> None:
+    root, index = _index(tmp_path)
+
+    result = index.find_declaration(str(root), "missing_symbol")
+
+    assert result == {
+        "success": False,
+        "status_code": 404,
+        "terminal": True,
+        "retryable": False,
+        "error_code": "declaration_not_found",
+        "error": "Declaration of 'missing_symbol' not found",
+    }
+
+
+def test_empty_declaration_symbol_has_terminal_bad_request_contract(tmp_path: Path) -> None:
+    root, index = _index(tmp_path)
+
+    result = index.find_declaration(str(root), "  ")
+
+    assert result == {
+        "success": False,
+        "status_code": 400,
+        "terminal": True,
+        "retryable": False,
+        "error_code": "invalid_symbol",
+        "error": "symbol cannot be empty",
+    }

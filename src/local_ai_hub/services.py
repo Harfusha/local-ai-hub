@@ -3254,7 +3254,15 @@ class LocalAIServices:
         limit: int | None = None,
         offset: int = 0,
         search_mode: str | None = None,
+        exact_count: bool = True,
     ) -> dict[str, Any]:
+        if type(exact_count) is not bool:
+            return {
+                "success": False, "error": "exact_count must be a boolean",
+                "status_code": 400, "terminal": True, "retryable": False,
+                "root": root, "results": [], "total_matches": 0,
+                "count_exact": False, "has_more": False,
+            }
         mode = default_search_mode(query) if search_mode is None else canonical_search_mode(search_mode)
         if mode is None:
             return {
@@ -3280,7 +3288,7 @@ class LocalAIServices:
             )
             result = self._repo_search_lexical(
                 root, lexical_query, top_k, context_lines, enrich, path_hints, scope,
-                limit=page_limit, offset=offset,
+                limit=page_limit, offset=offset, exact_count=exact_count,
                 installation_intent_priority=not prefers_lexical_precision(query),
             )
             result.update({
@@ -3299,7 +3307,7 @@ class LocalAIServices:
             lexical_query = lexical_precision_query(query)
             result = self._repo_search_lexical(
                 root, lexical_query, top_k, context_lines, enrich, path_hints, scope,
-                limit=page_limit, offset=offset,
+                limit=page_limit, offset=offset, exact_count=exact_count,
             )
             succeeded = result.get("success") is True
             lexical_count = result.get("total_matches")

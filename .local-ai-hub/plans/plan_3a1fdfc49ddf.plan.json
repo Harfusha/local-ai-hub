@@ -1,0 +1,10 @@
+{
+  "default_target_ref": "refs/heads/master",
+  "description": "Inspect operational logs and endpoint telemetry; fix confirmed slow/failing endpoints and improve request/response contracts with focused validation.",
+  "id": "plan_3a1fdfc49ddf",
+  "lifecycle": "draft",
+  "schema_version": 1,
+  "spec_refs": [],
+  "tasks": {},
+  "title": "Local AI Hub endpoint reliability audit"
+}

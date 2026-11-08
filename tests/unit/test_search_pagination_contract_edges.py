@@ -445,7 +445,7 @@ def test_http_search_route_maps_service_503_to_transport_status(
     assert responses[0][1]["success"] is False
     assert responses[0][1]["total_matches"] == 0
     assert responses[0][1]["has_more"] is False
-    assert service_calls[0]["search_mode"] is None
+    assert service_calls[0]["search_mode"] == "hybrid"
 
 
 def test_search_compaction_keeps_largest_whole_result_prefix_with_continuation(

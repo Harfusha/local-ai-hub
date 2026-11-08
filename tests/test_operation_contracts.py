@@ -364,10 +364,10 @@ def test_registry_metadata_and_selector_schemas_cover_all_public_tools():
 
 @pytest.mark.parametrize(
     ("profile", "qualified", "expected"),
-    [("cpu", True, False), ("low", True, False), ("balanced", False, False),
-     ("balanced", True, True), ("high", True, True), ("max", True, True)],
+    [(profile, qualified, qualified) for profile in ("cpu", "integrated", "low", "balanced", "medium", "high", "max")
+     for qualified in (False, True)],
 )
-def test_rag_reranking_capability_is_balanced_and_qualification_gated(profile, qualified, expected):
+def test_rag_reranking_capability_is_available_in_every_profile_when_qualified(profile, qualified, expected):
     config = {
         "features": {"rag": True, "local_reranking": qualified},
         "hardware": {"profile": profile},
@@ -378,11 +378,9 @@ def test_rag_reranking_capability_is_balanced_and_qualification_gated(profile, q
     status = feature_set.capability_status()["reranking"]
 
     assert status["available"] is expected
-    assert status["minimum_profile"] == "balanced"
+    assert status["minimum_profile"] == "cpu"
     assert "search" in feature_set.supported_rag_actions()
-    if not expected and profile in {"cpu", "low", "integrated"}:
-        assert status["reason"] == "requires_balanced_profile"
-    elif not expected:
+    if not expected:
         assert status["reason"] == "qualification_or_feature_gate_disabled"
 
 

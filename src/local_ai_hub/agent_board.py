@@ -272,15 +272,18 @@ class BoardStore:
         if "active_tasks" in inc and self.services is not None and getattr(self.services, "task_store", None):
             try:
                 active = self.services.task_store.list_tasks(status=None, limit=5)
-                briefing["active_tasks"] = [
-                    {
-                        "task_id": t.get("task_id"),
-                        "goal": t.get("contract", {}).get("goal", ""),
-                        "status": t.get("status"),
-                        "phase": t.get("checkpoint", {}).get("phase", ""),
-                    }
-                    for t in active if isinstance(t, dict) and t.get("status") in {"planned", "in_progress", "ready"}
-                ]
+                active_items = []
+                for t in active:
+                    td = t.to_dict() if hasattr(t, "to_dict") else (t if isinstance(t, dict) else {})
+                    st = td.get("status")
+                    if st in {"planned", "in_progress", "ready"}:
+                        active_items.append({
+                            "task_id": td.get("task_id"),
+                            "goal": td.get("contract", {}).get("goal", "") if isinstance(td.get("contract"), dict) else "",
+                            "status": st,
+                            "phase": td.get("checkpoint", {}).get("phase", "") if isinstance(td.get("checkpoint"), dict) else "",
+                        })
+                briefing["active_tasks"] = active_items
             except Exception as exc:
                 logger.warning("session_briefing active_tasks failed: %s", exc)
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import json
 import posixpath
 import re
 from pathlib import Path, PurePosixPath
@@ -18,6 +19,9 @@ _JS_DYNAMIC_IMPORT = re.compile(
 _PHP_INCLUDE = re.compile(
     r"\b(?:require|include)(?:_once)?\s*(?:\(\s*)?(?:(?P<dir>__DIR__)\s*\.\s*)?['\"](?P<path>(?:\.{1,2}/|/)[^'\"]+)['\"]\s*\)?"
 )
+_PHP_USE = re.compile(
+    r"^\s*use\s+([\\a-zA-Z0-9_]+)", re.MULTILINE
+)
 _RUBY_REQUIRE_RELATIVE = re.compile(
     r"\brequire_relative\s*['\"]([^'\"]+)['\"]"
 )
@@ -32,6 +36,9 @@ _RUST_USE_CRATE = re.compile(
 )
 _CS_USING = re.compile(
     r"^\s*using\s+([A-Za-z0-9_.]+)\s*;", re.MULTILINE
+)
+_CS_NAMESPACE = re.compile(
+    r"^\s*namespace\s+([A-Za-z_][A-Za-z0-9_.]*)\s*(?:;|\{)", re.MULTILINE
 )
 _JAVA_IMPORT = re.compile(
     r"^\s*import\s+(?:static\s+)?([A-Za-z0-9_.]+)\s*;", re.MULTILINE
@@ -54,9 +61,16 @@ def _safe_inventory_file(base: Path, path: str, repo_tools: Any) -> bool:
     pure = PurePosixPath(path)
     if pure.is_absolute() or ".." in pure.parts:
         return False
+    if repo_tools is None:
+        target = (base / Path(path)).resolve()
+        try:
+            target.relative_to(base.resolve())
+            return target.is_file()
+        except (ValueError, OSError):
+            return False
     try:
         return bool(repo_tools._inventory_path_safe(base, base / Path(path)))
-    except (OSError, RuntimeError, TypeError, ValueError):
+    except (OSError, RuntimeError, TypeError, ValueError, AttributeError):
         return False
 
 
@@ -78,7 +92,10 @@ def _resolve_relative_module(
     if pure_target.is_absolute() or ".." in pure_target.parts or target in ("", "."):
         return None
     candidates = [target]
-    if not pure_target.suffix:
+    if pure_target.suffix in {".js", ".jsx", ".mjs", ".cjs"}:
+        stem = target[:-len(pure_target.suffix)]
+        candidates.extend(stem + ext for ext in extensions if ext not in {".js", ".jsx", ".mjs", ".cjs"})
+    elif not pure_target.suffix:
         candidates.extend(target + extension for extension in extensions)
         candidates.extend(
             (PurePosixPath(target) / ("index" + extension)).as_posix()
@@ -154,7 +171,10 @@ def _go_import_candidates(base: Path, source: str, eligible: set[str]) -> list[s
 
     for imp in import_paths:
         target_dir = ""
-        if module_name and imp.startswith(module_name + "/"):
+        if module_name and imp == module_name:
+            matches = [path for path in eligible if "/" not in path and path.endswith(".go")]
+            found.extend(matches)
+        elif module_name and imp.startswith(module_name + "/"):
             target_dir = imp[len(module_name) + 1:].strip("/")
         elif imp.startswith("./") or imp.startswith("../"):
             target_dir = posixpath.normpath(imp)
@@ -167,12 +187,18 @@ def _go_import_candidates(base: Path, source: str, eligible: set[str]) -> list[s
 def _rust_import_candidates(seed: str, source: str, eligible: set[str]) -> list[str]:
     found: list[str] = []
     parent = PurePosixPath(seed).parent
+    seed_stem = PurePosixPath(seed).stem
     for mod_match in _RUST_MOD.finditer(source):
         mod_name = mod_match.group(1)
         candidates = [
             (parent / f"{mod_name}.rs").as_posix(),
             (parent / mod_name / "mod.rs").as_posix(),
         ]
+        if seed_stem not in ("lib", "main", "mod"):
+            candidates.extend([
+                (parent / seed_stem / f"{mod_name}.rs").as_posix(),
+                (parent / seed_stem / mod_name / "mod.rs").as_posix(),
+            ])
         for c in candidates:
             if c in eligible:
                 found.append(c)
@@ -221,18 +247,33 @@ def _ruby_require_candidates(base: Path, seed: str, source: str, eligible: set[s
     return found
 
 
-def _csharp_using_candidates(source: str, eligible: set[str]) -> list[str]:
+def _csharp_using_candidates(
+    base: Path, source: str, eligible: set[str], repo_tools: Any,
+) -> list[str]:
+    imported_namespaces = {match.group(1) for match in _CS_USING.finditer(source)}
+    if not imported_namespaces:
+        return []
+
     found: list[str] = []
-    for match in _CS_USING.finditer(source):
-        ns = match.group(1)
-        parts = ns.split(".")
-        last = parts[-1]
-        for c in eligible:
-            if not c.endswith(".cs"):
-                continue
-            pure = PurePosixPath(c)
-            if pure.stem == last or all(part in pure.parts for part in parts):
-                found.append(c)
+    for candidate in sorted(eligible):
+        if PurePosixPath(candidate).suffix.lower() != ".cs":
+            continue
+        if not _safe_inventory_file(base, candidate, repo_tools):
+            continue
+        target = base / Path(candidate)
+        try:
+            if repo_tools is not None:
+                _, lines = repo_tools._read_snapshot(target)
+                candidate_source = "\n".join(lines)
+            else:
+                candidate_source = target.read_text(encoding="utf-8", errors="replace")
+        except (OSError, RuntimeError, UnicodeError, TypeError, ValueError, AttributeError):
+            continue
+        declared_namespaces = {
+            match.group(1) for match in _CS_NAMESPACE.finditer(candidate_source)
+        }
+        if imported_namespaces.intersection(declared_namespaces):
+            found.append(candidate)
     return found
 
 
@@ -245,6 +286,60 @@ def _java_import_candidates(source: str, eligible: set[str]) -> list[str]:
             if c.endswith(rel_path):
                 found.append(c)
     return found
+
+
+def _php_psr4_map(base: Path) -> dict[str, tuple[str, ...]]:
+    composer = base / "composer.json"
+    try:
+        if not composer.is_file() or composer.stat().st_size > 1_000_000:
+            return {}
+        data = json.loads(composer.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, ValueError):
+        return {}
+    autoload = data.get("autoload", {}) if isinstance(data, dict) else {}
+    psr4 = autoload.get("psr-4", {}) if isinstance(autoload, dict) else {}
+    if not isinstance(psr4, dict):
+        return {}
+
+    mapping: dict[str, tuple[str, ...]] = {}
+    for namespace, directories in psr4.items():
+        if not isinstance(namespace, str):
+            continue
+        values = directories if isinstance(directories, list) else [directories]
+        paths = tuple(
+            path.replace("\\", "/").strip("/")
+            for path in values
+            if isinstance(path, str) and path.strip()
+        )
+        if paths:
+            mapping[namespace.lstrip("\\")] = paths
+    return mapping
+
+
+def _php_psr4_candidates(
+    namespace: str,
+    mapping: dict[str, tuple[str, ...]],
+    eligible: set[str],
+    base: Path,
+    repo_tools: Any,
+) -> tuple[bool, list[str]]:
+    name = namespace.lstrip("\\")
+    prefixes = [prefix for prefix in mapping if name.startswith(prefix)]
+    if not prefixes:
+        return False, []
+
+    prefix = max(prefixes, key=len)
+    relative_class = name[len(prefix):].lstrip("\\").replace("\\", "/")
+    if not relative_class:
+        return True, []
+
+    suffix = relative_class + ".php"
+    found: list[str] = []
+    for directory in mapping[prefix]:
+        candidate = posixpath.normpath(posixpath.join(directory, suffix))
+        if candidate in eligible and _safe_inventory_file(base, candidate, repo_tools):
+            found.append(candidate)
+    return True, list(dict.fromkeys(found))
 
 
 def _direct_import_candidates_for_seed(
@@ -281,6 +376,7 @@ def _direct_import_candidates_for_seed(
                 )) is not None
             ]
         elif suffix == ".php":
+            psr4_mapping = _php_psr4_map(base)
             for match in _PHP_INCLUDE.finditer(source):
                 specifier = match.group("path")
                 if specifier.startswith("/"):
@@ -292,6 +388,21 @@ def _direct_import_candidates_for_seed(
                 )
                 if path is not None:
                     candidates.append(path)
+            for use_match in _PHP_USE.finditer(source):
+                ns = use_match.group(1).lstrip("\\")
+                mapped, mapped_candidates = _php_psr4_candidates(
+                    ns, psr4_mapping, eligible, base, repo_tools,
+                )
+                if mapped:
+                    candidates.extend(mapped_candidates)
+                    continue
+                parts = ns.split("\\")
+                if parts:
+                    class_file = parts[-1] + ".php"
+                    rel_path = "/".join(parts) + ".php"
+                    for el in eligible:
+                        if el.endswith("/" + rel_path) or el == rel_path or el.endswith("/" + class_file):
+                            candidates.append(el)
         elif suffix == ".go":
             candidates = _go_import_candidates(base, source, eligible)
         elif suffix == ".rs":
@@ -301,7 +412,7 @@ def _direct_import_candidates_for_seed(
         elif suffix == ".rb":
             candidates = _ruby_require_candidates(base, seed, source, eligible, repo_tools)
         elif suffix == ".cs":
-            candidates = _csharp_using_candidates(source, eligible)
+            candidates = _csharp_using_candidates(base, source, eligible, repo_tools)
         elif suffix == ".java":
             candidates = _java_import_candidates(source, eligible)
         return candidates

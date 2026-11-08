@@ -3,5 +3,5 @@
   "version": "6.0.0",
   "release_date": "2026-11-07",
   "status": "production-ready",
-  "focus": "Release v6.0.0: Clean slate architecture, automatic purge of pre-v6 legacy runtime state on upgrade, and removal of deprecated compatibility layers."
+  "focus": "Release v6.0.0: Clean slate architecture, verified preservation of persistent runtime state with fail-closed mismatch checks, and removal of deprecated compatibility layers."
 }

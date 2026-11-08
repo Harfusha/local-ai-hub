@@ -37,8 +37,9 @@ class _ModelProcess:
 
     def _read_stderr(self):
         try:
+            reader = getattr(self.process.stderr, "read1", self.process.stderr.read)
             while True:
-                chunk = self.process.stderr.read(4096)
+                chunk = reader(4096)
                 if not chunk:
                     return
                 with self._stderr_lock:
@@ -53,11 +54,13 @@ class _ModelProcess:
         exit_code = self.process.poll()
         if exit_code is None:
             try:
-                exit_code = self.process.wait(timeout=0.1)
+                exit_code = self.process.wait(timeout=0.05)
             except subprocess.TimeoutExpired:
                 pass
         if exit_code is not None:
             details.append(f"worker exit code: {exit_code}")
+        if not self._stderr_tail:
+            time.sleep(0.05)
         with self._stderr_lock:
             stderr = bytes(self._stderr_tail).decode("utf-8", "replace").strip()
         if stderr:
@@ -116,13 +119,13 @@ class _ModelProcess:
             self._writers.append(writer)
             writer.start()
             if not written.wait(max(0.0, deadline - time.monotonic())):
-                raise TimeoutError("model request write timed out")
+                raise TimeoutError("model request write timed out" + self._worker_failure_context())
             if failures:
                 raise RuntimeError("model request pipe failed") from failures[0]
             try:
                 response = self._responses.get(timeout=max(0.0, deadline - time.monotonic()))
             except queue.Empty:
-                raise TimeoutError("model operation timed out") from None
+                raise TimeoutError("model operation timed out" + self._worker_failure_context()) from None
             if isinstance(response, Exception):
                 raise response
             if not isinstance(response, dict) or response.get("request_id") != self._sequence:
@@ -203,8 +206,31 @@ def _load(spec):
             return constructor(model_name, local_files_only=True, **options)
         except Exception:
             from pathlib import Path
+            import os
             clean_name = str(model_name).replace("/", "--")
-            for base in (Path.home() / ".cache" / "huggingface" / "hub",):
+            bases = []
+            if os.environ.get("HF_HOME"):
+                bases.append(Path(os.environ["HF_HOME"]) / "hub")
+            bases.extend([
+                Path.home() / ".cache" / "huggingface" / "hub",
+                Path(os.path.expanduser("~")) / ".cache" / "huggingface" / "hub",
+            ])
+            user_prof = os.environ.get("USERPROFILE")
+            if user_prof:
+                bases.append(Path(user_prof) / ".cache" / "huggingface" / "hub")
+            if os.name == "nt":
+                sys_drive = os.environ.get("SystemDrive", "C:")
+                if not sys_drive.endswith(("\\", "/")):
+                    sys_drive += "\\"
+                usr_name = os.environ.get("USERNAME")
+                if usr_name:
+                    bases.append(Path(sys_drive) / "Users" / usr_name / ".cache" / "huggingface" / "hub")
+            seen = set()
+            for base in bases:
+                b_str = str(base.resolve(strict=False))
+                if b_str in seen:
+                    continue
+                seen.add(b_str)
                 hub_dir = base / f"models--{clean_name}" / "snapshots"
                 if hub_dir.is_dir():
                     for snapshot in hub_dir.iterdir():

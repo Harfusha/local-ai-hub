@@ -3576,7 +3576,7 @@ class RAGStore:
                             [c["text"] for c in candidates],
                             top_k=top_k,
                             priority=priority,
-                            allow_cpu_fallback=False,
+                            allow_cpu_fallback=True,
                         )
                         if rr.get("success"):
                             ordered: list[dict[str, Any]] = []

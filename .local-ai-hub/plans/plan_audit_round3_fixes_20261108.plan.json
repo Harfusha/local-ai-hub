@@ -1,0 +1,10 @@
+{
+  "default_target_ref": "refs/heads/master",
+  "description": "21 nálezů z třetího kola hloubkového auditu (commit 2176b0e, 2026-11-08). Pokrývá: agentní semafory (T01, T02, T11, T12), CRDT blackboard (T03, T04, T13, T14), preprocess write actor (T05, T06, T07, T19), test selection a runner syntaxe (T08, T20, T21), swarm DAG (T09), session briefing (T10), durable pubsub (T15), tool agent (T16), OpenCode router (T17) a source slice (T18).",
+  "id": "plan_audit_round3_fixes_20261108",
+  "lifecycle": "draft",
+  "schema_version": 1,
+  "spec_refs": [],
+  "tasks": {},
+  "title": "Audit Round 3: Zjištění a nápravný plán (commit 2176b0e)"
+}

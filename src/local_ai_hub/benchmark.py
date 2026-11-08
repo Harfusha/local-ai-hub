@@ -4,6 +4,8 @@ from .json_utils import dumps as json_dumps
 
 import json
 import math
+import os
+import secrets
 import threading
 import time
 from pathlib import Path
@@ -44,6 +46,7 @@ class HardwareBenchmarkRunner:
         self.vram_balancer = vram_balancer
         self.config = config or {}
         self.scheduler = scheduler
+        self._file_lock = threading.Lock()
 
     def _default_model(self) -> str:
         return str(self.config.get("models", {}).get("fast_code", "qwen2.5-coder:1.5b"))
@@ -1103,18 +1106,26 @@ class HardwareBenchmarkRunner:
     def _persist_record(self, record: dict[str, Any]) -> None:
         try:
             self.benchmarks_path.parent.mkdir(parents=True, exist_ok=True)
-            history: list[dict[str, Any]] = []
-            if self.benchmarks_path.exists():
-                try:
-                    history = json.loads(self.benchmarks_path.read_text(encoding="utf-8"))
-                    if not isinstance(history, list):
+            file_lock = getattr(self, "_file_lock", None)
+            if file_lock is None:
+                file_lock = threading.Lock()
+                self._file_lock = file_lock
+            with file_lock:
+                history: list[dict[str, Any]] = []
+                if self.benchmarks_path.exists():
+                    try:
+                        history = json.loads(self.benchmarks_path.read_text(encoding="utf-8"))
+                        if not isinstance(history, list):
+                            history = []
+                    except Exception:
                         history = []
-                except Exception:
-                    history = []
-            history.append(record)
-            if len(history) > 50:
-                history = history[-50:]
-            self.benchmarks_path.write_text(json_dumps(history, indent=2), encoding="utf-8")
+                history.append(record)
+                if len(history) > 50:
+                    history = history[-50:]
+                content = json_dumps(history, indent=2)
+                tmp_file = self.benchmarks_path.with_suffix(f".tmp.{os.getpid()}.{secrets.token_hex(4)}")
+                tmp_file.write_text(content, encoding="utf-8")
+                os.replace(tmp_file, self.benchmarks_path)
         except Exception:
             pass
 

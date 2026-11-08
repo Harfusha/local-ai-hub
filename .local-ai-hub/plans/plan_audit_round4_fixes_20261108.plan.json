@@ -1,0 +1,165 @@
+{
+  "default_target_ref": "refs/heads/master",
+  "description": "17 nálezů z čtvrtého kola hloubkového auditu (commit 2176b0e, 2026-11-08). Pokrývá: EvidenceStore source integrity, worktree locking, TransactionStashHook ownership, LearningStore state machine, AgentConsistencyGuard, work fencing contention, snapshot I/O, model quality receipts, lint completeness a audit contracts.",
+  "id": "plan_audit_round4_fixes_20261108",
+  "lifecycle": "draft",
+  "schema_version": 1,
+  "spec_refs": [],
+  "tasks": {
+    "task_t01_evidence_integrity": {
+      "acceptance_criteria": [],
+      "blocker": null,
+      "clarifications": [],
+      "depends_on": [],
+      "description": "put(): ověřit text vůči obsahu souboru na deklarovaném rozsahu řádků; odmítnout absolutní cesty a úniky mimo root. validate_current(): přidat path.relative_to(root). Přidat pole source_verified. AC: záznam se správným hash+chybným textem nikdy nezíská source_verified=True. Priority: critical.",
+      "kind": "code",
+      "next_action": "",
+      "title": "A01+A17 — EvidenceStore: source_verified a path confinement",
+      "work_status": "planned"
+    },
+    "task_t02_evidence_hash_streaming": {
+      "acceptance_criteria": [],
+      "blocker": null,
+      "clarifications": [],
+      "depends_on": [],
+      "description": "Nahradit path.read_bytes() za blokové čtení 1 MiB chunks. Přidat explicitní limit velikosti souboru. Ověřit identitu souboru před a po čtení. Priority: high.",
+      "kind": "code",
+      "next_action": "",
+      "title": "A02 — EvidenceStore: inkrementální hashování souborů",
+      "work_status": "planned"
+    },
+    "task_t03_worktree_locking": {
+      "acceptance_criteria": [],
+      "blocker": null,
+      "clarifications": [],
+      "depends_on": [],
+      "description": "get_worktree_status(): spouštět 'git worktree list' nad samotným worktree, ne nad target.parent. Vracet 'unknown' místo tichého 'unlocked'. unlock_worktree fallback: nepoužívat basename; ověřit skutečná Git worktree metadata. Při nejednoznačnosti odmítnout ruční unlock. Priority: critical.",
+      "kind": "code",
+      "next_action": "",
+      "title": "A03+A04 — Worktrees: zjišťování a ruční odemykání zámků",
+      "work_status": "planned"
+    },
+    "task_t04_stash_ownership": {
+      "acceptance_criteria": [],
+      "blocker": null,
+      "clarifications": [],
+      "depends_on": [],
+      "description": "restore() a drop() musí používat uloženou _stash_sha pro identifikaci. Ověřit commit před mutací. Odmítnout tiché stash@{0}. Pokud vlastní stash nelze bezpečně identifikovat, selhat bez mutace cizího stashe. Priority: critical.",
+      "kind": "code",
+      "next_action": "",
+      "title": "A05 — TransactionStashHook: identita vlastního stashe",
+      "work_status": "planned"
+    },
+    "task_t05_learning_state_machine": {
+      "acceptance_criteria": [],
+      "blocker": null,
+      "clarifications": [],
+      "depends_on": [],
+      "description": "Implementovat validační funkci pro všechny přechody CandidateStatus. advance() odmítnout přímý přechod do PROMOTED. Stav PROMOTED smí vzniknout pouze přes schválenou promotion transakci s autoritativním approval receipt. Priority: critical.",
+      "kind": "code",
+      "next_action": "",
+      "title": "A06 — LearningStore: vynucené stavové přechody",
+      "work_status": "planned"
+    },
+    "task_t06_learning_atomicity": {
+      "acceptance_criteria": [],
+      "blocker": null,
+      "clarifications": [],
+      "depends_on": [],
+      "description": "Ukládat event a projekci v jedné SQLite transakci pomocí append_in_transaction(). Implementovat idempotenci opakovaného přechodu. Testovat selhání před/po eventu a před/po projekci. Priority: high.",
+      "kind": "code",
+      "next_action": "",
+      "title": "A07 — LearningStore: atomický zápis event+projekce",
+      "work_status": "planned"
+    },
+    "task_t07_slo_success_rate": {
+      "acceptance_criteria": [],
+      "blocker": null,
+      "clarifications": [],
+      "depends_on": [],
+      "description": "Zavést časové nebo počtové okno s agregací success_count, failure_count, min_sample_count. Rollback pouze při překročení agregovaného failure rate. Priority: high.",
+      "kind": "code",
+      "next_action": "",
+      "title": "A08 — LearningStore: SLO min_success_rate jako agregace",
+      "work_status": "planned"
+    },
+    "task_t08_contract_mapping": {
+      "acceptance_criteria": [],
+      "blocker": null,
+      "clarifications": [],
+      "depends_on": [],
+      "description": "build_contract_mappings(): vyžadovat konkrétní API vazbu (HTTP method+endpoint, OpenAPI op ID, DTO typ, explicitní import). Bez vazby vrátit insufficient_evidence. Opravit _is_frontend() pro TypeScript backend. Priority: high.",
+      "kind": "code",
+      "next_action": "",
+      "title": "A09 — ConsistencyGuard: párování backend/frontend kontraktů",
+      "work_status": "planned"
+    },
+    "task_t09_guard_reuse": {
+      "acceptance_criteria": [],
+      "blocker": null,
+      "clarifications": [],
+      "depends_on": [],
+      "description": "Předávat vypočtené candidates do check_drift() jako vstup místo opakovaného vyhledávání. Vracet analysis_status=unavailable|partial při neúspěchu diffu. Priority: medium.",
+      "kind": "code",
+      "next_action": "",
+      "title": "A10+A11 — ConsistencyGuard: recyklace reuse candidates a analysis_status",
+      "work_status": "planned"
+    },
+    "task_t10_fencing_contention": {
+      "acceptance_criteria": [],
+      "blocker": null,
+      "clarifications": [],
+      "depends_on": [],
+      "description": "Zvážit oddělené fencing DB podle projektové identity. Zachovat konflikt mezi worktrees stejného repozitáře. Benchmark: 2 nezávislé projekty, pomalý patch + opakovaný renewal, měřit p50/p95/p99 latency a SQLITE_BUSY. Priority: high.",
+      "kind": "code",
+      "next_action": "",
+      "title": "A12 — Work fencing: izolace SQLite per projekt",
+      "work_status": "planned"
+    },
+    "task_t11_snapshot_optimization": {
+      "acceptance_criteria": [],
+      "blocker": null,
+      "clarifications": [],
+      "depends_on": [],
+      "description": "Profilovat create_private_transaction_snapshot_with_manifest na NTFS. Zvážit reflink/inkrementální manifest/omezený scope. Zachovat dirty overlay a pre/post image compare. Uživatel musí mít možnost přepnout na plný snapshot. Priority: medium.",
+      "kind": "code",
+      "next_action": "",
+      "title": "A13 — Transaction snapshot: snížení I/O průchodů",
+      "work_status": "planned"
+    },
+    "task_t12_quality_receipts": {
+      "acceptance_criteria": [],
+      "blocker": null,
+      "clarifications": [],
+      "depends_on": [],
+      "description": "promote_candidate() vynutit vazbu na model digest, verzi suite, hash datasetu, konkrétní run s evaluátorem. Odmítnout receipt pouze s neprázdným evaluation_hash. Priority: high.",
+      "kind": "code",
+      "next_action": "",
+      "title": "A14 — Model quality: silné evaluation receipts",
+      "work_status": "planned"
+    },
+    "task_t13_lint_completeness": {
+      "acceptance_criteria": [],
+      "blocker": null,
+      "clarifications": [],
+      "depends_on": [],
+      "description": "submit() vrátit requested_paths_count, accepted_paths_count, truncated, omitted_paths_count. Označit lint výsledek jako partial pokud truncated=True. Priority: medium.",
+      "kind": "code",
+      "next_action": "",
+      "title": "A15 — SpeculativeLint: explicitní příznak zkrácení",
+      "work_status": "planned"
+    },
+    "task_t14_audit_contracts": {
+      "acceptance_criteria": [],
+      "blocker": null,
+      "clarifications": [],
+      "depends_on": [],
+      "description": "completion_audit() vyžadovat passed is True (ne bool('false')=True). Nevalidní typ označit jako invalid_receipt. check_drift() přidat analysis_status. Priority: high.",
+      "kind": "code",
+      "next_action": "",
+      "title": "A16 — completion_audit(): typově přísné boolean výsledky",
+      "work_status": "planned"
+    }
+  },
+  "title": "Audit Round 4: Opravy (commit 2176b0e)"
+}

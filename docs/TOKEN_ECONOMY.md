@@ -53,21 +53,23 @@ The automated setup runner (`install.ps1` / `install.sh` / `python tools/setup.p
 
 ## 3. Tool Inventory
 
-| Tool | Source / Install | Purpose | Typical Token Savings |
+| Tool | Source / Install | Purpose | Token effect / evidence |
 | :--- | :--- | :--- | :--- |
-| **`tokcount`** | Built-in CLI | Exact token measurement for files, dirs, or stdin (`o200k_base`, `cl100k_base`) | Context budgeting |
-| **`trim-run`** | Built-in CLI | Runs bundled token tools and read-only search CLIs from a safe allowlist, or truncates stdin pipelines to first/last $N$ lines | 70–95% output reduction |
-| **`repo-map`** | Built-in CLI | AST structural outline of classes, methods, and functions across 12 languages | 80–90% vs full files |
-| **`rg`** (`ripgrep`) | `winget` / `brew` / `apt` | Fast bounded regex search (`-m <N>`, `--max-columns <N>`) | 80–95% vs unconstrained grep |
-| **`fd`** (`fd-find`) | `winget` / `brew` / `apt` | Lightning-fast file/directory discovery (`-d <depth>`) | 85–95% vs recursive directory trees |
-| **`jq`** | `winget` / `brew` / `apt` | JSON projection: extract only relevant keys from API and CLI outputs | 70–98% vs raw JSON dumps |
-| **`grep-ast`** | PyPI (`grep-ast`) | Syntax-aware search: returns matching lines with enclosing function/class definitions | 60–85% vs dumping files |
-| **`ast-grep` (`sg`)** | npm (`@ast-grep/cli`) | Fast structural AST pattern searching and linting across codebases | 90% vs raw grep dumps |
-| **`repomix`** | npm (`repomix`) | Packs repos with comment stripping, empty line removal, and token counts | 40–60% vs raw directory |
-| **`files-to-prompt`** | PyPI (`files-to-prompt`) | Formats files into clean XML prompt structures without shell overhead | Clean prompt format |
-| **`local_ai_artifact`** | Local AI Hub MCP | Fetches exact line slices (`slice`) or evidence fragments | Zero whole-file reads |
-| **`local_ai_task`** | Local AI Hub MCP | Profile-aware role routing; see the model map above | 100% free (0 cloud tokens) |
-| **`local_ai_coord`** | Local AI Hub MCP | Agent OS task contracts, durable memory, and verification receipts | Eliminates repetitive rediscovery and tracks acceptance |
+| **`tokcount`** | Built-in CLI | Exact token measurement for files, dirs, or stdin (`o200k_base`, `cl100k_base`) | Measures input; does not reduce it by itself |
+| **`trim-run`** | Built-in CLI | Runs bundled token tools and read-only search CLIs from a safe allowlist, or truncates stdin pipelines to first/last $N$ lines | Limits emitted output; measure the selected output against its baseline |
+| **`repo-map`** | Built-in CLI | AST structural outline of classes, methods, and functions across 12 languages | Bounded structural view; savings depend on the repository and selected limits |
+| **`rg`** (`ripgrep`) | `winget` / `brew` / `apt` | Fast bounded regex search (`-m <N>`, `--max-columns <N>`) | Bounded matches; compare returned tokens with the task-specific baseline |
+| **`fd`** (`fd-find`) | `winget` / `brew` / `apt` | Lightning-fast file/directory discovery (`-d <depth>`) | Bounded-depth inventory; output depends on the selected tree |
+| **`jq`** | `winget` / `brew` / `apt` | JSON projection: extract only relevant keys from API and CLI outputs | Omits unselected fields; savings depend on the input and projection |
+| **`grep-ast`** | PyPI (`grep-ast`) | Syntax-aware search: returns matching lines with enclosing function/class definitions | Focused syntax matches; compare with the same task's full-file input |
+| **`ast-grep` (`sg`)** | npm (`@ast-grep/cli`) | Fast structural AST pattern searching and linting across codebases | Focused structural matches; no universal reduction is established |
+| **`repomix`** | npm (`repomix`) | Packs repos with comment stripping, empty line removal, and token counts | Packing changes representation; measure each configuration against its baseline |
+| **`files-to-prompt`** | PyPI (`files-to-prompt`) | Formats files into clean XML prompt structures without shell overhead | Formats input; no token reduction is guaranteed |
+| **`local_ai_artifact`** | Local AI Hub MCP | Fetches exact line slices (`slice`) or evidence fragments | Bounded result size depends on requested ranges and response envelope |
+| **`local_ai_task`** | Local AI Hub MCP | Profile-aware role routing; see the model map above | Local routing does not guarantee zero cloud tokens or zero cost |
+| **`local_ai_coord`** | Local AI Hub MCP | Agent OS task contracts, durable memory, and verification receipts | Tracks work and reuses state; savings require task-specific measurement |
+
+Do not treat these tool descriptions as benchmarked savings. Report a percentage only with a measured baseline, matched task and environment, and recorded token counts. The single-task Hub comparison in [the P1-5 evaluation](agent-evaluation/p1-5-ab-2026-11-08.md) measured higher input, output, and completion time with Hub; it does not support a general savings percentage.
 
 ---
 

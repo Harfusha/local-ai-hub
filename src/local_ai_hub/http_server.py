@@ -95,6 +95,7 @@ from .config import ConfigError, deep_merge, load_config, save_runtime_overrides
 from .delivery import decide_delivery
 from .resilience import RecoveryJournal
 from .sqlite_support import connect_sqlite, is_busy_error
+from .search_modes import default_agent_search_mode
 from .agent_identity import AgentScope, ScopeContext
 from .project_config import resolve_project_context
 from .state_paths import configured_state_dir
@@ -5252,7 +5253,8 @@ class Handler(BaseHTTPRequestHandler):
                 root = (query.get("root") or ["."])[0]
                 sym = (query.get("symbol") or query.get("name") or [""])[0]
                 rel_path = (query.get("path") or [None])[0]
-                self._send(200, APP.services.code_find_declaration(root, sym, path=rel_path))
+                result = APP.services.code_find_declaration(root, sym, path=rel_path)
+                self._send(result.get("status_code", 200), result)
                 return
             if path == "/api/code/find_implementations":
                 root = (query.get("root") or ["."])[0]
@@ -7954,7 +7956,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, APP.services.generate_tests(payload))
                 return
             if 'post_patch_validate_1' in post_route_ids:
-                self._send(200, APP.services.validate_patch(payload))
+                result = APP.services.validate_patch(payload)
+                self._send(result.get("status_code", 200), result)
                 return
             if 'post_query_expand_1' in post_route_ids:
                 q = payload.get("query", "")
@@ -8307,22 +8310,36 @@ class Handler(BaseHTTPRequestHandler):
                     int(payload.get("max_dependents", APP.config.get("workflow", {}).get("impact_max_dependents", 30))),
                 )); return
             if 'post_search_1' in post_route_ids:
+                if "exact_count" in payload and type(payload["exact_count"]) is not bool:
+                    self._send(400, {
+                        "success": False,
+                        "status_code": 400,
+                        "terminal": True,
+                        "retryable": False,
+                        "error": "exact_count must be a boolean",
+                    })
+                    return
                 if "search_mode" in payload and (
                     type(payload["search_mode"]) is not str
                     or payload["search_mode"] not in {"lexical", "rag", "hybrid"}
                 ):
                     self._send(400, {"success": False, "terminal": True, "retryable": False,
                                      "error": "search_mode must be lexical, rag, or hybrid"}); return
+                query_text = str(payload.get("query", ""))
+                search_mode = payload.get("search_mode")
+                if "search_mode" not in payload:
+                    search_mode = default_agent_search_mode(query_text)
                 result = APP.services.repo_search(
                     str(payload.get("root", ".")),
-                    str(payload.get("query", "")),
+                    query_text,
                     int(payload.get("top_k", 12)),
                     context_lines=int(payload["context_lines"]) if payload.get("context_lines") is not None else None,
                     enrich=bool(payload.get("enrich", False)),
                     limit=payload.get("limit", 24),
                     offset=payload.get("offset", 0),
                     path_hints=payload.get("path_hints"),
-                    search_mode=payload.get("search_mode"),
+                    search_mode=search_mode,
+                    exact_count=payload.get("exact_count", False),
                 )
                 status = int(result.pop("status_code", 200))
                 self._send(status, result); return
@@ -8861,7 +8878,8 @@ class Handler(BaseHTTPRequestHandler):
                     self._send(400, {"success": False, "status_code": 400, "terminal": True, "retryable": False, "error": bounds_error}); return
                 self._send(200, APP.services.code_find_implementations(str(payload.get("root", ".")), str(payload.get("symbol", "")), path=payload.get("path"), limit=limit, offset=offset)); return
             if 'post_declaration_1' in post_route_ids:
-                self._send(200, APP.services.code_find_declaration(str(payload.get("root", ".")), str(payload.get("symbol", "")), path=payload.get("path"))); return
+                result = APP.services.code_find_declaration(str(payload.get("root", ".")), str(payload.get("symbol", "")), path=payload.get("path"))
+                self._send(result.get("status_code", 200), result); return
             if 'post_repo_secret_scan_1' in post_route_ids:
                 if "git_history" in payload:
                     self._send(400, {

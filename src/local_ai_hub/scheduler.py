@@ -284,6 +284,8 @@ class AffinityScheduler:
                 )
         self._internal_gpu_digest: str | None = None
         self._internal_gpu_uncertain = False
+        self._internal_gpu_uncertain_since: float | None = None
+        self._internal_gpu_heartbeat_stop: threading.Event | None = None
         self._gpu_prepare_in_progress = False
         self._switch_not_started = False
         self._executor = ThreadPoolExecutor(max_workers=self.max_parallel, thread_name_prefix="local-ai")
@@ -1102,7 +1104,35 @@ class AffinityScheduler:
                 # it must not authorize clearing a later, unrelated lease.
                 self._external_gpu_operator_release_marker = release_marker
         if getattr(self, "_internal_gpu_uncertain", False):
-            return True
+            with self._cond:
+                active = bool(
+                    self._inflight or self._switching or self._gpu_prepare_in_progress
+                    or self._background_gpu_lease
+                )
+                since = getattr(self, "_internal_gpu_uncertain_since", None)
+                ttl = float(getattr(store, "ttl_seconds", 60.0)) if store is not None else 60.0
+                uncertainty_expired = reaped or (
+                    since is not None and time.monotonic() - since >= max(0.0, ttl)
+                )
+                reservation_absent = (
+                    path is None
+                    or (
+                        current is None
+                        and not path.exists()
+                        and not path.is_symlink()
+                        and (store is None or (
+                            not store.metadata_path.exists()
+                            and not store.metadata_path.is_symlink()
+                        ))
+                    )
+                )
+                if not active and uncertainty_expired and reservation_absent:
+                    self._internal_gpu_uncertain = False
+                    self._internal_gpu_uncertain_since = None
+                    self._internal_gpu_digest = None
+                    self._cond.notify_all()
+                else:
+                    return True
         if getattr(self, "_external_gpu_token", None) and getattr(self, "_external_gpu_owned", False):
             if current is not None:
                 return True
@@ -1141,6 +1171,7 @@ class AffinityScheduler:
             if not store.claim_internal(digest):
                 return False
             self._internal_gpu_digest = digest
+            self._start_internal_gpu_heartbeat(digest, store)
             return True
         try:
             with path.open("xb") as stream:
@@ -1156,6 +1187,37 @@ class AffinityScheduler:
         self._internal_gpu_digest = digest
         return True
 
+    def _start_internal_gpu_heartbeat(self, digest: str, store: Any) -> None:
+        stop = threading.Event()
+        self._internal_gpu_heartbeat_stop = stop
+        try:
+            ttl = float(store.ttl_seconds)
+        except (TypeError, ValueError):
+            ttl = 60.0
+        interval = max(0.1, min(ttl / 3.0, 20.0))
+
+        def keepalive() -> None:
+            while not stop.wait(interval):
+                with self._cond:
+                    if (self._internal_gpu_digest != digest or self._internal_gpu_uncertain
+                            or not self._running):
+                        return
+                if store.renew_internal(digest):
+                    continue
+                with self._cond:
+                    if self._internal_gpu_digest == digest and not self._internal_gpu_uncertain:
+                        self._mark_internal_gpu_uncertain_locked()
+                        self._cond.notify_all()
+                return
+
+        worker = threading.Thread(target=keepalive, name="local-ai-gpu-lease", daemon=True)
+        worker.start()
+
+    def _mark_internal_gpu_uncertain_locked(self) -> None:
+        if not self._internal_gpu_uncertain:
+            self._internal_gpu_uncertain_since = time.monotonic()
+        self._internal_gpu_uncertain = True
+
     def _release_internal_gpu(self) -> bool:
         if getattr(self, "_internal_gpu_uncertain", False) or getattr(self, "_gpu_prepare_in_progress", False):
             return False
@@ -1167,6 +1229,10 @@ class AffinityScheduler:
             return True
         store = getattr(self, "_external_gpu_store", None)
         if store is not None:
+            heartbeat_stop = getattr(self, "_internal_gpu_heartbeat_stop", None)
+            if heartbeat_stop is not None:
+                heartbeat_stop.set()
+                self._internal_gpu_heartbeat_stop = None
             if not store.release_internal(digest):
                 if path is not None and not path.exists():
                     self._internal_gpu_digest = None
@@ -1562,7 +1628,7 @@ class AffinityScheduler:
                 except Exception as exc:
                     with self._cond:
                         if not bool(getattr(exc, "operation_not_started", False)):
-                            self._internal_gpu_uncertain = True
+                            self._mark_internal_gpu_uncertain_locked()
                         for job in [j for j in self._pending if j.model == target_switch]:
                             self._pending.remove(job)
                             job.error = f"model preparation failed: {type(exc).__name__}"
@@ -1600,8 +1666,9 @@ class AffinityScheduler:
         except Exception:
             pass
         ordered = sorted(jobs, key=lambda j: (-j.priority, j.created_at))
+        top_priority = ordered[0].priority if ordered else 0
         for job in ordered:
-            if job.model in loaded:
+            if job.model in loaded and (top_priority - job.priority <= 2):
                 return job.model
         candidate = ordered[0] if ordered else None
         if candidate and candidate.background and now - self._last_foreground_activity < self.background_switch_grace:
@@ -1789,12 +1856,12 @@ class AffinityScheduler:
                     cancelled = True
                     if not bool(getattr(exc, "operation_not_started", False)):
                         with self._cond:
-                            self._internal_gpu_uncertain = True
+                            self._mark_internal_gpu_uncertain_locked()
                 else:
                     error = f"{type(exc).__name__}: {exc}"[:300]
                     if not bool(getattr(exc, "operation_not_started", False)):
                         with self._cond:
-                            self._internal_gpu_uncertain = True
+                            self._mark_internal_gpu_uncertain_locked()
         if not cancelled and not error:
             observed_vram_bytes = self._observe_model_vram_bytes(
                 target,
@@ -1923,13 +1990,13 @@ class AffinityScheduler:
                 success = self._perform_switch(model)
         except Exception:
             with self._cond:
-                self._internal_gpu_uncertain = True
+                self._mark_internal_gpu_uncertain_locked()
                 self._gpu_prepare_in_progress = False
                 self._cond.notify_all()
             raise
         with self._cond:
             if not success and not self._switch_not_started:
-                self._internal_gpu_uncertain = True
+                self._mark_internal_gpu_uncertain_locked()
             self._gpu_prepare_in_progress = False
             if not self._inflight and not self._switching and not self._background_gpu_lease:
                 self._release_internal_gpu()
@@ -2001,7 +2068,7 @@ class AffinityScheduler:
                     uncertain
                     or (failed and not clean_app_error and result.get("operation_not_started") is not True and not completed_at_limit)
                 ):
-                    self._internal_gpu_uncertain = True
+                    self._mark_internal_gpu_uncertain_locked()
                 reprepare = (not uncertain and result.get("success") is False
                              and result.get("operation_not_started") is True
                              and result.get("error_code") == "model_preparation_required")

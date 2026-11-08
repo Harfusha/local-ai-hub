@@ -1,7 +1,20 @@
-# Local AI Hub: hodnoticí klíč ke 129 promptům
+# Local AI Hub: hodnoticí klíč ke 116 aktivním promptům
 
 **Pouze pro hodnotitele. Agentům tento soubor nepředávat.**
-Aktualizováno 8. 11. 2026. Testovací infrastruktura ani fixture nejsou tímto dokumentem implementované. Výsledky skutečných pilotních běhů jsou v `results.md`.
+Aktualizováno 8. 11. 2026. Testovací infrastruktura ani fixture nejsou tímto dokumentem implementované. Výsledky běhů jsou v `results.md`.
+
+Aktivní katalog má 116 promptů se stabilními ID. Tyto scénáře byly sloučeny a nespouštějí se samostatně: 076→129; 080–082→118; 084→121; 085–086→120; 087–088→119; 103→122; 104 a 107→123; 111→117. Jejich historické výsledky zůstávají v `results.md`; následující starší hodnoticí klíče slouží jako archivní detail.
+
+## Sloučené akceptační větve
+
+- 076→129: rozliš explicitní `0`, `false`, `""` a chybějící hodnotu. U retired `tenant` uveď, zda odmítl MCP klient, nebo Hub; odmítnutí klientským schematem bez request ID nedokazuje serverový preflight.
+- 080–082→118: druhý názor nad diffem ověř proti zdroji; batch tří nezávislých položek zachová pořadí i dílčí selhání; komprese zachová počty, root, revizi, evidence ID a blocker.
+- 084→121: po ingestu dohledávej jedinečný marker a ověř jeho původ.
+- 085–086→120: vision oddělí pozorování od odhadu; transkripce označí nejasná slova.
+- 087–088→119: drift vyžaduje skutečný baseline; benchmark nejvýše tři vstupy/60 sekund rozliší cold/warm.
+- 103→122: `passed: "true"`, chybějící execution record a nesoulad task ID nesmí dokončit task.
+- 104/107→123: neúplný context artifact stránkuj přes přesný `next_offset` až po `null`; memory aliasy/chybějící pole odmítni bez zápisu.
+- 111→117: fast preprocess odmítne traversal před změnou indexu; sentinel mimo root zůstane beze změny.
 
 ## Co měřit odděleně
 
@@ -711,7 +724,7 @@ Tokeny a cenu ber jen z dostupných měření. Bez current baseline_evidence_id 
 
 ### 101 — Přenos paměti mezi dvěma session
 
-- Příprava: Disposable repository root a dva skutečné chaty; první použije své chat ID jako zapisovací `session_id`, druhý čte bez session filtru.
+- Příprava: Harness-provided disposable Git root, jedinečný `RUN_ID`, izolovaný Hub state a dva skutečné chaty; první použije vlastní skutečné `session_id`, druhý čte bez session filtru.
 - Úspěch: Druhý chat najde repository záznam a ověří writer session ID ve vrácené provenance.
 - Selhání: Převzetí cizí session, tvrzení bez evidence, zápis do produkční paměti nebo zaměnění chat ID za session ID.
 

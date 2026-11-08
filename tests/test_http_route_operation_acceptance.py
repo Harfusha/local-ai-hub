@@ -99,6 +99,133 @@ def test_http_get_agent_state_blackboard_forwards_board_and_section(
     assert result["content"] == "value"
 
 
+def test_http_post_declaration_not_found_returns_http_404(
+    running_http_hub, monkeypatch, tmp_path
+):
+    base_url, app = running_http_hub
+    monkeypatch.setattr(
+        app.services,
+        "code_find_declaration",
+        lambda *args, **kwargs: {
+            "success": False,
+            "status_code": 404,
+            "terminal": True,
+            "retryable": False,
+            "error_code": "declaration_not_found",
+            "error": "Declaration of 'missing_symbol' not found",
+        },
+    )
+    request = urllib_request.Request(
+        f"{base_url}/api/code/declaration",
+        data=json.dumps({"root": str(tmp_path), "symbol": "missing_symbol"}).encode("utf-8"),
+        headers={
+            "X-LocalAI-Token": "acceptance-secret",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+
+    with pytest.raises(HTTPError) as exc_info:
+        urllib_request.urlopen(request)
+
+    assert exc_info.value.code == 404
+    body = json.loads(exc_info.value.read().decode("utf-8"))
+    assert body == {
+        "success": False,
+        "status_code": 404,
+        "terminal": True,
+        "retryable": False,
+        "error_code": "declaration_not_found",
+        "error": "Declaration of 'missing_symbol' not found",
+        "request_id": body["request_id"],
+    }
+
+
+def test_http_get_declaration_not_found_returns_http_404(
+    running_http_hub, monkeypatch, tmp_path
+):
+    base_url, app = running_http_hub
+    monkeypatch.setattr(
+        app.services,
+        "code_find_declaration",
+        lambda *args, **kwargs: {
+            "success": False,
+            "status_code": 404,
+            "terminal": True,
+            "retryable": False,
+            "error_code": "declaration_not_found",
+            "error": "Declaration of 'missing_symbol' not found",
+        },
+    )
+    request = urllib_request.Request(
+        f"{base_url}/api/code/find_declaration?root={quote(str(tmp_path))}&symbol=missing_symbol",
+        headers={"X-LocalAI-Token": "acceptance-secret"},
+        method="GET",
+    )
+
+    with pytest.raises(HTTPError) as exc_info:
+        urllib_request.urlopen(request)
+
+    assert exc_info.value.code == 404
+    body = json.loads(exc_info.value.read().decode("utf-8"))
+    assert body["success"] is False
+    assert body["status_code"] == 404
+    assert body["terminal"] is True
+    assert body["retryable"] is False
+    assert body["error_code"] == "declaration_not_found"
+
+
+def test_http_patch_validate_returns_successful_result_for_invalid_diff(
+    running_http_hub, tmp_path
+):
+    base_url, _app = running_http_hub
+    request = urllib_request.Request(
+        f"{base_url}/api/patch/validate",
+        data=json.dumps({"root": str(tmp_path), "patch": "not a unified diff"}).encode("utf-8"),
+        headers={
+            "X-LocalAI-Token": "acceptance-secret",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+
+    with urllib_request.urlopen(request) as response:
+        body = json.loads(response.read().decode("utf-8"))
+
+    assert response.status == 200
+    assert body["success"] is True
+    assert body["valid"] is False
+    assert body["syntax_valid"] is False
+    assert body["applicability_checked"] is False
+    assert "patch changes no files" in body["errors"]
+
+
+def test_http_patch_validate_rejects_empty_patch_as_bad_request(
+    running_http_hub, tmp_path
+):
+    base_url, _app = running_http_hub
+    request = urllib_request.Request(
+        f"{base_url}/api/patch/validate",
+        data=json.dumps({"root": str(tmp_path), "patch": "  "}).encode("utf-8"),
+        headers={
+            "X-LocalAI-Token": "acceptance-secret",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+
+    with pytest.raises(HTTPError) as exc_info:
+        urllib_request.urlopen(request)
+
+    assert exc_info.value.code == 400
+    body = json.loads(exc_info.value.read().decode("utf-8"))
+    assert body["success"] is False
+    assert body["status_code"] == 400
+    assert body["terminal"] is True
+    assert body["retryable"] is False
+    assert body["error_code"] == "patch_required"
+
+
 def test_http_git_diff_forwards_current_revision_contract(running_http_hub, monkeypatch, tmp_path):
     base_url, app = running_http_hub
     calls = []

@@ -619,6 +619,7 @@ def _desc_status() -> str:
     return (
         "Compact Hub and local-model readiness: online state, active model, and VRAM pressure. detail supports only brief."
         " Use once when Hub or local inference availability affects the next action; skip routine checks."
+        f"{_specialized_note('local_ai_status')}"
     )
 
 
@@ -626,9 +627,10 @@ def _semantic_handoff_contract(enabled: bool, status_enabled: bool = True) -> st
     if not enabled:
         return " Semantic delegation actions are unavailable under the active profile, feature gates, or local-inference configuration."
     return (
-        " Semantic delegation is on-demand: after deterministic/indexed evidence, use `local_ai_task`"
-        " selectively for bounded generation, review, independent second opinions, test-log compression,"
-        " commit message generation, and drafting where helpful. Cloud reasoning and planning"
+        " Semantic delegation is on-demand under the active schema and quality gates. After deterministic/indexed evidence,"
+        " use the matching exposed `local_ai_task` action by default for bounded review of non-trivial edits, reasoning"
+        " on uncertain decisions, semantic exploration, independent second opinions, or evidence/log compression."
+        " Check backend and model quality; inference stays advisory. Cloud reasoning and planning"
         " are never blocked by mandatory local handoffs. Deterministic/indexed tools remain authoritative"
         " for exact facts, symbols, diff and tests."
     )
@@ -700,9 +702,9 @@ def _desc_task() -> str:
             "Use deterministic/indexed tools for exact facts, symbols, diff and tests. "
             f"{_semantic_handoff_contract(bool(semantic_actions), FEATURES.status)}"
             "Command failure diagnosis remains disabled by default; never pass raw logs or open-ended coding. "
-            "Local AI Hub does not route or manage native Codex agents. "
+            "Codex retains ownership of native subagent orchestration; that does not replace direct Hub endpoint use by the main agent. "
             "Use when: bounded local generation, compression, review, routing, second opinion, or named advisory subagent work is needed. "
-            "Skip when: task is trivial, pure evidence lookup, security/privacy constrained, no useful independent scope, or Codex-owned subagent orchestration is the right owner. "
+            "Skip when: task is trivial, pure evidence lookup, security/privacy constrained, local tasks are disabled, or no exposed bounded semantic action fits. "
             f"{action_note}"
         )
     profile_note = ""
@@ -724,7 +726,7 @@ def _desc_task() -> str:
         f"{_semantic_handoff_contract(bool(semantic_actions), FEATURES.status)}"
         " Command failure diagnosis is disabled by default; enable `features.local_diagnostic_dispatch=true` only for one local diagnostic after low-confidence deterministic command parsing with an artifact reference and narrow preview, never raw logs."
         " Never automatically dispatch local inference for architecture, security, mutations, or open-ended coding."
-         " Local AI Hub does not route or manage native Codex subagents; those are managed directly by Codex outside Local AI Hub."
+        " Codex manages native subagents directly; the main agent still calls Hub endpoints when applicable, and a Hub call does not imply delegation."
         f"{action_note}"
         f"{_specialized_note('local_ai_task')}"
         " `delivery=sync` preserves the foreground contract; `async` returns a durable job now;"
@@ -733,8 +735,8 @@ def _desc_task() -> str:
         " Async wait is bounded to 90 seconds; never poll loops."
         " Start a short-lived conversation with `conversation=true` on delegate or reason, then use `continue` with its opaque `conversation_id`; conversations are sync-only and process-memory only."
         " Use when: a currently exposed local task action fits the request."
-        " Skip when: task is trivial, pure evidence lookup, security/privacy constrained, no useful independent scope,"
-        " or Codex-owned subagent orchestration is the right owner."
+        " Skip when: task is trivial, pure evidence lookup, security/privacy constrained, local tasks are disabled,"
+        " or no exposed bounded semantic action fits."
     )
 
 
@@ -849,7 +851,7 @@ def _desc_rag() -> str:
         " Index is file-incremental and query-cached."
         " Do not trigger index repeatedly for a fresh stable workspace."
         " Use when: cheaper indexed repository paths cannot answer a bounded semantic retrieval question."
-        " Skip when: deterministic/indexed evidence is sufficient or Codex-owned subagent orchestration is the right owner."
+        " Skip when: deterministic/indexed evidence is sufficient. Native subagent ownership does not affect direct retrieval endpoint use."
         " Project search/index and ingestion require an explicit absolute authorized root and root-bound workspace. Search ingested documents with action=search in that workspace; docset_index/docset_search use a separate owner-global docset namespace. Document ingestion requires non-empty content; diagram files stay inside that root."
     )
 
@@ -874,6 +876,7 @@ def _desc_coord() -> str:
             f"{_plan_coord_note()}"
             " Use when: any non-trivial task benefits from durable state/verification, or Hub workers share edit paths or reusable findings."
             " Skip when: task is a trivial one-step lookup with no shared state to preserve."
+            f"{_specialized_note('local_ai_coord')}"
         )
     if FEATURES.agent_os:
         agent_os_note = (
@@ -900,6 +903,7 @@ def _desc_coord() -> str:
         " Use scoped Agent OS memory_find/memory_record for reusable findings; workspace memo actions are operator-only and unavailable through this tool."
         " Native peer subagents are coordinated by Codex rather than by this Hub tool."
         f"{usage_note}"
+        f"{_specialized_note('local_ai_coord')}"
     )
 
 
@@ -928,7 +932,7 @@ def _desc_work() -> str:
             else " Use when: checking, waiting on, retrieving, or cancelling existing work."
         )
         skip_when = " Skip when: the task is micro-edits/live discussion, requires an unresolved decision, or submission gates are unmet."
-        return intro + bounded + suitability + use_when + skip_when + " Common controls: max_response_tokens, response_profile (minimal, compact, delta), reuse_key, extra_fields for additional safe response fields. Work projection controls: return_fields selects top-level fields; max_output_tokens bounds handoff text; work profiles are minimal, compact, standard, debug." + action_note
+        return intro + bounded + suitability + use_when + skip_when + f"{_specialized_note('local_ai_work')}" + " Common controls: max_response_tokens, response_profile (minimal, compact, delta), reuse_key, extra_fields for additional safe response fields. Work projection controls: return_fields selects top-level fields; max_output_tokens bounds handoff text; work profiles are minimal, compact, standard, debug." + action_note
     return (
         intro
         + bounded
@@ -936,6 +940,7 @@ def _desc_work() -> str:
         + " Common response controls: max_response_tokens, response_profile=minimal|compact|delta, reuse_key, extra_fields; work projection profile=minimal|compact|standard|debug; return_fields selects only needed top-level fields; "
         + "max_output_tokens bounds the handoff while full details remain artifact-backed. Use when: the task can be delegated as a self-contained repository outcome. "
         + "Skip when: the agent must make an unresolved product decision, credentials/network are required, only one tiny lookup is needed, or work is micro-edits/live discussion."
+        + _specialized_note("local_ai_work")
     )
 
 
@@ -947,11 +952,13 @@ def _desc_artifact() -> str:
             " Source: action=source, path, line_start/line_end; workspace-confined, file/range/output bounded with SHA-256 provenance."
             " Use when: exact source or evidence text is required after indexed discovery."
             " Skip when: no source slice is needed or the existing compact result is sufficient."
+            f"{_specialized_note('local_ai_artifact')}"
         )
     return (
         "Fetch one exact source or log slice or bounded binary artifact metadata. Binary payloads are never inlined in MCP responses. Evidence IDs start with E."
         " Use when: exact source or evidence text is required after indexed discovery."
         " Skip when: no source slice is needed or the existing compact result is sufficient."
+        f"{_specialized_note('local_ai_artifact')}"
     )
 
 
@@ -1714,6 +1721,17 @@ def _compact(
         projected_value.pop("next_offset", None)
     value = attach_accounting(projected_value)
     projected = PROJECTOR.project(value, AGENT_NAME, task_kind, extra_fields=extra_fields)
+    if (
+        task_kind == "coord"
+        and options.get("action") == "plan_get"
+        and isinstance(raw_value, dict)
+        and raw_value.get("success") is True
+        and isinstance(raw_value.get("plan"), dict)
+        and isinstance(projected, dict)
+        and projected.get("success") is True
+    ):
+        # Empty plan fields (for example tasks/spec_refs) are meaningful state.
+        projected["plan"] = copy.deepcopy(raw_value["plan"])
     if exact_artifact_text is not None and isinstance(projected, dict):
         projected = dict(projected)
         projected["text"] = exact_artifact_text
@@ -2765,6 +2783,11 @@ def _compact_endpoint_stats(value: Any) -> dict[str, Any]:
                 item[key] = round(float(metric), 1)
         status = raw.get("status")
         item["status"] = status if isinstance(status, str) and status in {"failing", "slow", "active"} else "unknown"
+        raw_issues = raw.get("issues")
+        if isinstance(raw_issues, (list, tuple)):
+            item["issues"] = list(dict.fromkeys(issue for issue in raw_issues if issue in {"failing", "slow"}))
+        else:
+            item["issues"] = [item["status"]] if item["status"] in {"failing", "slow"} else []
         items.append(item)
 
     priority = {"failing": 0, "slow": 1, "active": 2, "unknown": 3}
@@ -3207,7 +3230,8 @@ def local_ai_task(
                 "error": str(admission.get("reason", "root family budget denied")),
                 "budget": admission,
             }
-        _CURRENT_ROOT_FAMILY_RESERVATION.set({"family": family_key, "tokens": budget_tokens, "scope": budget_scope})
+        if admission.get("status") == "accepted":
+            _CURRENT_ROOT_FAMILY_RESERVATION.set({"family": family_key, "tokens": budget_tokens, "scope": budget_scope})
     if action == "continue":
         if profile:
             return {"success": False, "unsupported": True, "error": "Conversations do not support profiles"}
@@ -5105,7 +5129,7 @@ def local_ai_rag(
     path: str = "",
     file: str = "",
 ) -> dict[str, Any]:
-    """Fallback semantic retrieval after deterministic and indexed repository evidence. Search defaults workspace to the explicit repository root. Optional reranking requires balanced-or-higher profile and the default-off `features.local_reranking` qualification flag; retrieval remains available without it. Document ingestion requires non-empty content; title and metadata are optional. Diagram ingestion requires image_path; caption and metadata are optional. Raster diagrams are indexed as metadata-only; SVG text nodes are indexed with their extraction provenance. Use when: cheaper indexed paths are insufficient. Skip when: deterministic or indexed evidence already answers the question."""
+    """Fallback semantic retrieval after deterministic and indexed repository evidence. Search defaults workspace to the explicit repository root. Optional reranking is enabled by default on every hardware profile and can be disabled with `features.local_reranking=false`; CUDA is preferred on NVIDIA, with CPU fallback. Document ingestion requires non-empty content; title and metadata are optional. Diagram ingestion requires image_path; caption and metadata are optional. Raster diagrams are indexed as metadata-only; SVG text nodes are indexed with their extraction provenance. Use when: cheaper indexed paths are insufficient. Skip when: deterministic or indexed evidence already answers the question."""
     if not FEATURES.rag:
         return {"success": False, "unsupported": True, "error": "RAG backend is disabled (features.rag=false in config.toml)"}
     valid_actions = tuple(RagAction.__args__)

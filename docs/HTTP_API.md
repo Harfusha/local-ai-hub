@@ -1,5 +1,22 @@
 # HTTP API
 
+`POST /api/search` skips exact total counting by default to keep repository
+search responsive. Its response reports `count_exact`; callers that need a
+precise `total_matches` can send `exact_count: true`. `exact_count` must be a
+JSON boolean. When omitted or false, clients must treat `total_matches` as
+non-exact and use `count_exact` as the authority.
+
+Code declaration lookup (`POST /api/code/declaration` and legacy
+`GET /api/code/find_declaration`) returns HTTP 404 with
+`error_code=declaration_not_found`, `terminal=true` and `retryable=false` when
+the requested symbol is absent. An empty symbol returns HTTP 400 with
+`error_code=invalid_symbol`; successful lookups return HTTP 200.
+
+`POST /api/patch/validate` returns HTTP 200 when validation completes, including
+when `valid=false`; `success` reports that the validation ran, while `valid` and
+`syntax_valid` report its result. Missing, empty or non-string patch input
+returns a terminal HTTP 400 response.
+
 Patch and repair operations forward verification receipts produced by the command
 broker. A successful command without a receipt reports
 `verification_receipt_warning`; it does not mint fallback evidence or establish

@@ -116,13 +116,13 @@ def lexical_precision_query(query: str) -> str:
 
 
 def default_search_mode(query: str) -> str:
-    """Keep the direct repository service default exhaustive and lexical."""
-    return "lexical"
+    """Use lexical for symbol-bearing queries and hybrid otherwise."""
+    return "lexical" if prefers_lexical_precision(query) else "hybrid"
 
 
 def default_agent_search_mode(query: str) -> str:
-    """Use hybrid for natural language and lexical for symbol-bearing agent queries."""
-    return "lexical" if prefers_lexical_precision(query) else "hybrid"
+    """Share the query-aware default with direct service callers."""
+    return default_search_mode(query)
 
 
 _SEMANTIC_QUERY_TERMS = {

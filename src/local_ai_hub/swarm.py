@@ -1101,7 +1101,12 @@ def execute_swarm_dag(
                     out = fn()
                     success = True
                     if isinstance(out, dict):
-                        success = out.get("success", True) is True
+                        if "success" in out:
+                            success = out["success"] is True
+                        elif "error" in out or "errors" in out or "failed" in out:
+                            success = False
+                        else:
+                            success = True
                     elif isinstance(out, bool):
                         success = out
                     return step_id, success, out

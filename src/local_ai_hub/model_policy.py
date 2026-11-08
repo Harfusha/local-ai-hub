@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 import math
+import re
 from typing import Any
 
 from .prompt_contracts import capability_for
@@ -248,7 +249,14 @@ class ModelExecutionPolicy:
     @staticmethod
     def _is_small_model(model: str) -> bool:
         low = _clean_str(model).lower()
-        return any(tag in low for tag in ("0.5b", "1.5b", "3b", ":1b", ":2b"))
+        patterns = (
+            r"(?:^|[\W_])0?\.5b\b",
+            r"(?:^|[\W_])1\.5b\b",
+            r"(?:^|[\W_])(?<![0-9])3b\b",
+            r"(?:^|[\W_])1b\b",
+            r"(?:^|[\W_])2b\b",
+        )
+        return any(re.search(pat, low) for pat in patterns)
 
     def apply_payload(
         self,

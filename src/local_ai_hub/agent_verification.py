@@ -636,6 +636,7 @@ def evaluate_completion_receipts(
     receipts: tuple[VerificationReceipt, ...] | list[VerificationReceipt],
     *,
     owner: str,
+    valid_owners: Any | None = None,
     repository_revision: str = "",
     mutation_generation: int = 0,
     mapped_receipt_ids: Mapping[str, str] | None = None,
@@ -721,6 +722,7 @@ def evaluate_completion_receipts(
     if invalid_verification_rules:
         unsatisfied.append("verification_rules")
     expected_owner = str(owner or "").strip()
+    owners = set(valid_owners) if valid_owners is not None else ({expected_owner} if expected_owner else set())
     expected_revision = str(repository_revision or "").strip()
     expected_generation = int(mutation_generation)
     mappings = mapped_receipt_ids or {}
@@ -738,7 +740,7 @@ def evaluate_completion_receipts(
             or not str(receipt.evidence_id or "").strip()
         ):
             unsatisfied.append(criterion)
-        elif not expected_owner or receipt.owner != expected_owner:
+        elif expected_owner and receipt.owner not in owners:
             unsatisfied.append(criterion)
         elif active_verification_rules and not expected_revision:
             unsatisfied.append(criterion)
@@ -754,6 +756,7 @@ def evaluate_completion_receipts(
             receipt,
             artifact_store,
             expected_owner=expected_owner,
+            valid_owners=owners,
             require_repository_revision=require_repository_revision,
             expected_project_command=(configured_commands or {}).get(criterion),
             expected_project_config_digest=(
@@ -812,6 +815,7 @@ def _receipt_evidence_matches(
     *,
     expected_owner: str,
     require_repository_revision: bool,
+    valid_owners: Any | None = None,
     expected_project_command: Any | None = None,
     expected_project_config_digest: str = "",
     expected_project_environment_sha256: str = "",
@@ -822,7 +826,8 @@ def _receipt_evidence_matches(
     evidence_store: Any | None = None,
 ) -> bool:
     """Bind positive receipts to complete proof with exact task/owner/repository pins."""
-    if artifact_store is None or not expected_owner or receipt.owner != expected_owner:
+    owners = set(valid_owners) if valid_owners is not None else ({expected_owner} if expected_owner else set())
+    if artifact_store is None or not expected_owner or receipt.owner not in owners:
         return False
     if require_repository_revision and not receipt.repository_revision.strip():
         return False
@@ -859,7 +864,8 @@ def _receipt_evidence_matches(
         return False
     if (
         proof.get("task_id") != receipt.task_id
-            or proof.get("owner") != expected_owner
+            or proof.get("owner") != receipt.owner
+            or proof.get("owner") not in owners
             or proof.get("repository_revision") != receipt.repository_revision
             or proof.get("mutation_generation") != receipt.mutation_generation
     ):
@@ -1023,7 +1029,8 @@ def _receipt_evidence_matches(
                 execution_record.get("schema") != "command_execution_record.v2"
                 or execution_record.get("command_id") != receipt.command_id
                 or execution_record.get("task_id") != receipt.task_id
-                or execution_record.get("owner") != expected_owner
+                or execution_record.get("owner") != receipt.owner
+                or (expected_owner and execution_record.get("owner") not in owners)
                 or execution_record.get("criterion") != receipt.criterion
                 or execution_record.get("evidence_id") != receipt.evidence_id
                 or execution_record.get("receipt_sha256") != receipt_sha256
@@ -1781,6 +1788,21 @@ class VerificationStore:
             else current_mutation_generation
         )
         expected_owner = str(task_state.owner or "").strip() if task_state else ""
+        adopted_owners = set(state_data.get("adopted_owners", []) or []) if isinstance(state_data, Mapping) else set()
+        if self.state_store and getattr(self.state_store, "enabled", False):
+            try:
+                with closing(connect_sqlite(self.state_store.db_path)) as con:
+                    for (pl_raw,) in con.execute(
+                        "SELECT payload FROM agent_events WHERE stream_id = ? AND kind = 'task.claimed'",
+                        (f"task:{task_id}",),
+                    ).fetchall():
+                        pl = json.loads(pl_raw) if isinstance(pl_raw, str) else pl_raw
+                        if isinstance(pl, dict) and pl.get("previous_owner"):
+                            adopted_owners.add(str(pl["previous_owner"]))
+            except Exception:
+                pass
+        valid_owners = {expected_owner, *adopted_owners} - {""}
+
         from .agent_tasks import _task_scope_root
         from .repository_scope import canonical_repository_root
 
@@ -1820,7 +1842,7 @@ class VerificationStore:
         visible_receipts = tuple(
             receipt
             for receipt in latest_by_criterion.values()
-            if not expected_owner or receipt.owner == expected_owner
+            if not expected_owner or receipt.owner in valid_owners
         )
         target_criteria = required_criteria
         gated = evaluate_completion_receipts(
@@ -1828,6 +1850,7 @@ class VerificationStore:
             target_criteria,
             visible_receipts,
             owner=expected_owner,
+            valid_owners=valid_owners,
             repository_revision=expected_revision,
             mutation_generation=expected_generation,
             mapped_receipt_ids=(task_state.verification_receipts if task_state else None),

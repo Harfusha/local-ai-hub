@@ -170,11 +170,13 @@ def test_task_adoption_and_claim(tmp_path: Path):
     assert fetched is not None
     assert fetched.owner == "gemini"
 
-    # Verify that verification receipt and proof artifact were cleanly rebound to new owner gemini
-    rebound_rcpt = verification_store.completion(task.task_id, current_revision="rev-1").receipts[0]
-    assert rebound_rcpt.owner == "gemini"
+    # Verify that verification receipt and proof artifact remain immutable with original author codex, while completion accepts valid adoption lineage
+    completion_result = verification_store.completion(task.task_id, current_revision="rev-1")
+    assert completion_result.complete is True
+    rebound_rcpt = completion_result.receipts[0]
+    assert rebound_rcpt.owner == "codex"
     rebound_doc = artifact_store.get(ev_id)
-    assert json.loads(rebound_doc["text"])["owner"] == "gemini"
+    assert json.loads(rebound_doc["text"])["owner"] == "codex"
 
 
 def test_dense_response_profile():

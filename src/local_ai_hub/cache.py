@@ -214,7 +214,7 @@ class MemoryLRUCache:
         num_shards = 16 if isinstance(shards, bool) or not isinstance(shards, int) or shards <= 0 else shards
         self.max_entries = max(1, int(max_ent))
         self.ttl_seconds = max(0.0, float(ttl))
-        self.num_shards = max(1, int(num_shards))
+        self.num_shards = max(1, min(int(num_shards), self.max_entries))
         self._shard_max = max(1, self.max_entries // self.num_shards)
         self._locks = [threading.RLock() for _ in range(self.num_shards)]
         self._shards: list[OrderedDict[str, tuple[float, Any]]] = [OrderedDict() for _ in range(self.num_shards)]

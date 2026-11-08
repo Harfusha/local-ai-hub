@@ -131,6 +131,34 @@ class ExternalGpuReservationStore:
             except OSError:
                 return False
 
+    def renew_internal(self, digest: str) -> bool:
+        """Refresh a live digest-only internal fence without changing ownership."""
+        _validate_digest(digest)
+        with self._locked():
+            if self.metadata_path.exists() or self.path.is_symlink():
+                return False
+            try:
+                with self.path.open("rb") as stream:
+                    before = os.fstat(stream.fileno())
+                    if not stat.S_ISREG(before.st_mode) or before.st_size != 64:
+                        return False
+                    raw_digest = stream.read(65)
+                    after = os.fstat(stream.fileno())
+                    current = self.path.stat(follow_symlinks=False)
+                    if (not os.path.samestat(before, after)
+                            or not os.path.samestat(after, current)
+                            or raw_digest.decode("ascii") != digest):
+                        return False
+                    now = self._clock()
+                    os.utime(self.path, (now, now))
+                    renewed = os.fstat(stream.fileno())
+                    if self.path.is_symlink():
+                        return False
+                    current = self.path.stat(follow_symlinks=False)
+                    return os.path.samestat(after, renewed) and os.path.samestat(renewed, current)
+            except (OSError, UnicodeDecodeError):
+                return False
+
     def release_internal(self, digest: str) -> bool:
         _validate_digest(digest)
         with self._locked():

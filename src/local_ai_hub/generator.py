@@ -99,24 +99,40 @@ def _model_capability_guidance(cfg: dict[str, Any]) -> str:
     return " Model capability contract: " + " | ".join(parts) + "."
 
 
+_SEMANTIC_TASK_ACTION_ORDER = (
+    "delegate", "explore", "reason", "review", "second_opinion", "compress"
+)
+_SEMANTIC_TASK_ACTION_GUIDANCE = {
+    "delegate": 'Use `local_ai_task(action="delegate")` for bounded implementation or test suggestions.',
+    "explore": 'Use `local_ai_task(action="explore")` for bounded semantic exploration.',
+    "reason": 'Use `local_ai_task(action="reason")` for bounded reasoning after gathering evidence.',
+    "review": 'Use `local_ai_task(action="review")` for an evidence-grounded semantic review.',
+    "second_opinion": 'Use `local_ai_task(action="second_opinion")` for independent critique.',
+    "compress": 'Use `local_ai_task(action="compress")` for semantic condensation.',
+}
+
+
+def _available_semantic_task_actions(fs: FeatureSet) -> tuple[str, ...]:
+    available = set(fs.supported_task_actions())
+    return tuple(action for action in _SEMANTIC_TASK_ACTION_ORDER if action in available)
+
+
 def _semantic_handoff_contract(fs: FeatureSet) -> str:
-    semantic_actions = (
-        {"delegate", "review"} if fs is None else
-        set(fs.supported_task_actions()) & {"delegate", "explore", "reason", "review", "second_opinion", "compress"}
-    )
+    semantic_actions = set(_available_semantic_task_actions(fs))
     selector = "|".join(
-        f'"{action}"' for action in ("delegate", "explore", "reason", "review", "second_opinion", "compress")
+        f'"{action}"' for action in _SEMANTIC_TASK_ACTION_ORDER
         if action in semantic_actions
     )
     actionable_guidance = (
-        ' For non-trivial edits, request evidence-grounded local test suggestions and review the diff using `local_ai_task(action="review")` when suitable; use `local_ai_task(action="delegate")` for test suggestions.'
-        if {"delegate", "review"} <= semantic_actions
-        else " Local semantic actions may be unavailable at this profile."
+        " Use the matching exposed semantic action by default after deterministic/indexed evidence when backend and model quality checks pass. "
+        + " ".join(_SEMANTIC_TASK_ACTION_GUIDANCE[action] for action in _SEMANTIC_TASK_ACTION_ORDER if action in semantic_actions)
+        if semantic_actions
+        else " No semantic task action is advertised at this profile; do not guess or call hidden actions."
     )
     return (
-        "Semantic delegation is on-demand and optional after deterministic/indexed evidence. "
+        "Semantic delegation is on-demand under the active schema and quality gates. "
         + (f"This profile advertises `local_ai_task(action={selector})`; " if selector else "No semantic task action is advertised at this profile; ")
-        + "cloud planning is never blocked by mandatory local handoffs. "
+        + "use matching exposed actions by default after deterministic/indexed evidence; cloud planning is never blocked by mandatory local handoffs. "
         "Deterministic/indexed evidence is authoritative; the primary agent accepts."
         + actionable_guidance
         + " Actions unavailable under this profile are omitted."
@@ -133,6 +149,20 @@ def _trigger_map_lines(fs: FeatureSet) -> list[str]:
 def _actions_note(actions: list[str]) -> str:
     """Keep generated tool descriptions aligned with each active action enum."""
     return f" Supported actions: {', '.join(actions)}." if actions else " No actions are enabled."
+
+
+def _active_tool_action_lines(fs: FeatureSet) -> list[str]:
+    """Render the exact profile-enabled MCP tool/action surface from its schema registry."""
+    from .operation_contracts import OPERATION_CONTRACTS, operation_actions, operation_enabled
+
+    lines: list[str] = []
+    for tool_name in OPERATION_CONTRACTS:
+        if not operation_enabled(fs, tool_name):
+            continue
+        actions = list(operation_actions(tool_name, fs))
+        action_text = ", ".join(f"`{action}`" for action in actions) if actions else "no action selector"
+        lines.append(f"- `{tool_name}`: {action_text}")
+    return lines
 
 
 def context_pack_guidance() -> str:
@@ -188,6 +218,8 @@ def generate_skill_markdown(cfg: dict[str, Any]) -> str:
 
     trigger_map = _trigger_map_lines(fs)
     trigger_lines = "\n".join(trigger_map) if trigger_map else "- (all Hub tools currently disabled in configuration)"
+    active_tool_actions = _active_tool_action_lines(fs)
+    active_tool_surface = "\n".join(active_tool_actions) if active_tool_actions else "- (all Hub tools currently disabled in configuration)"
     recipe_lines = "\n".join(fs.recipe_lines())
 
     # Delegation section
@@ -474,7 +506,12 @@ description: Local-first routing for Codex, Gemini, Claude, Cursor, Windsurf, VS
 Trigger map:
 {trigger_lines}
 
-Recipes (guidance, not gates):
+Active MCP tools and profile-enabled actions:
+{active_tool_surface}
+
+This generated surface reflects configuration and profile feature gates. Runtime authorization, task permissions, backend health, and quality gates are checked when an action runs.
+
+Recommended Hub routes (apply the matching route by default):
 {recipe_lines}
 
 Direct ownership is the default. Do not delegate audits, inventory, status checks, or routine work. Use subagents only for independent bounded implementation that materially shortens the critical path, or on explicit request; see the simplified workflow spec.
@@ -623,6 +660,19 @@ The active tool surface reflects your configuration:
         step_i += 1
         wf_steps.append(f"{step_i}. Retrieve deterministic facts, then code-index/search evidence.")
         step_i += 1
+        endpoint_notes = ["call available `local_ai_repo` context/search directly from the main agent"]
+        if fs.artifacts:
+            endpoint_notes.append("use `local_ai_artifact` for exact source slices")
+        if fs.coord:
+            endpoint_notes.append("use `local_ai_coord` for relevant task lifecycle, memory, or shared state")
+        if fs.rag:
+            endpoint_notes.append("use `local_ai_rag` only after indexed evidence is insufficient")
+        wf_steps.append(
+            f"{step_i}. Use applicable Hub endpoints directly; native subagent ownership does not replace these calls: "
+            + "; ".join(endpoint_notes)
+            + "."
+        )
+        step_i += 1
         if local_semantic_enabled:
             wf_steps.append(f"{step_i}. Retrieve deterministic/indexed evidence, then {semantic_handoff} Use `context` for compact evidence and call `solve` after evidence for repository implementation support.")
         else:
@@ -635,19 +685,39 @@ The active tool surface reflects your configuration:
 
     wf_lines = "\n".join(wf_steps)
     task_notes = ""
-    if fs.tasks and fs.has_any_model():
+    task_actions = set(fs.supported_task_actions()) if fs.tasks and fs.has_any_model() else set()
+    semantic_task_actions = _available_semantic_task_actions(fs) if task_actions else ()
+    if task_actions:
+        task_action_list = "|".join(f'`{action}`' for action in fs.supported_task_actions())
+        semantic_action_guidance = " ".join(
+            _SEMANTIC_TASK_ACTION_GUIDANCE[action] for action in semantic_task_actions
+        )
+        task_specific_sections: list[str] = []
+        if "second_opinion" in semantic_task_actions:
+            task_specific_sections.append(
+                "## Local second opinion\n\n"
+                "Use `local_ai_task(action=\"second_opinion\")` for a bounded candidate decision. Include the evidence and uncertainty."
+            )
+        long_output_guidance = []
+        if "compress" in semantic_task_actions:
+            long_output_guidance.append(_SEMANTIC_TASK_ACTION_GUIDANCE["compress"])
+        if fs.artifacts:
+            long_output_guidance.append("Use `local_ai_artifact` for exact lines.")
+        if long_output_guidance:
+            task_specific_sections.append(
+                "## Long output and failures\n\n"
+                + " ".join(long_output_guidance)
+                + " Reuse cache/coalesced results, do not duplicate `in_progress` work, and make one bounded fallback when the hub is unavailable."
+            )
+        task_specific_notes = "\n\n".join(task_specific_sections)
         task_notes = f"""
 ## Local semantic work
 
-{semantic_handoff} Use `local_ai_task(action="delegate")` for bounded creation or implementation guidance, `local_ai_task(action="explore")` for semantic exploration, `local_ai_task(action="reason")` for reasoning, `local_ai_task(action="review")` for a semantic review, `local_ai_task(action="second_opinion")` for independent critique, and `local_ai_task(action="compress")` for semantic condensation. Use `local_ai_repo` and `local_ai_artifact` for exact facts, symbols and diffs; use the host-native command tool for bounded tests.
+This profile exposes `local_ai_task` actions: {task_action_list}. Use only exposed actions; local inference stays bounded and advisory. Keep bounded tests on the host-native command tool.
 
-## Local second opinion
+{semantic_handoff} {semantic_action_guidance}
 
-Use `local_ai_task(action="second_opinion")` for a bounded candidate decision. Include the evidence and uncertainty.
-
-## Long output and failures
-
-Use `local_ai_task(action="compress")` for semantic condensation and `local_ai_artifact` for exact lines. Reuse cache/coalesced results, do not duplicate `in_progress` work, and make one bounded fallback when the hub is unavailable.
+{task_specific_notes}
 """
     whole_task = ""
     if fs.work_orchestrator and "submit" in fs.supported_work_actions():
@@ -750,7 +820,7 @@ def generate_global_policy(cfg: dict[str, Any]) -> str:
     task_delegation = ""
     if fs.tasks and fs.has_any_model():
         task_delegation = (
-            "\n- " + _semantic_handoff_contract(fs) + " Cloud planning is never blocked by mandatory local handoffs; deterministic/indexed "
+            "\n- Semantic delegation is on-demand under the active schema and quality gates; tier-available semantic actions only. Cloud planning is never blocked by mandatory local handoffs; deterministic/indexed "
             "evidence governs facts, symbols, diffs and tests. Check model availability."
         )
     if fs.work_orchestrator:
@@ -790,7 +860,7 @@ def generate_global_policy(cfg: dict[str, Any]) -> str:
             + (' On first work in each stable root, inspect `.local-ai.toml` and any applicable `.local-ai.worktree.toml`; add only evidence-backed project exclusions, uncommon text/binary extensions, pinned documentation, and entry points, preserving existing values and relying on Hub defaults when sufficient. Then call `local_ai_repo(action="preprocess", root=ABS_ROOT)` once for idempotent registration; never force-refresh an existing registration or poll asynchronous preprocessing.' if fs.preprocessing else "")
             + "\n"
             f"\nAdoption gate:{cmd_gate}{agent_os_gate}"
-            + (f' For implementation, diagnosis, refactoring or complex review, call `local_ai_repo(action="solve")` after evidence and before native edits.' if "solve" in fs.supported_repo_actions() else " Keep analysis within exposed deterministic/indexed actions.")
+            + (' For implementation, diagnosis, refactoring or complex review, call `local_ai_repo(action="solve")` after evidence and before native edits.' if "solve" in fs.supported_repo_actions() else " Keep analysis within exposed deterministic/indexed actions.")
             + f"{task_review_hint} After edits, use the applicable indexed impact/review/security/evidence action before final validation.\n"
         )
 
@@ -807,11 +877,18 @@ def generate_global_policy(cfg: dict[str, Any]) -> str:
         )
 
     prioritization_bullets = []
+    active_tool_actions = _active_tool_action_lines(fs)
+    active_tool_names = [line.split(":", 1)[0].strip("- `") for line in active_tool_actions]
+    if active_tool_names:
+        prioritization_bullets.append(
+            "> - **Enabled Local AI Hub tools** (from current configuration and profile): "
+            + ", ".join(f"`{name}`" for name in active_tool_names)
+            + ". Use only live MCP action enums; runtime authorization and quality gates apply."
+        )
     prioritization_bullets.append(
         "> - **Tests, builds, lint, execution**: Use the agent host's native command tool for bounded checks in the target repository."
     )
     if fs.repo:
-        repo_action_list = [action for action in ("solve", "context", "search", "code_index", "review_diff", "security_audit") if action in fs.supported_repo_actions()]
         prioritization_bullets.append(
             "> - **Repository & Code Search**: Call an action advertised by the current local_ai_repo MCP schema with the project root. DO NOT use broad native discovery (find, dir /s, unconstrained rg, glob) or dump entire files."
         )
@@ -820,7 +897,7 @@ def generate_global_policy(cfg: dict[str, Any]) -> str:
             "> - **Agent OS Lifecycle & Project Memory**: Call `local_ai_coord(action=\"task_create\"|\"task_checkpoint\"|\"memory_record\"|\"memory_find\"|\"verify_completion\", ...)`. Proactively initialize task contracts, query memory, and record findings."
         )
     if fs.tasks and fs.has_any_model():
-        task_action_list = [action for action in ("review", "second_opinion", "compress") if action in fs.supported_task_actions()]
+        task_action_list = list(_available_semantic_task_actions(fs))
         if task_action_list:
             prioritization_bullets.append(
                 f"> - **Semantic Review & Second Opinion**: Call `local_ai_task(action=\"{'|'.join(task_action_list)}\")` before finalizing non-trivial edits."
@@ -847,7 +924,7 @@ def generate_global_policy(cfg: dict[str, Any]) -> str:
         "Explicit approval: `task_repair_session` repairs only unbound tasks via write-authorized broker; require absolute root, task/session IDs and audit reason; bind same task/session to plan.\n\n"
         f"{SINGLE_OWNER_CONTRACT}\n\n"
         f"Trigger map:\n{trigger_lines}\n\n"
-        f"Recipes (guidance, not gates):\n{recipe_lines}\n\n"
+        f"Recommended Hub routes (apply the matching route by default):\n{recipe_lines}\n\n"
         "Direct ownership is the default. Do not delegate audits, inventory, status checks, or routine work; see the simplified workflow spec.\n"
         f"{task_delegation}\n"
         "- Use native Codex subagents only for independent bounded implementation or an explicit user request.\n"
@@ -992,18 +1069,21 @@ Load and follow this skill before any coding or repository task. Apply its disco
 
 def generate_token_economy_policy(cfg: dict[str, Any] | None = None) -> str:
     """Generate the standard TOKEN ECONOMY POLICY block."""
-    local_model_enabled = True
+    local_model_line = ""
     if cfg:
         try:
             fs = FeatureSet.from_config(cfg)
-            local_model_enabled = fs.tasks and fs.has_any_model()
+            task_actions = fs.supported_task_actions() if fs.tasks and fs.has_any_model() else []
+            if task_actions:
+                action_list = "|".join(f"`{action}`" for action in task_actions)
+                local_model_line = (
+                    f"- Local model routing follows the active `{fs.hardware_profile}` hardware profile and user overrides. "
+                    f"This profile exposes `local_ai_task` actions: {action_list}; use only these actions. "
+                    "Consult `docs/MODEL_CAPABILITIES.md`; configured routes do not prove models are installed. "
+                    "Deterministic/indexed tools remain authoritative for exact facts, symbols, diff and tests.\n"
+                )
         except Exception:
             pass
-    local_model_line = (
-        "- Local model routing follows the active hardware profile and user overrides; use `local_ai_task` for bounded semantic generation, reasoning, review, independent second opinions and compression. Consult `docs/MODEL_CAPABILITIES.md`; configured routes do not prove models are installed. Deterministic/indexed tools remain authoritative for exact facts, symbols, diff and tests.\n"
-        if local_model_enabled
-        else ""
-    )
     return (
         "<!-- BEGIN TOKEN ECONOMY POLICY -->\n"
         "- Before coding or repository work, load `local-ai-orchestrator` and `token-economizer` when installed, even under deadline pressure.\n"
@@ -1185,7 +1265,7 @@ def generate_mcp_tool_schemas(cfg: dict[str, Any]) -> dict[str, dict[str, Any]]:
         task_actions = fs.supported_task_actions()
         schemas["local_ai_task"] = {
             "name": "local_ai_task",
-            "description": f"Tiered bounded local-model work ({fs.fast_model} quick, {fs.general_model} ordinary, {fs.smart_model} more involved, {reasoning_tier} hardest) for semantic generation, reasoning, review, independent second opinions and semantic compression; use deterministic/indexed tools for exact facts, symbols, diff and tests. {_semantic_handoff_contract(fs)}" + _actions_note(task_actions),
+            "description": f"Tiered bounded local-model operations using {fs.fast_model} for quick work, {fs.general_model} for ordinary work, {fs.smart_model} for involved work, and {reasoning_tier} for hardest work; use deterministic/indexed tools for exact facts, symbols, diff and tests. {_semantic_handoff_contract(fs)}" + _actions_note(task_actions),
             "parameters": operation_parameters_schema("local_ai_task", fs),
         }
 
@@ -1243,7 +1323,8 @@ def generate_antigravity_instructions(cfg: dict[str, Any] | None = None) -> str:
     """Generate high-priority instructions for Gemini / Antigravity MCP directory."""
     fs = FeatureSet.from_config(cfg or {})
     repo_actions = [action for action in ("search", "code_index", "context", "solve") if action in fs.supported_repo_actions()]
-    task_actions = [action for action in ("review", "second_opinion", "compress") if action in fs.supported_task_actions()]
+    task_actions = list(_available_semantic_task_actions(fs))
+    active_tool_actions = _active_tool_action_lines(fs)
     lines = [
         "# Local AI Hub MCP Instructions for Antigravity & Gemini",
         "",
@@ -1254,6 +1335,9 @@ def generate_antigravity_instructions(cfg: dict[str, Any] | None = None) -> str:
         lines.append(f"- **Search code & repository facts**: Call an advertised local_ai_repo action ({'|'.join(repo_actions)}) with the project root. Avoid unconstrained directory dumping.")
     if task_actions:
         lines.append(f"- **Semantic code review & second opinions**: Call exposed local_ai_task actions ({'|'.join(task_actions)}).")
+    if active_tool_actions:
+        lines.extend(["", "## Active MCP tools and profile-enabled actions", *active_tool_actions,
+                      "", "This generated list reflects configuration and profile feature gates. Runtime authorization, task permissions, backend health, and quality gates are checked when an action runs."])
     if fs.agent_os or fs.coord:
         lines.append("- **Agent OS Lifecycle & durable memory**: Call local_ai_coord task, checkpoint and memory actions available in the current schema.")
     if fs.artifacts:

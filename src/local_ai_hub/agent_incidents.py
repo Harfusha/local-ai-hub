@@ -1376,8 +1376,9 @@ class IncidentStore:
                 WHERE ignored = 0 AND row_num = 1
                   AND (expires_at IS NULL OR expires_at > ?)
                 ORDER BY updated_at DESC
+                LIMIT ?
                 """,
-                (*scope_params, time.time()),
+                (*scope_params, time.time(), max(200, limit * 10)),
             )
             q_norm = query.strip().lower()
             results: list[dict[str, Any]] = []

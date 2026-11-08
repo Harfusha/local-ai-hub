@@ -1216,7 +1216,12 @@ class ProjectPreprocessor:
         matched_pairs: list[tuple[str, str]] = []
         matched_any = False
         for row in rows:
-            root_path = Path(str(row[0])).resolve(strict=False)
+            try:
+                root_path = Path(str(row[0])).resolve(strict=False)
+            except (OSError, RuntimeError, ValueError):
+                # One unavailable registered root must not terminate the watchdog
+                # dispatch thread or prevent events from reaching other projects.
+                continue
             rel = self._watch_relevant(root_path, changed)
             if rel is None:
                 continue

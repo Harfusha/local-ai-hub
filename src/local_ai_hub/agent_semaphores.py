@@ -75,6 +75,7 @@ class SemaphoreStore:
         with self._lock:
             con = self._connect()
             try:
+                con.execute("BEGIN IMMEDIATE")
                 with con:
                     row = con.execute(
                         "SELECT capacity, holders_json, queue_json FROM agent_semaphores WHERE name = ?",
@@ -91,6 +92,7 @@ class SemaphoreStore:
 
                     # Prune expired holders
                     active_holders = [h for h in holders if float(h.get("expires_at", 0)) > now]
+                    wait_queue = [w for w in wait_queue if w.get("owner") != owner]
 
                     if len(active_holders) < effective_capacity:
                         # Acquired
@@ -187,6 +189,7 @@ class SemaphoreStore:
             "name": clean_name,
             "capacity": effective_capacity,
             "held_count": len(active_holders),
+            "position": pos,
             "queue_position": pos,
             "reason": "capacity_reached",
             "waiting": False,
@@ -216,7 +219,10 @@ class SemaphoreStore:
                     remaining_holders = []
                     for h in holders:
                         if h.get("lease_id") == lease_id:
-                            released = True
+                            if owner and h.get("owner") and h.get("owner") != owner:
+                                remaining_holders.append(h)
+                            else:
+                                released = True
                         else:
                             remaining_holders.append(h)
 

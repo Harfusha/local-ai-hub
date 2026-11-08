@@ -413,6 +413,41 @@ def test_schema_inspect_handles_canonicalized_root_alias(monkeypatch, tmp_path):
     assert "order-items" in result["tables"]
 
 
+def test_schema_discovery_uses_pruned_walk_instead_of_recursive_rglob(monkeypatch, tmp_path):
+    from contextlib import closing
+    import sqlite3
+    from local_ai_hub.deterministic import DeterministicEngine
+
+    root = tmp_path / "repo"
+    ignored_db = root / ".venv" / "cache" / "ignored.db"
+    valid_db = root / "data" / "app.sqlite"
+    ignored_db.parent.mkdir(parents=True)
+    valid_db.parent.mkdir(parents=True)
+    ignored_db.write_bytes(b"not a sqlite database")
+    with closing(sqlite3.connect(valid_db)) as con:
+        con.execute("CREATE TABLE app (id INTEGER PRIMARY KEY)")
+        con.commit()
+
+    engine = DeterministicEngine(
+        {"deterministic": {"enabled": True}, "server": {"state_dir": str(tmp_path)}},
+        MagicMock(),
+        MagicMock(),
+        MagicMock(),
+    )
+    monkeypatch.setattr(
+        Path,
+        "rglob",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("recursive rglob must not run")),
+    )
+
+    result = engine.schema_inspect(str(root))
+    explain = engine.explain_query(str(root), "SELECT * FROM app WHERE id = 1")
+
+    assert result["success"] is True
+    assert result["db_path"] == "data/app.sqlite"
+    assert explain["success"] is True
+
+
 def test_agent_memory_reap_cleans_embeddings_and_fts():
     import sqlite3
     from local_ai_hub.agent_memory import MemoryStore, MemoryRecord, MemoryKind
@@ -486,6 +521,38 @@ def test_agent_policy_budgets_bounded():
         engine.get_budget(f"task_{i}")
     
     assert len(engine._budgets) <= 512
+
+
+def test_sqlite_discovery_skips_windows_reparse_junctions(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+    import stat
+    from local_ai_hub.deterministic import DeterministicEngine
+
+    junction = tmp_path / "junction"
+    walked = []
+
+    def fake_walk(root, *, topdown, followlinks):
+        assert topdown is True
+        assert followlinks is False
+        dirnames = ["junction"]
+        yield str(root), dirnames, []
+        if dirnames:
+            walked.append("junction")
+            yield str(junction), [], ["outside.sqlite"]
+
+    original_lstat = Path.lstat
+
+    def fake_lstat(path):
+        if path == junction:
+            return SimpleNamespace(st_mode=stat.S_IFDIR, st_file_attributes=0x400)
+        return original_lstat(path)
+
+    monkeypatch.setattr("local_ai_hub.deterministic.os.walk", fake_walk)
+    monkeypatch.setattr(Path, "lstat", fake_lstat)
+    monkeypatch.setattr(Path, "is_junction", lambda self: False, raising=False)
+
+    assert DeterministicEngine._find_sqlite_database(tmp_path) is None
+    assert walked == []
 
 
 

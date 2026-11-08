@@ -135,6 +135,25 @@ def test_caller_success_cannot_mint_native_receipt(environment):
         )
 
 
+def test_plan_binding_reports_missing_persisted_session(environment):
+    root, tasks, *_ = environment
+    task = tasks.create(
+        GoalContract(goal="Bind a plan", acceptance_criteria=["session is persisted"]),
+        context=ScopeContext(repository_id=str(root), session_id=""),
+        actor="agent_a", repo_root=str(root), task_id="execution_without_session",
+    )
+
+    assert task.context.session_id == ""
+    with pytest.raises(
+        ValueError,
+        match="execution task has no persisted session; repair its session before plan binding",
+    ):
+        agent_bridge.bind_plan_execution(
+            tasks, root=str(root), task_id=task.task_id, plan_id="plan_work",
+            plan_task_id="task_work",
+        )
+
+
 def test_delayed_checkpoint_sync_uses_latest_persisted_state(environment):
     _, tasks, _, _, storage, _, binding, _ = environment
     stale = tasks.get("execution_a")

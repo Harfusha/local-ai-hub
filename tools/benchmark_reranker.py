@@ -156,7 +156,6 @@ def run(*, repeats: int = 3, config_path: str | None = None) -> dict[str, Any]:
             ids = [item["id"] for item in case["candidates"]]
             baseline = evaluate_ranking(ids, case["relevant_ids"])
             samples: list[dict[str, Any]] = []
-            last_ranked = ids
             configured_cache = bool(getattr(reranker, "cache_enabled", True))
             try:
                 reranker.cache_enabled = False

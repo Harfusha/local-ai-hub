@@ -9,23 +9,24 @@
   "tasks": {
     "task_coverage": {
       "acceptance_criteria": [
-        "Every active MCP action maps to a prompt scenario and declared source contract.",
-        "Every tool property and action required/non-empty/allowed contract is indexed with type/default/bounds where declared.",
-        "Validation, feature/auth gates, side effects, retry semantics and important result branches have explicit coverage criteria.",
-        "Prompt, key, README, results, action map and contract index counts reconcile.",
-        "Focused contract/prompt tests pass; full test suite remains unrun and practical cases remain honestly NOT_RUN."
+        "Source-supported gated actions remain in prompts; missing live exposure is recorded GATED/UNAVAILABLE per run.",
+        "Only cases with fully duplicate objective and branches are removed or merged; unique action/subfunction coverage remains.",
+        "Prompt IDs, key, results, README, action map and contract index reconcile.",
+        "Every retained prompt has its own GPT-6 Luna low/medium chat result or concrete NOT_RUN/BLOCKED evidence.",
+        "Quality fixes and per-chat evidence, fixture and cleanup are recorded.",
+        "Full pytest remains unrun."
       ],
       "accountable_role": "primary",
       "blocker": null,
       "clarifications": [],
       "depends_on": [],
-      "description": "Completed active MCP subfunction coverage: 218 active action rows mapped, 346 declared tool input properties indexed, per-action required/non-empty/allowed fields, bounds, feature/effect/retry/output metadata, shared validators and auth/effect gates documented. Added case 129 for live schema branch audit. Focused contract tests and release checks pass; cases 114-129 remain NOT_RUN.",
+      "description": "Audit the full catalog for true redundancy and quality defects. Keep source-supported profile-gated MCP actions in coverage; per-session omission is not product removal. Repair docs and run every retained prompt in its own GPT-6 Luna low/medium isolated chat, recording exact blockers and results. Do not run full pytest.",
       "kind": "documentation",
-      "next_action": "Run selected prompt cases 114-129 in isolated chats when fixtures are available; retain NOT_RUN until each run has live per-action evidence; do not run the full suite.",
+      "next_action": "Audit remaining PARTIAL/GATED scenarios. Attempt case 118 route only if source proves it does not invoke inference; otherwise keep it GATED while gpu_admission_state is outcome_unknown. Continue bounded read-only cases and reconcile prompt/result counts.",
       "order": 1,
-      "title": "Add missing prompt scenarios",
+      "title": "Audit and stress-test prompt catalog",
       "work_phase": "verification",
-      "work_status": "done"
+      "work_status": "in_progress"
     }
   },
   "title": "Close missing evaluation prompt scenarios"

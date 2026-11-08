@@ -390,6 +390,8 @@ class LearningStore:
             raise KeyError(f"Candidate {candidate_id} not found")
         if current.status in (CandidateStatus.ROLLED_BACK, CandidateStatus.REJECTED):
             raise ValueError(f"Cannot advance candidate in terminal status '{current.status.value}'")
+        if new_status == CandidateStatus.PROMOTED:
+            raise ValueError("Direct advance to PROMOTED is prohibited; use promote() with approval")
 
         updated = ImprovementCandidate(
             candidate_id=current.candidate_id,
@@ -482,11 +484,20 @@ class LearningStore:
             )
 
         min_success = current.slo_thresholds.get("min_success_rate")
-        if min_success is not None and not observation.success:
-            return self._rollback(
-                current,
-                f"observed failure violated min_success_rate SLO {min_success:.2f}",
-            )
+        if min_success is not None:
+            current.metrics["slo_obs_total"] = int(current.metrics.get("slo_obs_total", 0)) + 1
+            if observation.success:
+                current.metrics["slo_obs_success"] = int(current.metrics.get("slo_obs_success", 0)) + 1
+            obs_total = current.metrics["slo_obs_total"]
+            obs_success = int(current.metrics.get("slo_obs_success", 0))
+            min_samples = int(current.slo_thresholds.get("min_samples", 3))
+            rate = obs_success / obs_total
+            if obs_total >= min_samples and rate < min_success:
+                return self._rollback(
+                    current,
+                    f"success rate {rate:.2f} ({obs_success}/{obs_total}) breached min_success_rate SLO {min_success:.2f}",
+                )
+            self._save(current)
 
         return None
 

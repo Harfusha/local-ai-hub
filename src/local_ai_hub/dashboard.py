@@ -6381,6 +6381,7 @@ function renderEndpointStatsView() {
     const p50 = item.p50_ms || 0;
     const p95 = item.p95_ms || 0;
     const p99 = item.p99_ms || 0;
+    const issues = Array.isArray(item.issues) ? item.issues : [item.status];
 
     let succClass = 'ok';
     let succText = `${item.success_rate != null ? item.success_rate.toFixed(1) : 100}%`;
@@ -6404,8 +6405,8 @@ function renderEndpointStatsView() {
       </td>
       <td style="padding:6px 8px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
         <code style="font-size:12px;font-weight:600;color:var(--text)" title="${esc(item.name)}">${esc(item.name)}</code>
-        ${item.status === 'slow' ? '<span class="pill warn-t" style="font-size:9px;margin-left:4px">SLOW</span>' : ''}
-        ${item.status === 'failing' ? '<span class="pill bad-t" style="font-size:9px;margin-left:4px">FAILING</span>' : ''}
+        ${issues.includes('slow') ? '<span class="pill warn-t" style="font-size:9px;margin-left:4px">SLOW</span>' : ''}
+        ${issues.includes('failing') ? '<span class="pill bad-t" style="font-size:9px;margin-left:4px">FAILING</span>' : ''}
       </td>
       <td style="padding:6px 8px">
         ${calls > 0 ? `

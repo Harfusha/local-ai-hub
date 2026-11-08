@@ -211,8 +211,15 @@ class IdleGPUWorker:
                 with self._lock:
                     self._model_details = [dict(item) for item in details]
                 row = next((x for x in details if str(x.get("name", "")) == self.model), None)
-                offload = float((row or {}).get("cpu_offload_fraction", 0.0) or 0.0)
-                if row is not None and offload > self.max_cpu_offload_fraction:
+                if row is None:
+                    with self._lock:
+                        self._stats["profile_rejections"] += 1
+                        self._last_error = f"background model '{self.model}' not found in loaded model details"
+                        self._retry_after = time.monotonic() + self.profile_retry_cooldown
+                    self._stop_and_release_gpu()
+                    return False
+                offload = float(row.get("cpu_offload_fraction", 0.0) or 0.0)
+                if offload > self.max_cpu_offload_fraction:
                     with self._lock:
                         self._stats["profile_rejections"] += 1
                         self._last_error = (
@@ -397,8 +404,14 @@ class IdleGPUWorker:
         text = str(response.get("response", "")).strip()
         try:
             data = json.loads(text)
-        except Exception:
-            data = {"purpose": text[:1200], "symbols": [], "dependencies": [], "side_effects": [], "risks": [], "tests": [], "keywords": []}
+            if not isinstance(data, dict):
+                return {"success": False, "error": f"Generated output is not a JSON object: {type(data).__name__}"}
+            if isinstance(schema, dict) and "required" in schema and isinstance(schema["required"], list):
+                missing_keys = [k for k in schema["required"] if k not in data]
+                if missing_keys:
+                    return {"success": False, "error": f"Generated JSON missing required keys: {missing_keys}"}
+        except Exception as exc:
+            return {"success": False, "error": f"Invalid JSON response: {str(exc)}"}
         return {
             "success": True,
             "model": self.model,

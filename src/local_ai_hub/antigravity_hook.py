@@ -178,11 +178,13 @@ def handle_pre_invocation(_payload: dict[str, Any]) -> dict[str, Any]:
     startup_note = "[Local AI Hub offline; auto-starting in background...]\n" if started else ""
     reminder = (
         startup_note +
-        "[LOCAL AI HUB POLICY] Mandate: Prioritize local-ai MCP tools via "
+        "[LOCAL AI HUB POLICY] For applicable repository work, directly call Local AI Hub MCP endpoints; using native subagents does not replace these calls. Invoke through "
         'call_mcp_tool(ServerName="local-ai", ToolName="<tool>", Arguments={...}).\n'
-        '- Repository search / context / facts: call local_ai_repo(action="context"|"search"|"code_index"|"security_audit", root="...").\n'
-        '- Task contracts, checkpoints, memory: call local_ai_coord(action="task_create"|"task_checkpoint"|"memory_record"|"memory_find", ...).\n'
-        '- Code review, second opinion, reasoning: call local_ai_task(action="review"|"second_opinion"|"explore", ...).\n'
+        '- Non-trivial repository work: start with local_ai_repo(action="context"|"search"|"code_index", root="..."); use local_ai_artifact for exact source slices.\n'
+        '- Multi-step work, memory, shared findings or leases: use the matching local_ai_coord action.\n'
+        '- Semantic retrieval: use local_ai_rag only after indexed paths are insufficient.\n'
+        '- Bounded semantic review/reasoning: use an exposed local_ai_task action when it fits; never send raw logs or open-ended edits.\n'
+        '- Run bounded tests with the host-native command tool. Skip only endpoints irrelevant to the task or unavailable in the active schema.\n'
         '- Token economy: Never read full files >80 lines; use local_ai_repo or targeted line slices (StartLine/EndLine).'
     )
     return {

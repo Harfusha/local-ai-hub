@@ -119,6 +119,12 @@ class EvidenceStore:
         file_hash = _clean_text(item.get("file_sha256") or item.get("content_hash") or "")
         if not path or not text or not file_hash:
             return None
+        if clean_root:
+            try:
+                cand = (Path(clean_root) / path).resolve()
+                cand.relative_to(Path(clean_root).resolve())
+            except Exception:
+                return None
         start = _safe_positive_int(item.get("start_line", 1), 1, minimum=1)
         end = _safe_positive_int(item.get("end_line", start), start, minimum=start)
         eid = self._id(clean_root, path, file_hash, start, end, text)
@@ -229,7 +235,33 @@ class EvidenceStore:
             try:
                 path = (Path(str(row["root"])) / str(row["path"])).resolve(strict=False)
                 if path.is_file():
-                    stale = hashlib.sha256(path.read_bytes()).hexdigest() != str(row["file_hash"])
+                    h = hashlib.sha256()
+                    with path.open("rb") as f:
+                        while chunk := f.read(65536):
+                            h.update(chunk)
+                    if h.hexdigest() != str(row["file_hash"]):
+                        stale = True
+                    else:
+                        try:
+                            with path.open("r", encoding="utf-8", errors="replace") as f:
+                                s_line = int(row["start_line"])
+                                e_line = int(row["end_line"])
+                                selected: list[str] = []
+                                line_count = 0
+                                for line_count, line in enumerate(f, start=1):
+                                    if s_line <= line_count <= e_line:
+                                        selected.append(line)
+                                    if line_count >= e_line:
+                                        break
+                            if s_line < 1 or line_count < e_line or len(selected) != e_line - s_line + 1:
+                                stale = True
+                            else:
+                                expected_snippet = "".join(selected).rstrip("\r\n")
+                                actual_snippet = str(row["text"]).rstrip("\r\n")
+                                if expected_snippet != actual_snippet:
+                                    stale = True
+                        except Exception:
+                            stale = True
                 else:
                     stale = True
             except Exception:

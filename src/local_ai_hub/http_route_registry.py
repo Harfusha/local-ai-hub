@@ -6,6 +6,9 @@ from types import MappingProxyType
 from typing import Mapping
 
 
+API_ROUTE_REGISTRIES_AUTHORITATIVE = True
+
+
 @dataclass(frozen=True, slots=True)
 class RouteRule:
     route_id: str

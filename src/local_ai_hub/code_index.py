@@ -3504,10 +3504,26 @@ class CodeIndex:
         return result
 
     def find_declaration(self, root: str, symbol_name: str, path: str | None = None) -> dict[str, Any]:
+        if not isinstance(symbol_name, str) or not symbol_name.strip():
+            return {
+                "success": False,
+                "status_code": 400,
+                "terminal": True,
+                "retryable": False,
+                "error_code": "invalid_symbol",
+                "error": "symbol cannot be empty",
+            }
         res = self.find_symbol(root, symbol_name, depth=0, include_body=True, include_info=True, relative_path=path, limit=5)
         symbols = res.get("symbols", [])
         if not symbols:
-            return {"success": False, "error": f"Declaration of '{symbol_name}' not found"}
+            return {
+                "success": False,
+                "status_code": 404,
+                "terminal": True,
+                "retryable": False,
+                "error_code": "declaration_not_found",
+                "error": f"Declaration of '{symbol_name}' not found",
+            }
         return {"success": True, "declaration": symbols[0]}
 
     def find_implementations(

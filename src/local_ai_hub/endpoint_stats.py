@@ -322,6 +322,7 @@ class EndpointStatsStore:
                 "p99_ms": 0.0,
                 "last_used": 0.0,
                 "status": "unused",
+                "issues": [],
             }
             if include_buckets:
                 entry["bucket_counts"] = [0] * NUM_BUCKETS
@@ -351,6 +352,7 @@ class EndpointStatsStore:
                             "p99_ms": 0.0,
                             "last_used": 0.0,
                             "status": "unused",
+                            "issues": [],
                         }
                         if include_buckets:
                             entry["bucket_counts"] = [0] * NUM_BUCKETS
@@ -391,13 +393,17 @@ class EndpointStatsStore:
                     p50, p95, p99 = calculate_percentiles(b_counts, calls)
                     succ_rate = round((succ / calls) * 100.0, 1) if calls > 0 else None
 
+                    issues: list[str] = []
                     status = "active"
                     if calls == 0:
                         status = "unused"
-                    elif succ_rate is not None and succ_rate < 90.0:
-                        status = "failing"
-                    elif p95 >= 1000.0:
-                        status = "slow"
+                    else:
+                        if succ_rate is not None and succ_rate < 90.0:
+                            issues.append("failing")
+                        if p95 >= 1000.0:
+                            issues.append("slow")
+                        if issues:
+                            status = issues[0]
 
                     entry = {
                         "type": itype,
@@ -411,6 +417,7 @@ class EndpointStatsStore:
                         "p99_ms": p99,
                         "last_used": l_used,
                         "status": status,
+                        "issues": issues,
                     }
                     if include_buckets:
                         entry["bucket_counts"] = b_counts
@@ -420,8 +427,8 @@ class EndpointStatsStore:
 
         all_items = list(known_map.values())
         unused_count = sum(1 for it in all_items if it["calls"] == 0)
-        slow_count = sum(1 for it in all_items if it["status"] == "slow")
-        failing_count = sum(1 for it in all_items if it["status"] == "failing")
+        slow_count = sum(1 for it in all_items if "slow" in it["issues"])
+        failing_count = sum(1 for it in all_items if "failing" in it["issues"])
 
         if not include_unused:
             items = [it for it in all_items if it["calls"] > 0]

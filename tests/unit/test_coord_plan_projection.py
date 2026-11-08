@@ -55,6 +55,36 @@ def test_plan_get_budget_projection_does_not_silently_drop_body() -> None:
         assert "file_revision" in compacted
 
 
+def test_plan_get_projection_preserves_empty_plan_sections() -> None:
+    plan = {
+        "id": "plan_empty",
+        "title": "Empty plan",
+        "spec_refs": [],
+        "tasks": {},
+    }
+    options = mcp_server._CURRENT_RESPONSE_OPTIONS.set({
+        "action": "plan_get",
+        "max_response_tokens": 6000,
+        "response_profile": "compact",
+    })
+    try:
+        compacted = mcp_server._compact(
+            {
+                "success": True,
+                "plan": plan,
+                "file_revision": "revision1234567890",
+                "rel_path": ".local-ai-hub/plans/plan_empty.plan.json",
+            },
+            "coord",
+            extra_fields=["plan", "file_revision", "rel_path"],
+        )
+    finally:
+        mcp_server._CURRENT_RESPONSE_OPTIONS.reset(options)
+
+    assert compacted["success"] is True
+    assert compacted["plan"] == plan
+
+
 def test_plan_task_edit_budget_rejection_keeps_mutation_ack_and_revision() -> None:
     raw = {
         "success": True,

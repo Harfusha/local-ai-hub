@@ -145,7 +145,20 @@ def project_response(
     for key in tuple(protected):
         if isinstance(out.get(key), str):
             out[key] = _dense(out[key], max(32, char_budget // 4))
-    return out
+    try:
+        if len(json_dumps(out, ensure_ascii=False, separators=(",", ":"))) <= char_budget:
+            return out
+    except Exception:
+        pass
+
+    # A protected-field set can itself exceed a tiny requested budget. Fail closed
+    # with a bounded retry instruction instead of returning an oversized success.
+    return {
+        "success": False,
+        "status": "response_budget_exceeded",
+        "error": "Response exceeds max_output_tokens; request a larger budget.",
+        "truncated": True,
+    }
 
 
 def supported_profiles() -> tuple[str, ...]:

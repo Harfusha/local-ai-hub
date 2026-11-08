@@ -271,9 +271,11 @@ class TestTokenEconomyPolicyGeneration:
         assert "Local model routing follows the active hardware profile" not in policy
 
     def test_policy_keeps_local_task_wording_when_enabled(self):
-        policy = generate_token_economy_policy({})
+        policy = generate_token_economy_policy({"ollama": {"enabled": True}})
 
-        assert "- Local model routing follows the active hardware profile and user overrides; use `local_ai_task` for bounded semantic generation, reasoning, review, independent second opinions and compression." in policy
+        assert "- Local model routing follows the active `" in policy
+        assert "This profile exposes `local_ai_task` actions:" in policy
+        assert "use only these actions." in policy
 
 
 class TestMcpSchemasGeneration:

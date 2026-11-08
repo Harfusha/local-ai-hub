@@ -757,32 +757,20 @@ def profile_overrides(profile_name: str, detected: dict[str, Any] | None = None)
         for gpu in gpus
     )
     has_npu = bool(detected.get("npus"))
-    nvidia_vram = max(
-        (
-            gpu.get("vram_mb", 0)
-            for gpu in gpus
-            if (
-                "nvidia" in str(gpu.get("vendor", "")).lower()
-                or "nvidia" in str(gpu.get("name", "")).lower()
-            )
-            and isinstance(gpu.get("vram_mb", 0), int)
-            and not isinstance(gpu.get("vram_mb", 0), bool)
-        ),
-        default=0,
-    )
     has_fp4 = any(bool(g.get("has_fp4")) for g in gpus if isinstance(g, dict))
     has_nvidia = any(
         "nvidia" in str(gpu.get("vendor", "")).lower()
         or "nvidia" in str(gpu.get("name", "")).lower()
         for gpu in gpus
     )
-    if profile_name in {"high", "max"} and has_nvidia:
+    if has_nvidia:
         result = _deep_merge_dict(result, {
             "models": {
-                "embedding_device": "cuda",
                 "reranker_device": "cuda",
             }
         })
+        if profile_name in {"high", "max"}:
+            result = _deep_merge_dict(result, {"models": {"embedding_device": "cuda"}})
 
     if has_fp4 and profile_name not in ("cpu", "integrated"):
         # Prefer FP4 quantized variants whenever hardware-accelerated (e.g. Blackwell / compute capability >= 12.0)
@@ -820,6 +808,7 @@ def profile_overrides(profile_name: str, detected: dict[str, Any] | None = None)
             "features": {"reranker": True},
             "openvino": {"enabled": True},
         })
+    result = _deep_merge_dict(result, {"features": {"local_reranking": True}})
     return result
 
 

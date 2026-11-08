@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import math
 import pytest
 
@@ -44,6 +45,32 @@ def test_project_response_nan_inf_max_output_tokens() -> None:
 
     res3 = project_response(payload, max_output_tokens=-100)
     assert res3["success"] is True
+
+
+def test_project_response_rejects_unfit_final_envelope() -> None:
+    payload = {
+        "success": True,
+        "status": "completed",
+        "work_id": "w" * 200,
+        "task_id": "t" * 200,
+        "error": "e" * 200,
+        "needs_agent": True,
+        "handoff_id": "h" * 200,
+        "artifact_id": "a" * 200,
+        "requires_primary_review": True,
+        "outcome_unknown": True,
+        "timed_out": True,
+        "in_progress": True,
+        "local_exploration_status": "x" * 200,
+        "rollback_status": "r" * 200,
+        "task_barrier_status": "b" * 200,
+        "task_barrier_error": "z" * 200,
+    }
+    result = project_response(payload, profile="debug", max_output_tokens=64)
+    wire = json.dumps(result, ensure_ascii=False, separators=(",", ":"))
+    assert len(wire) <= 64 * 4
+    assert result["success"] is False
+    assert result["status"] == "response_budget_exceeded"
 
 
 def test_response_protocol_inspection_helpers() -> None:

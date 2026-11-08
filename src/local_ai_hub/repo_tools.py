@@ -211,14 +211,27 @@ _SYMBOL_PATTERNS = [
 
 
 @lru_cache(maxsize=1)
-def _lower_expansion_characters() -> frozenset[str]:
-    """Characters emitted by multi-character Unicode lowercase mappings."""
+def _unicode_lower_expansions() -> tuple[frozenset[str], frozenset[str]]:
+    """Source and output characters of multi-character lowercase mappings."""
+    sources: set[str] = set()
     expanded: set[str] = set()
     for codepoint in range(0x110000):
-        lowered = chr(codepoint).lower()
+        source = chr(codepoint)
+        lowered = source.lower()
         if len(lowered) > 1:
+            sources.add(source)
             expanded.update(lowered)
-    return frozenset(expanded)
+    return frozenset(sources), frozenset(expanded)
+
+
+def _lower_expansion_characters() -> frozenset[str]:
+    """Characters emitted by multi-character Unicode lowercase mappings."""
+    return _unicode_lower_expansions()[1]
+
+
+def _lower_expansion_sources() -> frozenset[str]:
+    """Unicode source characters that expand when lowercased."""
+    return _unicode_lower_expansions()[0]
 
 
 @lru_cache(maxsize=1)
@@ -726,12 +739,11 @@ class RepositoryTools:
     ) -> tuple[str, list[str]]:
         """Cache decoded file content/hash by stat identity across different repo queries."""
         if max_bytes is not None:
-            # Re-stat even when the caller supplied a snapshot. The bounded read
-            # below also catches growth after this check without allocating it all.
+            # Re-stat and enforce the bound before cache lookup. Cache misses and
+            # identities that need content verification still use a bounded read.
             stat = path.stat()
             if stat.st_size > max_bytes:
                 raise FileTooLargeError(f"{path} exceeds {max_bytes} bytes")
-            force = True
         stat_was_supplied = stat is not None
         if stat is None:
             stat = path.stat()
@@ -1932,9 +1944,8 @@ class RepositoryTools:
         matching_relpaths: set[str] | None = None
         git_grep_candidates_authoritative = False
         ripgrep_candidates_authoritative = False
-        # Ripgrep uses simple Unicode folding. Restrict its candidate role to
-        # queries whose lowercase/casefold mapping is one-to-one; Python still
-        # verifies every candidate and computes exact counts.
+        # Ripgrep uses simple Unicode folding. Use it only where candidate
+        # coverage is provably complete; Python verifies candidates and counts.
         simple_casefold_query = all(
             len(char.lower()) == 1
             and len(char.casefold()) == 1
@@ -1948,18 +1959,23 @@ class RepositoryTools:
             for char in term
         )
         # Python verifies text with .lower(), while ripgrep uses Unicode simple
-        # folding. A query containing any character emitted by a multi-character
-        # lowercase mapping could match inside or across that expansion (for
-        # example ``i`` inside ``İstanbul``), so it cannot bound candidates.
+        # folding. Queries containing characters emitted by lowercase expansions
+        # need expansion-source characters added to the ripgrep candidate search;
+        # Python still verifies every candidate with the exact matching rules.
         lower_expansion_characters = _lower_expansion_characters()
+        expansion_sensitive_query = any(
+            char in lower_expansion_characters for char in phrase
+        )
         lower_complete_query = case_sensitive_symbol_query or not any(
-            char in lower_expansion_characters
-            for char in phrase
+            char in lower_expansion_characters for char in phrase
+        )
+        expansion_candidates_available = (
+            expansion_sensitive_query and self.use_ripgrep and bool(self._rg)
         )
         ripgrep_candidates_complete = (
             bool(terms)
             and len(terms) <= 16
-            and lower_complete_query
+            and (lower_complete_query or expansion_candidates_available)
             and (phrase.isascii() or simple_casefold_query)
         )
         if (
@@ -2075,6 +2091,8 @@ class RepositoryTools:
             ):
                 rg_cmd.extend(["-g", f"!{configured_state_relative.as_posix()}/**"])
             candidate_terms = [raw_phrase] if case_sensitive_symbol_query else terms[:16]
+            if expansion_sensitive_query and not case_sensitive_symbol_query:
+                candidate_terms.extend(sorted(_lower_expansion_sources()))
             for term in candidate_terms:
                 rg_cmd.extend(["-e", term])
             if (

@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import math
 import os
+from pathlib import Path
 import threading
 import time
 from typing import Any
@@ -126,7 +127,10 @@ class Reranker:
                     seen.add(key)
                     result.append((backend, device))
             return result
-        return [("torch", self.device)]
+        candidates = [("torch", self.device)]
+        if str(self.device).lower().startswith("cuda"):
+            candidates.append(("torch", "cpu"))
+        return candidates
 
     def _load_candidate(self, index: int) -> bool:
         candidates = self._candidate_specs()
@@ -175,11 +179,48 @@ class Reranker:
                 try:
                     model = CrossEncoder(self.model_name, local_files_only=True, **kwargs)
                 except Exception:
-                    models_cfg = self.config.get("models") if isinstance(self.config, dict) else None
-                    allow_hf = models_cfg.get("allow_hf_downloads") is True if isinstance(models_cfg, dict) else False
-                    if not allow_hf:
-                        raise
-                    model = CrossEncoder(self.model_name, **kwargs)
+                    # Check local snapshot cache across standard directories
+                    clean_name = str(self.model_name).replace("/", "--")
+                    bases = []
+                    if os.environ.get("HF_HOME"):
+                        bases.append(Path(os.environ["HF_HOME"]) / "hub")
+                    bases.extend([
+                        Path.home() / ".cache" / "huggingface" / "hub",
+                        Path(os.path.expanduser("~")) / ".cache" / "huggingface" / "hub",
+                    ])
+                    user_prof = os.environ.get("USERPROFILE")
+                    if user_prof:
+                        bases.append(Path(user_prof) / ".cache" / "huggingface" / "hub")
+                    if os.name == "nt":
+                        sys_drive = os.environ.get("SystemDrive", "C:")
+                        if not sys_drive.endswith(("\\", "/")):
+                            sys_drive += "\\"
+                        usr_name = os.environ.get("USERNAME")
+                        if usr_name:
+                            bases.append(Path(sys_drive) / "Users" / usr_name / ".cache" / "huggingface" / "hub")
+                    snapshot_found = None
+                    seen = set()
+                    for base in bases:
+                        b_str = str(base.resolve(strict=False))
+                        if b_str in seen:
+                            continue
+                        seen.add(b_str)
+                        hub_dir = base / f"models--{clean_name}" / "snapshots"
+                        if hub_dir.is_dir():
+                            for snapshot in hub_dir.iterdir():
+                                if snapshot.is_dir() and (snapshot / "config.json").exists() and ((snapshot / "model.safetensors").exists() or (snapshot / "pytorch_model.bin").exists()):
+                                    snapshot_found = str(snapshot)
+                                    break
+                        if snapshot_found:
+                            break
+                    if snapshot_found:
+                        model = CrossEncoder(snapshot_found, **kwargs)
+                    else:
+                        models_cfg = self.config.get("models") if isinstance(self.config, dict) else None
+                        allow_hf = models_cfg.get("allow_hf_downloads") is True if isinstance(models_cfg, dict) else False
+                        if not allow_hf:
+                            raise
+                        model = CrossEncoder(self.model_name, **kwargs)
                 if backend == "openvino" and str(device).upper().startswith("NPU"):
                     ov_model = getattr(model, "transformers_model", None)
                     if ov_model is None:
@@ -279,15 +320,14 @@ class Reranker:
                         scores = model.predict(predict_pairs, show_progress_bar=False, **predict_kwargs)
                         return scores[:len(pairs)] if is_openvino_npu else scores
             except Exception as exc:
-                if self.backend == "openvino" and self.active_backend == "openvino":
-                    failed = self.active_device or "openvino"
-                    self._load_error = f"openvino/{failed} inference failed: {exc}"
-                    self._load_error_time = time.time()
-                    self._model = None
-                    self.active_backend = None
-                    self.active_device = None
-                    if self._ensure_model(allow_cpu_fallback=allow_cpu_fallback):
-                        continue
+                failed = self.active_device or self.backend
+                self._load_error = f"{self.active_backend or self.backend}/{failed} inference failed: {exc}"
+                self._load_error_time = time.time()
+                self._model = None
+                self.active_backend = None
+                self.active_device = None
+                if allow_cpu_fallback and self._ensure_model(allow_cpu_fallback=allow_cpu_fallback):
+                    continue
                 return None
 
     def _needs_cuda_admission(self) -> bool:

@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from local_ai_hub.endpoint_stats import EndpointStatsStore
+from local_ai_hub.mcp_server import _compact_endpoint_stats
 
 
 def test_endpoint_stats_api_lifecycle(tmp_path: Path):
@@ -53,3 +54,23 @@ def test_endpoint_stats_api_lifecycle(tmp_path: Path):
     assert store.reset() is True
     global_res_after = store.get_stats()
     assert all(i["calls"] == 0 for i in global_res_after["items"])
+
+
+def test_compact_endpoint_stats_preserves_all_issue_dimensions():
+    response = _compact_endpoint_stats({
+        "success": True,
+        "items": [{
+            "type": "mcp",
+            "name": "local_ai_repo:search",
+            "calls": 10,
+            "success_rate": 80.0,
+            "p50_ms": 1500.0,
+            "p95_ms": 12000.0,
+            "p99_ms": 20000.0,
+            "status": "failing",
+            "issues": ["failing", "slow"],
+        }],
+    })
+
+    assert response["items"][0]["status"] == "failing"
+    assert response["items"][0]["issues"] == ["failing", "slow"]

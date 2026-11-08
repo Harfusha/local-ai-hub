@@ -395,8 +395,12 @@ def bind_plan_execution(
     if _task_scope_root(execution) != canonical:
         raise ValueError("root does not match the server-managed task scope")
     actual_session = execution.context.session_id
-    if not actual_session or (session_id and session_id != actual_session):
-        raise ValueError("session_id must match the execution task's persisted session")
+    if not actual_session:
+        raise ValueError(
+            "execution task has no persisted session; repair its session before plan binding"
+        )
+    if session_id and session_id != actual_session:
+        raise ValueError("session_id does not match the execution task's persisted session")
 
     workspace = RepoPlanWorkspace(canonical)
     plan = workspace.get_plan(plan_id)

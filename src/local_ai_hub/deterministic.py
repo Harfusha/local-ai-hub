@@ -7830,6 +7830,37 @@ def test_{sym}_regression_edge_cases():
             "findings": findings,
         }
 
+    @staticmethod
+    def _find_sqlite_database(p_root: Path) -> Path | None:
+        """Find a SQLite file without traversing generated or environment trees."""
+        ignored_dirs = {"node_modules", "venv", "tool-envs", "site-packages", ".venv"}
+        sqlite_suffixes = {".sqlite3", ".db", ".sqlite"}
+        for current, dirnames, filenames in os.walk(p_root, topdown=True, followlinks=False):
+            current_path = Path(current)
+            kept_dirs: list[str] = []
+            for dirname in dirnames:
+                if dirname.startswith(".") or dirname.lower() in ignored_dirs:
+                    continue
+                child = current_path / dirname
+                try:
+                    metadata = child.lstat()
+                    if stat.S_ISLNK(metadata.st_mode):
+                        continue
+                    reparse_point = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+                    if getattr(metadata, "st_file_attributes", 0) & reparse_point:
+                        continue
+                    is_junction = getattr(child, "is_junction", None)
+                    if callable(is_junction) and is_junction():
+                        continue
+                except OSError:
+                    continue
+                kept_dirs.append(dirname)
+            dirnames[:] = sorted(kept_dirs)
+            for filename in sorted(filenames):
+                if Path(filename).suffix.lower() in sqlite_suffixes:
+                    return current_path / filename
+        return None
+
     def schema_inspect(self, root: str, db_path: str | None = None) -> dict[str, Any]:
         """Inspect SQLite database schema (tables, columns, indexes, foreign keys)."""
         p_root = Path(self._root(root))
@@ -7838,17 +7869,7 @@ def test_{sym}_regression_edge_cases():
             p = Path(db_path)
             target_db = p if p.is_absolute() else p_root / p
         else:
-            for ext in ("*.sqlite3", "*.db", "*.sqlite"):
-                for cand in p_root.rglob(ext):
-                    try:
-                        rel_parts = cand.resolve(strict=False).relative_to(p_root).parts[:-1]
-                    except (ValueError, OSError):
-                        rel_parts = cand.parts[:-1]
-                    if not any(part.startswith((".", "node_modules", "venv")) or part in {"tool-envs", "site-packages", ".venv"} for part in rel_parts):
-                        target_db = cand
-                        break
-                if target_db:
-                    break
+            target_db = self._find_sqlite_database(p_root)
 
         if not target_db or not target_db.is_file():
             return {"success": False, "error": f"no SQLite database found in root: {root}"}
@@ -7891,17 +7912,7 @@ def test_{sym}_regression_edge_cases():
             p = Path(db_path)
             target_db = p if p.is_absolute() else p_root / p
         else:
-            for ext in ("*.sqlite3", "*.db", "*.sqlite"):
-                for cand in p_root.rglob(ext):
-                    try:
-                        rel_parts = cand.resolve(strict=False).relative_to(p_root).parts[:-1]
-                    except (ValueError, OSError):
-                        rel_parts = cand.parts[:-1]
-                    if not any(part.startswith((".", "node_modules", "venv")) or part in {"tool-envs", "site-packages", ".venv"} for part in rel_parts):
-                        target_db = cand
-                        break
-                if target_db:
-                    break
+            target_db = self._find_sqlite_database(p_root)
 
         if not target_db or not target_db.is_file():
             return {"success": False, "error": "no SQLite database found for query explain"}
@@ -8579,7 +8590,7 @@ def test_{sym}_regression_edge_cases():
     def extract_api_spec(self, root: str, framework: str | None = None) -> dict[str, Any]:
         """Statically extract API routes and endpoints into OpenAPI 3.0 schema."""
         p_root = Path(root).expanduser().resolve(strict=False)
-        skip_dirs = {".git", ".venv", "venv", "node_modules", "__pycache__"}
+        skip_dirs = {".git", ".venv", "venv", "tool-envs", "node_modules", "__pycache__"}
         endpoints: list[dict[str, Any]] = []
 
         # Check for static openapi.json / swagger.json in root
@@ -8605,14 +8616,106 @@ def test_{sym}_regression_edge_cases():
                 except Exception:
                     pass
 
-        for p in p_root.rglob("*.py"):
-            if any(part in skip_dirs for part in p.parts):
-                continue
+        scan_patterns = ("*.py", "*.js", "*.ts", "*.mjs", "*.php", "*.ctp", "*.html", "*.htm")
+        files_by_pattern: dict[str, list[Path]] = {pattern: [] for pattern in scan_patterns}
+        authoritative_registry = p_root / "src" / "local_ai_hub" / "http_route_registry.py"
+        registry_is_authoritative = False
+        if authoritative_registry.is_file():
+            try:
+                registry_tree = ast.parse(
+                    authoritative_registry.read_text(encoding="utf-8", errors="replace"),
+                    filename=str(authoritative_registry),
+                )
+                registry_is_authoritative = any(
+                    isinstance(node, ast.Assign)
+                    and any(
+                        isinstance(target, ast.Name)
+                        and target.id == "API_ROUTE_REGISTRIES_AUTHORITATIVE"
+                        for target in node.targets
+                    )
+                    and isinstance(node.value, ast.Constant)
+                    and node.value.value is True
+                    for node in registry_tree.body
+                )
+            except (OSError, SyntaxError, UnicodeError):
+                registry_is_authoritative = False
+
+        if registry_is_authoritative:
+            # This repository's canonical route registry is the same table the
+            # HTTP server dispatches. Parse it directly instead of walking and
+            # AST-parsing every test and tool file in the repository.
+            files_by_pattern["*.py"].append(authoritative_registry)
+        else:
+            for current_root, dirnames, filenames in os.walk(p_root, topdown=True, followlinks=False):
+                dirnames[:] = sorted(name for name in dirnames if name not in skip_dirs)
+                for filename in sorted(filenames):
+                    path = Path(current_root) / filename
+                    for pattern in scan_patterns:
+                        if path.match(pattern):
+                            files_by_pattern[pattern].append(path)
+                            break
+
+        for p in files_by_pattern["*.py"]:
             try:
                 content = p.read_text(encoding="utf-8", errors="replace")
                 tree = ast.parse(content, filename=str(p))
             except Exception:
                 continue
+
+            for declaration in tree.body:
+                if isinstance(declaration, ast.Assign):
+                    registry_names = [target.id for target in declaration.targets if isinstance(target, ast.Name)]
+                    registry_value = declaration.value
+                elif isinstance(declaration, ast.AnnAssign) and isinstance(declaration.target, ast.Name):
+                    registry_names = [declaration.target.id]
+                    registry_value = declaration.value
+                else:
+                    continue
+                for registry_name in registry_names:
+                    suffix = "_ROUTE_REGISTRY"
+                    if not registry_name.endswith(suffix):
+                        continue
+                    method = registry_name[:-len(suffix)]
+                    if method not in {"GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS", "HEAD"}:
+                        continue
+                    if not isinstance(registry_value, (ast.Tuple, ast.List)):
+                        continue
+                    for rule in registry_value.elts:
+                        if not (
+                            isinstance(rule, ast.Call)
+                            and isinstance(rule.func, ast.Name)
+                            and rule.func.id == "RouteRule"
+                            and len(rule.args) >= 2
+                            and isinstance(rule.args[0], ast.Constant)
+                            and isinstance(rule.args[0].value, str)
+                        ):
+                            continue
+                        paths_node = rule.args[1]
+                        if (
+                            isinstance(paths_node, ast.Call)
+                            and isinstance(paths_node.func, ast.Name)
+                            and paths_node.func.id == "frozenset"
+                            and len(paths_node.args) == 1
+                        ):
+                            paths_node = paths_node.args[0]
+                        try:
+                            route_paths = ast.literal_eval(paths_node)
+                        except (TypeError, ValueError):
+                            continue
+                        if not isinstance(route_paths, (set, frozenset, tuple, list)):
+                            continue
+                        for route_path in route_paths:
+                            if not isinstance(route_path, str) or not route_path:
+                                continue
+                            endpoints.append({
+                                "method": method,
+                                "path": route_path,
+                                "handler": rule.args[0].value,
+                                "summary": rule.args[0].value,
+                                "description": "",
+                                "file": str(p.relative_to(p_root) if p.is_relative_to(p_root) else p),
+                                "line": rule.lineno,
+                            })
 
             for node in ast.walk(tree):
                 if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -8647,9 +8750,7 @@ def test_{sym}_regression_edge_cases():
 
         express_call_pat = _API_EXPRESS_ROUTER_METHOD
         next_route_pat = _API_NEXT_ROUTE_HANDLER
-        for p in list(p_root.rglob("*.js")) + list(p_root.rglob("*.ts")) + list(p_root.rglob("*.mjs")):
-            if any(part in skip_dirs for part in p.parts):
-                continue
+        for p in files_by_pattern["*.js"] + files_by_pattern["*.ts"] + files_by_pattern["*.mjs"]:
             try:
                 text = p.read_text(encoding="utf-8", errors="replace")
                 scan_source = _mask_non_code(text, "typescript" if p.suffix.lower() == ".ts" else "javascript")
@@ -8693,9 +8794,7 @@ def test_{sym}_regression_edge_cases():
         cake_route_pat = _API_PHP_CONNECT_ROUTE
         cake_resource_pat = _API_PHP_RESOURCE_ROUTE
 
-        for p in list(p_root.rglob("*.php")) + list(p_root.rglob("*.ctp")):
-            if any(part in skip_dirs for part in p.parts):
-                continue
+        for p in files_by_pattern["*.php"] + files_by_pattern["*.ctp"]:
             try:
                 text = p.read_text(encoding="utf-8", errors="replace")
                 php_scan_source = _mask_non_code(text, "php")
@@ -8779,9 +8878,7 @@ def test_{sym}_regression_edge_cases():
                 continue
 
         form_pat = _API_HTML_FORM_ENDPOINT
-        for p in list(p_root.rglob("*.html")) + list(p_root.rglob("*.htm")):
-            if any(part in skip_dirs for part in p.parts):
-                continue
+        for p in files_by_pattern["*.html"] + files_by_pattern["*.htm"]:
             try:
                 text = p.read_text(encoding="utf-8", errors="replace")
                 html_scan_source = re.sub(

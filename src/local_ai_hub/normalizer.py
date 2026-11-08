@@ -34,9 +34,48 @@ ORPHANED_CLOSE_TAG_RE = re.compile(
 
 # Chat stop tokens emitted by raw LLM runtimes
 STOP_TOKENS_RE = re.compile(
-    r"(?:<\|im_end\|>|<\|endoftext\|>|<\|im_start\|>|<\|fim_prefix\|>|<\|fim_suffix\|>|<\|fim_middle\|>|</s>|\[DONE\]|<\|eot_id\|>|<\|end_of_text\|>)",
+    r"(?:<\|im_end\|>|<\|endoftext\|>|<\|im_start\|>|<\|fim_prefix\|>|<\|fim_suffix\|>|<\|fim_middle\|>|</s>|<\|eot_id\|>|<\|end_of_text\|>|(?:\n|\A)\[DONE\](?:\n|\Z))",
     re.IGNORECASE,
 )
+
+
+def _mask_fenced_code(text: str) -> tuple[str, dict[str, str]]:
+    """Hide fenced-code bodies from model-token cleanup, then restore them exactly."""
+    lines = text.splitlines(keepends=True)
+    masked: list[str] = []
+    blocks: dict[str, str] = {}
+    index = 0
+    line_index = 0
+    while line_index < len(lines):
+        line = lines[line_index]
+        opener = re.match(r"^ {0,3}(?P<marker>`{3,}|~{3,})", line)
+        if opener is None:
+            masked.append(line)
+            line_index += 1
+            continue
+
+        marker = opener.group("marker")
+        closing = re.compile(rf"^ {{0,3}}{re.escape(marker[0])}{{{len(marker)},}}[ \t]*$")
+        close_index = next(
+            (i for i in range(line_index + 1, len(lines)) if closing.fullmatch(lines[i].rstrip("\n"))),
+            None,
+        )
+        token = f"\uE000fenced_code_{index}\uE001"
+        while token in text:
+            index += 1
+            token = f"\uE000fenced_code_{index}\uE001"
+        index += 1
+
+        masked.append(line)
+        if close_index is None:
+            blocks[token] = "".join(lines[line_index + 1 :])
+            masked.append(token)
+            line_index = len(lines)
+        else:
+            blocks[token + "\n"] = "".join(lines[line_index + 1 : close_index])
+            masked.extend((token + "\n", lines[close_index]))
+            line_index = close_index + 1
+    return "".join(masked), blocks
 
 # Language-agnostic structural preamble pattern:
 # A short introductory line (< 140 chars) ending with a colon or newline directly preceding a code block or list
@@ -193,6 +232,7 @@ def postprocess_model_output(
         return "", None
 
     raw = str(text).replace("\r\n", "\n").replace("\r", "\n")
+    raw, fenced_code = _mask_fenced_code(raw)
     
     # 1. Extract generic thinking tags regardless of model architecture
     thinking_parts: list[str] = []
@@ -245,6 +285,9 @@ def postprocess_model_output(
 
     # 5. Deduplicate excessive consecutive newlines
     cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
+
+    for placeholder, code in fenced_code.items():
+        cleaned = cleaned.replace(placeholder, code)
 
     return cleaned, thinking
 

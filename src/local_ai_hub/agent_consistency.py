@@ -18,7 +18,7 @@ import time
 import unicodedata
 from dataclasses import dataclass
 from enum import Enum
-from pathlib import Path, PureWindowsPath
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, Iterable, Mapping
 
 from .agent_tasks import GoalContract
@@ -1398,6 +1398,10 @@ class AgentConsistencyGuard:
         be_id, fe_id = self._evidence_id(b), self._evidence_id(f)
         endpoint_match = _HTTP_ENDPOINT.search(braw + "\n" + fraw)
         endpoint = endpoint_match.group(2) if endpoint_match else ""
+        b_stem = PurePosixPath(str(b.get("path", ""))).stem.lower()
+        f_stem = PurePosixPath(str(f.get("path", ""))).stem.lower()
+        if not endpoint and (b_stem not in f_stem and f_stem not in b_stem):
+            return (), ()
         bfields = tuple(sorted(set(name for name, _ in _FIELD.findall(braw))))
         ffields = tuple(sorted(set(name for name, _ in _FIELD.findall(fraw))))
         berr = tuple(sorted(set(_IDENTIFIER.findall(braw))))
@@ -1743,7 +1747,7 @@ class AgentConsistencyGuard:
             evidence_ids = tuple(dict.fromkeys(_text(field(item, "evidence_id"), 200) for item in matched if field(item, "evidence_id")))[:24]
             receipt_ids = tuple(dict.fromkeys(_text(field(item, "receipt_id"), 200) for item in matched if field(item, "receipt_id")))[:24]
             current = [item for item in matched if not revision or _text(field(item, "repository_revision"), 200) == revision]
-            passed = any(bool(field(item, "passed", False)) for item in current)
+            passed = any(field(item, "passed", False) is True for item in current)
             stale = bool(matched and not current)
             if stale:
                 stale_criteria.append(criterion)

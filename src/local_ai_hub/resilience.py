@@ -26,6 +26,7 @@ class BreakerState:
     opened_at: float = 0.0
     half_open_probe: bool = False
     half_open_probe_since: float = 0.0
+    probe_generation: int = 0
 
 
 def _safe_float(val: Any, default: float, min_val: float = 0.0) -> float:
@@ -115,19 +116,31 @@ class CircuitBreakerRegistry:
                     return False
             state.half_open_probe = True
             state.half_open_probe_since = now
+            state.probe_generation += 1
             return True
 
-    def success(self, key: str) -> None:
+    def probe_generation(self, key: str) -> int:
         key = self._clean_key(key)
         with self._lock:
-            if self._get_or_create_locked(key) is not None:
+            state = self._get_or_create_locked(key)
+            return state.probe_generation if state is not None else 0
+
+    def success(self, key: str, *, probe_generation: int | None = None) -> None:
+        key = self._clean_key(key)
+        with self._lock:
+            state = self._get_or_create_locked(key)
+            if state is not None:
+                if probe_generation is not None and state.probe_generation != probe_generation:
+                    return
                 self._states[key] = BreakerState()
 
-    def failure(self, key: str) -> None:
+    def failure(self, key: str, *, probe_generation: int | None = None) -> None:
         key = self._clean_key(key)
         with self._lock:
             state = self._get_or_create_locked(key)
             if state is None:
+                return
+            if probe_generation is not None and state.probe_generation != probe_generation:
                 return
             state.failures += 1
             state.half_open_probe = False
@@ -485,7 +498,7 @@ class RecoveryJournal:
             with closing(self._connect()) as con:
                 con.execute("BEGIN IMMEDIATE")
                 con.executemany(
-                    "UPDATE requests SET state=?, updated_at=?, detail=?, status_code=?, response_json=? WHERE request_id=?",
+                    "UPDATE requests SET state=?, updated_at=?, detail=?, status_code=?, response_json=? WHERE request_id=? AND state = 'running'",
                     [
                         (state, updated_at, detail, status_code, response_json, request_id)
                         for request_id, state, updated_at, detail, status_code, response_json, _sequence in batch

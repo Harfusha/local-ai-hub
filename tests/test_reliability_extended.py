@@ -123,6 +123,29 @@ def test_watcher_edit_uses_incremental_inventory_and_invalidates_fast_fingerprin
         pre.close()
 
 
+def test_watcher_skips_project_root_that_cannot_be_resolved(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    config = _config(tmp_path)
+    repo = tmp_path / "repo"; repo.mkdir(); source = repo / "a.py"; source.write_text("x=1\n", encoding="utf-8")
+    inaccessible = tmp_path / "inaccessible"
+    tools = RepositoryTools(config)
+    pre = ProjectPreprocessor(config, _Noop(), _Rag(), _Scheduler(), _Noop(), tools)
+    try:
+        _insert_project(pre, repo)
+        _insert_project(pre, inaccessible)
+        original_resolve = Path.resolve
+
+        def fail_for_inaccessible(self: Path, strict: bool = False) -> Path:
+            if self == inaccessible:
+                raise OSError(1450, "Insufficient system resources")
+            return original_resolve(self, strict=strict)
+
+        monkeypatch.setattr(Path, "resolve", fail_for_inaccessible)
+        assert pre.notify_path_changed(str(source)) is True
+        assert pre._project_row(str(repo))["phase"] == "inventory"
+    finally:
+        pre.close()
+
+
 def test_watcher_metadata_only_event_does_not_requeue_preprocessing(tmp_path: Path):
     config = _config(tmp_path)
     repo = tmp_path / "repo"; repo.mkdir(); source = repo / "a.py"; source.write_text("x=1\n", encoding="utf-8")

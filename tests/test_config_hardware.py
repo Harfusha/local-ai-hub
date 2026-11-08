@@ -55,6 +55,7 @@ def test_cpu_profile_respects_supported_model_roles(tmp_path: Path):
     assert cfg["models"]["reasoning"] == "qwen3.5:9b"
     assert cfg["models"]["general"] == "qwen2.5-coder:7b"
     assert cfg["background_gpu"]["enabled"] is False
+    assert cfg["features"]["local_reranking"] is True
 
 
 @pytest.mark.parametrize("profile", ("cpu", "integrated", "low", "balanced", "medium", "high", "max"))
@@ -62,6 +63,22 @@ def test_hardware_profiles_do_not_use_preprocess_model_for_inference(profile: st
     models = PROFILE_OVERRIDES[profile]["models"]
     inference_roles = ("background_code", "fast_code", "heavy_code", "reasoning", "general")
     assert all(models[role] != "qwen2.5-coder:1.5b" for role in inference_roles)
+
+
+@pytest.mark.parametrize("profile", ("cpu", "integrated", "low", "balanced", "medium", "high", "max"))
+def test_every_hardware_profile_enables_local_reranking(profile: str) -> None:
+    assert profile_overrides(profile, {})["features"]["local_reranking"] is True
+
+
+@pytest.mark.parametrize("profile", ("cpu", "integrated", "low", "balanced", "medium", "high", "max"))
+def test_every_nvidia_profile_prefers_cuda_reranker(profile: str) -> None:
+    overrides = profile_overrides(
+        profile,
+        {"gpus": [{"vendor": "nvidia", "vram_mb": 4 * 1024}], "ram": {"total_gb": 32}},
+    )
+    assert overrides["models"]["reranker_device"] == "cuda"
+    if profile not in {"high", "max"}:
+        assert overrides["models"].get("embedding_device") != "cuda"
 
 
 def test_background_work_defaults_to_low_os_priority(tmp_path: Path):

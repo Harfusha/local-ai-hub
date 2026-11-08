@@ -71,6 +71,23 @@ def test_search_summary_capability_starts_at_balanced():
     assert any("summarize_results" in line for line in balanced.specialized_trigger_lines())
 
 
+def test_task_async_job_controls_require_known_job_id_and_use_status_for_readiness():
+    fs = FeatureSet({"ollama": {"enabled": True}, "hardware": {"profile": "high"}})
+    task_actions = set(fs.supported_task_actions())
+    job_actions = [action for action in ("status", "wait", "result", "cancel", "continue") if action in task_actions]
+    lines = fs.specialized_trigger_lines()
+
+    assert job_actions
+    assert "`local_ai_status`" in "\n".join(lines)
+    assert any(
+        "`local_ai_task` async jobs" in line
+        and all(action in line for action in job_actions)
+        and "known job ID" in line
+        and "readiness" in line
+        for line in lines
+    )
+
+
 def test_local_task_actions_follow_hardware_tiers_and_unknown_fails_closed():
     low = FeatureSet({"hardware": {"profile": "low"}}).supported_task_actions()
     balanced = FeatureSet({"features": {"local_semantic_analysis": True}, "hardware": {"profile": "balanced"}}).supported_task_actions()

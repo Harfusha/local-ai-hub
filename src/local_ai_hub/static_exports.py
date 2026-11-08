@@ -102,11 +102,13 @@ def named_export_status(source: str, language: str, name: str, *, container: str
     if language in {"csharp", "php"}:
         if kind not in _TYPE_KINDS or access.lower() in {"private", "protected"}:
             return False, "not_accessible_namespace_type"
-        pattern = r"\bnamespace\s+([A-Za-z_][\w.\\]*)"
         lexical_source = " ".join(match.group() for match in _TOKENS.finditer(source)
                                   if not match.group().startswith(("//", "/*", "'", '"', "`")))
         # Preserve dotted/backslash namespace components after removing opaque text.
         lexical_source = re.sub(r"\s*([.\\])\s*", r"\1", lexical_source)
+        if not re.search(rf"\b(?:class|interface|enum|trait|struct|record)\s+{re.escape(name)}\b", lexical_source):
+            return False, "type_declaration_not_found"
+        pattern = r"\bnamespace\s+([A-Za-z_][\w.\\]*)"
         namespaces = set(re.findall(pattern, lexical_source))
         if container and container not in namespaces:
             return False, "nested_type_not_importable_by_namespace"

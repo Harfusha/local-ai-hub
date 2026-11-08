@@ -147,8 +147,10 @@ class AutomationBroker:
 
     def _drop(self, identity: str, session: _Session) -> None:
         session.fenced = True
-        session.backend.close()
-        self.sessions.pop(identity, None)
+        if session.backend is not None:
+            session.backend.close()
+        with self.lock:
+            self.sessions.pop(identity, None)
 
     def _reap_loop(self):
         while not self._stop.wait(min(30, self.config.get("session_ttl_seconds", 900))):
@@ -159,13 +161,19 @@ class AutomationBroker:
                 continue
 
     def reap(self) -> None:
+        to_drop = []
         with self.lock:
             for identity, session in list(self.sessions.items()):
                 if session.expires <= self.clock() and session.lock.acquire(blocking=False):
-                    try:
-                        self._drop(identity, session)
-                    finally:
-                        session.lock.release()
+                    session.fenced = True
+                    to_drop.append((identity, session))
+        for identity, session in to_drop:
+            try:
+                self._drop(identity, session)
+            except Exception:
+                pass
+            finally:
+                session.lock.release()
 
     def execute(self, *, root: str, task_id: str, request: dict[str, Any]) -> dict[str, Any]:
         if not self.config.get("enabled", False) or self.closed:
@@ -246,20 +254,30 @@ class AutomationBroker:
                 return error("profile_busy", "personal browser profile is already leased", 409)
             if mode in {"desktop", "desktop_sandbox"} and any(s.mode == mode and s.window_id == request["window_id"] for s in self.sessions.values()):
                 return error("window_busy", "desktop window is already leased", 409)
-            try:
-                backend = self.factory(mode, self.config, request, self.policy)
-            except Exception as exc:
-                return error("backend_unavailable", f"automation backend could not start ({type(exc).__name__}): {str(exc)[:160]}", 503)
             identity, key = secrets.token_urlsafe(24), secrets.token_urlsafe(32)
-            self.sessions[identity] = _Session(owner, key, mode, backend,
+            session = _Session(owner, key, mode, None,
                 self.clock() + self.config.get("session_ttl_seconds", 900), window_id=request.get("window_id", 0))
+            session.lock.acquire()
+            self.sessions[identity] = session
+
+        try:
+            backend = self.factory(mode, self.config, request, self.policy)
+        except Exception as exc:
+            with self.lock:
+                self.sessions.pop(identity, None)
+            session.lock.release()
+            return error("backend_unavailable", f"automation backend could not start ({type(exc).__name__}): {str(exc)[:160]}", 503)
+
+        with self.lock:
+            session.backend = backend
             if self._reaper is None:
                 self._reaper = threading.Thread(target=self._reap_loop, name="hub-automation-expiry", daemon=True)
                 self._reaper.start()
-            return {"success": True, "automation": {"session_id": identity, "session_key": key, "mode": mode,
-                    "expires_in_seconds": self.config.get("session_ttl_seconds", 900),
-                    "isolation": "browser_context" if mode == "isolated" else mode,
-                    "network_egress_isolated": False}}
+        session.lock.release()
+        return {"success": True, "automation": {"session_id": identity, "session_key": key, "mode": mode,
+                "expires_in_seconds": self.config.get("session_ttl_seconds", 900),
+                "isolation": "browser_context" if mode == "isolated" else mode,
+                "network_egress_isolated": False}}
 
     def _act(self, session, request, timeout):
         identity = request.get("request_id")
@@ -330,20 +348,23 @@ class AutomationBroker:
     def close(self) -> None:
         self._stop.set()
         pending = False
+        to_drop = []
         with self.lock:
             self.closed = True
             for identity, session in list(self.sessions.items()):
                 session.fenced = True
                 if session.lock.acquire(blocking=False):
-                    try:
-                        self._drop(identity, session)
-                    finally:
-                        session.lock.release()
+                    to_drop.append((identity, session))
                 else:
                     pending = True
                     cancel = getattr(session.backend, "cancel", None)
                     if callable(cancel):
                         cancel()
+        for identity, session in to_drop:
+            try:
+                self._drop(identity, session)
+            finally:
+                session.lock.release()
         if self._reaper and self._reaper is not threading.current_thread():
             self._reaper.join(1)
         if pending:

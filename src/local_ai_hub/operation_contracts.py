@@ -170,10 +170,10 @@ CAPABILITY_REGISTRY = {
         # `rerank` is a capability mode of local_ai_rag:search, not a public
         # selector. Keep retrieval available on lower tiers while gating only
         # the optional cross-encoder stage.
-        "operations": (("local_ai_rag", "rerank"),), "minimum_profile": "balanced",
+        "operations": (("local_ai_rag", "rerank"),), "minimum_profile": "cpu",
         "backend": "reranker", "authority": "advisory_ranking",
-        "quality_gate": "reranker_task_evaluation", "feature_gate": "local_reranking",
-        "unavailable_reason": "requires_balanced_profile_and_reranker_qualification",
+        "quality_gate": "none", "feature_gate": "local_reranking",
+        "unavailable_reason": "disabled_by_operator",
     },
     "work.bounded_submission": {
         "operations": (("local_ai_work", "submit"), ("local_ai_work", "continue")), "minimum_profile": "high",
