@@ -153,10 +153,10 @@
       "depends_on": [],
       "description": "Gradually decompose oversized modules (commands.py ~10.8k lines, services.py ~9.8k lines, mcp_server.py ~7.4k lines, code_index.py ~5.1k lines) into cohesive submodules",
       "kind": "code",
-      "next_action": "",
+      "next_action": "Commit this verified StreamMultiplexer extraction. Then implement the approved Hub API-token removal before selecting the next modular boundary; keep P2-3 in progress.",
       "title": "P2-3: Postupně rozdělit velké moduly",
-      "work_phase": "discovery",
-      "work_status": "planned"
+      "work_phase": "verification",
+      "work_status": "in_progress"
     },
     "task_p2_opencode_e2e": {
       "acceptance_criteria": [
