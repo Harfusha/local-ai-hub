@@ -92,8 +92,8 @@
       "kind": "code",
       "next_action": "",
       "title": "P1-2: Profilovat a optimalizovat Git fingerprint na vyhledávací cestě",
-      "work_phase": "discovery",
-      "work_status": "planned"
+      "work_phase": "verification",
+      "work_status": "completed"
     },
     "task_p1_gpu_admission": {
       "acceptance_criteria": [

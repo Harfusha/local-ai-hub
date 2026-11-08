@@ -1105,7 +1105,10 @@ class LocalAIServices:
             fast = self.preprocessor.cache_fingerprint(root)
             if isinstance(fast, dict) and fast.get("fingerprint"):
                 return fast
-        return self.repo_state.fingerprint(root)
+        tracker = getattr(self, "repo_state", None)
+        if tracker is not None and hasattr(tracker, "fingerprint"):
+            return tracker.fingerprint(root)
+        return {}
 
     def _resident_optimize(self, route: dict[str, Any], task_type_override: str, complexity_override: str) -> dict[str, Any]:
         cfg = self.config.get("routing", {})
@@ -1876,14 +1879,13 @@ class LocalAIServices:
             "local_compute_tokens_avoided_est": max(0, int(cached_compute_tokens)),
         }
 
-        if self.tuner is not None and cache_layer == "ollama":
+        success = bool(result.get("success", "error" not in result))
+        if self.tuner is not None and cache_layer == "ollama" and success:
             self._observe_tuner_safely(
                 str(result.get("model", model)),
                 result,
                 (time.perf_counter() - started) * 1000,
             )
-
-        success = bool(result.get("success", "error" not in result))
         error_type = "" if success else "model_request_failed"
         self.telemetry.record(
             action=source, model=str(result.get("model", model)), cache_hit=effective_cache_hit, coalesced=coalesced,
@@ -3152,6 +3154,7 @@ class LocalAIServices:
         try:
             self._touch_project(root)
             tracker = getattr(self, "repo_state", None)
+
             if operation == "search" and tracker is not None:
                 # Exact counts cover the whole repository, including files not
                 # present in the previous page. A TTL-cached fingerprint cannot
@@ -3820,13 +3823,7 @@ class LocalAIServices:
                 ):
                     request_hints.append(hint)
         try:
-            tracker = getattr(self, "repo_state", None)
-            fingerprint = getattr(tracker, "fingerprint", None)
-            workspace_state = (
-                fingerprint(root, force=True) or {}
-                if callable(fingerprint)
-                else self._repo_cache_state(root) or {}
-            )
+            workspace_state = self._repo_cache_state(root) or {}
         except Exception:
             workspace_state = {}
         repository_revision = (
@@ -8635,12 +8632,28 @@ class LocalAIServices:
     def validate_patch(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Validate whether a diff patch applies cleanly and preserves valid syntax."""
         reject_retired_tenancy_fields(payload)
-        diff_text = str(payload.get("patch", payload.get("diff", "")))
+        diff_text = payload.get("patch", payload.get("diff", ""))
+        if not isinstance(diff_text, str):
+            return {
+                "success": False,
+                "status_code": 400,
+                "terminal": True,
+                "retryable": False,
+                "error_code": "invalid_patch",
+                "error": "patch must be a string",
+            }
         if not diff_text.strip():
-            return {"success": False, "error": "empty patch"}
+            return {
+                "success": False,
+                "status_code": 400,
+                "terminal": True,
+                "retryable": False,
+                "error_code": "patch_required",
+                "error": "empty patch",
+            }
 
         affected_files: list[str] = []
-        errors: list[str] = []
+        syntax_errors: list[str] = []
         previous_old: str | None = None
         hunks = 0
 
@@ -8659,26 +8672,27 @@ class LocalAIServices:
             if line.startswith("--- "):
                 previous_old = patch_path(line[4:])
                 if previous_old is None:
-                    errors.append("invalid old patch path")
+                    syntax_errors.append("invalid old patch path")
             elif line.startswith("+++ "):
                 current = patch_path(line[4:])
                 if previous_old is None or current is None:
-                    errors.append("patch file header is malformed")
+                    syntax_errors.append("patch file header is malformed")
                 elif current != "/dev/null":
                     affected_files.append(current)
                 previous_old = None
             elif line.startswith("@@ "):
                 if not re.match(r"^@@ -\d+(?:,\d+)? \+\d+(?:,\d+)? @@", line):
-                    errors.append("invalid hunk header")
+                    syntax_errors.append("invalid hunk header")
                 else:
                     hunks += 1
 
         if previous_old is not None:
-            errors.append("patch has an unpaired file header")
+            syntax_errors.append("patch has an unpaired file header")
         if not affected_files:
-            errors.append("patch changes no files")
+            syntax_errors.append("patch changes no files")
         if not hunks:
-            errors.append("patch contains no hunks")
+            syntax_errors.append("patch contains no hunks")
+        errors = list(syntax_errors)
         valid = not errors
         applicability_checked = False
         if valid and payload.get("root"):
@@ -8702,9 +8716,9 @@ class LocalAIServices:
             valid = not errors
 
         return {
-            "success": valid,
+            "success": True,
             "valid": valid,
-            "syntax_valid": valid,
+            "syntax_valid": not syntax_errors,
             "applicability_checked": applicability_checked,
             "files_affected": list(dict.fromkeys(affected_files)),
             "errors": errors,
