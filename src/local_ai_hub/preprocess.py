@@ -329,12 +329,17 @@ class ProjectPreprocessor:
             self._paused.set()
         self.install_root = Path(__file__).resolve().parents[2]
         self.max_preprocessing_projects = max(1, _safe_int(self.cfg.get("max_preprocessing_projects"), 3))
+        exclusive_cfg = self.cfg.get("exclusive", {})
+        exclusive_cfg = exclusive_cfg if isinstance(exclusive_cfg, dict) else {}
+        self.exclusive_max_projects = min(32, max(1, _safe_int(exclusive_cfg.get("max_projects"), 3)))
         self.discover_worktrees = bool(self.cfg.get("discover_worktrees", True))
         self.max_discovered_worktrees = max(1, _safe_int(self.cfg.get("max_discovered_worktrees"), 32))
         self.worktree_discovery_ttl = max(30.0, _safe_float(self.cfg.get("worktree_discovery_ttl_seconds"), 300.0))
         self._worktree_lock = threading.Lock()
         self._worktree_cache: dict[str, tuple[float, list[str]]] = {}
         self.cpu_workers = max(1, _safe_int(self.cfg.get("cpu_workers"), min(8, os.cpu_count() or 4)))
+        self.exclusive_cpu_workers = min(64, max(1, os.cpu_count() or 1),
+                                         max(1, _safe_int(exclusive_cfg.get("cpu_workers"), 8)))
         self.reject_temp_projects = bool(self.cfg.get("reject_temp_projects", False))
         self.require_project_markers = bool(self.cfg.get("require_project_markers", False))
         self._touch_lock = threading.Lock()
@@ -353,6 +358,12 @@ class ProjectPreprocessor:
         self._cpu_pool = ThreadPoolExecutor(
             max_workers=self.cpu_workers,
             thread_name_prefix="local-ai-pre-cpu",
+            initializer=set_current_thread_priority,
+            initargs=(self.cpu_priority,),
+        )
+        self._exclusive_cpu_pool = ThreadPoolExecutor(
+            max_workers=self.exclusive_cpu_workers,
+            thread_name_prefix="local-ai-pre-exclusive",
             initializer=set_current_thread_priority,
             initargs=(self.cpu_priority,),
         )
@@ -419,11 +430,13 @@ class ProjectPreprocessor:
             set_active_roots_provider(self._active_code_index_roots)
         self._requeue_available_external_indexes()
         self._cpu_thread: threading.Thread | None = None
+        self._extra_cpu_threads: list[threading.Thread] = []
         self._gpu_thread: threading.Thread | None = None
         self._fs_watcher_thread: threading.Thread | None = None
         if self.enabled:
             self._cpu_thread = threading.Thread(target=self._cpu_loop, name="local-ai-preprocessor-cpu", daemon=True)
             self._cpu_thread.start()
+            self._ensure_extra_cpu_threads()
             self._gpu_thread = threading.Thread(target=self._gpu_loop, name="local-ai-preprocessor-gpu", daemon=True)
             self._gpu_thread.start()
             if bool(self.cfg.get("fs_watcher_enabled", True)):
@@ -500,22 +513,35 @@ class ProjectPreprocessor:
                 self._step_locks[root] = lock
             return lock
 
-    def _run_project_step(self, row: dict[str, Any]) -> bool | None:
+    def _run_project_step(self, row: dict[str, Any], *, exclusive_only: bool = False) -> bool | None:
         """Run one durable project step with a single in-process owner.
 
         ``None`` means another loop already owns this project. Callers should simply
         retry later; this is contention, not a foreground-yield or an error.
         """
-        if self._paused.is_set() or not self._background_work_allowed():
+        if (self._paused.is_set() or not self._background_work_allowed()
+                or (exclusive_only and not self._exclusive_mode_active())):
             return None
         root = str(row.get("root", ""))
-        lock = self._project_step_lock(root)
-        if not lock.acquire(blocking=False):
+        with self._step_locks_guard:
+            lock = self._step_locks.setdefault(root, threading.Lock())
+            acquired = lock.acquire(blocking=False)
+        if not acquired:
             with self._stats_lock:
                 self._stats["project_step_contention"] += 1
             return None
         try:
-            return self._step(row)
+            current = self._project_row(root)
+            if current is None:
+                return None
+            fresh = dict(current)
+            if ((exclusive_only and not self._exclusive_mode_active())
+                    or fresh.get("paused") or fresh.get("phase") != row.get("phase")
+                    or fresh.get("status") not in {"queued", "running", "error", "complete"}
+                    or (fresh.get("status") == "complete" and row.get("status") != "complete")
+                    or float(fresh.get("retry_after") or 0) > time.time()):
+                return None
+            return self._step(fresh)
         finally:
             lock.release()
 
@@ -792,24 +818,75 @@ class ProjectPreprocessor:
             # correctness path if a derived state read is temporarily unavailable.
             return
 
+    def _exclusive_mode_active(self) -> bool:
+        try:
+            from .operational_mode import load_operational_mode
+            snapshot = load_operational_mode(self.state_dir)
+            return not snapshot.degraded and snapshot.mode == "preprocessing"
+        except (AttributeError, OSError, ValueError, TypeError):
+            return False
+
+    def _project_limit(self) -> int:
+        if self._exclusive_mode_active():
+            return getattr(self, "exclusive_max_projects", self.max_preprocessing_projects)
+        return self.max_preprocessing_projects
+
+    def _hash_pool(self) -> ThreadPoolExecutor:
+        if self._exclusive_mode_active():
+            return getattr(self, "_exclusive_cpu_pool", self._cpu_pool)
+        return self._cpu_pool
+
+    def _exclusive_stub_enrichment(self) -> bool:
+        exclusive = self.cfg.get("exclusive", {})
+        return (isinstance(exclusive, dict) and exclusive.get("enrich_stub_cards", True) is True
+                and self._exclusive_mode_active() and self._background_work_allowed())
+
+    def _pending_stub_cards(self, root: str) -> int:
+        if not self._exclusive_stub_enrichment():
+            return 0
+        with self._db_lock, closing(self._connect()) as con:
+            return int(con.execute(
+                "SELECT COUNT(*) FROM file_refs f JOIN content_cards c ON c.card_key=f.card_key "
+                "WHERE f.root=? AND c.model='deterministic-stub' AND f.size<=?",
+                (root, int(self.cfg.get("file_card_max_bytes", 180000))),
+            ).fetchone()[0])
+
+    @staticmethod
+    def _valid_enriched_file_card(data: Any) -> bool:
+        fields = ("symbols", "dependencies", "side_effects", "risks", "tests", "keywords")
+        return (isinstance(data, dict) and isinstance(data.get("purpose"), str) and bool(data["purpose"].strip())
+                and all(isinstance(data.get(key), list) and all(isinstance(item, str) for item in data[key])
+                        for key in fields))
+
+    def _scheduler_background_allowed(self) -> bool:
+        if self._exclusive_mode_active():
+            return self._background_work_allowed() and not self.scheduler.foreground_busy()
+        return self.scheduler.background_allowed()
+
     def _rebalance_processing_slots(self, con: sqlite3.Connection, preferred_root: str | None = None) -> None:
         """Keep all registered projects active; cap only runnable preprocessing work."""
-        limit = self.max_preprocessing_projects
+        limit = self._project_limit()
+        fairness_cutoff = time.time() - 300.0
         candidates = con.execute(
             """SELECT root,status FROM projects
                WHERE paused=0 AND phase<>?
-               ORDER BY CASE WHEN root=? THEN 0 ELSE 1 END,
+               ORDER BY CASE WHEN updated_at<=? THEN 0 ELSE 1 END,
+                        CASE WHEN updated_at<=? THEN updated_at END ASC,
+                        CASE WHEN root=? THEN 0 ELSE 1 END,
                         force_refresh DESC,last_requested_at DESC,updated_at DESC""",
-            (self.PHASES[-1], preferred_root or ""),
+            (self.PHASES[-1], fairness_cutoff, fairness_cutoff, preferred_root or ""),
         ).fetchall()
-        for index, row in enumerate(candidates):
-            root = str(row["root"])
-            cur_status = str(row["status"])
-            if index < limit:
-                if cur_status == "waiting":
-                    con.execute("UPDATE projects SET status='queued',retry_after=0 WHERE root=?", (root,))
-            else:
-                if cur_status in ("queued", "running"):
+        guard = getattr(self, "_step_locks_guard", None)
+        with guard if guard is not None else nullcontext():
+            locks = getattr(self, "_step_locks", {})
+            candidates.sort(key=lambda row: not bool(locks.get(str(row["root"])) and locks[str(row["root"])].locked()))
+            for index, row in enumerate(candidates):
+                root = str(row["root"])
+                cur_status = str(row["status"])
+                if index < limit:
+                    if cur_status == "waiting":
+                        con.execute("UPDATE projects SET status='queued',retry_after=0 WHERE root=?", (root,))
+                elif cur_status in ("queued", "running") and not (locks.get(root) and locks[root].locked()):
                     con.execute("UPDATE projects SET status='waiting' WHERE root=?", (root,))
 
     def _recover_db(self) -> None:
@@ -1010,9 +1087,22 @@ class ProjectPreprocessor:
             return None
         return str(rel_path).replace("\\", "/")
 
-    def _consume_dirty_paths(self, root: str) -> set[str]:
+    def _dirty_paths_pending(self, root: str) -> bool:
+        lock = getattr(self, "_dirty_lock", None)
+        with lock if lock is not None else nullcontext():
+            return bool(getattr(self, "_dirty_paths", {}).get(root))
+
+    def _consume_dirty_paths(self, root: str, limit: int = 1024) -> set[str]:
+        limit = max(1, int(limit))
         with self._dirty_lock:
-            return self._dirty_paths.pop(root, set())
+            pending = self._dirty_paths.get(root)
+            if not pending:
+                return set()
+            if len(pending) <= limit:
+                return self._dirty_paths.pop(root, set())
+            batch = set(sorted(pending)[:limit])
+            pending.difference_update(batch)
+            return batch
 
     def _project_config_context(self, root: str) -> tuple[Any | None, Any | None]:
         """Resolve optional project policy lazily for the owning repository."""
@@ -1238,14 +1328,12 @@ class ProjectPreprocessor:
                 self.ingest_cache.invalidate(rel, root=root)
                 self._watch_revisions[root] = self._watch_revisions.get(root, 0) + 1
             with self._hash_git_maps_lock:
-                for key in [key for key in self._hash_git_maps if key[0] == root]:
-                    self._hash_git_maps.pop(key, None)
-            self._code_index_pruned_generations = {
-                key for key in getattr(self, "_code_index_pruned_generations", set()) if key[0] != root
-            }
-            self._deterministic_pruned_generations = {
-                key for key in getattr(self, "_deterministic_pruned_generations", set()) if key[0] != root
-            }
+                # A watcher event changes one file's Git blob identity. Keep the
+                # rest of this generation's map warm; the next hash pass will
+                # refresh only the changed path from the working tree.
+                for key, git_hashes in self._hash_git_maps.items():
+                    if key[0] == root:
+                        git_hashes.pop(rel, None)
             if first:
                 matched_roots.append(root)
 
@@ -1625,6 +1713,24 @@ class ProjectPreprocessor:
             self._rebalance_processing_slots(con, preferred_root=resolved)
         self._write_retry(_resume_tx)
         self._wake_all(); return self.status(resolved)
+
+    def start_exclusive(self) -> dict[str, Any]:
+        """Resume all registered projects and recheck completed inventories.
+
+        This keeps content-addressed caches and leaves in-flight phases untouched.
+        """
+        if not self.enabled:
+            return {"success": False, "error": "preprocessing is disabled"}
+        resumed = self.resume()
+        if not isinstance(resumed, dict) or resumed.get("success") is not True:
+            return resumed
+        def requeue_completed(con: sqlite3.Connection) -> None:
+            con.execute("UPDATE projects SET status='waiting',phase='inventory',next_check_at=0,updated_at=? "
+                        "WHERE status='complete' AND phase='complete'", (time.time(),))
+            self._rebalance_processing_slots(con)
+        self._write_retry(requeue_completed)
+        self._wake_all()
+        return self.status()
 
     def cancel(self, root: str) -> dict[str, Any]:
         # Cancel means stop scheduling this project but keep all reusable derived cache.
@@ -2013,6 +2119,8 @@ class ProjectPreprocessor:
             project_card_counts: dict[str, int] = {}
             code_index_counts: dict[str, int] = {}
             deterministic_counts: dict[str, int] = {}
+            pending_stub_counts: dict[str, int] = {}
+            enrich_stubs = self._exclusive_stub_enrichment()
 
             for batch in root_batches(roots):
                 placeholders = ",".join("?" for _ in batch)
@@ -2028,6 +2136,15 @@ class ProjectPreprocessor:
                     str(count_row[0]): tuple(int(value or 0) for value in count_row[1:5])
                     for count_row in count_rows
                 })
+                if enrich_stubs:
+                    stub_rows = con.execute(
+                        f"""SELECT f.root, COUNT(*) FROM file_refs f
+                            JOIN content_cards c ON c.card_key=f.card_key
+                            WHERE f.root IN ({placeholders}) AND c.model='deterministic-stub'
+                              AND f.size<=? GROUP BY f.root""",
+                        (*batch, int(self.cfg.get("file_card_max_bytes", 180000))),
+                    ).fetchall()
+                    pending_stub_counts.update({str(item[0]): int(item[1]) for item in stub_rows})
                 external_rows = con.execute(
                     f"SELECT root,backend,status,error,updated_at FROM external_index_state WHERE root IN ({placeholders})",
                     batch,
@@ -2091,6 +2208,8 @@ class ProjectPreprocessor:
                 counts = file_counts.get(str(row["root"]), (0, 0, 0, 0))
                 total_files = int(counts[0] or 0)
                 file_cards = min(total_files, int(counts[1] or 0))
+                pending_stub_cards = pending_stub_counts.get(str(row["root"]), 0)
+                effective_file_cards = max(0, file_cards - pending_stub_cards)
                 hashed_files = min(total_files, int(counts[2] or 0))
                 rag_files = min(total_files, int(counts[3] or 0))
 
@@ -2103,12 +2222,8 @@ class ProjectPreprocessor:
                 ci_count = code_index_counts.get(str(row["root"]), 0)
                 if status_str != "complete" and phase_str != "complete":
                     det_count = deterministic_counts.get(str(row["root"]), 0)
-                    module_count = module_counts.get(str(row["root"]), 0)
-                    project_card_count = project_card_counts.get(str(row["root"]), 0)
-                else:
-                    file_cards = total_files
-                    hashed_files = total_files
-                    rag_files = total_files
+                module_count = module_counts.get(str(row["root"]), 0)
+                project_card_count = project_card_counts.get(str(row["root"]), 0)
 
                 # A stale derived index can temporarily contain rows from an
                 # older inventory. Never expose impossible progress such as
@@ -2151,7 +2266,7 @@ class ProjectPreprocessor:
                     frac = phase_pct / 100.0
                     overall_progress = round(min(100.0, max(0.0, ((phase_index - 1 + frac) / total_phases) * 100)), 1)
                 elif phase_str == "files" and total_files:
-                    phase_pct = round((file_cards / total_files) * 100, 1)
+                    phase_pct = round((effective_file_cards / total_files) * 100, 1)
                     frac = phase_pct / 100.0
                     overall_progress = round(min(100.0, max(0.0, ((phase_index - 1 + frac) / total_phases) * 100)), 1)
                 elif phase_str == "modules":
@@ -2196,7 +2311,7 @@ class ProjectPreprocessor:
                     
                     if phase_str in ("files", "modules", "project"):
                         unit = "cards/s"
-                        remaining = max(0, total_files - file_cards)
+                        remaining = max(0, total_files - effective_file_cards)
                     elif phase_str == "rag":
                         unit = "chunks/s"
                         remaining = max(0, total_files - rag_files)
@@ -2239,17 +2354,20 @@ class ProjectPreprocessor:
                 if is_paused_row:
                     waiting_reason = "Project is paused"
                 elif is_waiting_row:
-                    waiting_reason = f"Waiting for preprocessing slot (max {self.max_preprocessing_projects})"
+                    waiting_reason = f"Waiting for preprocessing slot (max {self._project_limit()})"
                 elif status_str == "error":
                     waiting_reason = f"Error: {last_err_short}" if last_err_short else "Project encountered an error"
                 elif retry_after_val > time.time():
                     waiting_reason = f"Cooldown ({int(retry_after_val - time.time())}s remaining)"
                 elif status_str == "complete":
                     waiting_reason = "100% complete and up to date"
+                elif (status_str == "running" and phase_str == "files" and pending_stub_cards
+                      and (self.background_gpu is None or not self.background_gpu.ready())):
+                    waiting_reason = "Waiting for preprocessing model or resources"
                 elif status_str == "running":
                     waiting_reason = f"Processing phase: {phase_str}"
                 elif status_str == "queued":
-                    if not self.scheduler.background_allowed():
+                    if not self._scheduler_background_allowed():
                         waiting_reason = "Yielding to foreground agent requests"
                     else:
                         waiting_reason = "Queued for worker execution"
@@ -2260,7 +2378,7 @@ class ProjectPreprocessor:
                 elif is_paused_row:
                     active_detail = "Project is paused"
                 elif is_waiting_row:
-                    active_detail = f"Waiting for preprocessing slot (max {self.max_preprocessing_projects})"
+                    active_detail = f"Waiting for preprocessing slot (max {self._project_limit()})"
                 elif status_str == "error":
                     active_detail = f"Error: {last_err_short}" if last_err_short else "Error during processing"
                 elif phase_str == "inventory":
@@ -2281,7 +2399,9 @@ class ProjectPreprocessor:
                 elif phase_str == "rag":
                     active_detail = f"Vector code embeddings: {rag_files}/{total_files} files ({phase_pct}%)"
                 elif phase_str == "files":
-                    active_detail = f"Generating semantic cards: {file_cards}/{total_files} files ({phase_pct}%)"
+                    active_detail = f"Generating semantic cards: {effective_file_cards}/{total_files} files ({phase_pct}%)"
+                    if pending_stub_cards:
+                        active_detail += f" · {pending_stub_cards} awaiting enrichment"
                 elif phase_str == "modules":
                     active_detail = f"Module graph synthesis ({module_count} modules)"
                 elif phase_str == "project":
@@ -2309,9 +2429,14 @@ class ProjectPreprocessor:
                     "active_detail": active_detail,
                     "phase_index": phase_index, "total_phases": total_phases,
                     "phase_progress_pct": phase_pct, "overall_progress_pct": overall_progress,
+                    "phase_progress_measured": phase_str in {"hash", "code_index", "deterministic", "lexical", "rag", "files", "complete"} and (total_files > 0 or phase_str == "complete"),
                     "speed_str": speed_str, "eta_str": eta_str, "last_complete_at": row["last_complete_at"],
                     "progress_age_seconds": round(progress_age_seconds, 1),
                     "files": total_files, "file_cards": file_cards, "hashed_files": hashed_files, "rag_files": rag_files,
+                    "lexical_files": source_count,
+                    "deterministic_files": det_count if status_str != "complete" else None,
+                    "module_cards": module_count, "project_cards": project_card_count,
+                    "pending_stub_cards": pending_stub_cards,
                     "code_index_files": ci_count,
                     "code_index_coverage": {
                         "complete": False, "scope": "demand_indexed_files",
@@ -2319,7 +2444,7 @@ class ProjectPreprocessor:
                     },
                     "stats": project_stats, "external_indexes": external_indexes,
                 })
-        bg_allowed = self.scheduler.background_allowed()
+        bg_allowed = self._scheduler_background_allowed()
         global_diagnostic = ""
         if not self.enabled:
             global_diagnostic = "Preprocessing is disabled in config (preprocessing.enabled = false)."
@@ -2358,6 +2483,12 @@ class ProjectPreprocessor:
         if not values:
             return
         root = self._root(root)
+        complete_transition = values.get("status") == "complete" and values.get("phase") == "complete"
+        dirty_before_complete = complete_transition and self._dirty_paths_pending(root)
+        if dirty_before_complete:
+            # A bounded watcher batch can leave more changed paths queued. Keep
+            # the project runnable until they pass through dependent phases.
+            values.update(status="queued", phase="inventory", next_check_at=0)
         values["updated_at"] = time.time()
         if not set(values) <= self._PROJECT_COLUMNS:
             bad = set(values) - self._PROJECT_COLUMNS
@@ -2365,6 +2496,14 @@ class ProjectPreprocessor:
         columns = ",".join(f"{key}=?" for key in values)
         params = [*values.values(), root]
         self._write_retry(lambda con: con.execute(f"UPDATE projects SET {columns} WHERE root=?", params))
+        if complete_transition and not dirty_before_complete and self._dirty_paths_pending(root):
+            # Close the race where an event arrives after the first in-memory
+            # check but before the completion update reaches SQLite.
+            now = time.time()
+            self._write_retry(lambda con: con.execute(
+                "UPDATE projects SET status='queued',phase='inventory',next_check_at=0,updated_at=? WHERE root=?",
+                (now, root),
+            ))
         if hasattr(self, "_status_cache"):
             self._status_cache.clear()
 
@@ -2387,29 +2526,41 @@ class ProjectPreprocessor:
             stats_json=json_dumps(stats, ensure_ascii=False, separators=(",", ":")),
         )
 
+    def _first_unowned_project(self, rows: list[sqlite3.Row]) -> sqlite3.Row | None:
+        guard = getattr(self, "_step_locks_guard", None)
+        if guard is None:
+            return rows[0] if rows else None
+        with guard:
+            for row in rows:
+                lock = self._step_locks.get(str(row["root"]))
+                if lock is None or not lock.locked():
+                    return row
+        return None
+
     def _next_cpu_project(self) -> sqlite3.Row | None:
         now = time.time()
         with self._db_lock, closing(self._connect()) as con:
             # CPU/read-only phases. Serena indexing runs only while foreground is idle.
             self._rebalance_processing_slots(con)
             con.commit()
-            row = con.execute(
+            rows = con.execute(
                 """SELECT * FROM projects
                    WHERE paused=0 AND retry_after<=?
                      AND status IN ('queued','running','error')
                      AND phase IN ('inventory', 'hash', 'code_index', 'deterministic', 'serena', 'lexical', 'rag', 'files', 'modules', 'project', 'hot_queries', 'diagnostics')
-                   ORDER BY force_refresh DESC,
-                            CASE status WHEN 'queued' THEN 0 WHEN 'running' THEN 1 ELSE 2 END,
-                            updated_at ASC LIMIT 1""",
-                (now,),
-            ).fetchone()
-            if row is not None:
-                return row
+                   ORDER BY CASE WHEN updated_at<=? THEN 0 ELSE 1 END,
+                            force_refresh DESC,
+                            updated_at - CASE WHEN last_requested_at>=? THEN 60 ELSE 0 END ASC,
+                            CASE status WHEN 'queued' THEN 0 WHEN 'running' THEN 1 ELSE 2 END LIMIT ?""",
+                (now, now - 300.0, now - 300.0, self._project_limit()),
+            ).fetchall()
+            if rows:
+                return self._first_unowned_project(rows)
             processing = int(con.execute(
                 "SELECT COUNT(*) FROM projects WHERE paused=0 AND status IN ('queued','running','error') AND phase<>?",
                 (self.PHASES[-1],),
             ).fetchone()[0] or 0)
-            if processing >= self.max_preprocessing_projects:
+            if processing >= self._project_limit():
                 return None
             # A healthy filesystem watcher queues only changed paths. Avoid waking
             # completed projects into a full-tree inventory while that signal is
@@ -2432,15 +2583,17 @@ class ProjectPreprocessor:
             # GPU-bound phases: files, modules, project, hot_queries
             self._rebalance_processing_slots(con)
             con.commit()
-            return con.execute(
+            rows = con.execute(
                 """SELECT * FROM projects
-                   WHERE paused=0 AND retry_after<=?
+                   WHERE paused=0 AND retry_after<=? AND status IN ('queued','running','error')
                      AND phase IN ('files', 'modules', 'project', 'hot_queries')
-                   ORDER BY force_refresh DESC,
-                            CASE status WHEN 'queued' THEN 0 WHEN 'running' THEN 1 ELSE 2 END,
-                            updated_at ASC LIMIT 1""",
-                (now,),
-            ).fetchone()
+                   ORDER BY CASE WHEN updated_at<=? THEN 0 ELSE 1 END,
+                            force_refresh DESC,
+                            updated_at - CASE WHEN last_requested_at>=? THEN 60 ELSE 0 END ASC,
+                            CASE status WHEN 'queued' THEN 0 WHEN 'running' THEN 1 ELSE 2 END LIMIT ?""",
+                (now, now - 300.0, now - 300.0, self._project_limit()),
+            ).fetchall()
+            return self._first_unowned_project(rows)
 
     def _record_failure_telemetry(self, current: sqlite3.Row | dict[str, Any] | None, error: Exception) -> None:
         """Keep telemetry callback failures separate from project recovery."""
@@ -2466,7 +2619,7 @@ class ProjectPreprocessor:
                 phase, type(telemetry_exc).__name__, fingerprint,
             )
 
-    def _cpu_loop(self) -> None:
+    def _cpu_loop(self, worker_index: int = 0) -> None:
         set_current_thread_priority(self.cpu_priority)
         startup_delay = max(0.0, float(self.cfg.get("startup_delay_seconds", 2.0)))
         if startup_delay > 0:
@@ -2475,6 +2628,10 @@ class ProjectPreprocessor:
         while not self._stop.is_set():
             with self._stats_lock:
                 self._stats["loops"] += 1
+            if worker_index and not self._exclusive_mode_active():
+                self._cpu_wakeup.wait(poll)
+                self._cpu_wakeup.clear()
+                continue
             if self._paused.is_set():
                 self._cpu_wakeup.wait(poll)
                 self._cpu_wakeup.clear()
@@ -2483,7 +2640,7 @@ class ProjectPreprocessor:
                 self._cpu_wakeup.wait(min(0.1, poll))
                 self._cpu_wakeup.clear()
                 continue
-            if not self.cpu_runs_during_foreground and not self.scheduler.background_allowed():
+            if not self.cpu_runs_during_foreground and not self._scheduler_background_allowed():
                 self._cpu_wakeup.wait(poll)
                 self._cpu_wakeup.clear()
                 continue
@@ -2495,7 +2652,8 @@ class ProjectPreprocessor:
                 continue
             root = str(row["root"])
             try:
-                progressed = self._run_project_step(dict(row))
+                progressed = (self._run_project_step(dict(row), exclusive_only=True) if worker_index
+                              else self._run_project_step(dict(row)))
                 if progressed is None:
                     self._cpu_wakeup.wait(min(0.1, poll))
                     self._cpu_wakeup.clear()
@@ -2505,7 +2663,7 @@ class ProjectPreprocessor:
                     with self._stats_lock:
                         self._stats["steps"] += 1
                     worker_sleep = max(0.0, float(self.cfg.get("cpu_worker_sleep_seconds", 0.0)))
-                    if worker_sleep > 0:
+                    if worker_sleep > 0 and not self._exclusive_mode_active():
                         self._stop.wait(worker_sleep)
                 else:
                     with self._stats_lock:
@@ -2598,7 +2756,7 @@ class ProjectPreprocessor:
         return bool(self.scheduler.foreground_busy())
 
     def _background_work_allowed(self) -> bool:
-        """Fail closed outside active mode; never load config from the state directory."""
+        """Allow processing only in modes that explicitly permit it."""
         path = self.state_dir / "operational_mode.json"
         try:
             payload = json.loads(path.read_text(encoding="utf-8"))
@@ -2612,7 +2770,7 @@ class ProjectPreprocessor:
         revision = payload.get("revision")
         updated_at = payload.get("updated_at")
         if (
-            mode not in {"active", "gaming", "maintenance"}
+            mode not in {"active", "gaming", "maintenance", "preprocessing"}
             or isinstance(revision, bool)
             or not isinstance(revision, int)
             or revision < 1
@@ -2620,7 +2778,12 @@ class ProjectPreprocessor:
             or not updated_at
         ):
             return False
-        return mode == "active"
+        if mode == "active":
+            return True
+        if mode == "preprocessing":
+            from .operational_mode import load_operational_mode, preprocessing_mode_ready
+            return preprocessing_mode_ready(self.state_dir, load_operational_mode(self.state_dir))
+        return False
 
     def _gpu_yield(self) -> bool:
         return (
@@ -2789,7 +2952,7 @@ class ProjectPreprocessor:
         base = Path(root)
         settings = self._project_settings(root)
         now = time.time()
-        paths = sorted(set(str(x).replace("\\", "/") for x in dirty_paths if x))[:1024]
+        paths = sorted(set(str(x).replace("\\", "/") for x in dirty_paths if x))
         if not paths:
             return False
         path_policy = ProjectPathPolicy(root, settings)
@@ -2968,7 +3131,8 @@ class ProjectPreprocessor:
             self.unregister(root, purge_data=True)
             return True
         dirty_paths = self._consume_dirty_paths(root)
-        if dirty_paths and row.get("last_complete_at") and not bool(row.get("force_refresh")):
+        if (dirty_paths and row.get("last_complete_at") and not bool(row.get("force_refresh"))
+                and not self._pending_stub_cards(root)):
             if self._step_incremental_inventory(row, dirty_paths):
                 return True
         # Metadata-only inventory: do not read/hash every file in one uninterruptible
@@ -3055,7 +3219,8 @@ class ProjectPreprocessor:
                     if self._project_phase_allowed(root, "rag")
                     else 0
                 )
-            if uncarded == 0 and unragged == 0:
+            pending_stubs = self._pending_stub_cards(root)
+            if uncarded == 0 and unragged == 0 and pending_stubs == 0:
                 self._set_project(root, phase="complete", status="complete", force_refresh=0, next_check_at=now + float(self.cfg.get("auto_recheck_seconds", 1800)), updated_at=now)
                 return True
 
@@ -3064,10 +3229,6 @@ class ProjectPreprocessor:
             or len(major_changed) >= int(self.cfg.get("major_change_files", 60)) \
             or (len(major_changed) >= ratio_min_files and major_changed_ratio >= float(self.cfg.get("major_change_ratio", 0.15)))
         generation = int(row.get("generation", 0)) + (1 if major else 0)
-        try:
-            git_hashes = self.repo_tools.git_blob_map(root)
-        except Exception:
-            git_hashes = {}
         with self._db_lock, closing(self._connect()) as con:
             for path in deleted:
                 con.execute("DELETE FROM file_refs WHERE root=? AND path=?", (root, path))
@@ -3079,9 +3240,11 @@ class ProjectPreprocessor:
                 old_hash = str(existing["content_hash"] or "") if existing else ""
                 old_rag_hash = str(existing["rag_hash"] or "") if existing else ""
                 old_card = existing["card_key"] if existing else None
-                git_hash = str(git_hashes.get(path) or "")
-                seeded_hash = git_hash or old_hash
-                needs_hash = int(stat_changed and not git_hash)
+                # Lexical indexing reads working-tree bytes and uses SHA-256.
+                # Git blob IDs use a different hash domain (and may apply clean
+                # filters), so they cannot serve as content identities here.
+                seeded_hash = old_hash
+                needs_hash = int(stat_changed or not old_hash or old_hash.startswith("git:"))
                 con.execute(
                     """INSERT INTO file_refs(root,path,content_hash,size,mtime_ns,needs_hash,rag_hash,generation,card_key,updated_at)
                        VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(root,path) DO UPDATE SET
@@ -3158,30 +3321,22 @@ class ProjectPreprocessor:
             self._set_project(root, phase="code_index")
             return True
         base = Path(root)
-        with self._hash_git_maps_lock:
-            git_hashes = self._hash_git_maps.get(hash_key)
-        if git_hashes is None:
-            git_hashes = self.repo_tools.git_blob_map(root)
-            with self._hash_git_maps_lock:
-                self._hash_git_maps[hash_key] = git_hashes
         def _hash_one(item: sqlite3.Row) -> tuple[str, str, bool]:
             rel = str(item["path"])
             path = (base / rel).resolve(strict=False)
             try:
                 path.relative_to(base)
-                digest = git_hashes.get(rel)
-                if not digest:
-                    invalidate = getattr(self.repo_tools, "invalidate_snapshot", None)
-                    if callable(invalidate):
-                        invalidate(path)
-                    digest = self.repo_tools._hash_file_only(path)
+                invalidate = getattr(self.repo_tools, "invalidate_snapshot", None)
+                if callable(invalidate):
+                    invalidate(path)
+                digest = self.repo_tools._hash_file_only(path)
             except Exception:
                 digest = ""
             old_hash = str(item["content_hash"] or "")
             same = bool(digest and digest == old_hash)
             return rel, digest, same
 
-        hashed_results = list(self._cpu_pool.map(_hash_one, pending))
+        hashed_results = list(self._hash_pool().map(_hash_one, pending))
 
         now = time.time()
         with self._db_lock, closing(self._connect()) as con:
@@ -3449,16 +3604,21 @@ class ProjectPreprocessor:
             self._set_project(root, phase="rag")
             return True
         base = Path(root)
-        def _lex_one(item: sqlite3.Row) -> tuple[str, str, str, str]:
+        def _lex_one(item: sqlite3.Row) -> tuple[str, str, str, str] | None:
             rel = str(item["path"])
             path = (base / rel).resolve(strict=False)
             path.relative_to(base)
-            if hasattr(self, "ingest_cache") and self.ingest_cache is not None:
-                ingested = self.ingest_cache.get_or_ingest(base, rel, self.repo_tools)
-                file_hash, text = ingested.content_hash, ingested.text
-            else:
-                file_hash, lines = self.repo_tools._read_snapshot(path)
-                text = "\n".join(lines)
+            try:
+                if hasattr(self, "ingest_cache") and self.ingest_cache is not None:
+                    ingested = self.ingest_cache.get_or_ingest(base, rel, self.repo_tools)
+                    file_hash, text = ingested.content_hash, ingested.text
+                else:
+                    file_hash, lines = self.repo_tools._read_snapshot(path)
+                    text = "\n".join(lines)
+            except FileNotFoundError:
+                # The file may disappear after inventory or the earlier stale-ref
+                # cleanup. Drop that ref and let the rest of this batch proceed.
+                return None
             if self.deterministic is not None and bool(self.cfg.get("compact_lexical_for_deterministic_declarative", True)):
                 try:
                     compact = self.deterministic.lexical_projection(
@@ -3466,11 +3626,18 @@ class ProjectPreprocessor:
                     )
                     if compact is not None:
                         text = compact
+                except FileNotFoundError:
+                    return None
                 except sqlite3.Error as exc:
                     logger.warning("Deterministic lexical projection unavailable (%s)", type(exc).__name__)
             return rel, str(item["content_hash"]), str(file_hash), text
 
-        lex_results = list(self._cpu_pool.map(_lex_one, pending))
+        batch_results = list(self._cpu_pool.map(_lex_one, pending))
+        if any(result is None for result in batch_results):
+            self._prune_missing_file_refs(root)
+        lex_results = [result for result in batch_results if result is not None]
+        if not lex_results:
+            return True
 
         now = time.time()
         with self._db_lock, closing(self._connect()) as con:
@@ -3870,7 +4037,7 @@ class ProjectPreprocessor:
             return True
         # External language-server/graph indexing can be CPU/RAM intensive. Never
         # start it while foreground inference is active; this is a background phase.
-        if not self.scheduler.background_allowed() or self.scheduler.foreground_busy():
+        if not self._scheduler_background_allowed() or self.scheduler.foreground_busy():
             return False
         revision = self._external_revision(root)
         force_refresh = bool(row.get("force_refresh"))
@@ -4126,7 +4293,9 @@ class ProjectPreprocessor:
             f_cols = {str(row[1]) for row in con.execute("PRAGMA table_info(file_refs)").fetchall()}
             last_accessed_clause = "(COALESCE(last_accessed_at, 0) > 0) DESC," if "last_accessed_at" in f_cols else ""
             centrality_clause = "COALESCE(centrality_score, 0.0) DESC," if "centrality_score" in f_cols else ""
-            selection = """SELECT * FROM file_refs WHERE root=? AND card_key IS NULL AND size<=?"""
+            card_filter = ("(card_key IS NULL OR card_key IN (SELECT card_key FROM content_cards WHERE model='deterministic-stub'))"
+                           if self._exclusive_stub_enrichment() else "card_key IS NULL")
+            selection = f"SELECT * FROM file_refs WHERE root=? AND {card_filter} AND size<=?"
             order = f""" ORDER BY
                      {last_accessed_clause}
                      {centrality_clause}
@@ -4195,7 +4364,7 @@ class ProjectPreprocessor:
             con.commit()
 
     def _run_background_generate(self, model: str, prompt: str, system: str, schema: dict[str, Any], max_tokens: int, source: str) -> dict[str, Any]:
-        from .operational_mode import load_operational_mode, operational_mode_gate_error
+        from .operational_mode import load_operational_mode, operational_mode_gate_error, preprocessing_mode_ready
 
         state_dir = getattr(self, "state_dir", None) or self.config.get("server", {}).get("state_dir")
         if state_dir is not None:
@@ -4203,7 +4372,8 @@ class ProjectPreprocessor:
                 mode = load_operational_mode(state_dir)
             except Exception:
                 mode = None
-            rejection = operational_mode_gate_error(mode, "preprocess")
+            rejection = (None if mode is not None and preprocessing_mode_ready(state_dir, mode)
+                         else operational_mode_gate_error(mode, "preprocess"))
             if rejection is not None:
                 return rejection
         if self._gpu_yield():
@@ -4214,7 +4384,8 @@ class ProjectPreprocessor:
         # and reranking never enter this path.
         if self.background_gpu is not None:
             result = self.background_gpu.generate(
-                prompt=prompt, system=system, schema=schema, max_tokens=int(max_tokens), source=source
+                prompt=prompt, system=system, schema=schema, max_tokens=int(max_tokens), source=source,
+                preprocessing=True,
             )
             return result
 
@@ -4286,6 +4457,7 @@ class ProjectPreprocessor:
 
     def _step_file_card(self, row: dict[str, Any]) -> bool:
         root = str(row["root"])
+        enrich_stubs = self._exclusive_stub_enrichment()
         bg_cfg = self.config.get("background_gpu", {})
         batch_size = max(1, int(bg_cfg.get("file_batch_size", 64)))
         items = self._find_next_files(root, batch_size)
@@ -4310,25 +4482,58 @@ class ProjectPreprocessor:
         pending_tasks: list[dict[str, Any]] = []
         pending_meta: list[tuple[sqlite3.Row, str]] = []
         progressed = False
+        deferred_enrichment = False
+        cached_cards: dict[str, str] = {}
+        if not bool(row.get("force_refresh")):
+            content_hashes = list(dict.fromkeys(
+                str(item["content_hash"] or "") for item in items if item["content_hash"]
+            ))
+            cache_updates: list[tuple[str, str]] = []
+            now = time.time()
+            with self._db_lock, closing(self._connect()) as con:
+                for batch in sqlite_batches(content_hashes):
+                    placeholders = ",".join("?" for _ in batch)
+                    cached_rows = con.execute(
+                        f"""SELECT content_hash,card_key,card_json FROM content_cards
+                            WHERE analyzer_version=? AND content_hash IN ({placeholders})
+                              AND (?=0 OR model NOT IN ('deterministic-stub','deterministic-unreadable','deterministic-oversized'))
+                            ORDER BY content_hash,hits DESC""",
+                        (PREPROCESS_ANALYZER_VERSION, *batch, int(enrich_stubs)),
+                    ).fetchall()
+                    for cached_row in cached_rows:
+                        if enrich_stubs:
+                            try:
+                                cached_data = json.loads(str(cached_row["card_json"]))
+                            except (TypeError, ValueError):
+                                continue
+                            if not self._valid_enriched_file_card(cached_data):
+                                continue
+                        cached_cards.setdefault(str(cached_row["content_hash"]), str(cached_row["card_key"]))
+                for item in items:
+                    cached_key = cached_cards.get(str(item["content_hash"] or ""))
+                    if cached_key:
+                        cache_updates.append((cached_key, str(item["path"])))
+                if cache_updates:
+                    con.executemany(
+                        "UPDATE content_cards SET hits=hits+1,accessed_at=? WHERE card_key=?",
+                        [(now, card_key) for card_key, _path in cache_updates],
+                    )
+                    con.executemany(
+                        "UPDATE file_refs SET card_key=?,updated_at=? WHERE root=? AND path=?",
+                        [(card_key, now, root, path) for card_key, path in cache_updates],
+                    )
+                    con.commit()
+            if cache_updates:
+                with self._stats_lock:
+                    self._stats["file_card_hits"] += len(cache_updates)
+                progressed = True
 
         for item in items:
             content_hash = str(item["content_hash"])
 
             # 1. Instant global content-addressed cache hit across all branches & worktrees
-            with self._db_lock, closing(self._connect()) as con:
-                cached = con.execute(
-                    "SELECT card_key, card_json FROM content_cards WHERE content_hash=? AND analyzer_version=? ORDER BY hits DESC LIMIT 1",
-                    (content_hash, PREPROCESS_ANALYZER_VERSION),
-                ).fetchone()
-                if cached and not bool(row.get("force_refresh")):
-                    cached_key = str(cached["card_key"])
-                    con.execute("UPDATE content_cards SET hits=hits+1,accessed_at=? WHERE card_key=?", (time.time(), cached_key))
-                    con.execute("UPDATE file_refs SET card_key=?,updated_at=? WHERE root=? AND path=?", (cached_key, time.time(), root, item["path"]))
-                    con.commit()
-                    with self._stats_lock:
-                        self._stats["file_card_hits"] += 1
-                    progressed = True
-                    continue
+            if cached_cards.get(content_hash):
+                continue
 
             # 2. Deterministic AST/facts fallback
             if self.deterministic is not None and bool(self.cfg.get("prefer_deterministic_cards", True)):
@@ -4344,7 +4549,7 @@ class ProjectPreprocessor:
                     progressed = True
                     continue
 
-            if bool(self.cfg.get("disable_llm_card_synthesis", True)):
+            if bool(self.cfg.get("disable_llm_card_synthesis", True)) and not enrich_stubs:
                 # Skip slow local LLM card synthesis on unparsed files; store compact deterministic metadata
                 data = {"purpose": f"source file ({Path(str(item['path'])).suffix})", "symbols": [], "dependencies": [], "side_effects": [], "risks": [], "tests": [], "keywords": [Path(str(item["path"])).stem]}
                 card_key = stable_hash({"app_version": PREPROCESS_ANALYZER_VERSION, "sha": content_hash, "source": "deterministic-stub"})
@@ -4359,6 +4564,9 @@ class ProjectPreprocessor:
                 int(self.cfg.get("file_card_max_chars", 18000)),
             )
             if not slice_result.get("success"):
+                if enrich_stubs and item["card_key"] is not None:
+                    deferred_enrichment = True
+                    continue
                 data = {"purpose": "unreadable/skipped", "symbols": [], "dependencies": [], "side_effects": [], "risks": [], "tests": [], "keywords": []}
                 self._store_file_card(root, item, card_key, data, "deterministic-unreadable")
                 progressed = True
@@ -4423,14 +4631,14 @@ class ProjectPreprocessor:
             pending_meta.append((item, card_key))
 
         if not pending_tasks:
-            return progressed or True
+            return progressed or not deferred_enrichment
 
         # Do not even start/lease the background GPU until the full foreground idle
         # grace is satisfied. This avoids pointless unload/reload churn between users.
         if self.background_gpu is not None:
             if not self.background_gpu.ready():
                 return progressed
-            results = self.background_gpu.generate_many(pending_tasks)
+            results = self.background_gpu.generate_many(pending_tasks, preprocessing=True)
         else:
             results = [
                 self._run_background_generate(background_model, t["prompt"], t["system"], t["schema"], int(t["max_tokens"]), str(t["source"]))
@@ -4441,6 +4649,11 @@ class ProjectPreprocessor:
             if generated.get("preempted"):
                 continue
             if not generated.get("success"):
+                with self._stats_lock:
+                    self._stats["file_card_failures"] = self._stats.get("file_card_failures", 0) + 1
+                continue
+            if enrich_stubs and (generated.get("model") != background_model
+                                 or not self._valid_enriched_file_card(generated.get("data"))):
                 with self._stats_lock:
                     self._stats["file_card_failures"] = self._stats.get("file_card_failures", 0) + 1
                 continue
@@ -4534,7 +4747,7 @@ class ProjectPreprocessor:
         if self.background_gpu is not None:
             if not self.background_gpu.ready():
                 return False
-            results = self.background_gpu.generate_many(pending_tasks)
+            results = self.background_gpu.generate_many(pending_tasks, preprocessing=True)
         else:
             results = [
                 self._run_background_generate(background_model, t["prompt"], t["system"], t["schema"], int(t["max_tokens"]), str(t["source"]))
@@ -4711,7 +4924,7 @@ class ProjectPreprocessor:
             interval = max(30, int(self.cfg.get("auto_recheck_seconds", 1800)))
             self._set_project(root, phase="complete", status="complete", last_complete_at=completed_at, next_check_at=completed_at + interval, force_refresh=0)
             return True
-        if self._gpu_yield() or not self.scheduler.background_allowed():
+        if self._gpu_yield() or not self._scheduler_background_allowed():
             return False
 
         profile = self._project_profile(root, self.services.repo_profile(root))
@@ -4921,7 +5134,6 @@ class ProjectPreprocessor:
 
     def _step_complete(self, row: dict[str, Any]) -> bool:
         root = str(row["root"])
-        max(30, int(self.cfg.get("auto_recheck_seconds", 1800)))
         now = time.time()
         self._run_idle_database_maintenance()
         self._set_project(
@@ -5095,11 +5307,20 @@ class ProjectPreprocessor:
                 modules = int(con.execute("SELECT COUNT(*) FROM module_cards").fetchone()[0])
                 source_files = int(con.execute("SELECT COUNT(*) FROM source_index").fetchone()[0])
                 capsules = int(con.execute("SELECT COUNT(*) FROM task_capsules").fetchone()[0])
-            stats.update({"enabled": self.enabled, "paused": self._paused.is_set(), "projects": projects, "active_projects": active_projects, "processing_projects": processing_projects, "max_preprocessing_projects": self.max_preprocessing_projects, "waiting_projects": waiting_projects, "paused_projects": paused_projects, "content_cards": cards, "file_refs": refs, "module_cards": modules, "source_index_files": source_files, "task_capsules": capsules})
+            stats.update({"enabled": self.enabled, "paused": self._paused.is_set(), "projects": projects, "active_projects": active_projects, "processing_projects": processing_projects, "max_preprocessing_projects": self._project_limit(), "waiting_projects": waiting_projects, "paused_projects": paused_projects, "content_cards": cards, "file_refs": refs, "module_cards": modules, "source_index_files": source_files, "task_capsules": capsules})
             self._stats_summary_cache["summary"] = {"time": now_mono, "data": stats}
             return stats
         except Exception:
             return stats
+
+    def _ensure_extra_cpu_threads(self) -> None:
+        existing = {int(t.name.rsplit("-", 1)[-1]): t for t in self._extra_cpu_threads if t.is_alive()}
+        for index in range(1, self.exclusive_max_projects):
+            if index not in existing:
+                thread = threading.Thread(target=self._cpu_loop, args=(index,), name=f"local-ai-preprocessor-cpu-{index}", daemon=True)
+                existing[index] = thread
+                thread.start()
+        self._extra_cpu_threads = list(existing.values())
 
     def ensure_running(self) -> bool:
         if not self.enabled or self._stop.is_set():
@@ -5107,6 +5328,7 @@ class ProjectPreprocessor:
         if self._cpu_thread is None or not self._cpu_thread.is_alive():
             self._cpu_thread = threading.Thread(target=self._cpu_loop, name="local-ai-preprocessor-cpu", daemon=True)
             self._cpu_thread.start()
+        self._ensure_extra_cpu_threads()
         if self._gpu_thread is None or not self._gpu_thread.is_alive():
             self._gpu_thread = threading.Thread(target=self._gpu_loop, name="local-ai-preprocessor-gpu", daemon=True)
             self._gpu_thread.start()
@@ -5120,9 +5342,12 @@ class ProjectPreprocessor:
     def close(self) -> None:
         self._stop.set()
         self._wake_all()
-        for t in (self._cpu_thread, self._gpu_thread, self._fs_watcher_thread):
+        for t in (self._cpu_thread, self._gpu_thread, self._fs_watcher_thread, *self._extra_cpu_threads):
             if t and t.is_alive() and threading.current_thread() is not t:
                 t.join(timeout=3.0)
         self._cpu_pool.shutdown(wait=False, cancel_futures=True)
+        exclusive_pool = getattr(self, "_exclusive_cpu_pool", None)
+        if exclusive_pool is not None and exclusive_pool is not self._cpu_pool:
+            exclusive_pool.shutdown(wait=False, cancel_futures=True)
         if getattr(self, "_write_actor", None) is not None:
             self._write_actor.stop()

@@ -138,7 +138,7 @@ def test_cache_fingerprint_degrades_on_sqlite_unavailability():
     assert preprocessor.cache_fingerprint("C:/repo") is None
 
 
-def test_repo_search_reuses_cache_for_equivalent_query_whitespace_and_case(tmp_path: Path):
+def test_live_lexical_repo_search_normalizes_equivalent_query_without_stale_cache(tmp_path: Path):
     class _Cache:
         def __init__(self):
             self.values = {}
@@ -172,7 +172,8 @@ def test_repo_search_reuses_cache_for_equivalent_query_whitespace_and_case(tmp_p
     second = services.repo_search(str(tmp_path), "cache route", top_k=12, search_mode="lexical")
 
     assert first["cache_hit"] is False
-    assert second["cache_hit"] is True
+    assert second["cache_hit"] is False
+    assert first["results"] == second["results"]
 
 
 def test_enriched_repo_search_returns_symbol_and_evidence_for_hit(tmp_path: Path, monkeypatch):

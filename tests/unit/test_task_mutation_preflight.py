@@ -121,6 +121,156 @@ def test_create_persists_when_full_memory_response_fits(tmp_path, monkeypatch):
     assert store.state_store.event_page(f"task:{task.task_id}")["last_seq"] == 1
 
 
+@pytest.mark.parametrize("blockers", [(), ("pending review",)])
+def test_checkpoint_store_roundtrip_preserves_fields_at_mcp_wire(tmp_path, monkeypatch, blockers):
+    from local_ai_hub import mcp_server
+
+    store = _store(tmp_path)
+    monkeypatch.setattr(store, "_task_memory_context", lambda task_id, *_a, **_k: _memory(task_id=task_id))
+    task = store.create(_contract(), ScopeContext(), task_id="checkpoint-wire-roundtrip")
+    checkpoint = TaskCheckpoint(
+        phase="verification", next_action="inspect result", affected_paths=("README.md",),
+        evidence_ids=("synthetic-evidence",), blockers=blockers,
+        state_data={"memory_audit": {"not_used_reason": "Synthetic fixture"}, "marker": "kept"},
+    )
+    before_seq = store.state_store.event_page(f"task:{task.task_id}")["last_seq"]
+    oversized = replace(checkpoint, state_data={**checkpoint.state_data, "marker": "x" * 4000})
+    with pytest.raises(CheckpointResponseBudgetError):
+        store.checkpoint(task.task_id, oversized, actor=task.owner, response_budget_tokens=512)
+    assert store.state_store.event_page(f"task:{task.task_id}")["last_seq"] == before_seq
+    assert "marker" not in store.get(task.task_id).checkpoint.state_data
+
+    store.checkpoint(task.task_id, checkpoint, actor=task.owner, response_budget_tokens=8192)
+    stored = store.get(task.task_id)
+    _, wire = mcp_server._mcp_budget_payload(
+        "local_ai_coord", {"action": "task_get", "max_response_tokens": 8192},
+        {"success": True, "task": stored.to_dict()},
+    )
+    actual = wire["task"]["checkpoint"]
+    assert actual["phase"] == checkpoint.phase
+    assert actual["next_action"] == checkpoint.next_action
+    assert actual["affected_paths"] == list(checkpoint.affected_paths)
+    assert actual["evidence_ids"] == list(checkpoint.evidence_ids)
+    assert actual["blockers"] == list(checkpoint.blockers)
+    assert actual["state_data"]["marker"] == "kept"
+    assert actual["state_data"]["memory_context"]["context"]["task_id"] == task.task_id
+
+
+@pytest.mark.parametrize("blockers", [[], ["synthetic blocker"]])
+def test_registered_mcp_checkpoint_roundtrip_with_real_store(tmp_path, monkeypatch, blockers):
+    from local_ai_hub import mcp_server
+
+    _activate_coord(monkeypatch)
+    store = _store(tmp_path)
+    task = store.create(_contract(), ScopeContext(), task_id="registered-wire-roundtrip")
+
+    class StoreTransport:
+        def coord(self, **kwargs):
+            if kwargs["action"] == "task_checkpoint":
+                updated = store.checkpoint(
+                    task.task_id, TaskCheckpoint.from_dict(kwargs["checkpoint"]),
+                    actor=task.owner, response_budget_tokens=kwargs.get("response_budget_tokens"),
+                )
+            elif kwargs["action"] == "task_get":
+                updated = store.get(task.task_id)
+            else:
+                raise AssertionError(kwargs["action"])
+            return {"success": True, "task": updated.to_dict()}
+
+    monkeypatch.setattr(mcp_server, "CLIENT", StoreTransport())
+    monkeypatch.setattr(mcp_server, "_record_tool_accounting", lambda **_: None)
+    monkeypatch.setattr(mcp_server, "RESPONSE_BUDGET_ENABLED", True)
+    checkpoint = {
+        "phase": "verification", "next_action": "read back", "affected_paths": ["README.md"],
+        "evidence_ids": ["synthetic-evidence"], "blockers": blockers,
+        "state_data": {"marker": "case122"},
+    }
+
+    def call(action, **fields):
+        result = asyncio.run(mcp_server.mcp.call_tool("local_ai_coord", {
+            "action": action, "root": str(tmp_path), "task_id": task.task_id,
+            "max_response_tokens": 8192, **fields,
+        }))
+        contents = result[0] if isinstance(result, tuple) else result
+        visible = json.loads(next(item.text for item in contents if item.type == "text"))
+        structured = result[1] if isinstance(result, tuple) else visible
+        return visible, structured
+
+    accepted, _ = call("task_checkpoint", checkpoint=checkpoint)
+    assert accepted["success"] is True
+    visible, structured = call("task_get")
+    for response in (visible, structured):
+        assert response["success"] is True
+        actual = response["task"]["checkpoint"]
+        for key in ("phase", "next_action", "affected_paths", "evidence_ids", "blockers"):
+            assert actual[key] == checkpoint[key]
+        assert actual["state_data"]["marker"] == checkpoint["state_data"]["marker"]
+
+
+def test_registered_mcp_task_list_sanitizes_private_state_without_memory(tmp_path, monkeypatch):
+    from local_ai_hub import mcp_server
+
+    _activate_coord(monkeypatch)
+
+    class StoreTransport:
+        def coord(self, **kwargs):
+            assert kwargs["action"] == "task_list"
+            return {"success": True, "tasks": [{
+                "task_id": "synthetic-list-task", "checkpoint": {
+                    "blockers": [], "state_data": {
+                        "marker": "visible", "_pending_fenced_work": {"attempt_token": "secret-fence"},
+                        "memory_audit_history": [{"private": "secret-history"}],
+                    },
+                },
+            }], "has_more": True, "next_offset": 1}
+
+    monkeypatch.setattr(mcp_server, "CLIENT", StoreTransport())
+    monkeypatch.setattr(mcp_server, "_record_tool_accounting", lambda **_: None)
+    monkeypatch.setattr(mcp_server, "RESPONSE_BUDGET_ENABLED", True)
+    result = asyncio.run(mcp_server.mcp.call_tool("local_ai_coord", {
+        "action": "task_list", "root": str(tmp_path), "max_response_tokens": 8192,
+    }))
+    contents = result[0] if isinstance(result, tuple) else result
+    visible = json.loads(next(item.text for item in contents if item.type == "text"))
+    structured = result[1] if isinstance(result, tuple) else visible
+    for response in (visible, structured):
+        assert "secret-fence" not in json.dumps(response)
+        assert "secret-history" not in json.dumps(response)
+        assert response["has_more"] is True and response["next_offset"] == 1
+        checkpoint = response["tasks"][0]["checkpoint"]
+        assert checkpoint["blockers"] == []
+        assert checkpoint["state_data"]["marker"] == "visible"
+        assert set(checkpoint["state_data_omitted"]) == {"_pending_fenced_work", "memory_audit_history"}
+
+
+def test_registered_mcp_task_list_rejects_budget_too_small_without_dropping_tasks(tmp_path, monkeypatch):
+    from local_ai_hub import mcp_server
+
+    _activate_coord(monkeypatch)
+
+    class StoreTransport:
+        def coord(self, **kwargs):
+            assert kwargs["action"] == "task_list"
+            return {"success": True, "tasks": [{
+                "task_id": "large-task", "checkpoint": {
+                    "blockers": [], "state_data": {"marker": "x" * 10000},
+                },
+            }], "has_more": True, "next_offset": 1}
+
+    monkeypatch.setattr(mcp_server, "CLIENT", StoreTransport())
+    monkeypatch.setattr(mcp_server, "_record_tool_accounting", lambda **_: None)
+    monkeypatch.setattr(mcp_server, "RESPONSE_BUDGET_ENABLED", True)
+    result = asyncio.run(mcp_server.mcp.call_tool("local_ai_coord", {
+        "action": "task_list", "root": str(tmp_path), "max_response_tokens": 512,
+    }))
+    contents = result[0] if isinstance(result, tuple) else result
+    visible = json.loads(next(item.text for item in contents if item.type == "text"))
+    structured = result[1] if isinstance(result, tuple) else visible
+    for response in (visible, structured):
+        assert response["success"] is False
+        assert response.get("error")
+
+
 def test_task_without_memory_context_still_preflights_full_response_budget(tmp_path, monkeypatch):
     store = _store(tmp_path)
     task = store.create(_contract(), ScopeContext(), task_id="no-memory-budget")
@@ -276,7 +426,7 @@ def test_auto_worktree_git_failure_keeps_started_operation_unknown(tmp_path, mon
 def test_completion_returns_scheduled_worktree_cleanup_without_postcommit_write(tmp_path, monkeypatch):
     store = _store(tmp_path)
     _mock_auto_worktree(monkeypatch, tmp_path)
-    monkeypatch.setattr(store, "_verify_completion", lambda _task: None)
+    monkeypatch.setattr(store, "_verify_completion", lambda _task, *, _waive_receipts=False: None)
     created = store.create(
         _contract(), ScopeContext(repository_id="complete-cleanup-coordination"),
         task_id="complete-scheduled-cleanup", auto_worktree=True, repo_root=str(tmp_path.resolve()),
@@ -295,7 +445,7 @@ def test_completion_returns_scheduled_worktree_cleanup_without_postcommit_write(
 def test_direct_completed_transition_schedules_existing_worktree_cleanup(tmp_path, monkeypatch):
     store = _store(tmp_path)
     _mock_auto_worktree(monkeypatch, tmp_path)
-    monkeypatch.setattr(store, "_verify_completion", lambda _task: None)
+    monkeypatch.setattr(store, "_verify_completion", lambda _task, *, _waive_receipts=False: None)
     created = store.create(
         _contract(), ScopeContext(repository_id="transition-cleanup-coordination"),
         task_id="transition-scheduled-cleanup", auto_worktree=True, repo_root=str(tmp_path.resolve()),
@@ -326,7 +476,7 @@ def test_idle_reaper_accepts_scheduled_worktree_before_expiry(tmp_path, monkeypa
 
     store = _store(tmp_path)
     _mock_auto_worktree(monkeypatch, tmp_path)
-    monkeypatch.setattr(store, "_verify_completion", lambda _task: None)
+    monkeypatch.setattr(store, "_verify_completion", lambda _task, *, _waive_receipts=False: None)
     created = store.create(
         _contract(), ScopeContext(repository_id="scheduled-reaper-coordination"), task_id="scheduled-reaper",
         auto_worktree=True, repo_root=str(tmp_path.resolve()),

@@ -1703,7 +1703,7 @@ class HubClient:
                 "name": kwargs.get("name", ""),
                 "owner": kwargs.get("owner", "agent"),
                 "capacity": int(kwargs.get("capacity", 1)),
-                "ttl_seconds": float(kwargs.get("ttl_seconds", 300.0)),
+                "ttl_seconds": None if kwargs.get("ttl_seconds") is None else float(kwargs["ttl_seconds"]),
                 "purpose": kwargs.get("purpose", ""),
                 "timeout": timeout_val,
             }, timeout=max(timeout_val + 5.0, 180.0))

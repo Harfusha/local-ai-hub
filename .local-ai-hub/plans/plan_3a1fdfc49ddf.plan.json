@@ -10,17 +10,18 @@
       "acceptance_criteria": [
         "Recent endpoint failures and latency hotspots are classified from retained telemetry and trace evidence.",
         "Confirmed server or response-contract defects are fixed at their source with focused regression coverage.",
+        "Repetition detection releases the GPU fence only after the backend confirms completion; incomplete or timed-out streams remain fenced.",
         "Focused checks pass and diff check is clean.",
         "Live process has loaded the current source and representative endpoint/trace behavior is verified after separately authorized restart."
       ],
-      "blocker": "Detailed request/response traces remain unclassified because enabling diagnostics stores unredacted payloads and paths; explicit approval remains pending. Current post-restart search used lexical fallback because rag_index_missing, and the first cold request spent 1102ms in search_hint_state.",
+      "blocker": "Full pytest and a later fail-fast run reported failures and are not final candidate evidence. FIM quality, detailed diagnostics, release-check nested DB, and affected_tests empty-path contract remain open.",
       "clarifications": [],
       "depends_on": [],
-      "description": "Audit current Hub logs and latency/failure data; classify expected caller failures versus server defects; fix confirmed performance and request/response projection issues; verify focused regression tests and live endpoints and traces after authorized restart.",
+      "description": "Audit operational logs and endpoint latency/failures; repair response contracts and recurring GPU reservation after repetition while preserving fail-closed behavior; verify live and through targeted and full validation.",
       "kind": "analysis",
-      "next_action": "Investigate the cold search_hint_state delay and remaining high-p95/failing endpoints with sanitized telemetry. Classify generic request failures only after separate approval for unredacted detailed traces.",
+      "next_action": "Fix affected_tests empty and invalid paths; classify full-suite failures and run fresh candidate-bound validation. Continue live FIM quality and latency investigation.",
       "title": "Review logs, fix confirmed endpoint defects, verify live changes",
-      "work_phase": "verification",
+      "work_phase": "implementation",
       "work_status": "in_progress"
     }
   },

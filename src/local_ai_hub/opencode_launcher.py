@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import tempfile
 from pathlib import Path
@@ -16,6 +17,24 @@ from .state_paths import configured_state_dir
 
 class LaunchError(RuntimeError):
     """A local OpenCode launch or its provider cleanup was not confirmed."""
+
+
+def _provider_start_failure(response: Any) -> str:
+    message = "provider start was not confirmed; inspect provider status"
+    if not isinstance(response, dict):
+        return message
+    details: list[str] = []
+    status = response.get("status_code")
+    if type(status) is int and 100 <= status <= 599:
+        details.append(f"HTTP {status}")
+    request_id = response.get("request_id")
+    if isinstance(request_id, str) and re.fullmatch(r"req_[0-9a-f]{12,32}", request_id):
+        details.append(f"request_id={request_id}")
+    for key in ("terminal", "retryable", "outcome_unknown"):
+        value = response.get(key)
+        if type(value) is bool:
+            details.append(f"{key}={str(value).lower()}")
+    return f"{message} ({'; '.join(details)})" if details else message
 
 
 # Runtime essentials only. Credential names are open-ended and cannot be
@@ -117,7 +136,7 @@ def launch_opencode(
     if (not isinstance(started, dict) or started.get("success") is not True or started.get("host") != "127.0.0.1"
             or started.get("model") != model or type(started.get("port")) is not int
             or not 1 <= started["port"] <= 65535 or not isinstance(started.get("nonce"), str)):
-        raise LaunchError("provider start was not confirmed; inspect provider status")
+        raise LaunchError(_provider_start_failure(started))
     nonce = started["nonce"]
     try:
         provider_token = derive_provider_token(nonce)

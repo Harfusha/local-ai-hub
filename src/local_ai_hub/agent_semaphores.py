@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import sqlite3
 import threading
 import time
@@ -12,6 +13,15 @@ from typing import Any
 from .sqlite_support import connect_sqlite, initialize_wal, retry_busy
 
 logger = logging.getLogger(__name__)
+
+
+def _holder_is_active(holder: dict[str, Any], now: float) -> bool:
+    expiry = holder.get("expires_at", 0)
+    if expiry is None:
+        return True
+    if isinstance(expiry, bool) or not isinstance(expiry, (int, float)) or not math.isfinite(expiry):
+        raise ValueError("invalid semaphore holder expiry")
+    return expiry > now
 
 
 class SemaphoreStore:
@@ -60,7 +70,7 @@ class SemaphoreStore:
         name: str,
         owner: str = "agent",
         capacity: int = 1,
-        ttl_seconds: float = 300.0,
+        ttl_seconds: float | None = None,
         purpose: str = "",
         timeout: float = 0.0,
     ) -> dict[str, Any]:
@@ -69,7 +79,11 @@ class SemaphoreStore:
         if not clean_name:
             raise ValueError("semaphore name must be a non-empty string")
         cap = max(1, int(capacity))
-        ttl = max(0.05, float(ttl_seconds))
+        ttl = None if ttl_seconds is None else float(ttl_seconds)
+        if ttl is not None:
+            if not math.isfinite(ttl):
+                raise ValueError("ttl_seconds must be finite")
+            ttl = max(0.05, ttl)
         now = time.time()
 
         with self._lock:
@@ -91,7 +105,7 @@ class SemaphoreStore:
                         wait_queue = json.loads(row[2])
 
                     # Prune expired holders
-                    active_holders = [h for h in holders if float(h.get("expires_at", 0)) > now]
+                    active_holders = [h for h in holders if _holder_is_active(h, now)]
                     wait_queue = [w for w in wait_queue if w.get("owner") != owner]
 
                     if len(active_holders) < effective_capacity:
@@ -102,7 +116,7 @@ class SemaphoreStore:
                             "owner": owner,
                             "purpose": purpose,
                             "acquired_at": now,
-                            "expires_at": now + ttl,
+                            "expires_at": None if ttl is None else now + ttl,
                         }
                         active_holders.append(new_holder)
                         con.execute(
@@ -130,7 +144,7 @@ class SemaphoreStore:
                             "name": clean_name,
                             "lease_id": lease_id,
                             "owner": owner,
-                            "expires_at": now + ttl,
+                            "expires_at": None if ttl is None else now + ttl,
                             "capacity": effective_capacity,
                             "held_count": len(active_holders),
                             "available_slots": max(0, effective_capacity - len(active_holders)),
@@ -262,7 +276,7 @@ class SemaphoreStore:
                     ).fetchone()
                     if row is None:
                         return {"success": True, "semaphore": None, "semaphores": {}, "found": False}
-                    holders = [h for h in json.loads(row[1]) if float(h.get("expires_at", 0)) > now]
+                    holders = [h for h in json.loads(row[1]) if _holder_is_active(h, now)]
                     queue = json.loads(row[2])
                     sem_data = {
                         "name": clean_name,
@@ -286,7 +300,7 @@ class SemaphoreStore:
                     semaphores = {}
                     for r in rows:
                         s_name = r[0]
-                        holders = [h for h in json.loads(r[2]) if float(h.get("expires_at", 0)) > now]
+                        holders = [h for h in json.loads(r[2]) if _holder_is_active(h, now)]
                         queue = json.loads(r[3])
                         semaphores[s_name] = {
                             "name": s_name,

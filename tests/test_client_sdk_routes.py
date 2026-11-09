@@ -30,12 +30,16 @@ def live_client(tmp_path, monkeypatch, request):
     server = http_server.LocalAIHTTPServer(("127.0.0.1", 0), http_server.Handler)
     config = tmp_path / "config.toml"
     state_dir = tmp_path / "state"
-    detailed_diagnostics = getattr(request, "param", False) is True
+    fixture_options = request.param if isinstance(getattr(request, "param", None), dict) else {}
+    detailed_diagnostics = fixture_options.get(
+        "detailed_diagnostics", getattr(request, "param", False) is True
+    )
+    hardware_profile = fixture_options.get("profile", "balanced")
     config.write_text(
         f'[server]\nbind = "127.0.0.1"\nport = {server.server_address[1]}\n'
         f'state_dir = "{state_dir.as_posix()}"\n'
         '[agent_state]\nenabled = true\n'
-        '[hardware]\nprofile = "balanced"\n'
+        f'[hardware]\nprofile = "{hardware_profile}"\n'
         '[features]\nlocal_semantic_analysis = true\n'
         '[security]\n'
         f'allowed_roots = ["{tmp_path.as_posix()}"]\n'
@@ -55,6 +59,281 @@ def live_client(tmp_path, monkeypatch, request):
         server.server_close()
         thread.join(timeout=3)
         app.close()
+
+
+@pytest.mark.parametrize("live_client", [{"profile": "high"}], indirect=True)
+@pytest.mark.parametrize(
+    ("reason", "retryable"),
+    [("vram_telemetry_unavailable", True), ("resource_pressure", False)],
+)
+def test_queue_full_http_response_preserves_admission_reason_and_retryability(
+    live_client, monkeypatch, reason, retryable
+):
+    app, client = live_client
+    from local_ai_hub.scheduler import QueueFullError
+
+    admission = {
+        "state": "rejected",
+        "reason": reason,
+        "retryable": retryable,
+    }
+
+    def reject_completion(_payload, **_kwargs):
+        raise QueueFullError(
+            f"model admission rejected: {reason}",
+            reason=reason,
+            admission=admission,
+        )
+
+    monkeypatch.setattr(app.services, "complete_code", reject_completion)
+    result = client.post("/api/complete", {"prefix": "def ready():\n    return ", "suffix": ""})
+
+    assert result["success"] is False
+    assert result["status_code"] == 429
+    assert result["error_code"] == reason
+    assert result["admission_state"] == "rejected"
+    assert result["retryable"] is retryable
+    assert result["terminal"] is (not retryable)
+
+
+@pytest.mark.parametrize("live_client", [{"profile": "high"}], indirect=True)
+def test_complete_http_preserves_uncertain_backend_failure(live_client, monkeypatch):
+    app, client = live_client
+    backend_failure = {
+        "error": "backend timed out after partial output",
+        "error_code": "backend_timeout",
+        "timed_out": True,
+        "outcome_unknown": True,
+        "cleanup_unconfirmed": True,
+        "_lah_partial_response": True,
+        "terminal": True,
+        "retryable": False,
+    }
+    monkeypatch.setattr(app.services.scheduler, "submit", lambda *args, **kwargs: backend_failure)
+
+    result = client.post("/api/complete", {"prefix": "def ready():\n    return ", "suffix": ""})
+
+    assert result["success"] is False
+    assert result["error_code"] == "backend_timeout"
+    for key in ("timed_out", "outcome_unknown", "cleanup_unconfirmed", "partial", "terminal"):
+        assert result[key] is True
+    assert result["retryable"] is False
+    assert "completion" not in result
+
+
+@pytest.mark.parametrize("live_client", [{"profile": "high"}], indirect=True)
+def test_complete_http_reports_repetition_with_unknown_gpu_outcome(live_client, monkeypatch):
+    app, client = live_client
+    monkeypatch.setattr(app.services.scheduler, "submit", lambda *args, **kwargs: {
+        "success": False,
+        "error": "model output repetition loop detected",
+        "_lah_repetition_loop_detected": True,
+        "outcome_unknown": True,
+        "terminal": True,
+        "retryable": False,
+    })
+
+    result = client.post("/api/complete", {"prefix": "def ready():\n    return ", "suffix": ""})
+
+    assert result["success"] is False
+    assert result["error_code"] == "model_repetition_loop"
+    assert result["repetition_loop_detected"] is True
+    assert result["outcome_unknown"] is True
+    assert result["terminal"] is True and result["retryable"] is False
+    assert "completion" not in result
+
+
+@pytest.mark.parametrize(("payload", "expected"), [
+    ({"paths": []}, []),
+    ({}, None),
+    ({"changed_paths": ["tests/a.py"]}, ["tests/a.py"]),
+    ({"paths": [], "changed_paths": ["tests/a.py"]}, []),
+])
+def test_affected_tests_http_preserves_explicit_paths(live_client, monkeypatch, tmp_path, payload, expected):
+    app, client = live_client
+    observed = []
+
+    def affected_tests(root, *, changed_paths):
+        observed.append(changed_paths)
+        return {"success": True}
+
+    monkeypatch.setattr(app.services, "affected_tests", affected_tests)
+    result = client.post("/api/repo/affected_tests", {"root": str(tmp_path), **payload})
+    assert result["success"] is True
+    assert observed == [expected]
+
+
+@pytest.mark.parametrize("invalid_paths", [False, 0, ""])
+def test_affected_tests_http_rejects_falsey_scalars(live_client, tmp_path, invalid_paths):
+    _, client = live_client
+    result = client.post("/api/repo/affected_tests", {"root": str(tmp_path), "paths": invalid_paths})
+    assert result["success"] is False
+    assert result["status_code"] == 400
+    assert result["error"] == "paths must be a JSON array or null"
+    assert result["terminal"] is True and result["retryable"] is False
+
+
+def test_affected_tests_http_empty_paths_does_not_select_test_matrix(live_client, tmp_path):
+    _, client = live_client
+    (tmp_path / "pyproject.toml").write_text("", encoding="utf-8")
+    (tmp_path / "test_example.py").write_text("def test_example(): pass\n", encoding="utf-8")
+
+    result = client.post("/api/repo/affected_tests", {"root": str(tmp_path), "paths": []})
+
+    assert result["success"] is True
+    assert result["changed_files"] == []
+    assert result["test_files"] == []
+    assert result["suggested_command"] == ""
+    assert result.get("selection_uncertain") is not True
+
+
+@pytest.mark.parametrize(("old_name", "new_name"), [
+    ("old name.py", "new name.py"), (".stará.py", ".nová.py"),
+])
+def test_affected_tests_http_git_rename_paths(live_client, tmp_path, old_name, new_name):
+    import subprocess
+
+    _, client = live_client
+    def git(*args):
+        subprocess.run(["git", *args], cwd=tmp_path, check=True, capture_output=True, timeout=10)
+
+    git("init", "-q")
+    (tmp_path / ".gitignore").write_text("state/\nconfig.toml\n", encoding="utf-8")
+    (tmp_path / old_name).write_text("value = 1\n", encoding="utf-8")
+    git("add", "--", ".gitignore", old_name)
+    git("-c", "user.name=Fixture", "-c", "user.email=fixture@invalid", "commit", "--no-verify", "-qm", "fixture")
+    git("mv", "--", old_name, new_name)
+
+    result = client.post("/api/repo/affected_tests", {"root": str(tmp_path)})
+
+    assert result["success"] is True
+    assert {old_name, new_name}.issubset(set(result["changed_files"]))
+    assert all(" -> " not in path for path in result["changed_files"])
+
+
+def test_http_search_finds_hinted_file_beyond_git_inventory_cap(live_client, tmp_path):
+    import subprocess
+
+    app, client = live_client
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True, timeout=10)
+    for number in range(70):
+        (repo / f"a_{number:03}.py").write_text("noise\n", encoding="utf-8")
+    (repo / "z_target.py").write_text("uniqueastralmarker\n", encoding="utf-8")
+    subprocess.run(["git", "add", "--", "."], cwd=repo, check=True, timeout=10)
+    app.services.repo_tools.max_files = 50
+    app.services.repo_tools.prefer_git = True
+    result = client.post("/api/search", {
+        "root": str(repo), "query": "uniqueastralmarker", "limit": 2, "search_mode": "lexical",
+        "path_hints": [{"path": "z_target.py", "purpose": "repository_search", "scope": "repo_search"}],
+    })
+    assert result["success"] is True, result
+    assert "z_target.py" in {item["path"] for item in result["results"]}
+    assert result["coverage_complete"] is False
+    assert "path_hint_usage" not in result
+
+
+def test_telemetry_report_http_distinguishes_inference_and_all_events(live_client):
+    app, client = live_client
+    app.telemetry.record(event_type="inference", success=True, duration_ms=1)
+    app.telemetry.record_http(action="/api/example", success=True, duration_ms=2)
+    flush_status = app.telemetry.flush_status(10)
+    assert flush_status["durable"], flush_status
+    response = client.get("/api/telemetry/report?days=1")
+    assert response["success"] is True
+    report = response["report"]
+    assert report["window"]["events"] == report["counts"]["events"]
+    assert report["window"]["inference_events"] == 1
+    assert report["window"]["events"] >= 2
+
+
+def test_telemetry_report_http_preserves_unknown_phase_latency(live_client):
+    app, client = live_client
+    app.telemetry.record_http(action="/api/search", success=True, duration_ms=20)
+    assert app.telemetry.flush(10)
+    report = client.get("/api/telemetry/report?days=1")["report"]
+    row = next(item for item in report["http_tail_latency"]["by_action"] if item["action"] == "/api/search")
+    assert row["p95_duration_ms"] == 20
+    assert row["p95_queue_wait_ms"] is None and row["queue_wait_measurement_complete"] is False
+    assert row["p95_service_ms"] is None and row["service_measurement_complete"] is False
+
+
+def test_http_security_audit_marks_capped_inventory_incomplete(live_client, tmp_path):
+    app, client = live_client
+    root = tmp_path / 'audit-project'
+    root.mkdir()
+    (root / 'a.py').write_text('safe = 1\n', encoding='utf-8')
+    (root / 'z.py').write_text('import pickle\npickle.loads(payload)\n', encoding='utf-8')
+    app.services.repo_tools.max_files = 1
+    app.services.repo_tools.prefer_git = False
+    result = client.post('/api/security_audit', {'root': str(root)})
+    assert result['success'] is True, result
+    assert result['scan_complete'] is False, result
+    assert result['is_clean'] is False, result
+    assert 'file_limit' in result['inventory_incomplete_reasons'], result
+    assert '_identity' not in result
+
+
+def test_http_security_audit_identifies_oversized_inventory_file(live_client, tmp_path):
+    app, client = live_client
+    root = tmp_path / 'audit-oversized'
+    root.mkdir()
+    (root / 'large.py').write_text('x = 1\n' * 30, encoding='utf-8')
+    app.services.repo_tools.max_file_bytes = 32
+    app.services.repo_tools.prefer_git = False
+    result = client.post('/api/security_audit', {'root': str(root)})
+    assert result['success'] is True, result
+    assert result['scan_complete'] is False and result['is_clean'] is False, result
+    assert result['inventory_incomplete_examples']['oversized_file'] == ['large.py'], result
+    assert result['inventory_examples_truncated'] is False
+
+
+def test_affected_tests_http_nested_root_excludes_sibling_paths(live_client, tmp_path):
+    import subprocess
+
+    _, client = live_client
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True, timeout=10)
+    (tmp_path / ".gitignore").write_text("state/\nconfig.toml\n", encoding="utf-8")
+    root = tmp_path / "nested"
+    root.mkdir()
+    (root / "inside.py").write_text("x=1\n", encoding="utf-8")
+    (tmp_path / "outside.py").write_text("x=2\n", encoding="utf-8")
+    subprocess.run(["git", "add", "--", "nested/inside.py", "outside.py"], cwd=tmp_path, check=True, timeout=10)
+    result = client.post("/api/repo/affected_tests", {"root": str(root)})
+    assert result["success"] is True
+    assert result["changed_files"] == ["inside.py"]
+
+
+def test_affected_tests_http_non_git_discovery_fails_explicitly(live_client, tmp_path):
+    _, client = live_client
+    result = client.post("/api/repo/affected_tests", {"root": str(tmp_path)})
+    assert result["success"] is False
+    assert result["error_code"] == "git_status_failed"
+    assert result["terminal"] is True and result["retryable"] is False
+    assert result.get("changed_files") is None
+
+
+def test_affected_tests_http_lists_untracked_files_in_directory(live_client, tmp_path):
+    import subprocess
+
+    _, client = live_client
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True, timeout=10)
+    (tmp_path / ".gitignore").write_text("state/\nconfig.toml\n", encoding="utf-8")
+    directory = tmp_path / "new package"
+    directory.mkdir()
+    (directory / "module.py").write_text("value = 1\n", encoding="utf-8")
+    result = client.post("/api/repo/affected_tests", {"root": str(tmp_path)})
+    assert result["success"] is True
+    assert "new package/module.py" in result["changed_files"]
+    assert "new package/" not in result["changed_files"]
+
+
+def test_affected_tests_http_empty_paths_need_no_git_repository(live_client, tmp_path):
+    _, client = live_client
+    result = client.post("/api/repo/affected_tests", {"root": str(tmp_path), "paths": []})
+    assert result["success"] is True
+    assert result["changed_files"] == [] and result["test_files"] == []
 
 
 @pytest.fixture

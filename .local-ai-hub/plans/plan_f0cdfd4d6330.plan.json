@@ -1,0 +1,57 @@
+{
+  "default_target_ref": "refs/heads/master",
+  "description": "Redesign dashboard preprocessing progress with clear per-project counts, phases and honest unknown values; preserve active runs.",
+  "id": "plan_f0cdfd4d6330",
+  "lifecycle": "draft",
+  "schema_version": 1,
+  "spec_refs": [],
+  "tasks": {
+    "task_active_repository_priority": {
+      "acceptance_criteria": [
+        "Doložit existující výběr a přenos signálů aktivity",
+        "Opravit potvrzené chyby prioritizace bez hladovění ostatních projektů",
+        "Ověřit cílenými testy a zachovat běžící proces"
+      ],
+      "blocker": null,
+      "clarifications": [],
+      "depends_on": [],
+      "description": "Prověřit uživatelovo podezření, že preprocessing nepreferuje aktuálně používané repozitáře. Zjistit skutečný výběr projektů a signály aktivity, případný problém opravit a ověřit bez přerušení běžícího preprocessingu.",
+      "kind": "code",
+      "next_action": "Source and focused tests verified; activate through normal restart only after the existing preprocessing run can stop safely.",
+      "title": "Priorita aktuálně používaných repozitářů",
+      "work_status": "in_progress"
+    },
+    "task_dashboard_progress": {
+      "acceptance_criteria": [
+        "Srozumitelný přehled stavu, fáze, skutečných počtů a označených odhadů",
+        "Neznámé údaje, čekání, chyby a rozsah worktree zobrazeny pravdivě",
+        "Akce a filtry zachovány, včetně úzkého zobrazení",
+        "Cílené testy a ověření aktuálního kódu v prohlížeči bez přerušení preprocessingu"
+      ],
+      "blocker": null,
+      "clarifications": [],
+      "depends_on": [],
+      "description": "Dokončit přestavbu GUI, ověřit běžící dashboard v prohlížeči. Uživatel následně výslovně povolil restart Hubu i při běžícím preprocessingu; ověřit obnovení zpracování.",
+      "kind": "code",
+      "next_action": "Restartovat Hub, ověřit živé GUI a obnovení preprocessingu.",
+      "title": "Přestavět přehled preprocessingu",
+      "work_status": "in_progress"
+    },
+    "task_receipt_bridge": {
+      "acceptance_criteria": [
+        "Zjistit podporovanou autentickou cestu z host-native testů",
+        "Ověřit původ a integritu bez syntetických receiptů",
+        "Uzavřít původní Agent OS úlohu podle pravidel"
+      ],
+      "blocker": "Codex PostToolUse předává nepodepsaný vstup/výstup; CommandBroker přijímá pouze vlastní autentický command_execution_record.v2. Hostitelské exec_command neposkytuje atestační API. `codex app-server daemon version` se nepřipojil k lokálnímu řídicímu socketu (os error 10050). Uživatel požaduje nativní testy.",
+      "clarifications": [],
+      "depends_on": [],
+      "description": "Uživatel výslovně zvolil zachovat nativní testy a opravit ověřitelnou integraci. Nelze je převést na spuštění přes broker; zachovat autentický původ, identitu task/root/owner a odmítání syntetických záznamů.",
+      "kind": "code",
+      "next_action": "Získat dostupný důvěryhodný hostitelský kanál a jeho bezpečnostní kontrakt; pak implementovat ověření bez vytvoření nepravého brokerového záznamu.",
+      "title": "Opravit cestu k ověřovacím záznamům",
+      "work_status": "blocked"
+    }
+  },
+  "title": "Přehled průběhu preprocessingu"
+}

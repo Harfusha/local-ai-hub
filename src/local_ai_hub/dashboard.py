@@ -434,6 +434,9 @@ button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-vis
 @media(max-width:1100px){.toolbar{margin-left:0;min-height:76px;padding:18px 24px}.brand-wrap{position:static;align-items:center;margin-right:auto}.brand small{display:none}.tabs{position:static;width:auto;height:auto;max-width:none;padding:0 18px 10px;flex-direction:row;border:0;background:var(--bg);gap:4px;overflow-x:auto}.tabbtn{min-height:38px;flex-shrink:0}.tabbtn::before{display:none}.tabbtn.active{box-shadow:inset 0 -2px var(--accent)}.page,.page.active{margin-left:0;padding:28px 24px 44px}.page-heading h1{font-size:32px}}
 @media(max-width:600px){.toolbar{padding:14px;gap:8px}.toolbar>.tiny#updated{margin-left:auto}.toolbar>label.tiny{order:5}.toolbar>#featSummary{order:6}.control-menu{margin-left:auto}.tabs{padding:0 10px 10px}.tabbtn{padding:9px 10px;font-size:12px}.page,.page.active{padding:24px 14px 36px}.page-heading{padding-bottom:20px;margin-bottom:22px}.page-heading h1{font-size:30px}.page-heading p{font-size:13px}.group-title>.tiny{text-align:left;max-width:none}.grid>.card{padding:18px;min-height:130px}.grid-6{grid-template-columns:minmax(0,1fr)}.section h2{padding:15px}.project-toolbar,.request-filter{padding:14px}.subtabs{gap:6px}.kanban-board{padding:14px}.value,.primary-metric{font-size:28px}#overviewHealthSummary{padding:18px!important}.control-popover{top:110px}.brand-icon{width:22px}.brand{font-size:15px}}
 .human-grid>div{min-width:0;overflow-wrap:anywhere}@media(max-width:600px){.human-grid{grid-template-columns:minmax(0,1fr);gap:4px}.human-grid>div:nth-child(even){margin-bottom:10px}.doc-check-grid{grid-template-columns:minmax(0,1fr)}}
+.prep-summary{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;padding:18px 20px 4px}.prep-summary-card{background:var(--panel2);border:1px solid var(--line);padding:14px 16px;border-radius:5px}.prep-summary-card b{display:block;font-size:23px;color:var(--fg-bright);line-height:1.2}.prep-summary-card span{font-size:12px;color:var(--muted)}
+.prep-list-wrap{max-height:none;overflow:visible;padding:0 20px 20px}.project-table{display:block;min-width:0;table-layout:auto}.project-table thead{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%)}.project-table tbody{display:grid;gap:12px}.project-table tbody tr.click{display:grid;grid-template-columns:minmax(190px,1.1fr) minmax(240px,1.4fr) minmax(220px,1.2fr);grid-template-areas:'identity activity progress' 'identity indexes actions';gap:12px 20px;padding:18px;background:var(--panel2);border:1px solid var(--line);border-radius:5px}.project-table tbody tr.click:hover{border-color:var(--accent);background:var(--panel2)}.project-table tbody tr.click td{display:block;padding:0;border:0;min-width:0}.project-table tbody tr.click td:nth-child(1){grid-area:identity}.project-table tbody tr.click td:nth-child(2){grid-area:activity}.project-table tbody tr.click td:nth-child(3){grid-area:progress}.project-table tbody tr.click td:nth-child(4){grid-area:indexes}.project-table tbody tr.click td:nth-child(5){grid-area:actions}.project-name{max-width:none}.project-index{display:grid;gap:4px}.prep-kicker{display:block;color:var(--muted);font-size:10px;letter-spacing:.08em;text-transform:uppercase;margin-bottom:6px}.prep-progress-value{font-size:18px;color:var(--fg-bright);font-weight:650}.prep-note{padding:0 20px 12px;color:var(--muted);font-size:12px;line-height:1.5}
+@media(max-width:1000px){.project-table tbody tr.click{grid-template-columns:1fr 1fr;grid-template-areas:'identity activity' 'progress indexes' 'actions actions'}}@media(max-width:600px){.prep-summary{grid-template-columns:repeat(2,minmax(0,1fr));padding:14px}.prep-list-wrap{padding:0 14px 14px}.project-table tbody tr.click{grid-template-columns:1fr;grid-template-areas:'identity' 'activity' 'progress' 'indexes' 'actions';padding:15px}.prep-note{padding:0 14px 12px}}
 @media(prefers-reduced-motion:reduce){*,*::before,*::after{scroll-behavior:auto!important;transition:none!important;animation:none!important}}
 
 </style></head><body>
@@ -462,6 +465,7 @@ button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-vis
         <button class="btn" id="activityModeActive" data-activity-mode="active" aria-pressed="false">Active</button>
         <button class="btn" id="activityModeGaming" data-activity-mode="gaming" aria-pressed="false">Gaming</button>
         <button class="btn" id="activityModeMaintenance" data-activity-mode="maintenance" aria-pressed="false">Maintenance</button>
+        <button class="btn" id="activityModePreprocessing" data-activity-mode="preprocessing" aria-pressed="false">Preprocessing</button>
         <span id="activityModeStatus" class="tiny muted" role="status" aria-live="polite">Checking mode…</span>
         <button class="btn warn" id="prepToggle">Pause preprocessing</button>
         <div class="tiny muted">Destructive maintenance</div>
@@ -785,12 +789,15 @@ button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-vis
 
 
 <div id="projects" class="page">
-  <header class="page-heading" data-section="05 / Projects"><h1 tabindex="-1" id="page-title-projects">Projects</h1><p>Connect repositories and see when their indexes are ready.</p></header>
+  <header class="page-heading" data-section="05 / Projects"><h1 tabindex="-1" id="page-title-projects">Projects &amp; preprocessing</h1><p>Follow each repository's current phase, file counts, and indexing status.</p></header>
   <div id="prepDiagnosticBar" class="diag-banner info" style="display:none"></div>
   <section class="section">
     <h2><span style="display:flex;align-items:center;gap:8px">Projects <span class="tiny" id="prepState">0 registered projects · global running</span></span><div style="display:flex;gap:6px;align-items:center"><button class="btn warn" id="prepAllToggle" style="padding:4px 10px;font-size:11px">Pause all projects</button><button class="btn primary" id="regProjectBtn" style="padding:4px 10px;font-size:11px">+ Register</button><button class="btn warn" id="cleanMissingBtn" style="padding:4px 10px;font-size:11px">🧹 Clean missing</button></div></h2>
+    <div class="prep-summary" id="prepOverview" aria-label="Preprocessing project entry states"></div>
+    <div class="prep-note">Status totals count individual project entries, including worktrees.</div>
     <div class="project-toolbar"><input id="projectSearch" aria-label="Search projects" type="search" placeholder="Search repository identity, project, or worktree…" autocomplete="off"><select id="projectFilter" aria-label="Project status"><option value="all">All states</option><option value="running">Running</option><option value="waiting">Waiting</option><option value="error">Error</option><option value="paused">Paused</option><option value="ready">Ready</option></select><label class="tiny"><input id="projectGroupWorktrees" type="checkbox" checked> Group worktrees</label><select id="projectSort" aria-label="Project sort"><option value="priority">Operational priority</option><option value="name">Name</option><option value="progress">Progress</option><option value="recent">Recent activity</option></select><span class="tiny project-summary" id="projectSummary">0 of 0 projects</span></div>
-    <div class="table-wrap"><table class="project-table"><thead><tr><th>Project</th><th>State &amp; activity</th><th>Phase &amp; progress</th><th>Indexes</th><th>Actions</th></tr></thead><tbody id="projectsBody"></tbody></table></div>
+    <div class="prep-note">Overall progress is an estimate based on phase weights. File counts are coverage of the inventory, not a promise that every file needs every index. Open a project for details.</div>
+    <div class="table-wrap prep-list-wrap"><table class="project-table"><thead><tr><th>Project</th><th>State &amp; activity</th><th>Phase &amp; progress</th><th>Indexes</th><th>Actions</th></tr></thead><tbody id="projectsBody"></tbody></table></div>
   </section>
 </div>
 
@@ -2750,10 +2757,16 @@ async function openTrace(id,options={}){
   traceDetailPoller=createDashboardStatusPoller(poll,{baseDelay:1000,maxDelay:30000});
   traceDetailPoller.start();
 }
+let projectInspectorGeneration=0;
+let activeProjectInspectorRoot='';
+let activeProjectInspectorData=null;
 function openModal(obj,title='',entityType=''){
+  const inspectorGeneration=++projectInspectorGeneration;
   if($('modalLive'))$('modalLive').textContent='';
   if(!$('modalBody'))return;
   const type=entityType||inferEntityType(obj);
+  activeProjectInspectorRoot=type==='project'?String(obj.root||''):'';
+  activeProjectInspectorData=type==='project'?obj:null;
   const defaultTitle=title||(
     type==='task'?'Task Inspector':
     type==='memory'?'Memory Record':
@@ -2783,7 +2796,10 @@ function openModal(obj,title='',entityType=''){
   else if(type==='memory')renderMemoryModal(obj);
   else if(type==='incident')renderIncidentModal(obj);
   else if(type==='event')renderLiveStreamModal(obj);
-  else if(type==='project')renderProjectModal(obj);
+  else if(type==='project'){
+    renderProjectModal(obj);
+    loadProjectDetails(obj,inspectorGeneration);
+  }
   else if(type==='doctor')renderDoctorModal(obj);
   else if(type==='code_intel')renderCodeIntelModal(obj,defaultTitle);
   else if(type==='lease')renderActiveLeaseModal(obj);
@@ -3642,14 +3658,47 @@ async function openTaskById(taskId){
   }
 }
 
+function preprocessingProgress(p){
+  const value=p.overall_progress_pct;
+  return typeof value==='number'&&Number.isFinite(value)?Math.max(0,Math.min(100,value)):null;
+}
+function preprocessingCounts(p){
+  const count=v=>typeof v==='number'&&Number.isFinite(v)&&v>=0?v:null;
+  const total=p.phase==='inventory'?null:count(p.files);
+  const pair=value=>{const done=count(value);return {done,total,remaining:done!==null&&total!==null?Math.max(0,total-done):null};};
+  return {hash:pair(p.hashed_files),code:pair(p.code_index_files),rag:pair(p.rag_files),cards:pair(p.file_cards)};
+}
+function preprocessingCountText(pair){
+  if(pair.done===null)return 'Unavailable';
+  if(pair.total===null)return `${n(pair.done)} files · total pending`;
+  return `${n(pair.done)} / ${n(pair.total)} inventoried files`;
+}
+async function loadProjectDetails(project,generation){
+  try{
+    const result=await fetchDashboardJson('/api/preprocess/status?root='+encodeURIComponent(project.root));
+    if(generation!==projectInspectorGeneration||!$('modalBg')?.classList.contains('open'))return;
+    const detail=Array.isArray(result?.projects)?result.projects.find(item=>item.root===project.root):null;
+    if(detail){activeProjectInspectorData={...activeProjectInspectorData,...detail};renderProjectModal(activeProjectInspectorData);}
+    else if($('projectDetailStatus'))$('projectDetailStatus').textContent='Detailed status unavailable';
+  }catch(e){
+    if(generation===projectInspectorGeneration&&$('projectDetailStatus'))$('projectDetailStatus').textContent='Detailed status unavailable';
+  }
+}
+function projectPhaseListHtml(p){
+  const phaseCounts={hash:p.hashed_files,code_index:p.code_index_files,deterministic:p.deterministic_files,lexical:p.lexical_files,rag:p.rag_files,files:p.file_cards};
+  return PHASES.map((step,index)=>{
+    const current=step.id===p.phase,count=phaseCounts[step.id];
+    const coverage=typeof count==='number'&&typeof p.files==='number'?`${n(count)} / ${n(p.files)} inventoried files`:'';
+    const value=current?(p.phase_progress_measured!==false&&typeof p.phase_progress_pct==='number'?`${p.phase_progress_pct}% · ${p.active_detail||'In progress'}`:(p.active_detail||'Progress unavailable')):(coverage||'No per-phase history available');
+    return `<div>${index+1}. ${esc(step.name)}</div><div>${esc(value)}</div>`;
+  }).join('');
+}
 function renderProjectModal(p){
   const state=projectState(p);
   const isComplete=state==='ready';
-  const overall=Math.max(0,Math.min(100,Number(p.overall_progress_pct||0)));
-  const tot=Math.max(1,Number(p.files||0));
-  const ragFiles=Number(p.rag_files||0);
-  const cards=Number(p.file_cards||0);
-  const astSymbols=Number(p.ast_symbols||p.symbols_count||0);
+  const overall=preprocessingProgress(p);
+  const counts=preprocessingCounts(p);
+  const astSymbols=typeof p.ast_symbols==='number'?p.ast_symbols:typeof p.symbols_count==='number'?p.symbols_count:null;
   const badge={
     running:['badge-running','Running'],
     waiting:['badge-waiting','Waiting'],
@@ -3672,20 +3721,36 @@ function renderProjectModal(p){
           <div class="tiny mono muted" style="margin-top:3px">${esc(p.root)}</div>
         </div>
         <div style="display:flex;gap:6px;align-items:center">
-          <span class="badge-status ${badge[0]}">${badge[1]}</span>
-          <span class="chip">${overall}% synchronized</span>
+          <span id="projectLiveBadge" class="badge-status ${badge[0]}">${badge[1]}</span>
+          <span class="chip" id="projectLiveOverall">${overall===null?'Overall estimate unavailable':`${overall}% estimated overall`}</span>
         </div>
       </div>
     </div>
     <div class="modal-body-wrap">
       <div class="modal-card">
-        <div class="modal-card-head"><span>13-Phase Pipeline Progression</span></div>
+        <div class="modal-card-head"><span>Current work and cache</span></div>
+        <div class="modal-card-body"><div class="kv" style="padding:0">
+          <div>Phase progress</div><div id="projectLiveProgress">${p.phase_progress_measured===false?'Unavailable':typeof p.phase_progress_pct==='number'?esc(p.phase_progress_pct)+'%':'Unavailable'}</div>
+          <div>Current phase</div><div id="projectLivePhase">${esc(p.phase||'Unavailable')}</div>
+          <div>Current activity</div><div id="projectLiveActivity">${esc(p.active_detail||p.waiting_reason||'Unavailable')}</div>
+          <div>Files changed in last inventory</div><div>${typeof p.stats?.changed_files==='number'?n(p.stats.changed_files):'Unavailable'}</div>
+          <div>Major change detected</div><div>${typeof p.stats?.major_change==='boolean'?(p.stats.major_change?'Yes':'No'):'Unavailable'}</div>
+          <div>Incremental watcher</div><div>${typeof p.stats?.incremental_watcher==='boolean'?(p.stats.incremental_watcher?'Used':'Not used'):'Unavailable'}</div>
+          <div>Cards awaiting enrichment</div><div>${typeof p.pending_stub_cards==='number'?n(p.pending_stub_cards):'Unavailable'}</div>
+          <div>External indexes</div><div>${p.external_indexes?esc(JSON.stringify(p.external_indexes)):'Unavailable'}</div>
+          <div>Last error</div><div>${esc(Object.hasOwn(p,'last_error')?(p.last_error||'None reported'):'Unavailable')}</div>
+        </div><div id="projectDetailStatus" class="tiny muted">${p.stats?'Full project status':'Loading detailed status…'}</div></div>
+      </div>
+      <div class="modal-card">
+        <div class="modal-card-head"><span>Pipeline phase order</span></div>
         <div class="modal-card-body">
-          ${stepperHtml}
-          <div class="bar" style="margin-top:10px"><i style="width:${overall}%;background:${state==='error'?'var(--bad)':isComplete?'var(--ok)':'var(--accent)'}"></i></div>
+          <div id="projectLiveStepper">${stepperHtml}</div>
+          <div class="tiny muted">Earlier phases may have been skipped or reused; the stepper shows order, not evidence that each phase ran.</div>
+          <div class="kv" id="projectPhaseList" style="padding:10px 0">${projectPhaseListHtml(p)}</div>
+          <div class="bar" style="margin-top:10px"><i id="projectLiveBar" style="width:${overall??0}%;background:${state==='error'?'var(--bad)':isComplete?'var(--ok)':'var(--accent)'}"></i></div>
           <div style="display:flex;justify-content:space-between;margin-top:6px;font-size:11px">
-            <span class="tiny muted">Phase: <b>${esc(p.phase||'Inventory')}</b></span>
-            <span class="tiny muted">${esc(p.active_detail||(isComplete?'All phases synchronized':'Processing pipeline'))}</span>
+            <span class="tiny muted">Phase: <b id="projectPhaseLabel">${esc(p.phase||'Inventory')}</b></span>
+            <span class="tiny muted" id="projectPhaseDetail">${esc(p.active_detail||(isComplete?'All phases synchronized':'Processing pipeline'))}</span>
           </div>
         </div>
       </div>
@@ -3694,11 +3759,15 @@ function renderProjectModal(p){
         <div class="modal-card-head"><span>Index Breakdown &amp; Diagnostics</span></div>
         <div class="modal-card-body">
           <div class="kv" style="padding:0">
-            <div>Total Indexed Files</div><div><b>${n(p.files||0)}</b> files (${n(p.dirty_files||0)} modified)</div>
-            <div>AST Code Symbols</div><div><b>${n(astSymbols)}</b> declarations indexed</div>
-            <div>RAG Vector Embeddings</div><div><b>${n(ragFiles)}</b> / ${n(tot)} files (${Math.round(ragFiles/tot*100)}%)</div>
-            <div>Semantic Context Cards</div><div><b>${n(cards)}</b> / ${n(tot)} files (${Math.round(cards/tot*100)}%)</div>
-            <div>Last Activity Checkpoint</div><div>${p.updated_at?new Date(p.updated_at*1000).toLocaleString():'—'}</div>
+            <div>Inventoried files</div><div><b>${counts.hash.total===null?'Unavailable':n(counts.hash.total)}</b></div>
+            <div>Content hashed</div><div><b id="projectLiveHash">${preprocessingCountText(counts.hash)}</b></div>
+            <div>Code index coverage</div><div><b id="projectLiveCode">${preprocessingCountText(counts.code)}</b> <span class="muted">(demand indexed)</span></div>
+            <div>AST Code Symbols</div><div><b>${astSymbols===null?'Unavailable':n(astSymbols)}</b>${astSymbols===null?'':' declarations indexed'}</div>
+            <div>RAG files</div><div><b id="projectLiveRag">${preprocessingCountText(counts.rag)}</b></div>
+            <div>Semantic context cards</div><div><b id="projectLiveCards">${preprocessingCountText(counts.cards)}</b></div>
+            <div>Current phase</div><div id="projectLiveBreakdownPhase">${esc(p.active_detail||p.phase||'Unavailable')}</div>
+            <div>Rate / phase estimate</div><div id="projectLiveRate">${esc(p.speed_str||'Unavailable')} · ${esc(p.phase==='rag'?'Estimate unavailable':p.eta_str||'Unavailable')}</div>
+            <div>Last Activity Checkpoint</div><div>${p.updated_at?new Date(p.updated_at*1000).toLocaleString():typeof p.progress_age_seconds==='number'?`${durSec(p.progress_age_seconds)} ago`:'Unavailable'}</div>
           </div>
         </div>
       </div>
@@ -4525,6 +4594,13 @@ document.addEventListener('click',e=>{
   const pageTrace=e.target.closest?.('[data-trace-page-id]');if(pageTrace){openTrace(pageTrace.dataset.tracePageId);return}
   const back=e.target.closest?.('[data-trace-back]');if(back){switchTab('work');return}
   const toggle=e.target.closest?.('[data-trace-toggle]');if(toggle){toggleTraceStep(toggle);return}
+  const projectDetails=e.target.closest?.('[data-project-details]');
+  if(projectDetails){
+    const row=projectDetails.closest('[data-detail]'),entry=row?dataStore.get(row.dataset.detail):null;
+    const project=entry?.data??entry;
+    if(project)openModal(project,'','project');
+    return;
+  }
   if(e.target.closest('button, a, input, select, textarea, .action-btn-sm, [data-project-action], [data-export-root]'))return;
   const trace=e.target.closest?.('[data-trace-id]');if(trace){openTrace(trace.dataset.traceId);return}
   const tr=e.target.closest?.('[data-detail]');
@@ -4589,10 +4665,10 @@ async function fetchDashboardJson(path,options={}){
 }
 async function post(path,payload,requestOptions={}){const r=await apiFetch(path,{...requestOptions,method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});return await r.json()}
 
-const ACTIVITY_MODES=['active','gaming','maintenance'];
+const ACTIVITY_MODES=['active','gaming','maintenance','preprocessing'];
 let activityModeStatusPolls=0;
 let activityModeTransitionNotice=null;
-const activityModeLabels={active:'Active',gaming:'GAMING / PAUSED',maintenance:'Maintenance'};
+const activityModeLabels={active:'Active',gaming:'GAMING / PAUSED',maintenance:'Maintenance',preprocessing:'Preprocessing'};
 function renderActivityMode(mode){
   const badge=$('activityModeBadge');if(!badge)return;
   const valid=ACTIVITY_MODES.includes(String(mode||''));
@@ -4609,6 +4685,7 @@ function activityModeFailure(response,data){
 }
 function projectActivityModeTransition(confirmed,data){
   const failures=[];
+  if(confirmed==='preprocessing'&&data.preprocessing_start?.success!==true)failures.push('preprocessing start incomplete');
   if(confirmed==='gaming'){
     const unload=data.runtime_unload;
     if(!unload||unload.state!=='pending'&&unload.success!==true)failures.push('VRAM unload incomplete');
@@ -4639,7 +4716,7 @@ async function refreshActivityMode(){
       const unloadState=data.runtime_unload?.success===true?'complete':'incomplete';
       notice.text=notice.text.replace(/VRAM unload (?:pending|incomplete)/,`VRAM unload ${unloadState}`);
     }
-    if(status){const unload=data.runtime_unload;status.textContent=notice?.text??(data.mode==='gaming'&&unload?(unload.success===true?'Gaming mode active. VRAM unload complete.':unload.state==='pending'?'Gaming mode active. VRAM unload in progress.':'Gaming mode active. VRAM unload incomplete.'):'Mode loaded.');}
+    if(status){const unload=data.runtime_unload;status.textContent=data.mode==='preprocessing'&&data.preprocessing_ready!==true?'Preprocessing not ready. Select Preprocessing to retry.':notice?.text??(data.mode==='gaming'&&unload?(unload.success===true?'Gaming mode active. VRAM unload complete.':unload.state==='pending'?'Gaming mode active. VRAM unload in progress.':'Gaming mode active. VRAM unload incomplete.'):'Mode loaded.');}
     if(data.mode==='gaming'&&data.runtime_unload?.state==='pending'&&activityModeStatusPolls<8){activityModeStatusPolls++;setTimeout(refreshActivityMode,1500);}else if(data.runtime_unload?.state!=='pending'){activityModeStatusPolls=0;}
     return true;
   }catch(_){renderActivityMode('unknown');if(status)status.textContent='Mode unavailable: Hub offline or unreachable.';return false;}
@@ -4820,12 +4897,11 @@ function projectIdentity(project){
   return String(project?.git_common_dir||project?.canonical_root||project?.root||project?.project||'').replace(/\\/g,'/').replace(/\/+$/,'');
 }
 function projectState(x){
-  const progress=Number(x.overall_progress_pct||0);
   if(x.status==='error'||x.last_error)return 'error';
   if(x.paused||x.status==='paused')return 'paused';
   if(x.waiting||x.status==='waiting')return 'waiting';
   if(x.status==='running')return 'running';
-  if(x.phase==='complete'||x.status==='complete'||progress>=100)return 'ready';
+  if(x.phase==='complete'||x.status==='complete')return 'ready';
   return 'queued';
 }
 
@@ -4848,10 +4924,32 @@ function renderProjects(items){
   const status=preprocessingSummary(last?.preprocessing||{},last?.dependency_status||{},last?.features||{});
   if(!status.available){
     if($('projectSummary'))$('projectSummary').textContent='Project inventory unavailable';
+    if($('prepOverview'))$('prepOverview').innerHTML='<div class="prep-summary-card"><span>Project status unavailable</span></div>';
     rows('projectsBody',[],()=>'',5,'Project status unavailable. Refresh status to retry.');
     return;
   }
   const entries=Array.isArray(items)?items:[],source=groupedProjects(entries),query=projectQuery.trim().toLowerCase();
+  const inspected=activeProjectInspectorRoot&&$('modalBg')?.classList.contains('open')?entries.find(item=>item.root===activeProjectInspectorRoot):null;
+  if(inspected){
+    activeProjectInspectorData={...activeProjectInspectorData,...inspected};
+    const current=activeProjectInspectorData,liveOverall=preprocessingProgress(current),liveState=projectState(current);
+    const liveCounts=preprocessingCounts(current),liveBadge={running:['badge-running','Running'],waiting:['badge-waiting','Waiting'],paused:['badge-paused','Paused'],error:['badge-error','Error'],ready:['badge-complete','Ready']}[liveState]||['badge-waiting','Queued'];
+    if($('projectLiveBadge')){ $('projectLiveBadge').className=`badge-status ${liveBadge[0]}`;$('projectLiveBadge').textContent=liveBadge[1]; }
+    if($('projectLivePhase'))$('projectLivePhase').textContent=inspected.phase||'Unavailable';
+    if($('projectLiveProgress'))$('projectLiveProgress').textContent=inspected.phase_progress_measured!==false&&typeof inspected.phase_progress_pct==='number'?`${inspected.phase_progress_pct}%`:'Unavailable';
+    if($('projectLiveActivity'))$('projectLiveActivity').textContent=inspected.active_detail||inspected.waiting_reason||'Unavailable';
+    if($('projectLiveOverall'))$('projectLiveOverall').textContent=liveOverall===null?'Overall estimate unavailable':`${liveOverall}% estimated overall`;
+    if($('projectLiveBar'))$('projectLiveBar').style.width=`${liveOverall??0}%`;
+    if($('projectLiveStepper'))$('projectLiveStepper').innerHTML=renderStepper(inspected.phase_index||1,liveState==='ready',liveState);
+    if($('projectPhaseList'))$('projectPhaseList').innerHTML=projectPhaseListHtml(current);
+    if($('projectPhaseLabel'))$('projectPhaseLabel').textContent=inspected.phase||'Unavailable';
+    if($('projectPhaseDetail'))$('projectPhaseDetail').textContent=inspected.active_detail||inspected.waiting_reason||'Unavailable';
+    for(const [id,pair] of [['projectLiveHash',liveCounts.hash],['projectLiveCode',liveCounts.code],['projectLiveRag',liveCounts.rag],['projectLiveCards',liveCounts.cards]])if($(id))$(id).textContent=preprocessingCountText(pair);
+    if($('projectLiveBreakdownPhase'))$('projectLiveBreakdownPhase').textContent=inspected.active_detail||inspected.phase||'Unavailable';
+    if($('projectLiveRate'))$('projectLiveRate').textContent=`${inspected.speed_str||'Unavailable'} · ${inspected.phase==='rag'?'Estimate unavailable':inspected.eta_str||'Unavailable'}`;
+  }
+  const overview=$('prepOverview');
+  if(overview){const count=state=>entries.filter(entry=>projectState(entry)===state).length;overview.innerHTML=[['Running',count('running')],['Waiting / queued',count('waiting')+count('queued')],['Paused / errors',count('paused')+count('error')],['Ready',count('ready')]].map(([label,value])=>`<div class="prep-summary-card"><b>${n(value)}</b><span>${label}</span></div>`).join('');}
   const rank={error:0,running:1,waiting:2,queued:3,paused:4,ready:5};
   const visible=source.filter(x=>{
     const state=projectState(x),haystack=[x.project,x.root,x.repository_identity,x.active_detail,x.phase,...(x.variants||[]).map(v=>v.root)].join(' ').toLowerCase();
@@ -4866,7 +4964,7 @@ function renderProjects(items){
   const summary=$('projectSummary');
   if(summary)summary.textContent=`${visible.length} of ${source.length} repository identities · ${entries.length} project entries`;
   rows('projectsBody',visible,x=>{
-    const state=projectState(x),tot=Math.max(1,Number(x.files||0)),ragFiles=Number(x.rag_files||0),cards=Number(x.file_cards||0),ragPct=Math.round(ragFiles/tot*100),cardPct=Math.round(cards/tot*100),overall=Math.max(0,Math.min(100,Number(x.overall_progress_pct||0))),phasePct=Math.max(0,Math.min(100,Number(x.phase_progress_pct||0))),isComplete=state==='ready',isWorktree=x.is_worktree===true;
+    const state=projectState(x),counts=preprocessingCounts(x),overall=preprocessingProgress(x),phasePct=Math.max(0,Math.min(100,Number(x.phase_progress_pct||0))),isComplete=state==='ready',isWorktree=x.is_worktree===true;
     const badge={running:['badge-running','Running','<span class="pulse-dot"></span>'],waiting:['badge-waiting','Waiting',''],paused:['badge-paused','Paused',''],error:['badge-error','Error',''],ready:['badge-complete','Ready','✓ ']}[state]||['badge-waiting','Queued',''];
     const activityText=isComplete?'Indexing complete · last reported snapshot':x.active_detail||(state==='paused'?(x.global_paused?'Globally paused':'Project paused'):state==='waiting'?'Waiting for preprocessing slot':state==='error'?(x.last_error_short||'Pipeline error'):'Processing queue');
     const activityCls=isComplete?'ok':state==='error'?'bad-t':state==='paused'?'warn-t':state==='waiting'?'muted':'';
@@ -4874,10 +4972,11 @@ function renderProjects(items){
     const phaseIndex=PHASES.findIndex(ph=>ph.id===x.phase),currentStep=phaseIndex>=0?phaseIndex+1:(Number(x.phase_index)||1);
     const phaseObj=(phaseIndex>=0?PHASES[phaseIndex]:null)||(isComplete?PHASES[PHASES.length-1]:{name:x.phase||'Inventory',icon:'⚙️'});
     const phaseTitle=(isComplete||x.phase==='complete')?`${PHASES.length}/${PHASES.length} Ready`:`${currentStep}/${PHASES.length} ${phaseObj.icon} ${phaseObj.name}`;
-    const phaseDetailText=isComplete?'100% complete':(x.active_detail||(phasePct>0?`${phasePct}% in phase`:'In progress…'));
-    const variants=x.variants||[x],variantLabel=variants.length>1?`<span class="chip" title="${esc(variants.map(v=>v.root).join('\n'))}">${variants.length} worktrees</span>`:'';
-    const actions=`<div class="project-actions"><button class="action-btn-sm" data-project-action="${state==='paused'?'resume':'pause'}" data-project-root="${esc(x.root)}" title="${state==='paused'?'Resume project preprocessing':'Pause project'}">${state==='paused'?'▶ Resume':'⏸ Pause'}</button><button class="action-btn-sm" data-project-action="refresh" data-project-root="${esc(x.root)}" title="Re-scan selected project entry">Refresh</button><button class="action-btn-sm danger" data-project-action="delete" data-project-root="${esc(x.root)}" data-project-name="${esc(x.project)}" title="Unregister selected project entry">Unregister</button></div>`;
-    return clickableRow(x,`<td><div class="project-name"><b>${esc(x.project)}</b>${isWorktree?'<span class="chip" style="font-size:9px;color:var(--accent2);border-color:#584578">worktree</span>':''}${variantLabel}</div><div class="tiny muted">Repository identity</div><div class="tiny muted mono project-root" title="${esc(x.repository_identity||x.root)}">${esc(x.repository_identity||x.root)}</div></td><td><span class="badge-status ${badge[0]}">${badge[2]}${badge[1]}</span><div class="tiny ${activityCls} project-activity" title="${esc(x.active_detail||activityText)}">${esc(activityText)}</div><div class="tiny muted">${esc(progressHint)}</div></td><td><div class="project-progress-line"><b>${phaseTitle}</b><span>${overall}%</span></div><div class="bar project-progress"><i style="width:${overall}%;background:${state==='error'?'var(--bad)':isComplete?'var(--ok)':'var(--accent)'}"></i></div><div class="tiny muted">${esc(phaseDetailText)}</div></td><td><div class="project-index"><span class="${ragFiles>=tot?'ok':''}">🧠 RAG ${ragPct}%</span><span class="${cards>=tot*0.9?'ok':''}">📄 Cards ${cardPct}%</span></div></td><td>${actions}</td>`,'project',x.root);
+    const phaseDetailText=isComplete?'100% complete':(x.phase_progress_measured!==false&&typeof x.phase_progress_pct==='number'&&Number.isFinite(x.phase_progress_pct)?`${phasePct}% in current phase`:'Phase progress unavailable');
+    const remainingText=x.phase==='hash'&&counts.hash.remaining!==null?`${n(counts.hash.remaining)} files left to hash`:'';
+    const variants=x.variants||[x],variantLabel=variants.length>1?`<span class="chip" title="${esc(variants.map(v=>v.root).join('\n'))}">${variants.length} entries · showing ${esc(x.root||'selected entry')}</span>`:'';
+    const actions=`<div class="project-actions"><button class="action-btn-sm" data-project-details title="Open project details">Details</button><button class="action-btn-sm" data-project-action="${state==='paused'?'resume':'pause'}" data-project-root="${esc(x.root)}" title="${state==='paused'?'Resume project preprocessing':'Pause project'}">${state==='paused'?'▶ Resume':'⏸ Pause'}</button><button class="action-btn-sm" data-project-action="refresh" data-project-root="${esc(x.root)}" title="Re-scan selected project entry">Refresh</button><button class="action-btn-sm danger" data-project-action="delete" data-project-root="${esc(x.root)}" data-project-name="${esc(x.project)}" title="Unregister selected project entry">Unregister</button></div>`;
+    return clickableRow(x,`<td><span class="prep-kicker">Repository entry</span><div class="project-name"><b>${esc(x.project)}</b>${isWorktree?'<span class="chip" style="font-size:9px;color:var(--accent2);border-color:#584578">worktree</span>':''}${variantLabel}</div><div class="tiny muted mono project-root" title="${esc(x.root||'')}">${esc(x.root||'—')}</div></td><td><span class="prep-kicker">Current activity</span><span class="badge-status ${badge[0]}">${badge[2]}${badge[1]}</span><div class="tiny ${activityCls} project-activity" title="${esc(x.active_detail||activityText)}">${esc(activityText)}</div><div class="tiny muted">${esc(progressHint)}</div></td><td><span class="prep-kicker">Pipeline · estimated overall</span><div class="project-progress-line"><b>${phaseTitle}</b><span class="prep-progress-value">${overall===null?'—':overall+'%'}</span></div><div class="bar project-progress" role="progressbar" aria-label="Estimated overall progress" ${overall===null?'':`aria-valuenow="${overall}"`} aria-valuemin="0" aria-valuemax="100"><i style="width:${overall??0}%;background:${state==='error'?'var(--bad)':isComplete?'var(--ok)':'var(--accent)'}"></i></div><div class="tiny muted">${esc(phaseDetailText)}</div><div class="tiny muted">${esc(remainingText)}</div><div class="tiny muted">${esc(x.speed_str||'')} ${x.eta_str&&x.phase!=='rag'?'· Phase ETA: '+esc(x.eta_str):''}</div></td><td><span class="prep-kicker">Inventory coverage</span><div class="project-index"><span>Hashed ${preprocessingCountText(counts.hash)}</span><span>RAG ${preprocessingCountText(counts.rag)}</span><span>Cards ${preprocessingCountText(counts.cards)}</span></div></td><td><span class="prep-kicker">Actions for this entry</span>${actions}</td>`,'project',x.root);
   },5,query||projectFilter!=='all'?'No projects match the current filters.':'No projects registered. Register a repository to begin.');
 }
 async function projectAction(root, action) {

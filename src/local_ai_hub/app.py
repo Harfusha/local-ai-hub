@@ -1043,13 +1043,24 @@ class LocalAIApp:
                 root = str(item.get("root", ""))
                 proj_name = item.get("project") or Path(root).name or root
                 if light:
-                    projects.append({
+                    row = {
                         "root": root,
                         "project": proj_name,
-                        "status": item.get("status", "complete"),
-                        "phase": item.get("phase", "complete"),
-                        "overall_progress_pct": item.get("overall_progress_pct", 100),
-                    })
+                    }
+                    # The dashboard polls this compact projection. Keep its
+                    # progress and worktree identity fields, but not arbitrary
+                    # project stats or lists of paths, in the frequent response.
+                    for key in (
+                        "status", "phase", "overall_progress_pct",
+                        "git_common_dir", "is_worktree", "paused", "waiting",
+                        "last_error_short", "waiting_reason", "active_detail",
+                        "phase_index", "total_phases", "phase_progress_pct", "phase_progress_measured",
+                        "speed_str", "eta_str", "progress_age_seconds", "last_complete_at",
+                        "files", "hashed_files", "code_index_files", "rag_files", "file_cards",
+                    ):
+                        if key in item:
+                            row[key] = item[key]
+                    projects.append(row)
                 else:
                     row = dict(item)
                     row["project"] = proj_name

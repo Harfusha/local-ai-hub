@@ -3939,7 +3939,7 @@ class LocalAIServices:
             (time.perf_counter() - saved_hints_started) * 1000.0, 1,
         )
         hint_digest_started = time.perf_counter()
-        effective_hints = [*saved_hints, *request_hints]
+        effective_hints = [*request_hints, *saved_hints]
         request_hint_digest = stable_hash([
             {
                 "path": hint.path,
@@ -4117,7 +4117,25 @@ class LocalAIServices:
         )
         search_priority_setup_started = time.perf_counter()
         if candidate_paths and hinted_search_paths:
-            candidate_paths = tuple(dict.fromkeys((*candidate_paths, *hinted_search_paths)))[:64]
+            eligible_hints = hinted_search_paths
+            if (hint_root is not None and getattr(self.repo_tools, "prefer_git", False)
+                    and (hint_root / ".git").exists()):
+                try:
+                    hinted_git_files = self.repo_tools._git_files(
+                        hint_root, pathspecs=tuple(hinted_search_paths),
+                    )
+                    git_paths = {
+                        os.path.normcase(path.relative_to(hint_root).as_posix())
+                        for path in hinted_git_files or ()
+                    }
+                except (OSError, RuntimeError, TypeError, ValueError):
+                    git_paths = set()
+                eligible_hints = [
+                    path for path in hinted_search_paths
+                    if os.path.normcase(path) in git_paths
+                    or any(path_matches_pattern(path, pattern) for pattern in force_include_patterns)
+                ]
+            candidate_paths = tuple(dict.fromkeys((*eligible_hints, *candidate_paths)))[:64]
         paths = list(dict.fromkeys([*hinted_search_paths, *paths]))
 
         def compute() -> dict[str, Any]:
@@ -4156,8 +4174,24 @@ class LocalAIServices:
                 *matching_hint_roots(configured_hints, learned=False),
             )
             request_hint_roots = matching_hint_roots(request_hints, learned=False)
+            candidate_hint_paths = tuple(
+                relative for relative in (
+                    candidate.relative_to(hint_root).as_posix() for candidate in request_hint_roots
+                ) if relative != "."
+            )
+            normalized_hint_paths = tuple(
+                os.path.normcase(relative).replace("\\", "/").rstrip("/")
+                for relative in candidate_hint_paths
+            )
 
             source_focused = _source_focused_query(query)
+
+            def candidate_path_priority(relative: str) -> int:
+                candidate = os.path.normcase(relative).replace("\\", "/").rstrip("/")
+                return 0 if candidate and any(
+                    candidate == path or candidate.startswith(path + "/") or path.startswith(candidate + "/")
+                    for path in normalized_hint_paths
+                ) else 1
 
             def path_priority(relative: str) -> tuple[int, int, int]:
                 candidate = hint_root / relative if hint_root else None
@@ -4192,6 +4226,9 @@ class LocalAIServices:
                 "path_priority": path_priority,
                 "installation_intent_priority": installation_intent_priority,
             }
+            if candidate_hint_paths:
+                search_options["candidate_path_priority"] = candidate_path_priority
+                search_options["candidate_hint_paths"] = candidate_hint_paths
             if candidate_query and candidate_query != query:
                 search_options["candidate_query"] = normalize_query(
                     candidate_query, strip_punctuation=False,
@@ -5010,9 +5047,15 @@ class LocalAIServices:
             path for path in result.get("test_files", []) if isinstance(path, str)
         ]
         changed_for_mapping = changed_paths or result.get("changed_files", [])
+        def normalize_graph_path(path: str) -> str:
+            normalized = path.replace("\\", "/")
+            while normalized.startswith("./"):
+                normalized = normalized[2:]
+            return normalized
+
         changed_for_graph = sorted(
             {
-                path.replace("\\", "/").lstrip("./")
+                normalize_graph_path(path)
                 for path in changed_for_mapping
                 if isinstance(path, str) and path
             }
@@ -5062,7 +5105,10 @@ class LocalAIServices:
                     )
         except Exception:
             graph_complete = False
-        selection_uncertain = not graph_complete
+        # An explicitly empty change set needs no graph or full-matrix fallback.
+        # Omitted paths still retain the conservative discovery behavior.
+        explicit_no_changes = isinstance(changed_paths, list) and not changed_paths
+        selection_uncertain = not graph_complete and not explicit_no_changes
         matrix: dict[str, Any] | None = None
         complete_matrix_paths: list[str] = []
         if selection_uncertain:
@@ -5608,7 +5654,7 @@ class LocalAIServices:
         name: str,
         owner: str = "agent",
         capacity: int = 1,
-        ttl_seconds: float = 300.0,
+        ttl_seconds: float | None = None,
         purpose: str = "",
         timeout: float = 0.0,
     ) -> dict[str, Any]:
@@ -8671,8 +8717,50 @@ class LocalAIServices:
                                         **({"cancel_event": cancel_event} if cancel_event is not None else {}))
             if cancel_event is not None and cancel_event.is_set():
                 return {"success": False, "cancelled": True, "reason": "cancelled", "validated": False}
+            if isinstance(res, dict) and res.get("_lah_repetition_loop_detected"):
+                failure = {
+                    "success": False,
+                    "error": str(res.get("error") or "model output repetition loop detected"),
+                    "error_code": "model_repetition_loop",
+                    "model": str(res.get("model") or model),
+                    "validated": False,
+                    "terminal": True,
+                    "retryable": False,
+                    "repetition_loop_detected": True,
+                    "retry_count": int(res.get("_lah_retry_count", 0) or 0),
+                }
+                if res.get("outcome_unknown") is True:
+                    failure["outcome_unknown"] = True
+                return failure
             if isinstance(res, dict) and "error" in res:
-                return {"success": False, "error": res["error"], "validated": False}
+                failure = {"success": False, "error": res["error"], "validated": False}
+                for key in (
+                    "error_code", "terminal", "retryable", "timed_out", "outcome_unknown",
+                    "cleanup_unconfirmed", "preempted", "cancelled", "_lah_partial_response",
+                    "operation_not_started", "output_truncated", "stop_reason",
+                ):
+                    if key in res:
+                        failure[key] = res[key]
+                if res.get("_lah_partial_response") is True:
+                    failure["partial"] = True
+                return failure
+            if isinstance(res, dict) and res.get("done_reason") == "length":
+                partial_completion = res.get("response")
+                return {
+                    "success": False,
+                    "error": "local model output reached its token limit",
+                    "error_code": "model_output_truncated",
+                    "model": model,
+                    "validated": False,
+                    "output_truncated": True,
+                    "stop_reason": "length",
+                    "final_response_produced": (
+                        isinstance(partial_completion, str) and bool(partial_completion.strip())
+                    ),
+                    "final_response_status": "truncated",
+                    "terminal": True,
+                    "retryable": False,
+                }
             response_value = res.get("response") if isinstance(res, dict) else None
             if not isinstance(response_value, str) or not response_value.strip():
                 return {
@@ -10076,23 +10164,51 @@ class LocalAIServices:
         history_file = Path(self.state_dir) / "eval_history.json"
 
         history: dict[str, Any] = {}
-        if history_file.is_file():
+        if history_file.exists():
             try:
                 history = json.loads(history_file.read_text(encoding="utf-8"))
-            except Exception:
-                history = {}
+                if not isinstance(history, dict):
+                    raise ValueError("history must be an object")
+            except (OSError, ValueError, UnicodeError):
+                return {"success": False, "error_code": "invalid_eval_history", "terminal": True, "retryable": False}
 
-        if "current" in payload and isinstance(payload["current"], dict):
+        if "current" in payload:
             current = payload["current"]
         else:
             current = self.eval_suite(payload)
+            if isinstance(current, dict) and current.get("success") is False:
+                return current
 
-        current_summary = current.get("summary", {})
-        curr_rate = float(current_summary.get("pass_rate", 0.0))
+        def valid_summary(summary: Any) -> bool:
+            if not isinstance(summary, dict):
+                return False
+            rate = summary.get("pass_rate")
+            return (
+                type(rate) in (int, float) and 0 <= rate <= 1 and math.isfinite(rate)
+                and summary.get("benchmark_valid", True) is True
+                and summary.get("role_mismatch", False) is False
+                and type(summary.get("execution_failures", 0)) is int
+                and summary.get("execution_failures", 0) == 0
+            )
+
+        if not isinstance(current, dict) or current.get("success", True) is not True:
+            return {"success": False, "error_code": "invalid_eval_result", "terminal": True, "retryable": False}
+        current_summary = current.get("summary")
+        cases = current.get("cases", [])
+        if not valid_summary(current_summary) or not isinstance(cases, list) or any(
+            not isinstance(case, dict) or case.get("status") in ("error", "unavailable")
+            or any(case.get(flag) is True for flag in
+                ("timed_out", "outcome_unknown", "in_progress", "cancelled", "truncated"))
+            for case in cases
+        ):
+            return {"success": False, "error_code": "invalid_eval_result", "terminal": True, "retryable": False}
+        curr_rate = float(current_summary["pass_rate"])
 
         prev_entry = history.get(suite_name)
-        if prev_entry:
-            prev_rate = float(prev_entry.get("summary", {}).get("pass_rate", 0.0))
+        if prev_entry is not None:
+            if not isinstance(prev_entry, dict) or not valid_summary(prev_entry.get("summary")):
+                return {"success": False, "error_code": "invalid_eval_history", "terminal": True, "retryable": False}
+            prev_rate = float(prev_entry["summary"]["pass_rate"])
             delta = round(curr_rate - prev_rate, 3)
             if delta > 0.01:
                 status = "improved"
@@ -10114,7 +10230,7 @@ class LocalAIServices:
             from .process_utils import atomic_write_file
             atomic_write_file(history_file, json_dumps(history, indent=2))
         except Exception:
-            pass
+            return {"success": False, "error_code": "eval_history_write_failed", "outcome_unknown": True, "retryable": False}
 
         return {
             "success": True,

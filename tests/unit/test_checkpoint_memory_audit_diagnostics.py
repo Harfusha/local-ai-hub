@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import pytest
 
 from local_ai_hub.agent_tasks import CompletionGateError, TaskStore
-from local_ai_hub.operation_contracts import operation_parameters_schema
+from local_ai_hub.operation_contracts import operation_parameters_schema, operation_tool_input_schema
 
 
 def _task(audit=None):
@@ -54,3 +54,15 @@ def test_published_checkpoint_schema_describes_nested_memory_audit():
     audit = checkpoint["properties"]["state_data"]["properties"]["memory_audit"]
     assert set(audit["properties"]) == {"used_ids", "not_used_reason", "source_checks"}
     assert "every checkpoint" in checkpoint["description"]
+
+
+def test_published_checkpoint_schema_requires_canonical_fields():
+    expected = {"phase": "string", "next_action": "string", "affected_paths": "array",
+                "evidence_ids": "array", "blockers": "array", "state_data": "object"}
+    for schema in (operation_parameters_schema("local_ai_coord"), operation_tool_input_schema("local_ai_coord")):
+        checkpoint = schema["properties"]["checkpoint"]
+        assert set(checkpoint["required"]) == set(expected)
+        for field, kind in expected.items():
+            assert checkpoint["properties"][field]["type"] == kind
+        for field in ("affected_paths", "evidence_ids", "blockers"):
+            assert checkpoint["properties"][field]["items"]["type"] == "string"

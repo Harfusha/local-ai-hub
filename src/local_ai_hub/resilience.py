@@ -505,9 +505,10 @@ class RecoveryJournal:
             with closing(self._connect()) as con:
                 con.execute("BEGIN IMMEDIATE")
                 con.executemany(
-                    "UPDATE requests SET state=?, updated_at=?, detail=?, status_code=?, response_json=? WHERE request_id=? AND state='running'",
+                    "UPDATE requests SET state=?, updated_at=?, detail=?, status_code=?, response_json=? "
+                    "WHERE request_id=? AND (state='running' OR (state IN ('done','failed') AND updated_at<=?))",
                     [
-                        (state, updated_at, detail, status_code, response_json, request_id)
+                        (state, updated_at, detail, status_code, response_json, request_id, updated_at)
                         for request_id, state, updated_at, detail, status_code, response_json, _sequence
                         in latest_by_request.values()
                     ],

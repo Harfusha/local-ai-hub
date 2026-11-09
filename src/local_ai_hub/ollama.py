@@ -871,6 +871,14 @@ class OllamaRuntime:
                             last_error = str(chunk["error"])
                             stream_error = True
                             break
+                        if watchdog.loop_detected:
+                            # Drain within the original deadline without publishing
+                            # more output, so a terminal backend response can prove
+                            # GPU work has ended before the scheduler releases it.
+                            if chunk.get("done") is True:
+                                final.update(chunk)
+                                break
+                            continue
                         delta = chunk.get("response")
                         if delta is not None:
                             text = str(delta)
@@ -882,7 +890,10 @@ class OllamaRuntime:
                                     except Exception: pass
                                 if watchdog.push(text):
                                     final["_lah_repetition_loop_detected"] = True
-                                    break
+                                    if chunk.get("done") is True:
+                                        final.update(chunk)
+                                        break
+                                    continue
                         message = chunk.get("message")
                         if isinstance(message, dict) and "tool_calls" in message:
                             calls = message["tool_calls"]
@@ -899,7 +910,10 @@ class OllamaRuntime:
                                     except Exception: pass
                                 if watchdog.push(text):
                                     final["_lah_repetition_loop_detected"] = True
-                                    break
+                                    if chunk.get("done") is True:
+                                        final.update(chunk)
+                                        break
+                                    continue
                         thinking_delta = chunk.get("thinking")
                         if thinking_delta is None and isinstance(message, dict):
                             thinking_delta = message.get("thinking")
@@ -921,12 +935,15 @@ class OllamaRuntime:
                         **({"_lah_partial_response": True} if (emitted_output or generated or chat or thinking_parts) else {}),
                     }
                 if watchdog.loop_detected:
-                    return {
+                    result = {
                         "error": "model output repetition loop detected",
                         "_lah_repetition_loop_detected": True,
                         "_lah_retry_count": max(0, attempt - 1),
                         "model": str(clean.get("model", "")),
                     }
+                    if final.get("done") is True and not stream_error:
+                        result["_lah_backend_completed"] = True
+                    return result
                 if generated:
                     resp_text = "".join(generated)
                     if watchdog.loop_detected:

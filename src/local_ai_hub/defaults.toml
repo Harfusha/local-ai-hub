@@ -874,6 +874,14 @@ hot_queries = [
   "concurrency queues workers background jobs scheduling locking"
 ]
 
+[preprocessing.exclusive]
+# Profile overlays supply these limits; explicit config.toml values take precedence.
+max_projects = 3
+cpu_workers = 8
+model_parallel = 4
+# Enrich unparsed-file stubs while retaining the old card until replacement succeeds.
+enrich_stub_cards = true
+
 [local_tools]
 # Read-only tools exposed to Ollama explorer/worker loops. Calls reuse the same
 # project snapshots, RAG, reranker and preprocessing caches as cloud-facing MCP.

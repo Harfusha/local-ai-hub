@@ -404,7 +404,7 @@ _ACTION_SCOPED_FIELDS = {
         "parent_root": frozenset({"preprocess"}),
         "path_hints": frozenset({"search", "context"}),
         "search_mode": frozenset({"search"}),
-        "limit": frozenset({"search", "code_index", "callers", "callees", "implementations", "hotspots", "call_graph", "find_files", "glob", "git_log", "reachability_dead_code"}),
+        "limit": frozenset({"search", "code_index", "callers", "callees", "implementations", "hotspots", "call_graph", "find_files", "glob", "git_log", "reachability_dead_code", "security_audit"}),
         "offset": frozenset({"search", "code_index", "callers", "callees", "implementations", "find_files", "glob"}),
         "directory_hints": frozenset({"context"}),
         "exclude_paths": frozenset({"context"}),
@@ -436,6 +436,7 @@ _ACTION_SCOPED_FIELDS = {
         "limit": frozenset({"task_sync", "pubsub_poll", "negative_knowledge_find", "board_item_list", "plan_list", "memory_find"}),
         "after_seq": frozenset({"task_sync", "pubsub_poll"}),
         "receipt": frozenset({"verify_receipt"}),
+        "operator_waiver": frozenset({"task_complete"}),
         "since_hash": frozenset({"context_compile"}),
         "format": frozenset({"verify_export", "curate_dataset"}),
         "content": frozenset({"blackboard_update"}),
@@ -555,6 +556,7 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
                 "root", "query", "max_commits", "author", "since", "until", "path",
             ),
             "hotspots": ("root", "days", "limit"),
+            "security_audit": ("root", "limit"),
             "ast_outline": ("root", "path"),
             "affected_tests": ("root", "path"),
             "code_invariants": ("root", "path"),
@@ -945,6 +947,7 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
             "gpu_reservation_release": ("generation", "consent", "audit_reason"),
             "gpu_reservation_release_authorized": ("consent", "audit_reason"),
             "task_create": ("root", "task_id", "goal", "task", "paths", "contract", "scope", "acceptance_criteria", "criteria", "title", "description", "path", "file"),
+            "task_checkpoint": ("root", "task_id", "checkpoint"),
             "task_update": ("root", "task_id", "checkpoint", "contract", "goal", "acceptance_criteria", "criteria"),
             "memory_list": ("root", "scope", "query", "limit", "kind"),
             "memory_find": ("root", "scope", "query", "limit", "kind", "key", "status", "session_id"),
@@ -969,6 +972,18 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
             "plan_reconcile_steering": ("root", "task_id", "steering_id", "spec_rel_path", "spec_content", "acceptance_criteria", "expected_revision", "expected_spec_revision", "summary"),
         },
         required={
+            "task_checkpoint": ("root", "task_id", "checkpoint"),
+            "plan_init": ("root",),
+            "plan_list": ("root",),
+            "plan_get": ("root", "plan_id"),
+            "plan_validate": ("root", "plan_id"),
+            "plan_board_view": ("root",),
+            "plan_create": ("root", "title"),
+            "plan_update": ("root", "plan_id", "expected_revision"),
+            "plan_task_edit": ("root", "plan_id", "task_id", "task_data", "expected_revision"),
+            "plan_task_delete": ("root", "plan_id", "task_id", "expected_revision"),
+            "plan_archive": ("root", "plan_id", "expected_revision"),
+            "plan_bind_task": ("root", "task_id", "plan_id", "plan_task_id"),
             "ask": ("root", "session_id"),
             "curate_dataset": ("root",),
             "memory_record": ("root", "scope", "key", "value"),
@@ -1008,6 +1023,7 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
             "gpu_reservation_release_authorized": ("consent", "audit_reason"),
         },
         non_empty={
+            "task_checkpoint": ("root", "task_id"),
             "ask": ("root", "session_id"),
             "curate_dataset": ("root",),
             "memory_record": ("root", "scope", "key"),
@@ -1044,9 +1060,9 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
             "plan_init": ("root",),
             "plan_list": ("root",),
             "plan_get": ("root", "plan_id"),
-            "plan_create": ("root", "plan_id", "title"),
+            "plan_create": ("root", "title"),
             "plan_update": ("root", "plan_id", "expected_revision"),
-            "plan_task_edit": ("root", "plan_id", "task_id", "task_data", "expected_revision"),
+            "plan_task_edit": ("root", "plan_id", "task_id", "expected_revision"),
             "plan_task_delete": ("root", "plan_id", "task_id", "expected_revision"),
             "plan_validate": ("root", "plan_id"),
             "plan_archive": ("root", "plan_id", "expected_revision"),
@@ -1098,6 +1114,10 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
             "error": {"type": "string", "default": ""},
             "kind": {"type": "string", "default": ""},
             "allow_adopt": {"type": "boolean", "default": False},
+            "operator_waiver": {"type": ["object", "null"], "additionalProperties": False,
+                                "required": ["consent", "reason"], "properties": {
+                                    "consent": {"const": True},
+                                    "reason": {"type": "string", "minLength": 1}}},
             "passed": {"type": "boolean", "default": True},
             "format": {"type": ["string", "null"], "default": None},
             "state_data": {"type": ["object", "null"]},
@@ -1404,13 +1424,13 @@ def operation_metadata(tool: str) -> dict[str, Any]:
     return result
 
 
-def operation_input_schema(tool: str, action: str) -> dict[str, Any]:
+def operation_input_schema(tool: str, action: str, features: Any = None) -> dict[str, Any]:
     """Return permissive tool arguments narrowed to one registered action."""
     contract = operation_contract(tool)
     if contract is None or action not in contract["actions"]:
         return {"type": "object", "properties": {}}
 
-    schema = operation_parameters_schema(tool)
+    schema = operation_parameters_schema(tool, features)
     selector = str(contract.get("selector_field", "action"))
     properties = schema.setdefault("properties", {})
     properties[selector] = {**properties.get(selector, {}), "enum": [action]}
@@ -1447,7 +1467,7 @@ def operation_action_guide(tool: str, action: str, features: Any = None) -> dict
     contract = operation_contract(tool)
     if contract is None or not isinstance(action, str) or action not in operation_actions(tool, features):
         return contract_error("unsupported or disabled guide tool/action")
-    raw = operation_input_schema(tool, action)
+    raw = operation_input_schema(tool, action, features)
     # Global union conditions are redundant once the selector is fixed.
     schema = {key: deepcopy(raw[key]) for key in ("type", "properties", "required") if key in raw}
     schema["additionalProperties"] = False
@@ -1477,11 +1497,11 @@ def operation_action_guide(tool: str, action: str, features: Any = None) -> dict
             "validation_note": "Server validation also enforces ownership, feature gates and cross-field constraints."}
 
 
-def operation_argument_hint(tool: str, action: str) -> dict[str, Any]:
+def operation_argument_hint(tool: str, action: str, features: Any = None) -> dict[str, Any]:
     contract = operation_contract(tool)
     if contract is None or not isinstance(action, str) or action not in contract["actions"]:
         return {}
-    schema = operation_input_schema(tool, action)
+    schema = operation_input_schema(tool, action, features)
     return {"allowed_arguments": sorted(schema.get("properties", {})),
             "required_arguments": schema.get("required", [])}
 
@@ -1496,6 +1516,17 @@ def operation_tool_input_schema(tool: str, features: Any = None) -> dict[str, An
     schema = operation_parameters_schema(tool, features)
     selector = str(contract.get("selector_field", "action"))
     properties = schema.setdefault("properties", {})
+    if tool == "local_ai_coord" and "receipt" in properties:
+        receipt = properties["receipt"]
+        # Keep the evidence rule while exposing the nested object to renderers
+        # that otherwise substitute its allOf for its sibling object type.
+        receipt_conditions = receipt.pop("allOf", None)
+        if receipt_conditions:
+            receipt["if"] = {}
+            receipt["then"] = {"allOf": receipt_conditions}
+            receipt["properties"]["evidence_id"]["description"] = (
+                "Required and non-empty when passed is true; use authentic evidence."
+            )
     selector_schema = properties.setdefault(selector, {"type": "string"})
     selector_schema["enum"] = list(actions)
     schema["additionalProperties"] = False
@@ -1536,8 +1567,31 @@ def operation_tool_input_schema(tool: str, features: Any = None) -> dict[str, An
             },
             "then": then,
         })
+    # Codex's type renderer does not show conditional `required` clauses.
+    # Repeat the registry's action-specific requirements as field descriptions.
+    required_by_field: dict[str, list[str]] = {}
+    for action in actions:
+        for field in contract["actions"][action].get("required", ()):
+            if field in properties and field != selector:
+                required_by_field.setdefault(field, []).append(action)
+    for field, required_actions in required_by_field.items():
+        current = properties[field].get("description", "")
+        hint = "Required for actions: " + ", ".join(required_actions) + "."
+        properties[field]["description"] = f"{current} {hint}".strip()
+    for field, scoped_actions in _ACTION_SCOPED_FIELDS.get(tool, {}).items():
+        if field not in properties:
+            continue
+        exposed = sorted(set(actions) & set(scoped_actions))
+        if exposed:
+            current = properties[field].get("description", "")
+            hint = "Valid only for actions: " + ", ".join(exposed) + "."
+            properties[field]["description"] = f"{current} {hint}".strip()
     if tool == "local_ai_repo" and "context" in actions:
         for field in ("path_hints", "directory_hints", "exclude_paths", "force_include_paths"):
+            current = properties[field].get("description", "")
+            properties[field]["description"] = (
+                f"{current} For context, omit mode or use adaptive mode."
+            ).strip()
             conditions.append({
                 "if": {
                     "properties": {
@@ -1551,9 +1605,12 @@ def operation_tool_input_schema(tool: str, features: Any = None) -> dict[str, An
     existing_all_of = list(schema.get("allOf", []))
     combined_all_of = [*existing_all_of, *conditions]
     if combined_all_of:
-        schema["allOf"] = combined_all_of
-    else:
-        schema.pop("allOf", None)
+        # Keep the object and its argument types visible to clients whose
+        # TypeScript renderer treats a root allOf as the entire input type.
+        # An always-true conditional preserves the same JSON Schema rules.
+        schema["if"] = {}
+        schema["then"] = {"allOf": combined_all_of}
+    schema.pop("allOf", None)
     return schema
 
 
@@ -1971,6 +2028,22 @@ def operation_parameters_schema(tool: str, features: Any = None) -> dict[str, An
         }
     if tool == "local_ai_coord":
         properties["max_tokens"].update(minimum=0, maximum=100000)
+        properties["scope"]["enum"] = ["", "global", "repository", "clone", "worktree", "branch", "task", "session"]
+        properties["scope"]["description"] = (
+            "Canonical agent scope. Empty is only an absent filter where that action permits it."
+        )
+        checkpoint = properties["checkpoint"]
+        fields = checkpoint.setdefault("properties", {})
+        fields.update({
+            "phase": {"type": "string", "minLength": 1},
+            "next_action": {"type": "string", "minLength": 1},
+            "affected_paths": {"type": "array", "items": {"type": "string"}},
+            "evidence_ids": {"type": "array", "items": {"type": "string"}},
+            "blockers": {"type": "array", "items": {"type": "string"}},
+        })
+        checkpoint["required"] = [
+            "phase", "next_action", "affected_paths", "evidence_ids", "blockers", "state_data",
+        ]
 
     parameters: dict[str, Any] = {"type": "object", "properties": properties}
     if contract.get("selector_required", True):

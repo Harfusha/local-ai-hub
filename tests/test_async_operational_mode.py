@@ -55,6 +55,23 @@ def test_gaming_rejects_new_inference_before_database_insert(tmp_path, monkeypat
         manager.close()
 
 
+def test_preprocessing_cancels_queued_jobs_and_rejects_new_work(tmp_path, monkeypatch):
+    manager = _manager(tmp_path)
+    selected = [_mode("active")]
+    monkeypatch.setattr(async_jobs, "load_operational_mode", lambda _path: selected[0], raising=False)
+    monkeypatch.setattr(async_jobs, "operational_mode_gate_error", operational_mode_gate_error, raising=False)
+    try:
+        queued = manager.submit("reason", {"task": "queued"}, dispatch_delay_seconds=30)
+        selected[0] = _mode("preprocessing")
+        assert manager.on_operational_mode_changed(selected[0])["success"] is True
+        assert _states(manager)[queued["job_id"]] == ("reason", "cancelled", True)
+        rejected = manager.submit("reason", {"task": "new"})
+        assert rejected["success"] is False
+        assert rejected["operational_mode"] == "preprocessing"
+    finally:
+        manager.close()
+
+
 def test_gaming_cancels_queued_inference_and_preserves_speculative_lint(tmp_path, monkeypatch):
     manager = _manager(tmp_path)
     monkeypatch.setattr(async_jobs, "load_operational_mode", lambda _path: _mode("active"), raising=False)

@@ -446,7 +446,7 @@ class AsyncJobManager:
         except Exception as exc:
             mode, revision, degraded = "maintenance", -1, True
             error = str(exc)[:240]
-        if mode not in {"active", "gaming", "maintenance"}:
+        if mode not in {"active", "gaming", "maintenance", "preprocessing"}:
             mode, degraded = "maintenance", True
         if degraded:
             mode = "maintenance"
@@ -709,7 +709,7 @@ class AsyncJobManager:
     @classmethod
     def _mode_blocked_actions(cls, snapshot: dict[str, Any]) -> frozenset[str]:
         mode = str(snapshot.get("mode", "maintenance"))
-        if snapshot.get("degraded") or mode == "maintenance":
+        if snapshot.get("degraded") or mode in {"maintenance", "preprocessing"}:
             return frozenset(cls.ACTIONS | cls.DIRECT_INFERENCE_ACTIONS)
         if mode == "gaming":
             return cls.INFERENCE_ADMISSION_ACTIONS

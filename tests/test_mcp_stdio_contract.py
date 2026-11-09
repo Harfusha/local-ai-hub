@@ -115,7 +115,8 @@ def test_stdio_handshake_publishes_all_registered_live_schemas(tmp_path: Path) -
                     "description": "Stable async-job idempotency key and request correlation ID.",
                 }
                 non_async_actions = sorted(set(mcp_server.operation_actions(name, features)) - {"submit", "status", "wait", "result", "cancel"})
-                expected_input.setdefault("allOf", []).append({
+                expected_input.setdefault("if", {})
+                expected_input.setdefault("then", {}).setdefault("allOf", []).append({
                     "if": {"properties": {"action": {"enum": non_async_actions}}, "required": ["action"]},
                     "then": {"not": {"required": ["request_id"]}},
                 })

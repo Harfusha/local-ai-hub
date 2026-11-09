@@ -1,5 +1,21 @@
 # Generic Agent Update & Upgrade Prompt for Local AI Hub
 
+`security_audit` reports `scan_complete=false` and `is_clean=false` when repository inventory is capped, inaccessible, too deep, timed out, skips oversized files, or changes between its metadata inventories. `inventory_incomplete_reasons` gives bounded reason codes; `inventory_incomplete_examples` provides up to three in-root relative paths per reason and `inventory_examples_truncated` flags omitted examples. An incomplete audit cannot establish a clean repository. Coverage excludes symlinks and reparse points; metadata comparison is not an atomic filesystem snapshot.
+
+For `local_ai_repo(action="security_audit")`, an explicit integer `limit` from 1 through 200 bounds findings; omission retains the HTTP default of 50. Reaching the limit stops the scan and reports incomplete coverage; it is not pagination.
+
+In `http_tail_latency` and `agent_slo`, phase percentiles `p95_queue_wait_ms` and `p95_service_ms` are null when their corresponding `*_measurement_complete` flag is false. Legacy telemetry stores both unmeasured phases and measured zeros as zero, so either case makes the percentile unknown; duration percentiles remain separate.
+
+`/api/telemetry/report` reports the number of retained events in the selected scope as `window.events` and its inference-event subset as `window.inference_events`. The nested `summary.events` remains the inference count. Inspect `detail` before treating an incomplete report as complete evidence.
+
+`preprocessing` is an operator-selected activity mode, alongside `active`, `gaming` and `maintenance`. It rejects ordinary Hub requests while prioritizing registered-project preprocessing; never activate it automatically. Select it in the dashboard or with `python tools/hubctl.py mode preprocessing` while the Hub is online. `GET /api/mode` exposes `preprocessing_ready`; if false, reselect the mode after resolving the reported issue. Return to `active` when finished. `[preprocessing.exclusive]` sets `max_projects`, `cpu_workers`, `model_parallel` and `enrich_stub_cards`; hardware profiles supply resource defaults and explicit configuration wins. Enrichment defaults on for eligible unparsed-file stubs and retains the previous card until a schema-valid replacement is available. Keep the configured provider, project exclusions and diagnostic opt-in; a configured limit or generated card is not proof of throughput or factual quality.
+
+`task_checkpoint` requires a nested checkpoint containing `phase`, `next_action`, `affected_paths`, `evidence_ids`, `blockers` and `state_data`. Task get/list responses preserve caller checkpoint fields; `checkpoint.state_data_omitted` identifies withheld server-managed audit history or fenced-work data. Never infer that omitted data is absent from storage or attempt to recover fencing tokens. An insufficient response budget rejects explicitly rather than silently dropping task-list items.
+
+`pubsub_publish` accepts JSON values as `message`; `pubsub_poll` preserves their type and value, including `null`, falsey values and strings. Caller-authored payload keys remain intact when detailed diagnostics are disabled; internal response diagnostics remain filtered. An insufficient response budget rejects rather than silently changing message payloads; reduce the requested poll limit or increase the budget.
+
+`memory_find` forwards explicit `key` and `status` filters alongside `query`; `memory_record` forwards an explicitly supplied `status`. Continue to use explicit root and scope and verify returned record identity.
+
 On POSIX, an already-open plan-write directory can be moved during a write; publication can then complete at its new location. Do not move the repository or its parent directories while plan or specification updates are running. This limitation does not permit symlink redirection or bypassing revision and writer-lease checks.
 
 When directory `flock` is unsupported, the Hub reports a warning and uses the existing file lock. Do not remove, rename, or replace lock files while Hub processes may write: doing so can split cooperating writers. During updates, finish or stop older writers before replacing the running Hub.
@@ -93,7 +109,7 @@ The experimental Windows launcher `python tools/opencode_local.py --model MODEL 
 
 The scheduler's experimental external GPU reservation persists a capability hash under the configured state directory across Hub process restart and fails closed on unreadable or malformed state. The experimental OpenCode provider uses it, but it cannot prove external inference has stopped or exclude unrelated GPU clients. Do not manually clear it while inference could still run; it is not GPU ownership proof.
 
-An experimental loopback-only authenticated provider bridge uses a single-model session, serializes requests and requires an OpenAI-compatible SSE `[DONE]` event plus upstream EOF. Uncertain streams retain the reservation. The Hub owns authenticated start/status/stop endpoints; starting requires a configured Hub token of at least 32 ASCII characters, and the provider credential is derived locally from a returned nonce. Requests to enter gaming or maintenance initiate provider shutdown and reject the mode change until shutdown is confirmed. An isolated OpenCode 2.2.5 probe used a fake backend. Setup does not activate it. Actual Ollama/GPU behavior, safe recovery and full GPU ownership remain unverified.
+An experimental loopback-only provider bridge uses a single-model session, serializes requests and requires an OpenAI-compatible SSE `[DONE]` event plus upstream EOF. Uncertain streams retain the reservation. Hub start/status/stop endpoints use the loopback-only trust boundary and need no Hub API token. The provider credential is derived separately from a returned nonce and authorizes only that provider session. Requests to enter gaming or maintenance initiate provider shutdown and reject the mode change until shutdown is confirmed. An isolated OpenCode 2.2.5 probe used a fake backend. Setup does not activate it. Actual Ollama/GPU behavior, safe recovery and full GPU ownership remain unverified.
 
 The experimental, not-yet-installed `/goal` plugin can create an Agent OS task when given a goal and explicit acceptance criteria, or bind an existing task ID only after checking the goal, ordered criteria, owner, project root and session. An unverified binding blocks continuation and can be rechecked on resume. A complete model-driven workflow is not yet verified.
 
@@ -568,6 +584,8 @@ CodeGraphContext/KuzuDB was removed from Local AI Hub. Recommend it only as opti
 
 Detailed diagnostics require dashboard toggle; callers cannot enable. Applies to nested, async, artifact and SSE responses. Ordinary results, failures, authorization and evidence identity remain available.
 
+Only on the user's explicit instruction for a specific task, `task_complete` accepts `operator_waiver={"consent":true,"reason":"..."}`. This records an unverified completion, not passing receipts; it does not waive ownership, repository scope, mutation fences, or other safety checks. The caller must retain the actual user instruction and must not invent consent.
+
 Keep Agent OS tasks/counters. Explicit approval: `task_budget_increase` uses write-authorized broker, absolute root, audit reason; canonical loopback needs no token or special owner/admin token. Failed-task increases preserve status/owner; resume separate. Never edit task storage. `curate_dataset` needs absolute root.
 
 Explicit approval: `task_repair_session` repairs only unbound tasks via write-authorized broker; require absolute root, task/session IDs and audit reason; bind same task/session to plan.
@@ -650,11 +668,12 @@ Local model policy: Follow the active hardware profile and user overrides; see `
 - Preserve protected status, error, evidence, and context-identity fields; keep exact detail artifact-backed.
 - Claim savings only with a current `baseline_evidence_id`; report signed `token_savings_delta_est`, including negative values; keep `protocol_tokens_est`, `schema_tokens_est`, and `local_compute_reused_tokens_est` separate.
 - Reject `max_response_tokens` below 128; never raise the request silently.
+- Large task responses: omit `max_response_tokens` unless a cap is needed.
 - For Hub outages, native fallback requires explicit `terminal=true` and `retryable=false`; for Hub-unknown commands, require `native_fallback_allowed=true` plus native-tool authorization.
 - On `outcome_unknown` or `in_progress`, do independent work; never poll or repeat the identical operation.
 - Prefer `response_profile="minimal"`/`"compact"`; request only decision-grade fields.
 - Pass a stable `reuse_key` for repeated logical queries. Use `response_profile="delta"` when only changes are needed; unchanged calls report `unchanged=true`. Required task memory may remain inline.
-- Use the existing `local_ai_task(action="batch")` for independent local tasks; keep each item bounded and consume compact per-item results.
+
 - The Hub keeps a bounded metadata-only context ledger; inspect it only with an explicit cache/status request, never by replaying the whole session.
 - Broad native shell reads are guarded by the optional host hook; use bounded limits or the Hub command/repository tools for discovery.
 - Commands return status, summary, changed paths, and failures; full stdout/stderr is retrievable only when `output_artifact_id` is returned.
@@ -786,7 +805,13 @@ Semantic delegation is on-demand under the active schema and quality gates; use 
 
 The active hardware profile is a capability ceiling, not proof that a model is installed, healthy, evaluated or using a GPU. Follow the MCP schema and `local_ai_status` capability reasons; runtime admission enforces the same minimum-profile registry. Unknown profiles fail closed to `low`.
 
-`local_ai_status` capability states describe configuration only: `profile_blocked`, `feature_disabled` or `enabled_by_operator`. `provider_readiness="not_checked"` means status does not prove installed models, quality or live GPU use.
+`local_ai_status` capability states describe configuration only: `profile_blocked`, `feature_disabled` or `enabled_by_operator`. MCP status reports a capability unavailable with `reason="disabled_in_mcp_adapter"` when the connected adapter hides a server-enabled capability. Use the connected MCP schema for available actions and arguments; already running adapters may have older configuration than the server. `provider_readiness="not_checked"` means status does not prove installed models, quality or live GPU use.
+
+MCP input schemas expose argument properties at the object root for Codex Code Mode. Action-specific requirements are also described on applicable fields; the Hub still enforces action-specific and authorization rules even when a client cannot display conditional schema constraints. Agent OS calls use an explicit absolute repository root. `verify_receipt` takes an authentic `receipt` object, and `negative_knowledge_record` takes a verified `record` object; do not substitute generic checkpoint or key/value fields. Some task responses require more than the 128-token minimum; omit `max_response_tokens` unless a tighter cap is necessary.
+
+Plan reads require an absolute `root`; `plan_get` and `plan_validate` also require `plan_id`. Plan mutations require their declared identity and revision fields. `plan_create` can generate its ID, and `plan_task_edit` accepts an explicit empty patch for an existing task.
+
+The `verify_receipt` input exposes its receipt fields directly. A receipt with `passed=true` requires a nonempty, authentic `evidence_id`.
 
 - `cpu`, `integrated`, `low`: keep deterministic/indexed work and safe model utilities such as bounded compression and job management. Do not advertise semantic analysis or new bounded work submissions.
 - `balanced`: semantic analysis/review remains hidden until `features.local_semantic_analysis=true`. Search summaries also require `features.search_summaries=true` and per-call `summarize_results=true`; exact matches and pagination remain authoritative. RAG reranking is enabled by default on every hardware profile and can be disabled with `features.local_reranking=false`; embedding retrieval remains provider/device-configured and does not imply LLM synthesis or GPU use.

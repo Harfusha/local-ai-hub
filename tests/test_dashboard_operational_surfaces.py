@@ -219,15 +219,15 @@ def _run_dashboard_apply_cases(cases):
     apply_js = extract("async function applyActivityMode(mode){", "\nasync function loadConfigView")
     script = f"""
 const vm=require('node:vm');
-const activityModeLabels={{active:'Active',gaming:'GAMING / PAUSED',maintenance:'Maintenance'}};
+const activityModeLabels={{active:'Active',gaming:'GAMING / PAUSED',maintenance:'Maintenance',preprocessing:'Preprocessing'}};
 const sources={json.dumps([render_js, failure_js, projection_js, apply_js])};
 const cases={json.dumps(cases)};
 async function runCase(item){{
   const badge={{dataset:{{mode:'active'}},className:'pill ok',textContent:'Mode: Active'}};
   const status={{textContent:''}};
-  const buttons=['active','gaming','maintenance'].map(mode=>({{dataset:{{activityMode:mode}},disabled:false,setAttribute(name,value){{this[name]=value;}}}}));
+  const buttons=['active','gaming','maintenance','preprocessing'].map(mode=>({{dataset:{{activityMode:mode}},disabled:false,setAttribute(name,value){{this[name]=value;}}}}));
   const sandbox=vm.createContext({{
-    ACTIVITY_MODES:['active','gaming','maintenance'],
+    ACTIVITY_MODES:['active','gaming','maintenance','preprocessing'],
     activityModeLabels,
     activityModeStatusPolls:0,
     activityModeTransitionNotice:null,
@@ -244,6 +244,18 @@ Promise.all(cases.map(runCase)).then(results=>console.log(JSON.stringify(results
 """
     result = subprocess.run([node, "-e", script], capture_output=True, text=True, check=True, timeout=5)
     return json.loads(result.stdout)
+
+
+def test_dashboard_reports_incomplete_preprocessing_start() -> None:
+    result = _run_dashboard_apply_cases([{
+        "name": "preprocessing_start",
+        "mode": "preprocessing",
+        "ok": True,
+        "status": 200,
+        "data": {"success": True, "mode": "preprocessing", "preprocessing_start": {"success": False}},
+    }])[0]
+    assert "incomplete" in result["status"].lower()
+    assert "preprocessing" in result["status"].lower()
 
 
 def test_dashboard_reports_incomplete_vram_unload_after_gaming_pause() -> None:

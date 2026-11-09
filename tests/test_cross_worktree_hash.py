@@ -1,4 +1,5 @@
 import time
+import threading
 from contextlib import closing
 from pathlib import Path
 import subprocess
@@ -127,6 +128,100 @@ def test_new_worktree_links_existing_content_card_across_app_release(tmp_path: P
         assert card == "card-existing"
     finally:
         pre.close()
+
+
+def test_file_card_cache_hits_share_one_database_connection(tmp_path: Path):
+    config = _config(tmp_path)
+    root = tmp_path / "repo"
+    root.mkdir()
+    tools = RepositoryTools(config)
+    pre = ProjectPreprocessor(config, _Noop(), _Rag(), _Noop(), _Noop(), tools)
+    try:
+        now = time.time()
+        with closing(pre._connect()) as con:
+            for name, digest in (("a.py", "hash-a"), ("b.py", "hash-b")):
+                con.execute(
+                    "INSERT INTO file_refs(root,path,content_hash,size,mtime_ns,needs_hash,rag_hash,generation,card_key,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                    (str(root), name, digest, 1, 1, 0, digest, 0, None, now),
+                )
+                con.execute(
+                    "INSERT INTO content_cards(card_key,content_hash,model,analyzer_version,card_json,created_at,accessed_at,hits) VALUES(?,?,?,?,?,?,?,0)",
+                    (f"card-{name}", digest, "test", preprocess_module.PREPROCESS_ANALYZER_VERSION, "{}", now, now),
+                )
+            items = con.execute("SELECT * FROM file_refs WHERE root=? ORDER BY path", (str(root),)).fetchall()
+            con.commit()
+
+        pre._find_next_files = lambda *_args: items
+        original_connect = pre._connect
+        connection_count = 0
+
+        def counted_connect():
+            nonlocal connection_count
+            connection_count += 1
+            return original_connect()
+
+        pre._connect = counted_connect
+        assert pre._step_file_card({"root": str(root), "force_refresh": 0}) is True
+        pre._connect = original_connect
+
+        assert connection_count == 1
+        with closing(pre._connect()) as con:
+            cards = con.execute(
+                "SELECT path,card_key FROM file_refs WHERE root=? ORDER BY path",
+                (str(root),),
+            ).fetchall()
+        assert [(row["path"], row["card_key"]) for row in cards] == [
+            ("a.py", "card-a.py"), ("b.py", "card-b.py")
+        ]
+    finally:
+        pre.close()
+
+
+def test_watcher_event_invalidates_only_its_git_hash_entry(tmp_path: Path):
+    root = tmp_path / "repo"
+    root.mkdir()
+
+    class _Rows:
+        def fetchall(self):
+            return [(str(root),)]
+
+    class _Connection:
+        def execute(self, *_args):
+            return _Rows()
+
+        def close(self):
+            return None
+
+    pre = ProjectPreprocessor.__new__(ProjectPreprocessor)
+    pre._background_work_allowed = lambda: True
+    pre._db_lock = threading.Lock()
+    pre._dirty_lock = threading.Lock()
+    pre._hash_git_maps_lock = threading.Lock()
+    pre._hash_git_maps = {
+        (str(root), 0): {
+            "src/changed.py": "git:old-changed",
+            "src/untouched.py": "git:still-valid",
+        }
+    }
+    pre._dirty_paths = {}
+    code_prune_key = (str(root), 0, "settings", 1)
+    deterministic_prune_key = (str(root), 0)
+    pre._code_index_pruned_generations = {code_prune_key}
+    pre._deterministic_pruned_generations = {deterministic_prune_key}
+    pre._watch_revisions = {}
+    pre._watch_relevant = lambda *_args: "src/changed.py"
+    pre._connect = _Connection
+    pre._write_retry = lambda operation: operation(_Connection())
+    pre._rebalance_processing_slots = lambda *_args, **_kwargs: None
+    pre._cpu_wakeup = threading.Event()
+
+    assert pre.notify_path_changed(str(root / "src" / "changed.py")) is True
+
+    assert pre._hash_git_maps[(str(root), 0)] == {
+        "src/untouched.py": "git:still-valid"
+    }
+    assert pre._code_index_pruned_generations == {code_prune_key}
+    assert pre._deterministic_pruned_generations == {deterministic_prune_key}
 
 
 def _insert_project_for_inventory(pre: ProjectPreprocessor, root: Path):

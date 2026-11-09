@@ -15,12 +15,12 @@ def test_tools_list_wire_exposes_action_scoped_repo_steps() -> None:
     tool = next(item for item in result.root.tools if item.name == "local_ai_repo")
     schema = tool.inputSchema
     pipeline_rule = next(
-        constraint for constraint in schema.get("allOf", [])
+        constraint for constraint in schema.get("then", {}).get("allOf", [])
         if constraint.get("if", {}).get("properties", {}).get("action", {}).get("const") == "pipeline"
     )
     assert "steps" not in pipeline_rule.get("then", {}).get("not", {}).get("anyOf", [])
     search_rule = next(
-        constraint for constraint in schema.get("allOf", [])
+        constraint for constraint in schema.get("then", {}).get("allOf", [])
         if constraint.get("if", {}).get("properties", {}).get("action", {}).get("const") == "search"
     )
     assert {"required": ["steps"]} in search_rule.get("then", {}).get("not", {}).get("anyOf", [])

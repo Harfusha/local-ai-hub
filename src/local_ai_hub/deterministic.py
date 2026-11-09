@@ -5378,11 +5378,9 @@ def test_{sym}_regression_edge_cases():
         }
 
 
-    def test_matrix(self, root: str) -> dict[str, Any]:
-        """Discover test frameworks, test files, and test mappings in the repository."""
-        resolved_root = Path(self._root(root))
+    @staticmethod
+    def _detect_test_framework(resolved_root: Path) -> tuple[str, str, bool, list[str]]:
         root_str = str(resolved_root)
-        test_files: list[dict[str, Any]] = []
         warnings: list[str] = []
         incomplete = False
         framework = "unknown"
@@ -5420,6 +5418,15 @@ def test_{sym}_regression_edge_cases():
         elif (resolved_root / "go.mod").exists():
             framework = "go"
             run_all_cmd = "go test ./..."
+
+        return framework, run_all_cmd, incomplete, warnings
+
+    def test_matrix(self, root: str) -> dict[str, Any]:
+        """Discover test frameworks, test files, and test mappings in the repository."""
+        resolved_root = Path(self._root(root))
+        root_str = str(resolved_root)
+        test_files: list[dict[str, Any]] = []
+        framework, run_all_cmd, incomplete, warnings = self._detect_test_framework(resolved_root)
 
         def is_test_source(rel_path: str) -> bool:
             """Recognize supported test naming conventions in the current tree."""
@@ -5619,27 +5626,65 @@ def test_{sym}_regression_edge_cases():
 
     def affected_tests(self, root: str, changed_paths: list[str] | None = None, base: str = "HEAD") -> dict[str, Any]:
         """Map changed paths/symbols directly to affected test files and formulate targeted command."""
-        matrix = self.test_matrix(root)
-        framework = matrix.get("framework", "unknown")
-        all_tests = matrix.get("test_files", [])
-        
         resolved_root = Path(self._root(root))
         if changed_paths is None:
             changed_paths = []
+            import subprocess
             try:
-                import subprocess
                 from .process_utils import hidden_run_kwargs
-                p = subprocess.run(["git", "status", "--porcelain"], cwd=str(resolved_root), capture_output=True, text=True, timeout=5, **hidden_run_kwargs())
-                if p.returncode == 0:
-                    for line in p.stdout.splitlines():
-                        parts = line.strip().split(maxsplit=1)
-                        if len(parts) == 2:
-                            changed_paths.append(parts[1].replace("\\", "/"))
-            except Exception:
-                pass
+                p = subprocess.run(["git", "status", "--porcelain=v1", "-z", "--untracked-files=all", "--", "."], cwd=str(resolved_root), capture_output=True, timeout=5, **hidden_run_kwargs())
+                if p.returncode != 0:
+                    return {"success": False, "error": "Unable to determine changed paths from git status",
+                            "error_code": "git_status_failed", "exit_code": p.returncode,
+                            "terminal": True, "retryable": False}
+                if not isinstance(p.stdout, bytes) or (p.stdout and not p.stdout.endswith(b"\0")):
+                    return {"success": False, "error": "Git status returned malformed path records",
+                            "error_code": "git_status_malformed", "terminal": True, "retryable": False}
+                records = os.fsdecode(p.stdout).split("\0")[:-1]
+                index = 0
+                while index < len(records):
+                    record = records[index]
+                    index += 1
+                    if len(record) < 4 or record[2] != " " or not record[3:]:
+                        return {"success": False, "error": "Git status returned malformed path records",
+                                "error_code": "git_status_malformed", "terminal": True, "retryable": False}
+                    changed_paths.append(record[3:])
+                    if "R" in record[:2] or "C" in record[:2]:
+                        if index >= len(records) or not records[index]:
+                            return {"success": False, "error": "Git status returned malformed path records",
+                                    "error_code": "git_status_malformed", "terminal": True, "retryable": False}
+                        changed_paths.append(records[index])
+                        index += 1
+                if changed_paths:
+                    prefix_result = subprocess.run(["git", "rev-parse", "--show-prefix"], cwd=str(resolved_root), capture_output=True, timeout=5, **hidden_run_kwargs())
+                    if (prefix_result.returncode != 0 or not isinstance(prefix_result.stdout, bytes)
+                            or not prefix_result.stdout.endswith(b"\n")):
+                        return {"success": False, "error": "Unable to determine repository path prefix",
+                                "error_code": "git_prefix_failed", "terminal": True, "retryable": False}
+                    prefix = os.fsdecode(prefix_result.stdout[:-1])
+                    if prefix and not prefix.endswith("/"):
+                        return {"success": False, "error": "Git returned malformed path prefix",
+                                "error_code": "git_prefix_failed", "terminal": True, "retryable": False}
+                    if prefix:
+                        changed_paths = [path[len(prefix):] for path in changed_paths if path.startswith(prefix)]
+            except subprocess.TimeoutExpired:
+                return {"success": False, "error": "Git status timed out while determining changed paths",
+                        "error_code": "git_status_timeout", "timed_out": True,
+                        "terminal": False, "retryable": True}
+            except Exception as exc:
+                return {"success": False, "error": "Git status unavailable while determining changed paths",
+                        "error_code": "git_status_unavailable", "error_type": type(exc).__name__,
+                        "terminal": True, "retryable": False}
 
-        norm_changed = [p.replace("\\", "/").lstrip("./") for p in changed_paths if p]
+        def normalize_changed_path(value: str) -> str:
+            normalized = value.replace("\\", "/")
+            while normalized.startswith("./"):
+                normalized = normalized[2:]
+            return normalized
+
+        norm_changed = [normalize_changed_path(p) for p in changed_paths if p]
         if not norm_changed:
+            framework, _, _, _ = self._detect_test_framework(resolved_root)
             return {
                 "success": True,
                 "framework": framework,
@@ -5648,6 +5693,10 @@ def test_{sym}_regression_edge_cases():
                 "suggested_command": "",
                 "confidence": 1.0,
             }
+
+        matrix = self.test_matrix(root)
+        framework = matrix.get("framework", "unknown")
+        all_tests = matrix.get("test_files", [])
 
         test_paths_set: set[str] = set()
         graph_complete = False
@@ -6281,7 +6330,8 @@ def test_{sym}_regression_edge_cases():
         code_smell_patterns = _SECURITY_AUDIT_SMELLS
 
         findings: list[dict[str, Any]] = []
-        raw_files = list(self.repo_tools.iter_files(str(resolved_root)))
+        deadline = time.monotonic() + 30.0
+        raw_files, inventory = self.repo_tools.security_inventory(str(resolved_root), deadline=deadline)
         def _sec_priority(p: Path) -> int:
             try:
                 parts = p.relative_to(resolved_root).parts
@@ -6301,13 +6351,12 @@ def test_{sym}_regression_edge_cases():
         scanned_files = 0
         eligible_files = 0
         skipped_files = 0
-        scan_complete = True
+        scan_complete = inventory.get("complete") is True
         limit_reached = False
         scanned_bytes = 0
         scan_errors: list[dict[str, str]] = []
-        deadline = time.monotonic() + 30.0
         max_file_bytes = min(2_000_000, max(1, int(getattr(self.repo_tools, "max_file_bytes", 2_000_000))))
-        stop_reason = ""
+        stop_reason = "" if scan_complete else "inventory_incomplete"
 
 
         for f in candidate_files:
@@ -6451,6 +6500,38 @@ def test_{sym}_regression_edge_cases():
                     })
 
 
+        if not scan_complete and not stop_reason and scan_errors:
+            stop_reason = "scan_errors"
+        if scan_complete:
+            _final_files, final_inventory = self.repo_tools.security_inventory(str(resolved_root), deadline=deadline)
+            initial_identity = inventory.get("_identity")
+            final_identity = final_inventory.get("_identity")
+            if (final_inventory.get("complete") is not True or not isinstance(initial_identity, dict)
+                    or not isinstance(final_identity, dict) or initial_identity != final_identity):
+                scan_complete = False
+                stop_reason = "inventory_changed_or_unverified"
+                reasons = inventory.setdefault("reasons", [])
+                if final_inventory.get("complete") is not True:
+                    reasons.extend(reason for reason in final_inventory.get("reasons", []) if reason not in reasons)
+                    examples = inventory.setdefault("examples", {})
+                    for reason, paths in final_inventory.get("examples", {}).items():
+                        bucket = examples.setdefault(reason, [])
+                        for path in paths:
+                            if path not in bucket:
+                                if len(bucket) < 3:
+                                    bucket.append(path)
+                                else:
+                                    inventory["examples_truncated"] = True
+                    inventory["examples_truncated"] = bool(
+                        inventory.get("examples_truncated") or final_inventory.get("examples_truncated")
+                    )
+                    if not reasons:
+                        reasons.append("inventory_coverage_unknown")
+                elif not isinstance(initial_identity, dict) or not isinstance(final_identity, dict):
+                    reasons.append("inventory_evidence_missing")
+                elif "workspace_changed" not in reasons:
+                    reasons.append("workspace_changed")
+
         high_count = sum(1 for f in findings if f.get("severity") == "HIGH")
         med_count = sum(1 for f in findings if f.get("severity") == "MEDIUM")
         test_findings = []
@@ -6483,10 +6564,13 @@ def test_{sym}_regression_edge_cases():
             "skipped_files": skipped_files,
             "scanned_bytes": scanned_bytes,
             "scan_complete": scan_complete,
+            "inventory_incomplete_reasons": inventory.get("reasons", []),
+            "inventory_incomplete_examples": inventory.get("examples", {}),
+            "inventory_examples_truncated": bool(inventory.get("examples_truncated", False)),
             "limit_reached": limit_reached,
             "stop_reason": stop_reason,
             "scan_errors": scan_errors,
-            "coverage_scope": "project-filtered repository iterator; counts cover visited entries",
+            "coverage_scope": "project-filtered repository files; symlinks and reparse points excluded; counts cover visited entries",
             "is_clean": not findings and scan_complete,
             "findings": findings[:limit],
         }

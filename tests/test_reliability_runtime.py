@@ -44,6 +44,7 @@ def _config(tmp_path: Path, *, cpu_during_foreground: bool = False):
 def test_preprocessor_single_owner_prevents_duplicate_project_step(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     config = _config(tmp_path)
     pre = ProjectPreprocessor(config, _Noop(), _Rag(), _Scheduler(), _Noop(), RepositoryTools(config))
+    pre.enabled = True
     entered = threading.Event(); release = threading.Event(); results: list[bool | None] = []
     try:
         def slow_step(row):
@@ -52,6 +53,7 @@ def test_preprocessor_single_owner_prevents_duplicate_project_step(tmp_path: Pat
             return True
         monkeypatch.setattr(pre, "_step", slow_step)
         row = {"root": str(tmp_path / "repo"), "phase": "files"}
+        monkeypatch.setattr(pre, "_project_row", lambda _root: {**row, "status": "queued", "paused": 0, "retry_after": 0})
         worker = threading.Thread(target=lambda: results.append(pre._run_project_step(row)))
         worker.start(); assert entered.wait(1)
         assert pre._run_project_step(row) is None

@@ -20,7 +20,7 @@ def test_cache_byte_capacity_preserves_admitted_history():
     assert bus.publish("existing", "x" * 700)["success"]
     assert not bus.publish("new", "y" * 700)["success"]
     assert bus._cached_bytes <= 1024
-    assert bus.poll("existing")["messages"][0]["payload"] == {"text": "x" * 700}
+    assert bus.poll("existing")["messages"][0]["payload"] == "x" * 700
 
 
 def test_compaction_releases_expired_cache_without_disconnect(monkeypatch):
@@ -58,7 +58,7 @@ def test_default_admission_supports_thirty_live_subscribers():
     subscriptions = [bus.subscribe("topic") for _index in range(30)]
     assert bus._subscriber_count == 30 and bus._queue_slots == 3000
     assert bus.publish("topic", "message")["success"]
-    assert all(queue.get_nowait()["payload"] == {"text": "message"} for _sub_id, queue in subscriptions)
+    assert all(queue.get_nowait()["payload"] == "message" for _sub_id, queue in subscriptions)
 
 
 @pytest.mark.parametrize("subscribers,slots,accepted", [(1, 1000, 1), (10, 20, 2)])

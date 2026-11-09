@@ -358,9 +358,18 @@ def complete_task_with_project_rules(
     response_budget_tokens: int | None = None,
     expected_criteria: list[str] | tuple[str, ...] | None = None,
     expected_binding: object = _BINDING_UNSET,
+    operator_waiver: Mapping[str, Any] | None = None,
 ) -> TaskState:
     """Resolve payload-root project rules and gate mutation on persisted receipts."""
     task_key = str(task_id or "").strip()
+    if operator_waiver is not None and (
+        not isinstance(operator_waiver, Mapping)
+        or set(operator_waiver) != {"consent", "reason"}
+        or operator_waiver.get("consent") is not True
+        or not isinstance(operator_waiver.get("reason"), str)
+        or not operator_waiver["reason"].strip()
+    ):
+        raise ValueError("operator waiver requires explicit consent and a nonempty reason")
     if not task_key:
         raise CompletionGateError("task_id is required")
     revision = str(current_revision or "").strip()
@@ -483,7 +492,7 @@ def complete_task_with_project_rules(
         project_root=project.root,
         now=now,
     )
-    if not result.complete:
+    if result.complete is not True and not (operator_waiver is not None and result.complete is False):
         missing = ", ".join(result.unsatisfied_criteria + result.stale_criteria)
         raise CompletionGateError(
             f"Cannot complete task {task_key}: verification incomplete"
@@ -529,5 +538,6 @@ def complete_task_with_project_rules(
         checkpoint=checkpoint_obj,
         _prepared_completion_updated_at=prepared_completion_updated_at,
         _expected_completion_content=expected_completion_content,
+        operator_waiver=operator_waiver,
     )
 

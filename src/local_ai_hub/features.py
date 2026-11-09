@@ -320,7 +320,7 @@ class FeatureSet:
         if repo:
             lines.append("- `local_ai_repo`: every non-trivial repo task; indexed lookup first, adaptive context for evidence gaps, targeted checks after changes.")
         if repo and self.search_summaries:
-            lines.append("- `local_ai_repo(action=\"search\")`: use `summarize_results=true` for bounded summaries when the active profile enables it.")
+            lines.append("- Search summaries: use `summarize_results=true` only if the connected MCP schema exposes it.")
         if repo & {"patch", "revert", "batch_replace", "ast_refactor", "generate_tests", "generate_tests_for_diff", "generate_mocks", "generate_types", "type_stubs", "synthesize_rules", "synthesize_commit", "split_changes", "resolve_imports", "delegate"}:
             lines.append("- `local_ai_repo` generation/mutation: explicit scoped requests only; preserve approval/review gates.")
         if repo & {"preprocess", "preprocess_status", "preprocess_refresh", "preprocess_pause", "preprocess_resume", "preprocess_cancel", "preprocess_unregister"}:

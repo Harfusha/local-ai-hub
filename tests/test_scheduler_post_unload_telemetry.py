@@ -3,6 +3,7 @@ from types import SimpleNamespace
 import pytest
 
 from local_ai_hub.scheduler import AffinityScheduler
+from local_ai_hub.scheduler import admission_rejection_message
 from local_ai_hub.vram_balancer import VRAMBalancer
 
 
@@ -143,6 +144,21 @@ def test_normal_admission_rejects_unavailable_stale_vram_capacity():
     assert result["reason"] == "vram_telemetry_unavailable"
     assert result["vram_admission"] == "unknown"
     assert "vram_available_bytes" not in result
+
+
+def test_admission_rejection_message_matches_reason_and_request_class():
+    assert admission_rejection_message("vram_telemetry_unavailable", background=False) == (
+        "VRAM telemetry unavailable; refusing model admission"
+    )
+    assert admission_rejection_message("resource_pressure", background=False) == (
+        "resource pressure blocks foreground admission"
+    )
+    assert admission_rejection_message("resource_pressure", background=True) == (
+        "resource pressure blocks background admission"
+    )
+    assert admission_rejection_message("vram_budget", background=False) == (
+        "insufficient VRAM for model admission"
+    )
 
 
 def test_post_unload_requests_refresh_without_changing_normal_status():

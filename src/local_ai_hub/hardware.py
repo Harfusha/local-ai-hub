@@ -410,7 +410,7 @@ PROFILE_OVERRIDES: dict[str, dict[str, Any]] = {
             "flash_attention": True,
             "num_threads": max(1, (os.cpu_count() or 4) - 2),
         },
-        "background_gpu": {"enabled": False, "parallel": 1},
+        "background_gpu": {"enabled": False, "parallel": 1, "cpu_fallback_enabled": True},
         "cpu_retrieval": {"embedding_batch_size": 4, "reranker_batch_size": 2, "reranker_max_length": 512, "embedding_trust_remote_code": False},
         "deterministic": {"context_raw_evidence": 3, "context_max_chars": 3600},
         "search": {"context_top_k": 8, "max_snippets_per_file": 2},
@@ -711,9 +711,23 @@ PROFILE_OVERRIDES: dict[str, dict[str, Any]] = {
 }
 
 
+EXCLUSIVE_PREPROCESSING_LIMITS: dict[str, dict[str, int]] = {
+    "cpu": {"max_projects": 2, "cpu_workers": 2, "model_parallel": 1},
+    "integrated": {"max_projects": 2, "cpu_workers": 4, "model_parallel": 1},
+    "low": {"max_projects": 2, "cpu_workers": 4, "model_parallel": 2},
+    "balanced": {"max_projects": 3, "cpu_workers": 8, "model_parallel": 4},
+    "medium": {"max_projects": 4, "cpu_workers": 12, "model_parallel": 4},
+    "high": {"max_projects": 6, "cpu_workers": 16, "model_parallel": 6},
+    "max": {"max_projects": 8, "cpu_workers": 24, "model_parallel": 8},
+}
+
+
 def profile_overrides(profile_name: str, detected: dict[str, Any] | None = None) -> dict[str, Any]:
     import copy
     result = copy.deepcopy(PROFILE_OVERRIDES.get(profile_name, PROFILE_OVERRIDES["balanced"]))
+    result.setdefault("preprocessing", {})["exclusive"] = dict(
+        EXCLUSIVE_PREPROCESSING_LIMITS.get(profile_name, EXCLUSIVE_PREPROCESSING_LIMITS["balanced"])
+    )
     detected = detected if isinstance(detected, dict) else {}
     ram_dict = detected.get("ram")
     ram_dict = ram_dict if isinstance(ram_dict, dict) else {}

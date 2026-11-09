@@ -112,7 +112,10 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", type=Path, default=Path(__file__).resolve().parents[1])
     parser.add_argument("--repeats", type=int, default=3)
-    parser.add_argument("--cache", action="store_true", help="measure cold then warm service cache with real repository fingerprinting")
+    parser.add_argument(
+        "--cache", action="store_true",
+        help="enable fingerprint/cache services; live lexical source search bypasses result caching",
+    )
     parser.add_argument("--search-mode", choices=("lexical", "rag", "hybrid"), default="lexical")
     args = parser.parse_args()
     print(json.dumps(run(args.root, args.repeats, args.cache, args.search_mode), indent=2))

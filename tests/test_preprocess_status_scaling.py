@@ -100,6 +100,7 @@ def _status_preprocessor(tmp_path: Path, project_count: int = 70) -> tuple[Proje
 
     pre = object.__new__(ProjectPreprocessor)
     pre.db_path = main_db
+    pre.cfg = {"exclusive": {"enrich_stub_cards": False}}
 
     def connect_main() -> sqlite3.Connection:
         con = sqlite3.connect(main_db)
@@ -140,15 +141,17 @@ def test_status_batches_registered_project_counts_and_reuses_index_connections(t
     assert len(projects) == 70
     assert projects[roots[0]]["status"] == "complete"
     assert projects[roots[0]]["phase_progress_pct"] == 100.0
-    assert projects[roots[0]]["file_cards"] == 2
-    assert projects[roots[0]]["hashed_files"] == 2
-    assert projects[roots[0]]["rag_files"] == 2
+    assert projects[roots[0]]["file_cards"] == 1
+    assert projects[roots[0]]["hashed_files"] == 1
+    assert projects[roots[0]]["rag_files"] == 1
     assert projects[roots[0]]["external_indexes"]["serena"]["status"] == "unavailable"
     assert projects[roots[1]]["status"] == "running"
     assert projects[roots[1]]["files"] == 2
     assert projects[roots[1]]["hashed_files"] == 1
     assert projects[roots[1]]["rag_files"] == 0
     assert projects[roots[1]]["phase_progress_pct"] == 50.0
+    assert projects[roots[1]]["phase_progress_measured"] is True
+    assert projects[roots[1]]["lexical_files"] == 1
     assert projects[roots[1]]["active_detail"] == "AST symbol extraction: 1/2 files (50.0%)"
     assert projects[roots[1]]["git_common_dir"] == roots[1]
     assert projects[roots[1]]["is_worktree"] is False
@@ -185,6 +188,7 @@ def test_file_card_generation_respects_configured_batch_limit():
 
     preprocessor = ProjectPreprocessor.__new__(ProjectPreprocessor)
     preprocessor.config = {"background_gpu": {"file_batch_size": 8}}
+    preprocessor.cfg = {"exclusive": {"enrich_stub_cards": False}}
     observed: list[int] = []
 
     def observe(_root: str, batch_size: int):

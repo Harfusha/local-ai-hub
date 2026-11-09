@@ -191,7 +191,7 @@ def context_economy_contract(cfg: dict[str, Any] | None = None) -> str:
         budget = int(section.get("default_tokens", budget)) if isinstance(section, dict) else budget
     except (TypeError, ValueError, AttributeError):
         pass
-    batch_line = '- Use the existing `local_ai_task(action="batch")` for independent local tasks; keep each item bounded and consume compact per-item results.' if features.tasks else ''
+    batch_line = '- Use `local_ai_task(action="batch")` for bounded independent tasks.' if "batch" in features.supported_task_actions() else ''
     return f"""## Context economy contract
 
 - Every Hub response is aggregate-bounded (default ≈{budget} tokens).
@@ -199,6 +199,7 @@ def context_economy_contract(cfg: dict[str, Any] | None = None) -> str:
 - Preserve protected status, error, evidence, and context-identity fields; keep exact detail artifact-backed.
 - Claim savings only with a current `baseline_evidence_id`; report signed `token_savings_delta_est`, including negative values; keep `protocol_tokens_est`, `schema_tokens_est`, and `local_compute_reused_tokens_est` separate.
 - Reject `max_response_tokens` below 128; never raise the request silently.
+- Large task responses: omit `max_response_tokens` unless a cap is needed.
 - For Hub outages, native fallback requires explicit `terminal=true` and `retryable=false`; for Hub-unknown commands, require `native_fallback_allowed=true` plus native-tool authorization.
 - On `outcome_unknown` or `in_progress`, do independent work; never poll or repeat the identical operation.
 - Prefer `response_profile=\"minimal\"`/`\"compact\"`; request only decision-grade fields.
@@ -413,7 +414,7 @@ def generate_skill_markdown(cfg: dict[str, Any]) -> str:
 
     # Advisory subagents section
     subagents_section = ""
-    if fs.subagents and fs.has_any_model():
+    if fs.subagents and fs.has_any_model() and "delegate" in fs.supported_task_actions():
         profiles_list = "\n".join(f"- `{p}` — configured advisory profile" for p in fs.subagent_profiles)
         example_profile = fs.subagent_profiles[0] if fs.subagent_profiles else "explorer"
         subagents_section = f"""
@@ -447,39 +448,41 @@ Use Agent OS for every non-trivial multi-step, long-running, delegated, or accep
 
 ### 1. Goal Contracts & Resumption
 - **Create a task contract before edits:**
-  `local_ai_coord(action="task_create", task_id="task-1", contract={{"goal": "Implement feature", "acceptance_criteria": ["All tests pass"]}})`
+  `local_ai_coord(action="task_create", root="ABSOLUTE_REPOSITORY_ROOT", task_id="task-1", contract={{"goal": "Implement feature", "acceptance_criteria": ["All tests pass"]}})`
 - Codex controls subagent permissions per task, including `allow_write`, workspace/worktree, timeout, cancellation, sandbox, and integration.
 - **Checkpoint progress before context truncation:**
-  `local_ai_coord(action="task_checkpoint", task_id="task-1", checkpoint={{"phase": "testing", "next_action": "run integration tests", "affected_paths": ["src/main.py"]}})`
+  `local_ai_coord(action="task_checkpoint", root="ABSOLUTE_REPOSITORY_ROOT", task_id="task-1", checkpoint={{"phase": "testing", "next_action": "run integration tests", "affected_paths": ["src/main.py"], "evidence_ids": [], "blockers": [], "state_data": {{"memory_audit": {{"not_used_reason": "No supplied memory was relevant."}}}}}})`
+  Replace the root, task ID and example memory audit with the actual task values; never invent evidence or memory IDs.
 - **Resume after session restart or interruption:**
-  `local_ai_coord(action="task_resume", task_id="task-1")`
+  `local_ai_coord(action="task_resume", root="ABSOLUTE_REPOSITORY_ROOT", task_id="task-1")`
 - **Persist a human question and retrieve its answer:**
   `local_ai_coord(action="ask", root="/repo", session_id="session-1", question="...", task_id="task-1")`; use returned `question_id` with the same root/session to retrieve it, and record operator response with `action="answer"` plus `question_id` and `answer`.
 - **Complete only after `verify_completion` passes every acceptance criterion; otherwise fail with a reason:**
-  `local_ai_coord(action="verify_completion", task_id="task-1")`, then `local_ai_coord(action="task_complete", task_id="task-1")` or `local_ai_coord(action="task_fail", task_id="task-1", reason="reason")`
+  `local_ai_coord(action="verify_completion", root="ABSOLUTE_REPOSITORY_ROOT", task_id="task-1")`, then `local_ai_coord(action="task_complete", root="ABSOLUTE_REPOSITORY_ROOT", task_id="task-1")` or `local_ai_coord(action="task_fail", root="ABSOLUTE_REPOSITORY_ROOT", task_id="task-1", reason="reason")`
+- **Explicit operator waiver:** Only when the user explicitly requests unverified completion for the task, `task_complete` accepts `operator_waiver={{"consent":true,"reason":"..."}}`. It records a waiver and does not create verification receipts.
 
 ### 2. Scoped Memory & Learnings
 - **Store durable findings and decisions:**
   `local_ai_coord(action="memory_record", root="/repo", scope="repository", key="convention", value="Token format must follow HMAC-SHA256")`
 - **Retrieve memories across turns:**
-  `local_ai_coord(action="memory_find", query="convention")`
+  `local_ai_coord(action="memory_find", root="ABSOLUTE_REPOSITORY_ROOT", query="convention")`
 
 ### 3. Exact Context Compilation
 - **Compile active task state, relevant memories, negative knowledge, and active edit leases into minimal tokens:**
-  `local_ai_coord(action="context_compile", task_id="task-1", max_tokens=4000)`
+  `local_ai_coord(action="context_compile", root="ABSOLUTE_REPOSITORY_ROOT", task_id="task-1", max_tokens=4000)`
 
 ### 4. Verification Receipts & Completion Gates
 {verification_receipt_item}
 - **Check if all acceptance criteria are verified before completing:**
-  `local_ai_coord(action="verify_completion", task_id="task-1")`
+  `local_ai_coord(action="verify_completion", root="ABSOLUTE_REPOSITORY_ROOT", task_id="task-1")`
 - **Record a direct receipt when command auto-capture is not used:**
-  `local_ai_coord(action="verify_receipt", checkpoint={{"task_id": "task-1", "criterion": "All tests pass", "passed": True}})`
+  Use `verify_receipt` with the explicit root and an authentic `receipt` object; never fabricate evidence or derive it from checkpoint state.
 
 ### 5. Negative Knowledge & Incident Avoidance
 - **Record failed approach or incident:**
-  `local_ai_coord(action="negative_knowledge_record", key="timeout", value="build timed out", reason="unindexed lock", status="add index")`
+  Use `negative_knowledge_record` with the explicit root and a verified `record` object; do not substitute generic key/value fields.
 - **Check before repeating a failed operation:**
-  `local_ai_coord(action="negative_knowledge_find", query="timeout")`
+  `local_ai_coord(action="negative_knowledge_find", root="ABSOLUTE_REPOSITORY_ROOT", query="timeout")`
 
 ### Public contract notes
 - `local_ai_repo(action="pipeline")` accepts closed step objects.
@@ -920,6 +923,7 @@ def generate_global_policy(cfg: dict[str, Any]) -> str:
         "<!-- BEGIN LOCAL AI HUB TOOL POLICY -->\n"
         f"{prioritization_directive}\n\n"
         "Detailed diagnostics require dashboard toggle; callers cannot enable. Applies to nested, async, artifact and SSE responses. Ordinary results, failures, authorization and evidence identity remain available.\n\n"
+        'Only on the user\'s explicit instruction for a specific task, `task_complete` accepts `operator_waiver={"consent":true,"reason":"..."}`. This records an unverified completion, not passing receipts; it does not waive ownership, repository scope, mutation fences, or other safety checks. The caller must retain the actual user instruction and must not invent consent.\n\n'
         "Keep Agent OS tasks/counters. Explicit approval: `task_budget_increase` uses write-authorized broker, absolute root, audit reason; canonical loopback needs no token or special owner/admin token. Failed-task increases preserve status/owner; resume separate. Never edit task storage. `curate_dataset` needs absolute root.\n\n"
         "Explicit approval: `task_repair_session` repairs only unbound tasks via write-authorized broker; require absolute root, task/session IDs and audit reason; bind same task/session to plan.\n\n"
         f"{SINGLE_OWNER_CONTRACT}\n\n"

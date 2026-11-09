@@ -18,6 +18,25 @@ def _read_mode_in_fresh_process(state_dir, connection):
         connection.close()
 
 
+def test_preprocessing_mode_requires_live_hub(monkeypatch, tmp_path):
+    class OfflineClient:
+        def __init__(self, **kwargs):
+            pass
+        def _online(self, timeout=None):
+            return False
+    monkeypatch.setattr(hubctl, "HubClient", OfflineClient)
+    monkeypatch.setattr(hubctl, "load_config", lambda _path: {"server": {"state_dir": str(tmp_path)}})
+    assert "preprocessing" in hubctl.ACTIVITY_MODES
+    result = hubctl._activity_mode_request("preprocessing", config_path="unused")
+    assert result["success"] is False
+    assert load_operational_mode(tmp_path).mode == "active"
+
+
+def test_preprocessing_mode_reports_incomplete_start():
+    result = {"preprocessing_start": {"success": False}, "job_cancellation": {"success": False}}
+    assert hubctl._activity_mode_transition_failures(result, "preprocessing") == ["preprocessing start", "job cancellation"]
+
+
 def test_pause_and_resume_persist_offline_when_hub_is_unavailable(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(
         hubctl,

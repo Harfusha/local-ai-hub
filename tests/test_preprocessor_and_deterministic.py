@@ -332,6 +332,45 @@ def test_active_watcher_suppresses_periodic_full_inventory(tmp_path: Path):
         pre.close()
 
 
+def test_dirty_path_batch_keeps_overflow_for_later(tmp_path: Path):
+    pre = ProjectPreprocessor.__new__(ProjectPreprocessor)
+    pre._dirty_lock = threading.Lock()
+    pre._dirty_paths = {"repo": {f"{index:04}.py" for index in range(1025)}}
+
+    first = pre._consume_dirty_paths("repo")
+    second = pre._consume_dirty_paths("repo")
+
+    assert len(first) == 1024
+    assert len(second) == 1
+    assert first.isdisjoint(second)
+
+
+def test_project_completion_requeues_pending_watcher_paths():
+    class _Connection:
+        sql = ""
+        params = ()
+
+        def execute(self, sql, params):
+            self.sql = sql
+            self.params = params
+
+    pre = ProjectPreprocessor.__new__(ProjectPreprocessor)
+    pre._PROJECT_COLUMNS = {"status", "phase", "next_check_at", "updated_at"}
+    pre._root = lambda root: root
+    pre._dirty_lock = threading.Lock()
+    pre._dirty_paths = {"repo": {"overflow.py"}}
+    con = _Connection()
+    pre._write_retry = lambda operation: operation(con)
+
+    pre._set_project("repo", status="complete", phase="complete", next_check_at=time.time() + 1800)
+
+    columns = [part.split("=")[0] for part in con.sql.split(" SET ", 1)[1].split(" WHERE ", 1)[0].split(",")]
+    updates = dict(zip(columns, con.params))
+    assert updates["status"] == "queued"
+    assert updates["phase"] == "inventory"
+    assert updates["next_check_at"] <= time.time()
+
+
 def test_watcher_filters_ignored_directories_case_insensitively(tmp_path: Path):
     cfg = _cfg(tmp_path)
     repo = tmp_path / "repo"

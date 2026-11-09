@@ -1599,7 +1599,7 @@ class SwarmPubSub:
     def publish(
         self,
         topic: str,
-        message: dict[str, Any] | str,
+        message: Any,
         sender: str = "agent",
         idempotency_key: str = "",
     ) -> dict[str, Any]:
@@ -1607,10 +1607,8 @@ class SwarmPubSub:
             clean_topic = bounded_name(topic, "topic").lower()
             sender = bounded_name(sender, "sender", strip=False)
             idempotency_key = bounded_name(idempotency_key, "idempotency_key", allow_empty=True, strip=False)
-            if not isinstance(message, (dict, str)):
-                raise ValueError("pubsub message must be a dictionary or string")
             envelope, _size = snapshot_message(
-                {"sender": sender, "message": message if isinstance(message, dict) else {"text": message}},
+                {"sender": sender, "message": message},
                 self.max_message_bytes,
             )
             msg_payload = envelope["message"]

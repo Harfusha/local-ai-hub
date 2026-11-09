@@ -2225,7 +2225,7 @@ class TaskStore:
         self._verify_completion(task)
         return task
 
-    def _verify_completion(self, task: TaskState, *, current_revision: str = "") -> None:
+    def _verify_completion(self, task: TaskState, *, current_revision: str = "", _waive_receipts: bool = False) -> None:
         if "_pending_fenced_work" in task.checkpoint.state_data:
             raise CompletionGateError("Cannot transition to COMPLETED: fenced work mutation is pending")
         memory_audit_validator = getattr(self, "_validate_memory_audit", None)
@@ -2333,6 +2333,8 @@ class TaskStore:
 
         complete = result.get("complete", False) if isinstance(result, Mapping) else getattr(result, "complete", False)
         if complete is not True:
+            if _waive_receipts and complete is False:
+                return
             unsatisfied = (
                 result.get("unsatisfied_criteria", ())
                 if isinstance(result, Mapping)
@@ -2371,7 +2373,17 @@ class TaskStore:
         _expected_reap: tuple[str, TaskStatus, float, float] | None = None,
         _prepared_updated_at: float | None = None,
         _expected_completion_content: tuple[Any, Any, str, float, TaskCheckpoint, dict[str, str], str] | None = None,
+        _operator_waiver: Mapping[str, Any] | None = None,
     ) -> TaskState:
+        if _operator_waiver is not None and (
+            target is not TaskStatus.COMPLETED
+            or not isinstance(_operator_waiver, Mapping)
+            or set(_operator_waiver) != {"consent", "reason"}
+            or _operator_waiver.get("consent") is not True
+            or not isinstance(_operator_waiver.get("reason"), str)
+            or not _operator_waiver["reason"].strip()
+        ):
+            raise ValueError("operator waiver requires explicit consent and a nonempty reason")
         if response_budget_tokens is not None and (
             isinstance(response_budget_tokens, bool)
             or not isinstance(response_budget_tokens, int)
@@ -2438,9 +2450,13 @@ class TaskStore:
                 if checkpoint is not None or not idempotency_key:
                     self._preflight_response_budget(candidate, response_budget_tokens)
                 # No-op retries must not trust an old terminal projection alone.
-                self._verify_completion(current)
+                if _operator_waiver is not None:
+                    recorded = current.checkpoint.state_data.get("completion_waiver")
+                    if not isinstance(recorded, Mapping) or recorded.get("reason") != _operator_waiver["reason"].strip():
+                        raise ValueError("operator waiver does not match completed task")
+                self._verify_completion(current, _waive_receipts=_operator_waiver is not None)
                 if checkpoint is not None:
-                    self._verify_completion(replace(current, checkpoint=checkpoint))
+                    self._verify_completion(replace(current, checkpoint=checkpoint), _waive_receipts=_operator_waiver is not None)
             if checkpoint is not None:
                 return self.checkpoint(
                     task_id,
@@ -2457,6 +2473,7 @@ class TaskStore:
                 task_id, target, reason=reason, actor=actor,
                 idempotency_key=idempotency_key,
                 response_budget_tokens=response_budget_tokens,
+                _operator_waiver=_operator_waiver,
             )
 
         allowed = VALID_TRANSITIONS.get(current.status, set())
@@ -2465,7 +2482,7 @@ class TaskStore:
                 f"Cannot transition task {task_id} from {current.status.value} to {target.value}"
             )
 
-        if target == TaskStatus.COMPLETED:
+        if target == TaskStatus.COMPLETED and _operator_waiver is None:
             now_check = time.time()
             for criterion in current.contract.acceptance_criteria:
                 if criterion not in current.verification_receipts:
@@ -2545,12 +2562,13 @@ class TaskStore:
 
         self._preflight_response_budget(updated, response_budget_tokens)
         if target == TaskStatus.COMPLETED:
-            self._verify_completion(updated)
+            self._verify_completion(updated, _waive_receipts=_operator_waiver is not None)
 
         event = AgentEvent.create(
             stream_id=f"task:{task_id}",
             kind="task.transitioned",
-            payload={"from_status": current.status.value, "to_status": target.value, "reason": reason},
+            payload={"from_status": current.status.value, "to_status": target.value, "reason": reason,
+                     **({"operator_waiver": dict(_operator_waiver)} if _operator_waiver is not None else {})},
             idempotency_key=idempotency_key,
             actor=actor,
         )
@@ -2569,6 +2587,7 @@ class TaskStore:
         actor: str,
         idempotency_key: str,
         response_budget_tokens: int | None = None,
+        _operator_waiver: Mapping[str, Any] | None = None,
     ) -> TaskState:
         """Serialize a no-op retry with writers and validate its original operation."""
         def _read_retry() -> TaskState:
@@ -2605,7 +2624,8 @@ class TaskStore:
                     if (
                         event.actor != actor
                         or event.kind != "task.transitioned"
-                        or set(payload) != {"from_status", "to_status", "reason"}
+                        or set(payload) != ({"from_status", "to_status", "reason", "operator_waiver"} if _operator_waiver is not None else {"from_status", "to_status", "reason"})
+                        or (_operator_waiver is not None and payload.get("operator_waiver") != dict(_operator_waiver))
                         or payload.get("to_status") != target.value
                         or payload.get("reason") != reason
                         or not valid_transition
@@ -2613,7 +2633,7 @@ class TaskStore:
                         raise ValueError("idempotency key was already used")
                 if target == TaskStatus.COMPLETED:
                     # Recheck the serialized projection/receipts, not the earlier read.
-                    self._verify_completion(persisted)
+                    self._verify_completion(persisted, _waive_receipts=_operator_waiver is not None)
                 con.execute("COMMIT")
                 return persisted
             except Exception:
@@ -2636,7 +2656,15 @@ class TaskStore:
         checkpoint: TaskCheckpoint | None = None,
         _prepared_completion_updated_at: float | None = None,
         _expected_completion_content: tuple[Any, Any, str, float, TaskCheckpoint, dict[str, str], str] | None = None,
+        operator_waiver: Mapping[str, Any] | None = None,
     ) -> TaskState:
+        if operator_waiver is not None:
+            if (not isinstance(operator_waiver, Mapping)
+                or set(operator_waiver) != {"consent", "reason"}
+                or operator_waiver.get("consent") is not True
+                or not isinstance(operator_waiver.get("reason"), str)
+                or not operator_waiver["reason"].strip()):
+                raise ValueError("operator waiver requires explicit consent and a nonempty reason")
         if response_budget_tokens is not None and (
             isinstance(response_budget_tokens, bool)
             or not isinstance(response_budget_tokens, int)
@@ -2659,6 +2687,13 @@ class TaskStore:
         requested_checkpoint = current.checkpoint
         if checkpoint is not None:
             requested_checkpoint = _preserve_checkpoint_memory_state(current.checkpoint.state_data, checkpoint)
+        if operator_waiver is not None:
+            waiver_state = dict(requested_checkpoint.state_data)
+            waiver_state["completion_waiver"] = {
+                "reason": operator_waiver["reason"].strip(),
+                "unverified_criteria": list(current.contract.acceptance_criteria),
+            }
+            requested_checkpoint = replace(requested_checkpoint, state_data=waiver_state)
         completion_checkpoint = _checkpoint_with_scheduled_worktree_cleanup(requested_checkpoint)
         expected_completion_content = (
             _expected_completion_content or self._completion_content_snapshot(current)
@@ -2672,6 +2707,7 @@ class TaskStore:
                 idempotency_key=idempotency_key,
                 response_budget_tokens=response_budget_tokens,
                 _expected_completion_content=expected_completion_content,
+                _operator_waiver=operator_waiver,
             )
         completion_updated_at = _prepared_completion_updated_at
         if completion_updated_at is None:
@@ -2707,7 +2743,7 @@ class TaskStore:
                 updated_at=completion_updated_at, heartbeat_expires_at=0.0,
                 checkpoint=completion_checkpoint,
             )
-            self._verify_completion(candidate)
+            self._verify_completion(candidate, _waive_receipts=operator_waiver is not None)
         if current.status == TaskStatus.PLANNED:
             current = self.transition(
                 task_id,
@@ -2752,6 +2788,7 @@ class TaskStore:
             response_budget_tokens=response_budget_tokens,
             _prepared_updated_at=completion_updated_at,
             _expected_completion_content=expected_completion_content,
+            _operator_waiver=operator_waiver,
         )
         return completed
 

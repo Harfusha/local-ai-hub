@@ -173,10 +173,11 @@ def test_live_mcp_schema_publishes_action_conditions_and_output_schema() -> None
     input_schema = registered.parameters
     output_schema = registered.output_schema
 
-    assert "allOf" in input_schema
+    assert "allOf" not in input_schema
+    assert input_schema["if"] == {}
     assert any(
         branch.get("then", {}).get("required") == ["action", "artifact_id"]
-        for branch in input_schema["allOf"]
+        for branch in input_schema["then"]["allOf"]
     )
     assert output_schema["type"] == "object"
     assert output_schema["additionalProperties"] is True
@@ -205,7 +206,8 @@ def test_live_mcp_schemas_match_registry_for_every_public_tool() -> None:
                 "description": "Stable async-job idempotency key and request correlation ID.",
             }
             non_async_actions = sorted(set(mcp_server.operation_actions(name, mcp_server.FEATURES)) - {"submit", "status", "wait", "result", "cancel"})
-            expected_input.setdefault("allOf", []).append({
+            expected_input.setdefault("if", {})
+            expected_input.setdefault("then", {}).setdefault("allOf", []).append({
                 "if": {"properties": {"action": {"enum": non_async_actions}}, "required": ["action"]},
                 "then": {"not": {"required": ["request_id"]}},
             })
@@ -532,7 +534,8 @@ def test_stdio_tools_list_matches_registered_output_contracts(tmp_path) -> None:
                     "description": "Stable async-job idempotency key and request correlation ID.",
                 }
                 non_async_actions = sorted(set(mcp_server.operation_actions(name, features)) - {"submit", "status", "wait", "result", "cancel"})
-                expected_input.setdefault("allOf", []).append({
+                expected_input.setdefault("if", {})
+                expected_input.setdefault("then", {}).setdefault("allOf", []).append({
                     "if": {"properties": {"action": {"enum": non_async_actions}}, "required": ["action"]},
                     "then": {"not": {"required": ["request_id"]}},
                 })

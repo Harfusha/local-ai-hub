@@ -124,8 +124,9 @@ def test_task_sync_fields_are_action_scoped():
 
 def test_coord_schema_forbids_events_for_implicit_export():
     schema = operation_tool_input_schema("local_ai_coord")
+    assert schema["if"] == {}
     sync_schema = next(
-        clause for clause in schema["allOf"]
+        clause for clause in schema["then"]["allOf"]
         if clause.get("if", {}).get("properties", {}).get("action") == {"const": "task_sync"}
         and "allOf" in clause.get("then", {})
     )

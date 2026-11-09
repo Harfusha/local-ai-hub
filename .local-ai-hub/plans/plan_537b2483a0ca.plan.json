@@ -1,0 +1,29 @@
+{
+  "default_target_ref": "refs/heads/master",
+  "description": "Zapínatelný režim pozastaví požadavky Hubu a využije volné prostředky pro kvalitní preprocessing všech registrovaných projektů; limity paralelismu a souběžných projektů dle profilu.",
+  "id": "plan_537b2483a0ca",
+  "lifecycle": "draft",
+  "schema_version": 1,
+  "spec_refs": [],
+  "tasks": {
+    "task_exclusive_preprocessing": {
+      "acceptance_criteria": [
+        "Režim lze zapnout a vypnout jako activity mode",
+        "Ostatní požadavky jsou zastaveny a řídicí rozhraní zůstává dostupné",
+        "Profilové limity řídí souběžné projekty a paralelismus",
+        "Preprocessing všech registrovaných projektů zachová kvalitu a bezpečnost",
+        "Regresní testy a dokumentace pokrývají změny"
+      ],
+      "blocker": null,
+      "clarifications": [],
+      "depends_on": [],
+      "description": "Čtvrtý activity mode vedle Active, Gaming a Maintenance. Specifikace: docs/superpowers/specs/2026-11-09-exclusive-preprocessing-mode.md. Zachovat pracovní změny a ochrany GPU. Řízení požadavků, profilové limity, všechny registrované projekty, testy a dokumentace.",
+      "kind": "code",
+      "next_action": "Dokončit ověřovací záznamy a sladit nezávislé chyby sdíleného stromu; integrovaný HTTP test dvou projektů se skutečným 3B CPU modelem a úklidem prošel.",
+      "title": "Čtvrtý activity mode pro výhradní preprocessing",
+      "work_phase": "verification",
+      "work_status": "in_progress"
+    }
+  },
+  "title": "Výhradní režim preprocessingu"
+}

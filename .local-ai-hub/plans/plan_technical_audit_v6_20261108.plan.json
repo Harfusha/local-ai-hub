@@ -58,15 +58,15 @@
         "Show no validation-quality regression and identify measurable token or time savings, or report neutral/negative results without retaining unsupported 80–95% claims.",
         "Record evidence-bound results under docs/agent-evaluation/ and reconcile docs/TOKEN_ECONOMY.md."
       ],
-      "blocker": null,
+      "blocker": "A fresh pair ran against a content-hashed 306-file scoped runtime snapshot and passed independent tests. The scope does not prove all runtime inputs are included; installed package contents and external services were not hashed. Repeated tool-result accounting is a partial offline estimate, not a complete count.",
       "clarifications": [],
       "depends_on": [],
       "description": "Run identical end-to-end coding tasks against a modern native-efficiency agent with and without Local AI Hub, using isolated roots and Hub state. Compare cloud input/output and repeated tool-result tokens, tool calls, duration, validation success, and follow-up repairs. Preserve honest neutral/negative results and revise unsupported savings claims.",
       "kind": "analysis",
-      "next_action": "",
+      "next_action": "Review full runtime/environment coverage and reproducibility of the new pair; compute defensible repeated-result accounting from retained events. Verify the new report and close P1-5 only when its exact environment and accounting criteria are met.",
       "title": "P1-5: Provést A/B evaluaci reálné úspory tokenů a latence Hubu",
       "work_phase": "verification",
-      "work_status": "completed"
+      "work_status": "in_progress"
     },
     "task_p1_feature_defaults": {
       "acceptance_criteria": [
@@ -166,12 +166,12 @@
         "Tokenless OpenCode workflow uses separate provider nonce credential, including cleanup and uncertainty handling.",
         "Focused tests and static checks pass; live model E2E remains independently gated on healthy scheduler readiness and installed model availability."
       ],
-      "blocker": "Hub API bearer-token config/transport/auth is retired and rejected; loopback-only HTTP/MCP accepts no Hub token. Separate nonce-derived provider-session credential remains internal to provider serving. Tokenless/API focused suites pass: 212 passed, 1 skipped; context/transport subset 26 passed; isolated session/dashboard/SDK/identity subset 51 passed with one test updated and rechecked. Full pytest is not clean (10,383 passed, 179 failed, 72 errors, 109 skipped, 60 subtests passed) and pytest ended with Windows PosixPath internal error at 69%. No live OpenCode model→MCP→transactional edit→cleanup/recovery E2E has been recorded. Fresh readiness req_b09e75c9550e timed out for runtime and scheduler (gpu_admission_state unknown); reservation req_80b9b63e7c24 is free.",
+      "blocker": "The prior provider-start response was hidden by opencode_launcher.py's generic LaunchError; retained traces have no start request. One independent pytest resume runner remains active in the shared checkout; no source edits or duplicate tests until it exits. Relevant affected suites: 97 passed; full suite pre-patch 15,449 passed, 129 skipped, 11 failed; all 11 nodes passed targeted after patches.",
       "clarifications": [],
       "depends_on": [],
       "description": "Complete OpenCode runtime validation and remove the Hub API bearer-token system across the single-owner installation, as approved by the operator. Enforce loopback-only access and preserve command, capability, root, approval, lease, rate-limit and audit controls; retain only the separate nonce-scoped OpenCode provider credential.",
       "kind": "code",
-      "next_action": "After Hub runtime and scheduler report healthy readiness, run the tokenless OpenCode E2E using an installed model; cover provider nonce credential, loopback operations, restricted project edit, stop, cleanup and uncertainty handling. Do not benchmark or infer while admission is unknown.",
+      "next_action": "Wait for active pytest owner to exit. Inspect provider endpoint contract and launcher/tests; change launcher to preserve only sanitized start failure diagnostics, then run focused tests. Retry one fresh nonce-scoped OpenCode session only after diagnostic fix and healthy readiness; verify edit and confirmed shutdown.",
       "title": "P2-1: Dokončit OpenCode E2E integraci",
       "work_phase": "verification",
       "work_status": "in_progress"

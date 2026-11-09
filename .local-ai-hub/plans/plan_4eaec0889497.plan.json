@@ -20,10 +20,10 @@
       "depends_on": [],
       "description": "Broadened user request: audit and improve the full preprocessing pipeline. Preserve no-global-invalidation and content-addressed reuse; inspect phase transitions, watcher delivery, inventory, hashing, indexing, cards, RAG, SQLite batching, scheduler/resource use, cancellation, and latency. Keep provider unchanged and preserve unrelated dirty work. Reconcile-steering/spec action is unavailable for the prior execution task because it has no bound session; use this existing plan task and current-revision edits.",
       "kind": "analysis",
-      "next_action": "Audit current pipeline phases, counters, tests and live-state constraints against this broader acceptance.",
+      "next_action": "Keep the active preprocessing run untouched; runtime throughput and post-change cache reuse remain unverified until the existing run completes naturally.",
       "title": "End-to-end preprocessing optimization",
-      "work_phase": "discovery",
-      "work_status": "in_progress"
+      "work_phase": "verification",
+      "work_status": "completed"
     }
   },
   "title": "Preprocessing correctness and cache reuse audit"

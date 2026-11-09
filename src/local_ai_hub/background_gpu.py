@@ -29,9 +29,18 @@ class IdleGPUWorker:
         self.scheduler = foreground_scheduler
         self.cfg = config.get("background_gpu", {})
         self.enabled = bool(self.cfg.get("enabled", True))
-        self.model = str(config.get("models", {}).get("background_code", "") or "")
+        prep_cfg = config.get("preprocessing", {})
+        prep_cfg = prep_cfg if isinstance(prep_cfg, dict) else {}
+        self.model = str(prep_cfg.get("model") or config.get("models", {}).get("background_code", "") or "")
         self.idle_seconds = max(0.0, float(self.cfg.get("idle_seconds", 60.0)))
         self.parallel = max(1, int(self.cfg.get("parallel", config.get("model_execution", {}).get("background", {}).get("parallel", 4))))
+        self._normal_parallel = self.parallel
+        exclusive_cfg = prep_cfg.get("exclusive", {}) if isinstance(prep_cfg, dict) else {}
+        exclusive_cfg = exclusive_cfg if isinstance(exclusive_cfg, dict) else {}
+        try:
+            self._exclusive_parallel = min(32, max(1, int(exclusive_cfg.get("model_parallel", self.parallel))))
+        except (ValueError, TypeError, OverflowError):
+            self._exclusive_parallel = self.parallel
         self.cpu_fallback_enabled = bool(self.cfg.get("cpu_fallback_enabled", False))
         self.cpu_parallel = 1
         self.cpu_endpoint = str(self.cfg.get("cpu_ollama_url", "http://127.0.0.1:11439")).rstrip("/")
@@ -44,12 +53,15 @@ class IdleGPUWorker:
         self.endpoint = str(self.cfg.get("ollama_url", "http://127.0.0.1:11436")).rstrip("/")
         self._lock = threading.RLock()
         self._setup_lock = threading.RLock()
+        self._cpu_slot = threading.Lock()
         self._cancel = threading.Event()
         self._closed = False
         self._active = 0
         self._lease = False
         self._stop_unconfirmed = False
         self._cpu_lease = False
+        self._cpu_retry_after = 0.0
+        self._cpu_retry_interval = self.start_failure_retry_initial
         self._last_error: str | None = None
         self._model_details: list[dict[str, Any]] = []
         self._retry_after = 0.0
@@ -127,13 +139,23 @@ class IdleGPUWorker:
             self._last_error = error
             self._stats["start_failures"] += 1
 
+    def _idle_grace(self) -> float:
+        try:
+            from .operational_mode import load_operational_mode, preprocessing_mode_ready
+            snapshot = load_operational_mode(self.config.get("server", {}).get("state_dir"))
+            if preprocessing_mode_ready(self.config.get("server", {}).get("state_dir"), snapshot):
+                return 0.0
+        except (AttributeError, ImportError, OSError, TypeError, ValueError):
+            pass
+        return self.idle_seconds
+
     def _foreground_requested(self) -> bool:
         if self._stop_unconfirmed:
             return True
         if self.scheduler.foreground_busy():
             return True
         if self._cancel.is_set():
-            if self.scheduler.foreground_idle_seconds() >= self.idle_seconds:
+            if self.scheduler.foreground_idle_seconds() >= self._idle_grace():
                 self._cancel.clear()
                 return False
             return True
@@ -146,6 +168,49 @@ class IdleGPUWorker:
             self._consecutive_start_failures = 0
             self._retry_after = 0.0
             self._last_error = None
+
+    def _configure_parallel_for_mode(self) -> bool:
+        """Switch a managed server profile only after all submitted work drains.
+
+        Caller holds _setup_lock, which also fences new batch admission.
+        """
+        try:
+            from .operational_mode import load_operational_mode, preprocessing_mode_ready
+            snapshot = load_operational_mode(self.config.get("server", {}).get("state_dir"))
+            if snapshot.degraded or snapshot.mode not in {"active", "preprocessing"}:
+                return False
+            if snapshot.mode == "preprocessing" and not preprocessing_mode_ready(self.config.get("server", {}).get("state_dir"), snapshot):
+                return False
+            desired = self._exclusive_parallel if snapshot.mode == "preprocessing" else self._normal_parallel
+        except (AttributeError, ImportError, OSError, TypeError, ValueError):
+            return False
+        if desired == self.parallel:
+            return True
+        with self._lock:
+            if self._active or self._stop_unconfirmed:
+                return False
+            leased = self._lease
+        new_config = copy.deepcopy(self._bg_config)
+        new_config.setdefault("scheduler", {})["max_parallel"] = desired
+        new_config["scheduler"]["max_queue"] = max(desired * 4, int(self.cfg.get("max_queue", 32)))
+        new_config.setdefault("ollama", {})["num_parallel"] = desired
+        new_config.setdefault("model_execution", {}).setdefault("background", {})["parallel"] = desired
+        try:
+            new_runtime = OllamaRuntime(new_config, managed_name="ollama-background")
+            new_policy = ModelExecutionPolicy(new_config)
+            new_executor = ThreadPoolExecutor(max_workers=desired, thread_name_prefix="local-ai-bg-gpu")
+        except Exception as exc:
+            with self._lock:
+                self._last_error = f"background profile setup failed: {type(exc).__name__}"
+            return False
+        if leased and not self._stop_and_release_gpu():
+            new_executor.shutdown(wait=False, cancel_futures=True)
+            return False
+        old_executor = self._executor
+        self._bg_config, self.runtime, self.policy, self._executor = new_config, new_runtime, new_policy, new_executor
+        self.parallel = desired
+        old_executor.shutdown(wait=False, cancel_futures=True)
+        return True
 
     def _acquire_session(self) -> bool:
         from .opencode_boundary import generation_denial
@@ -167,7 +232,7 @@ class IdleGPUWorker:
                 if self._lease and self.runtime.is_online():
                     return not self._foreground_requested()
 
-            if not self.scheduler.acquire_background_gpu(self.idle_seconds):
+            if not self.scheduler.acquire_background_gpu(self._idle_grace()):
                 with self._lock:
                     self._stats["idle_rejections"] += 1
                 return False
@@ -243,10 +308,22 @@ class IdleGPUWorker:
                 return False
 
     def ready(self, *, server_online: bool | None = None) -> bool:
-        if not self.enabled or not self.model or self._startup_circuit_open or self._stop_unconfirmed:
+        try:
+            from .operational_mode import load_operational_mode, preprocessing_mode_ready
+            state_dir = self.config.get("server", {}).get("state_dir")
+            mode = load_operational_mode(state_dir)
+            exclusive_ready = preprocessing_mode_ready(state_dir, mode)
+            if mode.degraded or (mode.mode == "preprocessing" and not exclusive_ready):
+                return False
+        except (AttributeError, ImportError, OSError, TypeError, ValueError):
+            return False
+        cpu_available = exclusive_ready and bool(getattr(self, "cpu_fallback_enabled", False))
+        if not self.model or self._stop_unconfirmed or (not cpu_available and (not self.enabled or self._startup_circuit_open)):
             return False
         if self.scheduler.foreground_busy():
             return False
+        if cpu_available and (not self.enabled or self._startup_circuit_open):
+            return time.monotonic() >= getattr(self, "_cpu_retry_after", 0.0)
         with self._lock:
             if time.monotonic() < self._retry_after:
                 return False
@@ -254,7 +331,13 @@ class IdleGPUWorker:
                 online = self.runtime.is_online() if server_online is None else bool(server_online)
                 if online:
                     return not self._cancel.is_set()
-        return self.scheduler.foreground_idle_seconds() >= self.idle_seconds
+        return self.scheduler.foreground_idle_seconds() >= self._idle_grace()
+
+    def _defer_cpu_session(self, reason: str) -> None:
+        with self._lock:
+            self._last_error = reason
+            self._cpu_lease = False
+            self._cpu_retry_after = time.monotonic() + self._cpu_retry_interval
 
     def _acquire_cpu_session(self) -> bool:
         """Start the serial CPU fallback without reserving the foreground GPU."""
@@ -265,38 +348,42 @@ class IdleGPUWorker:
         if self._closed or not self.cpu_fallback_enabled or not self.model:
             return False
         with self._setup_lock:
-            if self.cpu_runtime.is_online() and not self.cpu_runtime.managed_profile_status().get("managed"):
-                with self._lock:
-                    self._last_error = f"background CPU endpoint is unmanaged: {self.cpu_endpoint}"
-                    self._cpu_lease = False
+            if time.monotonic() < self._cpu_retry_after:
                 return False
-            if not self.cpu_runtime.is_online() and not self.cpu_runtime.ensure_running():
-                with self._lock:
-                    self._cpu_lease = False
+            try:
+                online = self.cpu_runtime.is_online()
+                if online and not self.cpu_runtime.managed_profile_status().get("managed"):
+                    self._defer_cpu_session(f"background CPU endpoint is unmanaged: {self.cpu_endpoint}")
+                    return False
+                if not online and not self.cpu_runtime.ensure_running():
+                    self._defer_cpu_session("background CPU server failed to start")
+                    return False
+            except Exception as exc:
+                self._defer_cpu_session(f"background CPU server unavailable: {type(exc).__name__}")
                 return False
             # Startup may have borrowed an endpoint that appeared concurrently.
-            if not self.cpu_runtime.managed_profile_status().get("managed"):
-                with self._lock:
-                    self._last_error = f"background CPU endpoint is unmanaged: {self.cpu_endpoint}"
-                    self._cpu_lease = False
+            try:
+                managed = self.cpu_runtime.managed_profile_status().get("managed") is True
+            except Exception as exc:
+                self._defer_cpu_session(f"background CPU profile unavailable: {type(exc).__name__}")
+                return False
+            if not managed:
+                self._defer_cpu_session(f"background CPU endpoint is unmanaged: {self.cpu_endpoint}")
                 return False
             try:
                 self.cpu_runtime.prepare_model(self.model, unload_others=True)
                 details = self.cpu_runtime.loaded_model_details()
             except Exception as exc:
-                with self._lock:
-                    self._last_error = f"background CPU fallback unavailable: {exc}"
-                    self._cpu_lease = False
+                self._defer_cpu_session(f"background CPU fallback unavailable: {exc}")
                 return False
             row = next((x for x in details if str(x.get("name", "")) == self.model), None)
             if row is None or int(row.get("vram_bytes", 0) or 0) > 0:
-                with self._lock:
-                    self._last_error = "background CPU fallback unexpectedly used VRAM"
-                    self._cpu_lease = False
+                self._defer_cpu_session("background CPU fallback unexpectedly used VRAM")
                 self.cpu_runtime.stop_managed_server()
                 return False
             with self._lock:
                 self._cpu_lease = True
+                self._cpu_retry_after = 0.0
             return True
 
     def _stop_and_release_gpu(self) -> bool:
@@ -341,6 +428,7 @@ class IdleGPUWorker:
         policy: ModelExecutionPolicy | None = None,
         config: dict[str, Any] | None = None,
         preemptible: bool = True,
+        preprocessing: bool = False,
     ) -> dict[str, Any]:
         runtime = runtime or self.runtime
         policy = policy or self.policy
@@ -386,10 +474,10 @@ class IdleGPUWorker:
             return {"success": False, "error": "selected context cannot fit the prepared prompt and system input"}
         # Executor jobs can sit queued across a gaming/maintenance transition.
         try:
-            from .operational_mode import load_operational_mode
+            from .operational_mode import load_operational_mode, preprocessing_mode_ready
 
             mode = load_operational_mode(self.config.get("server", {}).get("state_dir"))
-            if mode.degraded or mode.mode != "active":
+            if mode.degraded or not (mode.mode == "active" or (preprocessing and preprocessing_mode_ready(self.config.get("server", {}).get("state_dir"), mode))):
                 return {"success": False, "preempted": True, "error_code": "operational_mode_paused", "error": "background inference start blocked by operational mode"}
         except Exception:
             return {"success": False, "preempted": True, "error_code": "operational_mode_unavailable", "error": "background inference start blocked because operational mode is unavailable"}
@@ -425,7 +513,7 @@ class IdleGPUWorker:
             "eval_count": response.get("eval_count", 0),
         }
 
-    def generate_many(self, tasks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    def generate_many(self, tasks: list[dict[str, Any]], *, preprocessing: bool = False) -> list[dict[str, Any]]:
         if not tasks:
             return []
         from .opencode_boundary import generation_denial
@@ -436,24 +524,53 @@ class IdleGPUWorker:
         all_results: list[dict[str, Any]] = []
         batch_start = 0
         while batch_start < len(tasks):
-            using_gpu = self._acquire_session()
-            using_cpu = not using_gpu and self._acquire_cpu_session()
-            batch_size = self.parallel if using_gpu else 1
-            work = tasks[batch_start:batch_start + batch_size]
-            batch_start += len(work)
-            if not using_gpu and not using_cpu:
-                all_results.extend([{"success": False, "preempted": True, "idle_wait": True, "error": "background GPU and CPU fallback unavailable"} for _ in work])
-                continue
-            if using_gpu and self._foreground_requested():
-                self.preempt_foreground()
-                all_results.extend([{"success": False, "preempted": True, "error": "foreground work pending"} for _ in work])
-                continue
-
+            # Fence profile replacement against session acquisition and batch
+            # accounting. The active count includes queued executor work.
+            with self._setup_lock:
+                if not self._configure_parallel_for_mode():
+                    all_results.extend({"success": False, "preempted": True, "idle_wait": True,
+                                        "error": "background profile transition pending"} for _ in tasks[batch_start:])
+                    break
+                try:
+                    from .operational_mode import load_operational_mode, preprocessing_mode_ready
+                    mode = load_operational_mode(self.config.get("server", {}).get("state_dir"))
+                    allowed = not mode.degraded and (mode.mode == "active" or
+                                                     (preprocessing is True and preprocessing_mode_ready(self.config.get("server", {}).get("state_dir"), mode)))
+                except (AttributeError, ImportError, OSError, TypeError, ValueError):
+                    allowed = False
+                if not allowed:
+                    all_results.extend({"success": False, "preempted": True,
+                                        "error_code": "operational_mode_paused",
+                                        "error": "background inference blocked by operational mode"} for _ in tasks[batch_start:])
+                    break
+                using_gpu = self._acquire_session()
+                cpu_slot_acquired = False
+                using_cpu = False
+                if not using_gpu and self._cpu_slot.acquire(blocking=False):
+                    cpu_slot_acquired = True
+                    try:
+                        using_cpu = self._acquire_cpu_session()
+                    except BaseException:
+                        self._cpu_slot.release()
+                        raise
+                    if not using_cpu:
+                        self._cpu_slot.release()
+                        cpu_slot_acquired = False
+                batch_size = self.parallel if using_gpu else 1
+                work = tasks[batch_start:batch_start + batch_size]
+                batch_start += len(work)
+                if not using_gpu and not using_cpu:
+                    all_results.extend([{"success": False, "preempted": True, "idle_wait": True, "error": "background GPU and CPU fallback unavailable"} for _ in work])
+                    continue
+                if using_gpu and self._foreground_requested():
+                    self.preempt_foreground()
+                    all_results.extend([{"success": False, "preempted": True, "error": "foreground work pending"} for _ in work])
+                    continue
+                with self._lock:
+                    self._active += len(work)
+                    self._stats["batches"] += 1
+                    self._stats["submitted"] += len(work)
             results: list[dict[str, Any] | None] = [None] * len(work)
-            with self._lock:
-                self._active += len(work)
-                self._stats["batches"] += 1
-                self._stats["submitted"] += len(work)
             try:
                 futures = {
                     self._executor.submit(
@@ -463,6 +580,7 @@ class IdleGPUWorker:
                         policy=self.policy if using_gpu else self.cpu_policy,
                         config=self._bg_config if using_gpu else self._cpu_config,
                         preemptible=using_gpu,
+                        preprocessing=preprocessing,
                     ): idx
                     for idx, task in enumerate(work)
                 }
@@ -481,19 +599,21 @@ class IdleGPUWorker:
             finally:
                 with self._lock:
                     self._active = max(0, self._active - len(work))
+                if cpu_slot_acquired:
+                    self._cpu_slot.release()
             if using_gpu and self._foreground_requested():
                 self.preempt_foreground()
             all_results.extend([r or {"success": False, "error": "background worker returned no result"} for r in results])
         return all_results
 
-    def generate(self, *, prompt: str, system: str, schema: dict[str, Any], max_tokens: int, source: str = "background") -> dict[str, Any]:
+    def generate(self, *, prompt: str, system: str, schema: dict[str, Any], max_tokens: int, source: str = "background", preprocessing: bool = False) -> dict[str, Any]:
         result = self.generate_many([{
             "prompt": prompt,
             "system": system,
             "schema": schema,
             "max_tokens": max_tokens,
             "source": source,
-        }])
+        }], preprocessing=preprocessing)
         return result[0] if result else {"success": False, "error": "background worker unavailable"}
 
     def status(self) -> dict[str, Any]:

@@ -9,7 +9,7 @@ from local_ai_hub.deterministic import DeterministicEngine, _pattern_match_lines
 def _scan(root, paths, limit=50):
     engine = SimpleNamespace(
         _root=lambda value: str(root),
-        repo_tools=SimpleNamespace(iter_files=lambda value: iter(paths), max_file_bytes=2_000_000),
+        repo_tools=SimpleNamespace(security_inventory=lambda value, **kwargs: (list(paths), {"complete": True, "reasons": [], "_identity": {str(path): () for path in paths}}), max_file_bytes=2_000_000),
     )
     return DeterministicEngine.security_audit(engine, str(root), limit=limit)
 

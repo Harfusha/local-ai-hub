@@ -16,11 +16,11 @@ def task_memory_audit_projection(value: Any) -> Any:
     if not isinstance(value, dict):
         return {"invalid": True}
     out: dict[str, Any] = {}
-    truncated = False
+    truncated = value.get("truncated") is True
     used = value.get("used_ids")
     if isinstance(used, (list, tuple)):
         out["used_ids"] = [item for item in used[:8] if isinstance(item, str)]
-        truncated = len(used) > 8
+        truncated |= len(used) > 8
     reason = value.get("not_used_reason")
     if isinstance(reason, str):
         out["not_used_reason"] = reason[:512]
@@ -60,8 +60,41 @@ def normalize_task_memory_response(value: Any) -> Any:
     return value
 
 
+def task_private_state_projection(value: Any) -> Any:
+    """Withhold server-only checkpoint history and fencing credentials."""
+    projected = copy.deepcopy(value)
+    if not isinstance(projected, dict):
+        return projected
+    tasks = [projected.get("task")]
+    if isinstance(projected.get("tasks"), list):
+        tasks.extend(projected["tasks"])
+    for task in tasks:
+        checkpoint = task.get("checkpoint") if isinstance(task, dict) else None
+        state = checkpoint.get("state_data") if isinstance(checkpoint, dict) else None
+        if not isinstance(state, dict):
+            continue
+        memory_projection = task_memory_projection({"task": task})
+        if memory_projection is not None:
+            task["checkpoint"] = memory_projection["task"]["checkpoint"]
+            continue
+        private_keys = {"memory_audit_history", "_pending_fenced_work", "file_snapshots", "raw_debug"}
+        omitted = {key for key in private_keys if key in state}
+        previous = checkpoint.get("state_data_omitted", [])
+        if isinstance(previous, list):
+            omitted.update(key for key in previous if isinstance(key, str) and key in private_keys)
+        for key in private_keys:
+            state.pop(key, None)
+        if "memory_audit" in state:
+            state["memory_audit"] = task_memory_audit_projection(state["memory_audit"])
+        if omitted:
+            checkpoint["state_data_omitted"] = sorted(omitted)
+        else:
+            checkpoint.pop("state_data_omitted", None)
+    return projected
+
+
 def task_memory_projection(value: Any) -> dict[str, Any] | None:
-    """Carry the server-selected adoption bundle, not the whole task checkpoint."""
+    """Carry the adoption bundle and resumable checkpoint without silent loss."""
     if not isinstance(value, dict):
         return None
     task = value.get("task")
@@ -90,20 +123,36 @@ def task_memory_projection(value: Any) -> dict[str, Any] | None:
                 "repository_id", "clone_id", "worktree_id", "branch", "task_id", "session_id",
             ) if isinstance(task["context"].get(key), str)
         }
-    projected_task["checkpoint"] = {"state_data": {"memory_context": bundle}}
+    private_state_keys = {"memory_audit_history", "_pending_fenced_work", "file_snapshots", "raw_debug"}
+    projected_state = {
+        key: copy.deepcopy(item) for key, item in state.items()
+        if key not in {"memory_context", "memory_audit"} | private_state_keys
+    }
+    projected_state["memory_context"] = bundle
     if "memory_audit" in state:
-        projected_task["checkpoint"]["state_data"]["memory_audit"] = task_memory_audit_projection(
-            state["memory_audit"]
-        )
-    if "phase" in checkpoint:
-        projected_task["checkpoint"]["phase"] = checkpoint["phase"]
+        projected_state["memory_audit"] = task_memory_audit_projection(state["memory_audit"])
+    checkpoint_fields = ("phase", "affected_paths", "evidence_ids", "blockers")
+    if task.get("status") != "failed":
+        checkpoint_fields = ("phase", "next_action", "affected_paths", "evidence_ids", "blockers")
+    projected_task["checkpoint"] = {
+        key: copy.deepcopy(checkpoint[key]) for key in checkpoint_fields if key in checkpoint
+    }
+    projected_task["checkpoint"]["state_data"] = projected_state
+    prior_omissions = checkpoint.get("state_data_omitted", [])
+    omitted = {key for key in private_state_keys if key in state}
+    if isinstance(prior_omissions, list):
+        omitted.update(key for key in prior_omissions if isinstance(key, str) and key in private_state_keys)
+    if omitted:
+        projected_task["checkpoint"]["state_data_omitted"] = sorted(omitted)
     projected = {key: copy.deepcopy(value[key]) for key in (
         "success", "status", "status_code", "error", "terminal", "retryable",
         "context_id", "task_id", "request_id", "artifact_id", "evidence_ids",
         "stale", "degraded", "partial", "supported", "unsupported", "outcome_unknown",
         "request_not_sent", "in_progress", "cancelled", "timed_out", "fallback_used",
-        "mutation_applied", "operation_not_started",
+        "mutation_applied", "operation_not_started", "has_more", "next_offset", "offset", "limit", "next_cursor",
     ) if key in value}
+    if isinstance(value.get("tasks"), list):
+        projected["tasks"] = task_private_state_projection({"tasks": value["tasks"]})["tasks"]
     projected["task"] = projected_task
     if "task_id" in projected_task:
         projected["task_id"] = projected_task["task_id"]
@@ -117,7 +166,7 @@ def task_memory_essential_response(value: dict[str, Any]) -> dict[str, Any]:
         "context_id", "task_id", "request_id", "stale", "degraded", "partial", "task",
         "supported", "unsupported", "outcome_unknown", "request_not_sent",
         "in_progress", "cancelled", "timed_out", "fallback_used",
-        "mutation_applied", "operation_not_started",
+        "mutation_applied", "operation_not_started", "tasks", "has_more", "next_offset", "offset", "limit", "next_cursor",
     ) if key in value}
     task = essential.get("task")
     if isinstance(task, dict):
@@ -141,15 +190,17 @@ def task_memory_original_tokens(value: Any) -> int:
     `original_tokens` has this stable meaning even when callers add delta,
     reuse, debug, or private accounting metadata around the same memory bundle.
     """
-    projection = task_memory_projection(value)
-    canonical = normalize_task_memory_response(projection if projection is not None else value)
+    sanitized = task_private_state_projection(value)
+    projection = task_memory_projection(sanitized)
+    canonical = normalize_task_memory_response(projection if projection is not None else sanitized)
     return mcp_wire_tokens(canonical)
 
 
 def task_memory_wire_tokens(value: dict[str, Any], requested: int) -> int:
     """Measure the smallest successful MCP wire candidate with full adoption advice."""
-    projection = task_memory_projection(value)
-    canonical = normalize_task_memory_response(projection if projection is not None else value)
+    sanitized = task_private_state_projection(value)
+    projection = task_memory_projection(sanitized)
+    canonical = normalize_task_memory_response(projection if projection is not None else sanitized)
     original = task_memory_original_tokens(canonical)
     minimum: int | None = None
     for source in (canonical, task_memory_essential_response(canonical)):

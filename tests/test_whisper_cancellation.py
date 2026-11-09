@@ -45,13 +45,32 @@ def test_run_hidden_cancellation_terminates_tree_and_drains_output(monkeypatch):
         "creation_identity": 1234,
         "creation_identity_type": "linux_proc_starttime_ticks",
     }
-    monkeypatch.setattr(process_utils.os, "name", "posix")
-    monkeypatch.setattr(process_utils.subprocess, "Popen", lambda *a, **k: process)
+    real_os = process_utils.os
+    host_os_name = real_os.name
+
+    class _PosixOS:
+        name = "posix"
+
+        def __getattr__(self, name):
+            return getattr(real_os, name)
+
+    monkeypatch.setattr(process_utils, "os", _PosixOS())
+    real_subprocess = process_utils.subprocess
+
+    class _FakeSubprocess:
+        def Popen(self, *args, **kwargs):
+            return process
+
+        def __getattr__(self, name):
+            return getattr(real_subprocess, name)
+
+    monkeypatch.setattr(process_utils, "subprocess", _FakeSubprocess())
     monkeypatch.setattr(process_utils, "process_identity", lambda _pid: identity)
 
     def terminate_tree(
         pid, *, process_group=None, expected_identity=None, grace_seconds=5.0, process_handle=None
     ):
+        assert real_os.name == host_os_name
         calls.append((pid, process_group, expected_identity, grace_seconds, process_handle))
         process.returncode = -9
         return True

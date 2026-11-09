@@ -38,7 +38,7 @@ def test_reachability_dead_code_exposes_bounded_result_limit():
     }
     tool_schema = operation_tool_input_schema("local_ai_repo")
     action_rule = next(
-        rule["then"] for rule in tool_schema["allOf"]
+        rule["then"] for rule in tool_schema["then"]["allOf"]
         if rule["if"].get("properties", {}).get("action", {}).get("const") == "reachability_dead_code"
     )
     assert action_rule["properties"]["limit"] == {
@@ -663,7 +663,7 @@ def test_repo_path_hints_schema_is_bounded_and_context_scoped():
         assert any(
             rule.get("if", {}).get("properties", {}).get("mode") == {"not": {"const": "adaptive"}}
             and rule.get("then", {}).get("not", {}).get("required") == [field]
-            for rule in schema.get("allOf", [])
+            for rule in schema.get("then", {}).get("allOf", [])
         )
 
     valid = {"path_hints": [{"path": "src/auth.py", "purpose": "repository_search", "scope": "repo_search"}]}
@@ -1059,7 +1059,7 @@ def test_mcp_tools_list_scopes_artifact_list_arguments():
     )
     input_schema = tool.inputSchema
     list_rule = next(
-        rule for rule in input_schema["allOf"]
+        rule for rule in input_schema["then"]["allOf"]
         if rule.get("if", {}).get("properties", {}).get("action", {}).get("const") == "list"
     )
 

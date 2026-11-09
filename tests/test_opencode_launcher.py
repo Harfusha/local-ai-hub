@@ -176,6 +176,71 @@ def test_unconfirmed_provider_start_never_launches_or_stops_another_session(tmp_
     assert len(client.calls) == 1
 
 
+def test_provider_start_failure_reports_safe_status_without_exposing_response(tmp_path):
+    client = Client(tmp_path)
+    client.responses = [{"success": False, "status_code": 409, "request_id": "req_a1b2c3d4e5f6",
+                         "terminal": True, "retryable": False, "outcome_unknown": True,
+                         "error": "private-error-secret", "nonce": "private-nonce-secret"}]
+    exe = tmp_path / "opencode.exe"
+    exe.touch()
+    plugin = tmp_path / "tools" / "opencode_goal"
+    plugin.mkdir(parents=True)
+    (plugin / "index.js").touch()
+    with pytest.raises(LaunchError) as caught:
+        launch_opencode(client, install_dir=tmp_path, hub_python=Path("python"), executable=exe,
+                        project=tmp_path, model="model-a", run_child=lambda *a, **k: pytest.fail("launched"))
+    message = str(caught.value)
+    assert "HTTP 409" in message and "req_a1b2c3d4e5f6" in message
+    assert "terminal=true" in message and "retryable=false" in message and "outcome_unknown=true" in message
+    assert "private-error-secret" not in message and "private-nonce-secret" not in message
+    assert len(client.calls) == 1
+
+
+def test_provider_start_failure_preserves_normalized_http_status(tmp_path):
+    from io import BytesIO
+    from urllib.error import HTTPError
+    from local_ai_hub.client import HubClient
+
+    response = HubClient._error_response(
+        HTTPError("http://127.0.0.1/provider", 409, "Conflict", {},
+                  BytesIO(b'{"error":"private-response-secret"}')),
+        "req_0123456789ab",
+    )
+    client = Client(tmp_path)
+    client.responses = [response]
+    exe = tmp_path / "opencode.exe"
+    exe.touch()
+    plugin = tmp_path / "tools" / "opencode_goal"
+    plugin.mkdir(parents=True)
+    (plugin / "index.js").touch()
+    with pytest.raises(LaunchError) as caught:
+        launch_opencode(client, install_dir=tmp_path, hub_python=Path("python"), executable=exe,
+                        project=tmp_path, model="model-a", run_child=lambda *a, **k: pytest.fail("launched"))
+    message = str(caught.value)
+    assert "HTTP 409" in message and "req_0123456789ab" in message
+    assert "terminal=true" in message and "retryable=false" in message
+    assert "private-response-secret" not in message
+    assert len(client.calls) == 1
+
+
+def test_provider_start_failure_rejects_untrusted_diagnostic_values(tmp_path):
+    client = Client(tmp_path)
+    client.responses = [{"success": False, "status_code": True, "request_id": "secret with spaces",
+                         "terminal": "secret-value", "outcome_unknown": True}]
+    exe = tmp_path / "opencode.exe"
+    exe.touch()
+    plugin = tmp_path / "tools" / "opencode_goal"
+    plugin.mkdir(parents=True)
+    (plugin / "index.js").touch()
+    with pytest.raises(LaunchError) as caught:
+        launch_opencode(client, install_dir=tmp_path, hub_python=Path("python"), executable=exe,
+                        project=tmp_path, model="model-a", run_child=lambda *a, **k: pytest.fail("launched"))
+    message = str(caught.value)
+    assert "outcome_unknown=true" in message
+    assert "secret" not in message and "HTTP True" not in message
+    assert len(client.calls) == 1
+
+
 def test_launcher_reports_unconfirmed_shutdown_instead_of_success(tmp_path):
     client = Client(tmp_path)
     client.responses[-1] = {"success": True, "state": "stopping"}

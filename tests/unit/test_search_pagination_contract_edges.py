@@ -156,6 +156,51 @@ def test_mcp_compaction_returns_413_when_budget_omits_requested_page_rows(
     assert result[page_key] == []
 
 
+@pytest.mark.parametrize("symbols", [[], [{"name": "f", "path": "f.py", "kind": "function", "line": 1}]])
+def test_code_index_budget_error_does_not_invent_a_symbol(monkeypatch, symbols):
+    value = {"success": True, "root": ".", "symbols": symbols, "limit": 1,
+             "offset": 0, "total_matches": len(symbols), "has_more": False}
+    monkeypatch.setattr(mcp_server, "_response_budget", lambda *_args: (512, "minimal", "", True))
+    monkeypatch.setattr(mcp_server, "_code_index_prefix_fitting", lambda *_args, **_kwargs: None)
+    token = mcp_server._CURRENT_RESPONSE_OPTIONS.set({"tool": "local_ai_repo", "max_response_tokens": 512})
+    try:
+        result = mcp_server._compact(value, task_kind="code_index")
+    finally:
+        mcp_server._CURRENT_RESPONSE_OPTIONS.reset(token)
+    assert result["success"] is False
+    assert result["status_code"] == 413
+    assert ("first complete code-index symbol" in result["error"]) is bool(symbols)
+
+
+@pytest.mark.parametrize("symbols", [[], [{"name": "f", "path": "f.py", "kind": "function", "line": 1}]])
+def test_code_index_wire_budget_error_does_not_invent_a_symbol(monkeypatch, tmp_path, symbols):
+    raw = {"success": True, "root": str(tmp_path), "symbols": symbols,
+           "limit": 1, "offset": 0, "total_matches": len(symbols), "has_more": False}
+
+    class DummyClient:
+        def post(self, path, _payload, **_kwargs):
+            assert path == "/api/repo/code-index"
+            return dict(raw)
+
+    monkeypatch.setattr(mcp_server, "CLIENT", DummyClient())
+    monkeypatch.setattr(mcp_server, "_workspace", str(tmp_path))
+    monkeypatch.setattr(mcp_server, "_compact", lambda value, *_args, **_kwargs: value)
+    monkeypatch.setattr(mcp_server, "_code_index_prefix_fitting", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(mcp_server._ACCOUNTING_REPORTER, "record", lambda *args, **kwargs: None)
+    monkeypatch.setattr(mcp_server.CONTEXT_LEDGER, "record", lambda **kwargs: None)
+    monkeypatch.setattr(mcp_server, "load_operational_mode",
+                        lambda *args, **kwargs: mcp_server.OperationalModeSnapshot("active", 0, None))
+    result = asyncio.run(mcp_server.mcp.call_tool("local_ai_repo", {
+        "action": "code_index", "root": str(tmp_path), "query": "f",
+        "limit": 1, "max_response_tokens": 512,
+    }))
+    contents = result[0] if isinstance(result, tuple) else result
+    payload = json.loads(contents[0].text)
+    assert payload["success"] is False
+    assert payload["status_code"] == 413, payload
+    assert ("first complete code-index symbol" in payload["error"]) is bool(symbols)
+
+
 def test_code_index_compaction_keeps_largest_whole_symbol_prefix_with_continuation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -1,10 +1,206 @@
 from __future__ import annotations
 
 import sqlite3
+import asyncio
+import json
+import threading
+from http.server import ThreadingHTTPServer
 from pathlib import Path
+from types import SimpleNamespace
 import pytest
 
-from local_ai_hub.agent_events import AgentEvent, AgentStateStore, AppendResult
+from local_ai_hub.agent_events import AgentEvent, AgentStateStore, AppendResult, SwarmPubSub
+
+
+@pytest.mark.parametrize("message", [None, False, 0, "", [], {}, "hello", [0], {"nested": False}])
+@pytest.mark.parametrize("durable", [False, True])
+def test_pubsub_roundtrips_falsey_json_values(tmp_path, message, durable):
+    state = AgentStateStore(tmp_path / "pubsub.sqlite3") if durable else None
+    bus = SwarmPubSub(state_store=state)
+    published = bus.publish("falsey", message, sender="synthetic")
+    assert published["success"] is True
+    polled = bus.poll("falsey", after_seq=0)
+    assert polled["success"] is True
+    assert len(polled["messages"]) == 1
+    assert polled["messages"][0]["payload"] == message
+    assert type(polled["messages"][0]["payload"]) is type(message)
+
+
+@pytest.mark.parametrize("message", [float("nan"), float("inf"), {"bad": {1, 2}}])
+def test_pubsub_rejects_non_json_without_recording_message(tmp_path, message):
+    bus = SwarmPubSub(state_store=AgentStateStore(tmp_path / "pubsub-invalid.sqlite3"))
+    result = bus.publish("invalid", message, sender="synthetic")
+    assert result["success"] is False
+    assert bus.poll("invalid", after_seq=0)["messages"] == []
+
+
+def test_pubsub_diagnostic_projection_preserves_only_caller_payload():
+    from local_ai_hub.agent_diagnostics import project_agent_response, project_pubsub_poll_response
+
+    payload = {"prompt": "caller", "debug": "caller", "_token_accounting": {"custom": 1}}
+    source = {"success": True, "debug": "private envelope", "messages": [{
+        "debug": "private event", "payload": payload,
+    }]}
+    projected = project_pubsub_poll_response(source, enabled=False)
+    assert "debug" not in projected
+    assert "debug" not in projected["messages"][0]
+    assert projected["messages"][0]["payload"] == payload
+    ordinary = project_agent_response(source, enabled=False)
+    assert ordinary["messages"][0]["payload"] == {}
+
+
+@pytest.mark.parametrize("message", [None, False, 0, "", [], {}, "hello", [0], {"nested": False}])
+def test_registered_mcp_pubsub_preserves_falsey_json(tmp_path, monkeypatch, message):
+    from local_ai_hub import http_server, mcp_server
+    from local_ai_hub.client import HubClient
+    from local_ai_hub.operational_mode import OperationalModeSnapshot
+    from local_ai_hub.services import LocalAIServices
+
+    bus = SwarmPubSub(state_store=AgentStateStore(tmp_path / "pubsub-mcp.sqlite3"))
+    service = object.__new__(LocalAIServices)
+    service.agent_state = bus.state_store
+    monkeypatch.setattr(SwarmPubSub, "get_default", classmethod(lambda cls, state_store=None: bus))
+
+    def post(path, payload, **_kwargs):
+        payload = json.loads(json.dumps(payload))
+        http_server.Handler._validate_payload(path, payload)
+        if path == "/api/coord/pubsub_publish":
+            return service.pubsub_publish(payload["topic"], payload["message"], sender=payload["publisher"])
+        assert path == "/api/coord/pubsub_poll"
+        return service.pubsub_poll(payload["topic"], after_seq=payload["after_seq"], limit=payload["limit"])
+
+    client = object.__new__(HubClient)
+    client.post = post
+
+    monkeypatch.setattr(mcp_server.FEATURES, "coord", True)
+    monkeypatch.setattr(mcp_server.FEATURES, "agent_os", True)
+    monkeypatch.setattr(mcp_server, "load_operational_mode", lambda _state_dir: OperationalModeSnapshot("active", 1, None))
+    monkeypatch.setattr(mcp_server, "CLIENT", client)
+    monkeypatch.setattr(mcp_server, "_record_tool_accounting", lambda **_: None)
+
+    def call(action, **kwargs):
+        result = asyncio.run(mcp_server.mcp.call_tool("local_ai_coord", {
+            "action": action, "root": str(tmp_path), "topic": "falsey-mcp", **kwargs,
+        }))
+        contents = result[0] if isinstance(result, tuple) else result
+        return json.loads(next(item.text for item in contents if item.type == "text"))
+
+    assert call("pubsub_publish", message=message, publisher="synthetic")["success"] is True
+    received = call("pubsub_poll", after_seq=0, limit=10)
+    assert received["success"] is True
+    actual = received["messages"][0]["payload"]
+    assert type(actual) is type(message) and actual == message
+
+
+def test_registered_mcp_pubsub_rejects_incomplete_payload_at_small_budget(tmp_path, monkeypatch):
+    from local_ai_hub import mcp_server
+    from local_ai_hub.operational_mode import OperationalModeSnapshot
+
+    bus = SwarmPubSub(state_store=AgentStateStore(tmp_path / "pubsub-budget.sqlite3"))
+    assert bus.publish("large-mcp", {"text": "x" * 10000})["success"] is True
+
+    class StoreTransport:
+        def coord(self, **kwargs):
+            return bus.poll(kwargs["topic"], after_seq=kwargs["after_seq"], limit=kwargs["limit"])
+
+    monkeypatch.setattr(mcp_server.FEATURES, "coord", True)
+    monkeypatch.setattr(mcp_server.FEATURES, "agent_os", True)
+    monkeypatch.setattr(mcp_server, "load_operational_mode", lambda _state_dir: OperationalModeSnapshot("active", 1, None))
+    monkeypatch.setattr(mcp_server, "CLIENT", StoreTransport())
+    monkeypatch.setattr(mcp_server, "_record_tool_accounting", lambda **_: None)
+    monkeypatch.setattr(mcp_server, "RESPONSE_BUDGET_ENABLED", True)
+    result = asyncio.run(mcp_server.mcp.call_tool("local_ai_coord", {
+        "action": "pubsub_poll", "root": str(tmp_path), "topic": "large-mcp",
+        "after_seq": 0, "limit": 10, "max_response_tokens": 512,
+    }))
+    contents = result[0] if isinstance(result, tuple) else result
+    response = json.loads(next(item.text for item in contents if item.type == "text"))
+    assert response["success"] is False
+    assert response.get("error")
+
+
+@pytest.mark.parametrize("budget", [512, 1024, 2048, 4096])
+def test_registered_mcp_pubsub_never_succeeds_with_changed_payload(tmp_path, monkeypatch, budget):
+    from local_ai_hub import mcp_server
+    from local_ai_hub.operational_mode import OperationalModeSnapshot
+
+    message = {"text": "payload-" * 300, "empty": [], "enabled": False}
+    bus = SwarmPubSub(state_store=AgentStateStore(tmp_path / "pubsub-budget-boundary.sqlite3"))
+    assert bus.publish("budget-boundary", message)["success"] is True
+
+    class StoreTransport:
+        def coord(self, **kwargs):
+            return bus.poll(kwargs["topic"], after_seq=kwargs["after_seq"], limit=kwargs["limit"])
+
+    monkeypatch.setattr(mcp_server.FEATURES, "coord", True)
+    monkeypatch.setattr(mcp_server.FEATURES, "agent_os", True)
+    monkeypatch.setattr(mcp_server, "load_operational_mode", lambda _state_dir: OperationalModeSnapshot("active", 1, None))
+    monkeypatch.setattr(mcp_server, "CLIENT", StoreTransport())
+    monkeypatch.setattr(mcp_server, "_record_tool_accounting", lambda **_: None)
+    monkeypatch.setattr(mcp_server, "RESPONSE_BUDGET_ENABLED", True)
+    result = asyncio.run(mcp_server.mcp.call_tool("local_ai_coord", {
+        "action": "pubsub_poll", "root": str(tmp_path), "topic": "budget-boundary",
+        "after_seq": 0, "limit": 10, "max_response_tokens": budget,
+    }))
+    contents = result[0] if isinstance(result, tuple) else result
+    visible = json.loads(next(item.text for item in contents if item.type == "text"))
+    structured = result[1] if isinstance(result, tuple) else visible
+    for response in (visible, structured):
+        if response["success"] is True:
+            assert response["messages"][0]["payload"] == message
+        else:
+            assert response.get("error")
+
+
+@pytest.mark.parametrize("message", [None, False, 0, "", [], {}, "hello", [0], {"nested": False},
+    {"prompt": "caller text", "debug": "caller value", "returned_count": 1, "matches_count": 1}])
+def test_pubsub_roundtrip_over_isolated_loopback_http(tmp_path, monkeypatch, message):
+    from local_ai_hub import http_server, mcp_server
+    from local_ai_hub.client import HubClient
+    from local_ai_hub.operational_mode import OperationalModeSnapshot
+    from local_ai_hub.services import LocalAIServices
+
+    state = AgentStateStore(tmp_path / "http-pubsub.sqlite3")
+    bus = SwarmPubSub(state_store=state)
+    service = object.__new__(LocalAIServices)
+    service.agent_state = state
+    monkeypatch.setattr(SwarmPubSub, "get_default", classmethod(lambda cls, state_store=None: bus))
+    monkeypatch.setattr(http_server, "APP", SimpleNamespace(config={"server": {}, "observability": {}}, services=service))
+    monkeypatch.setattr(http_server, "_http_mode_gate_error", lambda *_args: None)
+    monkeypatch.setattr(http_server.Handler, "_require_authorized", lambda self: True)
+    monkeypatch.setattr(http_server.Handler, "_begin_trace", lambda self, _path: None)
+    monkeypatch.setattr(http_server.Handler, "_finish_debug_trace", lambda self, *_args, **_kwargs: None)
+    monkeypatch.setattr(mcp_server.FEATURES, "coord", True)
+    monkeypatch.setattr(mcp_server.FEATURES, "agent_os", True)
+    monkeypatch.setattr(mcp_server, "CFG", {"debug_traces": {"enabled": False}})
+    monkeypatch.setattr(mcp_server, "load_operational_mode", lambda _state_dir: OperationalModeSnapshot("active", 1, None))
+    monkeypatch.setattr(mcp_server, "_record_tool_accounting", lambda **_: None)
+    server = ThreadingHTTPServer(("127.0.0.1", 0), http_server.Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        client = HubClient(auto_start=False)
+        client._http_host, client._http_port = server.server_address
+        client.base_url = f"http://127.0.0.1:{server.server_port}"
+        monkeypatch.setattr(mcp_server, "CLIENT", client)
+
+        def call(action, **kwargs):
+            result = asyncio.run(mcp_server.mcp.call_tool("local_ai_coord", {
+                "action": action, "root": str(tmp_path), "topic": "http-loopback", **kwargs,
+            }))
+            contents = result[0] if isinstance(result, tuple) else result
+            return json.loads(next(item.text for item in contents if item.type == "text"))
+
+        assert call("pubsub_publish", message=message, publisher="synthetic")["success"] is True
+        result = call("pubsub_poll", after_seq=0, limit=10)
+        assert result["success"] is True
+        received = result["messages"][0]["payload"]
+        assert type(received) is type(message) and received == message
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+        assert not thread.is_alive()
 
 def test_generated_event_identifiers_use_full_uuid_entropy_and_keep_supplied_keys():
     created = AgentEvent.create("stream-1", "test.event")

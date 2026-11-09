@@ -349,14 +349,20 @@ def _tail_latency(rows: list[tuple[Any, ...]], key_name: str) -> list[dict[str, 
         durations = [item[0] for item in items]
         queue_waits = [item[1] for item in items]
         services = [item[2] for item in items]
+        # Legacy rows encode both an unmeasured phase and a measured zero as 0.
+        # A percentile across such rows cannot distinguish those two cases.
+        queue_complete = all(value > 0 for value in queue_waits)
+        service_complete = all(value > 0 for value in services)
         result.append({
             key_name: key, "events": len(items), "failures": sum(1 for item in items if not item[3]),
             "failure_rate": round(sum(1 for item in items if not item[3]) / len(items), 4) if items else 0.0,
             "p50_duration_ms": _percentile(durations, 0.50),
             "p95_duration_ms": _percentile(durations, 0.95),
             "p99_duration_ms": _percentile(durations, 0.99),
-            "p95_queue_wait_ms": _percentile(queue_waits, 0.95),
-            "p95_service_ms": _percentile(services, 0.95),
+            "p95_queue_wait_ms": _percentile(queue_waits, 0.95) if queue_complete else None,
+            "p95_service_ms": _percentile(services, 0.95) if service_complete else None,
+            "queue_wait_measurement_complete": queue_complete,
+            "service_measurement_complete": service_complete,
         })
     return sorted(result, key=lambda item: (-float(item["p99_duration_ms"]), -int(item["events"]), str(item[key_name])))
 
@@ -2687,7 +2693,8 @@ class TelemetryStore:
                 "command_calls": int(tool_http[2]), "repo_calls": int(tool_http[3]),
             },
             "writer": writer,
-            "window": {"days": max(1, int(days)), "scope": scope, "events": total},
+            "window": {"days": max(1, int(days)), "scope": scope,
+                       "events": decision_grade["counts"]["events"], "inference_events": total},
             "counts": decision_grade["counts"],
             "routes": decision_grade["routes"],
             "cache": decision_grade["cache"],

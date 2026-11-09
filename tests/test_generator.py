@@ -1,6 +1,7 @@
 """tests/test_generator.py - Unit tests for dynamic generator and feature toggles."""
 from __future__ import annotations
 
+import ast
 import json
 import sys
 import tomllib
@@ -29,7 +30,7 @@ from local_ai_hub.features import FeatureSet
 
 class TestSkillGeneration:
     def test_enabled_backend_skill_contains_all_core_components(self):
-        skill = generate_skill_markdown({"ollama": {"enabled": True}})
+        skill = generate_skill_markdown({"ollama": {"enabled": True}, "hardware": {"profile": "high"}, "features": {"local_semantic_analysis": True}})
         assert "local_ai_repo" in skill
         assert "local_ai_command" not in skill
         assert "native command tool" in skill
@@ -40,6 +41,15 @@ class TestSkillGeneration:
         assert "local_ai_work" in skill
         assert "Agent Operating System & Durable Execution" in skill
         assert "Local advisory subagents" in skill
+
+    def test_checkpoint_example_contains_complete_canonical_payload(self):
+        skill = generate_skill_markdown({"ollama": {"enabled": True}})
+        line = next(line for line in skill.splitlines() if 'local_ai_coord(action="task_checkpoint"' in line)
+        call = ast.parse(line.strip().strip("`"), mode="eval").body
+        checkpoint = ast.literal_eval(next(arg.value for arg in call.keywords if arg.arg == "checkpoint"))
+        assert set(checkpoint) == {"phase", "next_action", "affected_paths", "evidence_ids", "blockers", "state_data"}
+        assert ast.literal_eval(next(arg.value for arg in call.keywords if arg.arg == "root"))
+        assert checkpoint["state_data"]["memory_audit"]["not_used_reason"]
 
     def test_skill_without_rag(self):
         cfg = {"features": {"rag": False}}

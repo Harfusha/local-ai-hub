@@ -5,9 +5,9 @@ from types import SimpleNamespace
 import pytest
 
 from local_ai_hub.agent_consistency import AgentConsistencyGuard, ConsistencyRequest
-from local_ai_hub.agent_tasks import CompletionGateError, TaskStore
+from local_ai_hub.agent_tasks import CheckpointResponseBudgetError, CompletionGateError, TaskStore
 from local_ai_hub.token_accounting import json_tokens
-from local_ai_hub.task_memory_wire import task_memory_projection
+from local_ai_hub.task_memory_wire import task_memory_projection, task_memory_wire_tokens, task_private_state_projection
 
 
 def _snapshot():
@@ -77,6 +77,102 @@ def test_wire_projection_preserves_snapshot_context():
     bundle = projected["task"]["checkpoint"]["state_data"]["memory_context"]
     assert bundle["context"] == snapshot["context"]
     assert "tenant_key" not in bundle
+
+
+def test_wire_projection_preserves_resumable_checkpoint_with_memory():
+    checkpoint = {
+        "phase": "verification",
+        "next_action": "inspect result",
+        "affected_paths": ["README.md"],
+        "evidence_ids": ["evidence-1"],
+        "blockers": ["pending review"],
+        "state_data": {"memory_context": _snapshot(), "roundtrip_marker": {"value": 7}},
+    }
+    result = {"success": True, "task": {"task_id": "task-one", "checkpoint": checkpoint}}
+
+    projected = task_memory_projection(result)
+    assert projected["task"]["checkpoint"] == checkpoint
+    assert task_memory_projection(projected)["task"]["checkpoint"] == checkpoint
+
+
+def test_private_wire_projection_omits_file_snapshots_but_preserves_other_state():
+    value = {"success": True, "task": {"task_id": "task-one", "status": "active", "checkpoint": {
+        "phase": "editing", "state_data": {
+            "file_snapshots": {"C:/repo/secret.txt": "before image"},
+            "roundtrip_marker": {"value": 7},
+        },
+    }}}
+
+    projected = task_private_state_projection(value)
+
+    state = projected["task"]["checkpoint"]["state_data"]
+    assert "file_snapshots" not in state
+    assert state["roundtrip_marker"] == {"value": 7}
+    assert projected["task"]["checkpoint"]["state_data_omitted"] == ["file_snapshots"]
+
+
+def test_wire_budget_accounts_for_checkpoint_state_data():
+    checkpoint = {"phase": "verification", "state_data": {"memory_context": _snapshot()}}
+    small = {"success": True, "task": {"task_id": "task-one", "checkpoint": checkpoint}}
+    large = {"success": True, "task": {"task_id": "task-one", "checkpoint": {
+        "phase": "verification", "state_data": {"memory_context": _snapshot(), "marker": "x" * 12000},
+    }}}
+
+    assert task_memory_wire_tokens(large, 512) > 512
+    assert task_memory_wire_tokens(large, 8192) > task_memory_wire_tokens(small, 8192)
+
+
+def test_wire_projection_keeps_memory_audit_sanitized():
+    value = {"task": {"checkpoint": {"state_data": {
+        "memory_context": _snapshot(),
+        "memory_audit": {"used_ids": ["memory-one"], "history": "private"},
+        "memory_audit_history": [{"content": "private history"}],
+        "_pending_fenced_work": {"attempt_token": "private fencing token"},
+        "roundtrip_marker": "kept",
+    }}}}
+    projected = task_memory_projection(value)
+    checkpoint = projected["task"]["checkpoint"]
+    state = checkpoint["state_data"]
+    assert state["memory_audit"] == {"used_ids": ["memory-one"]}
+    assert "memory_audit_history" not in state
+    assert "_pending_fenced_work" not in state
+    assert state["roundtrip_marker"] == "kept"
+    assert checkpoint["state_data_omitted"] == ["_pending_fenced_work", "memory_audit_history"]
+    assert task_memory_projection(projected)["task"]["checkpoint"] == checkpoint
+
+
+def test_checkpoint_preflight_rejects_oversized_preserved_state():
+    task = SimpleNamespace(to_dict=lambda: {"task_id": "task-one", "checkpoint": {
+        "phase": "verification", "state_data": {"memory_context": _snapshot(), "marker": "x" * 4000},
+    }})
+    with pytest.raises(CheckpointResponseBudgetError):
+        TaskStore._preflight_response_budget(task, 512)
+    TaskStore._preflight_response_budget(task, 8192)
+
+
+def test_memory_audit_truncation_survives_reprojection():
+    value = {"task": {"checkpoint": {"state_data": {
+        "memory_context": _snapshot(), "memory_audit": {"used_ids": [str(i) for i in range(9)]},
+    }}}}
+    projected = task_memory_projection(value)
+    assert projected["task"]["checkpoint"]["state_data"]["memory_audit"]["truncated"] is True
+    assert task_memory_projection(projected) == projected
+
+
+def test_wire_projection_ignores_invalid_omission_metadata():
+    value = {"task": {"checkpoint": {"state_data_omitted": [{}, None, "unknown"],
+                                      "state_data": {"memory_context": _snapshot()}}}}
+    assert "state_data_omitted" not in task_memory_projection(value)["task"]["checkpoint"]
+
+
+def test_wire_projection_sanitizes_tasks_when_single_task_is_also_present():
+    value = {"task": {"checkpoint": {"state_data": {"memory_context": _snapshot()}}},
+             "tasks": [{"task_id": "other", "checkpoint": {"state_data": {
+                 "_pending_fenced_work": {"attempt_token": "private-token"},
+             }}}]}
+    projected = task_memory_projection(value)
+    assert "private-token" not in repr(projected)
+    assert projected["tasks"][0]["checkpoint"]["state_data_omitted"] == ["_pending_fenced_work"]
 
 
 def test_wire_does_not_translate_retired_snapshot():

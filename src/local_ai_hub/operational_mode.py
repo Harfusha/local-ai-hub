@@ -17,8 +17,8 @@ from pathlib import Path
 from typing import Iterator, Literal
 
 
-OperationalMode = Literal["active", "gaming", "maintenance"]
-_ALLOWED_MODES = frozenset({"active", "gaming", "maintenance"})
+OperationalMode = Literal["active", "gaming", "maintenance", "preprocessing"]
+_ALLOWED_MODES = frozenset({"active", "gaming", "maintenance", "preprocessing"})
 _STATE_FILENAME = "operational_mode.json"
 _LOCK_FILENAME = "operational_mode.lock"
 _LOCK = threading.RLock()
@@ -203,7 +203,7 @@ def set_operational_mode(state_dir: str | Path, mode: str) -> OperationalModeSna
     if not isinstance(state_dir, (str, Path)) or not str(state_dir).strip() or "\x00" in str(state_dir):
         raise ValueError("state_dir must be a nonempty path")
     if type(mode) is not str or mode not in _ALLOWED_MODES:
-        raise ValueError("mode must be active, gaming, or maintenance")
+        raise ValueError("mode must be active, gaming, maintenance, or preprocessing")
 
     path = _state_path(state_dir)
     with _LOCK, _state_writer_lock(state_dir):
@@ -229,6 +229,44 @@ def set_operational_mode(state_dir: str | Path, mode: str) -> OperationalModeSna
                 pass
             raise
         return snapshot
+
+
+def preprocessing_mode_ready(state_dir: str | Path, snapshot: OperationalModeSnapshot) -> bool:
+    """Require a readiness receipt for the exact persisted preprocessing revision."""
+    if not isinstance(snapshot, OperationalModeSnapshot) or snapshot.degraded or snapshot.mode != "preprocessing":
+        return False
+    try:
+        value = json.loads((Path(state_dir) / "preprocessing-mode.ready.json").read_text(encoding="utf-8"))
+        return (isinstance(value, dict) and set(value) == {"revision", "updated_at"}
+                and type(value["revision"]) is int and value["revision"] == snapshot.revision
+                and value["updated_at"] == snapshot.updated_at
+                and load_operational_mode(state_dir) == snapshot)
+    except (OSError, ValueError, TypeError, UnicodeError):
+        return False
+
+
+def publish_preprocessing_ready(state_dir: str | Path, snapshot: OperationalModeSnapshot) -> None:
+    """Publish readiness only while the same mode revision still owns the state."""
+    if not isinstance(snapshot, OperationalModeSnapshot) or snapshot.degraded or snapshot.mode != "preprocessing":
+        raise ValueError("valid preprocessing mode snapshot required")
+    path = Path(state_dir) / "preprocessing-mode.ready.json"
+    with _LOCK, _state_writer_lock(state_dir):
+        if load_operational_mode(state_dir) != snapshot:
+            raise ValueError("preprocessing mode revision changed")
+        payload = json.dumps({"revision": snapshot.revision, "updated_at": snapshot.updated_at}, separators=(",", ":"))
+        fd, temporary_name = tempfile.mkstemp(prefix=".preprocessing-mode-", suffix=".tmp", dir=path.parent)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as stream:
+                stream.write(payload)
+                stream.flush()
+                os.fsync(stream.fileno())
+            _replace_state_file(temporary_name, path)
+        except BaseException:
+            try:
+                os.unlink(temporary_name)
+            except OSError:
+                pass
+            raise
 
 
 def operational_mode_gate_error(

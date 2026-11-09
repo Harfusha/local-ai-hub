@@ -89,6 +89,68 @@ def test_length_truncation_never_falls_back_or_populates_caches(tmp_path):
     service.stale_generation_cache.set.assert_not_called()
 
 
+def test_complete_code_rejects_length_truncated_completion(tmp_path):
+    service, runtime = _service(
+        tmp_path, {"done": True, "response": "partial code", "done_reason": "length"}
+    )
+
+    result = service.complete_code({"prefix": "def ready():\n", "suffix": "", "max_tokens": 8})
+
+    assert result["success"] is False
+    assert result["error_code"] == "model_output_truncated"
+    assert result["output_truncated"] is True
+    assert result["stop_reason"] == "length"
+    assert result["final_response_status"] == "truncated"
+    assert result["terminal"] is True and result["retryable"] is False
+    assert "completion" not in result
+    assert runtime.calls == ["requested"]
+
+
+def test_complete_code_preserves_terminal_repetition_loop_failure(tmp_path):
+    service, runtime = _service(
+        tmp_path,
+        {
+            "error": "model output repetition loop detected",
+            "_lah_repetition_loop_detected": True,
+            "_lah_retry_count": 2,
+            "model": "requested",
+            "outcome_unknown": True,
+        },
+    )
+
+    result = service.complete_code({"prefix": "def ready():\n", "suffix": ""})
+
+    assert result["success"] is False
+    assert result["error_code"] == "model_repetition_loop"
+    assert result["repetition_loop_detected"] is True
+    assert result["outcome_unknown"] is True
+    assert result["terminal"] is True and result["retryable"] is False
+    assert result["retry_count"] == 2
+    assert "completion" not in result
+    assert runtime.calls == ["requested"]
+
+
+def test_complete_code_preserves_uncertain_backend_failure(tmp_path):
+    service, _ = _service(tmp_path, {
+        "error": "backend timed out after partial output",
+        "error_code": "backend_timeout",
+        "timed_out": True,
+        "outcome_unknown": True,
+        "cleanup_unconfirmed": True,
+        "_lah_partial_response": True,
+        "terminal": True,
+        "retryable": False,
+    })
+    result = service.complete_code({"prefix": "def ready():\n", "suffix": ""})
+    assert result["success"] is False
+    assert result["error_code"] == "backend_timeout"
+    assert all(result[key] is True for key in (
+        "timed_out", "outcome_unknown", "cleanup_unconfirmed", "_lah_partial_response", "terminal"
+    ))
+    assert result["retryable"] is False
+    assert "completion" not in result
+
+
 @pytest.mark.parametrize("state", [{"preempted": True}, {"timed_out": True}])
 def test_cancel_and_timeout_do_not_substitute_stale_response(tmp_path, state):
     service, runtime = _service(tmp_path, {"error": "provider stopped", **state})

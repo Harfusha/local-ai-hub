@@ -97,6 +97,7 @@ class Job:
     done: threading.Event = field(default_factory=threading.Event)
     result: dict[str, Any] = field(default_factory=dict)
     error: str | None = None
+    gpu_outcome_unknown: bool = False
     caller_timed_out: bool = False
     dispatched_at: float = 0.0
     started_at: float = 0.0
@@ -112,14 +113,32 @@ class Job:
 
 
 class QueueFullError(RuntimeError):
-    def __init__(self, message: str, *, reason: str = "queue_limit", retryable: bool = True, admission: dict[str, Any] | None = None):
+    def __init__(self, message: str, *, reason: str = "queue_limit", retryable: bool | None = None, admission: dict[str, Any] | None = None):
         self.admission = admission or {
-            "state": "rejected", "reason": reason, "queue_age_ms": 0, "retryable": bool(retryable),
+            "state": "rejected", "reason": reason, "queue_age_ms": 0,
+            "retryable": True if retryable is None else bool(retryable),
         }
         self.admission_state = str(self.admission["state"])
-        self.retryable = bool(retryable)
+        self.reason = str(self.admission.get("reason", reason))
+        self.retryable = bool(self.admission.get("retryable", True) if retryable is None else retryable)
         self.terminal = not self.retryable
         super().__init__(message)
+
+
+def admission_rejection_message(reason: str, *, background: bool) -> str:
+    """Describe admission failures without misclassifying foreground requests."""
+    reason = str(reason or "resource_pressure")
+    if reason == "vram_budget":
+        return "insufficient VRAM for model admission"
+    if reason == "vram_telemetry_unavailable":
+        return "VRAM telemetry unavailable; refusing model admission"
+    if reason == "resource_pressure":
+        return (
+            "resource pressure blocks background admission"
+            if background
+            else "resource pressure blocks foreground admission"
+        )
+    return f"model admission rejected: {reason}"
 
 
 class ModelUnavailableError(RuntimeError):
@@ -830,8 +849,7 @@ class AffinityScheduler:
             if admission["state"] == "rejected":
                 self._stats["queue_rejections"] += 1
                 reason = str(admission.get("reason", "resource_pressure"))
-                message = ("insufficient VRAM for model admission" if reason == "vram_budget"
-                           else "resource pressure blocks background admission")
+                message = admission_rejection_message(reason, background=background)
                 raise QueueFullError(message, reason=reason, admission=admission)
             if len(self._pending) >= self.max_queue:
                 self._stats["queue_rejections"] += 1
@@ -953,6 +971,8 @@ class AffinityScheduler:
                 "_lah_scheduler_fairness_wait_ms": round(job.fairness_wait_ms, 1),
                 "_lah_scheduler_background": job.background,
             }
+            if job.gpu_outcome_unknown:
+                result.update(outcome_unknown=True, terminal=True, retryable=False)
             if job.model_switch_receipt is not None:
                 result["_lah_scheduler_model_switch"] = dict(job.model_switch_receipt)
             return result
@@ -2070,6 +2090,9 @@ class AffinityScheduler:
                     or (failed and not clean_app_error and result.get("operation_not_started") is not True and not completed_at_limit)
                 ):
                     self._mark_internal_gpu_uncertain_locked()
+                    job.gpu_outcome_unknown = True
+                    if isinstance(job.result, dict) and not job.error:
+                        job.result.update(success=False, outcome_unknown=True, terminal=True, retryable=False)
                 reprepare = (not uncertain and result.get("success") is False
                              and result.get("operation_not_started") is True
                              and result.get("error_code") == "model_preparation_required")

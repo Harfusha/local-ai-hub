@@ -29,6 +29,31 @@ from .search_pagination import MAX_PAGE_SIZE, MAX_PAGE_WINDOW, pagination_bounds
 from .search_modes import prefers_lexical_precision
 
 
+def _record_security_inventory_issue(status: dict[str, Any] | None, root: Path,
+                                     reason: str, path: Path | None = None) -> None:
+    if status is None:
+        return
+    status["complete"] = False
+    if reason not in status["reasons"]:
+        status["reasons"].append(reason)
+    if path is None:
+        return
+    try:
+        relative = path.relative_to(root)
+        if not relative.parts or any(part in {".", ".."} for part in relative.parts):
+            return
+        value = relative.as_posix()
+    except ValueError:
+        return
+    examples = status.setdefault("examples", {}).setdefault(reason, [])
+    if value in examples:
+        return
+    if len(examples) < 3:
+        examples.append(value)
+    else:
+        status["examples_truncated"] = True
+
+
 _WORD = re.compile(r"[A-Za-z_][A-Za-z0-9_./:-]{1,80}")
 MAX_EXACT_SEARCH_FILES = 8000
 MAX_EXACT_GIT_PATHS = 128_000
@@ -410,7 +435,10 @@ class RepositoryTools:
             raise ValueError(f"root directory does not exist: {path}")
         return path
 
-    def _git_files(self, root: Path, *, max_files: int | None = None, force: bool = False) -> GitFileInventory | None:
+    def _git_files(self, root: Path, *, max_files: int | None = None, force: bool = False,
+                   pathspecs: tuple[str, ...] = (),
+                   inventory_status: dict[str, Any] | None = None,
+                   deadline: float | None = None) -> GitFileInventory | None:
         """Stream a bounded tracked + untracked Git inventory.
 
         At most ``max_files`` paths are retained (the default hard bound is
@@ -420,12 +448,21 @@ class RepositoryTools:
         if not self.prefer_git or not (root / ".git").exists():
             return None
         limit = self.max_files if max_files is None else max(0, int(max_files))
+        if (not isinstance(pathspecs, tuple) or len(pathspecs) > 64 or any(
+            type(value) is not str or not value or "\x00" in value
+            or value.startswith(("/", "\\")) or Path(value).is_absolute() or PureWindowsPath(value).drive
+            or any(part in {".", ".."} for part in value.replace("\\", "/").split("/"))
+            for value in pathspecs
+        )):
+            return None
         key = str(root)
+        if pathspecs:
+            key += "\0hints"
         now = time.monotonic()
         root_resolved = root.resolve(strict=False)
         with self._git_files_lock:
             cached = self._git_files_cache.get(key)
-            if not force and cached and (self.git_files_cache_ttl <= 0 or now - cached[0] <= self.git_files_cache_ttl):
+            if not pathspecs and not force and cached and (self.git_files_cache_ttl <= 0 or now - cached[0] <= self.git_files_cache_ttl):
                 self._git_stats["file_list_hits"] += 1
                 return GitFileInventory(
                     [(root_resolved / rel) for rel in cached[1][:limit]],
@@ -435,7 +472,11 @@ class RepositoryTools:
                 return None
             flight = self._git_files_flights.setdefault(key, threading.Lock())
 
-        if not flight.acquire(timeout=self.git_files_timeout + 0.25):
+        remaining = None if deadline is None else max(0.0, deadline - time.monotonic())
+        if remaining is not None and remaining <= 0:
+            return None
+        wait_timeout = self.git_files_timeout + 0.25 if remaining is None else min(self.git_files_timeout + 0.25, remaining)
+        if not flight.acquire(timeout=wait_timeout):
             with self._git_files_lock:
                 self._git_stats["file_list_coalesced"] += 1
             return None
@@ -446,7 +487,7 @@ class RepositoryTools:
             now = time.monotonic()
             with self._git_files_lock:
                 cached = self._git_files_cache.get(key)
-                if not force and cached and (self.git_files_cache_ttl <= 0 or now - cached[0] <= self.git_files_cache_ttl):
+                if not pathspecs and not force and cached and (self.git_files_cache_ttl <= 0 or now - cached[0] <= self.git_files_cache_ttl):
                     self._git_stats["file_list_hits"] += 1
                     self._git_stats["file_list_coalesced"] += 1
                     return GitFileInventory(
@@ -456,8 +497,11 @@ class RepositoryTools:
                 if now < self._git_files_slow_until.get(key, 0.0):
                     return None
                 self._git_stats["file_list_misses"] += 1
+            command = ["git", "-C", str(root), "ls-files", "-co", "--exclude-standard", "-z"]
+            if pathspecs:
+                command.extend(["--", *(f":(literal){path}" for path in pathspecs)])
             process = popen_managed(
-                ["git", "-C", str(root), "ls-files", "-co", "--exclude-standard", "-z"],
+                command,
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
                 **hidden_run_kwargs(text=False),
@@ -471,8 +515,11 @@ class RepositoryTools:
                     except (OSError, ValueError):
                         pass
 
-            inventory_deadline = time.monotonic() + self.git_files_timeout
-            timer = threading.Timer(self.git_files_timeout, kill_on_timeout)
+            git_timeout = self.git_files_timeout if deadline is None else min(self.git_files_timeout, max(0.0, deadline - time.monotonic()))
+            if git_timeout <= 0:
+                return None
+            inventory_deadline = time.monotonic() + git_timeout
+            timer = threading.Timer(git_timeout, kill_on_timeout)
             timer.daemon = True
             timer.start()
             inventory_paths = _BoundedSortedPaths(limit)
@@ -483,6 +530,10 @@ class RepositoryTools:
 
             def consider(raw: bytes) -> bool:
                 nonlocal scanned_paths, scanned_bytes, scan_capped
+                if deadline is not None and time.monotonic() >= deadline:
+                    scan_capped = True
+                    _record_security_inventory_issue(inventory_status, root, "time_limit")
+                    return False
                 if not raw:
                     return True
                 scanned_paths += 1
@@ -505,10 +556,24 @@ class RepositoryTools:
                         return True
                     if self.extensions and relative.suffix.lower() not in self.extensions and relative.name.lower() not in self.special_filenames:
                         return True
+                    if inventory_status is not None and not self._inventory_path_safe(root, root / rel):
+                        try:
+                            intentional_link = self._inventory_path_has_link(root, root / rel)
+                            if not intentional_link:
+                                _record_security_inventory_issue(inventory_status, root, "unavailable_path", root / rel)
+                        except FileNotFoundError:
+                            pass
+                        except (OSError, ValueError):
+                            _record_security_inventory_issue(inventory_status, root, "inventory_error", root / rel)
+                        return True
                     try:
                         if (root / rel).stat().st_size > self.max_file_bytes:
+                            _record_security_inventory_issue(inventory_status, root, "oversized_file", root / rel)
                             return True
+                    except FileNotFoundError:
+                        return True
                     except OSError:
+                        _record_security_inventory_issue(inventory_status, root, "inventory_error", root / rel)
                         return True
                 inventory_paths.add(rel)
                 return True
@@ -554,7 +619,7 @@ class RepositoryTools:
                 [(root_resolved / rel) for rel in rels], complete=complete,
             )
             with self._git_files_lock:
-                if (max_files is None or max_files >= self.max_files) and complete:
+                if inventory_status is None and not pathspecs and (max_files is None or max_files >= self.max_files) and complete:
                     self._git_files_cache[key] = (time.monotonic(), tuple(rels))
                     if len(self._git_files_cache) > 64:
                         for cache_key in list(self._git_files_cache.keys())[:-32]:
@@ -592,6 +657,23 @@ class RepositoryTools:
         ):
             yield path
 
+    def security_inventory(self, root: str, *, deadline: float | None = None) -> tuple[list[Path], dict[str, Any]]:
+        """Return a bounded audit inventory together with explicit coverage."""
+        status: dict[str, Any] = {"complete": True, "reasons": [], "examples": {}, "examples_truncated": False}
+        bound = max(0, self.max_files)
+        entries = list(self._iter_files_with_stat(
+            root, max_files=bound + 1, inventory_status=status, inventory_deadline=deadline,
+        ))
+        if len(entries) > bound:
+            _record_security_inventory_issue(status, self._root(root), "file_limit", entries[bound][0])
+            entries = entries[:bound]
+        status["_identity"] = {
+            str(path): (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+            for path, info in entries
+        }
+        status["reasons"] = list(dict.fromkeys(status["reasons"]))
+        return [path for path, _ in entries], status
+
     def _is_ignored_relative_path(self, relative: Path) -> bool:
         if is_root_archive_path(relative):
             return True
@@ -604,6 +686,19 @@ class RepositoryTools:
             and relative.suffix.lower() not in self.extensions
             and relative.name.lower() not in self.special_filenames
         )
+
+    @staticmethod
+    def _inventory_path_has_link(base: Path, path: Path) -> bool:
+        relative = path.relative_to(base)
+        if any(part in {".", ".."} for part in relative.parts):
+            raise ValueError("invalid inventory path")
+        current = base
+        for part in relative.parts:
+            current = current / part
+            info = current.lstat()
+            if stat.S_ISLNK(info.st_mode) or getattr(info, "st_file_attributes", 0) & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0):
+                return True
+        return False
 
     @staticmethod
     def _resolve_inventory_path_safe(base: Path, path: Path) -> tuple[Path, Path] | None:
@@ -630,10 +725,34 @@ class RepositoryTools:
 
     def _iter_files_with_stat(
         self, root: str, max_depth: int = 25, *, project_settings: Any | None = None,
-        max_files: int | None = None,
+        max_files: int | None = None, inventory_status: dict[str, Any] | None = None,
+        inventory_deadline: float | None = None,
     ) -> Iterable[tuple[Path, os.stat_result]]:
+        def incomplete(reason: str, path: Path | None = None) -> None:
+            _record_security_inventory_issue(inventory_status, base, reason, path)
+
+        def expired() -> bool:
+            if inventory_deadline is not None and time.monotonic() >= inventory_deadline:
+                incomplete("time_limit")
+                return True
+            return False
+
         base = self._root(root)
+        def safe(path: Path) -> bool:
+            if self._inventory_path_safe(base, path):
+                return True
+            if inventory_status is not None:
+                try:
+                    intentional_link = self._inventory_path_has_link(base, path)
+                    if not intentional_link:
+                        incomplete("unavailable_path", path)
+                except (OSError, ValueError):
+                    incomplete("inventory_error", path)
+            return False
+
         limit = self.max_files if max_files is None else max(0, int(max_files))
+        if expired():
+            return
         if project_settings is not None:
             yielded = 0
             for path in self._iter_project_search_files(base, project_settings, max_depth):
@@ -646,8 +765,17 @@ class RepositoryTools:
                     continue
                 yield path, stat
             return
-        git_files = self._git_files(base, max_files=limit) if max_files is not None else self._git_files(base)
+        git_files = (
+            self._git_files(base, max_files=limit, force=True, inventory_status=inventory_status, deadline=inventory_deadline)
+            if inventory_status is not None
+            else self._git_files(base, max_files=limit) if max_files is not None else self._git_files(base)
+        )
         if git_files is not None:
+            if isinstance(git_files, GitFileInventory):
+                if not git_files.complete and not (inventory_status is not None and "time_limit" in inventory_status["reasons"]):
+                    incomplete("file_limit")
+            else:
+                incomplete("inventory_coverage_unknown")
             candidates = git_files
         else:
             candidates = []
@@ -655,11 +783,19 @@ class RepositoryTools:
             try:
                 visited_realpaths.add(os.path.realpath(base))
             except Exception:
-                pass
-            for dirpath, dirnames, filenames in os.walk(base, followlinks=False):
+                incomplete("inventory_error")
+            def walk_error(error: OSError) -> None:
+                incomplete("inventory_error", Path(error.filename) if error.filename else None)
+            walk_options: dict[str, Any] = {"followlinks": False}
+            if inventory_status is not None:
+                walk_options["onerror"] = walk_error
+            for dirpath, dirnames, filenames in os.walk(base, **walk_options):
+                if expired():
+                    return
                 try:
                     relative_dir = Path(dirpath).relative_to(base)
                 except ValueError:
+                    incomplete("unavailable_path")
                     relative_dir = Path()
                 dirnames[:] = sorted((
                     d for d in dirnames
@@ -669,16 +805,20 @@ class RepositoryTools:
                 try:
                     rel_parts = Path(dirpath).relative_to(base).parts
                     if len(rel_parts) >= max_depth:
+                        if dirnames or filenames:
+                            incomplete("depth_limit")
                         dirnames.clear()
                         continue
                 except ValueError:
-                    pass
+                    incomplete("unavailable_path")
 
                 kept_dirnames: list[str] = []
                 for d in dirnames:
+                    if expired():
+                        return
                     subdir = os.path.join(dirpath, d)
                     try:
-                        if not self._inventory_path_safe(base, Path(subdir)):
+                        if not safe(Path(subdir)):
                             continue
                         rpath = os.path.realpath(subdir)
                         if rpath in visited_realpaths:
@@ -686,12 +826,15 @@ class RepositoryTools:
                         visited_realpaths.add(rpath)
                         kept_dirnames.append(d)
                     except Exception:
+                        incomplete("inventory_error", Path(subdir))
                         continue
                 dirnames[:] = kept_dirnames
 
                 for name in sorted(filenames, key=lambda value: (value.casefold(), value)):
+                    if expired():
+                        return
                     p = Path(dirpath) / name
-                    if not self._inventory_path_safe(base, p):
+                    if not safe(p):
                         continue
                     if p.suffix.lower() in self.ignore_extensions:
                         continue
@@ -700,33 +843,41 @@ class RepositoryTools:
                     if max_files is not None:
                         try:
                             if p.stat().st_size > self.max_file_bytes:
+                                incomplete("oversized_file", p)
                                 continue
                         except OSError:
+                            incomplete("inventory_error", p)
                             continue
                     candidates.append(p)
                     if len(candidates) >= limit:
+                        incomplete("file_limit", p)
                         break
                 if len(candidates) >= limit:
                     break
         count = 0
         for path in candidates:
+            if expired():
+                return
             if count >= limit:
                 break
             try:
                 relative = path.relative_to(base)
             except ValueError:
+                incomplete("unavailable_path", path)
                 continue
             # `git ls-files -co --exclude-standard` can return ignored paths from
             # other worktrees; configured exclusions apply to every inventory path.
             if self._is_ignored_relative_path(relative):
                 continue
-            if not self._inventory_path_safe(base, path):
+            if not safe(path):
                 continue
             try:
                 stat = path.stat()
                 if stat.st_size > self.max_file_bytes:
+                    incomplete("oversized_file", path)
                     continue
             except OSError:
+                incomplete("inventory_error", path)
                 continue
             count += 1
             yield path, stat
@@ -1678,6 +1829,7 @@ class RepositoryTools:
         *, git_inventory: Any = _UNSET_GIT_INVENTORY,
         candidate_limit: int | None = None,
         candidate_priority_terms: Iterable[str] = (),
+        candidate_path_priority: Callable[[str], int] | None = None,
         phase_timings_ms: dict[str, float] | None = None,
     ) -> Iterable[Path]:
         limit = max(1, min(int(self.max_files), 100_000))
@@ -1752,8 +1904,14 @@ class RepositoryTools:
                         and name.casefold() not in self.ignore_dirs
                         and depth < max_depth
                         and self._inventory_path_safe(base, Path(dirpath) / name)
-                    ), key=lambda name: (name.casefold(), name))
-                    for name in sorted(filenames, key=lambda value: (value.casefold(), value)):
+                    ), key=lambda name: (
+                        candidate_path_priority((relative_dir / name).as_posix()) if candidate_path_priority else 0,
+                        name.casefold(), name,
+                    ))
+                    for name in sorted(filenames, key=lambda value: (
+                        candidate_path_priority((relative_dir / value).as_posix()) if candidate_path_priority else 0,
+                        value.casefold(), value,
+                    )):
                         entries_seen += 1
                         if entries_seen > entry_budget:
                             break
@@ -1808,7 +1966,7 @@ class RepositoryTools:
         if candidate_limit is not None and priority_terms and candidates:
             indexed = list(enumerate(candidates))
 
-            def path_term_rank(item: tuple[int, Path]) -> tuple[int, int]:
+            def path_term_rank(item: tuple[int, Path]) -> tuple[int, int, int]:
                 position, candidate = item
                 stem = candidate.stem.casefold()
                 overlap = sum(
@@ -1817,9 +1975,20 @@ class RepositoryTools:
                     or (len(term) >= 4 and stem.startswith(term))
                     or (len(stem) >= 4 and term.startswith(stem))
                 )
-                return (-overlap, position)
+                try:
+                    preferred = candidate_path_priority(candidate.relative_to(base).as_posix()) if candidate_path_priority else 0
+                except ValueError:
+                    preferred = 1
+                return (preferred, -overlap, position)
 
             candidates = [path for _position, path in sorted(indexed, key=path_term_rank)]
+        elif candidate_limit is not None and candidate_path_priority and candidates:
+            def hint_rank(candidate: Path) -> int:
+                try:
+                    return candidate_path_priority(candidate.relative_to(base).as_posix())
+                except ValueError:
+                    return 1
+            candidates = sorted(candidates, key=hint_rank)
 
         if phase_timings_ms is not None:
             phase_timings_ms["candidate_priority_sort_ms"] = round(
@@ -2636,6 +2805,8 @@ class RepositoryTools:
         exact_count: bool = False,
         force_include_paths: list[str] | tuple[str, ...] = (),
         path_priority: Callable[[str], tuple[int, int, int]] | None = None,
+        candidate_path_priority: Callable[[str], int] | None = None,
+        candidate_hint_paths: tuple[str, ...] = (),
         installation_intent_priority: bool = True,
     ) -> dict[str, Any]:
         base = self._root(root)
@@ -2738,6 +2909,13 @@ class RepositoryTools:
             git_inventory_started = time.perf_counter()
             if candidate_inventory is _UNSET_GIT_INVENTORY:
                 candidate_inventory = self._git_files(base)
+            if (candidate_hint_paths and isinstance(candidate_inventory, GitFileInventory)
+                    and not candidate_inventory.complete):
+                hinted = self._git_files(base, pathspecs=candidate_hint_paths)
+                if hinted is not None:
+                    candidate_inventory = GitFileInventory(
+                        list(dict.fromkeys([*hinted, *candidate_inventory])), complete=False,
+                    )
             search_phase_timings_ms["git_inventory_ms"] = round(
                 (time.perf_counter() - git_inventory_started) * 1000.0, 1,
             )
@@ -2746,6 +2924,7 @@ class RepositoryTools:
                 base, project_settings, 25, git_inventory=candidate_inventory,
                 candidate_limit=candidate_path_budget + 16,
                 candidate_priority_terms=terms,
+                candidate_path_priority=candidate_path_priority,
                 phase_timings_ms=search_phase_timings_ms,
             ))
             search_phase_timings_ms["project_file_iteration_ms"] = round(
@@ -2754,7 +2933,9 @@ class RepositoryTools:
             if (
                 isinstance(candidate_inventory, list)
                 and len(candidate_inventory) > candidate_path_budget
-            ) or len(project_candidates) >= candidate_path_budget:
+            ) or (isinstance(candidate_inventory, GitFileInventory) and not candidate_inventory.complete) or (
+                len(project_candidates) >= min(max(1, self.max_files), candidate_path_budget)
+            ):
                 truncation_reasons.append("candidate_file_limit")
         elif candidate_paths is not None:
             # This is an explicitly incomplete candidate set for hybrid search,

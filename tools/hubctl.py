@@ -19,7 +19,7 @@ from local_ai_hub.llama_cpp_runtime import llama_cpp_backend_selection
 from local_ai_hub.process_utils import hidden_run_kwargs, terminate_tree
 
 ROOT_CONFIG = ROOT / "config.toml"
-ACTIVITY_MODES = ("active", "gaming", "maintenance")
+ACTIVITY_MODES = ("active", "gaming", "maintenance", "preprocessing")
 
 
 def is_valid_activity_mode(mode: Any) -> bool:
@@ -63,6 +63,8 @@ def _activity_mode_request(mode: str | None = None, *, config_path: str | None =
     try:
         c = HubClient(config_path=config_path or _config_arg(), auto_start=False)
         if not c._online(timeout=2.0):
+            if mode == "preprocessing":
+                return {"success": False, "server_status": "offline", "error": "preprocessing mode requires a running Hub"}
             config = load_config(config_path or _config_arg())
             server = config.get("server", {})
             state_dir = server.get("state_dir") if isinstance(server, dict) else None
@@ -117,6 +119,10 @@ def _activity_mode_transition_failures(result: dict[str, Any], requested_mode: s
     if not isinstance(result, dict):
         return ["invalid result"]
     failures: list[str] = []
+    if requested_mode == "preprocessing":
+        started = result.get("preprocessing_start")
+        if not isinstance(started, dict) or started.get("success") is not True:
+            failures.append("preprocessing start")
     if requested_mode == "gaming":
         unload = result.get("runtime_unload")
         unload_ok = False
@@ -135,7 +141,7 @@ def _activity_mode_transition_failures(result: dict[str, Any], requested_mode: s
         accelerator_release = result.get("accelerator_release")
         if not isinstance(accelerator_release, dict) or accelerator_release.get("success") is not True:
             failures.append("accelerator release")
-    if requested_mode in {"gaming", "maintenance"}:
+    if requested_mode in {"gaming", "maintenance", "preprocessing"}:
         job_cancellation = result.get("job_cancellation")
         if "job_cancellation" in result and (
             not isinstance(job_cancellation, dict) or job_cancellation.get("success") is not True

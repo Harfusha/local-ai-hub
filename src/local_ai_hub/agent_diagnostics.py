@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import tomllib
+import copy
 from pathlib import Path
 from typing import Any
 
@@ -104,6 +105,20 @@ def project_agent_response(value: Any, *, enabled: bool, _aggregate: bool = Fals
         if not enabled and key == "response_budget" and isinstance(item, dict):
             item = {name: field for name, field in item.items() if name != "original_tokens"}
         projected[key] = item if key in _DOCUMENT_FIELDS else project_agent_response(item, enabled=enabled, _aggregate=_aggregate)
+    return projected
+
+
+def project_pubsub_poll_response(value: Any, *, enabled: bool) -> Any:
+    """Keep caller-authored message payloads while filtering envelope diagnostics."""
+    projected = project_agent_response(value, enabled=enabled)
+    if not isinstance(value, dict) or not isinstance(projected, dict) or value.get("success") is not True:
+        return projected
+    source, result = value.get("messages"), projected.get("messages")
+    if not isinstance(source, list) or not isinstance(result, list) or len(source) != len(result):
+        return projected
+    for original, shown in zip(source, result):
+        if isinstance(original, dict) and isinstance(shown, dict) and "payload" in original:
+            shown["payload"] = copy.deepcopy(original["payload"])
     return projected
 
 

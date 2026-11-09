@@ -136,6 +136,36 @@ def make_realtime_app():
     return app
 
 
+def test_light_live_status_preserves_bounded_preprocessing_progress():
+    app = make_realtime_app()
+    project = {
+        "root": "C:/repo", "project": "repo", "status": "running", "phase": "lexical",
+        "overall_progress_pct": 25.7, "phase_progress_pct": 14.4, "files": 1921,
+        "hashed_files": 897, "rag_files": 0, "file_cards": 0,
+        "active_detail": "FTS5 full-text indexing: 276/1921 files (14.4%)",
+        "progress_age_seconds": 20.0, "git_common_dir": "C:/repo/.git", "is_worktree": False,
+        "stats": {"large_private_payload": "must not be copied"},
+    }
+    app.preprocessor = Probe(status={"success": True, "projects": [project]}, stats={})
+    row = app.realtime_status(light=True)["preprocessing"]["projects"][0]
+    assert row["files"] == 1921
+    assert row["hashed_files"] == 897
+    assert row["rag_files"] == 0
+    assert row["phase_progress_pct"] == 14.4
+    assert row["active_detail"] == project["active_detail"]
+    assert row["is_worktree"] is False
+    assert "stats" not in row
+
+
+def test_light_live_status_does_not_invent_completed_project():
+    app = make_realtime_app()
+    app.preprocessor = Probe(status={"success": True, "projects": [{"root": "C:/repo"}]}, stats={})
+    row = app.realtime_status(light=True)["preprocessing"]["projects"][0]
+    assert "status" not in row
+    assert "phase" not in row
+    assert "overall_progress_pct" not in row
+
+
 def read_concurrent(callback, count=12):
     barrier = threading.Barrier(count)
     results = [None] * count

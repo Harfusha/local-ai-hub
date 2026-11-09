@@ -529,7 +529,7 @@ def test_failed_dispatched_model_preparation_retains_gpu_fence(tmp_path):
         other.close()
 
 
-@pytest.mark.parametrize("failure", ["reported_unknown", "exception", "contradictory"])
+@pytest.mark.parametrize("failure", ["reported_unknown", "exception", "contradictory", "repetition"])
 def test_uncertain_internal_job_retains_gpu_fence(tmp_path, failure):
     config = {"server": {"state_dir": str(tmp_path)}}
     runtime = SimpleNamespace(loaded_model_details=lambda: [])
@@ -546,11 +546,14 @@ def test_uncertain_internal_job_retains_gpu_fence(tmp_path, failure):
             raise TimeoutError("backend outcome unknown")
         if failure == "contradictory":
             return {"success": False, "operation_not_started": True, "outcome_unknown": True}
+        if failure == "repetition":
+            return {"error": "repetition loop", "_lah_repetition_loop_detected": True}
         return {"success": False, "error": "connection lost", "outcome_unknown": True}
     scheduler._perform_switch = switch
     try:
         result = scheduler.submit("model", source="test", execute=execute, wait_timeout=3)
         assert result["success"] is False
+        assert result["outcome_unknown"] is True
         with scheduler._cond:
             assert not scheduler._release_internal_gpu()
         assert other.reserve_external_gpu() is None

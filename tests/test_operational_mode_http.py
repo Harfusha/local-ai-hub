@@ -170,6 +170,95 @@ def test_admin_mode_control_remains_available_in_maintenance(monkeypatch, tmp_pa
     assert operational_mode.load_operational_mode(tmp_path).mode == "active"
 
 
+def test_preprocessing_mode_resumes_preprocessor_and_keeps_admission_closed(monkeypatch, tmp_path):
+    operational_mode.set_operational_mode(tmp_path, "gaming")
+    handler, app, responses = _handler(monkeypatch, tmp_path, method="POST", path="/api/admin/mode", payload={"mode": "preprocessing"})
+    calls = []
+    app.preprocessor = SimpleNamespace(start_exclusive=lambda: calls.append("resume") or {"success": True}, status=lambda: {"success": True, "paused": False, "projects": []})
+    http_server.Handler.do_POST(handler)
+    assert responses[-1][0] == 200
+    assert responses[-1][1]["mode"] == "preprocessing"
+    assert calls == ["resume"]
+    assert operational_mode.preprocessing_mode_ready(tmp_path, operational_mode.load_operational_mode(tmp_path))
+    token, event = http_server._ACTIVE_TRANSCRIPTIONS.begin()
+    try:
+        assert event.is_set()
+    finally:
+        http_server._ACTIVE_TRANSCRIPTIONS.finish(token, {"cancelled": True})
+    blocked, _, blocked_responses = _handler(monkeypatch, tmp_path, method="POST", path="/api/search", payload={"query": "x"})
+    http_server.Handler.do_POST(blocked)
+    assert blocked_responses[-1][0] == 423
+    assert blocked_responses[-1][1]["mode"] == "preprocessing"
+
+
+def test_preprocessing_mode_waits_for_active_transcriptions(monkeypatch, tmp_path):
+    token, _event = http_server._ACTIVE_TRANSCRIPTIONS.begin()
+    try:
+        handler, _app, responses = _handler(monkeypatch, tmp_path, method="POST", path="/api/admin/mode", payload={"mode": "preprocessing"})
+        http_server.Handler.do_POST(handler)
+        assert responses[-1][0] == 423
+        assert operational_mode.load_operational_mode(tmp_path).mode == "active"
+    finally:
+        http_server._ACTIVE_TRANSCRIPTIONS.finish(token, {"success": True})
+
+
+def test_preprocessing_mode_reports_failed_async_cancellation(monkeypatch, tmp_path):
+    class FailedManager(_ModeManager):
+        def on_operational_mode_changed(self, snapshot):
+            return {"success": False, "error": "cancellation failed"}
+    handler, app, responses = _handler(monkeypatch, tmp_path, method="POST", path="/api/admin/mode", payload={"mode": "preprocessing"}, manager=FailedManager(tmp_path))
+    starts = []
+    app.preprocessor = SimpleNamespace(start_exclusive=lambda: starts.append(True) or {"success": True}, pause=lambda: None, status=lambda: {"success": True, "paused": False, "projects": []})
+    http_server.Handler.do_POST(handler)
+    assert responses[-1][1]["job_cancellation"]["success"] is False
+    assert not starts
+    assert responses[-1][1]["preprocessing_start"]["success"] is False
+    assert not operational_mode.preprocessing_mode_ready(tmp_path, operational_mode.load_operational_mode(tmp_path))
+
+
+def test_mode_status_exposes_preprocessing_readiness(monkeypatch, tmp_path):
+    snapshot = operational_mode.set_operational_mode(tmp_path, "preprocessing")
+    handler, _app, responses = _handler(monkeypatch, tmp_path, method="GET", path="/api/mode")
+    http_server.Handler.do_GET(handler)
+    assert responses[-1][1]["preprocessing_ready"] is False
+    operational_mode.publish_preprocessing_ready(tmp_path, snapshot)
+    handler, _app, responses = _handler(monkeypatch, tmp_path, method="GET", path="/api/mode")
+    http_server.Handler.do_GET(handler)
+    assert responses[-1][1]["preprocessing_ready"] is True
+
+
+def test_retry_unready_preprocessing_requeues_projects(monkeypatch, tmp_path):
+    operational_mode.set_operational_mode(tmp_path, "preprocessing")
+    handler, app, responses = _handler(monkeypatch, tmp_path, method="POST", path="/api/admin/mode", payload={"mode": "preprocessing"})
+    calls = []
+    app.preprocessor = SimpleNamespace(
+        start_exclusive=lambda: calls.append("requeue") or {"success": True},
+        resume=lambda: calls.append("resume") or {"success": True},
+        status=lambda: {"success": True, "paused": False, "projects": []},
+    )
+    http_server.Handler.do_POST(handler)
+    assert responses[-1][1]["preprocessing_start"]["success"] is True
+    assert calls == ["requeue"]
+    assert operational_mode.preprocessing_mode_ready(tmp_path, operational_mode.load_operational_mode(tmp_path))
+
+
+def test_preprocessing_ready_write_failure_stays_fail_closed(monkeypatch, tmp_path):
+    handler, app, responses = _handler(monkeypatch, tmp_path, method="POST", path="/api/admin/mode", payload={"mode": "preprocessing"})
+    app.preprocessor = SimpleNamespace(start_exclusive=lambda: {"success": True}, status=lambda: {"success": True, "paused": False, "projects": []})
+    monkeypatch.setattr(operational_mode, "publish_preprocessing_ready", lambda *_args: (_ for _ in ()).throw(OSError("disk")))
+    http_server.Handler.do_POST(handler)
+    assert responses[-1][1]["preprocessing_start"]["success"] is False
+    assert not operational_mode.preprocessing_mode_ready(tmp_path, operational_mode.load_operational_mode(tmp_path))
+
+
+def test_preprocessing_mode_waits_for_tracked_inference(monkeypatch, tmp_path):
+    manager = _ModeManager(tmp_path, inference_active=True)
+    handler, _app, responses = _handler(monkeypatch, tmp_path, method="POST", path="/api/admin/mode", payload={"mode": "preprocessing"}, manager=manager)
+    http_server.Handler.do_POST(handler)
+    assert responses[-1][0] == 423
+    assert operational_mode.load_operational_mode(tmp_path).mode == "active"
+
+
 def test_gaming_cleanup_runs_outside_mode_guard_and_keeps_release_reserved(monkeypatch, tmp_path):
     # Measure the cleanup/lock handshake independently of physical flush latency.
     # The synchronous endpoint test below retains the real on-disk fsync gate.

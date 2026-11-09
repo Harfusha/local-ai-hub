@@ -28,7 +28,7 @@ from local_ai_hub.repository_scope import (
     RepositoryScopeError, canonical_repository_root, reject_retired_tenancy_fields,
 )
 from local_ai_hub.compact import compact_result
-from local_ai_hub.agent_diagnostics import detailed_diagnostics_enabled, project_agent_response
+from local_ai_hub.agent_diagnostics import detailed_diagnostics_enabled, project_agent_response, project_pubsub_poll_response
 from local_ai_hub.agent_surface import diagnostic_mcp_operation, diagnostics_disabled_response
 from local_ai_hub.response_budget import (
     LIFECYCLE_PROTECTED_KEYS,
@@ -69,6 +69,7 @@ from local_ai_hub.task_memory_wire import (
     task_memory_essential_response as _task_memory_essential_response,
     task_memory_original_tokens as _task_memory_original_tokens,
     task_memory_projection as _task_memory_projection,
+    task_private_state_projection as _task_private_state_projection,
 )
 from local_ai_hub.routing import semantic_handoff_hint, targeted_semantic_handoff
 from local_ai_hub.operation_contracts import (
@@ -1672,6 +1673,13 @@ def _compact(
     memory_projection = (
         _task_memory_projection(value) if task_kind == "task_memory" else None
     )
+    if (memory_projection is None and task_kind == "task_memory"
+            and isinstance(value, dict) and value.get("success") is True
+            and (isinstance(value.get("task"), dict) or isinstance(value.get("tasks"), list))):
+        # Generic compaction removes meaningful empty checkpoint fields. Keep
+        # task responses intact and sanitized even when no memory is attached;
+        # the MCP boundary still enforces the full wire budget.
+        memory_projection = _task_private_state_projection(value)
     if memory_projection is not None:
         # The MCP boundary below owns the *wire* budget, including both text
         # and structuredContent. Generic status/pointer clipping loses memory.
@@ -1767,6 +1775,15 @@ def _compact(
         extra_fields=compact_extra_fields,
     )
     compacted = _preserve_contract_state(raw_value, compacted)
+    pubsub_messages = (
+        copy.deepcopy(raw_value["messages"])
+        if options.get("action") == "pubsub_poll" and isinstance(raw_value, dict)
+        and raw_value.get("success") is True and isinstance(raw_value.get("messages"), list)
+        else None
+    )
+    if pubsub_messages is not None and isinstance(compacted, dict):
+        # Empty/null JSON payloads carry meaning and must survive projection.
+        compacted["messages"] = pubsub_messages
     if task_kind == "status" and isinstance(projected, dict) and isinstance(compacted, dict):
         for key in ("modified", "staged", "untracked", "deleted", "unmerged", "changed_paths", "files"):
             original, shown = projected.get(key), compacted.get(key)
@@ -1856,6 +1873,7 @@ def _compact(
             *(SOURCE_SLICE_FIELDS if source_slice and raw_value.get("success") is True else ()),
             *(_CONTEXT_PROTECTED_KEYS if task_kind in {"context", "context_compile"} else ()),
             *(_STATUS_PROTECTED_KEYS if task_kind == "status" else ()),
+            *(("messages",) if pubsub_messages is not None else ()),
             *(_HARDWARE_BENCHMARK_PROTECTED_KEYS if task_kind == "hardware_benchmark" else ()),
             *(_VERIFY_PROTECTED_KEYS if task_kind == "verify" else ()),
         )))
@@ -1868,6 +1886,13 @@ def _compact(
             protected_keys=protected_keys,
             token_metadata=efficiency_metadata(),
         )
+        if pubsub_messages is not None and (
+            not isinstance(compacted, dict)
+            or json.dumps(compacted.get("messages"), sort_keys=True, separators=(",", ":"))
+            != json.dumps(pubsub_messages, sort_keys=True, separators=(",", ":"))
+        ):
+            return {"success": False, "status_code": 413, "terminal": True, "retryable": False,
+                    "error": "Pubsub messages exceed response budget; reduce limit or increase max_response_tokens"}
         if expected_context_delta is not None and (
             not isinstance(compacted, dict) or compacted.get("delta") != expected_context_delta
         ):
@@ -1909,7 +1934,11 @@ def _compact(
                 compacted = {
                     "success": False, "status_code": 413, "terminal": True,
                     "retryable": False,
-                    "error": "The first complete code-index symbol exceeds the configured response budget.",
+                    "error": (
+                        "The first complete code-index symbol exceeds the configured response budget."
+                        if raw_value["symbols"] else
+                        "The code-index response exceeds the configured response budget."
+                    ),
                     "root": raw_value.get("root"), "offset": raw_value.get("offset", 0),
                     "limit": raw_value.get("limit", 24),
                     "total_matches": raw_value.get("total_matches", 0),
@@ -2514,7 +2543,9 @@ def _record_tool_accounting(
 
 def _agent_output(value: Any, tool: str, arguments: dict[str, Any]) -> Any:
     """The dashboard toggle is authoritative; request profiles cannot enable detail."""
-    result = project_agent_response(value, enabled=detailed_diagnostics_enabled(CFG))
+    projector = (project_pubsub_poll_response if tool == "local_ai_coord"
+                 and arguments.get("action") == "pubsub_poll" else project_agent_response)
+    result = projector(value, enabled=detailed_diagnostics_enabled(CFG))
     return _reconcile_existing_budget(result) or result
 
 
@@ -2816,6 +2847,20 @@ def _compact_endpoint_stats(value: Any) -> dict[str, Any]:
     return {"available": True, "items": items[:8], "truncated": len(items) > 8}
 
 
+def _effective_mcp_capabilities(
+    backend: dict[str, Any], adapter: dict[str, Any],
+) -> dict[str, Any]:
+    """Report backend capabilities only when the current MCP adapter exposes them."""
+    effective = copy.deepcopy(backend)
+    for name, local in adapter.items():
+        remote = effective.get(name)
+        if (isinstance(local, dict) and local.get("available") is False
+                and isinstance(remote, dict) and remote.get("available") is True):
+            remote.update(available=False, state=local.get("state", "disabled"),
+                          reason="disabled_in_mcp_adapter")
+    return effective
+
+
 @mcp.tool()
 @_instrumented_tool()
 def local_ai_status(
@@ -2838,6 +2883,8 @@ def local_ai_status(
     raw_capabilities = status.get("capabilities")
     if not isinstance(raw_capabilities, dict):
         raw_capabilities = FEATURES.capability_status()
+    else:
+        raw_capabilities = _effective_mcp_capabilities(raw_capabilities, FEATURES.capability_status())
     capabilities = {
         str(name): {
             key: item[key]
@@ -4448,7 +4495,12 @@ def _local_ai_repo_impl(
     if action == "test_matrix":
         return _compact(CLIENT.post("/api/test_matrix", {"root": root}, timeout=_timeout("quick")), "architecture")
     if action == "security_audit":
-        return _compact(CLIENT.post("/api/security_audit", {"root": root}, timeout=_timeout("quick")), "security")
+        if explicit_limit and (type(limit) is not int or not 1 <= limit <= MAX_PAGE_SIZE):
+            return contract_error(f"limit must be an integer from 1 through {MAX_PAGE_SIZE}")
+        audit_payload = {"root": root}
+        if explicit_limit:
+            audit_payload["limit"] = limit
+        return _compact(CLIENT.post("/api/security_audit", audit_payload, timeout=_timeout("quick")), "security")
     if action == "git_status":
         raw_status = CLIENT.get(f"/api/git/status?root={quote(root)}")
         if path and isinstance(raw_status, dict):
@@ -5367,6 +5419,7 @@ def local_ai_coord(
     include: list[str] | None = None,
     confidence: float | None = None,
     allow_adopt: bool = False,
+    operator_waiver: dict[str, Any] | None = None,
     acceptance_criteria: list[str] | None = None,
     criteria: list[str] | None = None,
     error: str = "",
@@ -6098,6 +6151,8 @@ def local_ai_coord(
                 task_kwargs["changed_paths"] = paths[:64]
         if action == "task_complete" and allow_adopt:
             task_kwargs["allow_adopt"] = True
+        if action == "task_complete" and operator_waiver is not None:
+            task_kwargs["operator_waiver"] = operator_waiver
         if action in {"task_claim", "task_adopt"}:
             return _compact(CLIENT.coord(
                 action="task_claim", task_id=task_id, owner=owner, root=root,
@@ -6158,12 +6213,18 @@ def local_ai_coord(
                 memory_kwargs[field] = field_value
         if action == "memory_record":
             memory_kwargs.update(key=key, value=value)
+            if status:
+                memory_kwargs["status"] = status
             if contradicts_record_id is not None:
                 memory_kwargs["contradicts_record_id"] = contradicts_record_id
             if supersedes_record_id is not None:
                 memory_kwargs["supersedes_record_id"] = supersedes_record_id
         elif action == "memory_find":
             memory_kwargs["query"] = query
+            if key:
+                memory_kwargs["key"] = key
+            if status:
+                memory_kwargs["status"] = status
         elif action in {"memory_get", "memory_delete", "memory_promote"}:
             memory_kwargs["record_id"] = record_id
         if action == "memory_promote":
@@ -6616,7 +6677,8 @@ if hasattr(mcp, "_tool_manager") and hasattr(mcp, "_mcp_server") and mcp_types i
                 }
                 _non_async_actions = sorted(set(_actions) - {"submit", "status", "wait", "result", "cancel"})
                 if _non_async_actions:
-                    _input_schema.setdefault("allOf", []).append({
+                    _input_schema.setdefault("if", {})
+                    _input_schema.setdefault("then", {}).setdefault("allOf", []).append({
                         "if": {
                             "properties": {"action": {"enum": _non_async_actions}},
                             "required": ["action"],
@@ -6639,7 +6701,11 @@ if hasattr(mcp, "_tool_manager") and hasattr(mcp, "_mcp_server") and mcp_types i
 
     def _mcp_task_memory_wire(value: dict[str, Any], requested: int) -> Any:
         """Fit complete adoption advice or explicitly reject its delivery."""
-        canonical = _normalize_task_memory_response(_task_memory_projection(value) or value)
+        sanitized_value = _task_private_state_projection(value)
+        memory_projection = _task_memory_projection(sanitized_value)
+        canonical = _normalize_task_memory_response(
+            memory_projection if memory_projection is not None else sanitized_value
+        )
         original = _task_memory_original_tokens(canonical)
 
         def emit(payload: dict[str, Any], *, compact_error_text: bool = False,
@@ -6666,9 +6732,14 @@ if hasattr(mcp, "_tool_manager") and hasattr(mcp, "_mcp_server") and mcp_types i
         for key in ("reused", "unchanged"):
             if key in value:
                 essential[key] = value[key]
-        # Strip only optional task metadata. The complete memory bundle remains
-        # byte-for-byte equivalent JSON in every successful candidate.
-        for source in (value, essential):
+        # Preserve optional envelope metadata, but never bypass the task projection.
+        # The complete memory bundle remains equivalent in every successful candidate.
+        safe_value = copy.deepcopy(sanitized_value)
+        if isinstance(canonical.get("task"), dict):
+            safe_value["task"] = copy.deepcopy(canonical["task"])
+        if isinstance(canonical.get("tasks"), list):
+            safe_value["tasks"] = copy.deepcopy(canonical["tasks"])
+        for source in (safe_value, essential):
             candidate = copy.deepcopy(source)
             candidate["response_budget"] = {
                 "requested_tokens": requested, "original_tokens": original,
@@ -6995,7 +7066,11 @@ if hasattr(mcp, "_tool_manager") and hasattr(mcp, "_mcp_server") and mcp_types i
                     failure = {
                         "success": False, "status_code": 413, "terminal": True,
                         "retryable": False,
-                        "error": "The first complete code-index symbol exceeds the configured MCP response budget.",
+                        "error": (
+                            "The first complete code-index symbol exceeds the configured MCP response budget."
+                            if value["symbols"] else
+                            "The code-index response exceeds the configured MCP response budget."
+                        ),
                     }
                     bounded = _mcp_bounded_error(failure, requested)
                     if bounded is not None:
@@ -7327,6 +7402,21 @@ if hasattr(mcp, "_tool_manager") and hasattr(mcp, "_mcp_server") and mcp_types i
             if recovery is not None:
                 return recovery
         contents, structured = _build_mcp_budget_payload(name, arguments, value)
+        if (name == "local_ai_coord" and arguments.get("action") == "pubsub_poll"
+                and isinstance(value, dict) and value.get("success") is True
+                and isinstance(value.get("messages"), list)):
+            try:
+                text_value = json.loads(next(item.text for item in contents if item.type == "text"))
+            except (StopIteration, ValueError, TypeError):
+                text_value = None
+            expected_messages = json.dumps(value["messages"], sort_keys=True, separators=(",", ":"))
+            if (not isinstance(structured, dict)
+                    or json.dumps(structured.get("messages"), sort_keys=True, separators=(",", ":")) != expected_messages
+                    or not isinstance(text_value, dict)
+                    or json.dumps(text_value.get("messages"), sort_keys=True, separators=(",", ":")) != expected_messages):
+                rejection = {"success": False, "status_code": 413, "terminal": True, "retryable": False,
+                             "error": "Pubsub messages exceed response budget; reduce limit or increase max_response_tokens"}
+                return _build_mcp_budget_payload(name, arguments, rejection)
         if (name == "local_ai_artifact" and arguments.get("action") == "get"
                 and isinstance(value, dict) and value.get("success") is True
                 and isinstance(value.get("text"), str)
@@ -7363,7 +7453,9 @@ if hasattr(mcp, "_tool_manager") and hasattr(mcp, "_mcp_server") and mcp_types i
                     return bounded if bounded is not None else _build_mcp_budget_payload(name, arguments, rejection)
         if not isinstance(structured, dict):
             return contents, structured
-        safe = project_agent_response(structured, enabled=detailed_diagnostics_enabled(CFG))
+        projector = (project_pubsub_poll_response if name == "local_ai_coord"
+                     and arguments.get("action") == "pubsub_poll" else project_agent_response)
+        safe = projector(structured, enabled=detailed_diagnostics_enabled(CFG))
         if safe == structured:
             return contents, structured
         try:
@@ -7482,7 +7574,7 @@ if hasattr(mcp, "_tool_manager") and hasattr(mcp, "_mcp_server") and mcp_types i
             if validation is not None:
                 status_code, error = validation
                 from .operation_contracts import operation_argument_hint
-                hint = operation_argument_hint(name, validation_arguments.get(selector, "")) if status_code == 400 else {}
+                hint = operation_argument_hint(name, validation_arguments.get(selector, ""), FEATURES) if status_code == 400 else {}
                 if hint and "allowed_arguments" in hint:
                     import difflib
                     unknown_keys = [k for k in validation_arguments if k not in hint["allowed_arguments"] and k != selector]
