@@ -755,6 +755,15 @@ class EmbeddingModel:
         device = getattr(self, "device", None)
         cuda_candidate = (backend in {"auto", "sentence-transformers"} and uses_torch_cuda("sentence-transformers", device))
         cuda_loaded = uses_torch_cuda(getattr(self, "active_backend", None), getattr(self, "active_device", None))
+        cache_identity = self._active_cache_identity
+        if (texts and (cuda_candidate or cuda_loaded) and self.cache_enabled
+                and self._identity_cacheable(cache_identity)
+                and self._dimension_for_identity(cache_identity) is not None):
+            cached = self._encode_uncached(texts, query=query, priority=priority, cache_only=True)
+            if (self._active_cache_identity == cache_identity and isinstance(cached, dict)
+                    and cached.get("success") is True and cached.get("computed") == 0):
+                self._memory_hits += int(cached.get("cache_hits", 0))
+                return cached
         reservation = self._claim_embedding_gpu() if texts and (cuda_candidate or cuda_loaded) else None
         if reservation is False:
             return {"success": False, "error_code": "gpu_reserved", "error": "GPU admission is unavailable", "retryable": True}
@@ -811,7 +820,8 @@ class EmbeddingModel:
             if terminal_response and isinstance(reservation, tuple):
                 self._release_embedding_gpu(reservation)
 
-    def _encode_uncached(self, texts: list[str], query: bool = False, priority: int = 3) -> dict[str, Any]:
+    def _encode_uncached(self, texts: list[str], query: bool = False, priority: int = 3,
+                         *, cache_only: bool = False) -> dict[str, Any] | None:
         if not texts:
             return {"success": True, "model": self.model_name, "backend": self.backend, "embeddings": []}
 
@@ -822,6 +832,8 @@ class EmbeddingModel:
         pending_by_key: dict[str, int] = {}
         cache_hits = 0
         cache_identity = self._active_cache_identity
+        if cache_only and not (self.cache_enabled and self._identity_cacheable(cache_identity)):
+            return None
         # Establish a verified identity before the first lookup. Previously this
         # was assigned only after computing a miss, making every fresh process
         # ignore its persistent cross-worktree embedding cache for its first batch.
@@ -870,7 +882,8 @@ class EmbeddingModel:
                 vectors[i] = cached_vector
                 if self._active_embedding_dimension is None:
                     self._active_embedding_dimension = len(cached_vector)
-                self._memory_hits += 1
+                if not cache_only:
+                    self._memory_hits += 1
                 cached_items.append((i, text))
                 cache_hits += 1
                 continue
@@ -893,6 +906,8 @@ class EmbeddingModel:
         pending_cache_writes: dict[str, dict[str, Any]] = {}
 
         if missing_texts:
+            if cache_only:
+                return None
             computed_vectors: list[list[float]] | None = None
 
             # 1. Try Ollama GPU if backend is "auto" or "ollama"
