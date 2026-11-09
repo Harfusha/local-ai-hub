@@ -88,7 +88,9 @@ def test_system_contract_requires_hub_tools_advisory_mode_and_matching_language(
 
 
 def test_profile_docs_describe_hub_tools_and_advisory_boundary() -> None:
-    text = generate_skill_markdown({"ollama": {"enabled": True}, "models": {"fast_code": "qwen2.5-coder:7b"}})
+    config = {"hardware": {"profile": "high"}, "features": {"local_semantic_analysis": True},
+              "ollama": {"enabled": True}, "models": {"fast_code": "qwen2.5-coder:7b"}}
+    text = generate_skill_markdown(config)
 
     assert "qwen-explorer" in text
     assert "qwen-drafter" in text
@@ -96,6 +98,11 @@ def test_profile_docs_describe_hub_tools_and_advisory_boundary() -> None:
     assert "advisory" in text.lower()
     assert "local_ai_repo" in text
     assert "local_ai_artifact" in text
+
+    config["features"]["local_semantic_analysis"] = False
+    disabled = generate_skill_markdown(config)
+    assert "qwen-explorer" not in disabled
+    assert 'local_ai_task(action="delegate"' not in disabled
 
 
 def test_default_config_declares_three_advisory_profiles() -> None:

@@ -396,7 +396,7 @@ class RecoveryJournal:
                     con.commit()
             retry_busy(write, retries=2)
         pending = self._pending_completions.get(request_id)
-        if pending is not None and result.get("state") != "conflict":
+        if pending is not None and result.get("state") == "running":
             result.update(self._completion_result(pending))
         return result
 
@@ -436,7 +436,7 @@ class RecoveryJournal:
         response_json = ""
         if response is not None:
             try:
-                encoded = json_dumps(response, ensure_ascii=False, separators=(",", ":"))
+                encoded = json_dumps(response, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
                 # Responses should already be compact/artifact-backed. Avoid turning the
                 # recovery journal into a second unbounded artifact store.
                 if len(encoded.encode("utf-8")) <= 2_000_000:
@@ -452,6 +452,18 @@ class RecoveryJournal:
                 )
                 self._changed.notify_all()
                 return
+            pending = self._pending_completions.get(request_id)
+            if pending is not None:
+                same = (
+                    pending[1] == ("done" if success else "failed")
+                    and pending[3] == detail
+                    and pending[4] == int(status_code)
+                    and bool(response_json)
+                    and pending[5] == response_json
+                )
+                if same:
+                    return
+                raise ValueError("conflicting completion for request id")
             if len(self._pending_writes) >= self._write_queue_capacity:
                 self._writer_overflowed = True
                 self._journal_unavailable = True
@@ -598,7 +610,7 @@ class RecoveryJournal:
             return {"state": "conflict", "error": "request id already belongs to a different operation or payload"}
         response = self._decode_response(str(row[4] or ""))
         result = {"state": row[2], "status_code": int(row[3] or 0), "response": response, "updated_at": float(row[5])}
-        pending = self._pending_completions.get(request_id)
+        pending = self._pending_completions.get(request_id) if row[2] == "running" else None
         if pending is not None:
             result.update(self._completion_result(pending))
         if row[2] == "abandoned" or (row[2] in {"done", "failed"} and response is None):
@@ -625,7 +637,7 @@ class RecoveryJournal:
             return {"state": "conflict", "error": "request id already belongs to a different operation"}
         state = str(row[1])
         result = {"state": state, "status_code": int(row[2] or 0), "updated_at": float(row[4])}
-        pending = self._pending_completions.get(request_id)
+        pending = self._pending_completions.get(request_id) if state == "running" else None
         if pending is not None:
             completion = self._completion_result(pending)
             result.update({key: completion[key] for key in ("state", "status_code", "updated_at")})
