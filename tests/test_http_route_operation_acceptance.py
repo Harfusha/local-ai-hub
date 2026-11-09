@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import threading
 from types import SimpleNamespace
 from urllib.error import HTTPError
@@ -36,7 +37,6 @@ def running_http_hub(tmp_path):
                 "port = 11435",
                 f'state_dir = "{state_dir.as_posix()}"',
                 "[security]",
-                'api_token = "acceptance-secret"',
                 f'allowed_roots = ["{tmp_path.as_posix()}"]',
                 "[agent_state]",
                 "enabled = true",
@@ -83,7 +83,7 @@ def test_http_get_agent_state_blackboard_forwards_board_and_section(
     monkeypatch.setattr(app, "agent_blackboard", SimpleNamespace(get=get_board))
     url = f"{base_url}/api/agent-state/blackboard?board_id=task-31&task_id=task-31&section=plan&root={quote(str(tmp_path))}"
     request = urllib_request.Request(
-        url, headers={"X-LocalAI-Token": "acceptance-secret"}, method="GET"
+        url, headers={}, method="GET"
     )
 
     with _urlopen_with_error_body(request) as response:
@@ -96,6 +96,286 @@ def test_http_get_agent_state_blackboard_forwards_board_and_section(
     assert calls == [("task-31", "plan")]
     assert result["success"] is True
     assert result["content"] == "value"
+
+
+def test_http_post_declaration_not_found_returns_http_404(
+    running_http_hub, monkeypatch, tmp_path
+):
+    base_url, app = running_http_hub
+    monkeypatch.setattr(
+        app.services,
+        "code_find_declaration",
+        lambda *args, **kwargs: {
+            "success": False,
+            "status_code": 404,
+            "terminal": True,
+            "retryable": False,
+            "error_code": "declaration_not_found",
+            "error": "Declaration of 'missing_symbol' not found",
+        },
+    )
+    request = urllib_request.Request(
+        f"{base_url}/api/code/declaration",
+        data=json.dumps({"root": str(tmp_path), "symbol": "missing_symbol"}).encode("utf-8"),
+        headers={
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+
+    with pytest.raises(HTTPError) as exc_info:
+        urllib_request.urlopen(request)
+
+    assert exc_info.value.code == 404
+    body = json.loads(exc_info.value.read().decode("utf-8"))
+    assert body == {
+        "success": False,
+        "status_code": 404,
+        "terminal": True,
+        "retryable": False,
+        "error_code": "declaration_not_found",
+        "error": "Declaration of 'missing_symbol' not found",
+        "request_id": body["request_id"],
+    }
+
+
+def test_http_get_declaration_not_found_returns_http_404(
+    running_http_hub, monkeypatch, tmp_path
+):
+    base_url, app = running_http_hub
+    monkeypatch.setattr(
+        app.services,
+        "code_find_declaration",
+        lambda *args, **kwargs: {
+            "success": False,
+            "status_code": 404,
+            "terminal": True,
+            "retryable": False,
+            "error_code": "declaration_not_found",
+            "error": "Declaration of 'missing_symbol' not found",
+        },
+    )
+    request = urllib_request.Request(
+        f"{base_url}/api/code/find_declaration?root={quote(str(tmp_path))}&symbol=missing_symbol",
+        headers={},
+        method="GET",
+    )
+
+    with pytest.raises(HTTPError) as exc_info:
+        urllib_request.urlopen(request)
+
+    assert exc_info.value.code == 404
+    body = json.loads(exc_info.value.read().decode("utf-8"))
+    assert body["success"] is False
+    assert body["status_code"] == 404
+    assert body["terminal"] is True
+    assert body["retryable"] is False
+    assert body["error_code"] == "declaration_not_found"
+
+
+def test_http_patch_validate_returns_successful_result_for_invalid_diff(
+    running_http_hub, tmp_path
+):
+    base_url, _app = running_http_hub
+    request = urllib_request.Request(
+        f"{base_url}/api/patch/validate",
+        data=json.dumps({"root": str(tmp_path), "patch": "not a unified diff"}).encode("utf-8"),
+        headers={
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+
+    with urllib_request.urlopen(request) as response:
+        body = json.loads(response.read().decode("utf-8"))
+
+    assert response.status == 200
+    assert body["success"] is True
+    assert body["valid"] is False
+    assert body["syntax_valid"] is False
+    assert body["applicability_checked"] is False
+    assert "patch changes no files" in body["errors"]
+
+
+def test_http_patch_validate_rejects_empty_patch_as_bad_request(
+    running_http_hub, tmp_path
+):
+    base_url, _app = running_http_hub
+    request = urllib_request.Request(
+        f"{base_url}/api/patch/validate",
+        data=json.dumps({"root": str(tmp_path), "patch": "  "}).encode("utf-8"),
+        headers={
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+
+    with pytest.raises(HTTPError) as exc_info:
+        urllib_request.urlopen(request)
+
+    assert exc_info.value.code == 400
+    body = json.loads(exc_info.value.read().decode("utf-8"))
+    assert body["success"] is False
+    assert body["status_code"] == 400
+    assert body["terminal"] is True
+    assert body["retryable"] is False
+    assert body["error_code"] == "patch_required"
+
+
+def test_http_git_diff_forwards_current_revision_contract(running_http_hub, monkeypatch, tmp_path):
+    base_url, app = running_http_hub
+    calls = []
+
+    def git_diff(root, *, path=None, staged=False, max_lines=1000, rev1=None, rev2=None):
+        calls.append((root, path, staged, max_lines, rev1, rev2))
+        return {"success": True, "diff": "bounded diff"}
+
+    monkeypatch.setattr(app.services, "git_diff", git_diff)
+    query = (
+        f"root={quote(str(tmp_path))}&path={quote('src/example.py')}"
+        "&staged=false&max_lines=25&base=HEAD"
+    )
+    request = urllib_request.Request(
+        f"{base_url}/api/git/diff?{query}",
+        headers={},
+        method="GET",
+    )
+
+    with _urlopen_with_error_body(request) as response:
+        result = json.loads(response.read().decode("utf-8"))
+
+    assert calls == [(str(tmp_path), "src/example.py", False, 25, None, None)]
+    assert result["success"] is True
+    assert result["diff"] == "bounded diff"
+
+
+def test_http_git_diff_post_forwards_revision_pair_without_base_alias(running_http_hub, monkeypatch, tmp_path):
+    base_url, app = running_http_hub
+    calls = []
+
+    def git_diff(root, *, path=None, staged=False, max_lines=1000, rev1=None, rev2=None):
+        calls.append((root, path, staged, max_lines, rev1, rev2))
+        return {"success": True, "diff": "bounded diff"}
+
+    monkeypatch.setattr(app.services, "git_diff", git_diff)
+    payload = {"root": str(tmp_path), "path": "src/example.py", "staged": False,
+               "max_lines": 25, "rev1": "HEAD~1", "rev2": "HEAD", "base": "HEAD~1", "head": "HEAD"}
+    request = urllib_request.Request(
+        f"{base_url}/api/git/diff", data=json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json"}, method="POST",
+    )
+    with _urlopen_with_error_body(request) as response:
+        result = json.loads(response.read().decode("utf-8"))
+
+    assert calls == [(str(tmp_path), "src/example.py", False, 25, "HEAD~1", "HEAD")]
+    assert result["success"] is True
+
+    payload.pop("rev1")
+    payload.pop("rev2")
+    request = urllib_request.Request(
+        f"{base_url}/api/git/diff", data=json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json"}, method="POST",
+    )
+    with _urlopen_with_error_body(request) as response:
+        result = json.loads(response.read().decode("utf-8"))
+    assert calls[-1] == (str(tmp_path), "src/example.py", False, 25, "HEAD~1", "HEAD")
+    assert result["success"] is True
+
+    payload.update(base="HEAD", head="HEAD~1")
+    request = urllib_request.Request(
+        f"{base_url}/api/git/diff", data=json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json"}, method="POST",
+    )
+    with _urlopen_with_error_body(request) as response:
+        result = json.loads(response.read().decode("utf-8"))
+    assert calls[-1] == (str(tmp_path), "src/example.py", False, 25, "HEAD", "HEAD~1")
+    assert result["success"] is True
+
+    payload.update(base="HEAD~1", head="HEAD", rev1="HEAD~2", rev2="HEAD")
+    request = urllib_request.Request(
+        f"{base_url}/api/git/diff", data=json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json"}, method="POST",
+    )
+    with pytest.raises(HTTPError) as exc:
+        urllib_request.urlopen(request)
+    assert exc.value.code == 400
+    exc.value.close()
+    assert len(calls) == 3
+
+
+def test_http_git_diff_post_compares_actual_revisions(running_http_hub, tmp_path):
+    base_url, _app = running_http_hub
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    def git(*args):
+        return subprocess.run(
+            ["git", "-c", "user.name=Test", "-c", "user.email=test@example.invalid", *args],
+            cwd=repo, check=True, capture_output=True, text=True, timeout=10,
+        ).stdout.strip()
+    git("init")
+    target = repo / "example.txt"
+    target.write_text("before\n", encoding="utf-8")
+    git("add", "example.txt")
+    git("commit", "-m", "first")
+    first = git("rev-parse", "HEAD")
+    target.write_text("after\n", encoding="utf-8")
+    git("commit", "-am", "second")
+    second = git("rev-parse", "HEAD")
+    payload = {"root": str(repo), "rev1": first, "rev2": second, "base": "HEAD", "head": second}
+    request = urllib_request.Request(
+        f"{base_url}/api/git/diff", data=json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json"}, method="POST",
+    )
+    with _urlopen_with_error_body(request) as response:
+        result = json.loads(response.read().decode("utf-8"))
+    assert result["success"] is True
+    assert result["resolved_rev1"] == first
+    assert result["resolved_rev2"] == second
+    assert "-before" in result["diff"] and "+after" in result["diff"]
+
+
+def test_http_rag_search_cannot_bypass_reranker_capability_gate(
+    running_http_hub, monkeypatch, tmp_path
+):
+    base_url, app = running_http_hub
+    calls = []
+
+    def search(query, **kwargs):
+        calls.append((query, kwargs))
+        return {"success": True, "results": []}
+
+    monkeypatch.setattr(app.rag, "require_workspace_root", lambda **_kwargs: None)
+    monkeypatch.setattr(app.rag, "search", search)
+    monkeypatch.setitem(
+        app.config,
+        "features",
+        {**app.config.get("features", {}), "local_reranking": False},
+    )
+    monkeypatch.setitem(app.config, "hardware", {**app.config.get("hardware", {}), "profile": "low"})
+    monkeypatch.setitem(app.config, "_hardware", {"profile": "low"})
+    root = str(tmp_path.resolve())
+    payload = {
+        "root": root,
+        "workspace": "project:test",
+        "query": "needle",
+        "top_k": 6,
+        "use_reranker": True,
+    }
+    request = urllib_request.Request(
+        f"{base_url}/api/rag/search",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+
+    with _urlopen_with_error_body(request) as response:
+        result = json.loads(response.read().decode("utf-8"))
+
+    assert result["success"] is True
+    assert calls == [(
+        "needle",
+        {"workspace": "project:test", "top_k": 6, "use_reranker": False, "semantic_only": True},
+    )]
 
 
 def test_http_get_agent_state_events_forwards_stream_cursor_and_limit(
@@ -124,7 +404,7 @@ def test_http_get_agent_state_events_forwards_stream_cursor_and_limit(
     monkeypatch.setattr(app.agent_state, "event_page", event_page)
     url = f"{base_url}/api/agent-state/events?stream_id=task%3Atask-31&after_seq=4&limit=9&root={quote(str(tmp_path))}"
     request = urllib_request.Request(
-        url, headers={"X-LocalAI-Token": "acceptance-secret"}, method="GET"
+        url, headers={}, method="GET"
     )
 
     with _urlopen_with_error_body(request) as response:
@@ -163,7 +443,7 @@ def test_http_get_agent_state_tasks_forwards_filters_and_serializes(running_http
     monkeypatch.setattr(app.agent_tasks, "list_tasks", list_tasks)
     url = f"{base_url}/api/agent-state/tasks?status=active&limit=7&offset=3&include_stale=true&root={quote(str(tmp_path))}"
     request = urllib_request.Request(
-        url, headers={"X-LocalAI-Token": "acceptance-secret"}, method="GET"
+        url, headers={}, method="GET"
     )
 
     with _urlopen_with_error_body(request) as response:
@@ -194,7 +474,7 @@ def test_http_post_agent_state_cleanup_forwards_retention_policy(running_http_hu
     request = urllib_request.Request(
         url,
         data=json.dumps({"retention_days": 21}).encode("utf-8"),
-        headers={"X-LocalAI-Token": "acceptance-secret", "Content-Type": "application/json"},
+        headers={"Content-Type": "application/json"},
         method="POST",
     )
 
@@ -237,7 +517,7 @@ def test_http_post_agent_state_swarm_dispatch_forwards_explicit_scope(running_ht
     request = urllib_request.Request(
         url,
         data=json.dumps(payload).encode("utf-8"),
-        headers={"X-LocalAI-Token": "acceptance-secret", "Content-Type": "application/json"},
+        headers={"Content-Type": "application/json"},
         method="POST",
     )
 
@@ -264,7 +544,7 @@ def test_http_get_agent_state_swarm_forwards_state_and_limit(running_http_hub, m
     monkeypatch.setattr(app, "swarm", SimpleNamespace(list_swarms=list_swarms))
     url = f"{base_url}/api/agent-state/swarm?state=running&limit=6&root={quote(str(tmp_path))}"
     request = urllib_request.Request(
-        url, headers={"X-LocalAI-Token": "acceptance-secret"}, method="GET"
+        url, headers={}, method="GET"
     )
 
     with urllib_request.urlopen(request) as response:
@@ -289,7 +569,7 @@ def test_http_get_agent_state_swarm_detail_forwards_swarm_id(running_http_hub, m
     monkeypatch.setattr(app, "swarm", SimpleNamespace(get_status=get_status))
     url = f"{base_url}/api/agent-state/swarm/swarm-31?root={quote(str(tmp_path))}"
     request = urllib_request.Request(
-        url, headers={"X-LocalAI-Token": "acceptance-secret"}, method="GET"
+        url, headers={}, method="GET"
     )
 
     with urllib_request.urlopen(request) as response:
@@ -304,11 +584,11 @@ def test_http_get_agent_state_swarm_detail_forwards_swarm_id(running_http_hub, m
     assert result["step"] == 3
 
 
-def test_http_get_config_redacts_configured_token(running_http_hub):
+def test_http_get_config_contains_no_retired_token_setting(running_http_hub):
     base_url, _app = running_http_hub
     url = f"{base_url}/api/config"
     request = urllib_request.Request(
-        url, headers={"X-LocalAI-Token": "acceptance-secret"}, method="GET"
+        url, headers={}, method="GET"
     )
 
     with urllib_request.urlopen(request) as response:
@@ -319,14 +599,14 @@ def test_http_get_config_redacts_configured_token(running_http_hub):
     assert url == f"{base_url}/api/config"
     assert status == 200
     assert result["success"] is True
-    assert result["config"]["security"]["api_token"] == "***configured***"
+    assert "api_token" not in result["config"]["security"]
 
 
 def test_http_get_capabilities_returns_surface_and_features(running_http_hub):
     base_url, _app = running_http_hub
     url = f"{base_url}/api/capabilities"
     request = urllib_request.Request(
-        url, headers={"X-LocalAI-Token": "acceptance-secret"}, method="GET"
+        url, headers={}, method="GET"
     )
 
     with urllib_request.urlopen(request) as response:
@@ -353,7 +633,7 @@ def test_http_get_audit_tail_forwards_limit(running_http_hub, monkeypatch):
     monkeypatch.setattr(app.telemetry, "tail", tail)
     url = f"{base_url}/api/audit/tail?limit=3"
     request = urllib_request.Request(
-        url, headers={"X-LocalAI-Token": "acceptance-secret"}, method="GET"
+        url, headers={}, method="GET"
     )
 
     with urllib_request.urlopen(request) as response:
@@ -380,7 +660,7 @@ def test_http_get_audit_dependencies_forwards_root(running_http_hub, monkeypatch
     )
     url = f"{base_url}/api/audit_dependencies?root={quote(str(tmp_path))}"
     request = urllib_request.Request(
-        url, headers={"X-LocalAI-Token": "acceptance-secret"}, method="GET"
+        url, headers={}, method="GET"
     )
 
     with urllib_request.urlopen(request) as response:
@@ -411,7 +691,7 @@ def test_http_get_affected_tests_forwards_root_and_repeated_paths(
         "&path=src%2Fhttp_server.py&path=tests%2Ftest_routes.py"
     )
     request = urllib_request.Request(
-        url, headers={"X-LocalAI-Token": "acceptance-secret"}, method="GET"
+        url, headers={}, method="GET"
     )
 
     with urllib_request.urlopen(request) as response:
@@ -450,7 +730,6 @@ def test_http_post_affected_tests_forwards_json_paths(running_http_hub, monkeypa
         data=body,
         headers={
             "Content-Type": "application/json",
-            "X-LocalAI-Token": "acceptance-secret",
         },
         method="POST",
     )

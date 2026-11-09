@@ -22,6 +22,7 @@ def _handler(headers: dict[str, str], *, method: str = "GET", path: str = "/api/
     handler.headers = headers
     handler.command = method
     handler.path = path
+    handler.client_address = ("127.0.0.1", 23456)
     return handler
 
 
@@ -97,50 +98,30 @@ def _store_spy(calls):
     return StoreSpy()
 
 
-def test_api_token_permissions_apply_to_installation_owner(monkeypatch):
-    app = SimpleNamespace(config={
-        "security": {
-            "api_token": "alice-user-credential-long",
-            "api_token_permissions": ["read", "write"],
-        }
-    })
+def test_loopback_owner_uses_local_authority_without_credentials(monkeypatch):
+    app = SimpleNamespace(config={"security": {}})
     monkeypatch.setattr(http_server, "APP", app)
-    handler = _handler({
-        "X-LocalAI-Token": "alice-user-credential-long",
-    }, method="POST", path="/api/delegate")
+    handler = _handler({}, method="POST", path="/api/delegate")
 
     assert http_server.Handler._authorized(handler, "write") is True
-    assert handler._authorization_actor == "api_token"
-    assert handler._authorization_permissions == frozenset({"read", "write"})
+    assert handler._authorization_actor == "local"
+    assert handler._authorization_permissions == frozenset()
 
 
-def test_http_user_acl_denies_admin_and_invalid_credential(monkeypatch):
-    app = SimpleNamespace(config={
-        "security": {
-            "api_token": "alice-user-credential-long",
-            "api_token_permissions": ["read"],
-        }
-    })
+def test_remote_request_denied_even_with_spoofed_identity_headers(monkeypatch):
+    app = SimpleNamespace(config={"security": {}})
     monkeypatch.setattr(http_server, "APP", app)
-    valid = _handler({
-        "X-LocalAI-Token": "alice-user-credential-long",
-    }, method="POST", path="/api/admin/mode")
-    invalid = _handler({
-        "X-LocalAI-Token": "wrong-credential",
-    })
+    remote = _handler({"X-LocalAI-Agent": "local", "Authorization": "Bearer forged"},
+                      method="POST", path="/api/admin/mode")
+    remote.client_address = ("192.0.2.10", 23456)
 
-    assert http_server.Handler._authorized(valid, "admin") is False
-    assert valid._authorization_status == 403
-    assert http_server.Handler._authorized(invalid, "read") is False
-    assert invalid._authorization_status == 401
+    assert http_server.Handler._authorized(remote, "admin") is False
+    assert remote._authorization_status == 403
 
 
 def test_retired_tenant_header_is_rejected_even_with_valid_token(monkeypatch):
-    monkeypatch.setattr(http_server, "APP", SimpleNamespace(config={"security": {
-        "api_token": "valid-owner-token",
-    }}))
+    monkeypatch.setattr(http_server, "APP", SimpleNamespace(config={"security": {}}))
     handler = _handler({
-        "X-LocalAI-Token": "valid-owner-token",
         "X-LocalAI-Tenant": "retired-value",
     })
     responses = []
@@ -170,20 +151,20 @@ def test_retired_tenant_body_field_is_rejected():
     assert responses[0][1]["error_code"] == "retired_tenancy_field"
 
 
-def test_missing_credentials_fail_closed_and_legacy_global_token_remains(monkeypatch):
+def test_retired_token_configuration_fails_closed(monkeypatch):
     monkeypatch.setattr(http_server, "APP", SimpleNamespace(config={"security": {}}))
-    anonymous = _handler({})
-    assert http_server.Handler._authorized(anonymous, "admin") is False
-    assert anonymous._authorization_status == 401
+    local = _handler({})
+    assert http_server.Handler._authorized(local, "admin") is True
+    assert local._authorization_actor == "local"
 
     monkeypatch.setattr(
         http_server,
         "APP",
         SimpleNamespace(config={"security": {"api_token": "legacy-secret"}}),
     )
-    assert http_server.Handler._authorized(
-        _handler({"Authorization": "Bearer legacy-secret"}), "admin"
-    ) is True
+    retired = _handler({"Authorization": "Bearer legacy-secret"})
+    assert http_server.Handler._authorized(retired, "admin") is False
+    assert retired._authorization_status == 403
 
 
 def test_config_rejects_retired_tenant_auth_settings(tmp_path):
@@ -192,11 +173,10 @@ def test_config_rejects_retired_tenant_auth_settings(tmp_path):
     config = tmp_path / "hub.toml"
     config.write_text(
         f'[server]\nstate_dir = "{(tmp_path / "state").as_posix()}"\n'
-        '[security]\napi_token = "per-user-token-credential"\n'
+        '[security]\n'
         'api_token_tenant = "tenant-alice"\n'
         'tenant_derivation_key = "stable-test-derivation-secret-0123456789"\n'
         f'allowed_roots = ["{tmp_path.as_posix()}"]\n'
-        'api_token_permissions = ["monitor", "read"]\n'
         '[hardware]\nprofile = "cpu"\nauto_tune = true\n',
         encoding="utf-8",
     )
@@ -219,10 +199,9 @@ def readiness_server(monkeypatch):
         thread.join(timeout=2)
 
 
-def _get_json(url: str, *, token: str = "") -> tuple[int, dict]:
-    headers = {"X-LocalAI-Token": token} if token else {}
+def _get_json(url: str) -> tuple[int, dict]:
     try:
-        request = urllib.request.Request(url, headers=headers)
+        request = urllib.request.Request(url)
         with urllib.request.urlopen(request, timeout=1.0) as response:
             return response.status, json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as error:
@@ -241,13 +220,12 @@ def test_liveness_stays_healthy_while_readiness_waits_for_app(readiness_server):
 
 
 def test_readiness_is_ready_only_for_initialized_open_app(readiness_server, monkeypatch):
-    token = "readiness-probe-token-long"
-    config = {"security": {"api_token": token}}
+    config = {"security": {}}
     stores = {name: object() for name in http_server.READINESS_COMPONENTS}
     monkeypatch.setattr(http_server, "APP", SimpleNamespace(_closed=True, config=config, **stores))
-    closed_status, closed = _get_json(f"{readiness_server}/ready", token=token)
+    closed_status, closed = _get_json(f"{readiness_server}/ready")
     monkeypatch.setattr(http_server, "APP", SimpleNamespace(_closed=False, config=config, **stores))
-    ready_status, ready = _get_json(f"{readiness_server}/ready", token=token)
+    ready_status, ready = _get_json(f"{readiness_server}/ready")
 
     assert closed_status == 503
     assert closed["ready"] is False
@@ -264,35 +242,34 @@ def test_readiness_requires_initialized_core_stores(readiness_server, monkeypatc
         "APP",
         SimpleNamespace(
             _closed=False,
-            config={"security": {"api_token": token}},
+            config={"security": {}},
             **stores,
         ),
     )
 
-    status, result = _get_json(f"{readiness_server}/ready", token=token)
+    status, result = _get_json(f"{readiness_server}/ready")
 
     assert status == 503
     assert result["ready"] is False
     assert result["reason"] == "required_store_unavailable"
 
 
-def test_readiness_requires_monitor_auth_after_app_initializes(readiness_server, monkeypatch):
+def test_readiness_works_without_hub_credentials_after_app_initializes(readiness_server, monkeypatch):
+    stores = {name: object() for name in http_server.READINESS_COMPONENTS}
     monkeypatch.setattr(
         http_server,
         "APP",
         SimpleNamespace(
             _closed=False,
-            config={"security": {"api_token": "readiness-probe-token-long"}},
-            artifacts=object(),
-            telemetry=object(),
-            agent_state=object(),
+            config={"security": {}},
+            **stores,
         ),
     )
 
     status, result = _get_json(f"{readiness_server}/ready")
 
-    assert status == 401
-    assert result["error"] == "unauthorized"
+    assert status == 200
+    assert result["ready"] is True
 
 
 def test_readiness_is_loopback_only():
@@ -833,7 +810,6 @@ def test_external_termination_does_not_signal_reused_pidfd(monkeypatch, tmp_path
 def test_task_lookup_is_bound_to_repository_root(tmp_path, monkeypatch):
     app = SimpleNamespace(config={
         "security": {
-            "api_token": "a-long-test-token-value",
             "allowed_roots": [str(tmp_path)],
         }
     })
@@ -865,14 +841,12 @@ def test_task_lookup_is_bound_to_repository_root(tmp_path, monkeypatch):
     assert responses[0][0] == 404
 
 
-def test_task_access_sandbox_fails_closed_without_allowed_roots(tmp_path, monkeypatch):
+def test_task_access_uses_default_root_policy_when_allowed_roots_empty(tmp_path, monkeypatch):
     root = tmp_path / "repo"
     root.mkdir()
     _state, coordination_id = _project_state(root, tmp_path / "state")
     monkeypatch.setattr(http_server, "APP", SimpleNamespace(config={
-        "security": {
-            "api_token": "a-long-test-token-value",
-        }
+        "security": {}
     }))
     _handler({})
 
@@ -890,8 +864,8 @@ def test_task_access_sandbox_fails_closed_without_allowed_roots(tmp_path, monkey
     blocked = _handler({})
     blocked_response = []
     blocked._send = lambda status, payload: blocked_response.append((status, payload))
-    assert http_server.Handler._bind_root(blocked, str(root.resolve())) is None
-    assert blocked_response[0][0] == 403
+    assert http_server.Handler._bind_root(blocked, str(root.resolve())) == str(root.resolve())
+    assert blocked_response == []
     assert http_server.Handler._task_matches_request(task, str(root.resolve())) is True
     assert http_server.Handler._task_matches_request(rootless_task, str(root.resolve())) is False
 
@@ -930,7 +904,6 @@ def test_root_scope_rejects_retired_tenant_header_and_body_fields(tmp_path, monk
     root.mkdir()
     monkeypatch.setattr(http_server, "APP", SimpleNamespace(config={
         "security": {
-            "api_token": "a-long-test-token-value",
             "allowed_roots": [str(tmp_path)],
         }
     }))
@@ -977,7 +950,6 @@ def test_root_scope_fails_closed_for_missing_nonexistent_and_symlink_roots(tmp_p
     allowed.mkdir()
     monkeypatch.setattr(http_server, "APP", SimpleNamespace(config={
         "security": {
-            "api_token": "a-long-test-token-value",
             "allowed_roots": [str(allowed)],
         }
     }))
@@ -1015,22 +987,18 @@ def test_root_scope_fails_closed_for_missing_nonexistent_and_symlink_roots(tmp_p
     assert scoped_task_errors[0][0] == 400
 
 
-def test_api_token_authorizes_owner_without_root_identity_rewrite(tmp_path, monkeypatch):
+def test_loopback_owner_authority_does_not_rewrite_root_identity(tmp_path, monkeypatch):
     root = tmp_path / "repo"
     root.mkdir()
     monkeypatch.setattr(http_server, "APP", SimpleNamespace(config={
         "security": {
-            "api_token": "owner-token-long",
-            "api_token_permissions": ["read", "write"],
             "allowed_roots": [str(tmp_path)],
         }
     }))
-    handler = _handler({
-        "X-LocalAI-Token": "owner-token-long",
-    })
+    handler = _handler({})
     assert http_server.Handler._authorized(handler, "read") is True
-    assert handler._authorization_actor == "api_token"
-    assert handler._authorization_permissions == frozenset({"read", "write"})
+    assert handler._authorization_actor == "local"
+    assert handler._authorization_permissions == frozenset()
 
     scoped = _handler({})
     assert http_server.Handler._bind_root(scoped, str(root)) == str(root.resolve())
@@ -1039,7 +1007,7 @@ def test_api_token_authorizes_owner_without_root_identity_rewrite(tmp_path, monk
 
 def test_global_memory_stays_owner_global_and_session_scope_is_explicit(monkeypatch):
     monkeypatch.setattr(http_server, "APP", SimpleNamespace(config={
-        "security": {"api_token": "owner-token-long"}
+        "security": {}
     }))
     handler = _handler({})
     payload = {"scope": "global", "key": "private"}
@@ -1119,7 +1087,6 @@ def test_memory_task_query_requires_existing_task_in_bound_root(tmp_path, monkey
     }))
     monkeypatch.setattr(http_server, "APP", SimpleNamespace(
         config={"security": {
-            "api_token": "a-long-test-token-value",
             "allowed_roots": [str(tmp_path)],
         }},
         agent_state=agent_state,
@@ -1155,7 +1122,6 @@ def test_verification_scope_requires_existing_task_owned_by_root(tmp_path, monke
         "_agent_task_scope": {"version": 2, "repo_root": str(root_a.resolve())},
     }))
     monkeypatch.setattr(http_server, "APP", SimpleNamespace(config={"security": {
-        "api_token": "a-long-test-token-value",
         "allowed_roots": [str(tmp_path)],
     }}, agent_state=agent_state,
         agent_tasks=SimpleNamespace(get=lambda task_id: task if task_id == "task-a" else None)))
@@ -1188,7 +1154,6 @@ def test_verification_routes_reject_foreign_task_before_access(tmp_path, monkeyp
     calls = []
     app = SimpleNamespace(
         config={"security": {
-            "api_token": "a-long-test-token-value",
             "allowed_roots": [str(tmp_path)],
         }},
         agent_state=agent_state,
@@ -1218,7 +1183,6 @@ def test_workspace_memory_actions_bind_to_explicit_root(tmp_path, monkeypatch, p
     root = tmp_path / "allowed"
     root.mkdir()
     monkeypatch.setattr(http_server, "APP", SimpleNamespace(config={"security": {
-        "api_token": "a-long-test-token-value",
         "allowed_roots": [str(root)],
     }}))
     handler = _handler({})
@@ -1284,7 +1248,6 @@ def test_task_reaper_canonical_action_is_scoped_and_retired_aliases_reject(tmp_p
     )
     app = SimpleNamespace(
         config={"security": {
-            "api_token": "a-long-test-token-value",
             "allowed_roots": [str(root)],
         }},
         agent_state=state,
@@ -1309,7 +1272,6 @@ def test_task_reaper_canonical_action_is_scoped_and_retired_aliases_reject(tmp_p
             "auto_recover": True,
         },
         app,
-        headers={"X-LocalAI-Token": "a-long-test-token-value"},
         authenticate=True,
     )
 
@@ -1341,7 +1303,6 @@ def test_task_reaper_uses_authenticated_token_and_explicit_repository_root(tmp_p
     )
     app = SimpleNamespace(
         config={"security": {
-            "api_token": "a-long-test-token-value",
             "allowed_roots": [str(root)],
         }},
         agent_state=state,
@@ -1356,7 +1317,6 @@ def test_task_reaper_uses_authenticated_token_and_explicit_repository_root(tmp_p
         "/api/agent-state/tasks",
         {"root": str(root), "action": "reap_expired", "task_id": "task-1"},
         app,
-        headers={"X-LocalAI-Token": "a-long-test-token-value"},
         authenticate=True,
     )
 
@@ -1399,9 +1359,9 @@ def scoped_reaper_store(tmp_path, monkeypatch):
         create("different-session", root, "session-distinct")
     create("fresh", root, "session-fresh")
     app = SimpleNamespace(config={"security": {
-        "api_token": "a-long-test-token-value", "allowed_roots": [str(root)],
+        "allowed_roots": [str(root)],
     }}, agent_state=state_store, agent_tasks=store, recovery=None)
-    headers = {"X-LocalAI-Token": "a-long-test-token-value"}
+    headers = {}
 
     def post(task_id, **extra):
         return _dispatch_post(monkeypatch, "/api/agent-state/tasks", {
@@ -1512,7 +1472,6 @@ def test_task_list_accepts_authenticated_token_and_explicit_root(tmp_path, monke
 
     app = SimpleNamespace(
         config={"security": {
-            "api_token": "a-long-test-token-value",
             "allowed_roots": [str(root)],
         }},
         agent_tasks=SimpleNamespace(
@@ -1529,7 +1488,6 @@ def test_task_list_accepts_authenticated_token_and_explicit_root(tmp_path, monke
         monkeypatch,
         path,
         app,
-        headers={"X-LocalAI-Token": "a-long-test-token-value"},
         authenticate=True,
     )
 
@@ -1552,14 +1510,12 @@ def test_root_memory_preserves_global_scope_with_authenticated_owner_token(tmp_p
     root = tmp_path / "allowed"
     root.mkdir()
     monkeypatch.setattr(http_server, "APP", SimpleNamespace(config={"security": {
-        "api_token": "a-long-test-token-value",
         "allowed_roots": [str(root)],
     }}))
-    handler = _handler({"X-LocalAI-Token": "a-long-test-token-value"})
+    handler = _handler({})
     errors = []
     handler._send = lambda status, response: errors.append((status, response))
     payload = {"root": str(root), "scope": "global"}
-    handler.headers["X-LocalAI-Token"] = "a-long-test-token-value"
     assert http_server.Handler._authorized(handler, "write") is True
 
     assert http_server.Handler._bind_memory_payload(handler, payload) is True
@@ -1571,10 +1527,9 @@ def test_root_session_memory_requires_explicit_matching_session(tmp_path, monkey
     root = tmp_path / "allowed"
     root.mkdir()
     monkeypatch.setattr(http_server, "APP", SimpleNamespace(config={"security": {
-        "api_token": "a-long-test-token-value",
         "allowed_roots": [str(root)],
     }}))
-    handler = _handler({"X-LocalAI-Token": "a-long-test-token-value"})
+    handler = _handler({})
     responses = []
     handler._send = lambda status, response: responses.append((status, response))
     payload = {"root": str(root), "scope": "session", "session_id": "session-actual"}
@@ -1615,7 +1570,6 @@ def test_task_dataset_curation_forwards_authenticated_root_scope(tmp_path, monke
     app = SimpleNamespace(
         debug_traces=SimpleNamespace(enabled=True),
         config={"security": {
-            "api_token": "a-long-test-token-value",
             "allowed_roots": [str(root)],
         }},
         agent_state=state,
@@ -1638,7 +1592,6 @@ def test_task_dataset_curation_forwards_authenticated_root_scope(tmp_path, monke
             "format": "jsonl",
         },
         app,
-        headers={"X-LocalAI-Token": "a-long-test-token-value"},
     )
 
     assert responses[0][0] == expected_status
@@ -1669,7 +1622,6 @@ def test_scoped_task_operations_reject_invalid_root_or_retired_header_before_sto
     app = SimpleNamespace(
         debug_traces=SimpleNamespace(enabled=True),
         config={"security": {
-            "api_token": "a-long-test-token-value",
             "allowed_roots": [str(root)],
         }},
         agent_tasks=SimpleNamespace(
@@ -1693,14 +1645,13 @@ def test_scoped_task_operations_reject_invalid_root_or_retired_header_before_sto
     assert calls == []
 
 
-@pytest.mark.parametrize("case", ["wrong_token", "retired_header", "retired_body"])
+@pytest.mark.parametrize("case", ["retired_header", "retired_body"])
 def test_scoped_task_routes_fail_closed_on_authentication_or_retired_identity(
     tmp_path, monkeypatch, case
 ):
     root = tmp_path / "allowed"
     root.mkdir()
     security = {
-        "api_token": "a-long-test-token-value",
         "allowed_roots": [str(root)],
     }
     app = SimpleNamespace(
@@ -1710,9 +1661,7 @@ def test_scoped_task_routes_fail_closed_on_authentication_or_retired_identity(
             reap_expired_heartbeats=lambda **_kwargs: pytest.fail("scope mismatch reached task store"),
         ),
     )
-    headers = {
-        "X-LocalAI-Token": "wrong-token" if case == "wrong_token" else security["api_token"],
-    }
+    headers = {}
     if case == "retired_header":
         headers["X-LocalAI-Tenant"] = ""
     payload = {"root": str(root), "action": "reap_expired"}
@@ -1728,7 +1677,7 @@ def test_scoped_task_routes_fail_closed_on_authentication_or_retired_identity(
         authenticate=True,
     )
 
-    expected_status = {"wrong_token": 401, "retired_header": 400, "retired_body": 400}[case]
+    expected_status = {"retired_header": 400, "retired_body": 400}[case]
     assert responses[0][0] == expected_status
 
 
@@ -1836,7 +1785,7 @@ def test_unscoped_file_mutation_routes_deny_before_service_access(monkeypatch, p
         batch_replace=lambda *args, **kwargs: calls.append((args, kwargs)),
     )
     app = SimpleNamespace(
-        config={"security": {"api_token": "mutation-token-long"}},
+        config={"security": {}},
         services=services,
         deterministic=SimpleNamespace(),
         recovery=None,
@@ -1858,7 +1807,7 @@ def test_unscoped_file_mutation_routes_deny_before_service_access(monkeypatch, p
 def test_unscoped_repository_get_routes_deny_before_service_access(monkeypatch, path):
     calls = []
     app = SimpleNamespace(
-        config={"security": {"api_token": "repo-token-long"}},
+        config={"security": {}},
         services=SimpleNamespace(
             git_status=lambda *args, **kwargs: calls.append((args, kwargs)),
             dead_code=lambda *args, **kwargs: calls.append((args, kwargs)),
@@ -1955,7 +1904,7 @@ def test_config_route_exposes_file_labels_without_host_paths(monkeypatch, tmp_pa
     override_path = tmp_path / "private" / "runtime-overrides.toml"
     app = SimpleNamespace(
         config={
-            "security": {"api_token": "secret-token"},
+            "security": {},
             "_config_path": str(config_path),
             "_runtime_override_path": str(override_path),
         },
@@ -1965,7 +1914,7 @@ def test_config_route_exposes_file_labels_without_host_paths(monkeypatch, tmp_pa
 
     assert responses[0][0] == 200
     payload = responses[0][1]
-    assert payload["config"]["security"]["api_token"] == "***configured***"
+    assert "api_token" not in payload["config"]["security"]
     assert payload["config_path"] == "hub.toml"
     assert payload["runtime_override_path"] == "runtime-overrides.toml"
     assert str(tmp_path) not in str(payload)
@@ -2032,7 +1981,7 @@ def test_unscoped_repository_routes_deny_before_service_access(monkeypatch, path
         code_find_symbol=lambda *args, **kwargs: calls.append((args, kwargs)),
     )
     app = SimpleNamespace(
-        config={"security": {"api_token": "repo-token-long"}},
+        config={"security": {}},
         services=services,
         deterministic=SimpleNamespace(),
         external_tools=SimpleNamespace(query=lambda *args, **kwargs: calls.append((args, kwargs))),
@@ -2054,7 +2003,7 @@ def test_unscoped_repository_routes_deny_before_service_access(monkeypatch, path
 def test_cross_repository_routes_require_explicit_roots(monkeypatch, path, expected_status):
     calls = []
     app = SimpleNamespace(
-        config={"security": {"api_token": "cross-repo-token-long"}},
+        config={"security": {}},
         services=SimpleNamespace(cross_repo_contract=lambda *args, **kwargs: calls.append(args)),
         deterministic=SimpleNamespace(cross_project_graph=lambda *args: calls.append(args)),
         preprocessor=SimpleNamespace(status=lambda: {"projects": [{"root": "C:/untrusted"}]}),
@@ -2070,7 +2019,7 @@ def test_cross_repository_routes_require_explicit_roots(monkeypatch, path, expec
 def test_cross_project_graph_get_requires_explicit_roots(monkeypatch):
     calls = []
     app = SimpleNamespace(
-        config={"security": {"api_token": "cross-repo-token-long"}},
+        config={"security": {}},
         deterministic=SimpleNamespace(cross_project_graph=lambda *args: calls.append(args)),
         preprocessor=SimpleNamespace(status=lambda: (_ for _ in ()).throw(AssertionError("global fallback"))),
         recovery=None,
@@ -2085,7 +2034,7 @@ def test_cross_project_graph_get_requires_explicit_roots(monkeypatch):
 def test_cross_project_graph_get_forwards_bound_roots(monkeypatch):
     calls = []
     app = SimpleNamespace(
-        config={"security": {"api_token": "cross-repo-token-long"}},
+        config={"security": {}},
         deterministic=SimpleNamespace(
             cross_project_graph=lambda roots: calls.append(roots) or {"success": True}
         ),
@@ -2111,7 +2060,7 @@ def test_cross_project_graph_get_forwards_bound_roots(monkeypatch):
 def test_cross_project_impact_rejects_origin_outside_explicit_roots(monkeypatch):
     calls = []
     app = SimpleNamespace(
-        config={"security": {"api_token": "cross-repo-token-long"}},
+        config={"security": {}},
         deterministic=SimpleNamespace(cross_project_impact=lambda *args, **kwargs: calls.append(args)),
         recovery=None,
     )
@@ -2143,8 +2092,6 @@ def test_authenticated_learning_route_dispatches_candidate_mutation(monkeypatch)
         debug_traces=SimpleNamespace(enabled=True),
         config={
             "security": {
-                "api_token": token,
-                "api_token_permissions": ["write"],
             }
         },
         agent_learning=learning,
@@ -2163,7 +2110,6 @@ def test_authenticated_learning_route_dispatches_candidate_mutation(monkeypatch)
             },
         },
         app,
-        headers={"X-LocalAI-Token": token},
         authenticate=True,
     )
 
@@ -2184,8 +2130,6 @@ def test_authenticated_incident_find_requires_and_forwards_root_scope(monkeypatc
     app = SimpleNamespace(
         config={
             "security": {
-                "api_token": token,
-                "api_token_permissions": ["write"],
                 "allowed_roots": [str(tmp_path)],
             }
         },
@@ -2198,7 +2142,6 @@ def test_authenticated_incident_find_requires_and_forwards_root_scope(monkeypatc
         "/api/agent-state/incidents",
         {"action": "find", "query": "TimeoutError", "root": str(tmp_path)},
         app,
-        headers={"X-LocalAI-Token": token},
         authenticate=True,
     )
 
@@ -2241,11 +2184,10 @@ def test_context_compile_binds_existing_task_root_without_changing_task_id_contr
         "_agent_task_scope": {"version": 2, "repo_root": str(root.resolve())},
     }))
     monkeypatch.setattr(http_server, "APP", SimpleNamespace(config={"security": {
-        "api_token": "a-long-test-token-value",
         "allowed_roots": [str(root)],
     }}, agent_state=agent_state,
         agent_tasks=SimpleNamespace(get=lambda task_id: task if task_id == "task-a" else None)))
-    handler = _handler({"X-LocalAI-Token": "a-long-test-token-value"})
+    handler = _handler({})
     payload = {"action": "compile", "task_id": "task-a", "session_id": "session-context-real"}
 
     assert http_server.Handler._bind_context_payload(handler, payload) is True
@@ -2268,7 +2210,6 @@ def test_context_compile_rejects_foreign_or_unknown_task_before_compile(tmp_path
         "_agent_task_scope": {"version": 2, "repo_root": str(root_a.resolve())},
     }))
     monkeypatch.setattr(http_server, "APP", SimpleNamespace(config={"security": {
-        "api_token": "a-long-test-token-value",
         "allowed_roots": [str(tmp_path)],
     }}, agent_state=agent_state,
         agent_tasks=SimpleNamespace(get=lambda task_id: task_a if task_id == "task-a" else None)))
@@ -2293,7 +2234,6 @@ def test_task_event_reads_allow_only_owned_task_stream(tmp_path, monkeypatch):
     calls = []
     app = SimpleNamespace(
         config={"security": {
-            "api_token": "a-long-test-token-value",
             "allowed_roots": [str(root)],
         }},
         agent_tasks=SimpleNamespace(get=lambda task_id: task if task_id == "task-a" else None),
@@ -2312,7 +2252,7 @@ def test_task_event_reads_allow_only_owned_task_stream(tmp_path, monkeypatch):
             },
         ),
     )
-    handler = _handler({"X-LocalAI-Token": "a-long-test-token-value"}, path=(
+    handler = _handler({}, path=(
         f"/api/agent-state/events?root={root}&stream_id=task%3Atask-a"
     ))
     monkeypatch.setattr(http_server, "APP", app)
@@ -2337,7 +2277,6 @@ def test_task_blackboard_access_requires_owned_task_board(tmp_path, monkeypatch)
         "_agent_task_scope": {"version": 2, "repo_root": str(root.resolve())},
     }))
     monkeypatch.setattr(http_server, "APP", SimpleNamespace(config={"security": {
-        "api_token": "a-long-test-token-value",
         "allowed_roots": [str(root)],
     }}, agent_state=agent_state,
         agent_tasks=SimpleNamespace(get=lambda task_id: task if task_id == "task-a" else None)))
@@ -2573,10 +2512,10 @@ def test_config_rejects_nonliteral_loopback_bind_and_remote_opt_in(tmp_path):
     for bind in ("0.0.0.0", "localhost", "::1", " 127.0.0.1 "):
         config.write_text(
             f'[server]\nstate_dir = "{(tmp_path / "state").as_posix()}"\nbind = "{bind}"\n'
-            '[security]\napi_token = "long-secure-token-value-12345"\n',
+            '[security]\n',
             encoding="utf-8",
         )
-        with pytest.raises(ConfigError, match="server.bind must be 127.0.0.1"):
+        with pytest.raises(ConfigError, match="server.bind.*127.0.0.1"):
             load_config(str(config))
 
     config.write_text(

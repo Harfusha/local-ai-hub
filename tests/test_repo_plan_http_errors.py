@@ -43,6 +43,21 @@ def test_board_http_reports_invalid_plan_instead_of_empty_success(tmp_path):
     assert "plan_bad" in payload["error"]
 
 
+def test_missing_plan_file_returns_not_found_http_status(tmp_path):
+    responses = []
+    handler = SimpleNamespace(_send=lambda status, payload: responses.append((status, payload)))
+    workspace = RepoPlanWorkspace(tmp_path)
+    app = SimpleNamespace(services=SimpleNamespace(
+        plan_get=lambda root, plan_id: workspace.get_plan(plan_id)
+    ))
+
+    assert handle_post_plan(handler, {"root": str(tmp_path), "plan_id": "plan_missing"},
+                            "/api/coord/plan_get", app) is True
+    assert responses[0][0] == 404
+    assert responses[0][1]["success"] is False
+    assert "plan_missing" in responses[0][1]["error"]
+
+
 @pytest.mark.parametrize(("error", "expected_status"), [
     (RepoPlanConflictError("stale revision"), 409),
     (RepoPlanNotFoundError("plan missing"), 404),

@@ -226,3 +226,81 @@ def test_rollup_without_channel_coverage_marks_window_cost_incomplete(telemetry_
     assert summary["gross_cloud_tokens_avoided_est"] == 100
     assert summary["estimated_savings_usd"] is None
     assert summary["estimated_savings_pricing_mode"] == "incomplete"
+
+
+def test_cache_rates_default_and_validate(tmp_path):
+    defaulted = TelemetryStore(tmp_path / "defaulted")
+    assert defaulted.cloud_cache_read_token_cost_usd_per_million == 0.30
+    assert defaulted.cloud_cache_write_token_cost_usd_per_million == 3.75
+    defaulted.close()
+
+    custom = TelemetryStore(
+        tmp_path / "custom",
+        cloud_cache_read_token_cost_usd_per_million=0.50,
+        cloud_cache_write_token_cost_usd_per_million=5.0,
+    )
+    assert custom.cloud_cache_read_token_cost_usd_per_million == 0.50
+    assert custom.cloud_cache_write_token_cost_usd_per_million == 5.0
+    custom.close()
+
+
+def test_realistic_savings_range_and_breakdown(tmp_path):
+    store = TelemetryStore(
+        tmp_path / "realistic",
+        enabled=True,
+        cloud_input_token_cost_usd_per_million=3.0,
+        cloud_output_token_cost_usd_per_million=15.0,
+        cloud_cache_read_token_cost_usd_per_million=0.30,
+        cloud_cache_write_token_cost_usd_per_million=3.75,
+    )
+    # Simulate a discovery tool call (e.g. local_ai_repo)
+    store.record_tool_accounting({
+        "tool": "local_ai_repo",
+        "agent_tool_request_tokens_est": 100,
+        "agent_tool_response_tokens_est": 500,
+        "agent_protocol_tokens_est": 600,
+        "gross_cloud_tokens_avoided_est": 0,
+        "net_cloud_token_delta_est": -600,
+        "gross_input_tokens_avoided_est": 0,
+        "gross_output_tokens_avoided_est": 0,
+    })
+    assert store.flush()
+
+    # Fast summary (detailed_diagnostics=False)
+    summary_fast = store.summary(scope="process", detailed_diagnostics=False)
+    assert summary_fast["net_cloud_token_delta_est"] == -600
+    # Realistic delta adds: 1 avoided turn * (250 output + 600 slice) = 850
+    # Realistic net delta = 850 - 600 = 250
+    assert summary_fast["realistic_net_cloud_token_delta_est"] == 250
+    assert summary_fast["realistic_savings_usd"] is not None
+    assert "realistic_savings_breakdown" not in summary_fast
+
+    # Detailed summary (detailed_diagnostics=True)
+    summary_detailed = store.summary(scope="process", detailed_diagnostics=True)
+    assert "realistic_savings_breakdown" in summary_detailed
+    brk = summary_detailed["realistic_savings_breakdown"]
+    assert brk["avoided_turns"] == 1
+    assert brk["avoided_agent_output_tokens"] == 250
+    assert brk["avoided_cache_read_tokens"] == 7_800
+    assert brk["dynamic_depth_tokens"] == 7_800
+    assert brk["avoided_slice_tokens"] == 600
+    assert brk["sonnet_output_rate"] == 15.0
+    assert brk["cache_read_rate"] == 0.30
+
+    # Categorization assertion
+    assert "call_categories" in summary_detailed
+    cats = summary_detailed["call_categories"]
+    assert cats["discovery"]["events"] == 1
+    assert cats["agent_os"]["events"] == 0
+    assert cats["local_inference"]["events"] == 0
+    assert cats["system"]["events"] == 0
+
+    # Modern 2026+ profiles assertion
+    profiles = summary_detailed["pricing_profiles"]
+    for required in ("claude-5-sonnet", "claude-5-haiku", "claude-5-opus", "gpt-6", "gpt-6-mini", "gemini-3-flash", "gemini-3-pro"):
+        assert required in profiles
+        assert profiles[required]["input"] > 0
+        assert profiles[required]["output"] > 0
+        assert profiles[required]["cache_read"] > 0
+
+    store.close()

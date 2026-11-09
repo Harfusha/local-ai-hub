@@ -62,6 +62,7 @@ def test_goal_transport_creates_real_bound_task_without_warmup(monkeypatch, tmp_
     config.write_text(
         f'[server]\nbind = "127.0.0.1"\nport = 11498\nstate_dir = "{state_dir.as_posix()}"\nauto_start_ollama = false\n'
         '\n[agent_state]\nenabled = true\n[ollama]\nenabled = false\n'
+        '[hardware]\nprofile = "balanced"\n[features]\nlocal_semantic_analysis = true\n'
         '[llama_cpp]\nmode = "off"\n[preprocessing]\nenabled = false\ntask_context_warmup = true\n',
         encoding="utf-8",
     )
@@ -133,8 +134,11 @@ console.log(JSON.stringify(created));
         assert callers.get("callers"), callers
         with post("/api/rag/search", {"root": str(project.resolve()), "workspace": app.rag.workspace_id(str(project)), "query": "rare_symbol_abc"}, "opencode-local") as response:
             rag_result = json.load(response)
-        assert rag_result.get("retrieval_mode") == "lexical_fallback", rag_result
-        assert any(item.get("path") == "example.py" for item in rag_result.get("results", []))
+        assert rag_result.get("retrieval_mode") == "semantic_only_unavailable", rag_result
+        assert rag_result.get("degraded") is True
+        assert rag_result.get("fallback") == "embedding_backend"
+        assert rag_result.get("reason") == "generation_denied"
+        assert rag_result.get("results") == []
         with post("/api/agent-state/memory", {"action": "record", "root": str(project.resolve()), "scope": "repository", "key": "probe-key", "value": "probe-value"}, "opencode-local") as response:
             assert json.load(response).get("success") is True
         with post("/api/agent-state/memory", {"action": "find", "root": str(project.resolve()), "query": "probe-value", "limit": 5}, "opencode-local") as response:

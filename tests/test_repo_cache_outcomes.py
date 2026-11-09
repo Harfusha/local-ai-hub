@@ -168,8 +168,8 @@ def test_repo_search_reuses_cache_for_equivalent_query_whitespace_and_case(tmp_p
     services.preprocessor = None
     services.evidence_store = None
 
-    first = services.repo_search(str(tmp_path), "  Cache   Route  ", top_k=12)
-    second = services.repo_search(str(tmp_path), "cache route", top_k=12)
+    first = services.repo_search(str(tmp_path), "  Cache   Route  ", top_k=12, search_mode="lexical")
+    second = services.repo_search(str(tmp_path), "cache route", top_k=12, search_mode="lexical")
 
     assert first["cache_hit"] is False
     assert second["cache_hit"] is True
@@ -270,3 +270,40 @@ def test_foreground_refresh_never_syncs_watcher_owned_index(tmp_path: Path):
 
     assert services.code_index.calls == 0
     assert services.deterministic.calls == 0
+
+
+def test_foreground_refresh_updates_only_previously_indexed_code_paths(tmp_path: Path):
+    class _CodeIndex:
+        def __init__(self):
+            self.updated = []
+
+        def files_needing_reindex(self, _root, items, *, only_existing=False):
+            assert only_existing is True
+            return [item for item in items if item[0] == "src/used.py"]
+
+        def update_files_batch(self, _root, items):
+            self.updated.extend(items)
+            return {}
+
+        def update_file(self, *_args):
+            return {"success": True}
+
+    services = LocalAIServices.__new__(LocalAIServices)
+    services._index_refresh_lock = threading.Lock()
+    services._index_refresh_state = {}
+    for relative in ("src/used.py", "src/new.py"):
+        target = tmp_path / relative
+        target.parent.mkdir(exist_ok=True)
+        target.write_text("def changed(): return 1\n", encoding="utf-8")
+    services._repo_cache_state = lambda _root: {
+        "kind": "filesystem",
+        "fingerprint": "rev",
+        "changed_paths": ["src/used.py", "src/new.py"],
+    }
+    services.repo_tools = type("_Tools", (), {"_hash_file_only": lambda *_args: "new-hash"})()
+    services.code_index = _CodeIndex()
+    services.deterministic = None
+
+    services._refresh_changed_intelligence(str(tmp_path))
+
+    assert services.code_index.updated == [("src/used.py", "new-hash")]

@@ -1,0 +1,10 @@
+{
+  "default_target_ref": "refs/heads/master",
+  "description": "Implement single-pass ingest caching, cross-worktree CAS reuse, polyglot import resolution, dependency graph centrality, proactive git seeding, and deterministic trivial file cards.",
+  "id": "plan_smart_polyglot_preprocessing",
+  "lifecycle": "draft",
+  "schema_version": 1,
+  "spec_refs": [],
+  "tasks": {},
+  "title": "Smart, Fast and Polyglot Preprocessing Pipeline"
+}

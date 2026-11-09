@@ -8,6 +8,7 @@ import json
 import sqlite3
 import threading
 import time
+import traceback
 import zipfile
 from contextlib import ExitStack
 from concurrent.futures import CancelledError
@@ -47,6 +48,7 @@ from .autotune import RuntimeTuner
 from .deterministic import DeterministicEngine
 from .logging_setup import configure_logging, shutdown_logging
 from .sqlite_support import require_canonical_agent_state_database
+from .state_lifecycle import ensure_state_version
 from .external_tools import ExternalCodeIntelligence
 from .async_jobs import AsyncJobManager
 from .speculative_lint import SpeculativeLintQueue
@@ -75,7 +77,9 @@ from .status_executor import StatusDependencyExecutor
 
 _STATUS_DEPENDENCY_TIMEOUT_SECONDS = 0.25
 _STATUS_TELEMETRY_SUMMARY_TIMEOUT_SECONDS = 1.0
+_STATUS_OLLAMA_PROFILE_TIMEOUT_SECONDS = 1.0
 _STATUS_PREPROCESSING_STATUS_TIMEOUT_SECONDS = 2.0
+_STATUS_SCHEDULER_TIMEOUT_SECONDS = 1.0
 _STATUS_MAX_WORKERS = 32
 _STATUS_MAX_INFLIGHT_DEPENDENCIES = 32
 
@@ -84,8 +88,12 @@ def _status_dependency_timeout_seconds(key: str) -> float:
     timeout = float(_STATUS_DEPENDENCY_TIMEOUT_SECONDS)
     if key == "telemetry.summary":
         timeout = max(timeout, float(_STATUS_TELEMETRY_SUMMARY_TIMEOUT_SECONDS))
-    elif key in {"preprocessing.status", "preprocessing.stats"}:
+    elif key == "ollama_profile":
+        timeout = max(timeout, float(_STATUS_OLLAMA_PROFILE_TIMEOUT_SECONDS))
+    elif key in {"preprocessing.status", "preprocessing.stats", "background_gpu"}:
         timeout = max(timeout, float(_STATUS_PREPROCESSING_STATUS_TIMEOUT_SECONDS))
+    elif key == "scheduler":
+        timeout = max(timeout, float(_STATUS_SCHEDULER_TIMEOUT_SECONDS))
     return max(0.0, timeout)
 
 
@@ -316,8 +324,40 @@ def _prewarm_route_is_eligible(runtime: Any, model: str) -> bool:
     return True
 
 
+_PREWARM_RETRYABLE_GPU_STATES = frozenset({
+    "available",
+    "external_reservation",
+    "background_lease",
+    "preparing_model",
+    "inference_active",
+})
+
+
+def _prewarm_admission_state(scheduler: Any) -> str:
+    """Return the admission reason used to decide whether startup prewarm can retry."""
+    try:
+        status = scheduler.status()
+    except Exception:
+        return "status_unavailable"
+    if not isinstance(status, dict):
+        return "status_unavailable"
+    state = status.get("gpu_admission_state")
+    return state if isinstance(state, str) and state else "unknown"
+
+
+def _prewarm_should_retry(scheduler: Any) -> bool:
+    """Retry prewarm only when scheduler admission reports a recoverable state."""
+    return _prewarm_admission_state(scheduler) in _PREWARM_RETRYABLE_GPU_STATES
+
+
 def _wait_for_prewarm_backend(runtime: Any, shutdown: threading.Event, max_wait_seconds: float) -> bool:
-    """Give a managed backend a short startup grace period without blocking requests."""
+    """Let scheduler admission start an offline backend before prewarming it."""
+    if not _runtime_is_available(runtime):
+        ensure_running = getattr(runtime, "ensure_running", None)
+        if callable(ensure_running):
+            # Starting here would acquire GPU resources outside the scheduler's
+            # admission fence. Runtime preparation starts it after admission.
+            return not shutdown.is_set()
     deadline = time.monotonic() + max(0.0, float(max_wait_seconds))
     while not shutdown.is_set():
         if _runtime_is_available(runtime):
@@ -356,6 +396,30 @@ class BundleValidationError(ValueError):
     """Raised when bundle validation or scope verification fails."""
 
 
+def _record_startup_prewarm_failure(debug_traces: Any, model: str, error: BaseException) -> str:
+    """Retain startup prewarm exception details only in opt-in local traces."""
+    if getattr(debug_traces, "enabled", False) is not True:
+        return ""
+    try:
+        trace_id = debug_traces.start(
+            kind="system",
+            action="startup_prewarm",
+            source="startup",
+            model=str(model),
+            initial_event=("prewarm_attempt_failed", {
+                "exception_type": type(error).__name__,
+                "exception_message": str(error),
+                "traceback": "".join(traceback.format_exception(error)),
+            }),
+        )
+        if trace_id:
+            debug_traces.finish(trace_id, state="failed")
+        return trace_id
+    except Exception:
+        # Diagnostics must never change startup or scheduler behavior.
+        return ""
+
+
 class LocalAIApp:
     vram_balancer: Any = None
     swarm: Any = None
@@ -364,6 +428,7 @@ class LocalAIApp:
     def __init__(self, config_path: str | None = None):
         self.config = load_config(config_path)
         state_dir = Path(self.config["server"]["state_dir"])
+        ensure_state_version(state_dir)
         require_canonical_agent_state_database(state_dir)
         saving = self.config.get("token_saving", {})
         self.started_at = time.time()
@@ -391,7 +456,6 @@ class LocalAIApp:
         self.opencode_provider = ProviderService(
             self.scheduler,
             upstream_url=self.config.get("server", {}).get("ollama_url", ""),
-            hub_token=self.config.get("security", {}).get("api_token", ""),
             peer_verifier=lambda connection: verify_supervised_peer(connection, state_dir),
         )
         self.background_gpu = IdleGPUWorker(self.config, self.scheduler)
@@ -415,6 +479,10 @@ class LocalAIApp:
             rollup_retention_days=int(obs.get("rollup_retention_days", 365)),
             cloud_input_token_cost_usd_per_million=saving.get("cloud_input_token_cost_usd_per_million", 3.0),
             cloud_output_token_cost_usd_per_million=saving.get("cloud_output_token_cost_usd_per_million", 3.0),
+            pricing_profile=str(saving.get("pricing_profile", "claude-5-sonnet")),
+            cloud_cache_read_token_cost_usd_per_million=saving.get("cloud_cache_read_token_cost_usd_per_million", 0.30),
+            cloud_cache_write_token_cost_usd_per_million=saving.get("cloud_cache_write_token_cost_usd_per_million", 3.75),
+            config=self.config,
             batch_size=int(obs.get("batch_size", 64)),
             flush_interval_seconds=float(obs.get("flush_interval_seconds", 0.5)),
             queue_size=int(obs.get("queue_size", 10000)),
@@ -575,8 +643,19 @@ class LocalAIApp:
                             self.telemetry.record_system("prewarm_ready", model=str(model), attempts=attempts)
                             return
                     except Exception as exc:
-                        self.telemetry.record_error("prewarm", "startup_model", exc, recovered=True)
+                        self.telemetry.record_error("prewarm", "startup_model", exc, recovered=False)
+                        _record_startup_prewarm_failure(self.debug_traces, str(model), exc)
                         self.logger.warning("prewarm attempt failed: %s", type(exc).__name__)
+                    admission_state = _prewarm_admission_state(self.scheduler)
+                    if admission_state not in _PREWARM_RETRYABLE_GPU_STATES:
+                        self.logger.warning(
+                            "prewarm stopped: gpu_admission_state=%s", admission_state,
+                        )
+                        self.telemetry.record_system(
+                            "prewarm_stopped_gpu_admission_unavailable",
+                            model=str(model), gpu_admission_state=admission_state,
+                        )
+                        return
                     self._shutdown.wait(min(15.0, 1.5 + attempts * 0.5))
             self._prewarm_thread = threading.Thread(target=warm, name="local-ai-prewarm", daemon=True)
             self._prewarm_thread.start()
@@ -897,6 +976,8 @@ class LocalAIApp:
             return cached_snapshot(cached, now)
         cache_lock = ExitStack()
         if cached:
+            # Stale snapshots are cheap and safe; never make dashboard polls
+            # wait behind a slow refresh already owned by another request.
             if not self._live_status_lock.acquire(blocking=False):
                 return cached_snapshot(cached, now, stale=True)
             cache_lock.callback(self._live_status_lock.release)
@@ -983,7 +1064,7 @@ class LocalAIApp:
             from .model_lifecycle import lifecycle_status
             model_execution = {**model_execution, "lifecycle": lifecycle_status()}
             vram_balancer_obj = getattr(self, "vram_balancer", None)
-            vram_balancer, vram_balancer_healthy = read("vram_balancer", vram_balancer_obj.status if vram_balancer_obj else lambda: {}, {})
+            vram_balancer, vram_balancer_healthy = read("vram_balancer", (lambda: vram_balancer_obj.status(force=True)) if vram_balancer_obj else lambda: {}, {})
             benchmark_obj = getattr(self, "benchmark_runner", None)
             benchmark, benchmark_healthy = read("benchmark", benchmark_obj.get_latest_summary if benchmark_obj else lambda: {"available": False}, {"available": False})
             debug_traces, traces_healthy = read("debug_traces", self.debug_traces.stats, {})
@@ -1032,6 +1113,8 @@ class LocalAIApp:
                 },
                 "models": dict(self.config.get("models", {})),
                 "hardware": dict(self.config.get("_hardware", {})),
+                "hardware_profile": fs.hardware_profile,
+                "capabilities": fs.capability_status(),
                 "accelerators": accelerators,
                 "code_intelligence": code_intelligence,
                 "runtime_profile": {
@@ -1082,7 +1165,7 @@ class LocalAIApp:
 
         def dependency(key, callback, fallback, diagnostic=None):
             dependency_deadline = deadline
-            if key == "telemetry.summary":
+            if key in {"telemetry.summary", "scheduler"}:
                 dependency_deadline = time.monotonic() + _status_dependency_timeout_seconds(key)
             return _status_dependency(
                 callback,
@@ -1161,6 +1244,7 @@ class LocalAIApp:
             # health dependencies and share the request deadline; a slow
             # runtime must not prevent the scheduler result from being ready.
             scheduler_diagnostic: dict[str, Any] = {}
+            scheduler_deadline = time.monotonic() + _status_dependency_timeout_seconds("scheduler")
             scheduler_handle = _schedule_status_dependency(
                 self.scheduler.status,
                 {},
@@ -1170,11 +1254,11 @@ class LocalAIApp:
                 inflight=self._status_dependency_inflight,
                 slots=self._status_dependency_slots,
                 executor=self._status_dependency_executor,
-                deadline=deadline,
+                deadline=scheduler_deadline,
                 diagnostic=scheduler_diagnostic,
             )
             pending_dependencies["scheduler"] = (
-                scheduler_handle, {}, scheduler_diagnostic, deadline
+                scheduler_handle, {}, scheduler_diagnostic, scheduler_deadline
             )
 
             runtime_diagnostic: dict[str, Any] = {}

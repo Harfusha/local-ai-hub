@@ -13,7 +13,7 @@ parity and compares an allocation-inclusive adapter against current production S
 Votes-only reference speedup is explicitly separate. The dedicated Windows CI workflow
 retains compiler, SDK, binary provenance and three fresh-process sample records. This
 does not enable a production kernel, satisfy whole-indexing adoption, or prove local
-host speedup. See `docs/superpowers/plans/2026-10-25-performance-implementation-progress.md`.
+host speedup. See `docs/FINAL_COMPLETION_PLAN.md`.
 
 Release gate order matches CI: start from a clean checkout, run `python tools/release_check.py`, install the development extra with `python -m pip install -e ".[dev]"`, then run `python -m compileall -q src tools tests`, `pyflakes src tools`, `pytest -q`, `python tools/selftest.py`, and `python tools/check_dashboard.py`. Next run `python tools/release_check.py --post-test`; reject tracked mutations, remove expected ignored test/install caches with `git clean -fdX`, and run `python tools/release_check.py` again before packaging. Build the wheel and source distribution, then install the wheel into a fresh environment and smoke-test its version. The release check rejects local config, runtime databases, generated/cache payloads and internal workspaces. Pytest is configured to fail on resource leaks, unraisable exceptions and unhandled thread exceptions. Dashboard JavaScript is extracted and checked with Node when Node is available.
 

@@ -235,6 +235,59 @@ def test_exact_search_deduplicates_streamed_paths_with_constant_state(tmp_path: 
     assert [item["path"] for item in result["results"]] == ["a.py"]
 
 
+def test_exact_git_search_sorts_only_ripgrep_candidates(tmp_path: Path, monkeypatch) -> None:
+    import builtins
+    import subprocess
+
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / ".git").mkdir()
+    (root / "match.py").write_text("needle\n", encoding="utf-8")
+    noise = [f"noise_{index:04}.py" for index in range(1000)]
+    git_paths = [*noise, "match.py"]
+
+    class GitProcess:
+        pid = 12345
+
+        def __init__(self) -> None:
+            self.stdout = io.BytesIO("\0".join(git_paths).encode())
+
+        def poll(self):
+            return 0
+
+        def wait(self, timeout=None):
+            return 0
+
+    monkeypatch.setattr(
+        repo_tools_module, "popen_managed", lambda *_args, **_kwargs: GitProcess(),
+    )
+    monkeypatch.setattr(
+        subprocess, "run",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess(
+            ["rg"], 0, "match.py\n", "",
+        ),
+    )
+    sorted_set_sizes = []
+    real_sorted = builtins.sorted
+
+    def observe_sorted(values, *args, **kwargs):
+        if isinstance(values, set):
+            sorted_set_sizes.append(len(values))
+        return real_sorted(values, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "sorted", observe_sorted)
+    tools = RepositoryTools({"server": {"state_dir": str(tmp_path / "state")}})
+    tools._rg = "rg"
+
+    result = tools.search(str(root), "needle", limit=10, exact_count=True)
+
+    assert result["success"] is True
+    assert result["total_matches"] == 1
+    assert [item["path"] for item in result["results"]] == ["match.py"]
+    assert 1 in sorted_set_sizes
+    assert len(git_paths) not in sorted_set_sizes
+
+
 def test_service_code_query_keeps_offset_in_cache_identity(tmp_path: Path) -> None:
     calls: list[tuple[int, int]] = []
 

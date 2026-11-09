@@ -498,6 +498,50 @@ def test_http_trace_finisher_does_not_hide_a_failed_terminal_write(monkeypatch):
     assert handler._debug_trace_finished is True
 
 
+def test_http_trace_failure_keeps_safe_response_reason(monkeypatch):
+    from local_ai_hub import http_server
+
+    class Store:
+        def __init__(self):
+            self.output = None
+            self.response = None
+            self.finish_args = None
+
+        def update(self, trace_id, **kwargs):
+            self.output = kwargs.get("output")
+            self.response = kwargs.get("response")
+
+        def finish(self, trace_id, **kwargs):
+            self.finish_args = kwargs
+            return True
+
+    class App:
+        debug_traces = Store()
+
+    handler = http_server.Handler.__new__(http_server.Handler)
+    handler._debug_trace_id = "trace-id"
+    handler._debug_trace_finished = False
+    handler._debug_stream_capture = False
+    monkeypatch.setattr(http_server, "APP", App())
+
+    handler._finish_debug_trace(
+        400,
+        {
+            "success": False,
+            "error": "Cannot determine migration drift without a live SQLite database",
+        },
+    )
+
+    assert App.debug_traces.finish_args == {
+        "state": "failed",
+        "error": "Cannot determine migration drift without a live SQLite database",
+    }
+    assert App.debug_traces.output is None
+    assert App.debug_traces.response["error"] == "Cannot determine migration drift without a live SQLite database"
+    assert App.debug_traces.response["http_status_code"] == 400
+    assert handler._debug_trace_finished is True
+
+
 def test_model_request_promotes_model_to_trace_summary(tmp_path):
     store = DebugTraceStore(_config(tmp_path))
     trace_id = store.start(kind="async_job")

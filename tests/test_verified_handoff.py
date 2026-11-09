@@ -190,11 +190,11 @@ def test_model_pass_and_diff_check_cannot_complete_test_criterion(tmp_path):
     assert "receipt" in result.get("error", "").lower()
 
 
-def test_successful_test_command_receipt_can_complete_test_criterion(tmp_path):
+def test_execution_id_without_persisted_v2_receipt_cannot_complete_test_criterion(tmp_path):
     result, services, _ = _run_handoff(tmp_path, "python -m pytest -q", "cmd-test-1")
     assert services.commands_run == ["python -m pytest -q"]
-    assert result["status"] == "complete", result
-    assert result["verification"]["receipt_gate"]["satisfied_criteria"] == ["tests pass"]
+    assert result["status"] == "needs_agent", result
+    assert "receipt" in result.get("error", "").lower()
 
 
 def test_worktree_creation_returns_separate_checkout_identity_and_owner_metadata(tmp_path):

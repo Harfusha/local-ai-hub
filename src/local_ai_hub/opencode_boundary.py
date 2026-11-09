@@ -8,34 +8,12 @@ from __future__ import annotations
 from contextlib import contextmanager
 from contextvars import ContextVar
 from functools import wraps
-import hashlib
-import hmac
-import re
 from typing import Any
 
 _PROFILE = "opencode-local"
 _LOCAL_GENERATION_BLOCKED: ContextVar[bool] = ContextVar("opencode_local_generation_blocked", default=False)
 
 
-def derive_local_profile_token(master: str, nonce: str) -> str | None:
-    """Derive a restricted credential for one provider session."""
-    if (not isinstance(master, str) or not master.isascii() or not 32 <= len(master) <= 1024
-            or any(character.isspace() for character in master)):
-        return None
-    if not isinstance(nonce, str) or not re.fullmatch(r"[A-Za-z0-9_-]{20,128}", nonce):
-        return None
-    signature = hmac.new(master.encode("ascii"), b"local-ai-hub-opencode-profile-v1\0" + nonce.encode("ascii"), hashlib.sha256).hexdigest()
-    return f"lahoc1.{nonce}.{signature}"
-
-
-def local_profile_config(config: dict[str, Any], token: str) -> dict[str, Any]:
-    """Make a client-only copy without owner or supervisor credentials."""
-    if not isinstance(token, str) or (token and not re.fullmatch(r"lahoc1\.[A-Za-z0-9_-]{20,128}\.[0-9a-f]{64}", token)):
-        raise ValueError("opencode-local requires a restricted profile credential")
-    security = config.get("security", {})
-    if not isinstance(security, dict):
-        raise ValueError("invalid security configuration")
-    return {**config, "security": {**security, "api_token": token, "supervisor_token": "", "action_tokens": {}}}
 _READ_PATHS = frozenset({"/health", "/ready", "/api/status", "/api/mode", "/api/live/status?light=1"})
 _POST_PATHS = frozenset({
     "/api/repo/code-index", "/api/repo/callers", "/api/search", "/api/rag/search",

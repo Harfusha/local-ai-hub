@@ -1,6 +1,6 @@
 # Local model GPU evaluation: fixed cases
 
-Version 1. This is a future benchmark protocol, not a completed benchmark.
+Protocol revision 2. This is a future benchmark protocol, not a completed benchmark.
 Give the model only the selected case and its allowed synthetic workspace. Keep
 the scoring key outside that workspace and outside the model's context.
 Use a fresh isolated fixture for every run; never run write cases on the Hub
@@ -16,8 +16,11 @@ RTX 4060. Target-GPU behavior remains untested.
 
 To prepare a case, run
 `python tools/prepare_local_model_eval_fixture.py --case I1 --destination ABS_NEW_PATH`.
-Choose an absolute, non-existing path outside any Git checkout with an existing
-parent. The tool creates a disposable Git repository and baseline commit and
+Choose an absolute, non-existing path outside any existing Git checkout with
+an existing parent in a stable, user-controlled directory. Avoid system and
+temporary directories: Local AI Hub may deliberately ignore them during
+preprocessing, leaving cross-file evaluation without indexed evidence. The tool
+creates a disposable Git repository and baseline commit and
 prints its fixture digest and HEAD; it does not run the case. If preparation
 fails, it can leave that new fixture directory for operator inspection.
 
@@ -209,3 +212,76 @@ from pathlib import Path
 def test_panel_exists():
     assert 'id="panel"' in Path("index.html").read_text(encoding="utf-8")
 ```
+
+## A1 — Find a cross-file unit mismatch
+
+Prepare a fresh fixture with `python tools/prepare_local_model_eval_fixture.py
+--case A1 --destination ABS_NEW_PATH`. Run the read-only repository solve
+against that fixture with this task: “Trace `checkout` into its pricing helper.
+Report only behavior supported by the files. Cite file, line and returned
+evidence ID. Explain the unit mismatch and compare the current 22,000-cent
+result with the intended 1,210-cent result for a 1,000-cent subtotal at 21
+percent. Do not edit files or claim tests were run.” The expected
+facts are in `src/checkout.py:3-5` and `src/pricing.py:1-4`.
+
+## A2 — Design retry-safe delivery
+
+Prepare a separate fresh fixture with `--case A2`. Run read-only repository
+solve with: “Propose a design for retry-safe invoice delivery that preserves
+`deliver_invoice` and makes no edits. Cite the source and constraint evidence
+IDs. Explain the crash/timeout window, the idempotency key, a durable outbox
+option, and one tradeoff of each. Do not claim an implementation or test pass.”
+The source flow is `src/dispatcher.py:1-4`; constraints are in `README.md:3-6`.
+
+## S1 — Summarize bounded search evidence
+
+Give the model only this synthetic search result and the prompt below. The
+coverage note is metadata, not a claim that any particular match was omitted.
+
+```text
+Coverage note: Index coverage is incomplete; additional matches may be omitted.
+Match E1: `src/clamp.py:10-12` contains `if value < lower or value > upper:`.
+Both comparisons are strict, so values equal to either bound are accepted.
+```
+
+Prompt: “Summarize the finding in at most 3 bullets and 80 words. Use only the
+supplied match. Cite code claims with its exact `[path:start-end]` citation.
+Preserve uncertainty in the coverage note; do not claim that matches were
+omitted, infer counts, or cite `E1`.”
+
+For the `local_ai_task(eval_suite)` mechanical rubric, pass this case object;
+replace `INSTALLED_TAG` with a model already verified as installed:
+
+```json
+{
+  "action": "eval_suite",
+  "task": "S1-search-summary",
+  "model": "INSTALLED_TAG",
+  "cases": [
+    {
+      "id": "S1",
+      "input": "Coverage note: Index coverage is incomplete; additional matches may be omitted. Match E1: `src/clamp.py:10-12` contains `if value < lower or value > upper:`. Both comparisons are strict, so values equal to either bound are accepted. Summarize in at most 3 bullets and 80 words. Cite code claims with exactly [src/clamp.py:10-12]. Preserve coverage uncertainty; do not state matches were omitted, infer counts, or cite E1.",
+      "expected": "equal to bounds",
+      "max_words": 80,
+      "allowed_citations": ["[src/clamp.py:10-12]"],
+      "required_citations": ["[src/clamp.py:10-12]"],
+      "forbidden_phrases": ["matches were omitted", "complete search", "exactly 1 result"]
+    }
+  ]
+}
+```
+
+The evaluator sends only `input` to the model. `expected` and rubric fields
+stay scorer-side. The mechanical pass still needs operator review against the
+semantic S1 criteria below.
+
+Compare the model output with the deterministic baseline consisting of the
+exact match and coverage note above. Record citation precision, supported
+facts, qualifier preservation, unsupported claims, output length, latency and
+VRAM. A model summary does not replace or modify search matches or pagination.
+
+For A1/A2, capture the exact fixture revision, root scope, output, evidence
+IDs, model digest, profile, context/output budgets, tool calls, elapsed time
+and unchanged Git status. These are advisory analysis cases, not bounded work
+orders. Mark unavailable, cancelled, truncated or unidentified-model runs
+NOT_RUN; do not qualify a route from fixture tests alone.

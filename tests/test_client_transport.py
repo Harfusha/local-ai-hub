@@ -1028,7 +1028,6 @@ def test_coord_pubsub_adapters_send_canonical_fields_without_numeric_coercion(tm
 
 def test_stream_events_sends_agent_identity_and_caps_timeout(tmp_path, monkeypatch):
     client = _client(tmp_path)
-    client.api_token = "test-token"
     seen = {}
 
     class Response:
@@ -1050,7 +1049,8 @@ def test_stream_events_sends_agent_identity_and_caps_timeout(tmp_path, monkeypat
     assert events == [("update", {"value": 1})]
     assert "x-localai-tenant" not in seen["headers"]
     assert seen["headers"]["x-localai-agent"] == client.agent
-    assert seen["headers"]["x-localai-token"] == "test-token"
+    assert "x-localai-token" not in seen["headers"]
+    assert "authorization" not in seen["headers"]
     assert seen["headers"]["x-localai-request-id"].startswith("req_")
     assert seen["timeout"] <= client.max_request_timeout
     assert "timeout=5" in seen["url"]

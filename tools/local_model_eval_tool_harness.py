@@ -18,8 +18,10 @@ from types import SimpleNamespace
 from typing import Any
 from urllib.parse import urlsplit
 
+from local_ai_hub.config import load_config
 from local_ai_hub.model_policy import ModelExecutionPolicy
 from local_ai_hub.ollama import OllamaRuntime
+from local_ai_hub.scheduler import AffinityScheduler
 from local_ai_hub.tool_agent import ToolAwareLocalAgent
 from tools.prepare_local_model_eval_fixture import _CASES
 
@@ -86,16 +88,8 @@ def _loopback_url(value: str) -> str:
     return value.rstrip("/")
 
 
-def _prepare_runtime_state(root: Path) -> Path:
-    state_dir = root / ".git" / "local-ai-eval-runtime"
-    try:
-        state_dir.mkdir()
-    except FileExistsError as exc:
-        raise ValueError("fixture runtime state already exists; prepare a fresh fixture") from exc
-    return state_dir
-
-
 def run_tool_case(case: str, root: Path | str, model: str, runtime: Any, *,
+                  scheduler: Any | None = None,
                   context_tokens: int, timeout_seconds: int) -> dict[str, Any]:
     root = Path(root)
     source, fixture_digest, fixture_head = _fixture_source(case, root)
@@ -105,6 +99,10 @@ def run_tool_case(case: str, root: Path | str, model: str, runtime: Any, *,
         raise ValueError("unsupported context request")
     if type(timeout_seconds) is not int or not 1 <= timeout_seconds <= 600:
         raise ValueError("timeout must be between 1 and 600 seconds")
+    if scheduler is None:
+        scheduler = getattr(runtime, "scheduler", None)
+    if scheduler is None or not callable(getattr(scheduler, "submit", None)):
+        raise ValueError("shared GPU scheduler admission is required")
 
     try:
         inventory = runtime.request("/api/tags", timeout=min(5, timeout_seconds))
@@ -159,7 +157,7 @@ def run_tool_case(case: str, root: Path | str, model: str, runtime: Any, *,
     policy = ModelExecutionPolicy(config)
     services = SimpleNamespace(
         model_policy=policy, runtime=RecordedRuntime(),
-        scheduler=SimpleNamespace(submit=lambda _model, execute, **kwargs: execute()),
+        scheduler=scheduler,
         repo_tools=SimpleNamespace(_root=lambda value: value),
         _repo_cache_state=lambda _root: {"fingerprint": fixture_digest},
         generation_cache=SimpleNamespace(get_or_compute=lambda _key, compute: (compute(), False, False)),
@@ -205,6 +203,7 @@ def main() -> None:
     parser.add_argument("--case", choices=sorted(_PROMPTS), required=True)
     parser.add_argument("--fixture", type=Path, required=True)
     parser.add_argument("--model", required=True)
+    parser.add_argument("--config", type=Path, help="Hub config used by the running service")
     parser.add_argument("--ollama-url", default="http://127.0.0.1:11434")
     parser.add_argument("--context", type=int, choices=(16384, 32768, 65536, 131072), default=16384)
     parser.add_argument("--timeout", type=int, default=120)
@@ -215,13 +214,18 @@ def main() -> None:
         parser.error("--timeout must be between 1 and 600 seconds")
     os.environ["NO_PROXY"] = "*"
     os.environ["no_proxy"] = "*"
-    state_dir = _prepare_runtime_state(args.fixture)
-    config = {"server": {"ollama_url": url, "state_dir": str(state_dir),
-                         "request_timeout_seconds": max(1, min(args.timeout, 600))},
-              "ollama": {"enabled": True}}
+    config = load_config(args.config)
+    config.setdefault("ollama", {})["enabled"] = True
+    config.setdefault("server", {})["ollama_url"] = url
+    config["server"]["request_timeout_seconds"] = max(1, min(args.timeout, 600))
     runtime = OllamaRuntime(config)
-    print(json.dumps(run_tool_case(args.case, args.fixture, args.model, runtime,
-                                   context_tokens=args.context, timeout_seconds=args.timeout), ensure_ascii=False))
+    scheduler = AffinityScheduler(runtime, config)
+    try:
+        report = run_tool_case(args.case, args.fixture, args.model, runtime, scheduler=scheduler,
+                               context_tokens=args.context, timeout_seconds=args.timeout)
+        print(json.dumps(report, ensure_ascii=False))
+    finally:
+        scheduler.close()
 
 
 if __name__ == "__main__":

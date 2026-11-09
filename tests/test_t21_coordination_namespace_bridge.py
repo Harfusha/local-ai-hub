@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from copy import deepcopy
 import threading
 from pathlib import Path
 from types import SimpleNamespace
@@ -146,7 +145,9 @@ def _record_repository_memory(
         scope="repository",
         key=key,
         value=value,
-        record=record,
+        status=(record_fields or {}).get("status", "confirmed"),
+        contradicts_record_id=(record_fields or {}).get("contradicts_record_id"),
+        supersedes_record_id=(record_fields or {}).get("supersedes_record_id"),
     )
 
 
@@ -339,7 +340,7 @@ def test_repository_memory_coord_wrapper_preserves_correction_lineage(
             "supersedes_record_id": original_id,
         },
     )
-    assert corrected["success"] is True
+    assert corrected["success"] is True, corrected
     corrected_record = env.clients[-1].last_coord_result["record"]
     assert corrected_record["contradicts_record_id"] == original_id
     assert corrected_record["supersedes_record_id"] == original_id
@@ -366,7 +367,7 @@ def test_client_cannot_override_repository_scope_for_memory_find(
         coordination_id_override=_coordination_id(victim),
     )
     raw = env.clients[-1].last_coord_result
-    assert result["success"] is True
+    assert result["success"] is True, result
     assert raw.get("records", []) == []
 
 
@@ -381,17 +382,6 @@ def test_client_memory_requests_leave_repository_identity_to_server(
         return {"success": True}
 
     monkeypatch.setattr(client, "post", capture_post)
-    record = {
-        "kind": "finding",
-        "scope": "repository",
-        "scope_id": "forged-scope",
-        "repository_id": "forged-repository",
-        "coordination_id": "forged-coordination",
-        "key": "identity-rule",
-        "value": "must use server identity",
-    }
-    original_record = deepcopy(record)
-
     result = HubClient.coord(
         client,
         "memory_record",
@@ -401,23 +391,20 @@ def test_client_memory_requests_leave_repository_identity_to_server(
 
         repository_id="forged-repository",
         coordination_id="forged-coordination",
-        record=record,
+        key="identity-rule",
+        value="must use server identity",
     )
 
-    assert result["success"] is True
+    assert result["success"] is True, result
     assert captured["path"] == "/api/agent-state/memory"
     payload = captured["payload"]
     assert isinstance(payload, dict)
     assert payload["root"] == "C:/repo"
     assert payload["scope"] == "repository"
     assert {"repository_id", "coordination_id", "scope_id"}.isdisjoint(payload)
-    assert payload["record"] == {
-        "kind": "finding",
-        "scope": "repository",
-        "key": "identity-rule",
-        "value": "must use server identity",
-    }
-    assert record == original_record
+    assert payload["key"] == "identity-rule"
+    assert payload["value"] == "must use server identity"
+    assert "record" not in payload
 
 
 def test_client_rejects_retired_tenant_field_before_memory_transport(monkeypatch):
@@ -436,7 +423,7 @@ def test_client_rejects_retired_tenant_field_before_memory_transport(monkeypatch
     assert result["success"] is False
     assert transported == []
 
-def test_client_memory_record_namespace_comes_from_nested_repository_scope(
+def test_client_memory_record_uses_explicit_repository_scope(
     monkeypatch,
 ):
     client = HubClient.__new__(HubClient)
@@ -447,30 +434,19 @@ def test_client_memory_record_namespace_comes_from_nested_repository_scope(
         return {"success": True}
 
     monkeypatch.setattr(client, "post", capture_post)
-    record = {
-        "kind": "finding",
-        "scope": "repository",
-        "scope_id": "forged-scope",
-        "key": "nested-identity-rule",
-        "value": "must use server identity",
-    }
-    original_record = deepcopy(record)
-
     result = HubClient.coord(
         client,
         "memory_record",
         root="C:/repo",
-        record=record,
+        scope="repository",
+        key="nested-identity-rule",
+        value="must use server identity",
     )
 
     assert result["success"] is True
     payload = captured["payload"]
     assert isinstance(payload, dict)
-    assert "scope_id" not in payload
-    assert payload["record"] == {
-        "kind": "finding",
-        "scope": "repository",
-        "key": "nested-identity-rule",
-        "value": "must use server identity",
-    }
-    assert record == original_record
+    assert payload["scope"] == "repository"
+    assert payload["key"] == "nested-identity-rule"
+    assert payload["value"] == "must use server identity"
+    assert "scope_id" not in payload and "record" not in payload

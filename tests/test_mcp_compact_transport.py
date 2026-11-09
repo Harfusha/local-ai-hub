@@ -14,6 +14,14 @@ import mcp.types as t
 from local_ai_hub.token_accounting import json_tokens
 
 
+@pytest.fixture(autouse=True)
+def qualified_semantic_actions(monkeypatch):
+    monkeypatch.setattr(local_ai_mcp.FEATURES, "tasks", True)
+    monkeypatch.setattr(local_ai_mcp.FEATURES, "hardware_profile", "balanced")
+    monkeypatch.setattr(local_ai_mcp.FEATURES, "local_semantic_analysis", True)
+    monkeypatch.setattr(local_ai_mcp.FEATURES, "has_any_model", lambda: True)
+
+
 def test_plan_binding_recovery_state_survives_small_response_budget():
     token = local_ai_mcp._CURRENT_RESPONSE_OPTIONS.set({
         "max_response_tokens": 128, "response_profile": "minimal", "action": "plan_bind_task",
@@ -218,6 +226,8 @@ def test_mcp_delegate_autostarts_owned_daemon_and_preserves_http_payload(tmp_pat
     config_path = tmp_path / "autostart.toml"
     config_path.write_text(
         f'[server]\nbind = "127.0.0.1"\nport = {port}\nstate_dir = "{state_dir}"\n'
+        '[hardware]\nprofile = "balanced"\n'
+        '[features]\nlocal_semantic_analysis = true\n'
         "[client]\nstartup_wait_seconds = 15\nstartup_poll_seconds = 0.05\nhealth_timeout_seconds = 0.2\n",
         encoding="utf-8",
     )
@@ -573,11 +583,25 @@ def test_local_ai_repo_non_context_actions_ignore_guard_fields(monkeypatch) -> N
     api_calls = [call for call in calls if call[0] != "/api/telemetry/tool-accounting"]
     assert api_calls == [(
         "/api/search",
-        {"root": str(Path("C:/repo")), "query": "route", "top_k": 12, "enrich": False, "limit": 24, "offset": 0},
+        {"root": str(Path("C:/repo")), "query": "route", "top_k": 12, "enrich": False, "limit": 24, "offset": 0, "search_mode": "hybrid"},
         120.0,
         [{"path": "src/auth.py", "purpose": "repository_search", "scope": "repo_search"}],
     )]
     assert all(call[0] in {"/api/search", "/api/telemetry/tool-accounting"} for call in calls)
+
+
+def test_local_ai_repo_review_diff_uses_adaptive_delivery_for_slow_calls(monkeypatch) -> None:
+    calls = _capture_client(monkeypatch, {"success": True, "findings": []})
+
+    local_ai_mcp.local_ai_repo(action="review_diff", root="C:/repo")
+
+    api_calls = [call for call in calls if call[0] != "/api/telemetry/tool-accounting"]
+    assert len(api_calls) == 1
+    path, payload, timeout, *_ = api_calls[0]
+    assert path == "/api/review/diff"
+    assert payload["delivery"] == "auto"
+    assert payload["latency_budget_ms"] == 30_000
+    assert timeout == 600.0
 
 
 def test_local_ai_repo_context_returns_bounded_deterministic_projection(monkeypatch) -> None:

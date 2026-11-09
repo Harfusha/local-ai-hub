@@ -4,7 +4,6 @@ import importlib.metadata
 import json
 import os
 from pathlib import Path
-import secrets
 import socket
 import subprocess
 import sys
@@ -39,10 +38,9 @@ def main():
     with socket.socket() as probe:
         probe.bind(('127.0.0.1', 0))
         port = probe.getsockname()[1]
-    token = secrets.token_urlsafe(32)
     config = root / ('smoke-' + args.state + '-' + str(port) + '.toml')
     with config.open('x', encoding='utf-8') as output:
-        output.write('[server]\nbind = "127.0.0.1"\nport = ' + str(port) + '\nstate_dir = ' + json.dumps(str(state)) + '\nauto_start_ollama = false\n[security]\napi_token = ' + json.dumps(token) + '\n[ollama]\nenabled = false\n[llama_cpp]\nenabled = false\n[code_intelligence]\nenabled = false\nserena_enabled = false\npreprocess_serena = false\n[headless]\nmanage_ollama = false\n[resilience]\nwatchdog_enabled = false\n[setup]\ninstall_dir = ' + json.dumps(str(root / 'install')) + '\n')
+        output.write('[server]\nbind = "127.0.0.1"\nport = ' + str(port) + '\nstate_dir = ' + json.dumps(str(state)) + '\nauto_start_ollama = false\n[security]\n[ollama]\nenabled = false\n[llama_cpp]\nenabled = false\n[code_intelligence]\nenabled = false\nserena_enabled = false\npreprocess_serena = false\n[headless]\nmanage_ollama = false\n[resilience]\nwatchdog_enabled = false\n[setup]\ninstall_dir = ' + json.dumps(str(root / 'install')) + '\n')
     env = dict(os.environ)
     env.pop('PYTHONPATH', None)
     evidence = {'state':str(state), 'port':port, 'package_version':importlib.metadata.version('local-ai-hub'), 'package_path':str(Path(local_ai_hub.__file__).resolve()), 'runtime_acceptance':False}
@@ -52,7 +50,7 @@ def main():
             time.sleep(8)
             if process.poll() is not None:
                 raise RuntimeError('supervisor exited before check')
-            request = Request(f'http://127.0.0.1:{port}/api/status', headers={'Authorization':'Bearer '+token})
+            request = Request(f'http://127.0.0.1:{port}/api/status')
             with urlopen(request, timeout=10) as response:
                 status = json.load(response)
             supervisor_owner = json.loads((state/'supervisor.owner.json').read_text(encoding='utf-8'))

@@ -1,3 +1,3 @@
 # Separate synthetic importer project
 
-Fixture revision: eval-fixtures-v3.
+Fixture revision: eval-fixtures-v5.

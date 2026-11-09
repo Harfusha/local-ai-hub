@@ -41,6 +41,7 @@ def test_source_mapping_and_existing_test_paths_deduplicate_without_broad_name_r
         "tests/test_feature.py",
         "tests/unit/test_feature.py",
         "tests/test_test_widget.py",
+        "tests/unit/test_widget.ts",
     )
     assert set(selected.flaky_candidates) == {
         "tests/test_feature.py::test_mapped",

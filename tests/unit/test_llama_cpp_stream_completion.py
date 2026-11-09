@@ -62,6 +62,35 @@ def test_preset_retains_configured_context_without_mutating_config(tmp_path):
     assert config == original
 
 
+def test_preset_applies_quantized_kv_cache_types(tmp_path):
+    config = {"server": {"state_dir": str(tmp_path)}, "llama_cpp": {
+        "cache_type_k": "q8_0", "cache_type_v": "q8_0",
+        "models": {"fake": {"served_model": "fake", "url": "http://127.0.0.1:12438", "context_length": 8192}},
+    }}
+    runtime = LlamaCppManagedRuntime(config)
+
+    runtime._write_preset()
+
+    preset = (runtime.runtime_dir / "hub.models.ini").read_text(encoding="utf-8")
+    assert "cache-type-k = q8_0" in preset
+    assert "cache-type-v = q8_0" in preset
+
+
+@pytest.mark.parametrize("option", ["cache_type_k", "cache_type_v"])
+def test_preset_rejects_unknown_kv_cache_type_without_overwriting(tmp_path, option):
+    runtime = LlamaCppManagedRuntime({"server": {"state_dir": str(tmp_path)}, "llama_cpp": {
+        option: "q9_0", "models": {"fake": {"served_model": "fake", "url": "http://127.0.0.1:12438"}},
+    }})
+    runtime.runtime_dir.mkdir(parents=True)
+    preset = runtime.runtime_dir / "hub.models.ini"
+    preset.write_text("existing", encoding="utf-8")
+
+    with pytest.raises(ValueError):
+        runtime._write_preset()
+
+    assert preset.read_text(encoding="utf-8") == "existing"
+
+
 @pytest.mark.parametrize("context", [-1, True, "invalid", float("inf"), 8192.5])
 def test_invalid_preset_context_never_overwrites_existing_preset(tmp_path, context):
     runtime = LlamaCppManagedRuntime({"server": {"state_dir": str(tmp_path)}, "llama_cpp": {"models": {

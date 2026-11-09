@@ -1,0 +1,97 @@
+from __future__ import annotations
+
+import pytest
+
+from tools import benchmark_live_search
+from tools.benchmark_live_search import evaluate_case, load_cases, validate_cases
+
+
+def test_live_query_set_is_independent_bilingual_and_source_anchored():
+    cases = load_cases()
+    validate_cases(ROOT, cases)
+
+    assert len(cases) >= 8
+    assert any(case["language"] == "cs" for case in cases)
+    assert any(case["language"] == "en" for case in cases)
+    assert any(case["query"] == "repo_search" for case in cases)
+    assert any(case["negative"] for case in cases)
+    fixture_text = benchmark_live_search.CASE_FILE.read_text(encoding="utf-8")
+    assert all(case["query"] not in fixture_text for case in cases if case["negative"])
+
+
+def test_live_query_set_has_broader_bilingual_and_negative_holdouts():
+    cases = load_cases()
+
+    assert len(cases) >= 23
+    assert sum(case["language"] == "en" for case in cases) >= 8
+    assert sum(case["language"] == "cs" for case in cases) >= 8
+    assert sum(case["negative"] for case in cases) >= 3
+    expected_ids = {
+        "english-hybrid-unavailable-rag",
+        "english-changed-file-incremental-rag",
+        "english-search-result-pagination",
+        "english-installation-guide-setup",
+        "czech-hybrid-unavailable-rag",
+        "czech-incremental-rag",
+        "czech-search-result-pagination",
+        "czech-code-index-one-hop",
+        "czech-search-worktree-scope",
+        "negative-unknown-hybrid-symbol",
+        "negative-unrelated-agent-task",
+    }
+    assert expected_ids <= {case["id"] for case in cases}
+
+
+def test_live_query_labels_reject_broken_source_anchors():
+    with pytest.raises(ValueError, match="anchor"):
+        validate_cases(ROOT, [{
+            "id": "invalid-anchor",
+            "query": "repo_search", "expected_paths": ["src/local_ai_hub/services.py"],
+            "evidence": [{"path": "src/local_ai_hub/services.py", "anchor": "def never_exists("}],
+        }])
+
+
+def test_live_metrics_deduplicate_paths_and_score_negative_cases():
+    case = {"expected_paths": ["src/target.py"], "negative": False}
+    assert evaluate_case([{"path": "src/noise.py"}, {"path": "src/target.py"},
+                          {"path": "src/target.py"}], case)["reciprocal_rank"] == 0.5
+    assert evaluate_case([], {"expected_paths": [], "negative": True})["negative_correct"] is True
+    assert evaluate_case([{"path": "src/noise.py"}], {"expected_paths": [], "negative": True})["negative_correct"] is False
+
+
+def test_live_benchmark_reports_progress_after_each_request(monkeypatch, capsys):
+    monkeypatch.setattr(benchmark_live_search, "load_config", lambda **kwargs: {
+        "server": {"bind": "127.0.0.1", "port": 11435}, "security": {},
+        "hardware": {"profile": "high"}, "features": {"reranker": True}, "models": {},
+    })
+    monkeypatch.setattr(benchmark_live_search, "_request", lambda *args: (200, {
+        "success": True, "results": [{"path": "src/local_ai_hub/services.py"}],
+        "cache_hit": False,
+        "result_source": "lexical",
+        "rag_search_skipped": True,
+        "rag_skip_reason": "exact_lexical_precision",
+        "lexical_candidate_source": "preprocessed_index",
+        "lexical_preprocessed_candidate_count": 12,
+        "stale_candidate_count": 1,
+        "stale_candidate_reasons": {"fragment_mismatch": 1},
+        "stale_candidate_details": [{"path": "docs/old.md", "reason": "fragment_mismatch", "chunk_no": 2}],
+    }))
+    case = {"id": "progress-case", "query": "repo_search", "language": "en",
+            "expected_paths": ["src/local_ai_hub/services.py"], "negative": False,
+            "evidence": [{"path": "src/local_ai_hub/services.py", "anchor": "def repo_search("}]}
+
+    result = benchmark_live_search.run(root=ROOT, modes=("lexical",), repeats=1, cases=[case], progress=True)
+
+    assert "lexical progress-case 1/1 HTTP 200" in capsys.readouterr().err
+    row = result["cases"][0]
+    assert row["result_source"] == "lexical"
+    assert row["rag_search_skipped"] is True
+    assert row["rag_skip_reason"] == "exact_lexical_precision"
+    assert row["lexical_candidate_source"] == "preprocessed_index"
+    assert row["lexical_preprocessed_candidate_count"] == 12
+    assert row["stale_candidate_count"] == 1
+    assert row["stale_candidate_reasons"] == {"fragment_mismatch": 1}
+    assert row["stale_candidate_details"][0]["path"] == "docs/old.md"
+
+
+ROOT = __import__("pathlib").Path(__file__).resolve().parents[2]

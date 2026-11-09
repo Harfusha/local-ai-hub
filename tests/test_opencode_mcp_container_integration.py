@@ -9,9 +9,8 @@ from pathlib import Path
 
 import pytest
 
-from local_ai_hub.opencode_boundary import derive_local_profile_token
 from local_ai_hub.opencode_sandbox_session import SandboxSession
-from tools.opencode_install import VERSION, WINDOWS_X64_EXECUTABLE_SHA256, _file_digest
+from tools.opencode_install import VERSION, WINDOWS_X64_EXECUTABLE_SHA256
 
 pytestmark = pytest.mark.skipif(os.name != "nt", reason="Windows AppContainer")
 ROOT = Path(__file__).resolve().parents[1]
@@ -30,8 +29,7 @@ def test_existing_mcp_adapter_imports_in_appcontainer_without_live_hub(tmp_path)
     env.update({"TEMP": str(tmp_path), "TMP": str(tmp_path),
                 "PYTHONPATH": os.pathsep.join(str(path) for path in (tmp_path / "src", site / "win32", site / "win32" / "lib", site / "pythonwin")),
                 "PYTHONNOUSERSITE": "1", "PYTHONDONTWRITEBYTECODE": "1", "LOCAL_AI_AGENT": "opencode-local",
-                "LOCAL_AI_AGENT_PROFILE": "opencode-local", "LOCAL_AI_CONFIG": str(config),
-                "LOCAL_AI_HUB_TOKEN": derive_local_profile_token("x" * 40, "n" * 32)})
+                "LOCAL_AI_AGENT_PROFILE": "opencode-local", "LOCAL_AI_CONFIG": str(config)})
     with SandboxSession(1, 1) as session:
         profile = session.profile
         runtime, client_toml = session.build_runtime_config({"server": {"port": 1}}, install_dir=tmp_path,
@@ -68,13 +66,12 @@ def test_mcp_search_and_status_cross_authenticated_sandbox_bridge(tmp_path):
     bridge = tmp_path / "bridge.cjs"
     shutil.copyfile(ROOT / "tools" / "opencode_sandbox_bootstrap.cjs", bootstrap)
     shutil.copyfile(ROOT / "tools" / "opencode_pipe_client.cjs", bridge)
-    token = derive_local_profile_token("x" * 40, "n" * 32)
     received = []
 
     class FakeHub(BaseHTTPRequestHandler):
         def do_GET(self):
-            received.append((self.path, self.headers.get("X-LocalAI-Token")))
-            ok = self.path == "/api/live/status?light=1" and self.headers.get("X-LocalAI-Token") == token
+            received.append(self.path)
+            ok = self.path == "/api/live/status?light=1"
             body = json.dumps({"hub_online": ok, "version": "fake-status-bridge-test", "scheduler": {}}).encode()
             self.send_response(200 if ok else 403)
             self.send_header("Content-Type", "application/json")
@@ -84,8 +81,8 @@ def test_mcp_search_and_status_cross_authenticated_sandbox_bridge(tmp_path):
 
         def do_POST(self):
             self.rfile.read(int(self.headers.get("Content-Length", "0")))
-            received.append((self.path, self.headers.get("X-LocalAI-Token")))
-            ok = self.path == "/api/search" and self.headers.get("X-LocalAI-Token") == token
+            received.append(self.path)
+            ok = self.path == "/api/search"
             body = json.dumps({"success": ok, "results": [{"path": "fake-hub-bridge-test"}]}).encode()
             self.send_response(200 if ok else 403)
             self.send_header("Content-Type", "application/json")
@@ -106,7 +103,7 @@ def test_mcp_search_and_status_cross_authenticated_sandbox_bridge(tmp_path):
         env.update({"TEMP": str(tmp_path), "TMP": str(tmp_path),
                     "PYTHONPATH": os.pathsep.join(str(path) for path in (tmp_path / "src", site / "win32", site / "win32" / "lib", site / "pythonwin")),
                     "PYTHONNOUSERSITE": "1", "PYTHONDONTWRITEBYTECODE": "1", "LOCAL_AI_AGENT": "opencode-local",
-                    "LOCAL_AI_AGENT_PROFILE": "opencode-local", "LOCAL_AI_CONFIG": str(config), "LOCAL_AI_HUB_TOKEN": token,
+                    "LOCAL_AI_AGENT_PROFILE": "opencode-local", "LOCAL_AI_CONFIG": str(config),
                     "LOCAL_AI_BOOTSTRAP_CLIENT": str(bridge), "LOCAL_AI_BOOTSTRAP_EXECUTABLE": str(python),
                     "LOCAL_AI_BOOTSTRAP_PROJECT": str(tmp_path), "LOCAL_AI_BOOTSTRAP_ARGS": json.dumps(["-m", "local_ai_hub.mcp_server"])})
         with SandboxSession(server.server_port, server.server_port) as session:
@@ -155,7 +152,7 @@ def test_mcp_search_and_status_cross_authenticated_sandbox_bridge(tmp_path):
                 reader.join(timeout=5)
             assert code == 0, stderr.read_text(encoding="utf-8", errors="replace")[-2000:]
             assert response_received.is_set()
-            assert sorted(received) == sorted([("/api/search", token), ("/api/live/status?light=1", token)])
+            assert sorted(received) == sorted(["/api/search", "/api/live/status?light=1"])
             assert any(response.get("id") == 2 and "fake-hub-bridge-test" in json.dumps(response.get("result")) for response in responses)
             assert any(response.get("id") == 3 and "fake-status-bridge-test" in json.dumps(response.get("result")) for response in responses)
     finally:
@@ -196,7 +193,6 @@ def test_opencode_invokes_mcp_search_inside_sandbox(private_stage):
     python = staged["python"]
     # The shim is limited to this offline test and is not production isolation.
     (tmp_path / "taskkill.cmd").write_text('@powershell.exe -NoProfile -Command "Stop-Process -Id %2 -Force -ErrorAction Stop"\r\n', encoding="ascii")
-    token = derive_local_profile_token("x" * 40, "n" * 32)
     calls = []
     traffic = []
     invoked = threading.Event()
@@ -210,7 +206,7 @@ def test_opencode_invokes_mcp_search_inside_sandbox(private_stage):
             traffic.append(self.path)
             request = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
             if self.path == "/api/search":
-                calls.append((self.path, self.headers.get("X-LocalAI-Token")))
+                calls.append(self.path)
                 body = json.dumps({"success": True, "results": [{"path": "mcp-bridge-result"}]}).encode()
                 content_type = "application/json"
             else:
@@ -269,7 +265,7 @@ def test_opencode_invokes_mcp_search_inside_sandbox(private_stage):
                         "LOCAL_AI_BOOTSTRAP_CLIENT": str(staged["client"]), "LOCAL_AI_BOOTSTRAP_EXECUTABLE": str(staged["opencode"]),
                         "LOCAL_AI_BOOTSTRAP_PROJECT": str(project),
                         "LOCAL_AI_BOOTSTRAP_ARGS": json.dumps(["run", "--auto", "--format", "json", "--standalone", "--print-logs", "--log-level", "debug", "--model", "local-hub/model-a", "Search"]),
-                        "LOCAL_AI_HUB_TOKEN": token, "LOCAL_AI_OPENCODE_PROVIDER_TOKEN": "fake", "OPENCODE_CONFIG_CONTENT": json.dumps(config)})
+                        "LOCAL_AI_OPENCODE_PROVIDER_TOKEN": "fake", "OPENCODE_CONFIG_CONTENT": json.dumps(config)})
             env["HOME"] = env["USERPROFILE"] = str(home_dir)
             private_stage.grant(session)
             loader = "const fs=require('node:fs'),M=require('node:module');const m=new M('bootstrap');m._compile(fs.readFileSync(process.argv[1],'utf8'),'bootstrap.cjs');m.exports.main()"
@@ -285,7 +281,7 @@ def test_opencode_invokes_mcp_search_inside_sandbox(private_stage):
             assert code == 0, f"traffic={traffic!r}; events={events[-2000:]}; errors={errors.read_text(encoding='utf-8', errors='replace')[-3000:]}"
             assert edited.is_set() and (project / "created.py").read_text(encoding="utf-8").strip() == "answer = 42"
             assert invoked.is_set(), events[-2000:]
-            assert calls == [("/api/search", token)]
+            assert calls == ["/api/search"]
             assert "mcp-bridge-result" in events and "MCP_TEST_FINISHED" in events
     finally:
         server.shutdown()

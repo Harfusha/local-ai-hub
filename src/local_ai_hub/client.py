@@ -190,12 +190,6 @@ class HubClient:
         self._http_host = str(endpoint.hostname or "127.0.0.1")
         self._http_port = int(endpoint.port or 80)
         self.agent = os.environ.get("LOCAL_AI_AGENT_PROFILE") or os.environ.get("LOCAL_AI_AGENT") or "generic"
-        self.api_token = (os.environ.get("LOCAL_AI_HUB_TOKEN", "") if self.agent == "opencode-local"
-                          else str(self.config.get("security", {}).get("api_token", "")))
-        if self.agent == "opencode-local":
-            from .opencode_boundary import local_profile_config
-
-            self.config = local_profile_config(self.config, self.api_token)
         # An isolated OpenCode client may connect only to its existing Hub.
         # It must never start an unsandboxed replacement on connection failure.
         self.auto_start = bool(auto_start) and self.agent != "opencode-local"
@@ -571,8 +565,7 @@ class HubClient:
             health_timeout = self.health_timeout if timeout is None else max(0.0, float(timeout))
             if health_timeout <= 0:
                 return False
-            headers = {"X-LocalAI-Token": self.api_token} if self.api_token else {}
-            with urlopen(Request(f"{self.base_url}/ready", headers=headers), timeout=health_timeout) as response:
+            with urlopen(Request(f"{self.base_url}/ready"), timeout=health_timeout) as response:
                 try:
                     response.read()
                 except Exception:
@@ -968,8 +961,6 @@ class HubClient:
             }
             if cancel_event is not None:
                 headers["X-LocalAI-Cancel-On-Disconnect"] = "1"
-            if self.api_token:
-                headers["X-LocalAI-Token"] = self.api_token
             try:
                 open_options = {
                     "operational_action": operational_action,
@@ -1144,9 +1135,6 @@ class HubClient:
             "X-LocalAI-Agent": self.agent,
             "X-LocalAI-Request-ID": request_id,
         }
-        if self.api_token:
-            headers["X-LocalAI-Token"] = self.api_token
-
         def once(attempt_timeout: float) -> dict[str, Any]:
             try:
                 open_options = {
@@ -1464,6 +1452,13 @@ class HubClient:
             reject_retired_tenancy_fields(kwargs)
         except RepositoryScopeError as exc:
             return self._identity_preflight(str(exc), exc.code)
+        if act.startswith("memory_"):
+            # Memory identity is resolved from the authorized root by the Hub.
+            # Drop client-supplied repository selectors before action validation.
+            kwargs.pop("repository_id", None)
+            kwargs.pop("coordination_id", None)
+            if kwargs.get("scope") == "repository":
+                kwargs.pop("scope_id", None)
         if act in {"incident_decision", "negative_knowledge_record", "negative_knowledge_find"}:
             try:
                 reject_retired_tenancy_fields(kwargs)
@@ -1472,7 +1467,7 @@ class HubClient:
                     raise RepositoryScopeError("record cannot override root", "invalid_incident_root")
             except RepositoryScopeError as exc:
                 return self._identity_preflight(str(exc), exc.code)
-        if act in {"context_compile", "verify_receipt", "verify_completion", "verify_export"}:
+        if act in {"context_compile", "verify_receipt", "verify_completion", "verify_export", "memory_record", "memory_delete", "memory_promote"}:
             validation_error = validate_operation_arguments("local_ai_coord", act, dict(kwargs))
             if validation_error:
                 return {
@@ -2168,9 +2163,6 @@ class HubClient:
             "X-LocalAI-Agent": self.agent,
             "X-LocalAI-Request-ID": request_id,
         }
-        if self.api_token:
-            headers["X-LocalAI-Token"] = self.api_token
-            headers["Authorization"] = f"Bearer {self.api_token}"
         req = Request(url, headers=headers)
         monitor_stopped = threading.Event()
         deadline_expired = threading.Event()

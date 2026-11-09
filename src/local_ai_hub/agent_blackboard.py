@@ -124,10 +124,10 @@ def merge_sections(s1: BlackboardSection, s2: BlackboardSection) -> BlackboardSe
 
     if s1_dominates:
         winner = s1
-        version = s1.version
+        version = max(s1.version, s2.version)
     elif s2_dominates:
         winner = s2
-        version = s2.version
+        version = max(s1.version, s2.version)
     else:
         # Concurrent or identical clocks: LWW on timestamp, author, then canonical content.
         s1_ts = s1.timestamp if math.isfinite(s1.timestamp) else -1.0
@@ -554,6 +554,9 @@ class BlackboardStore:
                 cur = con.cursor()
                 for sec_name, raw_data in items.items():
                     if not sec_name or not isinstance(raw_data, dict):
+                        continue
+                    if "section" in raw_data and str(raw_data["section"]).strip() and str(raw_data["section"]).strip() != sec_name:
+                        # T14: Mismatch between dict key and internal section name
                         continue
                     remote_sec = BlackboardSection.from_dict(raw_data, default_section=sec_name)
 

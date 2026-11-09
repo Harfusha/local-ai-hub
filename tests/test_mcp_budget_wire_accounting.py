@@ -2,9 +2,18 @@ from __future__ import annotations
 
 import asyncio
 import json
+import pytest
 
 from local_ai_hub import mcp_server
 from local_ai_hub.token_accounting import json_tokens
+
+
+@pytest.fixture(autouse=True)
+def qualified_semantic_actions(monkeypatch):
+    monkeypatch.setattr(mcp_server.FEATURES, "tasks", True)
+    monkeypatch.setattr(mcp_server.FEATURES, "hardware_profile", "balanced")
+    monkeypatch.setattr(mcp_server.FEATURES, "local_semantic_analysis", True)
+    monkeypatch.setattr(mcp_server.FEATURES, "has_any_model", lambda: True)
 
 
 def _wire_measure(result) -> tuple[int, dict, dict | None]:

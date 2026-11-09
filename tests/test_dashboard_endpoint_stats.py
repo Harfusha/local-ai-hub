@@ -14,6 +14,7 @@ class DashboardEndpointStatsTest(unittest.TestCase):
         self.assertIn("loadEndpointStatsView", DASHBOARD_HTML)
         self.assertIn("renderEndpointStatsView", DASHBOARD_HTML)
         self.assertIn("/api/telemetry/endpoint-stats", DASHBOARD_HTML)
+        self.assertTrue("item.issues" in DASHBOARD_HTML, "dashboard should render every endpoint issue")
 
 
 if __name__ == "__main__":

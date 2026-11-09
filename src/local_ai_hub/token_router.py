@@ -203,10 +203,62 @@ class LosslessTokenRouter:
                 continue
             start = max(1, start - context_lines)
             end = min(max_line, end + context_lines)
-            out.append((start, end, float(item.get("score", 1.0))))
+            try:
+                raw_score = item.get("score", 1.0)
+                score_val = float(raw_score) if raw_score is not None else 1.0
+                if not (score_val == score_val and abs(score_val) != float("inf")):
+                    score_val = 1.0
+            except Exception:
+                score_val = 1.0
+            out.append((start, end, max(0.0, min(1.0, score_val))))
             if len(out) >= max_ranges:
                 break
         return out
+
+    @classmethod
+    def _normalize_ranges(
+        cls,
+        ranges: list[tuple[int, int, float]],
+        max_output_lines: int,
+        max_line: int,
+    ) -> list[tuple[int, int, float]]:
+        if not ranges:
+            return []
+        valid: list[tuple[int, int, float]] = []
+        for start, end, score in ranges:
+            s = max(1, min(max_line, int(start)))
+            e = max(s, min(max_line, int(end)))
+            valid.append((s, e, float(score)))
+
+        valid.sort(key=lambda r: (r[0], r[1]))
+
+        merged: list[tuple[int, int, float]] = []
+        for s, e, score in valid:
+            if not merged:
+                merged.append((s, e, score))
+            else:
+                last_s, last_e, last_score = merged[-1]
+                if s <= last_e + 1:
+                    merged[-1] = (last_s, max(last_e, e), max(last_score, score))
+                else:
+                    merged.append((s, e, score))
+
+        by_score = sorted(merged, key=lambda r: r[2], reverse=True)
+        selected: list[tuple[int, int, float]] = []
+        lines_used = 0
+        for s, e, score in by_score:
+            span = e - s + 1
+            if lines_used + span <= max_output_lines:
+                selected.append((s, e, score))
+                lines_used += span
+            elif lines_used < max_output_lines:
+                remaining = max_output_lines - lines_used
+                if remaining > 0:
+                    selected.append((s, s + remaining - 1, score))
+                    lines_used += remaining
+                break
+
+        return sorted(selected, key=lambda r: r[0])
 
     @staticmethod
     def _render(lines: list[str], ranges: list[tuple[int, int, float]], path: str | None = None) -> tuple[str, list[dict[str, Any]]]:
@@ -300,13 +352,14 @@ class LosslessTokenRouter:
             if local.get("success"):
                 parsed = self._parse_ranges(str(local.get("text", "")), len(lines), self.max_ranges, self.context_lines)
                 if parsed:
-                    ranges = parsed
+                    ranges = self._normalize_ranges(parsed, self.max_output_lines, len(lines))
                     local_used = True
                 else:
                     self.fallbacks += 1
             else:
                 self.fallbacks += 1
 
+        ranges = self._normalize_ranges(ranges, self.max_output_lines, len(lines))
         context, evidence = self._render(lines, ranges, path)
         result = {
             "success": True, "context": context, "evidence": evidence, "routed": True, "mode": mode,

@@ -14,7 +14,7 @@ from .opencode_boundary import path_allowed
 
 _MAX_BODY = 4 * 1024 * 1024
 _MAX_RESPONSE = 64 * 1024 * 1024
-_REQUEST_HEADERS = ("Authorization", "X-LocalAI-Token", "X-LocalAI-Agent", "X-LocalAI-Request-ID", "Content-Type", "Accept")
+_REQUEST_HEADERS = ("Authorization", "X-LocalAI-Agent", "X-LocalAI-Request-ID", "Content-Type", "Accept")
 _RESPONSE_HEADERS = ("Content-Type", "Cache-Control", "Content-Length")
 
 
@@ -115,7 +115,7 @@ class _Handler(BaseHTTPRequestHandler):
             if len(values) > 1:
                 self._reject(400)
                 return
-            if values:
+            if values and not (port == self.server.hub_port and name == "Authorization"):
                 headers[name] = values[0]
         try:
             body = self.rfile.read(length) if length else b""

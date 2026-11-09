@@ -51,6 +51,7 @@ class TaskWorkStatus(str, Enum):
     BLOCKED = "blocked"
     SOURCE_READY = "source_ready"
     DONE = "done"
+    COMPLETED = "completed"
     CANCELLED = "cancelled"
 
 

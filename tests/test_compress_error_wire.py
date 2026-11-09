@@ -13,8 +13,7 @@ from mcp.client.stdio import stdio_client
 def test_invalid_compress_input_returns_actionable_compact_error_over_mcp(tmp_path):
     config = tmp_path / "config.toml"
     config.write_text(
-        '[server]\nport = 1\nauto_start_ollama = false\n'
-        '[security]\napi_token = ""\n', encoding="utf-8"
+        '[server]\nport = 1\nauto_start_ollama = false\n', encoding="utf-8"
     )
     env = {key: value for key, value in os.environ.items()
            if not key.upper().startswith("GIT_") and key not in {"LOCAL_AI_TENANT", "LOCAL_AI_HUB_TOKEN"}}

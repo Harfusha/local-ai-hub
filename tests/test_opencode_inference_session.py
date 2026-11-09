@@ -16,20 +16,23 @@ def scheduler(tmp_path):
     scheduler.close()
 
 
-def test_session_serializes_same_model_and_holds_gpu_between_requests(scheduler):
+def test_session_serializes_requests_and_reserves_gpu_lazily(scheduler):
     session = ExternalInferenceSession.open(scheduler, "model-a")
-    assert scheduler.foreground_busy()
+    assert not scheduler.foreground_busy()
     first = session.start_request("model-a")
+    assert scheduler.foreground_busy()
     with pytest.raises(InferenceSessionError):
         session.start_request("model-a")
     with pytest.raises(InferenceSessionError):
         session.close()
     session.finish_request(first, terminal_confirmed=True)
-    assert scheduler.foreground_busy()
+    assert not scheduler.foreground_busy()
     with pytest.raises(InferenceSessionError):
         session.start_request("model-b")
     second = session.start_request("model-a")
+    assert scheduler.foreground_busy()
     session.finish_request(second, terminal_confirmed=True)
+    assert not scheduler.foreground_busy()
     session.close()
     assert not scheduler.foreground_busy()
 
@@ -40,6 +43,73 @@ def test_unknown_backend_outcome_never_releases_or_accepts_more_work(scheduler):
     session.finish_request(request, terminal_confirmed=False)
     with pytest.raises(InferenceSessionError):
         session.start_request("model-a")
+    with pytest.raises(InferenceSessionError):
+        session.close()
+    assert scheduler.foreground_busy()
+
+
+def test_marking_backend_outcome_uncertain_records_monotonic_time():
+    session = ExternalInferenceSession(SimpleNamespace(), "model-a")
+
+    session._mark_uncertain()
+
+    assert session._uncertain is True
+    assert session._uncertain_since is not None
+
+
+def test_gpu_lease_renewal_is_armed_only_for_active_request(scheduler, monkeypatch):
+    timers = []
+
+    class Timer:
+        def __init__(self, delay, callback, args=()):
+            self.delay, self.callback, self.args, self.cancelled = delay, callback, args, False
+            timers.append(self)
+
+        def start(self):
+            pass
+
+        def cancel(self):
+            self.cancelled = True
+
+        def fire(self):
+            if not self.cancelled:
+                self.callback(*self.args)
+
+    monkeypatch.setattr("local_ai_hub.opencode_inference_session.threading.Timer", Timer)
+    session = ExternalInferenceSession.open(scheduler, "model-a", idle_timeout_seconds=60)
+    assert not scheduler.foreground_busy()
+    assert timers == []
+    request = session.start_request("model-a")
+    assert scheduler.foreground_busy()
+    assert len(timers) == 1
+    assert timers[0].delay == 20
+    session.finish_request(request, terminal_confirmed=True)
+    assert timers[0].cancelled
+    assert not scheduler.foreground_busy()
+    session.close()
+
+
+def test_failed_gpu_lease_renewal_keeps_session_fenced(scheduler, monkeypatch):
+    timers = []
+
+    class Timer:
+        def __init__(self, delay, callback, args=()):
+            self.callback, self.args = callback, args
+            timers.append(self)
+
+        def start(self):
+            pass
+
+        def cancel(self):
+            self.cancelled = True
+
+    monkeypatch.setattr("local_ai_hub.opencode_inference_session.threading.Timer", Timer)
+    session = ExternalInferenceSession.open(scheduler, "model-a", idle_timeout_seconds=60)
+    session.start_request("model-a")
+    assert len(timers) == 1
+    monkeypatch.setattr(scheduler, "renew_external_gpu", lambda _token, *, state: False)
+    timers[0].callback(*timers[0].args)
+    assert session._uncertain
     with pytest.raises(InferenceSessionError):
         session.close()
     assert scheduler.foreground_busy()
@@ -87,9 +157,13 @@ def test_invalid_model_and_failed_reservation_do_not_start_session(scheduler):
         with pytest.raises(InferenceSessionError):
             ExternalInferenceSession.open(scheduler, invalid)
     first = ExternalInferenceSession.open(scheduler, "model-a")
+    first_request = first.start_request("model-a")
+    second = ExternalInferenceSession.open(scheduler, "model-a")
     with pytest.raises(InferenceSessionError):
-        ExternalInferenceSession.open(scheduler, "model-a")
+        second.start_request("model-a")
+    first.finish_request(first_request, terminal_confirmed=True)
     first.close()
+    second.close()
 
 
 def test_relay_requires_complete_upstream_stream_before_releasing_request(scheduler):
@@ -98,7 +172,7 @@ def test_relay_requires_complete_upstream_stream_before_releasing_request(schedu
     received = []
     session.relay_stream("model-a", lambda: iter(chunks), received.append)
     assert received == chunks
-    assert scheduler.foreground_busy()
+    assert not scheduler.foreground_busy()
     session.close()
 
 

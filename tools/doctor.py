@@ -191,8 +191,9 @@ def _optional_component_status(
         serena = dict(serena_details)
         serena.setdefault("enabled", None)
         serena.setdefault("state", "available" if serena.get("installed") else "missing")
+        active_failure = str(serena.get("last_failure") or "") if serena.get("failure_active") or serena.get("state") not in {"healthy", "available"} else ""
         serena["reason"] = str(
-            serena.get("repair_error") or serena.get("repair_blocked") or serena.get("last_failure")
+            serena.get("repair_error") or serena.get("repair_blocked") or active_failure
             or serena.get("unavailable_reason") or ""
         )
     else:
@@ -584,7 +585,8 @@ def format_doctor_report(rep: dict[str, Any]) -> str:
             probe = str(details.get("last_successful_probe") or "")
             if probe:
                 line += f"; last probe: {probe}"
-            reason = str(details.get("repair_error") or details.get("repair_blocked") or details.get("last_failure") or details.get("unavailable_reason") or "")
+            active_failure = str(details.get("last_failure") or "") if details.get("failure_active") or state not in {"healthy", "available"} else ""
+            reason = str(details.get("repair_error") or details.get("repair_blocked") or active_failure or details.get("unavailable_reason") or "")
             if reason:
                 line += f"; {reason[:140]}"
             lines.append(line)

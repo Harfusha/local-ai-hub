@@ -202,7 +202,11 @@ def test_registry_requires_reproducible_receipt_for_promotion():
     missing_receipt = promote_candidate(metrics)
     promoted = promote_candidate(
         metrics,
-        receipt={"receipt_id": "receipt-1", "evaluation_hash": "sha256:case-suite"},
+        receipt={
+            "receipt_id": "receipt-1",
+            "evaluation_hash": "sha256:case-suite",
+            "suite_version": "1",
+        },
     )
 
     assert missing_receipt["status"] == "rejected"
@@ -223,7 +227,7 @@ def test_registry_exposes_candidate_champion_and_rejected_states():
             "hallucinated_path_rate": 0.0,
             "false_positive_rate": 0.0,
         },
-        receipt={"receipt_id": "receipt-a", "evaluation_hash": "sha256:a"},
+        receipt={"receipt_id": "receipt-a", "evaluation_hash": "sha256:a", "suite_version": "1"},
     )
     rejected = registry.register_candidate("model-b", {"grounded_rate": 0.1})
 

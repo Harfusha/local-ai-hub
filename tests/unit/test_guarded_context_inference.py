@@ -40,7 +40,6 @@ def test_context_infers_guarded_when_focus_provided(monkeypatch):
 
 @pytest.fixture
 def context_http_hub(tmp_path, monkeypatch):
-    token = "guarded-context-test-secret"
     state_dir = tmp_path / "state"
     config_path = tmp_path / "config.toml"
     config_path.write_text(
@@ -50,8 +49,9 @@ def context_http_hub(tmp_path, monkeypatch):
             "port = 11435",
             f'state_dir = "{state_dir.as_posix()}"',
             "[security]",
-            f'api_token = "{token}"',
             f'allowed_roots = ["{tmp_path.as_posix()}"]',
+            "[debug_traces]",
+            "enabled = true",
         )),
         encoding="utf-8",
     )
@@ -72,7 +72,7 @@ def context_http_hub(tmp_path, monkeypatch):
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
-        yield f"http://127.0.0.1:{server.server_address[1]}", token, calls, tmp_path
+        yield f"http://127.0.0.1:{server.server_address[1]}", calls, tmp_path
     finally:
         server.shutdown()
         server.server_close()
@@ -81,11 +81,11 @@ def context_http_hub(tmp_path, monkeypatch):
         app.close()
 
 
-def _post_context(base_url, token, payload):
+def _post_context(base_url, payload):
     request = urllib_request.Request(
         f"{base_url}/api/context/pack",
         data=json.dumps(payload).encode("utf-8"),
-        headers={"Content-Type": "application/json", "X-LocalAI-Token": token},
+        headers={"Content-Type": "application/json"},
         method="POST",
     )
     try:
@@ -106,11 +106,10 @@ def _post_context(base_url, token, payload):
     ],
 )
 def test_http_context_requires_guard_activation_fields_to_be_explicit(context_http_hub, field, value):
-    base_url, token, calls, root = context_http_hub
+    base_url, calls, root = context_http_hub
 
     status, response = _post_context(
         base_url,
-        token,
         {"root": str(root), "query": "test context", field: value},
     )
 
@@ -122,11 +121,10 @@ def test_http_context_requires_guard_activation_fields_to_be_explicit(context_ht
 
 
 def test_http_context_rejects_malformed_explicit_guarded_even_with_empty_paths(context_http_hub):
-    base_url, token, calls, root = context_http_hub
+    base_url, calls, root = context_http_hub
 
     status, response = _post_context(
         base_url,
-        token,
         {"root": str(root), "query": "test context", "guarded": "false", "changed_paths": []},
     )
 
@@ -136,26 +134,27 @@ def test_http_context_rejects_malformed_explicit_guarded_even_with_empty_paths(c
 
 
 def test_http_context_session_id_explicitly_activates_guarded_request(context_http_hub):
-    base_url, token, calls, root = context_http_hub
+    base_url, calls, root = context_http_hub
 
     status, response = _post_context(
         base_url,
-        token,
         {"root": str(root), "query": "test context", "session_id": "session-test"},
     )
 
     assert status == 200, response
     assert response["success"] is True
+    assert response["phase_timings_ms"]["request_preparation_ms"] >= 0
+    assert response["phase_timings_ms"]["context_retrieval_ms"] >= 0
+    assert response["phase_timings_ms"]["total_ms"] >= 0
     assert calls
 
 
 @pytest.mark.parametrize("field", ["changed_paths", "focus"])
 def test_http_context_keeps_activation_field_validation(context_http_hub, field):
-    base_url, token, calls, root = context_http_hub
+    base_url, calls, root = context_http_hub
 
     status, response = _post_context(
         base_url,
-        token,
         {"root": str(root), "query": "test context", "guarded": True, field: "not-a-list"},
     )
 
@@ -165,13 +164,15 @@ def test_http_context_keeps_activation_field_validation(context_http_hub, field)
 
 
 def test_http_context_accepts_unscoped_request_without_guard_fields(context_http_hub):
-    base_url, token, calls, root = context_http_hub
+    base_url, calls, root = context_http_hub
 
     status, response = _post_context(
         base_url,
-        token,
         {"root": str(root), "query": "test context"},
     )
 
     assert status == 200, response
     assert response["success"] is True
+    assert response["phase_timings_ms"]["request_preparation_ms"] >= 0
+    assert response["phase_timings_ms"]["context_retrieval_ms"] >= 0
+    assert response["phase_timings_ms"]["total_ms"] >= 0

@@ -6,6 +6,7 @@ import logging
 import math
 import os
 import re
+import secrets
 import threading
 import time
 from collections.abc import Mapping
@@ -13,6 +14,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
+from .external_gpu_reservation import ExternalGpuReservationStore
 from .model_policy import ModelExecutionPolicy
 from .trace_context import observer
 
@@ -140,10 +142,11 @@ class SchedulerTimeoutError(TimeoutError):
     retryable response without pretending the work was cancelled.
     """
 
-    def __init__(self, job: Job, state: str, wait_timeout: float):
+    def __init__(self, job: Job, state: str, wait_timeout: float, *, wait_reason: str | None = None):
         self.job_id = job.id
         self.state = state
         self.wait_timeout = max(0.0, float(wait_timeout))
+        self.wait_reason = wait_reason
         self.retryable = True
         self.terminal = False
         self.error_code = "scheduler_caller_timeout"
@@ -260,13 +263,29 @@ class AffinityScheduler:
         server_cfg = config.get("server", {}) if isinstance(config.get("server"), dict) else {}
         raw_state_dir = server_cfg.get("state_dir")
         self._external_gpu_path = None
+        self._external_gpu_store = None
         if isinstance(raw_state_dir, (str, os.PathLike)) and str(raw_state_dir).strip():
             from .state_paths import configured_state_dir
             self._external_gpu_path = configured_state_dir(config) / "external-gpu-reservation"
+            self._external_gpu_store = ExternalGpuReservationStore(self._external_gpu_path)
         self._external_gpu_token = _read_external_reservation(self._external_gpu_path) if self._external_gpu_path else None
         self._external_gpu_owned = False
+        self._external_gpu_generation: str | None = None
+        self._external_gpu_expiry_monotonic: float | None = None
+        self._external_gpu_operator_release_marker = (
+            self._external_gpu_store.operator_release_marker() if self._external_gpu_store is not None else None
+        )
+        if self._external_gpu_store is not None:
+            reservation = self._external_gpu_store.read()
+            if reservation is not None and reservation.get("token_digest") == self._external_gpu_token:
+                self._external_gpu_generation = reservation.get("generation")
+                self._external_gpu_expiry_monotonic = time.monotonic() + max(
+                    0.0, float(reservation["expires_at"]) - time.time()
+                )
         self._internal_gpu_digest: str | None = None
         self._internal_gpu_uncertain = False
+        self._internal_gpu_uncertain_since: float | None = None
+        self._internal_gpu_heartbeat_stop: threading.Event | None = None
         self._gpu_prepare_in_progress = False
         self._switch_not_started = False
         self._executor = ThreadPoolExecutor(max_workers=self.max_parallel, thread_name_prefix="local-ai")
@@ -605,12 +624,27 @@ class AffinityScheduler:
         vram_fields: dict[str, int] = {}
         total_mb = resource.get("vram_total_mb")
         available_mb = resource.get("vram_available_mb")
-        if (
+        valid_total = (
             isinstance(total_mb, (int, float)) and not isinstance(total_mb, bool)
             and math.isfinite(total_mb) and total_mb > 0
-            and isinstance(available_mb, (int, float)) and not isinstance(available_mb, bool)
+        )
+        valid_available = (
+            isinstance(available_mb, (int, float)) and not isinstance(available_mb, bool)
             and math.isfinite(available_mb) and available_mb >= 0
-        ):
+        )
+        if resource.get("available") is not True and valid_total and valid_available:
+            # A timeout may retain last-known numbers for display. They are not
+            # current capacity and must not admit a model.
+            return {
+                "state": "rejected",
+                "reason": "vram_telemetry_unavailable",
+                "pressure_level": pressure,
+                "queue_age_ms": 0,
+                "retryable": True,
+                "vram_admission": "unknown",
+                "vram_estimate_source": "unknown",
+            }
+        if valid_total and valid_available:
             vram_fields = {
                 "vram_budget_bytes": int(round(float(total_mb) * 1024 * 1024)),
                 "vram_available_bytes": int(round(min(float(total_mb), float(available_mb)) * 1024 * 1024)),
@@ -778,6 +812,7 @@ class AffinityScheduler:
             priority = min(priority, 1)
         preempt_hook: Callable[[], bool | None] | None = None
         with self._cond:
+            self._external_gpu_reserved()
             if self._internal_gpu_uncertain:
                 return {"success": False, "error": "previous GPU inference outcome is unknown; reservation retained",
                         "error_code": "gpu_outcome_unknown", "outcome_unknown": True, "retryable": False}
@@ -891,7 +926,16 @@ class AffinityScheduler:
                         job.done.set()
                         state = "pending"
                         self._cond.notify_all()
-                raise SchedulerTimeoutError(job, state, effective_wait_timeout)
+                wait_reason = None
+                if state == "pending":
+                    try:
+                        wait_reason = self._job_public(job, time.monotonic(), state="queued").get("wait_reason")
+                    except Exception:
+                        wait_reason = None
+                raise SchedulerTimeoutError(
+                    job, state, effective_wait_timeout,
+                    wait_reason=wait_reason if isinstance(wait_reason, str) else None,
+                )
         queue_wait_ms = max(0.0, ((job.started_at or job.finished_at or time.monotonic()) - job.created_at) * 1000)
         service_ms = max(0.0, (job.finished_at - job.started_at) * 1000) if job.finished_at and job.started_at else 0.0
         if job.error:
@@ -969,7 +1013,7 @@ class AffinityScheduler:
                 remaining = max(1, int(blocked_until - now + 0.999))
                 detail = self._model_last_error.get(model, "model preparation failed")
                 raise ModelUnavailableError(f"model {model!r} temporarily unavailable ({detail}); retry after ~{remaining}s")
-            admission = self._admission(background=background)
+            admission = self._admission(background=background, model=model)
             if admission["state"] == "rejected":
                 self._stats["queue_rejections"] += 1
                 reason = str(admission.get("reason", "resource_pressure"))
@@ -1007,15 +1051,105 @@ class AffinityScheduler:
 
     def _external_gpu_reserved(self) -> bool:
         """Observe an external reservation created by another scheduler instance."""
-        if getattr(self, "_internal_gpu_uncertain", False):
-            return True
-        if getattr(self, "_external_gpu_token", None) and getattr(self, "_external_gpu_owned", False):
-            return True
+        store = getattr(self, "_external_gpu_store", None)
+        reaped = False
+        record = None
+        if store is not None:
+            try:
+                reaped = store.reap_expired()
+                record = store.read()
+                release_marker = store.operator_release_marker()
+            except OSError:
+                return True
+            if (record is not None
+                    and record.get("generation") == getattr(self, "_external_gpu_generation", None)):
+                self._external_gpu_expiry_monotonic = time.monotonic() + max(
+                    0.0, float(record["expires_at"]) - time.time()
+                )
         path = getattr(self, "_external_gpu_path", None)
         current = _read_external_reservation(path) if path else None
+        previous_release_marker = getattr(self, "_external_gpu_operator_release_marker", None)
+        if store is not None and release_marker is not None and release_marker != previous_release_marker:
+            no_reservation_file = bool(
+                current is None
+                and path is not None
+                and not path.exists()
+                and not path.is_symlink()
+                and not store.metadata_path.exists()
+                and not store.metadata_path.is_symlink()
+            )
+            if no_reservation_file:
+                with self._cond:
+                    scheduler_idle = not (
+                        self._inflight
+                        or self._switching
+                        or self._gpu_prepare_in_progress
+                        or self._background_gpu_lease
+                    )
+                    if scheduler_idle:
+                        # Queued waiters are not active GPU work. Explicit operator
+                        # consent may clear a stale fence unless execution is active.
+                        self._external_gpu_operator_release_marker = release_marker
+                        self._external_gpu_token = None
+                        self._external_gpu_generation = None
+                        self._external_gpu_owned = False
+                        self._external_gpu_expiry_monotonic = None
+                        self._internal_gpu_digest = None
+                        self._internal_gpu_uncertain = False
+                        self._cond.notify_all()
+                    else:
+                        return True
+            else:
+                # Consume the marker when another or malformed reservation remains;
+                # it must not authorize clearing a later, unrelated lease.
+                self._external_gpu_operator_release_marker = release_marker
+        if getattr(self, "_internal_gpu_uncertain", False):
+            with self._cond:
+                active = bool(
+                    self._inflight or self._switching or self._gpu_prepare_in_progress
+                    or self._background_gpu_lease
+                )
+                since = getattr(self, "_internal_gpu_uncertain_since", None)
+                ttl = float(getattr(store, "ttl_seconds", 60.0)) if store is not None else 60.0
+                uncertainty_expired = (
+                    since is not None and time.monotonic() - since >= max(0.0, ttl)
+                )
+                reservation_absent = (
+                    path is None
+                    or (
+                        current is None
+                        and not path.exists()
+                        and not path.is_symlink()
+                        and (store is None or (
+                            not store.metadata_path.exists()
+                            and not store.metadata_path.is_symlink()
+                        ))
+                    )
+                )
+                if not active and uncertainty_expired and reservation_absent:
+                    self._internal_gpu_uncertain = False
+                    self._internal_gpu_uncertain_since = None
+                    self._internal_gpu_digest = None
+                    self._cond.notify_all()
+                else:
+                    return True
+        if getattr(self, "_external_gpu_token", None) and getattr(self, "_external_gpu_owned", False):
+            if current is not None:
+                return True
+            expiry = getattr(self, "_external_gpu_expiry_monotonic", None)
+            expired_in_memory = expiry is not None and time.monotonic() >= expiry
+            if not reaped and not expired_in_memory:
+                return True
+            self._external_gpu_token = None
+            self._external_gpu_generation = None
+            self._external_gpu_owned = False
+            self._external_gpu_expiry_monotonic = None
         if getattr(self, "_external_gpu_token", None):
             self._external_gpu_token = current
         owned = getattr(self, "_internal_gpu_digest", None)
+        if current is None and owned is not None:
+            self._internal_gpu_digest = None
+            owned = None
         return current != owned if owned else bool(current)
 
     def _claim_internal_gpu(self) -> bool:
@@ -1032,6 +1166,13 @@ class AffinityScheduler:
         if getattr(self, "_external_gpu_token", None):
             return False
         digest = hashlib.sha256(secrets.token_bytes(32)).hexdigest()
+        store = getattr(self, "_external_gpu_store", None)
+        if store is not None:
+            if not store.claim_internal(digest):
+                return False
+            self._internal_gpu_digest = digest
+            self._start_internal_gpu_heartbeat(digest, store)
+            return True
         try:
             with path.open("xb") as stream:
                 stream.write(digest.encode("ascii"))
@@ -1046,6 +1187,37 @@ class AffinityScheduler:
         self._internal_gpu_digest = digest
         return True
 
+    def _start_internal_gpu_heartbeat(self, digest: str, store: Any) -> None:
+        stop = threading.Event()
+        self._internal_gpu_heartbeat_stop = stop
+        try:
+            ttl = float(store.ttl_seconds)
+        except (TypeError, ValueError):
+            ttl = 60.0
+        interval = max(0.1, min(ttl / 3.0, 20.0))
+
+        def keepalive() -> None:
+            while not stop.wait(interval):
+                with self._cond:
+                    if (self._internal_gpu_digest != digest or self._internal_gpu_uncertain
+                            or not self._running):
+                        return
+                if store.renew_internal(digest):
+                    continue
+                with self._cond:
+                    if self._internal_gpu_digest == digest and not self._internal_gpu_uncertain:
+                        self._mark_internal_gpu_uncertain_locked()
+                        self._cond.notify_all()
+                return
+
+        worker = threading.Thread(target=keepalive, name="local-ai-gpu-lease", daemon=True)
+        worker.start()
+
+    def _mark_internal_gpu_uncertain_locked(self) -> None:
+        if not self._internal_gpu_uncertain:
+            self._internal_gpu_uncertain_since = time.monotonic()
+        self._internal_gpu_uncertain = True
+
     def _release_internal_gpu(self) -> bool:
         if getattr(self, "_internal_gpu_uncertain", False) or getattr(self, "_gpu_prepare_in_progress", False):
             return False
@@ -1054,6 +1226,21 @@ class AffinityScheduler:
             return True
         path = getattr(self, "_external_gpu_path", None)
         if path is None:
+            return True
+        store = getattr(self, "_external_gpu_store", None)
+        if store is not None:
+            heartbeat_stop = getattr(self, "_internal_gpu_heartbeat_stop", None)
+            if heartbeat_stop is not None:
+                heartbeat_stop.set()
+                self._internal_gpu_heartbeat_stop = None
+            if not store.release_internal(digest):
+                if path is not None and not path.exists():
+                    self._internal_gpu_digest = None
+                    self._cond.notify_all()
+                    return True
+                return False
+            self._internal_gpu_digest = None
+            self._cond.notify_all()
             return True
         for attempt in range(6):
             if _read_external_reservation(path) != digest:
@@ -1162,6 +1349,19 @@ class AffinityScheduler:
                 return None
             token = secrets.token_urlsafe(32)
             digest = hashlib.sha256(token.encode("ascii")).hexdigest()
+            store = getattr(self, "_external_gpu_store", None)
+            if store is not None:
+                record = store.reserve(digest, owner=f"hub-pid:{os.getpid()}")
+                if record is None:
+                    return None
+                self._external_gpu_token = digest
+                self._external_gpu_generation = record["generation"]
+                self._external_gpu_owned = True
+                self._external_gpu_expiry_monotonic = time.monotonic() + float(
+                    getattr(store, "ttl_seconds", 900.0)
+                )
+                self._cond.notify_all()
+                return token
             try:
                 with self._external_gpu_path.open("xb") as stream:
                     stream.write(digest.encode("ascii"))
@@ -1176,6 +1376,7 @@ class AffinityScheduler:
                 return None
             self._external_gpu_token = digest
             self._external_gpu_owned = True
+            self._external_gpu_expiry_monotonic = time.monotonic() + 900.0
             self._cond.notify_all()
             return token
 
@@ -1189,6 +1390,22 @@ class AffinityScheduler:
             digest = hashlib.sha256(token.encode("ascii")).hexdigest()
             if not secrets.compare_digest(current, digest) or _read_external_reservation(self._external_gpu_path) != current:
                 return False
+            store = getattr(self, "_external_gpu_store", None)
+            if store is not None:
+                generation = getattr(self, "_external_gpu_generation", None)
+                if generation is None:
+                    reservation = store.read()
+                    if reservation is not None and secrets.compare_digest(reservation["token_digest"], current):
+                        generation = reservation["generation"]
+                if not generation or not store.release(current, generation):
+                    return False
+                self._external_gpu_token = None
+                self._external_gpu_generation = None
+                self._external_gpu_owned = False
+                self._external_gpu_expiry_monotonic = None
+                self._last_foreground_activity = time.monotonic()
+                self._cond.notify_all()
+                return True
             for attempt in range(6):
                 try:
                     self._external_gpu_path.unlink()
@@ -1203,9 +1420,49 @@ class AffinityScheduler:
                         return False
             self._external_gpu_token = None
             self._external_gpu_owned = False
+            self._external_gpu_expiry_monotonic = None
             self._last_foreground_activity = time.monotonic()
             self._cond.notify_all()
             return True
+
+    @property
+    def external_gpu_ttl_seconds(self) -> float:
+        store = getattr(self, "_external_gpu_store", None)
+        if store is not None and hasattr(store, "ttl_seconds"):
+            try:
+                return float(store.ttl_seconds)
+            except (TypeError, ValueError):
+                pass
+        return 60.0
+
+    def renew_external_gpu(self, token: str, *, state: str = "idle") -> bool:
+        if not isinstance(token, str) or not token.isascii():
+            return False
+        with self._cond:
+            store = getattr(self, "_external_gpu_store", None)
+            current = getattr(self, "_external_gpu_token", None)
+            generation = getattr(self, "_external_gpu_generation", None)
+            if store is None or current is None or not generation:
+                return False
+            digest = hashlib.sha256(token.encode("ascii")).hexdigest()
+            if not secrets.compare_digest(current, digest):
+                return False
+            return store.renew(digest, generation, state=state)
+
+    def release_expired_external_gpu(self, generation: str, *, consent: bool, audit_reason: str) -> bool:
+        """Release an expired idle lease after explicit operator consent."""
+        store = getattr(self, "_external_gpu_store", None)
+        if store is None:
+            return False
+        released = store.release_with_consent(generation, consent=consent, audit_reason=audit_reason)
+        if released:
+            with self._cond:
+                if getattr(self, "_external_gpu_generation", None) == generation:
+                    self._external_gpu_generation = None
+                    self._external_gpu_token = None
+                    self._external_gpu_owned = False
+                self._cond.notify_all()
+        return released
 
     def release_background_gpu(self) -> None:
         with self._cond:
@@ -1364,15 +1621,14 @@ class AffinityScheduler:
 
             if target_switch:
                 try:
-                    switched = self._perform_switch(
+                    self._perform_switch(
                         target_switch,
                         should_stop=lambda target=target_switch: not self._has_active_preparation_waiter(target),
                     )
                 except Exception as exc:
-                    switched = False
                     with self._cond:
                         if not bool(getattr(exc, "operation_not_started", False)):
-                            self._internal_gpu_uncertain = True
+                            self._mark_internal_gpu_uncertain_locked()
                         for job in [j for j in self._pending if j.model == target_switch]:
                             self._pending.remove(job)
                             job.error = f"model preparation failed: {type(exc).__name__}"
@@ -1410,8 +1666,9 @@ class AffinityScheduler:
         except Exception:
             pass
         ordered = sorted(jobs, key=lambda j: (-j.priority, j.created_at))
+        top_priority = ordered[0].priority if ordered else 0
         for job in ordered:
-            if job.model in loaded:
+            if job.model in loaded and (top_priority - job.priority <= 2):
                 return job.model
         candidate = ordered[0] if ordered else None
         if candidate and candidate.background and now - self._last_foreground_activity < self.background_switch_grace:
@@ -1599,12 +1856,12 @@ class AffinityScheduler:
                     cancelled = True
                     if not bool(getattr(exc, "operation_not_started", False)):
                         with self._cond:
-                            self._internal_gpu_uncertain = True
+                            self._mark_internal_gpu_uncertain_locked()
                 else:
                     error = f"{type(exc).__name__}: {exc}"[:300]
                     if not bool(getattr(exc, "operation_not_started", False)):
                         with self._cond:
-                            self._internal_gpu_uncertain = True
+                            self._mark_internal_gpu_uncertain_locked()
         if not cancelled and not error:
             observed_vram_bytes = self._observe_model_vram_bytes(
                 target,
@@ -1720,16 +1977,27 @@ class AffinityScheduler:
             self._gpu_prepare_in_progress = True
             self._switch_not_started = False
         try:
-            success = self._perform_switch(model)
-        except Exception:
+            is_online = getattr(self.runtime, "is_online", None)
+            ensure_running = getattr(self.runtime, "ensure_running", None)
+            runtime_online = bool(is_online()) if callable(is_online) else True
+            if not runtime_online and not callable(ensure_running):
+                with self._cond:
+                    self._switch_not_started = True
+                success = False
+            elif not runtime_online and not ensure_running():
+                success = False
+            else:
+                success = self._perform_switch(model)
+        except Exception as exc:
             with self._cond:
-                self._internal_gpu_uncertain = True
+                if not bool(getattr(exc, "operation_not_started", False)):
+                    self._mark_internal_gpu_uncertain_locked()
                 self._gpu_prepare_in_progress = False
                 self._cond.notify_all()
             raise
         with self._cond:
             if not success and not self._switch_not_started:
-                self._internal_gpu_uncertain = True
+                self._mark_internal_gpu_uncertain_locked()
             self._gpu_prepare_in_progress = False
             if not self._inflight and not self._switching and not self._background_gpu_lease:
                 self._release_internal_gpu()
@@ -1767,15 +2035,20 @@ class AffinityScheduler:
             job.finished_at = time.monotonic()
             with self._cond:
                 result = job.result if isinstance(job.result, dict) else {}
-                uncertainty_flags = ("outcome_unknown", "timed_out",
-                                     "cleanup_unconfirmed", "_lah_partial_response", "in_progress")
+                uncertainty_flags = ("outcome_unknown", "timed_out", "cleanup_unconfirmed",
+                                     "_lah_partial_response", "in_progress")
+                # An explicit cancel/preempt result is clean only after the execute
+                # callback returns, with no uncertainty flags or worker exception.
+                # Ambiguous or incomplete backend cleanup remains fail-closed.
                 clean_cancel = (
                     (result.get("preempted") is True or result.get("cancelled") is True)
+                    and result.get("output_truncated") is not True
                     and not any(key in result and result[key] is not False for key in uncertainty_flags)
                     and not bool(job.error)
                 )
                 uncertain = (bool(job.error)
                              or any(key in result and result[key] is not False for key in uncertainty_flags)
+                             or result.get("preempted") is True or result.get("cancelled") is True
                              or (result.get("output_truncated") is True and result.get("success") is not False))
                 failed = (result.get("success") is False or bool(result.get("error"))) and not clean_cancel
                 completed_at_limit = (result.get("_lah_backend_completed") is True
@@ -1783,9 +2056,20 @@ class AffinityScheduler:
                                       and result.get("stop_reason") == "length"
                                       and result.get("error_code") == "model_output_truncated"
                                       and result.get("terminal") is True and result.get("retryable") is False)
-                if execute_started and (uncertain or (failed and result.get("operation_not_started") is not True
-                                                       and not completed_at_limit)):
-                    self._internal_gpu_uncertain = True
+                clean_app_error = (
+                    result.get("completed_cleanly_with_app_error") is True
+                    or result.get("app_error") is True
+                    or (
+                        result.get("_lah_backend_completed") is True
+                        and not result.get("output_truncated")
+                        and not uncertain
+                    )
+                )
+                if execute_started and not clean_cancel and (
+                    uncertain
+                    or (failed and not clean_app_error and result.get("operation_not_started") is not True and not completed_at_limit)
+                ):
+                    self._mark_internal_gpu_uncertain_locked()
                 reprepare = (not uncertain and result.get("success") is False
                              and result.get("operation_not_started") is True
                              and result.get("error_code") == "model_preparation_required")
@@ -1845,6 +2129,19 @@ class AffinityScheduler:
             by_model: dict[str, int] = {}
             background_queued = 0
             now = time.monotonic()
+            external_reserved = self._external_gpu_reserved()
+            if self._internal_gpu_uncertain:
+                gpu_admission_state = "outcome_unknown"
+            elif external_reserved:
+                gpu_admission_state = "external_reservation"
+            elif self._background_gpu_lease:
+                gpu_admission_state = "background_lease"
+            elif self._switching or self._gpu_prepare_in_progress:
+                gpu_admission_state = "preparing_model"
+            elif self._inflight:
+                gpu_admission_state = "inference_active"
+            else:
+                gpu_admission_state = "available"
             ordered_pending = sorted(self._pending, key=lambda j: (-j.priority, j.created_at))
             pending_jobs: list[dict[str, Any]] = []
             model_positions: dict[str, int] = {}
@@ -1863,6 +2160,7 @@ class AffinityScheduler:
                 "active_parallel_limit": self._active_parallel_limit(),
                 "global_parallel_limit": self.max_parallel,
                 "switching": self._switching,
+                "gpu_admission_state": gpu_admission_state,
                 "background_gpu_lease": self._background_gpu_lease,
                 "inflight": self._inflight,
                 "inflight_background": self._inflight_background,
@@ -1882,6 +2180,59 @@ class AffinityScheduler:
                 "stats": dict(self._stats),
                 "cache_stats": self._cache_stats(),
             }
+
+    def gpu_reservation_operation(
+        self, *, action: str, generation: str = "", consent: bool | None = None,
+        audit_reason: str = "",
+    ) -> dict[str, Any]:
+        """Read or release the reservation using this scheduler's live state store."""
+        store = self._external_gpu_store
+        if store is None:
+            return {"success": False, "error": "GPU reservation store unavailable"}
+        if action == "status":
+            store.reap_expired()
+            record = store.read()
+            if record is None:
+                present = store.path.exists() or store.path.is_symlink()
+                return {
+                    "success": True, "reservation_present": present,
+                    "state": "unknown" if present else "free",
+                    "manual_intervention_required": present,
+                }
+            return {
+                "success": True, "reservation_present": True,
+                "generation": record["generation"], "owner": record["owner"],
+                "state": record["state"], "created_at": record["created_at"],
+                "expires_at": record["expires_at"],
+                "expired": record["expires_at"] <= time.time(),
+            }
+        if action == "release_authorized":
+            if (type(consent) is not bool or not consent
+                    or not isinstance(audit_reason, str) or not audit_reason.strip()):
+                return {"success": False, "operation_not_started": True,
+                        "error": "unknown reservation release requires consent=true and audit_reason"}
+            released = store.release_current_with_consent(
+                consent=consent, audit_reason=audit_reason,
+            )
+            result = {"success": released, "mutation_applied": released}
+            if not released:
+                result["error"] = "no valid current GPU reservation could be released"
+            else:
+                self.status()  # observe the operator marker and clear stale in-memory admission
+            return result
+        if action != "release":
+            return {"success": False, "operation_not_started": True,
+                    "error": "unsupported GPU reservation operation"}
+        if (type(consent) is not bool or not consent
+                or not isinstance(generation, str) or not generation.strip()
+                or not isinstance(audit_reason, str) or not audit_reason.strip()):
+            return {"success": False, "operation_not_started": True,
+                    "error": "gpu reservation release requires consent=true, generation, and audit_reason"}
+        released = store.release_with_consent(generation, consent=consent, audit_reason=audit_reason)
+        result = {"success": released, "mutation_applied": released, "generation": generation}
+        if not released:
+            result["error"] = "lease is missing, active, unexpired, or changed"
+        return result
 
     def is_running(self) -> bool:
         with self._cond:
@@ -1916,3 +2267,23 @@ class AffinityScheduler:
         self._executor.shutdown(wait=False, cancel_futures=True)
         if self._dispatcher.is_alive() and threading.current_thread() is not self._dispatcher:
             self._dispatcher.join(timeout=1.0)
+
+
+class Scheduler(AffinityScheduler):
+    """Backwards-compatible alias for AffinityScheduler."""
+
+    def __init__(
+        self,
+        runtime: Any = None,
+        config: dict[str, Any] | None = None,
+        *,
+        max_concurrent: int = 1,
+        max_queue: int = 256,
+        **kwargs: Any,
+    ):
+        cfg = dict(config) if isinstance(config, dict) else {}
+        sched_cfg = dict(cfg.get("scheduler", {})) if isinstance(cfg.get("scheduler"), dict) else {}
+        sched_cfg.setdefault("max_parallel", max_concurrent)
+        sched_cfg.setdefault("max_queue", max_queue)
+        cfg["scheduler"] = sched_cfg
+        super().__init__(runtime, cfg)

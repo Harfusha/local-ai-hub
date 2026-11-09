@@ -1083,14 +1083,27 @@ class ExternalCodeIntelligence:
             }
 
     def query_serena(self, root: str, action: str, query: str = "", path: str = "", limit: int = 20, timeout: float | None = None, soft_timeout: float | None = None) -> dict[str, Any]:
+        request_started = time.monotonic()
         root = self._root(root)
         eff_soft_timeout = float(soft_timeout) if soft_timeout is not None else self.soft_timeout
         if timeout is not None and eff_soft_timeout is not None:
             eff_soft_timeout = min(eff_soft_timeout, float(timeout))
+        if action in {"search", "pattern"}:
+            # Serena is optional for indexed search; cap its wait before falling back.
+            eff_soft_timeout = min(eff_soft_timeout, 2.0)
+        soft_deadline = request_started + eff_soft_timeout if eff_soft_timeout > 0 else None
         lock_wait = min(eff_soft_timeout, 8.0) if eff_soft_timeout > 0 else (float(timeout) if timeout is not None else 60.0)
         try:
             with self._backend_operation("serena", root, timeout=lock_wait):
-                return self._query_serena_locked(root, action, query, path, limit, timeout=timeout, soft_timeout=eff_soft_timeout)
+                remaining_soft_timeout = eff_soft_timeout
+                if soft_deadline is not None:
+                    remaining_soft_timeout = soft_deadline - time.monotonic()
+                    if remaining_soft_timeout <= 0.05:
+                        raise MCPSoftTimeoutError("MCP soft timeout: backend lock consumed search budget")
+                return self._query_serena_locked(
+                    root, action, query, path, limit,
+                    timeout=timeout, soft_timeout=remaining_soft_timeout,
+                )
         except (TimeoutError, MCPSoftTimeoutError) as exc:
             self.query_failures += 1
             if self.code_index is not None:

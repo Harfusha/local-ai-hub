@@ -59,7 +59,7 @@ def test_mode_get_is_loopback_only_auth_exception_and_returns_snapshot(monkeypat
         load_operational_mode=lambda *, state_dir: snapshot,
     ))
     monkeypatch.setattr(http_server, "APP", SimpleNamespace(
-        config={"security": {"api_token": ""}},
+        config={"security": {}},
         async_jobs=SimpleNamespace(path=Path("state/jobs.sqlite3")),
     ))
 
@@ -76,13 +76,13 @@ def test_mode_get_is_loopback_only_auth_exception_and_returns_snapshot(monkeypat
     ]
 
 
-def test_mode_get_without_api_token_does_not_open_admin_post(monkeypatch) -> None:
+def test_mode_get_and_admin_post_are_tokenless_for_loopback(monkeypatch) -> None:
     snapshot = SimpleNamespace(mode="active", revision=4, degraded=False)
     monkeypatch.setattr(http_server, "_operational_mode_api", lambda: SimpleNamespace(
         load_operational_mode=lambda *, state_dir: snapshot,
     ))
     monkeypatch.setattr(http_server, "APP", SimpleNamespace(
-        config={"security": {"api_token": "configured-secret"}},
+        config={"security": {}},
         async_jobs=SimpleNamespace(path=Path("state/jobs.sqlite3")),
     ))
 
@@ -90,7 +90,7 @@ def test_mode_get_without_api_token_does_not_open_admin_post(monkeypatch) -> Non
     local_get.headers = {"Host": "127.0.0.1"}
     local_get._validate_host_and_origin = lambda: True
     del local_get._require_authorized
-    assert local_get._authorized() is False
+    assert local_get._authorized() is True
     local_get.do_GET()
     assert local_get.responses == [(200, {"success": True, "mode": "active", "revision": 4, "degraded": False})]
 
@@ -98,9 +98,7 @@ def test_mode_get_without_api_token_does_not_open_admin_post(monkeypatch) -> Non
     admin_post.headers = {"Host": "127.0.0.1", "Content-Type": "application/json"}
     admin_post._validate_host_and_origin = lambda: True
     del admin_post._require_authorized
-    assert admin_post._authorized() is False
-    admin_post.do_POST()
-    assert admin_post.responses == [(401, {"success": False, "error": "unauthorized"})]
+    assert admin_post._authorized() is True
 
 
 def test_dashboard_shell_stays_online_in_maintenance_without_token(monkeypatch) -> None:
@@ -287,6 +285,7 @@ def test_context_pack_is_gated_in_both_paused_modes(monkeypatch, mode: str) -> N
     ("/api/async-jobs", {"job_action": "result", "job_id": "job-1"}),
     ("/api/async-jobs", {"job_action": "cancel", "job_id": "job-1"}),
     ("/api/work-orders", {"action": "status", "id": "work-1"}),
+    ("/api/work-orders", {"action": "wait", "id": "work-1"}),
     ("/api/work-orders", {"action": "get", "id": "work-1"}),
     ("/api/work-orders", {"action": "cancel", "id": "work-1"}),
     ("/api/speculative-lint", {"action": "status", "execution_id": "lint-1"}),
@@ -829,7 +828,7 @@ def test_admin_mode_post_requires_authorization(monkeypatch) -> None:
     mode_writes = []
     telemetry = SimpleNamespace(record_system=lambda *_args, **_kwargs: None)
     monkeypatch.setattr(http_server, "APP", SimpleNamespace(
-        config={"security": {"api_token": ""}, "server": {"state_dir": "unused"}},
+        config={"security": {}, "server": {"state_dir": "unused"}},
         telemetry=telemetry,
     ))
     monkeypatch.setattr(http_server, "_operational_mode_api", lambda: SimpleNamespace(
@@ -848,7 +847,7 @@ def test_admin_mode_post_requires_authorization(monkeypatch) -> None:
 
     handler.do_POST()
 
-    assert handler.responses == [(401, {"success": False, "error": "unauthorized"})]
+    assert handler.responses == [(403, {"success": False, "error": "forbidden"})]
     assert mode_writes == []
 
 
@@ -858,7 +857,7 @@ def test_authorized_mutation_fails_closed_when_mode_dependency_is_unavailable(mo
     import urllib.request
 
     monkeypatch.setattr(http_server, "APP", SimpleNamespace(
-        config={"security": {"api_token": "test-secret"}},
+        config={"security": {}},
         async_jobs=SimpleNamespace(path=tmp_path / "jobs.sqlite3"),
     ))
 
@@ -879,7 +878,7 @@ def test_authorized_mutation_fails_closed_when_mode_dependency_is_unavailable(mo
         request = urllib.request.Request(
             f"http://127.0.0.1:{server.server_address[1]}/api/command",
             data=b'{"action":"classify","command":"pytest -q"}',
-            headers={"X-LocalAI-Token": "test-secret", "Content-Type": "application/json"},
+            headers={"Content-Type": "application/json"},
             method="POST",
         )
         with pytest.raises(urllib.error.HTTPError) as response:

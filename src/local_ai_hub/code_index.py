@@ -7,6 +7,7 @@ import copy
 import errno
 import json
 import logging
+import math
 import os
 import re
 import sqlite3
@@ -16,7 +17,7 @@ import weakref
 from contextlib import closing, contextmanager
 from collections import Counter
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, Iterable, Iterator
 
 from . import __version__
 
@@ -29,6 +30,7 @@ from .search_pagination import MAX_PAGE_SIZE, MAX_PAGE_WINDOW, pagination_bounds
 from .sqlite_support import (
     connect_sqlite,
     ensure_incremental_vacuum,
+    incremental_vacuum,
     initialize_wal,
     is_busy_error,
     quick_sanity_check,
@@ -39,6 +41,8 @@ from .sqlite_counts import global_row_counts, initialize_row_counts
 
 _CODE_INDEX_INIT_LOCKS: weakref.WeakValueDictionary[str, threading.RLock] = weakref.WeakValueDictionary()
 _CODE_INDEX_INIT_LOCKS_GUARD = threading.Lock()
+_CODE_INDEX_WRITE_LOCKS: weakref.WeakValueDictionary[str, threading.RLock] = weakref.WeakValueDictionary()
+_CODE_INDEX_WRITE_LOCKS_GUARD = threading.Lock()
 
 
 @contextmanager
@@ -98,6 +102,17 @@ def _code_index_initialization_lock(db_path: Path) -> Iterator[None]:
                     msvcrt.locking(stream.fileno(), msvcrt.LK_UNLCK, 1)
                 else:
                     fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
+
+
+def _code_index_write_lock(db_path: Path) -> threading.RLock:
+    """Share write-admission fencing across instances targeting the same SQLite file."""
+    key = os.path.normcase(str(db_path.resolve()))
+    with _CODE_INDEX_WRITE_LOCKS_GUARD:
+        lock = _CODE_INDEX_WRITE_LOCKS.get(key)
+        if lock is None:
+            lock = threading.RLock()
+            _CODE_INDEX_WRITE_LOCKS[key] = lock
+        return lock
 
 
 def _root_archive_path_sql(path_expression: str = "path") -> str:
@@ -1074,13 +1089,22 @@ def _resolve_code_index_path_policy(api: Any | None, root: Any, settings: Any | 
 
 
 class CodeIndex:
-    def __init__(self, config: dict[str, Any], repo_tools: Any):
+    def __init__(self, config: dict[str, Any], repo_tools: Any, *, read_only: bool = False):
+        if type(read_only) is not bool:
+            raise TypeError("read_only must be a boolean")
         self.config = config
         self.repo_tools = repo_tools
         self.db_path = Path(config["server"]["state_dir"]) / "code-index.sqlite3"
+        self._read_only = read_only
         self.parse_blob_max = int(config.get("code_index", {}).get("parse_blob_max_entries", 100000))
+        self.max_index_bytes = max(1, int(config.get("code_index", {}).get("max_index_bytes", 512 * 1024 * 1024)))
         self._lock = threading.RLock()
-        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        self._write_lock = _code_index_write_lock(self.db_path)
+        if read_only:
+            if self.db_path.is_symlink() or not self.db_path.is_file():
+                raise FileNotFoundError("read-only code-index database is missing or unsafe")
+        else:
+            self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._status_cache: dict[str, Any] = {}
         self._rev_cache = {}
         self._rev_lock = threading.Lock()
@@ -1092,17 +1116,206 @@ class CodeIndex:
         self._impact_path_format_l1 = MemoryLRUCache(max_entries=256, ttl_seconds=1800)
         self._impact_candidate_count_l1 = MemoryLRUCache(max_entries=256, ttl_seconds=1800)
         self._query_cache_generation_key = str(self.db_path.resolve())
-        self._init_db()
-        self._cache_observer = SQLiteChangeObserver(self.db_path)
+        if not read_only:
+            self._init_db()
+        self._cache_observer = None if read_only else SQLiteChangeObserver(self.db_path)
         self._cache_guard = threading.RLock()
         self._observed_data_version: int | None = None
         self._reindex_callback: Any = None
         self._reindex_notifications = MemoryLRUCache(max_entries=512, ttl_seconds=30)
+        self._active_roots_provider: Any = None
 
     def set_reindex_callback(self, callback: Any) -> None:
         if callback is not None and not callable(callback):
             raise TypeError("reindex callback must be callable or None")
         self._reindex_callback = callback
+
+    def set_active_roots_provider(self, callback: Any) -> None:
+        if callback is not None and not callable(callback):
+            raise TypeError("active roots provider must be callable or None")
+        self._active_roots_provider = callback
+
+    def _write_budget_roots(self, root: str, protected_roots: Iterable[str] = ()) -> tuple[str, ...] | None:
+        roots = {canonical_root(root)}
+        if isinstance(protected_roots, (str, bytes)):
+            return None
+        try:
+            supplied = tuple(protected_roots)
+        except TypeError:
+            return None
+        for item in supplied:
+            if not isinstance(item, str) or not item.strip() or not Path(item).is_absolute():
+                return None
+            try:
+                roots.add(canonical_root(item))
+            except (OSError, RuntimeError, ValueError):
+                return None
+        provider = self._active_roots_provider
+        if callable(provider):
+            try:
+                active = provider()
+                if isinstance(active, (str, bytes)) or active is None:
+                    return None
+                for item in active:
+                    if not isinstance(item, str) or not item.strip() or not Path(item).is_absolute():
+                        return None
+                    try:
+                        roots.add(canonical_root(item))
+                    except (OSError, RuntimeError, ValueError):
+                        return None
+            except Exception:
+                # Without the active-root snapshot, refuse eviction rather than
+                # risk removing another worker's in-flight worktree.
+                return None
+        return tuple(sorted(roots))
+
+    def _physical_storage_bytes(self) -> int:
+        total = 0
+        for path in (self.db_path, Path(str(self.db_path) + "-wal"), Path(str(self.db_path) + "-shm")):
+            try:
+                total += path.stat().st_size
+            except FileNotFoundError:
+                continue
+        return total
+
+    def _reserve_write_budget(
+        self, root: str, expected_growth_bytes: int, *, protected_roots: Iterable[str] = (),
+    ) -> dict[str, Any]:
+        """Make room before a write; refuse indexing when the bounded eviction pass cannot."""
+        if type(expected_growth_bytes) is not int or expected_growth_bytes < 0:
+            return {"success": False, "budget_limited": True, "error": "invalid growth estimate"}
+        physical_bytes = self._physical_storage_bytes()
+        if physical_bytes + expected_growth_bytes <= self.max_index_bytes:
+            return {
+                "success": True, "budget_limited": False, "estimated_growth_bytes": expected_growth_bytes,
+                "before": {"physical_bytes": physical_bytes}, "after": {"physical_bytes": physical_bytes},
+                "eviction": None,
+            }
+        before = self.measure_storage()
+        target = self.max_index_bytes - expected_growth_bytes
+        if target < 1:
+            return {
+                "success": False, "budget_limited": True, "estimated_growth_bytes": expected_growth_bytes,
+                "before": before, "after": before, "eviction": None,
+            }
+        protected = self._write_budget_roots(root, protected_roots)
+        if protected is None:
+            return {
+                "success": False, "budget_limited": True, "reason": "active_roots_unavailable",
+                "estimated_growth_bytes": expected_growth_bytes, "before": before, "after": before,
+                "eviction": None,
+            }
+        eviction = self.enforce_size_limit(
+            max_bytes=target, max_files=512,
+            protected_roots=protected,
+        )
+        after = self.measure_storage()
+        admitted = bool(eviction.get("success") is True and after["physical_bytes"] + expected_growth_bytes <= self.max_index_bytes)
+        return {
+            "success": admitted, "budget_limited": not admitted,
+            "estimated_growth_bytes": expected_growth_bytes, "before": before, "after": after,
+            "eviction": eviction,
+        }
+
+    def _reconcile_post_write_budget(self, paths: Iterable[tuple[str, str]]) -> dict[str, Any]:
+        """Enforce the physical cap after SQLite/WAL write amplification is known."""
+        requested = list(dict.fromkeys((str(root), str(path)) for root, path in paths))
+        before = self.measure_storage()
+        if before["physical_bytes"] <= self.max_index_bytes:
+            return {"success": True, "within_budget": True, "before": before, "after": before,
+                    "evicted_paths": [], "missing_paths": []}
+
+        # Do not evict a project that another active preprocessor may be using.
+        # A malformed/incomplete active-root snapshot fails closed.
+        protected_roots: tuple[str, ...] = ()
+        provider = self._active_roots_provider
+        if callable(provider):
+            try:
+                active = provider()
+                if isinstance(active, (str, bytes)) or active is None:
+                    raise ValueError("invalid active roots")
+                normalized_active: set[str] = set()
+                for item in active:
+                    if not isinstance(item, str) or not item.strip() or not Path(item).is_absolute():
+                        raise ValueError("invalid active root")
+                    normalized_active.add(canonical_root(item))
+                protected_roots = tuple(sorted(normalized_active))
+            except Exception:
+                return {"success": False, "within_budget": False, "before": before,
+                        "after": before, "evicted_paths": [], "missing_paths": [],
+                        "reason": "active_roots_unavailable"}
+
+        eviction = self.enforce_size_limit(
+            max_bytes=self.max_index_bytes, max_files=512, protected_roots=protected_roots,
+        )
+        after = self.measure_storage()
+        recovery_vacuum: dict[str, Any] | None = None
+        # The regular maintenance path deliberately avoids VACUUM on oversized
+        # legacy databases. A single write can cross the cap after WAL/page
+        # amplification, though; permit one bounded recovery only when the
+        # entire physical store is at most twice the configured cap.
+        if after["physical_bytes"] > self.max_index_bytes and after["physical_bytes"] <= self.max_index_bytes * 2:
+            deadline = time.monotonic() + 5.0
+            try:
+                with closing(self._connect()) as con:
+                    con.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                    con.set_progress_handler(lambda: int(time.monotonic() >= deadline), 2000)
+                    con.execute("VACUUM")
+                recovery_vacuum = {"success": True, "method": "bounded_overshoot_vacuum"}
+            except sqlite3.DatabaseError as exc:
+                recovery_vacuum = {"success": False, "method": "bounded_overshoot_vacuum",
+                                   "error": type(exc).__name__}
+            after = self.measure_storage()
+        surviving: set[tuple[str, str]] = set()
+        for root in sorted({root for root, _path in requested}):
+            with self._lock, closing(self._connect()) as con:
+                rows = con.execute("SELECT path FROM files WHERE root=?", (root,)).fetchall()
+            surviving.update((root, str(row[0])) for row in rows)
+        missing = [item for item in requested if item not in surviving]
+        within_budget = after["physical_bytes"] <= self.max_index_bytes
+        return {
+            "success": bool(within_budget and not missing),
+            "within_budget": within_budget, "before": before, "after": after,
+            "evicted_paths": eviction.get("evicted_paths", []), "missing_paths": missing,
+            "eviction_success": eviction.get("success") is True,
+            "eviction": eviction, "recovery_vacuum": recovery_vacuum,
+        }
+
+    @staticmethod
+    def _estimate_write_growth(
+        file_count: int, parse_blob_rows: Iterable[tuple[Any, ...]],
+        symbols: Iterable[tuple[Any, ...]], refs: Iterable[tuple[Any, ...]], edges: Iterable[tuple[Any, ...]],
+    ) -> int:
+        """Conservative page-growth estimate for serialized rows and SQLite indexes."""
+        if file_count <= 0:
+            return 0
+        payload_bytes = sum(len(str(row[3]).encode("utf-8")) for row in parse_blob_rows)
+        row_bytes = 0
+        trigram_rows = 0
+        for row in symbols:
+            row_bytes += sum(len(str(value).encode("utf-8")) + 32 for value in row[2:])
+            # symbol_trigrams is a table plus a multi-column index. Text bytes
+            # alone badly understate its growth for code with many long names,
+            # paths, containers, or docstrings. Match _replace_symbol_trigrams.
+            if len(row) >= 11:
+                for value in (row[2], row[7], row[6], row[1], row[10]):
+                    text_value = str(value or "").lower()
+                    if len(text_value) >= 3:
+                        trigram_rows += len({
+                            text_value[offset:offset + 3]
+                            for offset in range(len(text_value) - 2)
+                        })
+        row_bytes += sum(
+            len(str(value).encode("utf-8")) + 32
+            for rows in (refs, edges) for row in rows for value in row[2:]
+        )
+        # Each distinct trigram is stored in both the table and its lookup
+        # index, with root/path/field and SQLite page overhead. The 384-byte
+        # allowance stayed above measured growth in the trigram-heavy fixture.
+        return max(
+            65536 * file_count,
+            (payload_bytes + row_bytes) * 2 + trigram_rows * 384 + 32768 * file_count,
+        )
 
     def _cache_generation(self) -> int:
         with self._cache_guard:
@@ -1135,7 +1348,14 @@ class CodeIndex:
         _advance_query_cache_generation(self._query_cache_generation_key)
 
     def _connect(self, *, register_archive_function: bool = True) -> sqlite3.Connection:
-        con = connect_sqlite(self.db_path, timeout_seconds=5.0, row_factory=sqlite3.Row)
+        if self._read_only:
+            uri = self.db_path.resolve(strict=True).as_uri() + "?mode=ro"
+            con = connect_sqlite(uri, uri=True, timeout_seconds=5.0, row_factory=sqlite3.Row, read_only=True)
+            con.row_factory = sqlite3.Row
+            con.execute("PRAGMA busy_timeout=5000")
+            con.execute("PRAGMA query_only=ON")
+        else:
+            con = connect_sqlite(self.db_path, timeout_seconds=5.0, row_factory=sqlite3.Row)
         try:
             con.execute("PRAGMA recursive_triggers=ON")
             if register_archive_function:
@@ -1168,6 +1388,24 @@ class CodeIndex:
         if existing_symbols and not existing_trigrams:
             # The index is derived state; old databases are rebuilt, never migrated.
             raise sqlite3.DatabaseError("stale derived code-index trigram schema; rebuild this cache")
+        for table, required_columns in (
+            ("files", {"analyzer_version", "mtime_ns", "size_bytes"}),
+            ("edges", {"src_name", "dst_name"}),
+        ):
+            exists = con.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,),
+            ).fetchone()
+            if exists:
+                columns = {
+                    str(row["name"])
+                    for row in con.execute(f"PRAGMA table_info({table})").fetchall()
+                }
+                if not required_columns.issubset(columns):
+                    # Check before CREATE INDEX references new columns, so the
+                    # disposable-cache recovery path gets the stable diagnosis.
+                    raise sqlite3.DatabaseError(
+                        "stale derived code-index schema; rebuild this cache"
+                    )
         if existing_trigrams:
             trigram_columns = {
                 str(row["name"])
@@ -1185,6 +1423,15 @@ class CodeIndex:
             updated_at REAL,
             mtime_ns INTEGER,
             size_bytes INTEGER,
+            PRIMARY KEY(root, path)
+        );
+        CREATE INDEX IF NOT EXISTS idx_files_parse_blob_ref
+            ON files(content_hash, analyzer_version, language);
+        CREATE TABLE IF NOT EXISTS file_usage(
+            root TEXT NOT NULL,
+            path TEXT NOT NULL,
+            use_count INTEGER NOT NULL DEFAULT 0,
+            last_used_at REAL NOT NULL DEFAULT 0,
             PRIMARY KEY(root, path)
         );
         CREATE TABLE IF NOT EXISTS symbols(
@@ -1275,6 +1522,32 @@ class CodeIndex:
     def _init_db(self) -> None:
         with _code_index_initialization_lock(self.db_path):
             self._initialize_db()
+            # Converting a legacy database to INCREMENTAL auto-vacuum requires a
+            # full VACUUM. Do not make Hub startup attempt that conversion on an
+            # already oversized index: the bounded conversion can still hold a
+            # large database lock for seconds on every restart. Large legacy DBs
+            # remain usable; eviction reports that physical compaction needs a
+            # separately scheduled maintenance window.
+            try:
+                physical_bytes = sum(
+                    candidate.stat().st_size
+                    for candidate in (
+                        self.db_path,
+                        Path(str(self.db_path) + "-wal"),
+                        Path(str(self.db_path) + "-shm"),
+                    )
+                    if candidate.exists()
+                )
+                if physical_bytes > self.max_index_bytes:
+                    logging.getLogger(__name__).warning(
+                        "Skipping code-index auto-vacuum setup for oversized database (%s bytes)",
+                        physical_bytes,
+                    )
+                    return
+            except (OSError, sqlite3.Error, TypeError, ValueError):
+                # Keep the index available; normal database health checks report
+                # corruption separately and the bounded eviction path can retry.
+                return
             if not ensure_incremental_vacuum(self.db_path).get("success"):
                 logging.getLogger(__name__).warning("code-index database incremental vacuum setup incomplete")
 
@@ -1297,8 +1570,15 @@ class CodeIndex:
                     side = Path(str(self.db_path) + suffix)
                     if side.exists():
                         side.unlink(missing_ok=True)
-            except OSError:
-                pass
+            except OSError as archive_error:
+                reason = (
+                    "stale derived code-index schema recovery failed"
+                    if "stale derived code-index schema" in str(exc)
+                    else "code-index recovery failed"
+                )
+                raise sqlite3.DatabaseError(
+                    f"{reason}: unable to archive cache ({type(archive_error).__name__})"
+                ) from exc
             with self._lock, closing(self._connect()) as con:
                 initialize_wal(con)
                 self._schema(con)
@@ -1357,9 +1637,10 @@ class CodeIndex:
             con.execute("BEGIN IMMEDIATE")
             for path in paths:
                 con.execute("DELETE FROM symbol_trigrams WHERE root=? AND path=?", (c_root, path))
-                for table in ("files", "symbols", "refs", "edges"):
+                for table in ("files", "symbols", "refs", "edges", "file_usage"):
                     con.execute(f"DELETE FROM {table} WHERE root=? AND path=?", (c_root, path))
             con.commit()
+        self._status_cache.pop(c_root, None)
         self._advance_query_cache_generation()
 
     def _parse_python(self, text: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
@@ -2015,8 +2296,12 @@ class CodeIndex:
         except Exception:
             pass
 
-    def files_needing_reindex(self, root: str, items: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    def files_needing_reindex(
+        self, root: str, items: list[tuple[str, str]], *, only_existing: bool = False,
+    ) -> list[tuple[str, str]]:
         """Select paths with changed content or stale parser analyzer versions."""
+        if type(only_existing) is not bool:
+            raise TypeError("only_existing must be a boolean")
         c_root = canonical_root(root)
         if not items:
             return []
@@ -2061,6 +2346,8 @@ class CodeIndex:
                     continue
             language = self._language_for_path(path, settings)
             ex = existing.get(path)
+            if ex is None and only_existing:
+                continue
             if ex is not None:
                 if (ex[0], ex[1], ex[2]) == (str(content_hash), _PARSER_ANALYZER_VERSION, language):
                     continue
@@ -2083,24 +2370,39 @@ class CodeIndex:
             pending.append((path, str(content_hash)))
         return pending
 
-    def _mark_file_unindexable(self, root: str, path: str, language: str) -> None:
+    def _mark_file_unindexable(self, root: str, path: str, language: str) -> dict[str, Any]:
         """Retain authorized path metadata while removing stale parsed data."""
         updated_at = time.time()
-        with self._lock, closing(self._connect()) as con:
-            con.execute("DELETE FROM symbol_trigrams WHERE root=? AND path=?", (root, path))
-            for table in ("symbols", "refs", "edges"):
-                con.execute(f"DELETE FROM {table} WHERE root=? AND path=?", (root, path))
-            con.execute(
-                "INSERT INTO files(root,path,content_hash,analyzer_version,language,updated_at,mtime_ns,size_bytes) "
-                "VALUES(?,?,NULL,NULL,?,?,NULL,NULL) "
-                "ON CONFLICT(root,path) DO UPDATE SET content_hash=NULL, "
-                "analyzer_version=NULL, language=excluded.language, updated_at=excluded.updated_at, "
-                "mtime_ns=NULL, size_bytes=NULL",
-                (root, path, language, updated_at),
-            )
-            con.commit()
+        with self._write_lock, self._lock:
+            with closing(self._connect()) as con:
+                existing = con.execute(
+                    "SELECT 1 FROM files WHERE root=? AND path=?", (root, path),
+                ).fetchone() is not None
+            budget: dict[str, Any] | None = None
+            if not existing:
+                budget = self._reserve_write_budget(root, 8192)
+                if not budget["success"]:
+                    return {
+                        "success": False, "budget_limited": True, "coverage_complete": False,
+                        "reason": "code index size limit", "budget": budget,
+                    }
+            with closing(self._connect()) as con:
+                con.execute("BEGIN IMMEDIATE")
+                con.execute("DELETE FROM symbol_trigrams WHERE root=? AND path=?", (root, path))
+                for table in ("symbols", "refs", "edges"):
+                    con.execute(f"DELETE FROM {table} WHERE root=? AND path=?", (root, path))
+                con.execute(
+                    "INSERT INTO files(root,path,content_hash,analyzer_version,language,updated_at,mtime_ns,size_bytes) "
+                    "VALUES(?,?,NULL,NULL,?,?,NULL,NULL) "
+                    "ON CONFLICT(root,path) DO UPDATE SET content_hash=NULL, "
+                    "analyzer_version=NULL, language=excluded.language, updated_at=excluded.updated_at, "
+                    "mtime_ns=NULL, size_bytes=NULL",
+                    (root, path, language, updated_at),
+                )
+                con.commit()
         self._advance_query_cache_generation()
         self._status_cache.pop(root, None)
+        return {"success": True, "budget_limited": False, "budget": budget}
 
     @staticmethod
     def _file_stat_is_current(path: Path, expected_stat: Any) -> bool:
@@ -2138,7 +2440,7 @@ class CodeIndex:
         if not target.is_file():
             with self._lock, closing(self._connect()) as con:
                 con.execute("DELETE FROM symbol_trigrams WHERE root=? AND path=?", (str(base), path))
-                for t in ("files", "symbols", "refs", "edges"):
+                for t in ("files", "symbols", "refs", "edges", "file_usage"):
                     con.execute(f"DELETE FROM {t} WHERE root=? AND path=?", (str(base), path))
                 con.commit()
             self._advance_query_cache_generation()
@@ -2151,7 +2453,9 @@ class CodeIndex:
             return {"success": False, "error": "file unavailable"}
         lang = self._language_for_path(path, settings)
         if target_stat.st_size > self.repo_tools.max_file_bytes:
-            self._mark_file_unindexable(str(base), path, lang)
+            marked = self._mark_file_unindexable(str(base), path, lang)
+            if not marked["success"]:
+                return {"path": path, **marked}
             return {"success": True, "skipped": True, "path": path, "reason": "file exceeds max indexable size"}
 
         # Unchanged size/mtime does not establish unchanged content. Reuse the
@@ -2161,7 +2465,9 @@ class CodeIndex:
                 target, stat=target_stat, force=True, max_bytes=self.repo_tools.max_file_bytes,
             )
         except FileTooLargeError:
-            self._mark_file_unindexable(str(base), path, lang)
+            marked = self._mark_file_unindexable(str(base), path, lang)
+            if not marked["success"]:
+                return {"path": path, **marked}
             return {"success": True, "skipped": True, "path": path, "reason": "file exceeds max indexable size"}
         content_hash = digest
         stat_is_current = self._file_stat_is_current(target, target_stat)
@@ -2182,46 +2488,76 @@ class CodeIndex:
 
         parsed_with_report = self._parse_blob_get_with_report(content_hash, lang)
         parsed = parsed_with_report[0] if parsed_with_report is not None else None
+        parse_blob_rows: list[tuple[Any, ...]] = []
         if parsed is None:
             text = "\n".join(lines)
             syms, refs, edges = self._parse_file_content(text, lang, source_key=self._tree_source_key(str(base), path))
             parse_outcome = dict(getattr(self._parse_diagnostic, "value", {}))
-            self._parse_blob_put(content_hash, lang, syms, refs, edges, parse_outcome)
+            payload = json_dumps(
+                {"symbols": syms, "refs": refs, "edges": edges, "parse_outcome": parse_outcome},
+                ensure_ascii=False, separators=(",", ":"),
+            )
+            parse_blob_rows.append((content_hash, _PARSER_ANALYZER_VERSION, lang, payload, time.time()))
         else:
             syms, refs, edges = parsed
             parse_outcome = parsed_with_report[1]
 
-        with self._lock, closing(self._connect()) as con:
-            con.execute("BEGIN IMMEDIATE")
-            con.execute(
-                "INSERT OR REPLACE INTO files(root,path,content_hash,analyzer_version,language,updated_at,mtime_ns,size_bytes) "
-                "VALUES(?,?,?,?,?,?,?,?)",
-                (
-                    str(base), path, content_hash, _PARSER_ANALYZER_VERSION, lang, time.time(),
-                    target_stat.st_mtime_ns if stat_is_current else None,
-                    target_stat.st_size if stat_is_current else None,
-                ),
-            )
-            metadata_update = {
-                "symbols": self._sync_file_rows(con, "symbols", str(base), path, [
-                    (x["name"], x["kind"], x["line"], x["end_line"], x.get("container", ""),
-                     x.get("name_path", x["name"]), x.get("signature", ""), x.get("access", "public"),
-                     x.get("docstring", "")) for x in syms]),
-                "refs": self._sync_file_rows(con, "refs", str(base), path, [
-                    (x["name"], x["line"], x.get("kind", "call")) for x in refs]),
-                "edges": self._sync_file_rows(con, "edges", str(base), path, [
-                    (x["src"], x["dst"], _edge_endpoint_name(x["src"]), _edge_endpoint_name(x["dst"]),
-                     x.get("kind", "reference"), x["line"]) for x in edges]),
-            }
-            self._replace_symbol_trigrams(con, str(base), [path])
-            con.commit()
+        budget_symbols = [
+            (str(base), path, x["name"], x["kind"], x["line"], x["end_line"], x.get("container", ""),
+             x.get("name_path", x["name"]), x.get("signature", ""), x.get("access", "public"), x.get("docstring", ""))
+            for x in syms
+        ]
+        budget_refs = [(str(base), path, x["name"], x["line"], x.get("kind", "call")) for x in refs]
+        budget_edges = [
+            (str(base), x["src"], x["dst"], _edge_endpoint_name(x["src"]), _edge_endpoint_name(x["dst"]),
+             x.get("kind", "reference"), path, x["line"])
+            for x in edges
+        ]
+        growth = self._estimate_write_growth(1, parse_blob_rows, budget_symbols, budget_refs, budget_edges)
+        with self._write_lock, self._lock:
+            budget = self._reserve_write_budget(str(base), growth)
+            if not budget["success"]:
+                return {
+                    "success": False, "budget_limited": True, "coverage_complete": False,
+                    "reason": "code index size limit", "budget": budget,
+                }
+            if parse_blob_rows:
+                self._parse_blob_put(content_hash, lang, syms, refs, edges, parse_outcome)
+            with closing(self._connect()) as con:
+                con.execute("BEGIN IMMEDIATE")
+                con.execute(
+                    "INSERT OR REPLACE INTO files(root,path,content_hash,analyzer_version,language,updated_at,mtime_ns,size_bytes) "
+                    "VALUES(?,?,?,?,?,?,?,?)",
+                    (
+                        str(base), path, content_hash, _PARSER_ANALYZER_VERSION, lang, time.time(),
+                        target_stat.st_mtime_ns if stat_is_current else None,
+                        target_stat.st_size if stat_is_current else None,
+                    ),
+                )
+                metadata_update = {
+                    "symbols": self._sync_file_rows(con, "symbols", str(base), path, [
+                        (x["name"], x["kind"], x["line"], x["end_line"], x.get("container", ""),
+                         x.get("name_path", x["name"]), x.get("signature", ""), x.get("access", "public"),
+                         x.get("docstring", "")) for x in syms]),
+                    "refs": self._sync_file_rows(con, "refs", str(base), path, [
+                        (x["name"], x["line"], x.get("kind", "call")) for x in refs]),
+                    "edges": self._sync_file_rows(con, "edges", str(base), path, [
+                        (x["src"], x["dst"], _edge_endpoint_name(x["src"]), _edge_endpoint_name(x["dst"]),
+                         x.get("kind", "reference"), x["line"]) for x in edges]),
+                }
+                self._replace_symbol_trigrams(con, str(base), [path])
+                con.commit()
+            post_write_budget = self._reconcile_post_write_budget([(str(base), path)])
 
         self._advance_query_cache_generation()
         self._status_cache.pop(str(base), None)
         return {
-            "success": True, "cached": False, "path": path,
+            "success": post_write_budget["success"], "cached": False, "path": path,
+            "budget_limited": not post_write_budget["success"],
+            "coverage_complete": post_write_budget["success"],
             "symbols": len(syms), "refs": len(refs), "edges": len(edges),
-            "parse_outcome": dict(parse_outcome),
+            "parse_outcome": dict(parse_outcome), "budget": budget,
+            "post_write_budget": post_write_budget,
             "metadata_update": metadata_update,
         }
 
@@ -2321,6 +2657,7 @@ class CodeIndex:
         cached = 0
         denied_paths: list[str] = []
         deleted_paths: list[tuple[str, str]] = []
+        budget_limited_paths: list[str] = []
         for path, supplied_hash in normalized:
             file_path = (base / path).resolve(strict=False)
             try:
@@ -2345,7 +2682,9 @@ class CodeIndex:
                     continue
             lang = self._language_for_path(path, settings)
             if file_stat.st_size > self.repo_tools.max_file_bytes:
-                self._mark_file_unindexable(c_root, path, lang)
+                marked = self._mark_file_unindexable(c_root, path, lang)
+                if marked.get("budget_limited") is True:
+                    budget_limited_paths.append(path)
                 continue
             file_stats[path] = file_stat
             if supplied_hash and path not in existing:
@@ -2357,7 +2696,9 @@ class CodeIndex:
                     file_path, stat=file_stat, force=True, max_bytes=self.repo_tools.max_file_bytes,
                 )
             except FileTooLargeError:
-                self._mark_file_unindexable(c_root, path, lang)
+                marked = self._mark_file_unindexable(c_root, path, lang)
+                if marked.get("budget_limited") is True:
+                    budget_limited_paths.append(path)
                 continue
             except OSError:
                 continue
@@ -2426,59 +2767,89 @@ class CodeIndex:
         single_delta = len(files_to_insert) == 1 and not deleted_paths
         metadata_update: dict[str, Any] = {}
         if files_to_insert or deleted_paths:
-            with self._lock, closing(self._connect()) as con:
-                con.execute("BEGIN IMMEDIATE")
-                if parse_blob_rows:
-                    con.executemany("INSERT OR REPLACE INTO parse_blobs(content_hash,analyzer_version,language,payload_json,updated_at) VALUES(?,?,?,?,?)", parse_blob_rows)
-                _IDX_TABLES = frozenset({"symbols", "refs", "edges"})
-                if deleted_paths:
-                    con.executemany("DELETE FROM files WHERE root=? AND path=?", deleted_paths)
-                    con.executemany("DELETE FROM symbol_trigrams WHERE root=? AND path=?", deleted_paths)
-                    for table in ("symbols", "refs", "edges"):
-                        assert table in _IDX_TABLES
-                        con.executemany(f"DELETE FROM {table} WHERE root=? AND path=?", deleted_paths)  # noqa: S608
-                if not single_delta:
-                    for table in ("symbols", "refs", "edges"):
-                        assert table in _IDX_TABLES
-                        con.executemany(f"DELETE FROM {table} WHERE root=? AND path=?", paths_to_clean)
-                con.executemany(
-                    "INSERT OR REPLACE INTO files(root,path,content_hash,analyzer_version,language,updated_at,mtime_ns,size_bytes) "
-                    "VALUES(?,?,?,?,?,?,?,?)",
-                    files_to_insert,
-                )
-                if single_delta:
-                    changed_path = str(files_to_insert[0][1])
-                    metadata_update = {
-                        "symbols": self._sync_file_rows(con, "symbols", c_root, changed_path,
-                                                        [tuple(row[2:]) for row in syms_to_insert]),
-                        "refs": self._sync_file_rows(con, "refs", c_root, changed_path,
-                                                     [tuple(row[2:]) for row in refs_to_insert]),
-                        "edges": self._sync_file_rows(con, "edges", c_root, changed_path,
-                                                      [(row[1], row[2], row[3], row[4], row[5], row[7])
-                                                       for row in edges_to_insert]),
+            growth = self._estimate_write_growth(
+                len(files_to_insert), parse_blob_rows, syms_to_insert, refs_to_insert, edges_to_insert,
+            )
+            with self._write_lock, self._lock:
+                budget = self._reserve_write_budget(c_root, growth)
+                if not budget["success"]:
+                    if deleted_paths:
+                        self._remove_indexed_paths(c_root, [path for _root, path in deleted_paths])
+                    return {
+                        "success": False, "budget_limited": True, "coverage_complete": False,
+                        "files_processed": 0, "cached": cached, "reason": "code index size limit",
+                        "budget": budget,
                     }
-                else:
-                    con.executemany("INSERT OR REPLACE INTO symbols(root,path,name,kind,line,end_line,container,name_path,signature,access,docstring) VALUES(?,?,?,?,?,?,?,?,?,?,?)", syms_to_insert)
-                    con.executemany("INSERT INTO refs(root,path,name,line,kind) VALUES(?,?,?,?,?)", refs_to_insert)
+                with closing(self._connect()) as con:
+                    con.execute("BEGIN IMMEDIATE")
+                    if parse_blob_rows:
+                        con.executemany("INSERT OR REPLACE INTO parse_blobs(content_hash,analyzer_version,language,payload_json,updated_at) VALUES(?,?,?,?,?)", parse_blob_rows)
+                    _IDX_TABLES = frozenset({"symbols", "refs", "edges"})
+                    if deleted_paths:
+                        con.executemany("DELETE FROM files WHERE root=? AND path=?", deleted_paths)
+                        con.executemany("DELETE FROM symbol_trigrams WHERE root=? AND path=?", deleted_paths)
+                        for table in ("symbols", "refs", "edges"):
+                            assert table in _IDX_TABLES
+                            con.executemany(f"DELETE FROM {table} WHERE root=? AND path=?", deleted_paths)  # noqa: S608
+                    if not single_delta:
+                        for table in ("symbols", "refs", "edges"):
+                            assert table in _IDX_TABLES
+                            con.executemany(f"DELETE FROM {table} WHERE root=? AND path=?", paths_to_clean)
                     con.executemany(
-                        "INSERT INTO edges(root,src,dst,src_name,dst_name,kind,path,line) VALUES(?,?,?,?,?,?,?,?)",
-                        edges_to_insert,
+                        "INSERT OR REPLACE INTO files(root,path,content_hash,analyzer_version,language,updated_at,mtime_ns,size_bytes) "
+                        "VALUES(?,?,?,?,?,?,?,?)",
+                        files_to_insert,
                     )
-                self._replace_symbol_trigrams(
-                    con,
-                    c_root,
-                    [str(item[1]) for item in files_to_insert],
+                    if single_delta:
+                        changed_path = str(files_to_insert[0][1])
+                        metadata_update = {
+                            "symbols": self._sync_file_rows(con, "symbols", c_root, changed_path,
+                                                            [tuple(row[2:]) for row in syms_to_insert]),
+                            "refs": self._sync_file_rows(con, "refs", c_root, changed_path,
+                                                         [tuple(row[2:]) for row in refs_to_insert]),
+                            "edges": self._sync_file_rows(con, "edges", c_root, changed_path,
+                                                          [(row[1], row[2], row[3], row[4], row[5], row[7])
+                                                           for row in edges_to_insert]),
+                        }
+                    else:
+                        con.executemany("INSERT OR REPLACE INTO symbols(root,path,name,kind,line,end_line,container,name_path,signature,access,docstring) VALUES(?,?,?,?,?,?,?,?,?,?,?)", syms_to_insert)
+                        con.executemany("INSERT INTO refs(root,path,name,line,kind) VALUES(?,?,?,?,?)", refs_to_insert)
+                        con.executemany(
+                            "INSERT INTO edges(root,src,dst,src_name,dst_name,kind,path,line) VALUES(?,?,?,?,?,?,?,?)",
+                            edges_to_insert,
+                        )
+                    self._replace_symbol_trigrams(
+                        con,
+                        c_root,
+                        [str(item[1]) for item in files_to_insert],
+                    )
+                    con.commit()
+                post_write_budget = self._reconcile_post_write_budget(
+                    [(c_root, str(item[1])) for item in files_to_insert],
                 )
-                con.commit()
             self._advance_query_cache_generation()
         self._status_cache.pop(c_root, None)
         indexed_paths = [str(item[1]) for item in files_to_insert]
+        if files_to_insert and not post_write_budget["success"]:
+            budget_limited_paths.extend(
+                path for _root, path in post_write_budget.get("missing_paths", [])
+                if path not in budget_limited_paths
+            )
+            budget_limited_paths.extend(
+                str(item[1]) for item in files_to_insert
+                if str(item[1]) not in budget_limited_paths
+            )
         return {
-            "success": True, "files_processed": len(files_to_insert), "cached": cached,
+            "success": not (files_to_insert and not post_write_budget["success"]),
+            "files_processed": len(files_to_insert), "cached": cached,
             "symbols": len(syms_to_insert), "refs": len(refs_to_insert), "edges": len(edges_to_insert),
             "parse_blob_hits": len(candidates) - len(parse_blob_rows),
             "parse_outcomes": self._parse_outcomes_for_paths(c_root, indexed_paths),
-            "metadata_update": metadata_update,
+            "metadata_update": metadata_update, "budget": budget if files_to_insert else None,
+            "budget_limited": bool(budget_limited_paths) or bool(files_to_insert and not post_write_budget["success"]),
+            "budget_limited_paths": budget_limited_paths,
+            "coverage_complete": not budget_limited_paths and (not files_to_insert or post_write_budget["success"]),
+            "post_write_budget": post_write_budget if files_to_insert else None,
         }
 
     @staticmethod
@@ -3133,10 +3504,26 @@ class CodeIndex:
         return result
 
     def find_declaration(self, root: str, symbol_name: str, path: str | None = None) -> dict[str, Any]:
+        if not isinstance(symbol_name, str) or not symbol_name.strip():
+            return {
+                "success": False,
+                "status_code": 400,
+                "terminal": True,
+                "retryable": False,
+                "error_code": "invalid_symbol",
+                "error": "symbol cannot be empty",
+            }
         res = self.find_symbol(root, symbol_name, depth=0, include_body=True, include_info=True, relative_path=path, limit=5)
         symbols = res.get("symbols", [])
         if not symbols:
-            return {"success": False, "error": f"Declaration of '{symbol_name}' not found"}
+            return {
+                "success": False,
+                "status_code": 404,
+                "terminal": True,
+                "retryable": False,
+                "error_code": "declaration_not_found",
+                "error": f"Declaration of '{symbol_name}' not found",
+            }
         return {"success": True, "declaration": symbols[0]}
 
     def find_implementations(
@@ -3428,14 +3815,22 @@ class CodeIndex:
             pass
         return [path for path, _ in sorted(scores.items(), key=lambda item: (-item[1], item[0]))[:limit]]
 
-    def prune(self, root: str, current_paths: list[str]) -> dict[str, Any]:
+    def prune(
+        self, root: str, current_paths: Iterable[str], *, stale_paths: Iterable[str] | None = None,
+    ) -> dict[str, Any]:
         """Remove stale per-workspace index rows in one short transaction."""
         resolved_root = canonical_root(root)
         current = {self._norm_rel(p) for p in current_paths if self._norm_rel(p)}
+        stale_candidates = (
+            {self._norm_rel(p) for p in stale_paths if self._norm_rel(p)}
+            if stale_paths is not None else None
+        )
         try:
             with self._lock, closing(self._connect()) as con:
                 indexed = {self._norm_rel(str(r[0])) for r in con.execute("SELECT path FROM files WHERE root=?", (resolved_root,)).fetchall()}
                 stale = sorted(indexed - current)
+                if stale_candidates is not None:
+                    stale = [path for path in stale if path in stale_candidates]
                 if not stale:
                     return {"success": True, "root": resolved_root, "pruned": 0}
                 con.execute("BEGIN IMMEDIATE")
@@ -3443,12 +3838,656 @@ class CodeIndex:
                 con.executemany("DELETE FROM symbol_trigrams WHERE root=? AND path=?", pairs)
                 for table in ("symbols", "refs", "edges", "files"):
                     con.executemany(f"DELETE FROM {table} WHERE root=? AND path=?", pairs)
+                con.executemany("DELETE FROM file_usage WHERE root=? AND path=?", pairs)
                 con.commit()
             self._advance_query_cache_generation()
             self._status_cache.pop(resolved_root, None)
             return {"success": True, "root": resolved_root, "pruned": len(stale), "paths": stale[:100]}
         except sqlite3.DatabaseError as exc:
             return {"success": False, "root": resolved_root, "pruned": 0, "error": str(exc), "busy": is_busy_error(exc)}
+
+    def record_usage(self, root: str, paths: list[dict[str, Any]]) -> int:
+        """Reconcile bounded usage evidence, keeping missing timestamps cold."""
+        resolved_root = canonical_root(root)
+        rows: list[tuple[str, str, int, float]] = []
+        for item in paths[:256]:
+            if not isinstance(item, dict):
+                continue
+            path = self._norm_rel(str(item.get("path") or ""))
+            if not path:
+                continue
+            try:
+                uses = max(1, min(int(item.get("uses", 1)), 2_147_483_647))
+            except (TypeError, ValueError, OverflowError):
+                uses = 1
+            try:
+                last_used_at = float(item.get("last_used_at", item.get("last_used", 0.0)))
+            except (TypeError, ValueError, OverflowError):
+                last_used_at = 0.0
+            if not math.isfinite(last_used_at) or last_used_at <= 0:
+                last_used_at = 0.0
+            rows.append((resolved_root, path, uses, last_used_at))
+        if not rows:
+            return 0
+        with self._write_lock, self._lock:
+            unique_paths = sorted({row[1] for row in rows})
+            with closing(self._connect()) as con:
+                placeholders = ",".join("?" for _ in unique_paths)
+                existing = {
+                    str(row[0]) for row in con.execute(
+                        f"SELECT path FROM file_usage WHERE root=? AND path IN ({placeholders})",
+                        (resolved_root, *unique_paths),
+                    ).fetchall()
+                }
+            missing_count = len(unique_paths) - len(existing)
+            if missing_count:
+                # Reserve conservative page and index headroom before metadata
+                # writes too; otherwise usage-only paths can bypass the cap.
+                budget = self._reserve_write_budget(resolved_root, missing_count * 1024)
+                if not budget["success"]:
+                    return 0
+            with closing(self._connect()) as con:
+                con.execute("BEGIN IMMEDIATE")
+                placeholders = ",".join("?" for _ in unique_paths)
+                con.execute(
+                    "UPDATE file_usage SET last_used_at=0 WHERE root=? "
+                    f"AND last_used_at<>0 AND path NOT IN ({placeholders})",
+                    (resolved_root, *unique_paths),
+                )
+                con.executemany(
+                    "INSERT INTO file_usage(root,path,use_count,last_used_at) VALUES(?,?,?,?) "
+                    "ON CONFLICT(root,path) DO UPDATE SET "
+                    "use_count=MAX(file_usage.use_count,excluded.use_count), "
+                    "last_used_at=excluded.last_used_at "
+                    "WHERE excluded.use_count>file_usage.use_count "
+                    "OR excluded.last_used_at<>file_usage.last_used_at",
+                    rows,
+                )
+                con.commit()
+        return len(rows)
+
+    def measure_storage(self) -> dict[str, int]:
+        """Measure SQLite allocation, free pages, and current on-disk sidecars."""
+        with self._lock, closing(self._connect()) as con:
+            page_count = int(con.execute("PRAGMA page_count").fetchone()[0])
+            page_size = int(con.execute("PRAGMA page_size").fetchone()[0])
+            freelist_count = int(con.execute("PRAGMA freelist_count").fetchone()[0])
+            physical_bytes = sum(
+                path.stat().st_size for path in (
+                    self.db_path, Path(str(self.db_path) + "-wal"), Path(str(self.db_path) + "-shm"),
+                ) if path.exists()
+            )
+        return {
+            "page_count": page_count,
+            "page_size": page_size,
+            "freelist_count": freelist_count,
+            "allocated_bytes": page_count * page_size,
+            "reusable_bytes": freelist_count * page_size,
+            "physical_bytes": physical_bytes,
+        }
+
+    def prune_unreferenced_parse_blobs(
+        self,
+        *,
+        dry_run: bool = True,
+        max_blobs: int = 2048,
+        target_bytes: int | None = None,
+    ) -> dict[str, Any]:
+        """Evict a bounded oldest-first batch of parse blobs unused by any indexed file."""
+        if type(dry_run) is not bool:
+            return {"success": False, "error": "dry_run must be a boolean"}
+        if self._read_only and not dry_run:
+            return {"success": False, "dry_run": False, "error": "read_only_index"}
+        if type(max_blobs) is not int or not 1 <= max_blobs <= 8192:
+            return {"success": False, "error": "max_blobs must be between 1 and 8192"}
+        if target_bytes is not None and (type(target_bytes) is not int or target_bytes < 0):
+            return {"success": False, "error": "target_bytes must be a nonnegative integer"}
+
+        before = self.measure_storage()
+        deleted_count = 0
+        deleted_payload_bytes = 0
+        try:
+            with self._lock, closing(self._connect()) as con:
+                if not dry_run:
+                    con.execute("BEGIN IMMEDIATE")
+                totals = con.execute(
+                    "SELECT COUNT(*) AS blob_count, "
+                    "COALESCE(SUM(length(p.payload_json)),0) AS payload_bytes "
+                    "FROM parse_blobs p WHERE NOT EXISTS ("
+                    "SELECT 1 FROM files f WHERE f.content_hash=p.content_hash "
+                    "AND f.analyzer_version=p.analyzer_version AND f.language=p.language)"
+                ).fetchone()
+                candidates = con.execute(
+                    "SELECT p.rowid,length(p.payload_json) AS payload_bytes "
+                    "FROM parse_blobs p WHERE NOT EXISTS ("
+                    "SELECT 1 FROM files f WHERE f.content_hash=p.content_hash "
+                    "AND f.analyzer_version=p.analyzer_version AND f.language=p.language) "
+                    "ORDER BY p.updated_at ASC,p.rowid ASC LIMIT ?",
+                    (max_blobs,),
+                ).fetchall()
+                selected: list[tuple[int, int]] = []
+                selected_payload_bytes = 0
+                for row in candidates:
+                    if target_bytes == 0 or (
+                        target_bytes is not None and selected_payload_bytes >= target_bytes
+                    ):
+                        break
+                    selected.append((int(row[0]), max(0, int(row[1] or 0))))
+                    selected_payload_bytes += selected[-1][1]
+                if not dry_run and selected:
+                    before_changes = con.total_changes
+                    con.executemany(
+                        "DELETE FROM parse_blobs WHERE rowid=? AND NOT EXISTS ("
+                        "SELECT 1 FROM files f WHERE f.content_hash=parse_blobs.content_hash "
+                        "AND f.analyzer_version=parse_blobs.analyzer_version "
+                        "AND f.language=parse_blobs.language)",
+                        [(rowid,) for rowid, _ in selected],
+                    )
+                    deleted_count = con.total_changes - before_changes
+                    deleted_payload_bytes = sum(payload_bytes for _, payload_bytes in selected[:deleted_count])
+                if not dry_run:
+                    con.commit()
+        except sqlite3.DatabaseError as exc:
+            return {
+                "success": False,
+                "dry_run": dry_run,
+                "error": type(exc).__name__,
+                "before": before,
+                "after": self.measure_storage(),
+            }
+
+        candidate_count = int(totals["blob_count"])
+        candidate_payload_bytes = int(totals["payload_bytes"])
+        removed_count = deleted_count if not dry_run else len(selected)
+        removed_payload_bytes = deleted_payload_bytes if not dry_run else selected_payload_bytes
+        remaining_count = max(0, candidate_count - removed_count)
+        remaining_payload_bytes = max(0, candidate_payload_bytes - removed_payload_bytes)
+        after = self.measure_storage()
+        return {
+            "success": True,
+            "dry_run": dry_run,
+            "max_blobs": max_blobs,
+            "candidate_blob_count": candidate_count,
+            "candidate_payload_bytes": candidate_payload_bytes,
+            "selected_blob_count": len(selected),
+            "selected_payload_bytes": selected_payload_bytes,
+            "deleted_blob_count": deleted_count,
+            "logical_bytes_released": deleted_payload_bytes,
+            "remaining_unreferenced_blob_count": remaining_count,
+            "remaining_unreferenced_payload_bytes": remaining_payload_bytes,
+            "before": before,
+            "after": after,
+            "physical_bytes_released": max(0, before["physical_bytes"] - after["physical_bytes"]),
+        }
+
+    def enforce_size_limit(
+        self, *, max_bytes: int | None = None, dry_run: bool = False, max_files: int = 128,
+        protected_roots: Iterable[str] = (),
+    ) -> dict[str, Any]:
+        """Evict cold derived rows and reclaim SQLite pages in a bounded pass."""
+        limit = self.max_index_bytes if max_bytes is None else max_bytes
+        if type(limit) is not int or limit < 1:
+            return {"success": False, "error": "max_bytes must be a positive integer"}
+        if type(max_files) is not int or not 1 <= max_files <= 512:
+            return {"success": False, "error": "max_files must be between 1 and 512"}
+        if isinstance(protected_roots, (str, bytes)):
+            return {"success": False, "error": "protected_roots must be an iterable of absolute paths"}
+        try:
+            raw_protected_roots = tuple(protected_roots)
+        except TypeError:
+            return {"success": False, "error": "protected_roots must be an iterable of absolute paths"}
+        if len(raw_protected_roots) > 8192 or any(
+            type(root) is not str or not root.strip() or not Path(root).is_absolute()
+            for root in raw_protected_roots
+        ):
+            return {"success": False, "error": "protected_roots must contain at most 8192 absolute paths"}
+        try:
+            normalized_protected_roots = tuple(dict.fromkeys(
+                canonical_root(root) for root in raw_protected_roots
+            ))
+        except (OSError, RuntimeError, ValueError) as exc:
+            return {"success": False, "error": f"invalid protected root: {type(exc).__name__}"}
+        before = self.measure_storage()
+        if before["physical_bytes"] <= limit:
+            return {
+                "success": True, "dry_run": dry_run, "within_budget": True,
+                "max_bytes": limit, "before": before, "after": before,
+                "evicted_paths": [], "estimated_reclaimable_bytes": 0,
+                "protected_root_count": len(normalized_protected_roots),
+            }
+
+        live_physical_before = max(0, before["physical_bytes"] - before["reusable_bytes"])
+        cache_need = max(0, live_physical_before - limit)
+        cache_cleanup = {
+            "success": True,
+            "dry_run": dry_run,
+            "selected_blob_count": 0,
+            "selected_payload_bytes": 0,
+            "deleted_blob_count": 0,
+            "logical_bytes_released": 0,
+        }
+        if cache_need:
+            cache_cleanup = self.prune_unreferenced_parse_blobs(
+                dry_run=dry_run, max_blobs=8192, target_bytes=cache_need,
+            )
+        cache_estimated = int(
+            cache_cleanup.get(
+                "selected_payload_bytes" if dry_run else "logical_bytes_released", 0
+            ) or 0
+        )
+        if dry_run:
+            live_physical_bytes = max(0, live_physical_before - cache_estimated)
+        else:
+            cache_after = cache_cleanup.get("after", before)
+            live_physical_bytes = max(
+                0, int(cache_after["physical_bytes"]) - int(cache_after["reusable_bytes"])
+            )
+        need = max(0, live_physical_bytes - limit)
+        selected: list[tuple[str, str]] = []
+        estimated = 0
+        with self._lock, closing(self._connect()) as con:
+            if not dry_run and need:
+                con.execute("BEGIN IMMEDIATE")
+            if normalized_protected_roots:
+                con.execute(
+                    "CREATE TEMP TABLE protected_code_index_roots (root TEXT PRIMARY KEY) WITHOUT ROWID"
+                )
+                con.executemany(
+                    "INSERT INTO protected_code_index_roots(root) VALUES (?)",
+                    ((root,) for root in normalized_protected_roots),
+                )
+                candidate_filter = (
+                    "WHERE NOT EXISTS (SELECT 1 FROM protected_code_index_roots p "
+                    "WHERE p.root=f.root) "
+                )
+            else:
+                candidate_filter = ""
+            candidates = con.execute(
+                "SELECT f.root,f.path,COALESCE(u.use_count,0) AS use_count, "
+                "COALESCE(u.last_used_at,f.updated_at,0) AS last_used_at "
+                "FROM files f LEFT JOIN file_usage u ON u.root=f.root AND u.path=f.path "
+                + candidate_filter
+                + "ORDER BY use_count ASC,last_used_at ASC,f.updated_at ASC,f.root ASC,f.path ASC "
+                "LIMIT ?",
+                (max_files,),
+            ).fetchall()
+            for row in candidates:
+                if len(selected) >= max_files or estimated >= need:
+                    break
+                root_path = str(row["root"])
+                file_path = str(row["path"])
+                counts = {
+                    table: int(con.execute(
+                        f"SELECT COUNT(*) FROM {table} WHERE root=? AND path=?",
+                        (root_path, file_path),
+                    ).fetchone()[0])
+                    for table in ("symbols", "refs", "edges", "symbol_trigrams")
+                }
+                selected.append((root_path, file_path))
+                # Source size_bytes is metadata only; source content is not stored here.
+                estimated += (
+                    counts["symbols"] * 1024
+                    + counts["refs"] * 384
+                    + counts["edges"] * 384
+                    + counts["symbol_trigrams"] * 192
+                    + 65536
+                )
+            if not dry_run and selected:
+                for table in ("symbol_trigrams", "symbols", "refs", "edges", "file_usage", "files"):
+                    con.executemany(f"DELETE FROM {table} WHERE root=? AND path=?", selected)
+            if not dry_run and need:
+                con.commit()
+
+        if dry_run:
+            predicted_physical = max(0, live_physical_bytes - estimated)
+            return {
+                "success": True, "dry_run": dry_run,
+                "within_budget": predicted_physical <= limit, "max_bytes": limit,
+                "before": before, "after": before,
+                "evicted_paths": selected,
+                "estimated_reclaimable_bytes": before["reusable_bytes"] + cache_estimated + estimated,
+                "predicted_physical_bytes": predicted_physical,
+                "parse_cache_cleanup": cache_cleanup,
+                "protected_root_count": len(normalized_protected_roots),
+            }
+
+        if selected:
+            self._advance_query_cache_generation()
+        try:
+            with closing(self._connect()) as con:
+                auto_vacuum = int(con.execute("PRAGMA auto_vacuum").fetchone()[0])
+        except sqlite3.DatabaseError as exc:
+            auto_vacuum = 0
+            compact_error = type(exc).__name__
+        else:
+            compact_error = None
+
+        # Prefer bounded incremental reclamation. A full VACUUM is allowed only
+        # for databases no larger than the configured index budget; larger legacy
+        # databases would monopolize the writer lock and need explicit maintenance.
+        if before["physical_bytes"] <= self.max_index_bytes:
+            compact_deadline = time.monotonic() + 5.0
+            try:
+                with closing(self._connect()) as con:
+                    con.set_progress_handler(lambda: int(time.monotonic() >= compact_deadline), 2000)
+                    con.execute("VACUUM")
+                vacuum = {"success": True, "method": "bounded_vacuum"}
+            except sqlite3.DatabaseError as exc:
+                vacuum = {"success": False, "method": "bounded_vacuum", "error": type(exc).__name__}
+        elif auto_vacuum == 2:
+            vacuum = incremental_vacuum(
+                self.db_path, pages=65536, freelist_threshold=1, timeout_seconds=5.0,
+            )
+            vacuum["method"] = "incremental_vacuum"
+        else:
+            vacuum = {
+                "success": False,
+                "method": "skipped",
+                "reason": "large_legacy_database_requires_scheduled_compaction",
+            }
+        if compact_error:
+            vacuum["compaction_error"] = compact_error
+        try:
+            with closing(self._connect()) as con:
+                con.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        except sqlite3.DatabaseError:
+            pass
+        after = self.measure_storage()
+        return {
+            "success": bool(vacuum.get("success")),
+            "dry_run": False,
+            "within_budget": after["physical_bytes"] <= limit,
+            "max_bytes": limit,
+            "before": before,
+            "after": after,
+            "evicted_paths": selected,
+            "estimated_reclaimable_bytes": before["reusable_bytes"] + cache_estimated + estimated,
+            "physical_bytes_released": max(0, before["physical_bytes"] - after["physical_bytes"]),
+            "parse_cache_cleanup": cache_cleanup,
+            "vacuum": vacuum,
+            "protected_root_count": len(normalized_protected_roots),
+        }
+
+    def prune_orphaned_trigrams(
+        self,
+        *,
+        dry_run: bool = True,
+        max_rows: int = 100000,
+        max_roots: int = 64,
+    ) -> dict[str, Any]:
+        """Remove a bounded batch of trigram rows with no owning symbol.
+
+        A fresh active-root snapshot is required for both dry-run and mutation.
+        Active preprocessing roots and Git roots are protected. Source files,
+        symbols, parse blobs, and other roots are never changed.
+        """
+        if type(dry_run) is not bool:
+            return {"success": False, "error": "dry_run must be a boolean"}
+        if self._read_only and not dry_run:
+            return {"success": False, "dry_run": False, "error": "read_only_index"}
+        if type(max_rows) is not int or not 1 <= max_rows <= 100000:
+            return {"success": False, "error": "max_rows must be between 1 and 100000"}
+        if type(max_roots) is not int or not 1 <= max_roots <= 128:
+            return {"success": False, "error": "max_roots must be between 1 and 128"}
+
+        provider = self._active_roots_provider
+        if not callable(provider):
+            return {"success": False, "error": "active_roots_unavailable"}
+        try:
+            active_values = provider()
+            if isinstance(active_values, (str, bytes)) or active_values is None:
+                return {"success": False, "error": "active_roots_unavailable"}
+            active_roots = set()
+            for value in active_values:
+                if not isinstance(value, str) or not value.strip() or not Path(value).is_absolute():
+                    return {"success": False, "error": "active_roots_unavailable"}
+                active_roots.add(canonical_root(value))
+        except Exception:
+            return {"success": False, "error": "active_roots_unavailable"}
+
+        before = self.measure_storage()
+        try:
+            with self._lock, closing(self._connect()) as con:
+                if self._read_only:
+                    con.execute("BEGIN")
+                orphaned_total = int(con.execute(
+                    "SELECT COUNT(*) FROM symbol_trigrams t WHERE NOT EXISTS ("
+                    "SELECT 1 FROM symbols s WHERE s.rowid=t.symbol_rowid "
+                    "AND s.root=t.root AND s.path=t.path)"
+                ).fetchone()[0])
+                root_rows = con.execute(
+                    "SELECT t.root,COUNT(*) AS orphan_count FROM symbol_trigrams t "
+                    "WHERE NOT EXISTS (SELECT 1 FROM symbols s WHERE s.rowid=t.symbol_rowid "
+                    "AND s.root=t.root AND s.path=t.path) "
+                    "GROUP BY t.root ORDER BY t.root LIMIT ?",
+                    (max_roots + 1,),
+                ).fetchall()
+                has_more_roots = len(root_rows) > max_roots
+                root_rows = root_rows[:max_roots]
+                eligible_roots: list[str] = []
+                skipped_roots: list[dict[str, Any]] = []
+                eligible_total = 0
+                for row in root_rows:
+                    root = str(row["root"])
+                    try:
+                        base = Path(root).expanduser()
+                        if not base.is_absolute() or "\x00" in root or base.is_symlink():
+                            raise ValueError("unsafe_root_path")
+                        base = base.resolve(strict=False)
+                    except (OSError, RuntimeError, ValueError):
+                        skipped_roots.append({"root": root, "reason": "unsafe_root_path"})
+                        continue
+                    if root in active_roots:
+                        skipped_roots.append({"root": root, "reason": "active_preprocessing_root"})
+                        continue
+                    if any((ancestor / ".git").exists() for ancestor in (base, *base.parents)):
+                        skipped_roots.append({"root": root, "reason": "active_git_root"})
+                        continue
+                    eligible_roots.append(root)
+                    eligible_total += int(row["orphan_count"])
+
+                placeholders = ",".join("?" for _ in eligible_roots)
+                candidates = []
+                if eligible_roots:
+                    candidates = con.execute(
+                        "SELECT t.root,t.path,t.symbol_rowid,t.field,t.gram "
+                        "FROM symbol_trigrams t WHERE t.root IN (" + placeholders + ") "
+                        "AND NOT EXISTS (SELECT 1 FROM symbols s WHERE s.rowid=t.symbol_rowid "
+                        "AND s.root=t.root AND s.path=t.path) "
+                        "ORDER BY t.root,t.path,t.symbol_rowid,t.field,t.gram LIMIT ?",
+                        (*eligible_roots, max_rows),
+                    ).fetchall()
+                if not dry_run and candidates:
+                    con.execute("BEGIN IMMEDIATE")
+                    con.executemany(
+                        "DELETE FROM symbol_trigrams WHERE root=? AND path=? AND symbol_rowid=? "
+                        "AND field=? AND gram=? AND NOT EXISTS ("
+                        "SELECT 1 FROM symbols s WHERE s.rowid=symbol_trigrams.symbol_rowid "
+                        "AND s.root=symbol_trigrams.root AND s.path=symbol_trigrams.path)",
+                        [tuple(row) for row in candidates],
+                    )
+                    con.commit()
+                rows_pruned = 0 if dry_run else int(con.total_changes)
+                after = self.measure_storage() if not dry_run else before
+        except sqlite3.DatabaseError as exc:
+            return {
+                "success": False, "dry_run": dry_run, "error": str(exc),
+                "busy": is_busy_error(exc), "storage_before": before,
+                "storage_after": self.measure_storage(), "interrupted_safe_to_repeat": True,
+            }
+
+        if rows_pruned:
+            self._advance_query_cache_generation()
+        remaining_eligible = max(0, eligible_total - rows_pruned)
+        return {
+            "success": True, "dry_run": dry_run,
+            "orphan_trigrams_available": orphaned_total,
+            "eligible_trigrams": eligible_total,
+            "rows_pruned": rows_pruned,
+            "max_rows": max_rows,
+            "has_more": remaining_eligible > 0 or has_more_roots,
+            "roots_scanned": len(root_rows), "has_more_roots": has_more_roots,
+            "skipped_roots": skipped_roots,
+            "storage_before": before, "storage_after": after,
+            "physical_bytes_released": max(0, before["physical_bytes"] - after["physical_bytes"]),
+            "freelist_bytes_released": max(0, before["reusable_bytes"] - after["reusable_bytes"]),
+            "interrupted_safe_to_repeat": True,
+        }
+
+    def cleanup_stale_files(
+        self,
+        *,
+        dry_run: bool = True,
+        max_roots: int = 64,
+        max_paths_per_root: int = 20000,
+        compact: bool = False,
+        after_root: str | None = None,
+    ) -> dict[str, Any]:
+        """Prune derived rows for missing source paths and empty inactive roots.
+
+        Active Git roots are skipped as a whole. For other roots, a source path
+        must still resolve to a file inside its owning root to remain indexed.
+        Shared parse blobs are never removed. Each root is committed separately,
+        making interrupted runs safe to repeat.
+        """
+        if type(dry_run) is not bool or type(compact) is not bool:
+            return {"success": False, "error": "dry_run and compact must be booleans"}
+        if self._read_only and not dry_run:
+            return {"success": False, "dry_run": False, "error": "read_only_index"}
+        if after_root is not None and (
+            not isinstance(after_root, str) or not after_root or "\x00" in after_root
+            or len(after_root) > 32768 or not Path(after_root).is_absolute()
+        ):
+            return {"success": False, "error": "after_root must be an absolute path"}
+        if type(max_roots) is not int or not 1 <= max_roots <= 128:
+            return {"success": False, "error": "max_roots must be between 1 and 128"}
+        if type(max_paths_per_root) is not int or not 1 <= max_paths_per_root <= 100000:
+            return {"success": False, "error": "max_paths_per_root must be between 1 and 100000"}
+
+        before = self.measure_storage()
+        with self._lock, closing(self._connect()) as con:
+            query = "SELECT root,COUNT(*) AS file_count FROM files"
+            params: tuple[Any, ...] = ()
+            if after_root is not None:
+                query += " WHERE root > ?"
+                params = (after_root,)
+            query += " GROUP BY root ORDER BY root LIMIT ?"
+            root_rows = con.execute(query, (*params, max_roots + 1)).fetchall()
+        has_more_roots = len(root_rows) > max_roots
+        root_rows = root_rows[:max_roots]
+        next_root = str(root_rows[-1]["root"]) if has_more_roots and root_rows else None
+        plans: list[dict[str, Any]] = []
+        for root_row in root_rows:
+            root = str(root_row["root"])
+            base = Path(root).expanduser()
+            if not base.is_absolute() or "\x00" in root or base.is_symlink():
+                plans.append({"root": root, "skipped": True, "reason": "unsafe_root_path"})
+                continue
+            try:
+                base = base.resolve(strict=False)
+            except (OSError, RuntimeError, ValueError):
+                plans.append({"root": root, "skipped": True, "reason": "root_resolution_failed"})
+                continue
+            if any((ancestor / ".git").exists() for ancestor in (base, *base.parents)):
+                plans.append({"root": root, "skipped": True, "reason": "active_git_root"})
+                continue
+            with self._lock, closing(self._connect()) as con:
+                total = int(con.execute("SELECT COUNT(*) FROM files WHERE root=?", (root,)).fetchone()[0])
+                if total > max_paths_per_root:
+                    plans.append({
+                        "root": root, "skipped": True, "reason": "root_scan_limit",
+                        "file_count": total, "max_paths_per_root": max_paths_per_root,
+                    })
+                    continue
+                rows = con.execute(
+                    "SELECT path,size_bytes FROM files WHERE root=? ORDER BY path",
+                    (root,),
+                ).fetchall()
+            current_paths: list[str] = []
+            stale_paths: list[str] = []
+            logical_source_bytes = 0
+            for row in rows:
+                rel = str(row["path"] or "").replace("\\", "/")
+                rel_path = Path(rel)
+                if not rel or rel_path.is_absolute() or ".." in rel_path.parts or "\x00" in rel:
+                    stale_paths.append(rel)
+                    logical_source_bytes += max(0, int(row["size_bytes"] or 0))
+                    continue
+                target = base / rel_path
+                try:
+                    resolved_target = target.resolve(strict=True)
+                    resolved_target.relative_to(base)
+                    if not resolved_target.is_file() or target.is_symlink():
+                        raise ValueError("source path is not a confined regular file")
+                except (OSError, RuntimeError, ValueError):
+                    stale_paths.append(rel)
+                    logical_source_bytes += max(0, int(row["size_bytes"] or 0))
+                    continue
+                current_paths.append(rel)
+            plans.append({
+                "root": root, "skipped": False, "file_count": total,
+                "stale_file_count": len(stale_paths),
+                "logical_source_bytes": logical_source_bytes,
+                "current_file_count": len(current_paths),
+                "stale_paths": stale_paths,
+                "current_paths": current_paths,
+            })
+
+        target_plans = [item for item in plans if not item.get("skipped") and item.get("stale_file_count", 0)]
+        if dry_run:
+            return {
+                "success": True, "dry_run": True, "roots_scanned": len(root_rows),
+                "has_more_roots": has_more_roots, "next_root": next_root, "roots": [
+                    {key: value for key, value in item.items() if key not in {"current_paths", "stale_paths"}}
+                    | {"stale_path_preview": item.get("stale_paths", [])[:20]}
+                    for item in plans
+                ],
+                "stale_root_count": len(target_plans),
+                "stale_file_count": sum(item["stale_file_count"] for item in target_plans),
+                "logical_source_bytes": sum(item["logical_source_bytes"] for item in target_plans),
+                "storage_before": before, "storage_after": before,
+                "currently_reusable_bytes": before["reusable_bytes"],
+                "parse_blobs_preserved": True,
+            }
+
+        pruned_roots: list[dict[str, Any]] = []
+        for item in target_plans:
+            result = self.prune(
+                str(item["root"]), list(item["current_paths"]),
+                stale_paths=list(item["stale_paths"]),
+            )
+            if not isinstance(result, dict) or result.get("success") is not True:
+                return {
+                    "success": False, "dry_run": False, "roots": pruned_roots,
+                    "failed_root": item["root"], "error": result.get("error", "root_prune_failed") if isinstance(result, dict) else "root_prune_failed",
+                    "storage_before": before, "storage_after": self.measure_storage(),
+                    "interrupted_safe_to_repeat": True,
+                }
+            pruned_roots.append({"root": item["root"], "pruned": int(result.get("pruned", 0))})
+
+        compaction: dict[str, Any] = {"success": True, "method": "not_requested"}
+        if compact and any(int(item["pruned"]) > 0 for item in pruned_roots):
+            compaction = incremental_vacuum(
+                self.db_path, pages=65536, freelist_threshold=1, timeout_seconds=5.0,
+            )
+            try:
+                with closing(self._connect()) as con:
+                    con.execute("PRAGMA wal_checkpoint(PASSIVE)")
+            except sqlite3.DatabaseError as exc:
+                compaction["checkpoint_error"] = type(exc).__name__
+        after = self.measure_storage()
+        return {
+            "success": all(bool(item.get("success")) for item in (compaction,)),
+            "dry_run": False, "roots_scanned": len(root_rows),
+            "has_more_roots": has_more_roots, "next_root": next_root, "roots_pruned": pruned_roots,
+            "files_pruned": sum(int(item["pruned"]) for item in pruned_roots),
+            "logical_source_bytes": sum(item["logical_source_bytes"] for item in target_plans),
+            "storage_before": before, "storage_after": after,
+            "physical_bytes_released": max(0, before["physical_bytes"] - after["physical_bytes"]),
+            "freelist_bytes_released": max(0, before["reusable_bytes"] - after["reusable_bytes"]),
+            "compaction": compaction, "parse_blobs_preserved": True,
+            "interrupted_safe_to_repeat": True,
+        }
 
     def impact(self, root: str, changed_paths: list[str], max_symbols: int = 48, max_dependents: int = 30) -> dict[str, Any]:
         """Resolve changed symbols, dependents and likely tests from SQLite only."""
@@ -3796,6 +4835,7 @@ class CodeIndex:
             "changed_files_count": len(changed),
             "coverage": {
                 "complete": indexed_count == len(changed) and not truncated,
+                "scope": "indexed_changed_files_and_candidates",
                 "changed_files_count": len(changed),
                 "indexed_changed_files": indexed_count,
                 "changed_file_ratio": round(changed_file_coverage, 3),
@@ -3809,7 +4849,10 @@ class CodeIndex:
             "truncated": truncated,
             "truncation": truncation,
             "graph_complete": False,
-            "dependency_graph_complete": not truncated,
+            # A non-truncated scan of indexed rows says nothing about files
+            # outside this partial index.
+            "dependency_graph_complete": False,
+            "indexed_candidate_graph_complete": not truncated,
         }
         self._impact_result_l1.set(cache_key, result)
         return result

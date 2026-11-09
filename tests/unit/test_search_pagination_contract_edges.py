@@ -58,7 +58,7 @@ def _service_for_repo_search(
     service.learner = None
     service.evidence_store = None
     service._repo_cache_state = lambda _root: {"fingerprint": "revision-1"}
-    service._repo_cached = lambda _operation, _root, _params, compute: compute()
+    service._repo_cached = lambda _operation, _root, _params, compute, **_kwargs: compute()
     return root, service, context
 
 
@@ -74,9 +74,18 @@ def test_service_exact_count_pages_late_request_hint_after_candidate_window(
     (root / "yyy-config-hint.py").write_text("needle match\n", encoding="utf-8")
     request_hint = [{"path": "zzz-request-hint.py", "purpose": "repository_search", "scope": "repo_search"}]
 
-    first = service.repo_search(str(root), "needle", limit=20, offset=0, path_hints=request_hint)
-    second = service.repo_search(str(root), "needle", limit=20, offset=20, path_hints=request_hint)
-    late = service.repo_search(str(root), "needle", limit=20, offset=330, path_hints=request_hint)
+    first = service.repo_search(
+        str(root), "needle", limit=20, offset=0, path_hints=request_hint,
+        search_mode="lexical",
+    )
+    second = service.repo_search(
+        str(root), "needle", limit=20, offset=20, path_hints=request_hint,
+        search_mode="lexical",
+    )
+    late = service.repo_search(
+        str(root), "needle", limit=20, offset=330, path_hints=request_hint,
+        search_mode="lexical",
+    )
 
     assert [hit["path"] for hit in first["results"][:2]] == [
         "zzz-request-hint.py", "yyy-config-hint.py",
@@ -97,7 +106,7 @@ def test_service_repo_search_cache_identity_includes_page_hints_and_config(
     (root / "hint.py").write_text("needle\n", encoding="utf-8")
     cache_params: list[dict[str, object]] = []
 
-    def run_cached(_operation, _root, params, compute):
+    def run_cached(_operation, _root, params, compute, **_kwargs):
         cache_params.append(dict(params))
         return compute()
 
@@ -397,12 +406,18 @@ def test_http_code_index_route_returns_bounded_400_for_upper_bound(
 def test_http_search_route_maps_service_503_to_transport_status(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    app = SimpleNamespace(
-        recovery=None,
-        services=SimpleNamespace(repo_search=lambda *_args, **_kwargs: {
+    service_calls: list[dict[str, object]] = []
+
+    def repo_search(*_args, **kwargs):
+        service_calls.append(kwargs)
+        return {
             "success": False, "status_code": 503, "error": "exact scan incomplete",
             "results": [], "total_matches": 0, "has_more": False,
-        }),
+        }
+
+    app = SimpleNamespace(
+        recovery=None,
+        services=SimpleNamespace(repo_search=repo_search),
         debug_traces=None,
         logger=SimpleNamespace(error=lambda *_args, **_kwargs: None),
     )
@@ -430,6 +445,7 @@ def test_http_search_route_maps_service_503_to_transport_status(
     assert responses[0][1]["success"] is False
     assert responses[0][1]["total_matches"] == 0
     assert responses[0][1]["has_more"] is False
+    assert service_calls[0]["search_mode"] == "hybrid"
 
 
 def test_search_compaction_keeps_largest_whole_result_prefix_with_continuation(

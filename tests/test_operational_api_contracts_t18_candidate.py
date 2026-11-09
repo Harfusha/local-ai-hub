@@ -1662,7 +1662,14 @@ def test_status_detail_values_route_to_expected_live_status_scope(monkeypatch):
             return status
 
     monkeypatch.setattr(mcp_server, "CLIENT", Client())
-    monkeypatch.setattr(mcp_server, "FEATURES", SimpleNamespace(status=True, tasks=False, has_any_model=lambda: False))
+    monkeypatch.setattr(
+        mcp_server,
+        "FEATURES",
+        SimpleNamespace(
+            status=True, tasks=False, hardware_profile="low", capability_status=lambda: {},
+            has_any_model=lambda: False,
+        ),
+    )
     expected_calls = {
         "brief": ["/api/live/status?light=1"],
     }

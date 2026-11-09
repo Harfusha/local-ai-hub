@@ -82,5 +82,51 @@ def test_patch_validation_checks_explicit_git_root(tmp_path):
 
     result = LocalAIServices.validate_patch(None, {"patch": patch, "root": str(root)})
 
-    assert result["success"] is False
+    assert result["success"] is True
+    assert result["valid"] is False
+    assert result["syntax_valid"] is True
     assert result["applicability_checked"] is True
+
+
+def test_patch_validation_marks_git_corrupt_patch_as_syntax_invalid(tmp_path):
+    root = tmp_path / "repo"
+    root.mkdir()
+    subprocess.run(["git", "init"], cwd=root, check=True, capture_output=True)
+    patch = (
+        "diff --git a/new.py b/new.py\n"
+        "new file mode 100644\n"
+        "--- /dev/null\n"
+        "+++ b/new.py\n"
+        "@@ -0,0 +1 @@\n"
+        "+VALUE = 1"
+    )
+
+    result = LocalAIServices.validate_patch(None, {"patch": patch, "root": str(root)})
+
+    assert result["success"] is True
+    assert result["valid"] is False
+    assert result["syntax_valid"] is False
+    assert result["applicability_checked"] is True
+    assert any("corrupt patch" in error for error in result["errors"])
+
+
+def test_patch_validation_accepts_applicable_new_file_without_applying(tmp_path):
+    root = tmp_path / "repo"
+    root.mkdir()
+    subprocess.run(["git", "init"], cwd=root, check=True, capture_output=True)
+    patch = (
+        "diff --git a/new.py b/new.py\n"
+        "new file mode 100644\n"
+        "--- /dev/null\n"
+        "+++ b/new.py\n"
+        "@@ -0,0 +1,1 @@\n"
+        "+VALUE = 1\n"
+    )
+
+    result = LocalAIServices.validate_patch(None, {"patch": patch, "root": str(root)})
+
+    assert result["success"] is True
+    assert result["valid"] is True
+    assert result["syntax_valid"] is True
+    assert result["applicability_checked"] is True
+    assert not (root / "new.py").exists()

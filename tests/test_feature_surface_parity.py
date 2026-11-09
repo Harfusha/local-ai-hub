@@ -20,6 +20,9 @@ def _config(*, agent_os: bool = True, work_orchestrator: bool = False, speculati
         "features": {
             "agent_os": agent_os,
             "work_orchestrator": work_orchestrator,
+        "local_semantic_analysis": True,
+        "local_automation": True,
+        "bounded_local_work": work_orchestrator,
             "tasks": True,
             "rag": True,
             "commands": True,
@@ -32,6 +35,7 @@ def _config(*, agent_os: bool = True, work_orchestrator: bool = False, speculati
         "coord": {"enabled": True},
         "work_orchestrator": {"enabled": work_orchestrator},
         "speculative_lint": {"enabled": speculative_lint},
+        "hardware": {"profile": "high"},
     }
 
 
@@ -54,9 +58,9 @@ def test_enabled_agent_os_and_tool_actions_are_discoverable():
     assert "Agent OS trigger and lifecycle" in references["tools.md"]
     assert "Agent OS through `local_ai_coord`" in references["multi-agent.md"]
     assert "create an Agent OS task" in schemas["local_ai_coord"]["description"]
-    for semantic_task in ("generation", "reasoning", "second opinion", "semantic compression"):
-        assert semantic_task in policy.lower()
-    assert "facts, symbols, diff and tests" in policy.lower()
+    for semantic_action in ("delegate", "reason", "second_opinion", "compress"):
+        assert semantic_action in policy.lower()
+    assert "deterministic/indexed evidence" in policy.lower()
     tools_reference = references["tools.md"].lower()
     workflows_reference = references["workflows.md"].lower()
     assert "semantic generation" in tools_reference
@@ -114,6 +118,7 @@ def test_disabled_agent_os_actions_are_omitted_from_generated_surfaces():
 def test_whole_task_tool_obeys_its_feature_gate():
     disabled = _config(work_orchestrator=False)
     enabled = _config(work_orchestrator=True)
+    enabled["hardware"] = {"profile": "high"}
 
     disabled_refs = generate_skill_references(disabled)
     disabled_schemas = generate_mcp_tool_schemas(disabled)

@@ -32,7 +32,6 @@ def _client(
     state_dir = tmp_path / "state"
     config_path = tmp_path / "hub.toml"
     security: dict[str, object] = {
-        "api_token": "fallback-api-token",
         "allowed_roots": allowed_roots or [tmp_path],
     }
     security.update(security_overrides or {})
@@ -257,7 +256,7 @@ def test_concurrent_task_requests_preserve_roots_for_same_task_id(tmp_path, monk
     assert not hasattr(client, "tenant")
 
 
-def test_configured_token_with_empty_allowlist_rejects_root_scoped_request(tmp_path):
+def test_empty_root_allowlist_leaves_canonical_root_unrestricted(tmp_path):
     client = _client(
         tmp_path,
         security_overrides={"allowed_roots": []},
@@ -268,7 +267,7 @@ def test_configured_token_with_empty_allowlist_rejects_root_scoped_request(tmp_p
         {"root": str(tmp_path), "task_id": "task-empty-allowlist"},
     )
 
-    assert error["error_code"] == "root_not_allowed"
+    assert error is None
 
 
 def test_explicit_root_allowlist_rejects_outside_agent_state_root(tmp_path):

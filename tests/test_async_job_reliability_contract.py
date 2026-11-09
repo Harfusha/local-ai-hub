@@ -77,6 +77,28 @@ def _cancel_delayed_dispatch(manager: AsyncJobManager, job_id: str) -> None:
         timer.cancel()
 
 
+def test_terminal_failure_result_is_known_failed_not_outcome_unknown(manager_factory) -> None:
+    manager = manager_factory(
+        lambda *_: {
+            "success": False,
+            "error": "deterministic review preflight rejection",
+            "terminal": True,
+            "retryable": False,
+        }
+    )
+    submitted = manager.submit(
+        "review_diff", {"task": "bounded review"}, dispatch_delay_seconds=30
+    )
+    _cancel_delayed_dispatch(manager, submitted["job_id"])
+
+    manager._execute(submitted["job_id"])
+    result = manager.result(submitted["job_id"])
+
+    assert result["state"] == "failed"
+    assert result["error"] == "deterministic review preflight rejection"
+    assert result.get("outcome_unknown") is not True
+
+
 def test_same_request_id_after_restart_reuses_completed_job(manager_factory) -> None:
     executions: list[tuple[str, str]] = []
 

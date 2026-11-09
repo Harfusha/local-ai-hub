@@ -42,6 +42,10 @@ def _assert_conservative_unknown(result: dict[str, object], reason: str) -> None
         (_balanced_sample(vram_used_mb=float("nan")), "sample_invalid"),
         (_balanced_sample(vram_used_pct=float("inf")), "sample_invalid"),
         (_balanced_sample(vram_used_pct=-1.0), "sample_invalid"),
+        (_balanced_sample(vram_available_mb=float("nan")), "sample_invalid"),
+        (_balanced_sample(vram_available_mb=-1.0), "sample_invalid"),
+        (_balanced_sample(vram_available_mb=True), "sample_invalid"),
+        (_balanced_sample(vram_available_mb=8193.0), "sample_invalid"),
         (_balanced_sample(vram_total_mb="8192"), "sample_invalid"),
         (_balanced_sample(vram_used_mb=9000.0), "sample_invalid"),
         ({"available": "false"}, "sample_invalid"),
@@ -70,6 +74,28 @@ def test_explicit_zero_percent_cannot_hide_measured_used_to_total_pressure() -> 
     assert result["policy_measurement_basis"] == "dedicated_observed"
     assert result["policy_pressure_is_derived"] is True
     assert result["speculative_inference"]["active"] is False
+
+
+def test_free_vram_only_sample_derives_pressure_and_headroom() -> None:
+    balancer = VRAMBalancer()
+    result = balancer._status_from_telemetry(
+        _balanced_sample(
+            vram_used_mb=None,
+            vram_used_pct=None,
+            vram_available_mb=6144.0,
+        )
+    )
+
+    assert result["available"] is True
+    assert result["vram_used_mb"] is None
+    assert result["vram_available_mb"] == 6144.0
+    assert result["pressure_level"] == "nominal"
+    assert result["context_budget_factor"] == 1.0
+    assert result["throttle_background"] is False
+    assert result["policy_pressure_pct"] == 25.0
+    assert result["policy_headroom_mb"] == 6144.0
+    assert result["policy_measurement_basis"] == "dedicated_observed"
+    assert result["policy_pressure_is_derived"] is True
 
 
 def test_valid_rocm_style_pressure_keeps_existing_thresholds() -> None:

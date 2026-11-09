@@ -1,20 +1,28 @@
 from local_ai_hub.generator import generate_skill_markdown, generate_skill_references
 
 
+def qualified_work_config():
+    return {
+        "ollama": {"enabled": True},
+        "hardware": {"profile": "high"},
+        "features": {"bounded_local_work": True},
+    }
+
+
 def test_generated_workflow_explains_missing_receipt():
-    workflow = generate_skill_references({"ollama": {"enabled": True}})["workflows.md"]
+    workflow = generate_skill_references(qualified_work_config())["workflows.md"]
     assert 'validation.receipt_status="not_recorded"' in workflow
     assert "no durable broker verification receipt" in workflow
     assert "does not replace primary-agent review" in workflow
 
 
 def test_generated_guidance_preserves_qualified_bounded_handoff():
-    cfg = {"ollama": {"enabled": True}}
+    cfg = qualified_work_config()
     skill = generate_skill_markdown(cfg)
     workflow = generate_skill_references(cfg)["workflows.md"]
     tools = generate_skill_references(cfg)["tools.md"]
     for guidance in (skill, workflow):
-        assert "profile `high`" in guidance
+        assert "high/max profile" in guidance or "profile `high`" in guidance
         assert "task/model quality" in guidance
         assert "primary agent" in guidance
         assert "bounded patch parent directories must already exist" in guidance

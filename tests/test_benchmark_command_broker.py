@@ -334,3 +334,6 @@ def test_synthetic_repository_fixture_is_pinned_clean_and_reproducible(tmp_path)
     assert subprocess.check_output(
         ["git", "-C", str(worktree), "status", "--porcelain"], text=True
     ) == ""
+
+
+pytestmark = pytest.mark.slow

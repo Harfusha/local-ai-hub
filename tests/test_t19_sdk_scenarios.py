@@ -31,6 +31,8 @@ def scenario_hub(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     config.write_text(
         f'[server]\nbind = "127.0.0.1"\nport = {server.server_address[1]}\n'
         f'state_dir = "{state_dir.as_posix()}"\n'
+        "\n[hardware]\nprofile = \"balanced\"\n"
+        "\n[features]\nlocal_semantic_analysis = true\n"
         "\n[agent_state]\nenabled = true\n"
         f'allowed_roots = ["{tmp_path.as_posix()}"]\n',
         encoding="utf-8",
@@ -164,7 +166,7 @@ def test_seven_sdk_workflows_have_measured_production_route_outcomes(
                 (workspace / "sample.py").read_bytes()
             ).hexdigest(),
             "start_line": 1,
-            "end_line": 1,
+            "end_line": len(source_text.splitlines()),
         },
     )
     assert evidence_id

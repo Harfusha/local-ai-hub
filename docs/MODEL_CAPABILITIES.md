@@ -31,12 +31,12 @@ Cached fallback models remain eligible while downloads are disabled.
 | `qwen2.5-coder:1.5b` | preprocessing only | inference, code generation, reviews, reasoning, or edits |
 | `qwen2.5-coder:3b` | bounded review, test plans, simple patch plans, comparisons | architecture decisions, high-risk migrations, security decisions, edits |
 | `qwen2.5-coder:7b` | root-cause analysis, cross-file reasoning, diff review, patch/test plans | security decisions, final verification, edits |
-| `qwen3.5:4b-q4_K_M` | candidate for bounded advisory review, test plans, simple patch plans and comparisons | architecture or security decisions, high-risk migrations, edits, final verification |
-| `gemma4:12b` | candidate for advisory visual review, visual observations and extraction | source-only reasoning, security decisions, edits, final verification |
+| `qwen2.5-coder:32b` | configured `max`-profile `heavy_code` target | security decisions, final verification, edits; quality and host availability remain unqualified |
+| `qwen3.5:4b-nvfp4` | unqualified advisory candidate for bounded review, test plans, simple patch plans and comparisons | architecture or security decisions, high-risk migrations, edits, final verification, tool-use qualification |
 | `qwen3-vl:4b` | visual review, UI observations, accessibility observations | source-only reasoning, security decisions, edits, final verification |
+| `minicpm-v:8b` | configured `balanced`, `high` and `max` vision target | source-only reasoning, security decisions, edits, final verification; image capability remains unqualified |
 | `qwen3.5:9b` | heavy reasoning, cross-file review, patch plans, visual review; quality-evaluated bounded implementation through `local_ai_work` | unscoped or unreviewed edits, security decisions, final verification |
 | `qwen3.5:9b-q4_K_M` | candidate for heavy reasoning, cross-file review and bounded patch plans | direct edits, security decisions, final verification |
-| `qwen2.5-coder:14b` | optional candidate for cross-file review and bounded patch plans | direct edits, security decisions, final verification |
 
 The candidate rows describe intended prompt scope, not measured quality,
 verified image support or a tool-calling grant. They await task-specific
@@ -58,13 +58,21 @@ names do not establish cached-weight availability, transcription quality or WER.
 | `cpu` | `qwen2.5-coder:3b` | `qwen2.5-coder:3b` | `qwen2.5-coder:7b` | `qwen3.5:9b` | `qwen2.5-coder:7b` | `qwen3-vl:4b` |
 | `integrated` | `qwen2.5-coder:3b` | `qwen2.5-coder:3b` | `qwen2.5-coder:7b` | `qwen3.5:9b` | `qwen2.5-coder:7b` | `qwen3-vl:4b` |
 | `low` | `qwen2.5-coder:3b` | `qwen2.5-coder:3b` | `qwen2.5-coder:7b` | `qwen3.5:9b` | `qwen2.5-coder:7b` | `qwen3-vl:4b` |
-| `balanced` | `qwen2.5-coder:3b` | `qwen2.5-coder:3b` | `qwen2.5-coder:7b` | `qwen3.5:9b` | `qwen2.5-coder:7b` | `qwen3.5:9b` |
-| `high` | `qwen2.5-coder:3b` | `qwen2.5-coder:3b` | `qwen2.5-coder:7b` | `qwen3.5:9b` | `qwen3.5:9b` | `qwen3.5:9b` |
-| `max` | `qwen2.5-coder:3b` | `qwen2.5-coder:3b` | `qwen3.5:9b` | `qwen3.5:9b` | `qwen3.5:9b` | `qwen3.5:9b` |
+| `balanced` | `qwen2.5-coder:3b` | `qwen2.5-coder:3b` | `qwen2.5-coder:7b` | `qwen3.5:9b` | `qwen2.5-coder:7b` | `minicpm-v:8b` |
+| `medium` | `qwen2.5-coder:3b` | `qwen2.5-coder:7b` | `qwen2.5-coder:7b` | `qwen3.5:9b` | `qwen3.5:9b` | `minicpm-v:8b` |
+| `high` | `qwen2.5-coder:3b` | `qwen2.5-coder:7b` | `qwen2.5-coder:14b` | `qwen3.5:9b` | `qwen3.5:9b` | `minicpm-v:8b` |
+| `max` | `qwen2.5-coder:7b` | `qwen2.5-coder:7b` | `qwen2.5-coder:32b` | `qwen3.5:9b` | `qwen3.5:9b` | `minicpm-v:8b` |
 
 These are profile routing targets from `hardware.py`. They do not prove a model
 is installed on a host, and profile selection does not pull models. Runtime
 availability must be checked separately.
+
+Preprocessing routes: cpu=`qwen2.5-coder:0.5b`; integrated=`qwen2.5-coder:1.5b`;
+low=`qwen2.5-coder:1.5b`; balanced=`qwen2.5-coder:1.5b`;
+medium=`qwen2.5-coder:3b`; high=`qwen2.5-coder:3b`; max=`qwen2.5-coder:7b`.
+CPU, integrated and low profiles disable search summaries; vision is supported
+across all profiles; balanced, medium, high and max enable search summaries. Integrated inherits configured feature defaults. These flags do not
+qualify model quality, availability, or image support.
 
 ## Static operation contracts
 
@@ -104,3 +112,79 @@ the requested complexity before judging model quality.
 Hardware measurements with fewer than two generated tokens have no composite
 score. Missing models, provider errors and empty responses are failures with
 explicit diagnostics, never synthetic successful one-token measurements.
+
+## Hardware capability tiers
+
+The configured hardware profile is a capability ceiling. MCP action discovery,
+server-side action validation, generated trigger guidance and the brief status
+response use the same minimum-profile registry. Unknown profile names resolve
+to `low`; an unlisted future `local_ai_task` action is hidden until it receives
+an explicit tier policy. Provider/model availability, feature flags,
+authorization and quality evidence remain separate gates.
+
+| Profile | Exposed local-model capability classes |
+| --- | --- |
+| `cpu`, `integrated`, `low` | Deterministic/indexed operations; bounded compression, routing, evaluation and management actions. No semantic analysis promotion or work submission. |
+| `balanced` | Above, plus search summaries with `features.search_summaries=true`; semantic analysis/review remains hidden until `features.local_semantic_analysis=true`. No bounded work submission, vision, scaffold or speculative draft. |
+| `high` | Above, plus semantic analysis with `features.local_semantic_analysis=true`; vision, code generation and browser automation each need their own default-off flags. Bounded work needs `features.bounded_local_work=true` and `mode="bounded"`, plus task quality, explicit permissions and primary-agent review. |
+| `max` | Same authority classes as `high`; performance limits and model routes require separate measurements. |
+
+`local_ai_status` reports the configured profile and configuration-level
+availability reasons for search summaries, semantic analysis and bounded work.
+Capability entries report `profile_blocked`, `feature_disabled` or
+`enabled_by_operator`; `provider_readiness="not_checked"` means status does not
+infer installed model, quality or live device use.
+
+On `high`/`max`, a detected NVIDIA adapter with at least 15 GiB selects CUDA for
+embedding and reranker placement, sets Ollama and managed llama.cpp K/V cache
+types to `q8_0`, and caps both the scheduler and Ollama at two parallel requests.
+The smart role receives a 65,536-token context ceiling; background GPU preprocessing uses larger bounded
+batches and prioritizes recently accessed files. CUDA embedding and reranking
+claim the shared external GPU reservation for execution and fail closed with a
+retryable admission error when another owner holds it. These are configuration
+and source-level guarantees; they do not prove general model availability,
+quality, live reload, sustained throughput, or RTX 5070 Ti acceptance. Two
+2026-11-04 `qwen3.5:9b-nvfp4` smoke samples measured 148.09 tokens/s over six
+tokens and 133.12 tokens/s over 256 tokens; these are not sustained-performance
+qualification. The local reranker feature remains
+default-off pending role evaluation. Managed llama.cpp still selects one
+configured managed logical model per installation configuration.
+
+An available bounded-work tier means only that the profile permits discovery;
+it does not mean a model passed evaluation or that a request is authorized.
+Job status, wait, result/get and cancellation remain available across profile
+downgrades, subject to existing ownership checks.
+
+Repository search summaries require the explicit
+`features.search_summaries=true` configuration and a per-call
+`summarize_results=true`. They remain disabled by default. Exact result rows and pagination remain authoritative;
+the model receives bounded source excerpts and returns a separate advisory
+summary with source references. A disabled tier, timeout or model error never
+replaces deterministic search output. This route is not a quality qualification
+or a claim of 5070 Ti use. See the capability inventory and plan for outstanding
+provider, latency, quality and hardware measurements.
+
+Semantic analysis, vision, code generation and bounded local work use separate
+default-off operator release flags: `features.local_semantic_analysis`,
+`features.local_vision`, `features.local_code_generation`,
+`features.local_automation` and `features.bounded_local_work`. RAG reranking
+uses the separately configured reranker backend/device and is available on
+every hardware profile when enabled by `features.local_reranking`. After GPU
+admission or inference failure, RAG keeps candidates and uses heuristic
+ranking; CPU inference requires CPU as the configured primary device. Enable
+each only after reviewing role-specific task evaluations. These flags do not
+establish model quality or availability. Embedding retrieval remains available
+according to its provider and device configuration; it does not imply LLM
+synthesis or GPU use.
+
+## Physical RTX 5070 Ti benchmark results — 2026-11-07
+
+Hardware: NVIDIA GeForce RTX 5070 Ti (16,275 MiB VRAM, Compute Capability 12.0 Blackwell architecture).
+Runtime: CUDA backend (CUDA 13.5 / Clang build 12054), full GPU offload (-ngl 99), 512 prompt tokens (pp512), 128 generated tokens (tg128).
+
+| Model | Parameters | Size on GPU | Prompt Processing (pp512) | TTFT (512 tokens) | Generation (tg128) | Peak VRAM Used |
+|---|---|---|---|---|---|---|
+| qwen2.5-coder:7b (Q4_K_M) | 7.62 B | 4.36 GiB | 2,763.12 ± 822.46 t/s | ~185 ms (0.18 ms/tok) | 142.52 ± 8.80 tok/s | ~5.2 GiB |
+| qwen3.5:9b (Q4_K_M) | 8.95 B | 5.23 GiB | 2,983.44 ± 468.94 t/s | ~171 ms (0.17 ms/tok) | 79.51 ± 1.87 tok/s | ~6.3 GiB |
+
+Measurements confirmed zero VRAM thrashing, stable thermal baseline (42–45°C), and full Blackwell tensor offload.

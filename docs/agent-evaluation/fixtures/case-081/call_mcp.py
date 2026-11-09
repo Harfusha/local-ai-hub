@@ -35,7 +35,7 @@ if tool == "local_ai_task":
         raise SystemExit("unexpected batch item fields")
 source = Path((here / "source.txt").read_text(encoding="utf-8")).resolve()
 env = os.environ.copy()
-for key in ("LOCAL_AI_TENANT", "LOCAL_AI_HUB_TOKEN", "LOCAL_AI_AGENT", "LOCAL_AI_AGENT_PROFILE"):
+for key in ("LOCAL_AI_TENANT", "LOCAL_AI_AGENT", "LOCAL_AI_AGENT_PROFILE"):
     env.pop(key, None)
 env.update(LOCAL_AI_CONFIG=str(config_path), PYTHONPATH=str(source / "src"), PYTHONDONTWRITEBYTECODE="1")
 params = StdioServerParameters(command=sys.executable, args=["-B", "-m", "local_ai_hub.mcp_server"], env=env, cwd=str(here))

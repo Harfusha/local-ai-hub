@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import json
+import threading
 import time
 from pathlib import Path
 from unittest.mock import MagicMock
 import pytest
 
 from local_ai_hub.benchmark import HardwareBenchmarkRunner
+from local_ai_hub.scheduler import QueueFullError
 
 
 def test_benchmark_runner_metrics_and_persistence(tmp_path: Path) -> None:
@@ -59,6 +61,129 @@ def test_benchmark_runner_metrics_and_persistence(tmp_path: Path) -> None:
     assert summary["tokens_per_second"] > 0
 
 
+def test_benchmark_records_verified_model_digest_and_exact_loaded_vram(tmp_path: Path) -> None:
+    runtime = MagicMock()
+    runtime.generate_stream.side_effect = lambda *_args, **_kwargs: iter(["one ", "two ", "three"])
+    runtime.model_digest.return_value = "a" * 64
+    runtime.loaded_model_details.return_value = [
+        {"name": "selected-model", "vram_bytes": 1234},
+        {"name": "other-model", "vram_bytes": 9876},
+    ]
+    benchmarks_file = tmp_path / "benchmarks.json"
+    runner = HardwareBenchmarkRunner(benchmarks_path=benchmarks_file, runtime=runtime)
+
+    result = runner.run(model="selected-model", prompt="prompt", num_tokens=3)
+
+    assert result["model_digest"] == "a" * 64
+    assert result["model_digest_status"] == "verified_installed"
+    assert result["loaded_model_vram_bytes"] == 1234
+    assert result["loaded_model_vram_status"] == "observed_loaded_model"
+    saved = json.loads(benchmarks_file.read_text(encoding="utf-8"))
+    assert saved[0]["model_digest"] == "a" * 64
+    assert saved[0]["loaded_model_vram_bytes"] == 1234
+
+
+def test_benchmark_marks_model_evidence_unavailable_without_exact_runtime_data(tmp_path: Path) -> None:
+    runtime = MagicMock()
+    runtime.generate_stream.side_effect = lambda *_args, **_kwargs: iter(["one ", "two ", "three"])
+    runtime.model_digest.return_value = "invalid-digest"
+    runtime.loaded_model_details.return_value = [
+        {"name": "different-model", "vram_bytes": 1234},
+        {"name": "selected-model", "vram_bytes": 0},
+    ]
+    runner = HardwareBenchmarkRunner(benchmarks_path=tmp_path / "benchmarks.json", runtime=runtime)
+
+    result = runner.run(model="selected-model", prompt="prompt", num_tokens=3)
+
+    assert result["model_digest"] is None
+    assert result["model_digest_status"] == "unavailable"
+    assert result["loaded_model_vram_bytes"] is None
+    assert result["loaded_model_vram_status"] == "unavailable"
+
+
+def test_benchmark_measures_ttft_after_queue_and_vram_after_scheduler_preparation(tmp_path: Path) -> None:
+    class Scheduler:
+        inside_execution = False
+
+        def submit(self, _model, *, execute, **_kwargs):
+            time.sleep(0.1)
+            self.inside_execution = True
+            try:
+                result = execute()
+            finally:
+                self.inside_execution = False
+            return {**result, "_lah_scheduler_queue_wait_ms": 100.0}
+
+    scheduler = Scheduler()
+
+    class Runtime:
+        def loaded_model_details(self, *, force_refresh=False):
+            if scheduler.inside_execution:
+                return [{"name": "selected-model", "vram_bytes": 4321}]
+            return []
+
+        def generate_stream(self, *_args, **_kwargs):
+            time.sleep(0.02)
+            yield {"response": "one two", "eval_count": 2, "eval_duration": 20_000_000}
+
+    runner = HardwareBenchmarkRunner(
+        benchmarks_path=tmp_path / "benchmarks.json",
+        runtime=Runtime(),
+        scheduler=scheduler,
+    )
+
+    result = runner.run(model="selected-model", prompt="prompt", num_tokens=2)
+
+    assert result["queue_wait_ms"] == 100.0
+    assert result["ttft_ms"] < result["queue_wait_ms"]
+    assert result["loaded_model_vram_bytes"] == 4321
+    assert result["loaded_model_vram_status"] == "observed_loaded_model"
+
+
+def test_benchmark_uses_callback_streaming_runtime_for_true_ttft(tmp_path: Path) -> None:
+    class Scheduler:
+        inside_execution = False
+
+        def submit(self, _model, *, execute, **_kwargs):
+            time.sleep(0.1)
+            self.inside_execution = True
+            try:
+                result = execute()
+            finally:
+                self.inside_execution = False
+            return {**result, "_lah_scheduler_queue_wait_ms": 100.0}
+
+    scheduler = Scheduler()
+
+    class Runtime:
+        def loaded_model_details(self, *, force_refresh=False):
+            if scheduler.inside_execution:
+                return [{"name": "selected-model", "vram_bytes": 4321}]
+            return []
+
+        def request_stream(self, endpoint, payload, on_chunk, timeout=None):
+            assert endpoint == "/api/generate"
+            assert payload["stream"] is True
+            assert payload["model"] == "selected-model"
+            time.sleep(0.02)
+            on_chunk("one two")
+            return {"eval_count": 2, "eval_duration": 20_000_000}
+
+    runner = HardwareBenchmarkRunner(
+        benchmarks_path=tmp_path / "benchmarks.json",
+        runtime=Runtime(),
+        scheduler=scheduler,
+    )
+
+    result = runner.run(model="selected-model", prompt="prompt", num_tokens=2)
+
+    assert result["streaming"] is True
+    assert result["queue_wait_ms"] == 100.0
+    assert result["ttft_ms"] < result["queue_wait_ms"]
+    assert result["tokens_generated"] == 2
+    assert result["loaded_model_vram_bytes"] == 4321
+
+
 def test_benchmark_runner_handles_offline_runtime(tmp_path: Path) -> None:
     benchmarks_file = tmp_path / "benchmarks.json"
     mock_runtime = MagicMock()
@@ -90,6 +215,22 @@ def test_benchmark_runner_supports_non_streaming_runtime(tmp_path: Path) -> None
     result = runner.run(model="qwen2.5-coder:7b", prompt="return 42", num_tokens=4)
 
     assert result["success"] is True
+    assert result["streaming"] is False
+    assert result["ttft_ms"] is None
+    assert result["latency_basis"] == "full_call"
+    assert result["call_latency_ms"] > 0
+    latest = runner.get_latest_summary()
+    assert latest["ttft_ms"] is None
+    assert latest["call_latency_ms"] == result["call_latency_ms"]
+    assert latest["latency_basis"] == "full_call"
+    runner.benchmarks_path.write_text(
+        json.dumps([{"model": "legacy", "streaming": False, "ttft_ms": 12.5}]),
+        encoding="utf-8",
+    )
+    legacy_latest = runner.get_latest_summary()
+    assert legacy_latest["ttft_ms"] is None
+    assert legacy_latest["call_latency_ms"] == 12.5
+    assert legacy_latest["latency_basis"] == "full_call"
     assert result["tokens_generated"] == 1
     assert result["whitespace_token_estimate"] == 1
     assert result["token_count_method"] == "whitespace_token_estimate_not_model_tokenization"
@@ -111,6 +252,151 @@ def test_benchmark_runner_does_not_treat_error_response_as_success(tmp_path: Pat
     assert result["model"] == "qwen3.5:9b"
     assert "404" in result["error"]
     assert not (tmp_path / "benchmarks.json").exists()
+
+
+def test_hardware_benchmark_uses_scheduler_for_model_preparation(tmp_path: Path) -> None:
+    class Runtime:
+        def generate_stream(self, model, prompt, options=None):
+            assert model == "candidate"
+            assert options == {"num_predict": 2, "think": False}
+            yield {"response": "ok", "eval_count": 2, "eval_duration": 1_000_000}
+
+    class Scheduler:
+        def __init__(self):
+            self.calls = []
+
+        def submit(self, model, *, source, execute, priority, wait_timeout):
+            self.calls.append((model, source, priority, wait_timeout))
+            result = execute()
+            result["_lah_scheduler_queue_wait_ms"] = 12.5
+            return result
+
+    scheduler = Scheduler()
+    runner = HardwareBenchmarkRunner(
+        benchmarks_path=tmp_path / "benchmarks.json",
+        runtime=Runtime(),
+        scheduler=scheduler,
+        config={"server": {"request_timeout_seconds": 8}},
+    )
+
+    result = runner.run(model="candidate", prompt="measure", num_tokens=2)
+
+    assert result["success"] is True
+    assert scheduler.calls == [("candidate", "benchmark", 2, 8.0)]
+    assert result["queue_wait_ms"] == 12.5
+
+
+def test_managed_mixed_backend_benchmark_fails_closed_without_scheduler(tmp_path: Path) -> None:
+    class Runtime:
+        def generate(self, *_args, **_kwargs):
+            raise AssertionError("benchmark must not bypass managed model preparation")
+
+    benchmarks_file = tmp_path / "benchmarks.json"
+    runner = HardwareBenchmarkRunner(
+        benchmarks_path=benchmarks_file,
+        runtime=Runtime(),
+        config={"llama_cpp": {"managed_with_ollama": True}},
+    )
+
+    result = runner.run(model="candidate", prompt="measure", num_tokens=2)
+
+    assert result["success"] is False
+    assert "Scheduler required" in result["error"]
+    assert not benchmarks_file.exists()
+
+
+def test_hardware_benchmark_preserves_scheduler_admission_failure(tmp_path: Path) -> None:
+    class Runtime:
+        def generate(self, *_args, **_kwargs):
+            raise AssertionError("rejected benchmark must not reach inference")
+
+    class Scheduler:
+        def submit(self, *_args, **_kwargs):
+            return {"success": False, "error": "model preparation required",
+                    "error_code": "model_preparation_required", "operation_not_started": True}
+
+    benchmarks_file = tmp_path / "benchmarks.json"
+    runner = HardwareBenchmarkRunner(
+        benchmarks_path=benchmarks_file,
+        runtime=Runtime(),
+        scheduler=Scheduler(),
+    )
+
+    result = runner.run(model="candidate", prompt="measure", num_tokens=2)
+
+    assert result["success"] is False
+    assert result["error_code"] == "model_preparation_required"
+    assert result["operation_not_started"] is True
+    assert not benchmarks_file.exists()
+
+
+def test_hardware_benchmark_preserves_scheduler_queue_rejection_reason(tmp_path: Path) -> None:
+    class Runtime:
+        def generate(self, *_args, **_kwargs):
+            raise AssertionError("rejected benchmark must not reach inference")
+
+    class Scheduler:
+        def submit(self, *_args, **_kwargs):
+            raise QueueFullError(
+                "insufficient VRAM for model admission",
+                admission={
+                    "state": "rejected",
+                    "reason": "vram_budget",
+                    "vram_admission": "rejected",
+                    "retryable": False,
+                },
+                retryable=False,
+            )
+
+    benchmarks_file = tmp_path / "benchmarks.json"
+    runner = HardwareBenchmarkRunner(
+        benchmarks_path=benchmarks_file,
+        runtime=Runtime(),
+        scheduler=Scheduler(),
+    )
+
+    result = runner.run(model="candidate", prompt="measure", num_tokens=2)
+
+    assert result["success"] is False
+    assert result["error"] == "insufficient VRAM for model admission"
+    assert result["error_code"] == "vram_budget"
+    assert result["admission_state"] == "rejected"
+    assert result["retryable"] is False
+    assert result["terminal"] is True
+    assert result["vram_admission"] == "rejected"
+    assert not benchmarks_file.exists()
+
+
+def test_hardware_benchmark_reports_peak_device_vram_during_generation(tmp_path: Path) -> None:
+    class Balancer:
+        def __init__(self):
+            self.samples = 0
+            self.sampled_twice = threading.Event()
+
+        def sample_vram(self):
+            self.samples += 1
+            if self.samples >= 3:
+                self.sampled_twice.set()
+            used = {1: 80, 2: 100, 3: 110}.get(self.samples, 90)
+            return {"vram_used_mb": used, "vram_total_mb": 16303}
+
+    class Runtime:
+        def generate_stream(self, model, prompt, options=None):
+            assert balancer.sampled_twice.wait(1.0)
+            yield {"response": "ok", "eval_count": 2, "eval_duration": 1_000_000}
+
+    balancer = Balancer()
+    runner = HardwareBenchmarkRunner(
+        benchmarks_path=tmp_path / "benchmarks.json",
+        runtime=Runtime(),
+        vram_balancer=balancer,
+    )
+
+    result = runner.run(model="candidate", prompt="measure", num_tokens=2)
+
+    assert result["success"] is True
+    assert result["peak_vram_bytes"] == 110 * 1024 * 1024
+    assert result["peak_vram_scope"] == "device_wide_sampled_during_inference"
 
 
 def test_benchmark_runner_reports_insufficient_sample_for_one_token_output(tmp_path: Path) -> None:
@@ -324,3 +610,6 @@ def test_run_t12_case_reports_model_reuse_only_from_zero_backend_load(tmp_path: 
     assert result["model_load_event"] is False
     assert result["model_reuse_event"] is True
     assert result["routed_profile"] == "fast_code"
+
+
+pytestmark = pytest.mark.slow

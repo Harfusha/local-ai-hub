@@ -237,7 +237,7 @@ def test_conversation_debug_trace_preserves_opt_in_transcript(monkeypatch) -> No
     assert store.response == {
         "trace_id": "trace-1",
         "state": "done",
-        "response": {"success": True, "text": "full transcript", "conversation_id": "opaque"},
+        "response": {"success": True, "text": "full transcript", "conversation_id": "opaque", "http_status_code": 200},
         "error": "",
     }
 

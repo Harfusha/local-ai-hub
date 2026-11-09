@@ -472,11 +472,11 @@ def test_global_memory_store_requires_approval_marker_and_then_is_shared(tmp_pat
     assert any(record.record_id == shared.record_id for record in records)
 
 
-def test_api_token_authentication_requires_a_valid_token(monkeypatch):
+def test_loopback_api_access_does_not_require_a_hub_token(monkeypatch):
     monkeypatch.setattr(
         http_server,
         "APP",
-        SimpleNamespace(config={"security": {"api_token": "expected-local-token"}}),
+        SimpleNamespace(config={"security": {}}),
     )
 
     request = http_server.Handler.__new__(http_server.Handler)
@@ -484,13 +484,10 @@ def test_api_token_authentication_requires_a_valid_token(monkeypatch):
     request.client_address = ("127.0.0.1", 1234)
     request.path = "/api/test"
     request.command = "GET"
-    assert Handler._authorized(request) is False
-
-    request.headers["X-LocalAI-Token"] = "wrong-token"
-    assert Handler._authorized(request) is False
-
-    request.headers["X-LocalAI-Token"] = "expected-local-token"
     assert Handler._authorized(request) is True
+    request.client_address = ("203.0.113.7", 1234)
+    request.headers["X-LocalAI-Token"] = "ignored-legacy-token"
+    assert Handler._authorized(request) is False
 
 
 def test_lease_conflicts_keep_owner_details_visible(tmp_path):

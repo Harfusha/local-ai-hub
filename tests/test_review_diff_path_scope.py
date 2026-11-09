@@ -12,6 +12,12 @@ from local_ai_hub.services import LocalAIServices
 from local_ai_hub.repo_tools import RepositoryTools
 
 
+@pytest.fixture(autouse=True)
+def isolated_review_diff_environment(monkeypatch):
+    monkeypatch.setattr(mcp_server.FEATURES, "hardware_profile", "balanced")
+    monkeypatch.setattr(mcp_server.FEATURES, "local_semantic_analysis", True)
+
+
 def test_review_diff_mcp_forwards_explicit_path(monkeypatch, tmp_path):
     calls = []
     client = mcp_server.HubClient(auto_start=False)
@@ -32,6 +38,42 @@ def test_review_diff_service_passes_path_to_diff_collector():
     result = LocalAIServices.review_diff(service, {'root':'C:/fixture', 'path':'src/example.py'})
     assert result['success'] is True
     assert calls[0][1]['path'] == 'src/example.py'
+
+
+def test_review_diff_refreshes_vram_before_sizing_model_prompt():
+    status_calls = []
+    profile_calls = []
+
+    class VramBalancer:
+        def status(self, *, force=False):
+            status_calls.append(force)
+            return {'available': True, 'vram_available_mb': 7368}
+
+    class ModelPolicy:
+        def tier_for(self, model):
+            return 'fast'
+
+        def profile(self, model, **kwargs):
+            profile_calls.append(kwargs)
+            return SimpleNamespace(prompt_budget_tokens=128)
+
+    service = SimpleNamespace(
+        config={},
+        deterministic=None,
+        incident_store=None,
+        router=SimpleNamespace(classify=lambda *args: {'model': 'fast-model', 'complexity': 'fast'}),
+        _resident_optimize=lambda route, *args: route,
+        model_policy=ModelPolicy(),
+        vram_balancer=VramBalancer(),
+    )
+    diff = '--- a/a.py\\n+++ b/a.py\\n@@ -1 +1 @@\\n-old\\n+new\\n'
+
+    result = LocalAIServices.review_diff(service, {'diff': diff})
+
+    assert status_calls == [True]
+    assert profile_calls[0]['vram_free_mb'] == 7368
+    assert result['success'] is False
+    assert 'prompt budget is too small' in result['error']
 
 
 def test_review_diff_missing_inventory_cannot_claim_complete():

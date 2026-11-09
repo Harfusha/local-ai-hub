@@ -100,7 +100,7 @@ def test_authenticated_single_model_stream_uses_real_loopback_backend(bridge):
     connections = server.test_behavior["connections"]
     assert [entry[0] for entry in connections] == ["/api/version", "/api/ps", "/v1/chat/completions"]
     assert len({entry[1] for entry in connections}) == 1
-    assert scheduler.foreground_busy()
+    assert not scheduler.foreground_busy()
     server.session.close()
 
 
@@ -115,7 +115,7 @@ def test_rejects_new_resident_model_without_sending_inference(bridge):
     assert error.value.code == 503
     error.value.close()
     assert len(calls) == 1
-    assert scheduler.foreground_busy()
+    assert not scheduler.foreground_busy()
     server.session.close()
 
 
@@ -127,7 +127,7 @@ def test_unavailable_model_inventory_does_not_start_inference(bridge):
     assert error.value.code == 503
     error.value.close()
     assert calls == []
-    assert scheduler.foreground_busy()
+    assert not scheduler.foreground_busy()
     server.session.close()
 
 
@@ -150,7 +150,7 @@ def test_closed_preflight_connection_is_not_replaced_for_inference(bridge):
     assert error.value.code == 503
     error.value.close()
     assert calls == []
-    assert scheduler.foreground_busy()
+    assert not scheduler.foreground_busy()
     server.session.close()
 
 
@@ -203,7 +203,7 @@ def test_done_in_shorter_than_declared_response_keeps_gpu_fenced(bridge):
 
 
 def test_second_request_is_rejected_while_first_is_running(bridge):
-    server, _, calls = bridge
+    server, scheduler, calls = bridge
     server.test_behavior["entered"] = threading.Event()
     server.test_behavior["release"] = threading.Event()
     result = []
@@ -214,6 +214,7 @@ def test_second_request_is_rejected_while_first_is_running(bridge):
     thread.start()
     try:
         assert server.test_behavior["entered"].wait(timeout=3)
+        assert scheduler.foreground_busy()
         with pytest.raises(urllib.error.HTTPError) as rejected:
             post(server, {"model": "model-a", "stream": True})
         assert rejected.value.code == 503
@@ -223,6 +224,7 @@ def test_second_request_is_rejected_while_first_is_running(bridge):
         thread.join(timeout=5)
     assert not thread.is_alive()
     assert len(calls) == 1 and result[0].endswith(b"data: [DONE]\n\n")
+    assert not scheduler.foreground_busy()
     server.session.close()
 
 

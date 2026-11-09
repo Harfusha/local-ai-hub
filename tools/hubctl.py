@@ -59,7 +59,7 @@ def status(explicit_config: Path | None = None) -> dict:
 
 
 def _activity_mode_request(mode: str | None = None, *, config_path: str | None = None) -> dict[str, Any]:
-    """Read or change activity mode through the authenticated Hub API only."""
+    """Read or change activity mode through the loopback-only Hub API."""
     try:
         c = HubClient(config_path=config_path or _config_arg(), auto_start=False)
         if not c._online(timeout=2.0):
@@ -90,8 +90,6 @@ def _activity_mode_request(mode: str | None = None, *, config_path: str | None =
 
     if not isinstance(result, dict):
         return {"success": False, "error": "invalid response from mode API"}
-    if result.get("status_code") == 401:
-        return {**result, "success": False, "error": result.get("error") or "unauthorized"}
     if result.get("server_status") == "offline":
         return {**result, "success": False, "error": result.get("error") or "Local AI Hub is offline"}
     if result.get("success") is not True:
@@ -107,8 +105,6 @@ def _activity_mode_request(mode: str | None = None, *, config_path: str | None =
 
 def _activity_mode_error(result: dict[str, Any]) -> str:
     status_code = result.get("status_code")
-    if status_code == 401:
-        return "unauthorized (HTTP 401); check the configured API token"
     if result.get("server_status") == "offline":
         return "Local AI Hub is offline or unreachable"
     if status_code == 400:

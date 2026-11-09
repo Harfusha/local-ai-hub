@@ -103,9 +103,18 @@ class Supervisor:
 
         def start_owned() -> None:
             try:
-                self.runtime.llama_cpp_managed.ensure_running(
+                started = self.runtime.llama_cpp_managed.ensure_running(
                     should_stop=lambda: self.stopping or self._stop_event.is_set()
                 )
+                if started:
+                    self._managed_cuda_last_report = ("ready", "")
+                elif not self.stopping and not self._stop_event.is_set():
+                    owner = self.runtime.llama_cpp_managed
+                    reason = str(getattr(owner, "_last_error", "") or "ensure_running_returned_false")
+                    report = ("incomplete", reason)
+                    if getattr(self, "_managed_cuda_last_report", None) != report:
+                        self.log(f"managed CUDA startup incomplete: {reason}")
+                        self._managed_cuda_last_report = report
             except Exception as exc:
                 self.log(f"managed CUDA startup failed: {type(exc).__name__}")
             finally:
@@ -117,7 +126,7 @@ class Supervisor:
         self._mixed_cuda_worker.start()
 
     def _stop_mixed_cuda(self) -> None:
-        worker = self._mixed_cuda_worker
+        worker = getattr(self, "_mixed_cuda_worker", None)
         if worker is None:
             return
         self._stop_event.set()
@@ -383,13 +392,9 @@ class Supervisor:
             return False
         server = self.config["server"]
         host = "127.0.0.1"
-        headers: dict[str, str] = {}
-        token = str(self.config.get("security", {}).get("api_token", ""))
-        if token:
-            headers["X-LocalAI-Token"] = token
         try:
             timeout = max(0.1, min(10.0, float(self.cfg.get("health_probe_timeout_seconds", 5.0))))
-            with urlopen(Request(f"http://{host}:{int(server.get('port', 11435))}/health", headers=headers), timeout=timeout) as response:
+            with urlopen(Request(f"http://{host}:{int(server.get('port', 11435))}/health"), timeout=timeout) as response:
                 if response.status != 200:
                     self.last_health_error = f"http_status_{response.status}"
                     return False
@@ -439,14 +444,9 @@ class Supervisor:
             return False
         server = self.config["server"]
         host = "127.0.0.1"
-        headers: dict[str, str] = {}
-        security = self.config.get("security", {})
-        token = str(security.get("api_token", "") or "")
-        if token:
-            headers["X-LocalAI-Token"] = token
         try:
             timeout = max(0.1, min(3.0, float(self.cfg.get("readiness_probe_timeout_seconds", 1.0))))
-            with urlopen(Request(f"http://{host}:{int(server.get('port', 11435))}/ready", headers=headers), timeout=timeout) as response:
+            with urlopen(Request(f"http://{host}:{int(server.get('port', 11435))}/ready"), timeout=timeout) as response:
                 if response.status != 200:
                     return False
                 payload = json.loads(response.read().decode("utf-8"))

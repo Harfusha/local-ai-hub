@@ -100,6 +100,50 @@ def test_http_global_memory_identity_uses_repository_scope_and_session_id(tmp_pa
                 return exc.code, json.loads(exc.read().decode("utf-8"))
 
     try:
+        with closing(sqlite3.connect(app.agent_memory.state_store.db_path)) as connection:
+            before_invalid_record = connection.execute(
+                "SELECT COUNT(*) FROM agent_memory_records"
+            ).fetchone()[0]
+        for malformed_record in (
+            {"action": "record", "root": str(repo_a)},
+            {"action": "record", "scope": "repository", "key": "missing-root", "value": "x"},
+            {"action": "record", "root": str(repo_a), "scope": "repository", "query": "legacy-key", "value": "x"},
+        ):
+            status, invalid_record = post(malformed_record)
+            assert status == 400
+            assert invalid_record["success"] is False
+        with closing(sqlite3.connect(app.agent_memory.state_store.db_path)) as connection:
+            after_invalid_record = connection.execute(
+                "SELECT COUNT(*) FROM agent_memory_records"
+            ).fetchone()[0]
+        assert after_invalid_record == before_invalid_record
+
+        status, saved_record = post({
+            "action": "record",
+            "root": str(repo_a),
+            "scope": "repository",
+            "key": "prompt-101-session-provenance",
+            "value": "writer-session-bound",
+            "session_id": "session-prompt-101",
+        })
+        assert status == 200
+        assert saved_record["record"]["scope"] == "repository"
+        assert saved_record["record"]["provenance"]["root"] == str(repo_a.resolve())
+        assert saved_record["record"]["provenance"]["repository_id"] == repo_a.name
+        assert saved_record["record"]["provenance"]["session_id"] == "session-prompt-101"
+        record_id = saved_record["record"]["record_id"]
+        for invalid_mutation in (
+            {"action": "delete", "scope": "repository", "record_id": record_id},
+            {"action": "promote", "scope": "repository", "record_id": record_id, "target_scope": "branch"},
+        ):
+            status, invalid_response = post(invalid_mutation)
+            assert status == 400
+            assert invalid_response["success"] is False
+        with closing(sqlite3.connect(app.agent_memory.state_store.db_path)) as connection:
+            assert connection.execute(
+                "SELECT 1 FROM agent_memory_records WHERE record_id = ?", (record_id,)
+            ).fetchone() is not None
+
         global_payload = {
             "action": "get",
             "record_id": global_record.record_id,

@@ -16,3 +16,17 @@ def test_readiness_uses_light_status_and_omits_internal_runtime_stats(monkeypatc
     assert result["version"] == "test"
     assert "runtime_stats" not in result
     assert "repo_cache" not in result
+
+
+def test_readiness_preserves_valid_hardware_profile(monkeypatch):
+    monkeypatch.setattr(mcp_server.CLIENT, "get", lambda _path: {
+        "hub_online": True,
+        "version": "test",
+        "ollama_online": True,
+        "hardware_profile": "high",
+    })
+    monkeypatch.setattr(mcp_server, "_compact", lambda value, *args, **kwargs: value)
+
+    result = mcp_server.local_ai_status.__wrapped__(detail="brief")
+
+    assert result["hardware_profile"] == "high"

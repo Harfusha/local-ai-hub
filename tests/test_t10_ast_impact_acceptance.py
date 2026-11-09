@@ -10,10 +10,77 @@ from pathlib import Path
 import pytest
 
 from local_ai_hub.code_index import CodeIndex
+from local_ai_hub.deterministic import DeterministicEngine
 from local_ai_hub import treesitter_parser
 from local_ai_hub.preprocess import ProjectPreprocessor
 from local_ai_hub.repo_tools import RepositoryTools
 from local_ai_hub.treesitter_parser import is_treesitter_available
+
+
+def test_refactor_impact_matches_qualified_call_graph_edges(tmp_path: Path) -> None:
+    root = tmp_path / "repo"
+    (root / "pkg").mkdir(parents=True)
+    (root / "pkg" / "paths.py").write_text(
+        "def normalize_path(value):\n    return value.strip()\n", encoding="utf-8",
+    )
+    (root / "consumer.py").write_text(
+        "from pkg.paths import normalize_path\n\n"
+        "def load_project(value):\n    return normalize_path(value)\n",
+        encoding="utf-8",
+    )
+    config = {"server": {"state_dir": str(tmp_path / "state")}}
+    index = CodeIndex(config, RepositoryTools(config))
+    assert index.update_files_batch(str(root), ["pkg/paths.py", "consumer.py"])["success"] is True
+    with closing(index._connect()) as con:
+        con.execute(
+            "UPDATE edges SET dst=? WHERE root=? AND path=? AND kind=? AND dst_name=?",
+            ("pkg.paths::normalize_path", str(root.resolve()), "consumer.py", "calls", "normalize_path"),
+        )
+        con.commit()
+
+    graph = index.find_callers(str(root), "normalize_path")
+    impact = DeterministicEngine(config, RepositoryTools(config), code_index=index).refactor_impact(
+        str(root), "pkg/paths.py", "normalize_path",
+    )
+
+    assert any(row["path"] == "consumer.py" for row in graph["callers"]), graph
+    assert "consumer.py" in impact["impacted_files"], impact
+    assert impact["callers_count"] == len(graph["callers"]), impact
+    assert impact["risk_level"] == "UNKNOWN", impact
+    assert impact["observed_risk_level"] == "MEDIUM", impact
+    assert impact["coverage"]["complete"] is False, impact
+    assert impact["freshness"]["status"] == "not_checked", impact
+
+
+def test_refactor_impact_fails_closed_without_code_index(tmp_path: Path) -> None:
+    config = {"server": {"state_dir": str(tmp_path / "state")}}
+    engine = DeterministicEngine(config, RepositoryTools(config), code_index=None)
+
+    result = engine.refactor_impact(str(tmp_path), "src/target.py", "target")
+
+    assert result["success"] is False, result
+    assert result["risk_level"] == "UNKNOWN", result
+    assert result["coverage"]["complete"] is False, result
+    assert result["index_available"] is False, result
+    assert result["coverage"]["reason"] == "index_unavailable", result
+
+
+def test_refactor_impact_surfaces_index_query_errors(tmp_path: Path, monkeypatch) -> None:
+    config = {"server": {"state_dir": str(tmp_path / "state")}}
+    index = CodeIndex(config, RepositoryTools(config))
+
+    def fail_connect():
+        raise RuntimeError("index unavailable")
+
+    monkeypatch.setattr(index, "_connect", fail_connect)
+    engine = DeterministicEngine(config, RepositoryTools(config), code_index=index)
+
+    result = engine.refactor_impact(str(tmp_path), "src/target.py", "target")
+
+    assert result["success"] is False, result
+    assert result["risk_level"] == "UNKNOWN", result
+    assert "index unavailable" in result["error"], result
+    assert result["coverage"]["complete"] is False, result
 
 
 @pytest.mark.parametrize(

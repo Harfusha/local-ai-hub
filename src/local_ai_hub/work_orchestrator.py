@@ -951,7 +951,7 @@ class WorkOrchestrator:
         }
         if self.path.exists():
             read_only_uri = self.path.resolve().as_uri() + "?mode=ro"
-            with closing(sqlite3.connect(read_only_uri, uri=True, timeout=2.0)) as check:
+            with closing(connect_sqlite(read_only_uri, uri=True, timeout_seconds=2.0, read_only=True)) as check:
                 check.execute("PRAGMA query_only=ON")
                 table = check.execute(
                     "SELECT 1 FROM sqlite_master WHERE type='table' AND name='work_orders'"
@@ -3604,11 +3604,11 @@ class WorkOrchestrator:
                         if (not isinstance(task_state, dict) or task_state.get("_pending_fenced_work") != expected_marker
                                 or type(task_state.get("mutation_generation")) is not int):
                             raise RuntimeError("bounded task mutation generation changed before handoff")
-                        current_task_generation = task_state["mutation_generation"]
+                        handoff_task_generation = task_state["mutation_generation"]
                         verification_receipts = [r for r in verification_receipts
-                                                 if r.mutation_generation == current_task_generation]
+                                                 if r.mutation_generation == handoff_task_generation]
                         for item in validation:
-                            if item.get("receipt_ids") and item.get("task_mutation_generation") != current_task_generation:
+                            if item.get("receipt_ids") and item.get("task_mutation_generation") != handoff_task_generation:
                                 item["receipt_status"] = "stale"
                     persisted_receipts = self._persist_handoff_receipts(
                         work_id, verification_receipts, validation, attempt=attempt

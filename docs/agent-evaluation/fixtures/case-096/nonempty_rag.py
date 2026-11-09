@@ -191,7 +191,6 @@ def _wait_for_mismatch(root: Path, state: Path) -> tuple[str, bool, bool]:
     with socket.socket() as probe:
         probe.bind(("127.0.0.1", 0))
         port = probe.getsockname()[1]
-    token = "case096-" + hashlib.sha256(os.urandom(32)).hexdigest()
     config_path = root / f"mismatch-{port}.toml"
     supervisor_output = root / f"mismatch-{port}.log"
     if config_path.exists() or supervisor_output.exists():
@@ -204,7 +203,6 @@ def _wait_for_mismatch(root: Path, state: Path) -> tuple[str, bool, bool]:
         f"state_dir = {json.dumps(str(state))}\n"
         "auto_start_ollama = false\n"
         "[security]\n"
-        f"api_token = {json.dumps(token)}\n"
         "[ollama]\nenabled = false\n"
         "[llama_cpp]\nenabled = false\n"
         "[code_intelligence]\nenabled = false\nserena_enabled = false\n"

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 from copy import deepcopy
+from pathlib import Path
 from typing import Any
 
 from .search_pagination import MAX_PAGE_SIZE, MAX_PAGE_WINDOW, pagination_bounds_error
@@ -112,6 +113,125 @@ def _action_contracts(
 
 
 _STATUS_ACTIONS = ("brief",)
+
+# Hardware suitability is a discovery/admission ceiling, independent from
+# provider health, feature flags, explicit permissions, and task-quality gates.
+# Keep action IDs here so MCP schemas and direct runtime validation share one
+# policy table. Unlisted operations retain their existing feature/authority
+# gates and are not made GPU-dependent by implication.
+HARDWARE_PROFILE_ORDER = ("cpu", "integrated", "low", "balanced", "medium", "high", "max")
+_HARDWARE_PROFILE_RANK = {name: rank for rank, name in enumerate(HARDWARE_PROFILE_ORDER)}
+CAPABILITY_REGISTRY = {
+    "repo.search_summary": {
+        "operations": (("local_ai_repo", "search_summaries"),), "minimum_profile": "balanced",
+        "backend": "local_model", "authority": "advisory", "quality_gate": "not_qualified_by_default",
+        "feature_gate": "search_summaries",
+        "unavailable_reason": "requires_balanced_profile_or_evaluated_backend",
+    },
+    "repo.diff_review": {
+        "operations": (("local_ai_repo", "review_diff"), ("local_ai_task", "review"), ("local_ai_task", "review_diff")), "minimum_profile": "balanced",
+        "backend": "local_model", "authority": "advisory", "quality_gate": "diff_review_evaluation",
+        "feature_gate": "local_semantic_analysis",
+        "unavailable_reason": "requires_balanced_profile_and_role_qualification",
+    },
+    "repo.solve": {
+        "operations": (("local_ai_repo", "solve"),), "minimum_profile": "medium",
+        "backend": "local_model", "authority": "advisory", "quality_gate": "task_specific_evaluation",
+        "feature_gate": "local_semantic_analysis",
+        "unavailable_reason": "requires_high_profile_and_task_qualification",
+    },
+    "task.semantic_analysis": {
+        "operations": (("local_ai_repo", "delegate"),) + tuple(("local_ai_task", action) for action in (
+            "delegate", "explore", "reason", "review", "second_opinion", "continue", "batch", "submit"
+        )), "minimum_profile": "balanced", "backend": "local_model", "authority": "advisory",
+        "quality_gate": "task_specific_review", "feature_gate": "local_semantic_analysis",
+        "unavailable_reason": "requires_balanced_profile",
+    },
+    "task.vision": {
+        "operations": (("local_ai_task", "vision"),), "minimum_profile": "cpu",
+        "backend": "vision_model", "authority": "advisory", "quality_gate": "vision_role_evaluation",
+        "feature_gate": "local_vision",
+        "unavailable_reason": "requires_high_profile_and_vision_role_qualification",
+    },
+    "task.code_generation": {
+        "operations": tuple(("local_ai_task", action) for action in (
+            "complete_code", "scaffold", "speculative_draft", "speculative_lint"
+        )), "minimum_profile": "medium", "backend": "local_model", "authority": "proposal",
+        "quality_gate": "task_specific_evaluation", "feature_gate": "local_code_generation",
+        "unavailable_reason": "requires_high_profile_and_task_qualification",
+    },
+    "task.automation": {
+        "operations": (("local_ai_task", "automation"),), "minimum_profile": "medium",
+        "backend": "browser_automation", "authority": "explicitly_authorized_action",
+        "quality_gate": "automation_task_evaluation", "feature_gate": "local_automation",
+        "unavailable_reason": "requires_high_profile_and_automation_qualification",
+    },
+    "retrieval.reranking": {
+        # `rerank` is a capability mode of local_ai_rag:search, not a public
+        # selector. Keep retrieval available on lower tiers while gating only
+        # the optional cross-encoder stage.
+        "operations": (("local_ai_rag", "rerank"),), "minimum_profile": "cpu",
+        "backend": "reranker", "authority": "advisory_ranking",
+        "quality_gate": "none", "feature_gate": "local_reranking",
+        "unavailable_reason": "disabled_by_operator",
+    },
+    "work.bounded_submission": {
+        "operations": (("local_ai_work", "submit"), ("local_ai_work", "continue")), "minimum_profile": "high",
+        "backend": "local_model", "authority": "bounded_mutation", "quality_gate": "implementation_case_and_overall_gate",
+        "feature_gate": "bounded_local_work",
+        "unavailable_reason": "requires_high_profile_task_qualification_and_explicit_permissions",
+    },
+}
+_CAPABILITY_BY_OPERATION = {
+    operation: capability_id
+    for capability_id, definition in CAPABILITY_REGISTRY.items()
+    for operation in definition["operations"]
+}
+_TASK_LOW_TIER_ACTIONS = frozenset({
+    "compress", "route", "benchmark", "hardware_benchmark", "evaluation_record",
+    "evaluation_report", "status", "wait", "result", "cancel", "transcribe",
+    "browser", "candidate_create", "candidate_promote", "eval_suite", "prompt_eval", "eval_drift",
+})
+_TASK_BALANCED_TIER_ACTIONS = frozenset({
+    "delegate", "explore", "reason", "review", "second_opinion", "continue", "batch",
+})
+
+
+def capability_minimum_profile(tool: str, action: str) -> str:
+    """Return the configured hardware ceiling for one operation action."""
+    if tool == "local_ai_task":
+        if action in _TASK_LOW_TIER_ACTIONS:
+            return "cpu"
+        if action in _TASK_BALANCED_TIER_ACTIONS:
+            return "balanced"
+        # Unknown/future semantic task actions require an explicit policy entry.
+        capability_id = _CAPABILITY_BY_OPERATION.get((tool, action))
+        return str(CAPABILITY_REGISTRY[capability_id]["minimum_profile"]) if capability_id else "max"
+    capability_id = _CAPABILITY_BY_OPERATION.get((tool, action))
+    if capability_id is None:
+        return "cpu"
+    return str(CAPABILITY_REGISTRY[capability_id]["minimum_profile"])
+
+
+def capability_definition(tool: str, action: str) -> dict[str, Any]:
+    """Return the shared policy definition for an operation, if tiered."""
+    capability_id = _CAPABILITY_BY_OPERATION.get((tool, action))
+    definition = CAPABILITY_REGISTRY.get(capability_id) if capability_id else None
+    return deepcopy(definition) if isinstance(definition, dict) else {}
+
+
+def capability_feature_gate(tool: str, action: str) -> str | None:
+    """Return the explicit operator release flag for one capability, if any."""
+    gate = capability_definition(tool, action).get("feature_gate")
+    return gate if isinstance(gate, str) and gate else None
+
+
+def capability_profile_available(profile: Any, minimum_profile: str) -> bool:
+    """Fail closed for unknown profile names and compare known tier ceilings."""
+    if not isinstance(profile, str) or profile not in _HARDWARE_PROFILE_RANK:
+        profile = "cpu"
+    minimum = minimum_profile if minimum_profile in _HARDWARE_PROFILE_RANK else "max"
+    return _HARDWARE_PROFILE_RANK[profile] >= _HARDWARE_PROFILE_RANK[minimum]
 _REPO_ACTIONS = (
     "profile", "search", "map", "code_index", "deterministic", "context", "route", "delegate",
     "solve", "review_diff", "impact", "refactor_impact", "resolve_imports", "generate_tests",
@@ -136,7 +256,7 @@ _TASK_ACTIONS = (
     "eval_suite", "prompt_eval", "eval_drift", "complete_code", "scaffold", "automation",
 )
 _RAG_ACTIONS = ("index", "search", "list", "docset_index", "docset_search", "ingest_document", "ingest_diagram")
-_COORD_BASE_ACTIONS = ("claim", "renew", "release", "leases")
+_COORD_BASE_ACTIONS = ("claim", "renew", "release", "leases", "gpu_reservation_status", "gpu_reservation_release", "gpu_reservation_release_authorized")
 _COORD_ACTIONS = (
     *_COORD_BASE_ACTIONS,
     "task_create", "task_get", "task_checkpoint", "task_rollback", "task_transition", "task_resume", "task_list", "task_budget_increase", "task_repair_session",
@@ -244,6 +364,7 @@ _REPO_CONDITIONS = {
 _ACTION_SCOPED_FIELDS = {
     "local_ai_status": {},
     "local_ai_task": {
+        "path": frozenset(),
         "automation": frozenset({"automation"}),
         "url": frozenset({"browser"}),
         "request_id": frozenset({"submit"}),
@@ -282,7 +403,8 @@ _ACTION_SCOPED_FIELDS = {
         "is_worktree": frozenset({"preprocess"}),
         "parent_root": frozenset({"preprocess"}),
         "path_hints": frozenset({"search", "context"}),
-        "limit": frozenset({"search", "code_index", "callers", "callees", "implementations", "hotspots", "call_graph", "find_files", "glob", "git_log"}),
+        "search_mode": frozenset({"search"}),
+        "limit": frozenset({"search", "code_index", "callers", "callees", "implementations", "hotspots", "call_graph", "find_files", "glob", "git_log", "reachability_dead_code"}),
         "offset": frozenset({"search", "code_index", "callers", "callees", "implementations", "find_files", "glob"}),
         "directory_hints": frozenset({"context"}),
         "exclude_paths": frozenset({"context"}),
@@ -356,6 +478,10 @@ _ACTION_SCOPED_FIELDS = {
         "result": frozenset({"task_complete", "task_fail", "record_native_receipt"}),
         "timeout_seconds": frozenset({"wait_for_event", "semaphore_acquire"}),
         "id": frozenset({"task_get", "task_resume", "task_cleanup_worktree", "task_zombie_reap", "board_item_get", "board_item_delete", "board_item_update"}),
+        "approver": frozenset(),
+        "target_scope": frozenset({"memory_promote"}),
+        "record_id": frozenset({"memory_get", "memory_delete", "memory_promote"}),
+        "record": frozenset({"negative_knowledge_record"}),
     },
 }
 OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
@@ -446,7 +572,7 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
             "investigate": ("root", "query", "path", "include_code"),
             "secret_scan": ("root", "path", "staged"),
             "diagnose": ("root", "query"),
-            "search": ("root", "query", "path", "include_code", "path_hints", "limit", "offset"),
+            "search": ("root", "query", "path", "include_code", "path_hints", "limit", "offset", "summarize_results", "search_mode"),
             "code_index": ("root", "query", "limit", "offset", "include_code"),
             "semantic": ("root", "query", "path", "relation"),
             "intelligence": ("root", "query", "path", "relation"),
@@ -524,6 +650,10 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
             "task": {"type": "string", "default": ""},
             "task_id": {"type": "string", "default": ""},
             "include_code": {"type": "boolean", "default": False},
+            "search_mode": {
+                "type": "string", "enum": ["lexical", "rag", "hybrid"],
+                "description": "Omitted agent mode uses hybrid for natural-language queries and lexical for exact identifiers; lexical searches current source text, hybrid fuses bounded lexical and semantic candidates without an exact mixed total, and rag searches semantic candidates",
+            },
             "limit": {"type": "integer", "minimum": 1, "maximum": MAX_PAGE_SIZE, "default": 24},
             "days": {"type": "integer", "minimum": 1, "maximum": 3650, "default": 30},
             "depth": {"type": "integer", "minimum": 1, "maximum": 5, "default": 1},
@@ -594,9 +724,14 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
             "extra_fields": {"type": "array", "items": {"type": "string"}},
         },
         conditional_properties={
+            "search_summaries": {
+                "summarize_results": {"type": "boolean", "default": False},
+            },
             "batch_replacement": {
                 "dry_run": {"type": "boolean", "default": False},
                 "edits": {"type": "array", "items": {"type": "object"}},
+                "owner": {"type": "string"},
+                "lease_id": {"type": "string"},
             },
         },
     ),
@@ -631,7 +766,7 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
             "automation": ("root", "task_id", "automation"),
             "candidate_create": ("candidate_data",),
             "candidate_promote": ("candidate", "approver"),
-            "hardware_benchmark": ("model", "prompt", "max_tokens"),
+            "hardware_benchmark": ("model", "prompt", "max_tokens", "context_tokens"),
             "speculative_draft": ("task", "candidate", "context", "root"),
             "vision": (
                 "prompt", "candidate", "model", "image_artifact_id", "screenshot_artifact_id",
@@ -671,6 +806,7 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
                 "description": "Operation to run for action=submit; submit itself is asynchronous.",
             },
             "max_tokens": {"type": "integer", "default": 0},
+            "context_tokens": {"type": "integer", "minimum": 4096, "maximum": 32768},
             "evaluation_days": {"type": "integer", "default": 30},
             "latency_budget_ms": {"type": "number", "default": 0},
             "timeout_seconds": {"type": "number", "default": 90},
@@ -690,7 +826,34 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
             "json_schema": {"type": "object"},
             "tasks": {"type": "array", "items": {"type": "object"}},
             "items": {"type": "array", "items": {"type": "object"}},
-            "cases": {"type": "array", "items": {"type": "object"}},
+            "cases": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 32,
+                "items": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "id": {"type": "string", "maxLength": 120},
+                        "input": {"type": "string", "maxLength": 4000},
+                        "expected": {"type": "string", "maxLength": 2000},
+                        "max_words": {"type": "integer", "minimum": 1, "maximum": 1000},
+                        "include_response_text": {"type": "boolean"},
+                        "allowed_citations": {
+                            "type": "array", "minItems": 1, "maxItems": 32,
+                            "items": {"type": "string", "minLength": 1, "maxLength": 512, "pattern": r"^\[[^\[\]\r\n]+:\d+-\d+\]$"},
+                        },
+                        "required_citations": {
+                            "type": "array", "minItems": 1, "maxItems": 32,
+                            "items": {"type": "string", "minLength": 1, "maxLength": 512, "pattern": r"^\[[^\[\]\r\n]+:\d+-\d+\]$"},
+                        },
+                        "forbidden_phrases": {
+                            "type": "array", "minItems": 1, "maxItems": 32,
+                            "items": {"type": "string", "minLength": 1, "maxLength": 512},
+                        },
+                    },
+                },
+            },
             "format": {"type": ["string", "object"]},
             "extra_fields": {"type": "array", "items": {"type": "string"}},
         },
@@ -723,6 +886,7 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
     "local_ai_coord": _tool_contract(
         "local_ai_coord", "coord", "action", _COORD_ACTIONS, timeout="action-specific coordination budget; HubClient cap applies",
         projection="coordination result", default_effect="coordination_state", read_only=(
+            "gpu_reservation_status",
             "leases", "task_get", "task_list", "memory_get", "memory_find",
             "blackboard_get", "blackboard_list", "swarm_status", "swarm_list", "pubsub_poll", "verify_export",
             "wait_for_event", "semaphore_status", "board_item_get", "board_item_list", "board_summary", "milestone_status", "session_briefing",
@@ -777,11 +941,16 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
             "milestone_status": ("root", "name"),
             "session_briefing": ("root", "session_id", "include"),
             "task_claim": ("root", "task_id", "owner"),
+            "gpu_reservation_status": (),
+            "gpu_reservation_release": ("generation", "consent", "audit_reason"),
+            "gpu_reservation_release_authorized": ("consent", "audit_reason"),
             "task_create": ("root", "task_id", "goal", "task", "paths", "contract", "scope", "acceptance_criteria", "criteria", "title", "description", "path", "file"),
             "task_update": ("root", "task_id", "checkpoint", "contract", "goal", "acceptance_criteria", "criteria"),
             "memory_list": ("root", "scope", "query", "limit", "kind"),
-            "memory_find": ("root", "scope", "query", "limit", "kind", "key", "status"),
-            "memory_record": ("root", "scope", "key", "value", "kind", "status", "confidence", "ttl_seconds", "name", "content"),
+            "memory_find": ("root", "scope", "query", "limit", "kind", "key", "status", "session_id"),
+            "memory_record": ("root", "scope", "key", "value", "kind", "status", "confidence", "ttl_seconds", "session_id", "contradicts_record_id", "supersedes_record_id"),
+            "memory_delete": ("root", "scope", "record_id", "scope_id", "task_id", "session_id", "clone_id", "worktree_id", "branch"),
+            "memory_promote": ("root", "scope", "record_id", "target_scope", "scope_id", "task_id", "session_id", "clone_id", "worktree_id", "branch"),
             "task_fail": ("root", "task_id", "reason", "error", "message"),
             "task_list": ("root", "query", "status", "owner", "limit", "offset", "include_stale"),
             "record_native_receipt": ("root", "task_id", "criterion", "command_id"),
@@ -802,6 +971,9 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
         required={
             "ask": ("root", "session_id"),
             "curate_dataset": ("root",),
+            "memory_record": ("root", "scope", "key", "value"),
+            "memory_delete": ("root", "scope", "record_id"),
+            "memory_promote": ("root", "scope", "record_id", "target_scope"),
             "task_budget_increase": ("root", "task_id", "reason", "budget"),
             "answer": ("root", "question_id", "answer"),
             "task_cleanup_worktree": ("task_id",),
@@ -832,10 +1004,15 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
             "milestone_status": ("name",),
             "task_claim": ("task_id",),
             "record_native_receipt": ("task_id", "criterion", "command_id"),
+            "gpu_reservation_release": ("generation", "consent", "audit_reason"),
+            "gpu_reservation_release_authorized": ("consent", "audit_reason"),
         },
         non_empty={
             "ask": ("root", "session_id"),
             "curate_dataset": ("root",),
+            "memory_record": ("root", "scope", "key"),
+            "memory_delete": ("root", "scope", "record_id"),
+            "memory_promote": ("root", "scope", "record_id", "target_scope"),
             "task_budget_increase": ("root", "task_id", "reason"),
             "answer": ("root", "question_id", "answer"),
             "task_cleanup_worktree": ("task_id",),
@@ -862,6 +1039,8 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
             "milestone_status": ("name",),
             "task_claim": ("task_id",),
             "record_native_receipt": ("task_id", "criterion", "command_id"),
+            "gpu_reservation_release": ("generation", "audit_reason"),
+            "gpu_reservation_release_authorized": ("audit_reason",),
             "plan_init": ("root",),
             "plan_list": ("root",),
             "plan_get": ("root", "plan_id"),
@@ -900,11 +1079,12 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
                 "record_id", "target_scope", "approver", "criterion", "board_id", "section", "scope",
                 "scope_id", "clone_id", "worktree_id", "branch", "repository_id", "session_id",
                 "repository_revision", "phase", "preload_profile", "since_hash",
-                "question_id", "question", "answer", "state_revision",
+                "question_id", "question", "answer", "state_revision", "generation", "audit_reason",
                 "name", "item_id", "title", "priority", "assignee", "milestone", "linked_task_id",
                 "target_date", "description", "purpose", "owner", "resource", "notes",
                 "plan_id", "idempotency_key", "plan_task_id", "steering_id", "spec_rel_path", "spec_content", "expected_spec_revision", "accountable_role",
             )},
+            "consent": {"type": "boolean", "default": False},
             "expected_revision": {"type": "string", "minLength": 1},
             "lifecycle": {"type": "string", "enum": ["draft", "active", "paused", "completed", "cancelled", "archived"]},
             "default_target_ref": {"type": ["string", "null"]},
@@ -1002,6 +1182,8 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
                 }},
             },
             "record": {"type": "object"},
+            "contradicts_record_id": {"type": ["string", "null"]},
+            "supersedes_record_id": {"type": ["string", "null"]},
             "fingerprint": {
                 "type": "object",
                 "properties": {
@@ -1091,7 +1273,7 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
             "task_id": {"type": "string", "default": ""},
             "acceptance_criteria": {"type": "array", "items": {"type": "string"}},
             "constraints": {"type": "array", "items": {"type": "string"}},
-            "mode": {"type": "string", "enum": ["execute", "bounded", "plan", "plan_only", "dry_run"], "default": "execute"},
+            "mode": {"type": "string", "enum": ["execute", "bounded", "plan", "plan_only", "dry_run"], "default": "bounded"},
             "allowed_paths": {"type": "array", "minItems": 1, "maxItems": 8, "items": {"type": "string"}},
             "approved_commands": {"type": "array", "minItems": 1, "maxItems": 8, "items": {"type": "string"}},
             "permissions": {"type": "object"},
@@ -1171,11 +1353,30 @@ def operation_actions(tool: str, features: Any = None) -> tuple[str, ...]:
         return ()
     if tool == "local_ai_status":
         return _STATUS_ACTIONS
-    return tuple(
+    actions = tuple(
         action
         for action in contract["action_order"]
         if _requirements_met(features, contract["actions"][action].get("requires", ()))
     )
+    if features is not None:
+        profile = getattr(features, "hardware_profile", "cpu")
+        actions = tuple(
+            action for action in actions
+            if capability_profile_available(profile, capability_minimum_profile(tool, action))
+        )
+        gate_attributes = {
+            "local_semantic_analysis": "local_semantic_analysis",
+            "local_vision": "local_vision_qualified",
+            "local_code_generation": "local_code_generation_qualified",
+            "local_automation": "local_automation_qualified",
+            "bounded_local_work": "bounded_work_qualified",
+        }
+        actions = tuple(
+            action for action in actions
+            if not (gate := capability_feature_gate(tool, action))
+            or bool(getattr(features, gate_attributes.get(gate, gate), False))
+        )
+    return actions
 
 
 def operation_metadata(tool: str) -> dict[str, Any]:
@@ -1226,6 +1427,10 @@ def operation_input_schema(tool: str, action: str) -> dict[str, Any]:
     if tool == "local_ai_coord" and action == "context_compile":
         schema["properties"]["max_tokens"] = {
             "type": "integer", "minimum": 0, "maximum": 100000, "default": 4000,
+        }
+    if tool == "local_ai_repo" and action == "reachability_dead_code":
+        schema["properties"]["limit"] = {
+            "type": "integer", "minimum": 1, "maximum": 200, "default": 100,
         }
     action_contract = contract["actions"][action]
     required = [
@@ -1313,6 +1518,13 @@ def operation_tool_input_schema(tool: str, features: Any = None) -> dict[str, An
         then: dict[str, Any] = {}
         if required:
             then["required"] = list(dict.fromkeys((selector, *required)))
+        if tool == "local_ai_work" and action == "submit":
+            then.setdefault("required", []).append("mode")
+            then.setdefault("properties", {})["mode"] = {"type": "string", "enum": ["bounded"]}
+        if tool == "local_ai_repo" and action == "reachability_dead_code":
+            then.setdefault("properties", {})["limit"] = {
+                "type": "integer", "minimum": 1, "maximum": 200, "default": 100,
+            }
         if disallowed:
             then["not"] = {"anyOf": [{"required": [field]} for field in sorted(disallowed)]}
         if not then:
@@ -1423,13 +1635,33 @@ def _status_output_variants(action: str) -> list[dict[str, Any]]:
         return []
     return [{
         "type": "object",
-        "required": ["success", "version", "ollama_online", "active_model", "degraded"],
+        "required": ["success", "version", "ollama_online", "active_model", "degraded", "hardware_profile", "capabilities"],
         "properties": {
             "success": {"type": "boolean"},
             "version": {"type": ["string", "null"]},
             "ollama_online": {"type": ["boolean", "null"]},
             "active_model": {"type": ["string", "null"]},
             "degraded": {"type": "boolean"},
+            "hardware_profile": {"type": "string", "enum": list(HARDWARE_PROFILE_ORDER)},
+            "capabilities": {
+                "type": "object",
+                "additionalProperties": {
+                    "type": "object",
+                    "required": ["available", "state", "minimum_profile", "reason", "backend", "feature_gate", "provider_readiness", "authority", "quality_gate"],
+                    "properties": {
+                        "available": {"type": "boolean"},
+                        "state": {"type": "string", "enum": ["profile_blocked", "feature_disabled", "enabled_by_operator"]},
+                        "minimum_profile": {"type": "string", "enum": list(HARDWARE_PROFILE_ORDER)},
+                        "reason": {"type": ["string", "null"]},
+                        "backend": {"type": "string"},
+                        "feature_gate": {"type": ["string", "null"]},
+                        "provider_readiness": {"type": "string", "const": "not_checked"},
+                        "authority": {"type": "string"},
+                        "quality_gate": {"type": "string"},
+                    },
+                    "additionalProperties": False,
+                },
+            },
             "vram_pressure": {"type": "string"},
             "context_budget_factor": {"type": "number"},
             "dependency_status": {"type": "object"},
@@ -1790,6 +2022,17 @@ def operation_parameters_schema(tool: str, features: Any = None) -> dict[str, An
             }
             for action, row in required_actions
         ]
+    if tool == "local_ai_work" and "submit" in available_actions:
+        parameters.setdefault("allOf", []).append({
+            "if": {
+                "properties": {selector_field: {"const": "submit"}},
+                "required": [selector_field],
+            },
+            "then": {
+                "required": ["mode"],
+                "properties": {"mode": {"type": "string", "const": "bounded"}},
+            },
+        })
     if tool == "local_ai_repo" and "hotspots" in available_actions:
         parameters.setdefault("allOf", []).append({
             "if": {
@@ -2021,10 +2264,31 @@ def validate_operation_arguments(
     if not isinstance(action, str) or action not in available_actions:
         supported = ", ".join(available_actions)
         return f"invalid action for {tool}: expected one of {supported}"
+    if tool == "local_ai_work" and action == "submit" and arguments.get("mode", "bounded") != "bounded":
+        return "local_ai_work submit requires mode='bounded'"
 
+    scoped_fields = _ACTION_SCOPED_FIELDS.get(tool, {})
     properties = operation_parameters_schema(tool, features).get("properties", {})
+
+    def is_empty_noncanonical_scoped_default(field: str) -> bool:
+        scoped_actions = scoped_fields.get(field, ())
+        if action in scoped_actions or field not in arguments:
+            return False
+        value = arguments[field]
+        if field in scoped_fields and value in (None, ""):
+            return True
+        if tool == "local_ai_task" and action == "benchmark" and isinstance(properties, dict):
+            schema = properties.get(field)
+            if isinstance(schema, dict) and "default" in schema:
+                default = schema["default"]
+                return type(value) is type(default) and value == default
+        return False
+
     if isinstance(properties, dict):
-        unknown = sorted(set(arguments) - set(properties))
+        unknown = sorted(
+            field for field in set(arguments) - set(properties)
+            if not is_empty_noncanonical_scoped_default(field)
+        )
         if unknown:
             if tool == "local_ai_task" and action == "compress" and unknown[0] == "input":
                 return "unexpected argument for local_ai_task: input; use text for source and task for instructions"
@@ -2034,17 +2298,45 @@ def validate_operation_arguments(
     allowed = action_contract.get("allowed")
     if allowed is not None:
         common = set(_RESPONSE_BUDGET_PROPERTIES) | {"extra_fields", contract["selector_field"]}
-        unexpected = sorted(set(arguments) - set(allowed) - common)
+        unexpected = sorted(
+            field for field in set(arguments) - set(allowed) - common
+            if not is_empty_noncanonical_scoped_default(field)
+        )
         if unexpected:
             return f"{unexpected[0]} is not valid for action='{action}'"
-    for field, scoped_actions in _ACTION_SCOPED_FIELDS.get(tool, {}).items():
-        if field in arguments and action not in scoped_actions:
+    for field, scoped_actions in scoped_fields.items():
+        if field in arguments and action not in scoped_actions and not is_empty_noncanonical_scoped_default(field):
             scoped_names = sorted(scoped_actions)
             if len(scoped_names) == 1:
                 return f"{field} is only valid for action='{scoped_names[0]}'"
             return f"{field} is only valid for actions {scoped_names}"
     if tool == "local_ai_coord" and action == "task_create" and arguments.get("scope") == "":
         return "scope must use a canonical AgentScope value when supplied"
+    if tool == "local_ai_coord" and action in {"memory_record", "memory_delete", "memory_promote"}:
+        root = arguments.get("root")
+        if not isinstance(root, str) or not root.strip():
+            return f"root is required for action='{action}'"
+        if not Path(root).expanduser().is_absolute():
+            return f"root must be an absolute path for action='{action}'"
+        scope = arguments.get("scope")
+        if not isinstance(scope, str) or not scope:
+            return f"scope is required for action='{action}'"
+        if scope not in {"global", "repository", "clone", "worktree", "branch", "task", "session"}:
+            return f"scope must use a canonical AgentScope value for action='{action}'"
+        if action in {"memory_delete", "memory_promote"}:
+            record_id = arguments.get("record_id")
+            if not isinstance(record_id, str) or not record_id.strip():
+                return f"record_id is required for action='{action}'"
+        if action == "memory_promote":
+            target_scope = arguments.get("target_scope")
+            if not isinstance(target_scope, str) or target_scope not in {"global", "repository", "clone", "worktree", "branch", "task", "session"}:
+                return "target_scope must use a canonical AgentScope value for action='memory_promote'"
+    if tool == "local_ai_coord" and action == "memory_record":
+        key = arguments.get("key")
+        if not isinstance(key, str) or not key.strip():
+            return "key must be a non-empty string for action='memory_record'"
+        if not isinstance(arguments.get("value"), str):
+            return "value must be a string for action='memory_record'"
     if tool == "local_ai_repo" and action == "context":
         mode = arguments.get("mode", properties.get("mode", {}).get("default", "adaptive"))
         if mode != "adaptive":

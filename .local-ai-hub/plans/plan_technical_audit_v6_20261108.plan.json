@@ -1,0 +1,196 @@
+{
+  "default_target_ref": "refs/heads/master",
+  "description": "Detailní technický audit v6.0.0 a akční plán prioritních oprav (commit 2176b0e, 2026-11-08). Pokrývá P0 (CI pyflakes, model timeout regression test, upgrade kontrakt), P1 (feature defaults, Git fingerprint profilace, klasifikace dotazů, RAG lifecycle, GPU routing, A/B evaluace) a P2 (OpenCode E2E, SQLite sjednocení, modularizace).",
+  "id": "plan_technical_audit_v6_20261108",
+  "lifecycle": "draft",
+  "schema_version": 1,
+  "spec_refs": [],
+  "tasks": {
+    "task_p0_ci_pyflakes": {
+      "acceptance_criteria": [
+        "pyflakes src tools passes with 0 warnings"
+      ],
+      "blocker": null,
+      "clarifications": [],
+      "depends_on": [],
+      "description": "Fix 11 pyflakes warnings across embeddings.py, generator.py, hardware.py, preprocess.py, benchmark_reranker.py",
+      "kind": "code",
+      "next_action": "",
+      "title": "P0-1: Opravit CI pyflakes varování",
+      "work_phase": "verification",
+      "work_status": "completed"
+    },
+    "task_p0_model_timeout": {
+      "acceptance_criteria": [
+        "pytest tests/ -k test_owned_model_timeout_reports_bounded_worker_stderr passes",
+        "TimeoutError contains bounded worker stderr output"
+      ],
+      "blocker": null,
+      "clarifications": [],
+      "depends_on": [],
+      "description": "Fix failing regression test test_owned_model_timeout_reports_bounded_worker_stderr: switch stderr reading to non-blocking read1 and include failure context on TimeoutError",
+      "kind": "code",
+      "next_action": "",
+      "title": "P0-2: Opravit regresní test test_owned_model_timeout_reports_bounded_worker_stderr",
+      "work_phase": "verification",
+      "work_status": "completed"
+    },
+    "task_p0_upgrade_contract": {
+      "acceptance_criteria": [
+        "RELEASE.json, CHANGELOG.md and state_lifecycle.py agree on upgrade behavior",
+        "Integration test verifies upgrade from 5.x preserves persistent state without unhandled exception"
+      ],
+      "blocker": null,
+      "clarifications": [],
+      "depends_on": [],
+      "description": "Reconciled RELEASE.json focus description with state_lifecycle.py and CHANGELOG.md (verified preservation of persistent runtime state with fail-closed mismatch checks)",
+      "kind": "documentation",
+      "next_action": "",
+      "title": "P0-3: Sjednotit upgrade kontrakt v6.0.0",
+      "work_phase": "verification",
+      "work_status": "completed"
+    },
+    "task_p1_ab_evaluation": {
+      "acceptance_criteria": [
+        "Same tasks run with and without Hub using the same agent/model, prompts, repository revision, fixtures, and validation commands.",
+        "Record cloud input/output tokens, repeated tool-result tokens, tool-call counts, total completion time, validation success, and follow-up repairs per run.",
+        "Use separate authorized disposable roots and isolated Hub config/state; preserve run IDs and exact environment fingerprints.",
+        "Show no validation-quality regression and identify measurable token or time savings, or report neutral/negative results without retaining unsupported 80–95% claims.",
+        "Record evidence-bound results under docs/agent-evaluation/ and reconcile docs/TOKEN_ECONOMY.md."
+      ],
+      "blocker": null,
+      "clarifications": [],
+      "depends_on": [],
+      "description": "Run identical end-to-end coding tasks against a modern native-efficiency agent with and without Local AI Hub, using isolated roots and Hub state. Compare cloud input/output and repeated tool-result tokens, tool calls, duration, validation success, and follow-up repairs. Preserve honest neutral/negative results and revise unsupported savings claims.",
+      "kind": "analysis",
+      "next_action": "",
+      "title": "P1-5: Provést A/B evaluaci reálné úspory tokenů a latence Hubu",
+      "work_phase": "verification",
+      "work_status": "completed"
+    },
+    "task_p1_feature_defaults": {
+      "acceptance_criteria": [
+        "README feature defaults match defaults.toml",
+        "Automated test verifies documented feature defaults against defaults.toml"
+      ],
+      "blocker": null,
+      "clarifications": [],
+      "depends_on": [],
+      "description": "Reconcile README claims (enriched_search, batch_replacement, diagnostic_artifacts) with defaults.toml; add contract verification test",
+      "kind": "documentation",
+      "next_action": "",
+      "title": "P1-1: Sjednotit feature defaults",
+      "work_phase": "verification",
+      "work_status": "completed"
+    },
+    "task_p1_fingerprint_profile": {
+      "acceptance_criteria": [
+        "services._repo_search_lexical uses cached fingerprint when safe without regressions in change detection",
+        "Search latency benchmark shows measured reduction in cold/warm overhead"
+      ],
+      "blocker": null,
+      "clarifications": [],
+      "depends_on": [],
+      "description": "P1-2 verified: exact lexical search reads live source on every request and refreshes Git inventory without forcing a full Git status fingerprint. Exact search results bypass workspace result caching; the TTL fingerprint remains advisory for workspace context. Regression tests cover edits and new untracked files before fingerprint TTL. RepoStateTracker fingerprint median: 61.66 ms forced vs 0.15 ms cached (5 samples). Targeted suite: 28 passed; pyflakes, compileall and diff check passed.",
+      "kind": "code",
+      "next_action": "",
+      "title": "P1-2: Profilovat a optimalizovat Git fingerprint na vyhledávací cestě",
+      "work_phase": "verification",
+      "work_status": "completed"
+    },
+    "task_p1_gpu_admission": {
+      "acceptance_criteria": [
+        "Benchmark measures TTFT, throughput, VRAM under load for available installed models across verified 8k, 16k and 32k contexts; unavailable 4B model recorded as limitation.",
+        "Scheduler memory bounds prevent VRAM OOM on 16GB GPU during concurrent desktop usage."
+      ],
+      "blocker": null,
+      "clarifications": [],
+      "depends_on": [],
+      "description": "P1-6 live acceptance verified for installed models: 3B and 9B long-prefill at 8k/16k/32k; independent 128-token 9B decode; simultaneous same-model and cross-model 9B+3B short requests at 8k. All measured requests returned verified loaded contexts and nominal pressure; concurrent pair peaked at 6,607,077,376 device-wide VRAM bytes, with 7,311 MiB reported available. Targeted scheduler/VRAM suites had 95+36 passes before the full-suite run. GPU reservation was free after the live work. qwen3.5:4b-nvfp4 was absent and no pull was authorized. Evidence proves these bounded observed cases only; it does not claim a general zero-OOM guarantee, sustained rate, or process-attributed VRAM.",
+      "kind": "analysis",
+      "next_action": "",
+      "title": "P1-6: Zátěžové testy GPU admission a model routingu",
+      "work_phase": "verification",
+      "work_status": "completed"
+    },
+    "task_p1_query_classification": {
+      "acceptance_criteria": [
+        "Explicit query classification for exact_symbol, file_path, natural_language, mixed",
+        "Mixed queries preserve semantic retrieval candidates without bypassing lexical precision"
+      ],
+      "blocker": null,
+      "clarifications": [],
+      "depends_on": [],
+      "description": "Refactor prefers_lexical_precision in search_modes.py: classify query types, prevent accidental bypassing of semantic search for queries with dots or paths",
+      "kind": "code",
+      "next_action": "",
+      "title": "P1-3: Zlepšit klasifikaci dotazů v search_modes",
+      "work_phase": "verification",
+      "work_status": "completed"
+    },
+    "task_p1_rag_lifecycle": {
+      "acceptance_criteria": [
+        "embedding_space_mismatch yields explicit reindex_required state without blocking foreground queries",
+        "GPU reservation lifecycle unified with safe lease release on timeout"
+      ],
+      "blocker": null,
+      "clarifications": [],
+      "depends_on": [],
+      "description": "Stabilize RAG embedding lifecycle: clear diagnostic and background reindex on embedding space mismatch; clean GPU reservation timeouts",
+      "kind": "code",
+      "next_action": "",
+      "title": "P1-4: Stabilizovat RAG embedding space a GPU reservation lifecycle",
+      "work_phase": "verification",
+      "work_status": "completed"
+    },
+    "task_p2_modularize": {
+      "acceptance_criteria": [
+        "Modularize high-complexity files by functional boundaries without breaking public MCP schema or HTTP API",
+        "Regression tests pass before and after extraction"
+      ],
+      "blocker": null,
+      "clarifications": [],
+      "depends_on": [],
+      "description": "Gradually decompose oversized modules (commands.py ~10.8k lines, services.py ~9.8k lines, mcp_server.py ~7.4k lines, code_index.py ~5.1k lines) into cohesive submodules",
+      "kind": "code",
+      "next_action": "Command policy extraction verified by 47 passed, 1 skipped; compileall, pyflakes, selftest and diff check pass. Continue extracting the next cohesive broker subsystem.",
+      "title": "P2-3: Postupně rozdělit velké moduly",
+      "work_phase": "verification",
+      "work_status": "in_progress"
+    },
+    "task_p2_opencode_e2e": {
+      "acceptance_criteria": [
+        "Hub token config and transport surfaces are removed and retired config fields fail explicitly.",
+        "Loopback HTTP/MCP operations work without credentials; non-loopback peers and bind configuration fail closed.",
+        "Command authorization, capability policy, project-root confinement, approval, leases, rate limits and audit behavior remain enforced.",
+        "Tokenless OpenCode workflow uses separate provider nonce credential, including cleanup and uncertainty handling.",
+        "Focused tests and static checks pass; live model E2E remains independently gated on healthy scheduler readiness and installed model availability."
+      ],
+      "blocker": "Hub API bearer-token config/transport/auth is retired and rejected; loopback-only HTTP/MCP accepts no Hub token. Separate nonce-derived provider-session credential remains internal to provider serving. Tokenless/API focused suites pass: 212 passed, 1 skipped; context/transport subset 26 passed; isolated session/dashboard/SDK/identity subset 51 passed with one test updated and rechecked. Full pytest is not clean (10,383 passed, 179 failed, 72 errors, 109 skipped, 60 subtests passed) and pytest ended with Windows PosixPath internal error at 69%. No live OpenCode model→MCP→transactional edit→cleanup/recovery E2E has been recorded. Fresh readiness req_b09e75c9550e timed out for runtime and scheduler (gpu_admission_state unknown); reservation req_80b9b63e7c24 is free.",
+      "clarifications": [],
+      "depends_on": [],
+      "description": "Complete OpenCode runtime validation and remove the Hub API bearer-token system across the single-owner installation, as approved by the operator. Enforce loopback-only access and preserve command, capability, root, approval, lease, rate-limit and audit controls; retain only the separate nonce-scoped OpenCode provider credential.",
+      "kind": "code",
+      "next_action": "After Hub runtime and scheduler report healthy readiness, run the tokenless OpenCode E2E using an installed model; cover provider nonce credential, loopback operations, restricted project edit, stop, cleanup and uncertainty handling. Do not benchmark or infer while admission is unknown.",
+      "title": "P2-1: Dokončit OpenCode E2E integraci",
+      "work_phase": "verification",
+      "work_status": "in_progress"
+    },
+    "task_p2_sqlite_factory": {
+      "acceptance_criteria": [
+        "Direct sqlite3.connect calls audited and routed through sqlite_support.py where appropriate",
+        "Distinct connection modes (read-only, WAL, timeouts) preserved; while True loops bounded"
+      ],
+      "blocker": null,
+      "clarifications": [],
+      "depends_on": [],
+      "description": "Audit direct SQLite connections; consolidate via sqlite_support.py factory while preserving custom concurrency/timeout/WAL configurations",
+      "kind": "code",
+      "next_action": "",
+      "title": "P2-2: Sjednotit SQLite přístup přes sqlite_support.py",
+      "work_phase": "verification",
+      "work_status": "completed"
+    }
+  },
+  "title": "Technický audit v6.0.0 a prioritizovaný plán oprav (commit 2176b0e)"
+}

@@ -9,15 +9,18 @@ import math
 import os
 import shlex
 import sqlite3
+import stat
 import tempfile
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing, nullcontext
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Any
 
-from . import __version__
+# Stable identity for semantic preprocessing output. Bump only when the card
+# contract, prompts, or deterministic card derivation makes cached cards stale.
+PREPROCESS_ANALYZER_VERSION = "6.0.0"
 from .cache import stable_hash
 from .project_config import (
     ProjectPathPolicy,
@@ -68,6 +71,62 @@ def _safe_int(val: Any, default: int, min_val: int = 0) -> int:
         return max(min_val, i)
     except (ValueError, TypeError, OverflowError):
         return default
+
+
+def _ensure_file_refs_revision_tracking(con: sqlite3.Connection) -> None:
+    """Track source-identity changes without rescanning file_refs per batch."""
+    columns = {str(row[1]) for row in con.execute("PRAGMA table_info(file_refs)").fetchall()}
+    update_columns = [
+        column for column in ("root", "path", "content_hash", "size", "mtime_ns", "needs_hash")
+        if column in columns
+    ]
+    if not {"root", "path"}.issubset(columns):
+        return
+    update_fields = ", ".join(update_columns)
+    update_condition = " OR ".join(f"OLD.{column} IS NOT NEW.{column}" for column in update_columns)
+    trigger_row = con.execute(
+        "SELECT sql FROM sqlite_master WHERE type='trigger' AND name='file_refs_revision_update'"
+    ).fetchone()
+    if trigger_row is not None:
+        trigger_sql = str(trigger_row[0] or "")
+        if any(f"OLD.{column} IS NOT NEW.{column}" not in trigger_sql for column in update_columns):
+            # Upgrade only an outdated derived trigger; avoid schema writes on
+            # every Hub start when the stored invalidation contract is current.
+            con.execute("DROP TRIGGER file_refs_revision_update")
+    con.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS file_refs_revision (
+            root TEXT PRIMARY KEY,
+            revision INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE TRIGGER IF NOT EXISTS file_refs_revision_insert
+        AFTER INSERT ON file_refs
+        BEGIN
+            INSERT INTO file_refs_revision(root, revision) VALUES(NEW.root, 1)
+            ON CONFLICT(root) DO UPDATE SET revision=revision+1;
+        END;
+        CREATE TRIGGER IF NOT EXISTS file_refs_revision_delete
+        AFTER DELETE ON file_refs
+        BEGIN
+            INSERT INTO file_refs_revision(root, revision) VALUES(OLD.root, 1)
+            ON CONFLICT(root) DO UPDATE SET revision=revision+1;
+        END;
+        """
+    )
+    con.executescript(
+        f"""
+        CREATE TRIGGER IF NOT EXISTS file_refs_revision_update
+        AFTER UPDATE OF {update_fields} ON file_refs
+        WHEN {update_condition}
+        BEGIN
+            INSERT INTO file_refs_revision(root, revision) VALUES(NEW.root, 1)
+            ON CONFLICT(root) DO UPDATE SET revision=revision+1;
+            INSERT INTO file_refs_revision(root, revision)
+            SELECT OLD.root, 1 WHERE OLD.root IS NOT NEW.root
+            ON CONFLICT(root) DO UPDATE SET revision=revision+1;
+        END;
+        """
+    )
 
 
 CARD_SCHEMA = {
@@ -195,6 +254,14 @@ def _resolve_preprocess_path_policy(api: Any | None, root: Any, settings: Any | 
     return ProjectPathPolicy(root, settings)
 
 
+class _RetryablePreprocessingError(RuntimeError):
+    """A project step was deferred by a transient resource or backend state."""
+
+    def __init__(self, message: str, retry_after_seconds: float = 60.0) -> None:
+        super().__init__(message)
+        self.retry_after_seconds = retry_after_seconds
+
+
 class ProjectPreprocessor:
     """Durable idle-time project preprocessing.
 
@@ -208,6 +275,24 @@ class ProjectPreprocessor:
     # indexing before any idle-GPU card generation. This lets embeddings run even
     # while foreground model work is active instead of waiting behind GPU-idle work.
     PHASES = ("inventory", "hash", "code_index", "deterministic", "serena", "lexical", "rag", "files", "modules", "project", "hot_queries", "diagnostics", "complete")
+    PHASE_WEIGHTS = {
+        "inventory": 2.0, "hash": 3.0, "code_index": 10.0, "deterministic": 5.0,
+        "serena": 5.0, "lexical": 5.0, "rag": 40.0, "files": 20.0,
+        "modules": 4.0, "project": 3.0, "hot_queries": 2.0, "diagnostics": 1.0,
+    }
+
+    @classmethod
+    def calculate_overall_progress(cls, phase_str: str, phase_pct: float, is_complete: bool = False) -> float:
+        if is_complete or phase_str == "complete":
+            return 100.0
+        base = 0.0
+        for ph in cls.PHASES:
+            if ph == phase_str:
+                break
+            base += cls.PHASE_WEIGHTS.get(ph, 0.0)
+        curr_weight = cls.PHASE_WEIGHTS.get(phase_str, 0.0)
+        progress = base + (curr_weight * (max(0.0, min(100.0, phase_pct)) / 100.0))
+        return round(max(0.0, min(99.9, progress)), 1)
 
     def __init__(self, config: dict[str, Any], services: Any, rag: Any, scheduler: Any, runtime: Any, repo_tools: Any, code_index: Any | None = None, learner: Any | None = None, deterministic: Any | None = None, telemetry: Any | None = None, background_gpu: Any | None = None, external_tools: Any | None = None):
         self.config = config
@@ -276,12 +361,18 @@ class ProjectPreprocessor:
         # once per batch after the short RepositoryTools TTL expires.
         self._hash_git_maps: dict[tuple[str, int], dict[str, str]] = {}
         self._hash_git_maps_lock = threading.RLock()
-        # Pruning the per-root code indexes is a consistency operation, not part
-        # of every bounded parse batch. Keep it once per generation and invalidate
-        # it only when the watcher reports a real file change.
-        self._code_index_pruned_generations: set[tuple[str, int]] = set()
+        # Prune the per-root code index only when source inventory or path policy
+        # changes; reuse a revision-fenced allowlist across bounded parse batches.
+        self._code_index_pruned_generations: set[tuple[Any, ...]] = set()
+        from .preprocess_write_actor import PreprocessWriteActor
+        self._write_actor = PreprocessWriteActor(self.db_path)
+        self._write_actor.start()
         self._deterministic_pruned_generations: set[tuple[str, int]] = set()
         self._missing_refs_checked_generations: set[tuple[str, int]] = set()
+        self._code_index_allowed_cache_lock = threading.Lock()
+        self._code_index_allowed_cache: dict[
+            str, tuple[int, int, Any, dict[str, str]]
+        ] = {}
         # CPU and GPU loops may observe the same durable phase at the same time. A
         # per-project non-blocking step lock guarantees exactly one owner for that
         # project while still allowing independent projects to progress concurrently.
@@ -292,8 +383,18 @@ class ProjectPreprocessor:
         self._lookup_cache_lock = threading.Lock()
         self._lookup_cache: dict[str, tuple[float, str, dict[str, Any]]] = {}
         self._lookup_cache_ttl = max(1.0, _safe_float(self.cfg.get("lookup_l1_ttl_seconds"), 30.0))
+        self._demand_priority_lock = threading.Lock()
+        self._demand_priority_cache: dict[
+            str, tuple[float, tuple[str, ...], tuple[Any, ...], tuple[str, ...]]
+        ] = {}
+        from .preprocess_ingest import SinglePassIngestCache
+        self.ingest_cache = SinglePassIngestCache(
+            max_entries=max(50, _safe_int(self.cfg.get("ingest_cache_max_entries"), 500)),
+            max_bytes=max(1024 * 1024, _safe_int(self.cfg.get("ingest_cache_max_bytes"), 64 * 1024 * 1024)),
+        )
         self._stats_lock = threading.Lock()
         self._last_db_maintenance = time.time()
+        self._db_maintenance_retry_interval: int | None = None
         self._stats = {
             "loops": 0, "steps": 0, "yields": 0, "errors": 0, "file_card_hits": 0,
             "file_card_generations": 0, "module_generations": 0, "project_generations": 0,
@@ -313,6 +414,9 @@ class ProjectPreprocessor:
         if bool(getattr(self.rag, "index_reset", False)):
             self._invalidate_rag_sync_state()
         self._repair_registry()
+        set_active_roots_provider = getattr(self.code_index, "set_active_roots_provider", None)
+        if callable(set_active_roots_provider):
+            set_active_roots_provider(self._active_code_index_roots)
         self._requeue_available_external_indexes()
         self._cpu_thread: threading.Thread | None = None
         self._gpu_thread: threading.Thread | None = None
@@ -363,6 +467,14 @@ class ProjectPreprocessor:
         return is_busy_error(exc)
 
     def _write_retry(self, operation: Any) -> Any:
+        actor = getattr(self, "_write_actor", None)
+        if actor is not None and actor.is_alive and not actor.is_current_thread():
+            try:
+                return actor.submit(operation)
+            except Exception as actor_exc:
+                if not is_busy_error(actor_exc):
+                    raise
+
         def attempt() -> Any:
             with self._db_lock, closing(self._connect()) as con:
                 con.execute("BEGIN IMMEDIATE")
@@ -423,6 +535,22 @@ class ProjectPreprocessor:
         self._missing_refs_checked_generations = {
             key for key in self._missing_refs_checked_generations if key[0] != root
         }
+        cache_lock = getattr(self, "_code_index_allowed_cache_lock", None)
+        cache = getattr(self, "_code_index_allowed_cache", None)
+        if cache_lock is not None and isinstance(cache, dict):
+            with cache_lock:
+                cache.pop(root, None)
+
+    def _active_code_index_roots(self) -> tuple[str, ...] | None:
+        """Snapshot roots currently owned by preprocessing workers for safe eviction."""
+        try:
+            with self._db_lock, closing(self._connect()) as con:
+                roots = [str(row[0]) for row in con.execute(
+                    "SELECT root FROM projects WHERE status='running' ORDER BY root"
+                ).fetchall()]
+        except sqlite3.Error:
+            return None
+        return tuple(root for root in roots if root and Path(root).is_absolute())
 
     def _init_db(self) -> None:
         with self._db_lock, closing(self._connect()) as con:
@@ -465,6 +593,7 @@ class ProjectPreprocessor:
                     last_accessed_at REAL NOT NULL DEFAULT 0,
                     generation INTEGER NOT NULL,
                     card_key TEXT,
+                    centrality_score REAL NOT NULL DEFAULT 0.0,
                     updated_at REAL NOT NULL,
                     PRIMARY KEY(root,path)
                 );
@@ -540,6 +669,13 @@ class ProjectPreprocessor:
                 CREATE VIRTUAL TABLE IF NOT EXISTS source_fts USING fts5(root UNINDEXED, path UNINDEXED, content);
                 """
             )
+            _ensure_file_refs_revision_tracking(con)
+            f_cols = {str(row[1]) for row in con.execute("PRAGMA table_info(file_refs)").fetchall()}
+            if "centrality_score" not in f_cols:
+                try:
+                    con.execute("ALTER TABLE file_refs ADD COLUMN centrality_score REAL NOT NULL DEFAULT 0.0")
+                except sqlite3.OperationalError:
+                    pass
             columns = {
                 str(row[1])
                 for row in con.execute("PRAGMA table_info(external_index_state)").fetchall()
@@ -948,7 +1084,123 @@ class ProjectPreprocessor:
                     "mtime_ns": int(stat.st_mtime_ns), "extension": candidate.suffix.lower(),
                 })
 
-    def notify_path_changed(self, changed_path: str) -> bool:
+    def fast_update_file(
+        self,
+        root: str,
+        rel_path: str,
+        content: str | None = None,
+    ) -> dict[str, Any]:
+        """Sub-50ms instant fast-path for editor save events.
+
+        Updates RAM ingest cache, file_refs hash/mtime, and deterministic AST facts
+        immediately for a single file without resetting project phase to inventory
+        nor running the full 13-phase cycle.
+        """
+        import hashlib
+        t0 = time.monotonic()
+        resolved = self._root(root)
+        if not isinstance(rel_path, str) or not rel_path or "\x00" in rel_path:
+            return {"success": False, "error": "path must be a relative file inside root"}
+        normalized_rel = rel_path.replace("\\", "/")
+        raw_parts = normalized_rel.split("/")
+        if (
+            normalized_rel.startswith("/")
+            or PureWindowsPath(normalized_rel).drive
+            or any(part == ".." for part in raw_parts)
+        ):
+            return {"success": False, "error": "path must be a relative file inside root"}
+        clean_rel = "/".join(part for part in raw_parts if part not in ("", "."))
+        if not clean_rel:
+            return {"success": False, "error": "path must identify a file inside root"}
+
+        root_path = Path(resolved)
+        full_path = root_path.joinpath(*clean_rel.split("/"))
+        cursor = root_path
+        for part in clean_rel.split("/"):
+            cursor = cursor / part
+            is_junction = getattr(os.path, "isjunction", lambda _path: False)(cursor)
+            if cursor.is_symlink() or is_junction:
+                return {"success": False, "error": "symlink or junction traversal is not allowed"}
+        try:
+            if not full_path.resolve(strict=False).is_relative_to(root_path):
+                return {"success": False, "error": "path must stay inside root"}
+        except (OSError, RuntimeError, ValueError):
+            return {"success": False, "error": "path must stay inside root"}
+
+        if content is not None:
+            text = content
+            stat_size = len(text.encode("utf-8"))
+            stat_mtime = int(time.time() * 1e9)
+        else:
+            try:
+                st = full_path.stat()
+                stat_size = int(st.st_size)
+                stat_mtime = int(st.st_mtime_ns)
+                text = full_path.read_text(encoding="utf-8", errors="replace")
+            except Exception as read_exc:
+                return {"success": False, "error": str(read_exc)}
+
+        new_hash = hashlib.sha256(text.encode("utf-8", errors="replace")).hexdigest()
+
+        if hasattr(self, "ingest_cache") and self.ingest_cache is not None:
+            self.ingest_cache.put(clean_rel, text, new_hash, root=resolved)
+
+        now = time.time()
+        def _update_db(con: sqlite3.Connection) -> None:
+            gen_row = con.execute("SELECT generation FROM projects WHERE root=?", (resolved,)).fetchone()
+            gen = int(gen_row[0]) if gen_row else 1
+            con.execute(
+                """INSERT INTO file_refs (root, path, size, mtime_ns, content_hash, needs_hash, generation, updated_at)
+                   VALUES (?, ?, ?, ?, ?, 0, ?, ?)
+                   ON CONFLICT(root, path) DO UPDATE SET
+                     size=excluded.size,
+                     mtime_ns=excluded.mtime_ns,
+                     content_hash=excluded.content_hash,
+                     needs_hash=0,
+                     generation=excluded.generation,
+                     updated_at=excluded.updated_at""",
+                (resolved, clean_rel, stat_size, stat_mtime, new_hash, gen, now),
+            )
+            con.execute(
+                "INSERT OR REPLACE INTO source_index(root, path, content_hash, text, updated_at) VALUES(?, ?, ?, ?, ?)",
+                (resolved, clean_rel, new_hash, text, now),
+            )
+            try:
+                con.execute("DELETE FROM source_fts WHERE root=? AND path=?", (resolved, clean_rel))
+                con.execute("INSERT INTO source_fts(root, path, content) VALUES(?, ?, ?)", (resolved, clean_rel, clean_rel + "\n" + text))
+            except sqlite3.OperationalError:
+                pass
+
+        self._write_retry(_update_db)
+
+        det_updated = False
+        if self.deterministic is not None and hasattr(self.deterministic, "update_file"):
+            try:
+                det_res = self.deterministic.update_file(resolved, clean_rel, new_hash)
+                det_updated = bool(det_res.get("success", False))
+            except Exception as det_exc:
+                logger.debug("Fast-path deterministic update failed: %s", det_exc)
+
+        code_idx_updated = False
+        if self.code_index is not None and hasattr(self.code_index, "update_file"):
+            try:
+                ci_res = self.code_index.update_file(resolved, clean_rel)
+                code_idx_updated = bool(ci_res.get("success", False))
+            except Exception:
+                pass
+
+        elapsed_ms = round((time.monotonic() - t0) * 1000, 2)
+        return {
+            "success": True,
+            "root": resolved,
+            "path": clean_rel,
+            "content_hash": new_hash,
+            "deterministic_updated": det_updated,
+            "code_index_updated": code_idx_updated,
+            "elapsed_ms": elapsed_ms,
+        }
+
+    def notify_path_changed(self, changed_path: str, *, fast_path: bool = False) -> bool:
         """Coalesce watcher events and queue only the owning registered project."""
         if not self._background_work_allowed():
             return False
@@ -963,18 +1215,27 @@ class ProjectPreprocessor:
             return False
 
         matched_roots: list[str] = []
+        matched_pairs: list[tuple[str, str]] = []
         matched_any = False
         for row in rows:
-            root_path = Path(str(row[0])).resolve(strict=False)
+            try:
+                root_path = Path(str(row[0])).resolve(strict=False)
+            except (OSError, RuntimeError, ValueError):
+                # One unavailable registered root must not terminate the watchdog
+                # dispatch thread or prevent events from reaching other projects.
+                continue
             rel = self._watch_relevant(root_path, changed)
             if rel is None:
                 continue
             root = str(root_path)
             matched_any = True
+            matched_pairs.append((root, rel))
             with self._dirty_lock:
                 paths = self._dirty_paths.setdefault(root, set())
                 first = not paths
                 paths.add(rel)
+            if hasattr(self, "ingest_cache") and self.ingest_cache is not None:
+                self.ingest_cache.invalidate(rel, root=root)
                 self._watch_revisions[root] = self._watch_revisions.get(root, 0) + 1
             with self._hash_git_maps_lock:
                 for key in [key for key in self._hash_git_maps if key[0] == root]:
@@ -987,6 +1248,14 @@ class ProjectPreprocessor:
             }
             if first:
                 matched_roots.append(root)
+
+        if fast_path:
+            for r, rel in matched_pairs:
+                try:
+                    self.fast_update_file(r, rel)
+                except Exception as fast_exc:
+                    logger.debug("Fast path update error for %s: %s", rel, fast_exc)
+            return bool(matched_pairs)
 
         for root in matched_roots:
             try:
@@ -1264,34 +1533,10 @@ class ProjectPreprocessor:
             except (OSError, sqlite3.Error) as exc:
                 logger.warning("worktree deterministic cache seed skipped (%s)", type(exc).__name__)
 
-        # 3. Seed code-index.sqlite3 (files, symbols, refs, edges)
-        if self.code_index is not None:
-            try:
-                with closing(self.code_index._connect()) as ci_con:
-                    ci_con.execute(
-                        """INSERT OR IGNORE INTO files(root, path, content_hash, language, updated_at)
-                           SELECT ?, path, content_hash, language, ? FROM files WHERE root=?""",
-                        (resolved, now, parent_resolved),
-                    )
-                    ci_con.execute(
-                        """INSERT OR IGNORE INTO symbols(root, path, name, kind, line, end_line, container, name_path, signature, access, docstring)
-                           SELECT ?, path, name, kind, line, end_line, container, name_path, signature, access, docstring FROM symbols WHERE root=?""",
-                        (resolved, parent_resolved),
-                    )
-                    ci_con.execute(
-                        """INSERT OR IGNORE INTO refs(root, path, name, line, kind)
-                           SELECT ?, path, name, line, kind FROM refs WHERE root=?""",
-                        (resolved, parent_resolved),
-                    )
-                    ci_con.execute(
-                        """INSERT OR IGNORE INTO edges(root, src, dst, kind, path, line)
-                           SELECT ?, src, dst, kind, path, line FROM edges WHERE root=?""",
-                        (resolved, parent_resolved),
-                    )
-                    ci_con.commit()
-                    stats["code_index"] = 1
-            except (OSError, sqlite3.Error) as exc:
-                logger.warning("worktree code-index cache seed skipped (%s)", type(exc).__name__)
+        # Code-index admission is demand-driven by actual source evidence in
+        # _step_code_index. Cloning the parent's full per-root index here makes
+        # every worktree multiply unrelated rows and overstates its coverage.
+        # Shared content-addressed parse blobs remain available to later indexing.
 
         return stats
 
@@ -1794,7 +2039,9 @@ class ProjectPreprocessor:
                         "updated_at": float(external_row[4] or 0),
                     }
 
-            for batch in root_batches(incomplete_roots):
+            # Report true derived-index coverage even after preprocessing completes.
+            # The code index is demand-driven and intentionally partial.
+            for batch in root_batches(roots):
                 placeholders = ",".join("?" for _ in batch)
                 for table, target in (
                     ("source_index", source_counts),
@@ -1807,13 +2054,16 @@ class ProjectPreprocessor:
                     ).fetchall()
                     target.update({str(count_row[0]): int(count_row[1] or 0) for count_row in count_rows})
 
-            def index_file_counts(index: Any | None, label: str) -> dict[str, int]:
+            def index_file_counts(
+                index: Any | None, label: str, requested_roots: list[str] | None = None,
+            ) -> dict[str, int]:
                 result: dict[str, int] = {}
-                if index is None or not incomplete_roots:
+                scope_roots = incomplete_roots if requested_roots is None else requested_roots
+                if index is None or not scope_roots:
                     return result
                 try:
                     with closing(index._connect()) as index_con:
-                        for batch in root_batches(incomplete_roots):
+                        for batch in root_batches(scope_roots):
                             placeholders = ",".join("?" for _ in batch)
                             count_rows = index_con.execute(
                                 f"SELECT root, COUNT(*) FROM files WHERE root IN ({placeholders}) GROUP BY root",
@@ -1824,7 +2074,7 @@ class ProjectPreprocessor:
                     logger.warning("%s status unavailable (%s)", label, type(exc).__name__)
                 return result
 
-            code_index_counts = index_file_counts(self.code_index, "Code-index")
+            code_index_counts = index_file_counts(self.code_index, "Code-index", roots)
             deterministic_counts = index_file_counts(self.deterministic, "Deterministic-index")
 
             projects: list[dict[str, Any]] = []
@@ -1850,8 +2100,8 @@ class ProjectPreprocessor:
                 module_count = 0
                 project_card_count = 0
                 external_indexes = external_by_root.get(str(row["root"]), {})
+                ci_count = code_index_counts.get(str(row["root"]), 0)
                 if status_str != "complete" and phase_str != "complete":
-                    ci_count = code_index_counts.get(str(row["root"]), 0)
                     det_count = deterministic_counts.get(str(row["root"]), 0)
                     module_count = module_counts.get(str(row["root"]), 0)
                     project_card_count = project_card_counts.get(str(row["root"]), 0)
@@ -1918,7 +2168,7 @@ class ProjectPreprocessor:
                     overall_progress = round(min(100.0, max(0.0, ((phase_index - 1 + frac) / total_phases) * 100)), 1)
                 else:
                     phase_pct = 0.0
-                    overall_progress = round(min(100.0, max(0.0, ((phase_index - 1) / total_phases) * 100)), 1)
+                overall_progress = self.calculate_overall_progress(phase_str, phase_pct, status_str == "complete" or phase_str == "complete")
 
                 # Throughput speed and ETA calculation
                 now = time.time()
@@ -2062,6 +2312,11 @@ class ProjectPreprocessor:
                     "speed_str": speed_str, "eta_str": eta_str, "last_complete_at": row["last_complete_at"],
                     "progress_age_seconds": round(progress_age_seconds, 1),
                     "files": total_files, "file_cards": file_cards, "hashed_files": hashed_files, "rag_files": rag_files,
+                    "code_index_files": ci_count,
+                    "code_index_coverage": {
+                        "complete": False, "scope": "demand_indexed_files",
+                        "indexed_files": ci_count, "project_files": total_files,
+                    },
                     "stats": project_stats, "external_indexes": external_indexes,
                 })
         bg_allowed = self.scheduler.background_allowed()
@@ -2256,6 +2511,20 @@ class ProjectPreprocessor:
                     with self._stats_lock:
                         self._stats["yields"] += 1
                     self.scheduler.note_background_yield()
+                    self._stop.wait(min(0.5, poll))
+            except _RetryablePreprocessingError as exc:
+                with self._stats_lock:
+                    self._stats["yields"] += 1
+                try:
+                    delay = min(300.0, max(1.0, float(exc.retry_after_seconds)))
+                    self._set_project(
+                        root,
+                        status="waiting",
+                        last_error=str(exc)[:1000],
+                        retry_after=time.time() + delay,
+                    )
+                except Exception as record_exc:
+                    logger.error("Could not record deferred preprocessing state (%s)", type(record_exc).__name__)
                     self._stop.wait(min(0.5, poll))
             except Exception as exc:
                 with self._stats_lock:
@@ -2641,11 +2910,9 @@ class ProjectPreprocessor:
                        card_key=excluded.card_key,updated_at=excluded.updated_at""",
                     (root, rel, stored_hash, size, mtime_ns, needs_hash, stored_rag_hash, generation, stored_card, now),
                 )
-            if major:
-                con.execute("DELETE FROM module_cards WHERE root=?", (root,))
-                con.execute("DELETE FROM project_cards WHERE root=?", (root,))
-                con.execute("DELETE FROM hot_query_state WHERE root=?", (root,))
-                con.execute("DELETE FROM task_capsules WHERE root=?", (root,))
+            # Keep project-wide derived caches intact. Per-path source rows above
+            # are invalidated precisely; a broad change must never clear every
+            # module/project cache in one operation.
         self._write_retry(_apply)
 
         structural_hash = row.get("structural_hash")
@@ -2655,7 +2922,7 @@ class ProjectPreprocessor:
             structural_hash = stable_hash({
                 "structure": [(path, Path(path).suffix.lower()) for path in all_paths],
                 "models": {k: self.config.get("models", {}).get(k) for k in ("fast_code", "heavy_code", "reasoning")},
-                "analyzer": __version__,
+                "analyzer": PREPROCESS_ANALYZER_VERSION,
                 "project_config": getattr(self._project_config_context(root)[1], "config_digest", ""),
             })
         inventory_hash = stable_hash({"previous": row.get("inventory_hash"), "dirty": sorted(content_changed)})
@@ -2744,20 +3011,30 @@ class ProjectPreprocessor:
         deleted = set(old) - set(new_files)
         changed.update(deleted)
         changed_ratio = len(changed) / max(1, max(len(old), len(new_files)))
+        # Timestamp-only changes still need a content hash, but are not evidence
+        # of a broad content change. Keep them out of the project-wide invalidation
+        # threshold; _step_hash decides whether each candidate's content changed.
+        major_changed = {
+            path for path, item in new_files.items()
+            if path not in old
+            or int(old[path]["size"] or 0) != int(item.get("size", 0))
+        }
+        major_changed.update(deleted)
+        major_changed_ratio = len(major_changed) / max(1, max(len(old), len(new_files)))
         manifest_names = {
             "package.json", "deno.json", "deno.jsonc", "pyproject.toml", "composer.json", "composer.lock", "package-lock.json", "pnpm-lock.yaml",
             "yarn.lock", "Cargo.toml", "Cargo.lock", "go.mod", "go.sum", "go.work", "pom.xml", "build.gradle", "build.gradle.kts",
             "requirements.txt", "Pipfile", "poetry.lock", "uv.lock", "Gemfile", "Gemfile.lock", "packages.lock.json", "global.json",
             "Directory.Build.props", "Directory.Build.targets", "Directory.Packages.props", "libs.versions.toml",
         }
-        manifest_changed = any(Path(path).name in manifest_names for path in changed)
+        manifest_changed = any(Path(path).name in manifest_names for path in major_changed)
         # Structural identity is intentionally deterministic/cheap and independent
         # of local LLM output. Content-sensitive manifests are re-hashed next.
         structure = [(p, Path(p).suffix.lower()) for p, x in sorted(new_files.items())]
         structural_hash = stable_hash({
             "structure": structure,
             "models": {k: self.config.get("models", {}).get(k) for k in ("fast_code", "heavy_code", "reasoning")},
-            "analyzer": __version__,
+            "analyzer": PREPROCESS_ANALYZER_VERSION,
             "project_config": config_digest,
             "project_type": getattr(settings, "project_type", None),
             "solution_path": getattr(settings, "solution_path", None),
@@ -2784,8 +3061,8 @@ class ProjectPreprocessor:
 
         ratio_min_files = max(2, int(self.cfg.get("major_change_ratio_min_files", 12)))
         major = force or row.get("structural_hash") not in {None, structural_hash} or manifest_changed \
-            or len(changed) >= int(self.cfg.get("major_change_files", 60)) \
-            or (len(changed) >= ratio_min_files and changed_ratio >= float(self.cfg.get("major_change_ratio", 0.15)))
+            or len(major_changed) >= int(self.cfg.get("major_change_files", 60)) \
+            or (len(major_changed) >= ratio_min_files and major_changed_ratio >= float(self.cfg.get("major_change_ratio", 0.15)))
         generation = int(row.get("generation", 0)) + (1 if major else 0)
         try:
             git_hashes = self.repo_tools.git_blob_map(root)
@@ -2816,11 +3093,9 @@ class ProjectPreprocessor:
                         old_rag_hash, generation, old_card, now,
                     ),
                 )
-            if major:
-                con.execute("DELETE FROM module_cards WHERE root=?", (root,))
-                con.execute("DELETE FROM project_cards WHERE root=?", (root,))
-                con.execute("DELETE FROM hot_query_state WHERE root=?", (root,))
-                con.execute("DELETE FROM task_capsules WHERE root=?", (root,))
+            # Keep project-wide derived caches intact. Per-path content changes
+            # are handled by the hash/index phases; never clear every project
+            # cache because an inventory crosses the major-change threshold.
             con.commit()
         self._link_content_reuse(root)
         if major:
@@ -2848,7 +3123,7 @@ class ProjectPreprocessor:
                    )
                    WHERE root=? AND card_key IS NULL AND content_hash<>''
                      AND EXISTS (SELECT 1 FROM content_cards WHERE content_cards.content_hash = file_refs.content_hash AND analyzer_version=?)""",
-                (__version__, root, __version__),
+                (PREPROCESS_ANALYZER_VERSION, root, PREPROCESS_ANALYZER_VERSION),
             )
             con.execute(
                 """INSERT OR IGNORE INTO source_index(root, path, content_hash, text, updated_at)
@@ -2928,7 +3203,7 @@ class ProjectPreprocessor:
                            )
                            WHERE root=? AND path IN ({placeholders}) AND card_key IS NULL AND content_hash<>''
                              AND EXISTS (SELECT 1 FROM content_cards WHERE content_cards.content_hash = file_refs.content_hash AND analyzer_version=?)""",
-                        (__version__, root, *batch, __version__),
+                        (PREPROCESS_ANALYZER_VERSION, root, *batch, PREPROCESS_ANALYZER_VERSION),
                     )
                     # Instantly link matching lexical source index across branches/worktrees
                     con.execute(
@@ -2963,14 +3238,17 @@ class ProjectPreprocessor:
         root = str(row["root"])
         workspace = str(row["workspace"])
         limit = max(1, int(self.cfg.get("rag_files_per_step", 128)))
+        priority_paths = self._learned_priority_paths(root) if limit > 1 else ()
         with self._db_lock, closing(self._connect()) as con:
-            pending = con.execute(
-                """SELECT path,content_hash FROM file_refs
+            f_cols = {str(row[1]) for row in con.execute("PRAGMA table_info(file_refs)").fetchall()}
+            last_accessed_clause = "(COALESCE(last_accessed_at, 0) > 0) DESC," if "last_accessed_at" in f_cols else ""
+            centrality_clause = "COALESCE(centrality_score, 0.0) DESC," if "centrality_score" in f_cols else ""
+            selection = """SELECT path,content_hash FROM file_refs
                    WHERE root=? AND needs_hash=0 AND content_hash<>''
-                     AND COALESCE(rag_hash,'')<>content_hash
-                   ORDER BY
-                     -- Recently accessed files first (set by agent interactions)
-                     (COALESCE(last_accessed_at, 0) > 0) DESC,
+                     AND COALESCE(rag_hash,'')<>content_hash"""
+            order = f""" ORDER BY
+                     {last_accessed_clause}
+                     {centrality_clause}
                      -- Entry-points and key architectural files
                      CASE
                        WHEN path LIKE '%/Controllers/%' THEN 0
@@ -2988,10 +3266,19 @@ class ProjectPreprocessor:
                      END ASC,
                      size ASC,
                      path ASC
-                   LIMIT ?""",
-                (root, limit),
-            ).fetchall()
-            all_paths = [str(r[0]) for r in con.execute("SELECT path FROM file_refs WHERE root=? ORDER BY path", (root,)).fetchall()]
+                   LIMIT ?"""
+            pending = con.execute(selection + order, (root, limit)).fetchall()
+            if pending and priority_paths:
+                placeholders = ",".join("?" for _ in priority_paths)
+                quota = min(limit - 1, max(1, limit // 4))
+                preferred = con.execute(
+                    selection + f" AND path IN ({placeholders})" + order,
+                    (root, *priority_paths, quota),
+                ).fetchall()
+                seen = {str(item["path"]) for item in preferred}
+                pending = (list(preferred) + [item for item in pending if str(item["path"]) not in seen])[:limit]
+            if not pending:
+                all_paths = [str(r[0]) for r in con.execute("SELECT path FROM file_refs WHERE root=? ORDER BY path", (root,)).fetchall()]
         if not pending:
             deleted = self.rag.prune_missing(root, workspace, all_paths)
             if deleted:
@@ -2999,6 +3286,7 @@ class ProjectPreprocessor:
                     self._stats["rag_deleted_files"] = self._stats.get("rag_deleted_files", 0) + deleted
             self._set_project(root, phase="files")
             return True
+        pending_hashes = {str(item["path"]): str(item["content_hash"]) for item in pending}
         # Deterministically well-described declarative files do not need a
         # semantic vector index. Mark them synchronized and remove stale
         # RAG rows from older releases so they cannot pollute future retrieval.
@@ -3014,14 +3302,15 @@ class ProjectPreprocessor:
             now = time.time()
             with self._db_lock, closing(self._connect()) as con:
                 con.executemany(
-                    "UPDATE file_refs SET rag_hash=content_hash,updated_at=? WHERE root=? AND path=?",
-                    [(now, root, rel) for rel in skipped],
+                    "UPDATE file_refs SET rag_hash=?,updated_at=? WHERE root=? AND path=? AND content_hash=? AND needs_hash=0",
+                    [(pending_hashes[rel], now, root, rel, pending_hashes[rel]) for rel in skipped],
                 )
                 con.commit()
             with self._stats_lock:
                 self._stats["rag_skipped_files"] = self._stats.get("rag_skipped_files", 0) + len(skipped)
 
-        needed_items = [p for p in pending if str(p["path"]) not in set(skipped)]
+        skipped_paths = set(skipped)
+        needed_items = [p for p in pending if str(p["path"]) not in skipped_paths]
         if not needed_items:
             return True
         paths = [str(p["path"]) for p in needed_items]
@@ -3029,10 +3318,30 @@ class ProjectPreprocessor:
         placeholders = ",".join("?" for _ in paths)
         with self._db_lock, closing(self._connect()) as con:
             rows = con.execute(
-                f"SELECT path,text FROM source_index WHERE root=? AND path IN ({placeholders})",
+                f"SELECT path,content_hash,text FROM source_index WHERE root=? AND path IN ({placeholders})",
                 (root, *paths),
             ).fetchall()
-        content_overrides.update({str(item["path"]): str(item["text"]) for item in rows})
+        content_overrides.update({str(item["path"]): str(item["text"]) for item in rows
+                                  if str(item["content_hash"]) == pending_hashes.get(str(item["path"]))})
+        missing_hashes = [h for p, h in pending_hashes.items() if p not in content_overrides and h]
+        if missing_hashes:
+            with self._db_lock, closing(self._connect()) as con:
+                for batch in sqlite_batches(missing_hashes):
+                    ph = ",".join("?" for _ in batch)
+                    cas_rows = con.execute(
+                        f"SELECT content_hash, text FROM source_index WHERE content_hash IN ({ph})",
+                        batch,
+                    ).fetchall()
+                    cas_map = {str(r[0]): str(r[1]) for r in cas_rows}
+                    for p, h in pending_hashes.items():
+                        if p not in content_overrides and h in cas_map:
+                            content_overrides[p] = cas_map[h]
+        if hasattr(self, "ingest_cache") and self.ingest_cache is not None:
+            for p in paths:
+                if p not in content_overrides and self.ingest_cache.has(p, root=root):
+                    item = self.ingest_cache.get(p, root=root)
+                    if item is not None:
+                        content_overrides[p] = item.text
         result = self.rag.index_paths_step(
             root, workspace=workspace, paths=paths,
             should_yield=self._yield,
@@ -3043,38 +3352,68 @@ class ProjectPreprocessor:
         if result.get("preempted"):
             return False
         if not result.get("success"):
-            raise RuntimeError(str(result.get("error", "RAG preprocessing failed")))
+            message = str(result.get("error", "RAG preprocessing failed"))
+            if result.get("retryable") is True:
+                retry_after = result.get("retry_after_seconds", 60.0)
+                try:
+                    retry_after = float(retry_after)
+                except (TypeError, ValueError):
+                    retry_after = 60.0
+                raise _RetryablePreprocessingError(message, retry_after)
+            raise RuntimeError(message)
         processed = set(str(x) for x in result.get("processed_paths", []))
         # A watcher event can leave a deleted file_ref behind after the file has
         # disappeared. RAG intentionally ignores missing paths, so without this
         # cleanup the same pending path is selected forever and the phase spins.
-        missing = [
-            rel for rel in paths
-            if not ((Path(root) / rel).resolve(strict=False)).is_file()
-        ]
+        missing = []
+        uncertain = []
+        for rel in paths:
+            try:
+                if not stat.S_ISREG((Path(root) / rel).stat().st_mode):
+                    missing.append(rel)
+            except (FileNotFoundError, NotADirectoryError):
+                missing.append(rel)
+            except OSError:
+                # An unreadable file is not evidence of deletion.
+                uncertain.append(rel)
+        if uncertain:
+            with self._db_lock, closing(self._connect()) as con:
+                con.executemany(
+                    "UPDATE file_refs SET needs_hash=1,rag_hash=NULL WHERE root=? AND path=? AND content_hash=?",
+                    [(root, rel, pending_hashes[rel]) for rel in uncertain],
+                )
+                con.commit()
         if missing:
             self.rag.remove_paths(workspace=workspace, paths=missing)
-            placeholders = ",".join("?" for _ in missing)
             with self._db_lock, closing(self._connect()) as con:
-                con.execute(
-                    f"DELETE FROM file_refs WHERE root=? AND path IN ({placeholders})",
-                    (root, *missing),
-                )
-                con.execute(
-                    f"DELETE FROM source_index WHERE root=? AND path IN ({placeholders})",
-                    (root, *missing),
-                )
-                con.execute(
-                    f"DELETE FROM source_fts WHERE root=? AND path IN ({placeholders})",
-                    (root, *missing),
-                )
+                con.execute("BEGIN IMMEDIATE")
+                for rel in missing:
+                    try:
+                        if not stat.S_ISREG((Path(root) / rel).stat().st_mode):
+                            raise FileNotFoundError(rel)
+                    except (FileNotFoundError, NotADirectoryError):
+                        deleted = con.execute(
+                            "DELETE FROM file_refs WHERE root=? AND path=? AND content_hash=? AND needs_hash=0",
+                            (root, rel, pending_hashes[rel]),
+                        ).rowcount
+                        if deleted:
+                            con.execute("DELETE FROM source_index WHERE root=? AND path=?", (root, rel))
+                            con.execute("DELETE FROM source_fts WHERE root=? AND path=?", (root, rel))
+                        else:
+                            con.execute("UPDATE file_refs SET needs_hash=1,rag_hash=NULL WHERE root=? AND path=?", (root, rel))
+                    except OSError:
+                        con.execute("UPDATE file_refs SET needs_hash=1,rag_hash=NULL WHERE root=? AND path=?", (root, rel))
+                    else:
+                        # RAG rows were removed but the path reappeared during
+                        # the batch. Retain its record and schedule a fresh hash.
+                        con.execute("UPDATE file_refs SET needs_hash=1,rag_hash=NULL WHERE root=? AND path=?", (root, rel))
                 con.commit()
         if processed:
             now = time.time()
             with self._db_lock, closing(self._connect()) as con:
                 con.executemany(
-                    "UPDATE file_refs SET rag_hash=content_hash,updated_at=? WHERE root=? AND path=?",
-                    [(now, root, rel) for rel in processed],
+                    "UPDATE file_refs SET rag_hash=?,updated_at=? WHERE root=? AND path=? AND content_hash=? AND needs_hash=0",
+                    [(pending_hashes[rel], now, root, rel, pending_hashes[rel]) for rel in processed if rel in pending_hashes],
                 )
                 con.commit()
             self._record_progress(root, len(processed))
@@ -3110,12 +3449,16 @@ class ProjectPreprocessor:
             self._set_project(root, phase="rag")
             return True
         base = Path(root)
-        def _lex_one(item: sqlite3.Row) -> tuple[str, str, str]:
+        def _lex_one(item: sqlite3.Row) -> tuple[str, str, str, str]:
             rel = str(item["path"])
             path = (base / rel).resolve(strict=False)
             path.relative_to(base)
-            file_hash, lines = self.repo_tools._read_snapshot(path)
-            text = "\n".join(lines)
+            if hasattr(self, "ingest_cache") and self.ingest_cache is not None:
+                ingested = self.ingest_cache.get_or_ingest(base, rel, self.repo_tools)
+                file_hash, text = ingested.content_hash, ingested.text
+            else:
+                file_hash, lines = self.repo_tools._read_snapshot(path)
+                text = "\n".join(lines)
             if self.deterministic is not None and bool(self.cfg.get("compact_lexical_for_deterministic_declarative", True)):
                 try:
                     compact = self.deterministic.lexical_projection(
@@ -3125,25 +3468,43 @@ class ProjectPreprocessor:
                         text = compact
                 except sqlite3.Error as exc:
                     logger.warning("Deterministic lexical projection unavailable (%s)", type(exc).__name__)
-            return rel, str(item["content_hash"]), text
+            return rel, str(item["content_hash"]), str(file_hash), text
 
         lex_results = list(self._cpu_pool.map(_lex_one, pending))
 
         now = time.time()
         with self._db_lock, closing(self._connect()) as con:
+            con.execute("BEGIN IMMEDIATE")
+            placeholders = ",".join("?" for _ in lex_results)
+            current = {str(item["path"]): (str(item["content_hash"]), int(item["needs_hash"]))
+                       for item in con.execute(
+                           f"SELECT path,content_hash,needs_hash FROM file_refs WHERE root=? AND path IN ({placeholders})",
+                           (root, *(item[0] for item in lex_results)),
+                       )}
+            # The bytes or the watcher may have changed while the CPU pool read
+            # the batch. Publish only text carrying the selected source identity.
+            accepted = []
+            for rel, expected_hash, file_hash, text in lex_results:
+                if current.get(rel) != (expected_hash, 0):
+                    continue
+                if file_hash != expected_hash:
+                    con.execute("UPDATE file_refs SET needs_hash=1 WHERE root=? AND path=? AND content_hash=? AND needs_hash=0",
+                                (root, rel, expected_hash))
+                    continue
+                accepted.append((rel, expected_hash, text))
             con.executemany(
                 "INSERT OR REPLACE INTO source_index(root,path,content_hash,text,updated_at) VALUES(?,?,?,?,?)",
-                [(root, rel, chash, text, now) for rel, chash, text in lex_results],
+                [(root, rel, chash, text, now) for rel, chash, text in accepted],
             )
-            for rel, _, text in lex_results:
+            for rel, _, text in accepted:
                 con.execute("DELETE FROM source_fts WHERE root=? AND path=?", (root, rel))
                 # Include path in indexed content so filename/class/module searches
                 # can narrow candidates without a full repository scan.
                 con.execute("INSERT INTO source_fts(root,path,content) VALUES(?,?,?)", (root, rel, rel + "\n" + text))
             con.commit()
         with self._stats_lock:
-            self._stats["lexical_files"] = self._stats.get("lexical_files", 0) + len(lex_results)
-        self._record_progress(root, len(lex_results))
+            self._stats["lexical_files"] = self._stats.get("lexical_files", 0) + len(accepted)
+        self._record_progress(root, len(accepted))
         return True
 
     def _prune_missing_file_refs(self, root: str) -> int:
@@ -3176,20 +3537,69 @@ class ProjectPreprocessor:
             con.execute("DELETE FROM hot_query_state WHERE root=?", (root,))
             con.execute("DELETE FROM task_capsules WHERE root=?", (root,))
 
-        self._write_retry(remove_refs)
         for index in (self.code_index, self.deterministic):
             if index is None:
                 continue
             try:
+                if index is self.code_index:
+                    # The code-index owns its trigram rows and cache generation;
+                    # direct table deletes leave both stale.
+                    index._remove_indexed_paths(root, missing)
+                    continue
                 with closing(index._connect()) as con:
-                    for table in ("files", "symbols", "refs", "edges") if index is self.code_index else ("files", "facts"):
+                    for table in ("files", "facts"):
                         con.executemany(f"DELETE FROM {table} WHERE root=? AND path=?", [(root, path) for path in missing])
                     con.commit()
             except (sqlite3.Error, OSError) as exc:
                 logger.warning("Could not prune deleted-file derived index (%s)", type(exc).__name__)
+                # Keep the file reference so a later pass can retry after a
+                # partial or interrupted cleanup.
+                raise
+        still_missing = []
+        for rel in missing:
+            try:
+                (base / rel).stat()
+            except (FileNotFoundError, NotADirectoryError):
+                still_missing.append(rel)
+            except OSError:
+                continue
+        missing = still_missing
+        if not missing:
+            return 0
+        self._write_retry(remove_refs)
         with self._stats_lock:
             self._stats["missing_files_pruned"] = self._stats.get("missing_files_pruned", 0) + len(missing)
         return len(missing)
+
+    def _proactive_git_seeds(self, root: str, allowed: dict[str, str]) -> list[str]:
+        """Discover proactive initial seeds: git status, branch changes, and entrypoints."""
+        from pathlib import PurePosixPath
+        proactive: list[str] = []
+        try:
+            status = getattr(self.repo_tools, "git_status", None)
+            if callable(status):
+                git_st = status(root)
+                if isinstance(git_st, dict):
+                    for p in git_st.get("modified", []) + git_st.get("staged", []) + git_st.get("untracked", []):
+                        norm = str(p).replace("\\", "/")
+                        if norm in allowed and norm not in proactive:
+                            proactive.append(norm)
+        except Exception:
+            pass
+
+        entrypoint_names = {
+            "main.py", "app.py", "server.py", "index.ts", "index.js", "main.ts", "main.js",
+            "main.go", "lib.rs", "main.rs", "program.cs", "main.java", "app.rb",
+        }
+        for path in allowed:
+            pure = PurePosixPath(path)
+            if pure.name.lower() in entrypoint_names or (len(pure.parts) <= 2 and pure.suffix in {".py", ".ts", ".js", ".go", ".rs"}):
+                if path not in proactive:
+                    proactive.append(path)
+                    if len(proactive) >= 16:
+                        break
+
+        return proactive[:32]
 
     def _step_code_index(self, row: dict[str, Any]) -> bool:
         root = str(row["root"])
@@ -3202,32 +3612,108 @@ class ProjectPreprocessor:
             self._prune_missing_file_refs(root)
             self._missing_refs_checked_generations.add(generation_key)
             self._missing_refs_checked_generations = self._bound_generation_set(self._missing_refs_checked_generations)
-        with self._db_lock, closing(self._connect()) as con:
-            refs = [
-                (str(r["path"]), str(r["content_hash"]), int(r["size"] or 0))
-                for r in con.execute(
-                    "SELECT path,content_hash,size FROM file_refs WHERE root=? AND needs_hash=0 AND content_hash<>'' ORDER BY path",
-                    (root,),
-                ).fetchall()
-            ]
         settings = self._project_settings(root)
         path_policy = ProjectPathPolicy(root, settings)
-        refs = [
-            (path, digest)
-            for path, digest, size_bytes in refs
-            if not any(part.lower() in self.repo_tools.ignore_dirs for part in Path(path).parts[:-1])
-            and self._project_path_allowed(
-                root, path, settings, phase="call_graph", size_bytes=size_bytes,
-                path_policy=path_policy,
-            )
-        ]
+        allowed: dict[str, str] | None = None
+        source_revision: int | None = None
+        allowed_cache_lock = getattr(self, "_code_index_allowed_cache_lock", None)
+        allowed_cache = getattr(self, "_code_index_allowed_cache", None)
+        with self._db_lock, closing(self._connect()) as con:
+            con.execute("BEGIN")
+            try:
+                revision_row = con.execute(
+                    "SELECT revision FROM file_refs_revision WHERE root=?", (root,),
+                ).fetchone()
+                source_revision = int(revision_row[0]) if revision_row is not None else 0
+            except sqlite3.Error:
+                # Older or damaged derived state has no usable revision fence;
+                # rebuild the allowlist and prune on each bounded pass.
+                source_revision = None
+            if allowed_cache_lock is not None and isinstance(allowed_cache, dict) and source_revision is not None:
+                with allowed_cache_lock:
+                    cached = allowed_cache.get(root)
+                    if (
+                        cached is not None
+                        and cached[0] == generation_key[1]
+                        and cached[1] == source_revision
+                        and cached[2] == settings
+                    ):
+                        allowed = cached[3]
+                        allowed_cache.pop(root, None)
+                        allowed_cache[root] = cached
+            if allowed is None:
+                allowed = {}
+                cursor = con.execute(
+                    "SELECT path,content_hash,size FROM file_refs WHERE root=? AND needs_hash=0 AND content_hash<>'' ORDER BY path",
+                    (root,),
+                )
+                while True:
+                    batch = cursor.fetchmany(256)
+                    if not batch:
+                        break
+                    for row_ref in batch:
+                        path = str(row_ref["path"])
+                        if any(part.lower() in self.repo_tools.ignore_dirs for part in Path(path).parts[:-1]):
+                            continue
+                        if self._project_path_allowed(
+                            root, path, settings, phase="call_graph",
+                            size_bytes=int(row_ref["size"] or 0), path_policy=path_policy,
+                        ):
+                            allowed[path] = str(row_ref["content_hash"])
+                if (
+                    source_revision is not None
+                    and allowed_cache_lock is not None
+                    and isinstance(allowed_cache, dict)
+                ):
+                    if len(allowed) <= 50_000:
+                        with allowed_cache_lock:
+                            allowed_cache.pop(root, None)
+                            allowed_cache[root] = (
+                                generation_key[1], source_revision, settings, allowed,
+                            )
+                            while len(allowed_cache) > 4:
+                                allowed_cache.pop(next(iter(allowed_cache)))
+                    else:
+                        with allowed_cache_lock:
+                            allowed_cache.pop(root, None)
         pruned_generations = getattr(self, "_code_index_pruned_generations", set())
-        if generation_key not in pruned_generations:
-            prune_result = self.code_index.prune(root, [p for p,_ in refs])
+        prune_key = (root, generation_key[1], repr(settings), source_revision)
+        if source_revision is None or prune_key not in pruned_generations:
+            prune_result = self.code_index.prune(root, allowed.keys())
             if not isinstance(prune_result, dict) or prune_result.get("success") is not True:
                 raise RuntimeError("code index prune failed")
-            pruned_generations.add(generation_key)
-            self._code_index_pruned_generations = self._bound_generation_set(pruned_generations)
+            if source_revision is not None:
+                pruned_generations.add(prune_key)
+                self._code_index_pruned_generations = self._bound_generation_set(pruned_generations)
+        # Evidence is a record of source material actually served to an agent.
+        # The repository inventory alone is not a reason to grow the index.
+        evidence_store = getattr(getattr(self, "services", None), "evidence_store", None)
+        recent_paths = getattr(evidence_store, "recent_paths", None)
+        if not callable(recent_paths):
+            self._set_project(root, phase="deterministic", last_error="code_index_demand_unavailable")
+            return True
+        try:
+            demand = recent_paths(root, limit=256)
+            seeds = list(dict.fromkeys(str(item.get("path", "")).replace("\\", "/")
+                                        for item in demand if isinstance(item, dict)))
+            seeds = [path for path in seeds if path in allowed]
+            if not seeds:
+                seeds.extend(self._proactive_git_seeds(root, allowed))
+            from .code_index_demand import one_hop_related_files, two_hop_related_files
+            demand_hops = max(1, int(self.cfg.get("demand_hops", 1)))
+            ic = getattr(self, "ingest_cache", None)
+            if demand_hops >= 2:
+                neighbors = two_hop_related_files(Path(root), seeds, set(allowed), self.repo_tools, ingest_cache=ic)
+            else:
+                neighbors = one_hop_related_files(Path(root), seeds, set(allowed), self.repo_tools, ingest_cache=ic)
+            refs = [(path, allowed[path]) for path in [*seeds, *neighbors]]
+            record_usage = getattr(self.code_index, "record_usage", None)
+            if callable(record_usage):
+                record_usage(root, [item for item in demand if isinstance(item, dict) and str(item.get("path", "")).replace("\\", "/") in seeds])
+        except (sqlite3.Error, OSError, ValueError, TypeError) as exc:
+            logger.warning("Code-index demand selection unavailable (%s)", type(exc).__name__)
+            self._set_project(root, phase="deterministic", last_error="code_index_demand_unavailable")
+            return True
         try:
             select_pending = getattr(self.code_index, "files_needing_reindex", None)
             if callable(select_pending):
@@ -3246,6 +3732,17 @@ class ProjectPreprocessor:
             result = self.code_index.update_files_batch(root, pending)
             files_processed = int(result.get("files_processed", 0))
             progressed = files_processed + int(result.get("cached", 0))
+            if isinstance(result, dict) and result.get("budget_limited") is True:
+                if progressed:
+                    with self._stats_lock:
+                        self._stats["code_index_files"] += progressed
+                self._record_progress(root, len(pending))
+                retry_at = time.time() + 300.0
+                self._set_project(
+                    root, phase="code_index", status="waiting",
+                    last_error="code_index_budget_limited", retry_after=retry_at, next_check_at=retry_at,
+                )
+                return True
         except Exception as batch_exc:
             from .project_config import ProjectConfigError
             if isinstance(batch_exc, ProjectConfigError):
@@ -3273,7 +3770,7 @@ class ProjectPreprocessor:
         return True
 
     @staticmethod
-    def _bound_generation_set(s: set[tuple[str, int]], max_size: int = 512) -> set[tuple[str, int]]:
+    def _bound_generation_set(s: set[tuple[Any, ...]], max_size: int = 512) -> set[tuple[Any, ...]]:
         if len(s) > max_size:
             return set(sorted(s, key=lambda item: item[1])[-max_size // 2:])
         return s
@@ -3318,6 +3815,23 @@ class ProjectPreprocessor:
                 self.deterministic.find_hotspots(root, days=30, limit=20)
             except Exception as index_exc:
                 logger.warning("Deterministic hotspot refresh failed (%s)", type(index_exc).__name__)
+            if hasattr(self.deterministic, "get_centrality_ranks"):
+                try:
+                    ranks = self.deterministic.get_centrality_ranks(root)
+                    if ranks:
+                        with self._db_lock, closing(self._connect()) as con:
+                            con.executemany(
+                                "UPDATE file_refs SET centrality_score=? WHERE root=? AND path=?",
+                                [(score, root, p) for p, score in ranks.items()],
+                            )
+                            con.commit()
+                except Exception as exc:
+                    logger.debug("Centrality calculation failed: %s", exc)
+            if hasattr(self.deterministic, "precompute_dead_code"):
+                try:
+                    self.deterministic.precompute_dead_code(root)
+                except Exception as exc:
+                    logger.debug("Dead code precompute failed: %s", exc)
             self._set_project(root, phase="serena")
             return True
 
@@ -3465,7 +3979,9 @@ class ProjectPreprocessor:
         exponent = min(5, max(0, int(retry_count) - 1))
         return min(900.0, 30.0 * (2 ** exponent))
 
-    def candidate_paths(self, root: str, query: str, limit: int = 32) -> list[str]:
+    def candidate_paths(
+        self, root: str, query: str, limit: int = 32, *, include_semantic: bool = True,
+    ) -> list[str]:
         """Fast deterministic candidate selection; exact source verification happens later."""
         resolved = self._root(root)
         limit = max(0, min(int(limit), 64))
@@ -3486,13 +4002,14 @@ class ProjectPreprocessor:
             except sqlite3.OperationalError as fts_exc:
                 logger.debug("Preprocessing FTS candidate search unavailable (%s)", type(fts_exc).__name__)
                 pass
-        # Semantic cards cover vocabulary mismatch and FTS-unavailable builds.
-        try:
-            cards = self.lookup(resolved, query, limit=max(5, min(int(limit), 16)))
-            paths.extend(str(x.get("path")) for x in cards.get("files", []) if x.get("path"))
-        except Exception as lookup_exc:
-            logger.debug("Semantic card candidate lookup unavailable (%s)", type(lookup_exc).__name__)
-            pass
+        if include_semantic:
+            # Semantic cards cover vocabulary mismatch and FTS-unavailable builds.
+            try:
+                cards = self.lookup(resolved, query, limit=max(5, min(int(limit), 16)))
+                paths.extend(str(x.get("path")) for x in cards.get("files", []) if x.get("path"))
+            except Exception as lookup_exc:
+                logger.debug("Semantic card candidate lookup unavailable (%s)", type(lookup_exc).__name__)
+                pass
         out: list[str] = []
         seen: set[str] = set()
         for path in paths:
@@ -3526,20 +4043,93 @@ class ProjectPreprocessor:
             pass
         return out[:limit]
 
+    def candidate_paths_lexical(self, root: str, query: str, limit: int = 32) -> list[str]:
+        """Return FTS-only candidates when exact source search makes semantics redundant."""
+        return self.candidate_paths(root, query, limit, include_semantic=False)
+
     def _content_card_key(self, content_hash: str) -> str:
+        bg_model = str(self.config.get("preprocessing", {}).get("model") or self.config.get("models", {}).get("background_code", "qwen2.5-coder:0.5b"))
         return stable_hash({
-            "app_version": __version__, "sha": content_hash,
-                    "model": self.config.get("models", {}).get("background_code", "qwen2.5-coder:0.5b"),
+            "app_version": PREPROCESS_ANALYZER_VERSION, "sha": content_hash,
+            "model": bg_model,
         })
+
+    def _learned_priority_paths(self, root: str) -> tuple[str, ...]:
+        """Use bounded learned queries as advisory background scheduling hints."""
+        learner = getattr(self, "learner", None)
+        if learner is None or not getattr(learner, "enabled", True):
+            return ()
+        cache = getattr(self, "_demand_priority_cache", None)
+        lock = getattr(self, "_demand_priority_lock", None)
+        now = time.monotonic()
+        try:
+            queries = tuple(learner.hot_queries(root, 4)[:4])
+            with self._db_lock, closing(self._connect()) as con:
+                has_revision_tracking = con.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='file_refs_revision'"
+                ).fetchone() is not None
+                if has_revision_tracking:
+                    revision = con.execute(
+                        "SELECT revision FROM file_refs_revision WHERE root=?", (root,)
+                    ).fetchone()
+                    index_signature = (int(revision[0]) if revision else 0,)
+                else:
+                    # Minimal legacy/test schemas lack startup-installed triggers.
+                    columns = {str(row[1]) for row in con.execute("PRAGMA table_info(file_refs)").fetchall()}
+                    aggregates = ["COUNT(*)"]
+                    for column in ("generation", "updated_at", "size", "needs_hash", "last_accessed_at"):
+                        if column in columns:
+                            aggregates.append(f"COALESCE(SUM(CAST({column} AS REAL)), 0)")
+                    for column in ("content_hash", "rag_hash", "card_key"):
+                        if column in columns:
+                            aggregates.append(f"COALESCE(SUM(LENGTH(COALESCE({column}, ''))), 0)")
+                            aggregates.append(f"COUNT(DISTINCT {column})")
+                    revision = con.execute(
+                        f"SELECT {', '.join(aggregates)} FROM file_refs WHERE root=?", (root,)
+                    ).fetchone()
+                    index_signature = tuple(revision)
+            if cache is not None and lock is not None:
+                with lock:
+                    cached = cache.get(root)
+                    if (cached is not None and cached[0] > now
+                            and cached[1] == queries and cached[2] == index_signature):
+                        return cached[3]
+            paths: list[str] = []
+            with self._db_lock, closing(self._connect()) as con:
+                for query in queries[:4]:
+                    if not isinstance(query, str) or len(query) > 120:
+                        continue
+                    terms = self.repo_tools._terms(query)[:8]
+                    if not terms:
+                        continue
+                    expression = " OR ".join('"' + term.replace('"', '""') + '"' for term in terms)
+                    rows = con.execute(
+                        "SELECT path FROM source_fts WHERE root=? AND source_fts MATCH ? ORDER BY bm25(source_fts) LIMIT 16",
+                        (root, expression),
+                    ).fetchall()
+                    paths.extend(str(row[0]) for row in rows)
+            result = tuple(dict.fromkeys(paths))[:32]
+        except (AttributeError, OSError, RuntimeError, sqlite3.Error, TypeError, ValueError):
+            return ()
+        if cache is not None and lock is not None:
+            with lock:
+                if len(cache) >= 128 and root not in cache:
+                    cache.pop(min(cache, key=lambda key: cache[key][0]), None)
+                cache[root] = (now + 15.0, queries, index_signature, result)
+        return result
 
     def _find_next_files(self, root: str, limit: int) -> list[sqlite3.Row]:
         max_bytes = int(self.cfg.get("file_card_max_bytes", 180000))
+        limit = max(1, int(limit))
+        priority_paths = self._learned_priority_paths(root) if limit > 1 else ()
         with self._db_lock, closing(self._connect()) as con:
-            return con.execute(
-                """SELECT * FROM file_refs
-                   WHERE root=? AND card_key IS NULL AND size<=?
-                   ORDER BY
-                     (COALESCE(last_accessed_at, 0) > 0) DESC,
+            f_cols = {str(row[1]) for row in con.execute("PRAGMA table_info(file_refs)").fetchall()}
+            last_accessed_clause = "(COALESCE(last_accessed_at, 0) > 0) DESC," if "last_accessed_at" in f_cols else ""
+            centrality_clause = "COALESCE(centrality_score, 0.0) DESC," if "centrality_score" in f_cols else ""
+            selection = """SELECT * FROM file_refs WHERE root=? AND card_key IS NULL AND size<=?"""
+            order = f""" ORDER BY
+                     {last_accessed_clause}
+                     {centrality_clause}
                      CASE
                        WHEN path LIKE '%/Controllers/%' THEN 0
                        WHEN path LIKE '%/Runtime/%'     THEN 0
@@ -3555,9 +4145,20 @@ class ProjectPreprocessor:
                        ELSE 1
                      END ASC,
                      size ASC, path ASC
-                   LIMIT ?""",
-                (root, max_bytes, max(1, int(limit))),
+                   LIMIT ?"""
+            regular = con.execute(selection + order, (root, max_bytes, limit)).fetchall()
+            if not priority_paths:
+                return regular
+            placeholders = ",".join("?" for _ in priority_paths)
+            quota = min(limit - 1, max(1, limit // 4))
+            preferred = con.execute(
+                selection + f" AND path IN ({placeholders})" + order,
+                (root, max_bytes, *priority_paths, quota),
             ).fetchall()
+            selected = list(preferred)
+            seen = {str(row["path"]) for row in selected}
+            selected.extend(row for row in regular if str(row["path"]) not in seen)
+            return selected[:limit]
 
     def _find_next_file(self, root: str) -> sqlite3.Row | None:
         rows = self._find_next_files(root, 1)
@@ -3588,7 +4189,7 @@ class ProjectPreprocessor:
         with self._db_lock, closing(self._connect()) as con:
             con.execute(
                 "INSERT OR REPLACE INTO content_cards(card_key,content_hash,model,analyzer_version,card_json,created_at,accessed_at,hits) VALUES(?,?,?,?,?,?,?,COALESCE((SELECT hits FROM content_cards WHERE card_key=?),0))",
-                (card_key, str(item["content_hash"]), model, __version__, json_dumps(data, ensure_ascii=False), now, now, card_key),
+                (card_key, str(item["content_hash"]), model, PREPROCESS_ANALYZER_VERSION, json_dumps(data, ensure_ascii=False), now, now, card_key),
             )
             con.execute("UPDATE file_refs SET card_key=?,updated_at=? WHERE root=? AND path=?", (card_key, now, root, item["path"]))
             con.commit()
@@ -3686,18 +4287,18 @@ class ProjectPreprocessor:
     def _step_file_card(self, row: dict[str, Any]) -> bool:
         root = str(row["root"])
         bg_cfg = self.config.get("background_gpu", {})
-        batch_size = max(64, int(bg_cfg.get("file_batch_size", 64)))
+        batch_size = max(1, int(bg_cfg.get("file_batch_size", 64)))
         items = self._find_next_files(root, batch_size)
         if not items:
             with self._db_lock, closing(self._connect()) as con:
                 oversized = con.execute("SELECT * FROM file_refs WHERE root=? AND card_key IS NULL", (root,)).fetchall()
                 for item in oversized:
                     content_hash = str(item["content_hash"])
-                    card_key = stable_hash({"app_version": __version__, "sha": content_hash, "source": "deterministic-oversized"})
+                    card_key = stable_hash({"app_version": PREPROCESS_ANALYZER_VERSION, "sha": content_hash, "source": "deterministic-oversized"})
                     data = {"purpose": "oversized source file", "symbols": [], "dependencies": [], "side_effects": [], "risks": [], "tests": [], "keywords": []}
                     con.execute(
                         "INSERT OR REPLACE INTO content_cards(card_key,content_hash,model,analyzer_version,card_json,created_at,accessed_at,hits) VALUES(?,?,?,?,?,?,?,0)",
-                        (card_key, content_hash, "deterministic-oversized", __version__, json_dumps(data), time.time(), time.time()),
+                        (card_key, content_hash, "deterministic-oversized", PREPROCESS_ANALYZER_VERSION, json_dumps(data), time.time(), time.time()),
                     )
                     con.execute("UPDATE file_refs SET card_key=?,updated_at=? WHERE root=? AND path=?", (card_key, time.time(), root, item["path"]))
                 con.commit()
@@ -3705,7 +4306,7 @@ class ProjectPreprocessor:
                 self._set_project(root, phase="modules", force_refresh=0)
             return True
 
-        background_model = str(self.config.get("models", {}).get("background_code", "qwen2.5-coder:0.5b"))
+        background_model = str(self.config.get("preprocessing", {}).get("model") or self.config.get("models", {}).get("background_code", "qwen2.5-coder:0.5b"))
         pending_tasks: list[dict[str, Any]] = []
         pending_meta: list[tuple[sqlite3.Row, str]] = []
         progressed = False
@@ -3717,7 +4318,7 @@ class ProjectPreprocessor:
             with self._db_lock, closing(self._connect()) as con:
                 cached = con.execute(
                     "SELECT card_key, card_json FROM content_cards WHERE content_hash=? AND analyzer_version=? ORDER BY hits DESC LIMIT 1",
-                    (content_hash, __version__),
+                    (content_hash, PREPROCESS_ANALYZER_VERSION),
                 ).fetchone()
                 if cached and not bool(row.get("force_refresh")):
                     cached_key = str(cached["card_key"])
@@ -3736,7 +4337,7 @@ class ProjectPreprocessor:
                 except Exception:
                     det = {"success": False}
                 if det.get("success"):
-                    card_key = stable_hash({"app_version": __version__, "sha": content_hash, "source": "deterministic"})
+                    card_key = stable_hash({"app_version": PREPROCESS_ANALYZER_VERSION, "sha": content_hash, "source": "deterministic"})
                     self._store_file_card(root, item, card_key, det.get("card", {}), "deterministic")
                     with self._stats_lock:
                         self._stats["deterministic_card_hits"] = self._stats.get("deterministic_card_hits", 0) + 1
@@ -3746,7 +4347,7 @@ class ProjectPreprocessor:
             if bool(self.cfg.get("disable_llm_card_synthesis", True)):
                 # Skip slow local LLM card synthesis on unparsed files; store compact deterministic metadata
                 data = {"purpose": f"source file ({Path(str(item['path'])).suffix})", "symbols": [], "dependencies": [], "side_effects": [], "risks": [], "tests": [], "keywords": [Path(str(item["path"])).stem]}
-                card_key = stable_hash({"app_version": __version__, "sha": content_hash, "source": "deterministic-stub"})
+                card_key = stable_hash({"app_version": PREPROCESS_ANALYZER_VERSION, "sha": content_hash, "source": "deterministic-stub"})
                 self._store_file_card(root, item, card_key, data, "deterministic-stub")
                 progressed = True
                 continue
@@ -3763,6 +4364,33 @@ class ProjectPreprocessor:
                 progressed = True
                 continue
 
+            file_text = slice_result.get("text", "")
+            rel_name = Path(str(item["path"])).name.lower()
+            is_trivial = False
+            if int(item["size"] or 0) < 1500:
+                if rel_name in {"__init__.py", "index.ts", "index.js", "index.mjs"}:
+                    is_trivial = True
+                elif rel_name.endswith(".d.ts") or rel_name.endswith("_types.py") or rel_name.endswith(".types.ts"):
+                    is_trivial = True
+                elif any(file_text.strip().startswith(prefix) for prefix in ("export *", "from .", "__all__ =")):
+                    is_trivial = True
+
+            if is_trivial:
+                import re
+                data = {
+                    "purpose": f"re-export / declaration module ({rel_name})",
+                    "symbols": [p.strip() for p in re.findall(r"\b(?:export|class|def|type|interface)\s+([a-zA-Z0-9_]+)", file_text)[:12]],
+                    "dependencies": [],
+                    "side_effects": [],
+                    "risks": [],
+                    "tests": [],
+                    "keywords": [Path(str(item["path"])).stem],
+                }
+                barrel_key = stable_hash({"app_version": PREPROCESS_ANALYZER_VERSION, "sha": content_hash, "source": "deterministic-barrel"})
+                self._store_file_card(root, item, barrel_key, data, "deterministic-barrel")
+                progressed = True
+                continue
+
             item_model = background_model
 
             # Diff-based update: if old card exists and fewer than 15% lines changed, use diff prompt
@@ -3771,7 +4399,7 @@ class ProjectPreprocessor:
                 prev = con.execute(
                     "SELECT card_key, card_json FROM content_cards WHERE content_hash<>? AND analyzer_version=? AND card_key IN "
                     "(SELECT card_key FROM file_refs WHERE root=? AND path=?)",
-                    (content_hash, __version__, root, str(item["path"])),
+                    (content_hash, PREPROCESS_ANALYZER_VERSION, root, str(item["path"])),
                 ).fetchone()
                 if prev:
                     old_card_text = str(prev[1])
@@ -3813,9 +4441,8 @@ class ProjectPreprocessor:
             if generated.get("preempted"):
                 continue
             if not generated.get("success"):
-                fallback_data = {"purpose": f"generation error: {str(generated.get('error', ''))[:200]}", "symbols": [], "dependencies": [], "side_effects": [], "risks": [], "tests": [], "keywords": []}
-                self._store_file_card(root, item, card_key, fallback_data, "fallback-error")
-                progressed = True
+                with self._stats_lock:
+                    self._stats["file_card_failures"] = self._stats.get("file_card_failures", 0) + 1
                 continue
             self._store_file_card(root, item, card_key, self._generated_card_data(generated), background_model)
             progressed = True
@@ -3869,7 +4496,7 @@ class ProjectPreprocessor:
 
         bg_cfg = self.config.get("background_gpu", {})
         batch_size = max(1, int(bg_cfg.get("module_batch_size", bg_cfg.get("parallel", 4))))
-        background_model = str(self.config.get("models", {}).get("background_code", "qwen2.5-coder:0.5b"))
+        background_model = str(self.config.get("preprocessing", {}).get("model") or self.config.get("models", {}).get("background_code", "qwen2.5-coder:0.5b"))
         pending_tasks: list[dict[str, Any]] = []
         pending_meta: list[tuple[str, str]] = []
         progressed = False
@@ -3920,9 +4547,8 @@ class ProjectPreprocessor:
                 preempted = True
                 continue
             if not generated.get("success"):
-                fallback_data = {"summary": f"module generation error: {str(generated.get('error', ''))[:200]}", "responsibilities": [], "entry_points": [], "key_symbols": [], "dependencies": [], "tests": []}
-                self._store_module_card(root, module, revision, fallback_data)
-                progressed = True
+                with self._stats_lock:
+                    self._stats["module_failures"] = self._stats.get("module_failures", 0) + 1
                 continue
             self._store_module_card(root, module, revision, self._generated_card_data(generated))
             progressed = True
@@ -4221,9 +4847,16 @@ class ProjectPreprocessor:
     def _run_idle_database_maintenance(self) -> bool:
         """Run coarse derived-index maintenance from an existing idle worker turn."""
         now = time.time()
-        maintenance_interval = max(300, int(self.cfg.get("db_maintenance_interval_seconds", 1800)))
+        configured_maintenance_interval = max(300, int(self.cfg.get("db_maintenance_interval_seconds", 1800)))
+        retry_interval = getattr(self, "_db_maintenance_retry_interval", None)
+        maintenance_interval = (
+            min(configured_maintenance_interval, retry_interval)
+            if type(retry_interval) is int and retry_interval >= 300
+            else configured_maintenance_interval
+        )
         if now - self._last_db_maintenance < maintenance_interval or self._yield():
             return False
+        next_maintenance_interval = configured_maintenance_interval
         try:
             with self._db_lock, closing(self._connect()) as con:
                 # Prune orphan content cards not referenced by any active file and older than 30 days
@@ -4251,6 +4884,23 @@ class ProjectPreprocessor:
                     component.optimize()
             except Exception as maintenance_exc:
                 logger.debug("Derived-index optimization skipped (%s)", type(maintenance_exc).__name__)
+        # Incremental vacuum can hold the code-index writer lock for seconds.
+        # Keep it off the indexing path and run it only from this idle maintenance turn.
+        enforce_budget = getattr(self.code_index, "enforce_size_limit", None)
+        if callable(enforce_budget):
+            try:
+                with self._db_lock, closing(self._connect()) as con:
+                    protected_roots = tuple(sorted(
+                        str(row[0]) for row in con.execute(
+                            "SELECT root FROM projects WHERE status='running'"
+                        ).fetchall()
+                    ))
+                budget_result = enforce_budget(protected_roots=protected_roots, max_files=512)
+                if not isinstance(budget_result, dict) or budget_result.get("success") is not True or budget_result.get("within_budget") is False:
+                    next_maintenance_interval = min(maintenance_interval, 300)
+                    logger.warning("Code-index size budget remains exceeded or could not be enforced")
+            except Exception as maintenance_exc:
+                logger.warning("Code-index size maintenance skipped (%s)", type(maintenance_exc).__name__)
         # cleanup_deleted_projects also performs the same bounded incremental vacuum.
         self.cleanup_deleted_projects()
         self.cleanup_orphaned_indexes()
@@ -4260,6 +4910,11 @@ class ProjectPreprocessor:
         except Exception as clean_exc:
             logger.debug("Quarantined file cleanup skipped (%s)", type(clean_exc).__name__)
         self._last_db_maintenance = now
+        self._db_maintenance_retry_interval = (
+            next_maintenance_interval
+            if next_maintenance_interval < configured_maintenance_interval
+            else None
+        )
         with self._stats_lock:
             self._stats["db_maintenance_runs"] = self._stats.get("db_maintenance_runs", 0) + 1
         return True
@@ -4469,3 +5124,5 @@ class ProjectPreprocessor:
             if t and t.is_alive() and threading.current_thread() is not t:
                 t.join(timeout=3.0)
         self._cpu_pool.shutdown(wait=False, cancel_futures=True)
+        if getattr(self, "_write_actor", None) is not None:
+            self._write_actor.stop()

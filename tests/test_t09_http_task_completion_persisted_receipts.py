@@ -35,7 +35,7 @@ def test_http_task_complete_uses_persisted_repository_scoped_receipts(
     config_path.write_text(
         f'[server]\nbind = "127.0.0.1"\nport = 11498\nstate_dir = "{state_dir.as_posix()}"\n'
         "\n[agent_state]\nenabled = true\n"
-        '\n[security]\napi_token = "t09-test-token"\n'
+        '\n[security]\n'
         f'allowed_roots = ["{project_root.as_posix()}"]\n',
         encoding="utf-8",
     )
@@ -132,19 +132,6 @@ def test_http_task_complete_uses_persisted_repository_scoped_receipts(
     try:
         before_unauthorized = app.agent_tasks.get(task_id)
         assert before_unauthorized is not None
-        mcp_client.api_token = "wrong-t09-test-token"
-        unauthorized = mcp_server.local_ai_coord(
-            action="task_complete",
-            task_id=task_id,
-            root=str(project_root),
-            reason="unauthorized completion attempt",
-        )
-        assert unauthorized["success"] is False, unauthorized
-        assert unauthorized["status_code"] == 401, unauthorized
-        after_unauthorized = app.agent_tasks.get(task_id)
-        assert after_unauthorized == before_unauthorized
-
-        mcp_client.api_token = "t09-test-token"
         before_wrong_owner = app.agent_tasks.get(task_id)
         task_events_before_wrong_owner = app.agent_tasks.state_store.events(
             stream_id=f"task:{task_id}"

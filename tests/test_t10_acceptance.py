@@ -8,6 +8,7 @@ import threading
 import time
 from contextlib import closing
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -27,6 +28,20 @@ from local_ai_hub.treesitter_parser import is_treesitter_available, parse_treesi
 class _SnapshotReader:
     ignore_dirs: set[str] = set()
     max_file_bytes: int = 2_000_000
+
+    @staticmethod
+    def _inventory_path_safe(base: Path, path: Path) -> bool:
+        try:
+            current = base
+            for part in path.relative_to(base).parts:
+                current = current / part
+                info = current.lstat()
+                if current.is_symlink() or getattr(info, "st_file_attributes", 0) & 0x400:
+                    return False
+            path.resolve(strict=True).relative_to(base.resolve(strict=True))
+            return True
+        except (OSError, RuntimeError, ValueError):
+            return False
 
     @staticmethod
     def _read_snapshot(
@@ -624,7 +639,11 @@ def test_preprocessor_queues_unchanged_files_after_analyzer_version_change(tmp_p
         "preprocessing": {"code_index_files_per_step": 8},
     }
     preprocessor = ProjectPreprocessor(
-        config, services=None, rag=None, scheduler=None, runtime=None,
+        config,
+        services=SimpleNamespace(evidence_store=SimpleNamespace(
+            recent_paths=lambda _root, limit: [{"path": "module.py"}][:limit],
+        )),
+        rag=None, scheduler=None, runtime=None,
         repo_tools=index.repo_tools, code_index=index,
     )
     root_key = canonical_root(str(root))

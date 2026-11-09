@@ -82,7 +82,7 @@ def warmup(tmp_path, monkeypatch):
     )
     instance = LocalAIServices.__new__(LocalAIServices)
     instance.config = {"server": {"state_dir": str(tmp_path / "state")},
-                       "security": {"api_token": "protected", "allowed_roots": [str(tmp_path)]}}
+                       "security": {"allowed_roots": [str(tmp_path)]}}
     instance.task_store = SimpleNamespace(get=Mock(return_value=task))
     instance._context_warmup = SimpleNamespace(submit=Mock(return_value=True))
     instance.adaptive_context_pack = Mock()
@@ -119,6 +119,8 @@ def test_warmup_rechecks_fences_when_callback_runs(tmp_path, monkeypatch, change
     elif change == "degraded":
         mode.degraded = True
     else:
-        instance.config["security"]["allowed_roots"] = []
+        denied_root = tmp_path.parent / "denied-root"
+        denied_root.mkdir(exist_ok=True)
+        instance.config["security"]["allowed_roots"] = [str(denied_root)]
     instance._context_warmup.submit.call_args.args[1]()
     instance.adaptive_context_pack.assert_not_called()

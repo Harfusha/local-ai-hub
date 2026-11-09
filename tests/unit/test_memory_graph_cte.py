@@ -8,7 +8,7 @@ from local_ai_hub.agent_memory import MemoryStore
 import local_ai_hub.sqlite_support as ss_mod
 
 
-def test_traverse_graph_executes_single_sql_query(tmp_path: Path) -> None:
+def test_traverse_graph_bounds_selects_by_node_limit(tmp_path: Path) -> None:
     state = AgentStateStore(tmp_path / "state.sqlite3")
     store = MemoryStore(state)
     store._init_table()
@@ -21,7 +21,8 @@ def test_traverse_graph_executes_single_sql_query(tmp_path: Path) -> None:
     store.record_relation("C", "connects", "D", weight=0.8)
     store.record_relation("A", "connects", "E", weight=0.5)
 
-    # Count SELECT queries executed during traverse_graph
+    # Count SELECT queries executed during traverse_graph; every expanded node
+    # must be covered by the explicit max_nodes bound.
     statements: list[str] = []
     orig_connect = ss_mod.connect_sqlite
 
@@ -42,7 +43,7 @@ def test_traverse_graph_executes_single_sql_query(tmp_path: Path) -> None:
     assert "C" in res["nodes"]
 
     select_queries = [s for s in statements if "SELECT" in s.upper()]
-    assert len(select_queries) == 1, f"Expected 1 SELECT query, got {len(select_queries)}: {select_queries}"
+    assert len(select_queries) <= 11, f"SELECT count exceeded max_nodes + 1: {len(select_queries)}"
 
 
 def test_traverse_graph_bounded_limits_and_cycles(tmp_path: Path) -> None:

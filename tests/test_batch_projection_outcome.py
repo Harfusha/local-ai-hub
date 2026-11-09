@@ -6,6 +6,14 @@ from local_ai_hub import mcp_server
 from local_ai_hub.token_accounting import json_tokens
 
 
+@pytest.fixture(autouse=True)
+def qualified_batch_actions(monkeypatch):
+    monkeypatch.setattr(mcp_server.FEATURES, "tasks", True)
+    monkeypatch.setattr(mcp_server.FEATURES, "hardware_profile", "balanced")
+    monkeypatch.setattr(mcp_server.FEATURES, "local_semantic_analysis", True)
+    monkeypatch.setattr(mcp_server.FEATURES, "has_any_model", lambda: True)
+
+
 def batch_result():
     return {
         "success": True, "input_count": 3, "accepted_count": 3,

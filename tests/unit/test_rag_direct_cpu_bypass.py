@@ -116,34 +116,32 @@ def _stub_openvino_reranker(tmp_path, monkeypatch, *, fail_gpu_load, fail_gpu_pr
     return reranker, attempts, cpu_predictions
 
 
-def test_direct_rag_route_blocks_cpu_candidate_after_cold_gpu_load_failure(tmp_path, monkeypatch):
+def test_direct_rag_route_uses_cpu_candidate_after_cold_gpu_load_failure(tmp_path, monkeypatch):
     store = _store_with_two_chunks(tmp_path / "rag")
     reranker, attempts, cpu_predictions = _stub_openvino_reranker(
         tmp_path / "reranker", monkeypatch, fail_gpu_load=True, fail_gpu_predict=False
     )
     store.reranker = reranker
 
-    baseline = store._search_uncached("candidate", "workspace-a", top_k=2, use_reranker=False)
     result = store._search_uncached("candidate", "workspace-a", top_k=2, use_reranker=True)
 
-    assert attempts == [("openvino", "GPU")]
-    assert cpu_predictions == []
-    assert [item["path"] for item in result["results"]] == [item["path"] for item in baseline["results"]]
+    assert attempts == [("openvino", "GPU"), ("torch", "cpu")]
+    assert cpu_predictions == [2]
+    assert result["reranked"] is True
 
 
-def test_direct_rag_route_blocks_cpu_candidate_after_gpu_prediction_failure(tmp_path, monkeypatch):
+def test_direct_rag_route_uses_cpu_candidate_after_gpu_prediction_failure(tmp_path, monkeypatch):
     store = _store_with_two_chunks(tmp_path / "rag")
     reranker, attempts, cpu_predictions = _stub_openvino_reranker(
         tmp_path / "reranker", monkeypatch, fail_gpu_load=False, fail_gpu_predict=True
     )
     store.reranker = reranker
 
-    baseline = store._search_uncached("candidate", "workspace-a", top_k=2, use_reranker=False)
     result = store._search_uncached("candidate", "workspace-a", top_k=2, use_reranker=True)
 
-    assert attempts == [("openvino", "GPU")]
-    assert cpu_predictions == []
-    assert [item["path"] for item in result["results"]] == [item["path"] for item in baseline["results"]]
+    assert attempts == [("openvino", "GPU"), ("torch", "cpu")]
+    assert cpu_predictions == [2, 2]
+    assert result["reranked"] is True
 
 
 def test_non_rag_reranker_call_keeps_cpu_fallback_by_default(tmp_path, monkeypatch):
@@ -170,7 +168,7 @@ def test_non_rag_reranker_runtime_failure_keeps_cpu_fallback_by_default(tmp_path
     assert cpu_predictions == [2, 2]
 
 
-def test_direct_search_bypasses_active_cpu_reranker_and_preserves_candidates(tmp_path):
+def test_direct_search_uses_active_cpu_reranker(tmp_path):
     store = _store_with_two_chunks(tmp_path)
     reranker = _RerankerSpy("cpu")
     store.reranker = reranker
@@ -178,8 +176,8 @@ def test_direct_search_bypasses_active_cpu_reranker_and_preserves_candidates(tmp
     baseline = store._search_uncached("candidate", "workspace-a", top_k=2, use_reranker=False)
     result = store._search_uncached("candidate", "workspace-a", top_k=2, use_reranker=True)
 
-    assert reranker.calls == 0
-    assert [item["path"] for item in result["results"]] == [item["path"] for item in baseline["results"]]
+    assert reranker.calls == 1
+    assert [item["path"] for item in result["results"]] == list(reversed([item["path"] for item in baseline["results"]]))
 
 
 def test_direct_search_still_uses_active_gpu_reranker(tmp_path):
@@ -194,7 +192,7 @@ def test_direct_search_still_uses_active_gpu_reranker(tmp_path):
     assert [item["path"] for item in result["results"]] == list(reversed([item["path"] for item in baseline["results"]]))
 
 
-def test_direct_search_does_not_load_cold_cpu_reranker(tmp_path):
+def test_direct_search_lazily_loads_cold_cpu_reranker(tmp_path):
     store = _store_with_two_chunks(tmp_path)
     reranker = _RerankerSpy(None)
     reranker.device = "cpu"
@@ -202,7 +200,7 @@ def test_direct_search_does_not_load_cold_cpu_reranker(tmp_path):
 
     store._search_uncached("candidate", "workspace-a", top_k=2, use_reranker=True)
 
-    assert reranker.calls == 0
+    assert reranker.calls == 1
 
 
 def test_direct_search_keeps_lazy_gpu_reranking(tmp_path):
@@ -216,3 +214,49 @@ def test_direct_search_keeps_lazy_gpu_reranking(tmp_path):
 
     assert reranker.calls == 1
     assert [item["path"] for item in result["results"]] == list(reversed([item["path"] for item in baseline["results"]]))
+
+
+def test_direct_rag_route_preserves_candidates_when_gpu_reservation_is_denied(tmp_path, monkeypatch):
+    store = _store_with_two_chunks(tmp_path / "rag")
+    reranker, attempts, cpu_predictions = _stub_openvino_reranker(
+        tmp_path / "reranker", monkeypatch, fail_gpu_load=False, fail_gpu_predict=False
+    )
+    reranker.active_device = "cuda:0"
+    monkeypatch.setattr(reranker, "_needs_cuda_admission", lambda: True)
+    monkeypatch.setattr(reranker, "_claim_gpu_reservation", lambda: False)
+    store.reranker = reranker
+
+    baseline = store._search_uncached("candidate", "workspace-a", top_k=2, use_reranker=False)
+    result = store._search_uncached("candidate", "workspace-a", top_k=2, use_reranker=True)
+
+    assert result["success"] is True
+    assert {item["path"] for item in result["results"]} == {item["path"] for item in baseline["results"]}
+    assert attempts == []
+    assert cpu_predictions == []
+
+
+def test_rag_embedding_gpu_reservation_denial_uses_lexical_candidates(tmp_path, monkeypatch):
+    store = _store_with_two_chunks(tmp_path / "rag")
+    calls = []
+
+    def deny_gpu_admission(texts, priority=3, query=False):
+        calls.append((texts, priority, query))
+        return {
+            "success": False,
+            "error_code": "gpu_reserved",
+            "error": "GPU admission is unavailable",
+            "retryable": True,
+        }
+
+    monkeypatch.setattr(store.services, "embed", deny_gpu_admission)
+    baseline = store._search_uncached(
+        "candidate", "workspace-a", top_k=2, use_reranker=False, lexical_only=True
+    )
+    result = store._search_uncached("candidate", "workspace-a", top_k=2, use_reranker=False)
+
+    assert calls == [(["candidate"], 3, True)]
+    assert result["success"] is True
+    assert result["fallback"] == "bm25_fts"
+    assert result["retrieval_mode"] == "lexical_fallback"
+    assert result["reason"] == "GPU admission is unavailable"
+    assert {item["path"] for item in result["results"]} == {item["path"] for item in baseline["results"]}

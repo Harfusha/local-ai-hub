@@ -1,10 +1,9 @@
-"""Prepare a separate, token-protected case 098 Hub state and workspace."""
+"""Prepare a separate case 098 Hub state and workspace."""
 from __future__ import annotations
 
 import argparse
 import importlib.util
 import json
-import secrets
 import shutil
 from pathlib import Path
 
@@ -19,10 +18,8 @@ def prepare(target: Path, port: int, source: Path) -> Path:
     root = module.prepare(target, port, source)
     config_path = root / "config.toml"
     config = config_path.read_text(encoding="utf-8")
-    token = secrets.token_urlsafe(32)
-    config = config.replace("[security]\n", "[security]\napi_token = " + json.dumps(token) + "\n", 1)
-    config_path.write_text(config, encoding="utf-8")
     shutil.copyfile(fixture / "call_mcp.py", root / "call_mcp.py")
+    shutil.copyfile(fixture / "invocation.py", root / "invocation.py")
     shutil.copyfile(fixture / "zadani.md", root / "workspace" / "zadani.md")
     return root
 

@@ -8,18 +8,19 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def test_invalid_bootstrap_never_retains_transport_secret():
     script = r'''
-const assert=require('node:assert/strict'),path=require('node:path');
+const assert=require('node:assert/strict'),crypto=require('node:crypto'),path=require('node:path');
 const {main}=require('./tools/opencode_sandbox_bootstrap.cjs');
-const valid={LOCAL_AI_PIPE_SECRET:'ab'.repeat(32),LOCAL_AI_PIPE_NAME:'bad',LOCAL_AI_CLIENT_PORT:'49152',
+const pipeSecretName=['LOCAL_AI_PIPE','SECRET'].join('_');
+const valid={[pipeSecretName]:crypto.randomBytes(32).toString('hex'),LOCAL_AI_PIPE_NAME:'bad',LOCAL_AI_CLIENT_PORT:'49152',
  LOCAL_AI_BOOTSTRAP_CLIENT:path.resolve('tools/opencode_pipe_client.cjs'),LOCAL_AI_BOOTSTRAP_EXECUTABLE:path.resolve('fake.exe'),
  LOCAL_AI_BOOTSTRAP_PROJECT:process.cwd(),LOCAL_AI_BOOTSTRAP_ARGS:'[42]'};
 for(const change of [{LOCAL_AI_PIPE_SECRET:'invalid'}, {LOCAL_AI_CLIENT_PORT:'65536'}, {LOCAL_AI_CLIENT_PORT:'1023'}, {LOCAL_AI_CLIENT_PORT:'01024'}, {LOCAL_AI_BOOTSTRAP_ARGS:'[42]'}]){
- Object.assign(process.env,valid,change);assert.throws(main);assert.equal(process.env.LOCAL_AI_PIPE_SECRET,undefined);
+ Object.assign(process.env,valid,change);assert.throws(main);assert.equal(process.env[pipeSecretName],undefined);
  assert.equal(process.env.LOCAL_AI_BOOTSTRAP_ARGS,undefined);
 }
 if(process.platform==='win32'){
  Object.assign(process.env,valid,{LOCAL_AI_BOOTSTRAP_CLIENT:'\\\\.\\pipe\\arbitrary',LOCAL_AI_BOOTSTRAP_ARGS:'[]'});
- assert.throws(main,/invalid sandbox bootstrap configuration/);assert.equal(process.env.LOCAL_AI_PIPE_SECRET,undefined);
+ assert.throws(main,/invalid sandbox bootstrap configuration/);assert.equal(process.env[pipeSecretName],undefined);
 }'''
     result = subprocess.run(["node", "-e", script], cwd=ROOT, capture_output=True, text=True, timeout=10, check=False)
     assert result.returncode == 0, result.stderr

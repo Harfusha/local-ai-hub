@@ -3,11 +3,11 @@ from contextlib import closing
 from pathlib import Path
 import subprocess
 
-from local_ai_hub import __version__
 from local_ai_hub.config import load_config
 from local_ai_hub.code_index import CodeIndex
 from local_ai_hub.deterministic import DeterministicEngine
 from local_ai_hub.rag import RAGStore, _fragment_hash
+import local_ai_hub.preprocess as preprocess_module
 from local_ai_hub.preprocess import ProjectPreprocessor
 from local_ai_hub.repo_tools import RepositoryTools
 
@@ -94,7 +94,7 @@ def test_new_clean_worktree_seeds_git_hash_without_byte_read(tmp_path: Path):
         pre.close()
 
 
-def test_new_worktree_links_existing_content_card(tmp_path: Path):
+def test_new_worktree_links_existing_content_card_across_app_release(tmp_path: Path, monkeypatch):
     config = _config(tmp_path)
     root = tmp_path / "repo"
     root.mkdir()
@@ -109,9 +109,14 @@ def test_new_worktree_links_existing_content_card(tmp_path: Path):
         with closing(pre._connect()) as con:
             con.execute(
                 "INSERT INTO content_cards(card_key,content_hash,model,analyzer_version,card_json,created_at,accessed_at,hits) VALUES(?,?,?,?,?,?,?,?)",
-                ("card-existing", "git:blob-app", "test", __version__, "{}", now, now, 0),
+                (
+                    "card-existing", "git:blob-app", "test",
+                    preprocess_module.PREPROCESS_ANALYZER_VERSION, "{}", now, now, 0,
+                ),
             )
             con.commit()
+        # A normal Hub release must not make semantically unchanged cards miss.
+        monkeypatch.setattr(preprocess_module, "__version__", "next-release", raising=False)
         tools.git_blob_map = lambda _root: {"app.py": "git:blob-app"}
         assert pre._step_inventory(dict(pre._project_row(str(root))))
         with closing(pre._connect()) as con:
@@ -132,6 +137,59 @@ def _insert_project_for_inventory(pre: ProjectPreprocessor, root: Path):
             (str(root), "w", "running", "inventory", 0, 0, now, now, 0, 0, now, "test"),
         )
         con.commit()
+
+
+def test_major_inventory_change_preserves_derived_cache_rows(tmp_path: Path):
+    config = _config(tmp_path)
+    root = tmp_path / "repo"
+    root.mkdir()
+    source = root / "app.py"
+    source.write_text("value = 1\n", encoding="utf-8")
+    tools = RepositoryTools(config)
+    pre = ProjectPreprocessor(config, _Noop(), _Rag(), _Noop(), _Noop(), tools)
+    try:
+        _insert_project_for_inventory(pre, root)
+        stat_result = source.stat()
+        now = time.time()
+        with closing(pre._connect()) as con:
+            con.execute(
+                "UPDATE projects SET structural_hash='previous-analyzer' WHERE root=?",
+                (str(root),),
+            )
+            con.execute(
+                "INSERT INTO file_refs(root,path,content_hash,size,mtime_ns,needs_hash,rag_hash,generation,card_key,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                (str(root), "app.py", "same-content", stat_result.st_size, stat_result.st_mtime_ns, 0, "same-content", 0, "card", now),
+            )
+            con.execute(
+                "INSERT INTO module_cards(root,module,revision_hash,card_json,updated_at) VALUES(?,?,?,?,?)",
+                (str(root), "app", "same-revision", "{}", now),
+            )
+            con.execute(
+                "INSERT INTO project_cards(root,revision_hash,card_json,updated_at) VALUES(?,?,?,?)",
+                (str(root), "same-revision", "{}", now),
+            )
+            con.execute(
+                "INSERT INTO hot_query_state(root,query,revision_hash,updated_at) VALUES(?,?,?,?)",
+                (str(root), "query", "same-revision", now),
+            )
+            con.execute(
+                "INSERT INTO task_capsules(root,query,revision_hash,capsule_json,updated_at) VALUES(?,?,?,?,?)",
+                (str(root), "query", "same-revision", "{}", now),
+            )
+            con.commit()
+
+        assert pre._step_inventory(dict(pre._project_row(str(root))))
+
+        with closing(pre._connect()) as con:
+            cache_counts = tuple(
+                int(con.execute(f"SELECT count(*) FROM {table} WHERE root=?", (str(root),)).fetchone()[0])
+                for table in ("module_cards", "project_cards", "hot_query_state", "task_capsules")
+            )
+            generation = int(con.execute("SELECT generation FROM projects WHERE root=?", (str(root),)).fetchone()[0])
+        assert cache_counts == (1, 1, 1, 1)
+        assert generation == 1
+    finally:
+        pre.close()
 
 
 def test_dirty_and_untracked_files_still_use_byte_hash(tmp_path: Path):

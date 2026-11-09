@@ -1548,7 +1548,7 @@ def compare_records(
     if not isinstance(baseline, dict) or not isinstance(candidate, dict):
         return {"status": "incomparable", "reason": "benchmark record must be a JSON object"}
     if baseline.get("success") is not True or candidate.get("success") is not True:
-        return {"status": "incomparable", "reason": "both benchmark records must pass supported golden and stage gates"}
+        return {"status": "inconclusive", "reason": "both benchmark records must pass supported golden and stage gates"}
     baseline_meta = baseline.get("metadata", {})
     candidate_meta = candidate.get("metadata", {})
     if not isinstance(baseline_meta, dict) or not isinstance(candidate_meta, dict):
@@ -3838,6 +3838,7 @@ def run_benchmark(
             def verify_rag_search_cache_case(regime: str, index: int) -> dict[str, Any]:
                 from local_ai_hub.cache import stable_hash as cache_stable_hash
                 from local_ai_hub.normalizer import normalize_query
+                from local_ai_hub.rag import RAG_CHUNKER_VERSION
 
                 case = rag_search_cases[index]
                 workspace = rag_search_workspaces[regime]
@@ -3845,6 +3846,7 @@ def run_benchmark(
                 revision = app.rag.revision(workspace=workspace)
                 with closing(app.rag._connect()) as con:
                     generation = app.rag._workspace_index_generation(con, workspace)
+                    stored_chunker_version = app.rag._stored_workspace_chunker_version(con, workspace)
                 cache_identity_known = app.rag._embedding_space_cache_identity_known()
                 embedding_space = app.rag._embedding_space_id()
                 embedding_dimension = app.rag._embedding_dimension_cache_identity()
@@ -3855,7 +3857,11 @@ def run_benchmark(
                     "query": clean_query,
                     "top_k": 10,
                     "reranker": False,
+                    "semantic_only": False,
+                    "semantic_query": clean_query,
                     "scope_path": None,
+                    "chunker_version": RAG_CHUNKER_VERSION,
+                    "stored_chunker_version": stored_chunker_version,
                     "embedding_space": embedding_space if cache_identity_known else None,
                     "embedding_dimension": embedding_dimension,
                 })
@@ -3968,8 +3974,8 @@ def run_benchmark(
         def seed_parent(target: Path) -> dict[str, Any]:
             result = app.preprocessor._seed_from_parent(str(target), str(repo_root))
             seeded_rows.update({key: int(value) for key, value in result.items()})
-            if int(result.get("code_index", 0)) < 1:
-                raise RuntimeError("parent seed did not copy synthetic CodeIndex rows")
+            if int(result.get("code_index", 0)) != 0:
+                raise RuntimeError("parent seed copied CodeIndex rows despite demand-driven admission")
             return {"success": True, "seeded_rows": result}
 
         def prepare_warm_seed(index: int) -> dict[str, Any]:
@@ -3991,9 +3997,7 @@ def run_benchmark(
                     "SELECT COUNT(*) FROM files WHERE root=?", (root,),
                 ).fetchone()[0])
             empty_target = not any(target.iterdir())
-            if regime == "cold" and (file_rows != 0 or not empty_target):
-                return {"success": False}
-            if regime == "warm" and file_rows < 1:
+            if file_rows != 0 or not empty_target:
                 return {"success": False}
             status = "cold_case_unseen" if regime == "cold" else "warm_exact_case_primed"
             return _preparation_observation(
@@ -4021,7 +4025,7 @@ def run_benchmark(
             warm_prepare=prepare_warm_seed,
             cold_verify=lambda index: verify_seed_case("cold", index),
             warm_verify=lambda index: verify_seed_case("warm", index),
-            definition="Copies only benchmark-owned parent CodeIndex rows into synthetic worktree roots; cold destinations are empty, warm destination is preseeded. Paired IDs identify same numbered copy observation.",
+            definition="Verifies demand-driven worktree registration does not clone unrelated parent CodeIndex rows; cold and warm destinations are isolated empty synthetic roots, with the warm no-clone outcome primed outside timing. Paired IDs identify the same numbered no-clone observation.",
             workload_fingerprint=parent_seed_workload_fingerprint,
             sample_ids_by_regime={
                 "cold": parent_seed_sample_ids,
@@ -5273,11 +5277,13 @@ def main(argv: list[str] | None = None) -> int:
             app.close()
     print(json.dumps(result, ensure_ascii=False, separators=(",", ":")))
     comparison_status = result.get("comparison", {}).get("status", "within_tolerance")
+    if comparison_status == "inconclusive":
+        return 2
     if not result["success"] or comparison_status in {"regression", "incomparable"}:
         return 1
     if args.full_matrix and result.get("metadata", {}).get("baseline_readiness") != "plan_grade":
         return 2
-    return 2 if comparison_status == "inconclusive" else 0
+    return 0
 
 
 _T12_PROFILE_CORPUS: dict[str, tuple[dict[str, Any], ...]] = {

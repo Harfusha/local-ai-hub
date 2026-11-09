@@ -14,12 +14,9 @@ from local_ai_hub import http_server
 from local_ai_hub.app import LocalAIApp
 
 
-TOKEN = "repository-analysis-baseline-secret"
-def _post(base_url, path, payload, *, token=TOKEN, raw_body=None):
+def _post(base_url, path, payload, *, raw_body=None):
     body = raw_body if raw_body is not None else json.dumps(payload).encode("utf-8")
     headers = {"Content-Type": "application/json"}
-    if token is not None:
-        headers["X-LocalAI-Token"] = token
     request = urllib_request.Request(
         f"{base_url}{path}", data=body, headers=headers, method="POST"
     )
@@ -47,7 +44,6 @@ def public_http_hub(tmp_path):
             "port = 11435",
             f'state_dir = "{state_dir.as_posix()}"',
             "[security]",
-            f'api_token = "{TOKEN}"',
             f'allowed_roots = ["{tmp_path.as_posix()}"]',
         )),
         encoding="utf-8",
@@ -118,24 +114,18 @@ def test_pre_extraction_public_http_route_baseline(
     assert calls == [(name, (canonical_root, *args), kwargs)]
 
 
-def test_public_http_baseline_authorization_precedes_route_service(
+def test_public_http_baseline_loopback_route_needs_no_hub_token(
     public_http_hub, monkeypatch
 ):
     base_url, app, root = public_http_hub
     calls = _install_service_spies(monkeypatch, app)
     payload = {"root": str(root)}
 
-    status, response = _post(base_url, "/api/git/status", payload, token=None)
+    status, response = _post(base_url, "/api/git/status", payload)
 
-    assert status == 401
-    assert response == {
-        "success": False,
-        "error": "unauthorized",
-        "status_code": 401,
-        "retryable": False,
-        "terminal": True,
-    }
-    assert calls == []
+    assert status == 200
+    assert response["success"] is True
+    assert calls
 
 
 def test_public_http_baseline_maintenance_gate_precedes_body_and_service(

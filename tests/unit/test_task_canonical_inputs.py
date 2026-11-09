@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from typing import Literal
 
 import pytest
 
@@ -22,7 +23,11 @@ def _active_task_mode(monkeypatch, tmp_path):
     })
     monkeypatch.setattr(mcp_server.FEATURES, "tasks", True)
     monkeypatch.setattr(mcp_server.FEATURES, "has_any_model", lambda: True)
+    monkeypatch.setattr(mcp_server.FEATURES, "hardware_profile", "high")
+    monkeypatch.setattr(mcp_server.FEATURES, "local_semantic_analysis", True)
+    monkeypatch.setattr(mcp_server.FEATURES, "local_code_generation_qualified", True)
     monkeypatch.setattr(mcp_server.FEATURES, "vision", True)
+    monkeypatch.setattr(mcp_server.FEATURES, "local_vision_qualified", True)
     snapshot = OperationalModeSnapshot("active", 1, None)
     monkeypatch.setattr(mcp_server, "load_operational_mode", lambda _state_dir: snapshot)
     monkeypatch.setattr(mcp_server, "_record_tool_accounting", lambda **_kwargs: None)
@@ -70,6 +75,12 @@ def test_registered_task_handler_rejects_retired_aliases_before_dispatch(
 ):
     client = DummyClient()
     monkeypatch.setattr(mcp_server, "CLIENT", client)
+    monkeypatch.setattr(mcp_server.FEATURES, "tasks", True)
+    monkeypatch.setattr(mcp_server.FEATURES, "hardware_profile", "high")
+    monkeypatch.setattr(mcp_server.FEATURES, "local_semantic_analysis", True)
+    monkeypatch.setattr(mcp_server.FEATURES, "local_code_generation_qualified", True)
+    monkeypatch.setattr(mcp_server.FEATURES, "local_vision_qualified", True)
+    monkeypatch.setattr(mcp_server.FEATURES, "has_any_model", lambda: True)
 
     result = asyncio.run(mcp_server.mcp.call_tool(
         "local_ai_task", {"action": action, **canonical, **retired},
@@ -98,6 +109,8 @@ def test_registered_candidate_handler_requires_canonical_fields(action, argument
 @pytest.mark.parametrize(("action", "arguments", "path", "expected"), [
     ("hardware_benchmark", {"prompt": "measure", "model": "m"}, "/api/benchmark/run",
      {"model": "m", "prompt": "measure", "num_tokens": 40}),
+    ("hardware_benchmark", {"prompt": "measure", "model": "m", "context_tokens": 16384}, "/api/benchmark/run",
+     {"model": "m", "prompt": "measure", "num_tokens": 40, "context_tokens": 16384}),
     ("speculative_draft", {"task": "draft", "candidate": "src/a.py", "context": "ctx", "root": "repo"},
      "/api/task/speculative_draft", {"task": "draft", "file": "src/a.py", "context": "ctx", "root": "repo"}),
     ("vision", {"prompt": "inspect", "candidate": "image.png", "image_artifact_id": "image-id",
@@ -134,19 +147,76 @@ def test_registered_task_handler_dispatches_canonical_inputs(
 ):
     client = DummyClient()
     monkeypatch.setattr(mcp_server, "CLIENT", client)
-
-    if action == "vision":
-        # The imported MCP action Literal is fixed at startup feature state; this fixture
-        # enables vision after import, so exercise the same handler without stale schema.
-        mcp_server.local_ai_task(action=action, **arguments)
-    else:
-        asyncio.run(mcp_server.mcp.call_tool(
-            "local_ai_task", {"action": action, **arguments},
-        ))
+    # MCP's registered Literal is a startup snapshot. Exercise handler mapping directly;
+    # live schema gating is covered by the MCP contract tests.
+    monkeypatch.setattr(mcp_server, "TaskAction", Literal[action])
+    mcp_server.local_ai_task(action=action, **arguments)
 
     assert len(client.calls) == 1
     assert client.calls[0][0] == path
     assert {key: client.calls[0][1][key] for key in expected} == expected
+
+
+def test_hardware_benchmark_projection_keeps_measurements_inside_response_budget(monkeypatch):
+    class BenchmarkClient:
+        def post(self, path, payload, **kwargs):
+            assert path == "/api/benchmark/run"
+            assert payload["context_tokens"] == 16384
+            return {
+                "success": True,
+                "model": "qwen3.5:4b-nvfp4",
+                "model_digest": "a" * 64,
+                "model_digest_status": "verified_installed",
+                "loaded_model_vram_bytes": 123456,
+                "loaded_model_vram_status": "observed_loaded_model",
+                "tokens_generated": 8,
+                "token_count_method": "backend_eval_count",
+                "ttft_ms": 12.3,
+                "call_latency_ms": 45.6,
+                "latency_basis": "ttft",
+                "tokens_per_second": 100.2,
+                "hardware_score": 80.1,
+                "generation_duration_ms": 8.0,
+                "load_duration_ms": 1.2,
+                "requested_context_tokens": 16384,
+                "loaded_model_context_tokens": 16384,
+                "context_qualified": True,
+                "context_qualification_status": "verified",
+                "prompt_eval_count": 8192,
+                "prompt_eval_count_method": "backend_prompt_eval_count",
+                "prompt_eval_duration_ms": 250.0,
+                "prefill_tokens_per_second": 32768.0,
+                "queue_wait_ms": 2.1,
+                "peak_vram_bytes": 987654,
+                "peak_vram_scope": "device_wide_sampled_during_inference",
+                "initial_vram": {"vram_used_mb": 3, "vram_total_mb": 15},
+                "final_vram": {"vram_used_mb": 4, "vram_total_mb": 15},
+                "verbose_debug_detail": "x" * 8000,
+            }
+
+    monkeypatch.setattr(mcp_server, "CLIENT", BenchmarkClient())
+    monkeypatch.setattr(mcp_server, "TaskAction", Literal["hardware_benchmark"])
+
+    result = mcp_server.local_ai_task(
+        action="hardware_benchmark", model="qwen3.5:4b-nvfp4", prompt="measure",
+        max_tokens=8, context_tokens=16384,
+        max_response_tokens=512, response_profile="compact",
+    )
+
+    assert result["success"] is True
+    assert result["tokens_per_second"] == 100.2
+    assert result["requested_context_tokens"] == 16384
+    assert result["loaded_model_context_tokens"] == 16384
+    assert result["context_qualified"] is True
+    assert result["context_qualification_status"] == "verified"
+    assert result["prompt_eval_count"] == 8192
+    assert result["prompt_eval_count_method"] == "backend_prompt_eval_count"
+    assert result["prompt_eval_duration_ms"] == 250.0
+    assert result["prefill_tokens_per_second"] == 32768.0
+    assert result["peak_vram_bytes"] == 987654
+    assert result["loaded_model_vram_bytes"] == 123456
+    assert result["response_budget"]["returned_tokens"] <= 512
+    assert result["response_budget"]["truncated"] is True
 
 
 def test_vision_contract_keeps_distinct_artifact_inputs():
@@ -214,6 +284,26 @@ def test_task_action_contract_accepts_canonical_task_inputs_and_rejects_aliases(
         assert validate_operation_arguments("local_ai_task", action, {**canonical, **alias}) is not None
 
 
+def test_benchmark_ignores_tool_schema_defaults_but_rejects_overrides():
+    assert validate_operation_arguments("local_ai_task", "benchmark", {}) is None
+    assert validate_operation_arguments("local_ai_task", "benchmark", {"path": ""}) is None
+    assert validate_operation_arguments("local_ai_task", "benchmark", {"audio_path": ""}) is None
+    assert validate_operation_arguments("local_ai_task", "benchmark", {"cloud_fallback": False}) is None
+    assert validate_operation_arguments("local_ai_task", "benchmark", {"complexity": "auto"}) is None
+    assert validate_operation_arguments(
+        "local_ai_task", "benchmark", {"audio_path": "clip.wav"},
+    ) is not None
+    assert validate_operation_arguments(
+        "local_ai_task", "benchmark", {"path": "clip.wav"},
+    ) is not None
+    assert validate_operation_arguments(
+        "local_ai_task", "benchmark", {"cloud_fallback": True},
+    ) is not None
+    assert validate_operation_arguments(
+        "local_ai_task", "benchmark", {"complexity": "hard"},
+    ) is not None
+
+
 def test_candidate_action_schema_requires_canonical_inputs():
     assert validate_operation_arguments("local_ai_task", "candidate_create", {"candidate_data": {}}) is None
     assert validate_operation_arguments("local_ai_task", "candidate_create", {}) is not None
@@ -223,3 +313,13 @@ def test_candidate_action_schema_requires_canonical_inputs():
     assert validate_operation_arguments("local_ai_task", "candidate_promote", {
         "candidate": "cand-a",
     }) is not None
+
+
+def test_hardware_benchmark_context_window_schema_is_bounded_and_strict():
+    assert validate_operation_arguments("local_ai_task", "hardware_benchmark", {
+        "prompt": "measure", "context_tokens": 4096,
+    }) is None
+    for invalid in (True, 4095, 32769, "16384"):
+        assert validate_operation_arguments("local_ai_task", "hardware_benchmark", {
+            "prompt": "measure", "context_tokens": invalid,
+        }) is not None

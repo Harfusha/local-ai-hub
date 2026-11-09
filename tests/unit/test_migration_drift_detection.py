@@ -56,6 +56,52 @@ def test_non_ascii_identifiers_remain_distinct(tmp_path):
     assert result["extra_tables_in_db"] == ["Ä"]
 
 
+def test_migration_drift_ignores_nonproduction_python_trees(tmp_path, monkeypatch):
+    monkeypatch.setattr(deterministic, "_MAX_SCHEMA_SCAN_FILES", 3)
+    parsed_sources = []
+    original_parse = deterministic.ast.parse
+
+    def capture_parse(source, *args, **kwargs):
+        parsed_sources.append(kwargs.get("filename", ""))
+        return original_parse(source, *args, **kwargs)
+
+    monkeypatch.setattr(deterministic.ast, "parse", capture_parse)
+    db_file = tmp_path / "app.db"
+    with _connect(db_file) as con:
+        con.execute("CREATE TABLE users (id INTEGER PRIMARY KEY)")
+
+    source = tmp_path / "src"
+    source.mkdir()
+    model_file = source / "models.py"
+    model_file.write_text(
+        "class User:\n"
+        "    __tablename__ = 'users'\n"
+        "    id: int\n"
+        "    email: str\n",
+        encoding="utf-8",
+    )
+    (source / "helpers.py").write_text('TOKEN = "__tablename__"\n', encoding="utf-8")
+    tools = tmp_path / "tools"
+    tools.mkdir()
+    (tools / "cli.py").write_text("def main(): return 0\n", encoding="utf-8")
+    fixtures = tmp_path / "tests" / "fixtures"
+    fixtures.mkdir(parents=True)
+    for index in range(3):
+        (fixtures / f"fixture_{index}.py").write_text("class Fixture: pass\n", encoding="utf-8")
+    tool_envs = tmp_path / "tool-envs"
+    tool_envs.mkdir()
+    for index in range(3):
+        (tool_envs / f"installed_{index}.py").write_text("class Package: pass\n", encoding="utf-8")
+
+    engine = DeterministicEngine({"server": {"state_dir": str(tmp_path / "state")}})
+    result = engine.migration_drift(str(tmp_path), str(db_file))
+
+    assert result["success"] is True, result
+    assert result["drift_detected"] is True
+    assert result["column_drifts"][0]["missing_in_db"] == ["email"]
+    assert parsed_sources == [str(model_file)]
+
+
 def test_migration_alter_rename_drop_sequence_matches_final_schema(tmp_path):
     result = _compare_schema(tmp_path, "CREATE TABLE renamed (id INTEGER, email TEXT);",
                              "CREATE TABLE users (id INTEGER, obsolete TEXT);"
@@ -178,6 +224,8 @@ def test_migration_drift_does_not_report_sync_without_live_database(tmp_path: Pa
 
     assert result["success"] is False
     assert result["status"] == "database_missing"
+    assert result["terminal"] is True
+    assert result["retryable"] is False
     assert result["in_sync"] is None
     assert result["drift_detected"] is None
 
@@ -192,6 +240,8 @@ def test_migration_drift_does_not_claim_sync_without_schema_source(tmp_path: Pat
 
     assert result["success"] is False
     assert result["status"] == "schema_source_unavailable"
+    assert result["terminal"] is True
+    assert result["retryable"] is False
     assert result["in_sync"] is None
     assert result["drift_detected"] is None
 
@@ -265,6 +315,8 @@ def test_migration_drift_bounds_directory_entry_scan(
 
     assert result["success"] is False
     assert result["status"] == "schema_scan_budget_exceeded"
+    assert result["terminal"] is True
+    assert result["retryable"] is False
     assert result["in_sync"] is None
     assert result["drift_detected"] is None
 
@@ -284,6 +336,8 @@ def test_migration_drift_bounds_python_model_fallback_scan(
 
     assert result["success"] is False
     assert result["status"] == "schema_scan_budget_exceeded"
+    assert result["terminal"] is True
+    assert result["retryable"] is False
     assert result["in_sync"] is None
     assert result["drift_detected"] is None
 

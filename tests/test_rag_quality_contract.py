@@ -300,6 +300,29 @@ def test_subthreshold_query_uses_degraded_lexical_fallback_instead_of_vector_tie
     assert result["results"] == []
 
 
+def test_cuda_reranker_failure_is_reported_with_deterministic_fallback(tmp_path):
+    store = _store(tmp_path)
+    workspace = "gpu-reranker-fallback-workspace"
+    _insert_vectors(store, workspace, np.asarray([[1.0, 0.0], [0.8, 0.6]], dtype=np.float32))
+    store.config["features"]["reranker"] = True
+
+    class _UnavailableCudaReranker:
+        active_device = "cuda"
+        device = "cuda"
+
+        def rerank(self, *_args, **_kwargs):
+            return {"success": False, "error": "GPU admission unavailable", "results": []}
+
+    store.reranker = _UnavailableCudaReranker()
+    result = store._search_uncached("fixture", workspace, top_k=2, use_reranker=True)
+
+    assert result["success"] is True
+    assert result["results"]
+    assert result["fallback"] == "heuristic_rerank"
+    assert "reranker" in result["fallbacks"]
+    assert "heuristic_rerank" in result["fallbacks"]
+
+
 def test_fallback_embedding_reports_identity_of_backend_that_produced_vectors():
     class _Cache:
         def __init__(self):
@@ -652,10 +675,13 @@ def test_retrieval_latency_and_peak_memory_baseline(tmp_path, monkeypatch):
         assert sum(scoring_batch_rows) == count
         assert max(scoring_batch_rows) <= configured_batch_size
 
+        ordered_samples = sorted(samples_ms)
+        p95_sample = ordered_samples[max(0, math.ceil(0.95 * len(ordered_samples)) - 1)]
         metrics.append({
             "chunks": count,
             "search_batch_size": configured_batch_size,
             "median_ms": round(float(np.median(samples_ms)), 3),
+            "p95_ms": round(float(p95_sample), 3),
             "peak_traced_mib": round(peak_bytes / (1024 * 1024), 3),
             "measured_samples": len(samples_ms),
             "peak_memory_samples": len(samples_ms),
@@ -672,6 +698,7 @@ def test_retrieval_latency_and_peak_memory_baseline(tmp_path, monkeypatch):
         assert row["scored_chunks"] == row["chunks"]
         assert row["max_scoring_batch_rows"] <= row["search_batch_size"]
         assert math.isfinite(float(row["median_ms"])) and float(row["median_ms"]) >= 0.0
+        assert math.isfinite(float(row["p95_ms"])) and float(row["p95_ms"]) >= float(row["median_ms"])
         assert math.isfinite(float(row["peak_traced_mib"])) and float(row["peak_traced_mib"]) >= 0.0
 
     receipt = {

@@ -32,6 +32,18 @@ def _broker(tmp_path) -> CommandBroker:
     )
 
 
+def _qualified_mutation_config() -> dict[str, Any]:
+    return {
+        "hardware": {"profile": "high"},
+        "features": {
+            "bounded_local_work": True,
+            "local_semantic_analysis": True,
+            "local_codegen": True,
+            "vision_analysis": True,
+        },
+    }
+
+
 def _register_task_worktree(broker: CommandBroker, task_id: str, root) -> None:
     task = SimpleNamespace(
         checkpoint=SimpleNamespace(
@@ -904,7 +916,7 @@ def test_post_journal_failure_prevents_mutation_dispatch(monkeypatch) -> None:
 
     submitted: list[dict[str, Any]] = []
     app = SimpleNamespace(
-        config={},
+        config=_qualified_mutation_config(),
         recovery=_UnavailableJournal(),
         async_jobs=SimpleNamespace(inference_admission=lambda _action: nullcontext()),
         work_orchestrator=SimpleNamespace(
@@ -916,7 +928,7 @@ def test_post_journal_failure_prevents_mutation_dispatch(monkeypatch) -> None:
     monkeypatch.setattr(http_server.Handler, "_begin_trace", lambda self, _path: setattr(self, "_trace_request_id", "req-1"))
     monkeypatch.setattr(http_server.Handler, "_require_authorized", lambda self: True)
     monkeypatch.setattr(http_server.Handler, "_agent", lambda self: "agent-a")
-    monkeypatch.setattr(http_server.Handler, "_read_json", lambda self: {"action": "submit", "work_id": "work-1"})
+    monkeypatch.setattr(http_server.Handler, "_read_json", lambda self: {"action": "submit", "mode": "bounded", "work_id": "work-1"})
     monkeypatch.setattr(http_server.Handler, "_validate_payload", lambda self, _path, _payload: None)
     responses: list[tuple[int, dict[str, Any]]] = []
     monkeypatch.setattr(http_server.Handler, "_send", lambda self, status, data: responses.append((status, data)))
@@ -933,10 +945,10 @@ def test_post_journal_failure_prevents_mutation_dispatch(monkeypatch) -> None:
 
 def test_post_work_order_disabled_gate_prevents_dispatch(tmp_path, monkeypatch) -> None:
     journal = RecoveryJournal(tmp_path)
-    payload = {"action": "submit", "work_id": "work-disabled"}
+    payload = {"action": "submit", "mode": "bounded", "work_id": "work-disabled"}
     submitted: list[dict[str, Any]] = []
     app = SimpleNamespace(
-        config={},
+        config=_qualified_mutation_config(),
         recovery=journal,
         work_orchestrator=SimpleNamespace(
             enabled=False,
@@ -972,11 +984,11 @@ def test_post_work_order_disabled_gate_prevents_dispatch(tmp_path, monkeypatch) 
 
 def test_http_retry_replays_outcome_and_rejects_changed_payload(tmp_path, monkeypatch) -> None:
     journal = RecoveryJournal(tmp_path)
-    payload_box: dict[str, dict[str, Any]] = {"value": {"action": "submit", "work_id": "work-1"}}
+    payload_box: dict[str, dict[str, Any]] = {"value": {"action": "submit", "mode": "bounded", "work_id": "work-1"}}
     original_payload = dict(payload_box["value"])
     submitted: list[dict[str, Any]] = []
     app = SimpleNamespace(
-        config={},
+        config=_qualified_mutation_config(),
         recovery=journal,
         async_jobs=SimpleNamespace(inference_admission=lambda _action: nullcontext()),
         work_orchestrator=SimpleNamespace(
@@ -1008,10 +1020,10 @@ def test_http_retry_replays_outcome_and_rejects_changed_payload(tmp_path, monkey
 
     request()
     request()
-    payload_box["value"] = {"action": "submit", "work_id": "different-work"}
+    payload_box["value"] = {"action": "submit", "mode": "bounded", "work_id": "different-work"}
     request()
 
-    assert submitted == [{"action": "submit", "work_id": "work-1"}]
+    assert submitted == [{"action": "submit", "mode": "bounded", "work_id": "work-1"}]
     assert [status for status, _data in responses] == [200, 200, 409]
     assert responses[1][1] == responses[0][1]
     original = journal.lookup(
@@ -1028,12 +1040,12 @@ def test_http_retry_agent_metadata_does_not_partition_request_journal(tmp_path, 
     journal = RecoveryJournal(tmp_path)
     agent_box = {"value": "agent-a"}
     payload = {
-        "action": "submit", "root": str(tmp_path.resolve()),
+        "action": "submit", "mode": "bounded", "root": str(tmp_path.resolve()),
         "task_id": "task-1", "session_id": "session-1", "work_id": "work-1",
     }
     submitted: list[dict[str, Any]] = []
     app = SimpleNamespace(
-        config={},
+        config=_qualified_mutation_config(),
         recovery=journal,
         work_orchestrator=SimpleNamespace(
             enabled=True,
@@ -1074,7 +1086,7 @@ def test_http_retry_from_two_live_clients_dispatches_once(tmp_path, monkeypatch)
     import logging
 
     journal = RecoveryJournal(tmp_path)
-    payload = {"action": "submit", "root": str(tmp_path), "task": "live HTTP idempotence"}
+    payload = {"action": "submit", "mode": "bounded", "root": str(tmp_path), "task": "live HTTP idempotence"}
     publish_started = threading.Event()
     release_publish = threading.Event()
     duplicate_waiting = threading.Event()
@@ -1094,7 +1106,7 @@ def test_http_retry_from_two_live_clients_dispatches_once(tmp_path, monkeypatch)
     telemetry = SimpleNamespace(record_live=lambda **_kwargs: None, record_http=lambda **_kwargs: None)
     app = SimpleNamespace(
         # Keep replay wait above the 5s synchronization barrier for loaded CI.
-        config={"resilience": {"singleflight_wait_timeout_seconds": 10.0}, "observability": {}},
+        config={**_qualified_mutation_config(), "resilience": {"singleflight_wait_timeout_seconds": 10.0}, "observability": {}},
         recovery=journal,
         telemetry=telemetry,
         logger=logging.getLogger("test.http-idempotence"),
@@ -1274,7 +1286,7 @@ def test_post_rejects_malformed_request_id_before_mutation_dispatch(tmp_path, mo
     monkeypatch.setattr(http_server, "APP", app)
     monkeypatch.setattr(http_server.Handler, "_require_authorized", lambda self: True)
     monkeypatch.setattr(http_server.Handler, "_agent", lambda self: "agent-a")
-    monkeypatch.setattr(http_server.Handler, "_read_json", lambda self: {"action": "submit", "work_id": "work-1"})
+    monkeypatch.setattr(http_server.Handler, "_read_json", lambda self: {"action": "submit", "mode": "bounded", "work_id": "work-1"})
     monkeypatch.setattr(http_server.Handler, "_validate_payload", lambda self, _path, _payload: None)
     responses: list[tuple[int, dict[str, Any]]] = []
     monkeypatch.setattr(http_server.Handler, "_send", lambda self, status, data, **_kwargs: responses.append((status, data)))
@@ -1344,7 +1356,7 @@ def test_send_normalizes_http_error_before_journaling_and_serializing(monkeypatc
         ("/api/rag/docset/index", {"name": "docs", "root": "project"}, "rag-docset-index"),
         ("/api/rag/ingest_document", {"workspace": "default", "content": "doc"}, "rag-ingest"),
         ("/api/rag/ingest_diagram", {"workspace": "default", "image_path": "diagram.png"}, "rag-diagram"),
-        ("/api/work-orders", {"action": "submit", "work_id": "work-1"}, "work-submit"),
+        ("/api/work-orders", {"action": "submit", "mode": "bounded", "work_id": "work-1"}, "work-submit"),
         ("/api/agent-state/tasks", {"action": "checkpoint", "task_id": "task-1", "checkpoint": {"phase": "testing", "next_action": "verify"}}, "task-checkpoint"),
     ],
 )
@@ -1378,9 +1390,7 @@ def test_http_partial_publish_failure_replays_without_dispatching_twice(
         raise KeyError("checkpoint failed after partial publish")
 
     app = SimpleNamespace(
-        config={"security": {
-            "allowed_roots": [task_root],
-        }},
+        config={**_qualified_mutation_config(), "security": {"allowed_roots": [task_root]}},
         agent_state=SimpleNamespace(db_path=str(state_dir / "agent_state.sqlite3")),
         recovery=journal,
         async_jobs=SimpleNamespace(inference_admission=lambda _action: nullcontext()),
@@ -1510,7 +1520,7 @@ def test_debug_trace_failure_after_claim_does_not_block_post_dispatch(monkeypatc
             raise OSError("trace store unavailable")
 
     app = SimpleNamespace(
-        config={},
+        config=_qualified_mutation_config(),
         recovery=journal,
         debug_traces=BrokenTraceStore(),
         work_orchestrator=SimpleNamespace(
@@ -1522,7 +1532,7 @@ def test_debug_trace_failure_after_claim_does_not_block_post_dispatch(monkeypatc
     monkeypatch.setattr(http_server.Handler, "_begin_trace", lambda self, _path: setattr(self, "_trace_request_id", "req-trace-failure") or setattr(self, "_debug_trace_id", "trace-1"))
     monkeypatch.setattr(http_server.Handler, "_require_authorized", lambda self: True)
     monkeypatch.setattr(http_server.Handler, "_agent", lambda self: "agent-a")
-    monkeypatch.setattr(http_server.Handler, "_read_json", lambda self: {"action": "submit", "work_id": "work-1"})
+    monkeypatch.setattr(http_server.Handler, "_read_json", lambda self: {"action": "submit", "mode": "bounded", "work_id": "work-1"})
     monkeypatch.setattr(http_server.Handler, "_validate_payload", lambda self, _path, _payload: None)
     responses: list[tuple[int, dict[str, Any]]] = []
     monkeypatch.setattr(http_server.Handler, "_send", lambda self, status, data: responses.append((status, data)))
@@ -1532,10 +1542,10 @@ def test_debug_trace_failure_after_claim_does_not_block_post_dispatch(monkeypatc
 
     http_server.Handler.do_POST(handler)
 
-    assert submitted == [{"action": "submit", "work_id": "work-1"}]
+    assert submitted == [{"action": "submit", "mode": "bounded", "work_id": "work-1"}]
     assert responses[0][0] == 200
     assert journal.lookup(
-        "req-trace-failure", action="/api/work-orders",payload_fingerprint=journal.fingerprint_payload({"action": "submit", "work_id": "work-1"}),
+        "req-trace-failure", action="/api/work-orders",payload_fingerprint=journal.fingerprint_payload({"action": "submit", "mode": "bounded", "work_id": "work-1"}),
     )["state"] == "running"
 
 
@@ -1707,7 +1717,7 @@ def test_retired_command_path_never_dispatches_or_creates_journal_entry(tmp_path
         http_server,
         "APP",
         SimpleNamespace(
-            config={"observability": {}, "security": {}},
+                config={**_qualified_mutation_config(), "observability": {}, "security": {}},
             recovery=journal,
             telemetry=telemetry,
             logger=logging.getLogger("test.retired-command-route"),
@@ -1763,6 +1773,7 @@ def test_http_retry_after_restart_is_unknown_and_never_redispatches(tmp_path, mo
     request_id = "t07-restart-outcome-unknown"
     payload = {
         "action": "submit",
+        "mode": "bounded",
         "root": str(tmp_path),
         "task": "restart idempotency contract",
         "work_id": "work-before-restart",
@@ -1780,7 +1791,7 @@ def test_http_retry_after_restart_is_unknown_and_never_redispatches(tmp_path, mo
         http_server,
         "APP",
         SimpleNamespace(
-            config={"observability": {}, "security": {}},
+                config={**_qualified_mutation_config(), "observability": {}, "security": {}},
             recovery=restarted,
             telemetry=telemetry,
             logger=logging.getLogger("test.restart-outcome-unknown"),
@@ -1823,7 +1834,7 @@ def test_http_retry_after_restart_is_unknown_and_never_redispatches(tmp_path, mo
 def test_wait_observation_failure_is_unknown_without_rewriting_committed_outcome(tmp_path, monkeypatch) -> None:
     journal = RecoveryJournal(tmp_path)
     request_id = "req-wait-observation-failure"
-    payload = {"action": "submit", "root": str(tmp_path), "task": "observation failure contract"}
+    payload = {"action": "submit", "mode": "bounded", "root": str(tmp_path), "task": "observation failure contract"}
     original = journal.begin(request_id, action="/api/work-orders",payload=payload)
     assert original["claimed"] is True
     committed = {"success": True, "work_id": "committed-before-observation-error"}
@@ -1833,7 +1844,10 @@ def test_wait_observation_failure_is_unknown_without_rewriting_committed_outcome
         raise OSError("journal observation failed after durable completion")
 
     monkeypatch.setattr(journal, "wait_for", finish_then_fail)
-    app = SimpleNamespace(config={"resilience": {"singleflight_wait_timeout_seconds": 0.05}}, recovery=journal)
+    app = SimpleNamespace(
+        config={**_qualified_mutation_config(), "resilience": {"singleflight_wait_timeout_seconds": 0.05}},
+        recovery=journal,
+    )
     monkeypatch.setattr(http_server, "APP", app)
     monkeypatch.setattr(http_server.Handler, "_begin_trace", lambda self, _path: setattr(self, "_trace_request_id", request_id))
     monkeypatch.setattr(http_server.Handler, "_require_authorized", lambda self: True)
@@ -1898,7 +1912,7 @@ def test_direct_async_submit_carries_caller_request_id(tmp_path, monkeypatch) ->
 
     submitted: list[dict[str, Any]] = []
     app = SimpleNamespace(
-        config={},
+        config={**_qualified_mutation_config(), "hardware": {"profile": "balanced"}},
         recovery=RecoveryJournal(tmp_path),
         async_jobs=SimpleNamespace(
             submit=lambda _action, payload: submitted.append(dict(payload)) or {"success": True}

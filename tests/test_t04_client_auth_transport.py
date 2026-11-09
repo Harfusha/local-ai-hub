@@ -9,20 +9,17 @@ from local_ai_hub import http_server
 from local_ai_hub.client import HubClient
 
 
-def test_client_token_reaches_http_authorization_boundary(tmp_path, monkeypatch) -> None:
-    monkeypatch.setattr(
-        http_server,
-        "APP",
-        SimpleNamespace(config={"security": {"api_token": "expected-local-token"}}),
-    )
+def test_client_uses_tokenless_loopback_http_transport(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(http_server, "APP", SimpleNamespace(config={"security": {}}))
 
-    observed: list[tuple[str, bool]] = []
+    observed: list[tuple[str, str, bool]] = []
 
     class AuthHandler(http_server.Handler):
         def do_POST(self):
-            token = self.headers.get("X-LocalAI-Token", "")
+            token_header = self.headers.get("X-LocalAI-Token", "")
+            authorization = self.headers.get("Authorization", "")
             allowed = self._authorized()
-            observed.append((token, allowed))
+            observed.append((token_header, authorization, allowed))
             body = json.dumps({"authorized": allowed}).encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
@@ -38,24 +35,19 @@ def test_client_token_reaches_http_authorization_boundary(tmp_path, monkeypatch)
     thread.start()
     clients = []
     try:
-        for index, (token, expected) in enumerate(
-            (("expected-local-token", True), ("wrong-token", False), (None, False))
-        ):
+        for index in range(2):
             config = tmp_path / f"config-{index}.toml"
-            token_section = f"[security]\napi_token='{token}'\n" if token else ""
             config.write_text(
                 f"[server]\nport={server.server_port}\nstate_dir='{(tmp_path / f'state-{index}').as_posix()}'\n"
-                "[client]\nmax_request_timeout_seconds=5\n"
-                + token_section,
+                "[client]\nmax_request_timeout_seconds=5\n",
                 encoding="utf-8",
             )
             client = HubClient(config_path=str(config), auto_start=False)
             clients.append(client)
-            assert client.post("/api/memory/get", {"key": "item"}) == {"authorized": expected}
+            assert client.post("/api/memory/get", {"key": "item"}) == {"authorized": True}
         assert observed == [
-            ("expected-local-token", True),
-            ("wrong-token", False),
-            ("", False),
+            ("", "", True),
+            ("", "", True),
         ]
     finally:
         for client in clients:

@@ -13,14 +13,12 @@ from local_ai_hub.app import LocalAIApp
 from local_ai_hub import http_server
 
 
-def _post(url: str, payload: dict, *, origin: str = "chrome-extension://fixture", token: str | None = "test-api-token", request_id: str | None = None, extra_headers: dict[str, str] | None = None) -> dict:
+def _post(url: str, payload: dict, *, origin: str = "chrome-extension://fixture", request_id: str | None = None, extra_headers: dict[str, str] | None = None) -> dict:
     headers = {
         "Content-Type": "application/json",
         "Origin": origin,
     }
     headers.update(extra_headers or {})
-    if token:
-        headers["X-LocalAI-Token"] = token
     if request_id:
         headers["X-LocalAI-Request-ID"] = request_id
     request = urllib.request.Request(
@@ -47,7 +45,6 @@ def test_browser_capability_capture_and_review_routes_are_explicit_and_origin_sc
                 'port = 11498',
                 f'state_dir = "{state_dir.as_posix()}"',
                 '[security]',
-                'api_token = "test-api-token"',
                 '[browser_bridge]',
                 'enabled = true',
                 'allowed_origins = ["chrome-extension://fixture"]',
@@ -326,15 +323,14 @@ def test_browser_stage_commit_and_abandon_http_lifecycle(tmp_path: Path, monkeyp
         app.close()
 
 
-def test_token_auth_supports_bridge_and_review_preflight_without_wildcard_origin(tmp_path: Path) -> None:
-    token = "0123456789abcdef"
+def test_tokenless_bridge_and_review_require_configured_origin(tmp_path: Path) -> None:
     state_dir = tmp_path / "state"
     config_path = tmp_path / "config.toml"
     config_path.write_text(
         "\n".join([
             "[server]", 'bind = "127.0.0.1"', "port = 11499", f'state_dir = "{state_dir.as_posix()}"',
-            "[security]", f'api_token = "{token}"',
-            "[browser_bridge]", "enabled = true", "allowed_origins = []",
+            "[security]",
+            "[browser_bridge]", "enabled = true", 'allowed_origins = ["chrome-extension://token-only"]',
         ]), encoding="utf-8"
     )
     app = LocalAIApp(str(config_path))
@@ -350,37 +346,37 @@ def test_token_auth_supports_bridge_and_review_preflight_without_wildcard_origin
             headers={
                 "Origin": "chrome-extension://token-only",
                 "Access-Control-Request-Method": "POST",
-                "Access-Control-Request-Headers": "content-type, x-localai-token",
+                "Access-Control-Request-Headers": "content-type",
             }, method="OPTIONS"
         )
         with urllib.request.urlopen(preflight) as response:
             assert response.status == 204
             assert response.headers["Access-Control-Allow-Origin"] == "chrome-extension://token-only"
-            assert "X-LocalAI-Token" in response.headers["Access-Control-Allow-Headers"]
+            assert "X-LocalAI-Token" not in response.headers["Access-Control-Allow-Headers"]
 
         browser_preflight = urllib.request.Request(
             f"{base}/api/browser/capture",
             headers={
                 "Origin": "chrome-extension://token-only",
                 "Access-Control-Request-Method": "POST",
-                "Access-Control-Request-Headers": "content-type, x-localai-token",
+                "Access-Control-Request-Headers": "content-type",
             }, method="OPTIONS"
         )
         with urllib.request.urlopen(browser_preflight) as response:
             assert response.status == 204
             assert response.headers["Access-Control-Allow-Origin"] == "chrome-extension://token-only"
-            assert "X-LocalAI-Token" in response.headers["Access-Control-Allow-Headers"]
+            assert "X-LocalAI-Token" not in response.headers["Access-Control-Allow-Headers"]
 
         capability = _post(
             f"{base}/api/browser/capability",
             {"origin": "chrome-extension://token-only", "tab_id": 7, "window_id": 3},
-            origin="chrome-extension://token-only", token=token,
+            origin="chrome-extension://token-only",
         )
         assert capability["success"] is True
         denied = _post(
             f"{base}/api/browser/capability",
-            {"origin": "chrome-extension://token-only", "tab_id": 7, "window_id": 3},
-            origin="chrome-extension://token-only",
+            {"origin": "chrome-extension://unlisted", "tab_id": 7, "window_id": 3},
+            origin="chrome-extension://unlisted",
         )
         assert denied["success"] is False
 
@@ -390,7 +386,7 @@ def test_token_auth_supports_bridge_and_review_preflight_without_wildcard_origin
             review = _post(
                 f"{base}/api/vision/review",
                 {"bundle_artifact_id": "frontend-review-bundle:artifact", "prompt": "Review"},
-                origin="chrome-extension://token-only", token=token,
+                origin="chrome-extension://token-only",
                 request_id="t17-token-vision-review-route",
             )
         finally:
@@ -402,7 +398,7 @@ def test_token_auth_supports_bridge_and_review_preflight_without_wildcard_origin
         denied = _post(
             f"{base}/api/vision/review",
             {"bundle_artifact_id": "frontend-review-bundle:artifact", "prompt": "Review"},
-            origin="chrome-extension://token-only", token=token,
+            origin="chrome-extension://token-only",
             extra_headers={"X-LocalAI-Tenant": "retired"},
         )
         assert denied["error_code"] == "retired_tenant_header"

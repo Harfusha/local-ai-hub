@@ -402,13 +402,14 @@
       "decision": "retain",
       "role": "agent",
       "reason": "Repository source/navigation/analysis/change evidence backing agent work. Code diagnostics describe user code errors, not Hub diagnostic logging.",
-      "response_policy": "Preserve work result, errors/retry/cancellation, identities, evidence and pagination; project_agent_response removes internal observations outside dashboard detail; caller documents remain opaque.",
+      "response_policy": "Preserve service result, status_code mapping, errors/retry/cancellation, identities, evidence and pagination; no bearer token or tenant envelope.",
       "source_contract": {
         "source": "src/local_ai_hub/http_server.py",
         "handler": "do_GET",
         "literal_response_fields": [],
         "response_producers": [
-          "APP.services.code_find_declaration"
+          "APP.services.code_find_declaration",
+          "local:result"
         ],
         "action_literals": []
       }
@@ -1800,6 +1801,72 @@
       "role": "agent",
       "reason": "Scoped durable task/memory/verification/lease/board/event coordination; these are agent working state and safety controls, not operator profiling.",
       "response_policy": "Preserve work result, errors/retry/cancellation, identities, evidence and pagination; project_agent_response removes internal observations outside dashboard detail; caller documents remain opaque.",
+      "source_contract": {
+        "source": "src/local_ai_hub/operation_contracts.py",
+        "selector": "action",
+        "output_schema_fields": [
+          "cancel_reason",
+          "cancel_requested",
+          "cancelled",
+          "degraded",
+          "error",
+          "evidence_ids",
+          "retryable",
+          "stale",
+          "success",
+          "terminal"
+        ]
+      }
+    },
+    "MCP local_ai_coord.gpu_reservation_release": {
+      "decision": "retain",
+      "role": "agent",
+      "reason": "Generation-bound GPU reservation recovery requires explicit consent and an audit reason, and only releases an expired lease.",
+      "response_policy": "Preserve success, errors and generation; never expose the reservation digest or raw token. Unknown or active reservations fail closed.",
+      "source_contract": {
+        "source": "src/local_ai_hub/operation_contracts.py",
+        "selector": "action",
+        "output_schema_fields": [
+          "cancel_reason",
+          "cancel_requested",
+          "cancelled",
+          "degraded",
+          "error",
+          "evidence_ids",
+          "retryable",
+          "stale",
+          "success",
+          "terminal"
+        ]
+      }
+    },
+    "MCP local_ai_coord.gpu_reservation_release_authorized": {
+      "decision": "protocol_boundary",
+      "role": "agent",
+      "reason": "Conditional operator recovery endpoint requires its explicit authorization path; it does not establish that a reservation owner is dead or that an active fence is safe to clear.",
+      "response_policy": "Preserve success, errors, retry/degraded state and evidence. Keep authorization and audit reason explicit; unknown owner liveness remains fail-closed and reservation credentials stay private.",
+      "source_contract": {
+        "source": "src/local_ai_hub/operation_contracts.py",
+        "selector": "action",
+        "output_schema_fields": [
+          "cancel_reason",
+          "cancel_requested",
+          "cancelled",
+          "degraded",
+          "error",
+          "evidence_ids",
+          "retryable",
+          "stale",
+          "success",
+          "terminal"
+        ]
+      }
+    },
+    "MCP local_ai_coord.gpu_reservation_status": {
+      "decision": "retain",
+      "role": "agent",
+      "reason": "Scoped GPU reservation status supports safe resource coordination without exposing reservation credentials.",
+      "response_policy": "Preserve reservation presence, state, expiry and manual-intervention requirement; never expose the reservation digest or raw token.",
       "source_contract": {
         "source": "src/local_ai_hub/operation_contracts.py",
         "selector": "action",
@@ -5383,11 +5450,13 @@
           "cancel_reason",
           "cancel_requested",
           "cancelled",
+          "capabilities",
           "context_budget_factor",
           "degraded",
           "dependency_status",
           "error",
           "evidence_ids",
+          "hardware_profile",
           "ollama_online",
           "retryable",
           "stale",
@@ -6574,6 +6643,7 @@
         "literal_response_fields": [
           "completion",
           "error",
+          "error_code",
           "evidence_id",
           "receipt",
           "receipt_id",
@@ -6584,12 +6654,15 @@
         ],
         "response_producers": [
           "local:res",
-          "local:revision_stop"
+          "local:result",
+          "local:revision_stop",
+          "run_goal_project_verification"
         ],
         "action_literals": [
           "completion",
           "export",
           "native_receipt",
+          "project_command",
           "receipt"
         ]
       }
@@ -6996,13 +7069,14 @@
       "decision": "retain",
       "role": "agent",
       "reason": "Repository source/navigation/analysis/change evidence backing agent work. Code diagnostics describe user code errors, not Hub diagnostic logging.",
-      "response_policy": "Preserve work result, errors/retry/cancellation, identities, evidence and pagination; project_agent_response removes internal observations outside dashboard detail; caller documents remain opaque.",
+      "response_policy": "Preserve service result fields, errors/retry/cancellation, identities, evidence and pagination; POST status remains 200 by route contract.",
       "source_contract": {
         "source": "src/local_ai_hub/http_route_registry.py",
         "handler": "post_declaration_1",
         "literal_response_fields": [],
         "response_producers": [
-          "APP.services.code_find_declaration"
+          "APP.services.code_find_declaration",
+          "local:result"
         ],
         "action_literals": []
       }
@@ -8102,13 +8176,14 @@
       "decision": "retain",
       "role": "agent",
       "reason": "Repository source/navigation/analysis/change evidence backing agent work. Code diagnostics describe user code errors, not Hub diagnostic logging.",
-      "response_policy": "Preserve work result, errors/retry/cancellation, identities, evidence and pagination; project_agent_response removes internal observations outside dashboard detail; caller documents remain opaque.",
+      "response_policy": "Preserve validation result fields and diagnostics; project_agent_response removes internal observations outside dashboard detail.",
       "source_contract": {
         "source": "src/local_ai_hub/http_route_registry.py",
         "handler": "post_patch_validate_1",
         "literal_response_fields": [],
         "response_producers": [
-          "APP.services.validate_patch"
+          "APP.services.validate_patch",
+          "local:result"
         ],
         "action_literals": []
       }
@@ -9221,14 +9296,38 @@
       "decision": "retain",
       "role": "agent",
       "reason": "Retrieval/context/ingestion task evidence with authorized root/workspace/docset boundaries; explicit context diagnostics remains gated.",
-      "response_policy": "Preserve work result, errors/retry/cancellation, identities, evidence and pagination; project_agent_response removes internal observations outside dashboard detail; caller documents remain opaque.",
+      "response_policy": "Preserve work result, errors/retry/cancellation, identities, evidence, pagination and status_code; project_agent_response removes internal observations outside dashboard detail.",
       "source_contract": {
         "source": "src/local_ai_hub/http_route_registry.py",
         "handler": "post_search_1",
-        "literal_response_fields": [],
+        "literal_response_fields": [
+          "error",
+          "retryable",
+          "status_code",
+          "success",
+          "terminal"
+        ],
         "response_producers": [
           "APP.services.repo_search",
           "local:result"
+        ],
+        "action_literals": []
+      }
+    },
+    "POST /api/gpu-reservation": {
+      "decision": "protocol_boundary",
+      "role": "agent",
+      "reason": "Explicit GPU reservation management is an operator boundary used for bounded cross-process resource admission and recovery.",
+      "response_policy": "Preserve success and errors; require the route's current authorization checks and retain fail-closed handling for unknown owner liveness. Do not expose reservation credentials.",
+      "source_contract": {
+        "source": "src/local_ai_hub/http_route_registry.py",
+        "handler": "post_gpu_reservation_1",
+        "literal_response_fields": [
+          "error",
+          "success"
+        ],
+        "response_producers": [
+          "local:res"
         ],
         "action_literals": []
       }
@@ -9581,23 +9680,20 @@
       "decision": "retain",
       "role": "agent",
       "reason": "Existing durable work/session lifecycle and cancellation/result delivery. Diagnostic submissions and retained results are gated independently.",
-      "response_policy": "Preserve work result, errors/retry/cancellation, identities, evidence and pagination; project_agent_response removes internal observations outside dashboard detail; caller documents remain opaque.",
+      "response_policy": "Preserve work result, errors/retry/cancellation, work_id and outcome flags. Submit and lifecycle actions retain their distinct producer behavior; not-found lifecycle responses map to HTTP 404.",
       "source_contract": {
         "source": "src/local_ai_hub/http_route_registry.py",
         "handler": "post_work_orders_1",
         "literal_response_fields": [
           "error",
+          "retryable",
           "success",
           "terminal",
           "unsupported"
         ],
         "response_producers": [
-          "APP.work_orchestrator.cancel",
-          "APP.work_orchestrator.continue_work",
-          "APP.work_orchestrator.get",
-          "APP.work_orchestrator.status",
           "APP.work_orchestrator.submit",
-          "APP.work_orchestrator.wait"
+          "local:result"
         ],
         "action_literals": [
           "cancel",
@@ -9820,28 +9916,6 @@
         "literal_response_fields": [],
         "response_producers": [],
         "action_literals": []
-      }
-    },
-    "MCP local_ai_coord.task_repair_session": {
-      "decision": "retain",
-      "role": "operator_control",
-      "reason": "Explicitly authorized recovery for an existing task with no session; the broker preserves task identity and rejects replacement of an existing session.",
-      "response_policy": "Preserve task/session identity, repository scope, mutation status and audit evidence; never accept caller-supplied owner authority or replace an existing session.",
-      "source_contract": {
-        "source": "src/local_ai_hub/operation_contracts.py",
-        "selector": "action",
-        "output_schema_fields": [
-          "cancel_reason",
-          "cancel_requested",
-          "cancelled",
-          "degraded",
-          "error",
-          "evidence_ids",
-          "retryable",
-          "stale",
-          "success",
-          "terminal"
-        ]
       }
     }
   }

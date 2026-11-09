@@ -43,7 +43,7 @@ def prep(tmp_path):
                 root TEXT, path TEXT, content_hash TEXT, needs_hash INTEGER,
                 rag_hash TEXT, last_accessed_at REAL, size INTEGER, updated_at REAL
             );
-            CREATE TABLE source_index (root TEXT, path TEXT, text TEXT);
+            CREATE TABLE source_index (root TEXT, path TEXT, content_hash TEXT, text TEXT);
             CREATE TABLE source_fts (root TEXT, path TEXT, content TEXT);
             CREATE TABLE hot_query_state (
                 root TEXT, query TEXT, revision_hash TEXT, updated_at REAL
@@ -61,7 +61,7 @@ def add_pending(prep, root, path):
             "INSERT INTO file_refs VALUES(?,?,?,0,'',0,1,0)",
             (root, path, "current-hash"),
         )
-        con.execute("INSERT INTO source_index VALUES(?,?,?)", (root, path, "cached text"))
+        con.execute("INSERT INTO source_index VALUES(?,?,?,?)", (root, path, "current-hash", "cached text"))
         con.commit()
 
 

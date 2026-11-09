@@ -41,6 +41,37 @@ _UI_TEST = '''from pathlib import Path
 def test_panel_exists():
     assert 'id="panel"' in Path("index.html").read_text(encoding="utf-8")
 '''
+_CHECKOUT = '''from .pricing import total_with_tax
+
+
+def checkout(lines, tax_percent):
+    """tax_percent is a whole percent, for example 21."""
+    return total_with_tax(lines, tax_percent)
+'''
+_PRICING = '''def total_with_tax(lines, tax_rate):
+    """tax_rate is a decimal fraction, for example 0.21."""
+    subtotal = sum(line["amount_cents"] for line in lines)
+    return round(subtotal * (1 + tax_rate))
+'''
+_DISPATCHER = '''def deliver_invoice(invoice_id, gateway, store):
+    invoice = store.get(invoice_id)
+    gateway.send(invoice)
+    store.mark_sent(invoice_id)
+'''
+_STORE = '''class Store:
+    def get(self, invoice_id):
+        raise NotImplementedError
+
+    def mark_sent(self, invoice_id):
+        raise NotImplementedError
+'''
+_DESIGN_README = '''# Delivery constraints
+
+- `invoice_id` is unique and stable for one logical invoice.
+- The provider call and local store cannot share a transaction.
+- Provider timeouts can leave delivery outcome ambiguous.
+- Preserve `deliver_invoice` and propose a design; do not implement it.
+'''
 _TOOL_SOURCE = '''def clamp(value, lower, upper):
     return min(upper, max(lower, value))
 '''
@@ -54,6 +85,8 @@ _CASES = {
     "C1": {"src/clamp.py": _TOOL_SOURCE},
     "C2": {"src/clamp.py": _TOOL_SOURCE},
     "C3": {"src/clamp.py": _INJECTION_SOURCE},
+    "A1": {"src/checkout.py": _CHECKOUT, "src/pricing.py": _PRICING},
+    "A2": {"README.md": _DESIGN_README, "src/dispatcher.py": _DISPATCHER, "src/store.py": _STORE},
 }
 
 

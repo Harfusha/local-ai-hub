@@ -19,6 +19,7 @@ from .process_utils import hidden_run_kwargs
 _GPU_CACHE: dict[str, Any] = {}
 _GPU_CACHE_TIME = 0.0
 _GPU_LOCK = threading.Lock()
+_GPU_LOCK_TIMEOUT_SECONDS = 2.0
 _WINDOWS_CACHE: dict[str, Any] = {}
 _WINDOWS_CACHE_TIME = 0.0
 _WINDOWS_LOCK = threading.Lock()
@@ -241,7 +242,15 @@ def get_gpu_telemetry() -> dict[str, Any]:
     now = time.time()
     if _GPU_CACHE and now - _GPU_CACHE_TIME < 1.5:
         return dict(_GPU_CACHE)
-    with _GPU_LOCK:
+    if not _GPU_LOCK.acquire(timeout=_GPU_LOCK_TIMEOUT_SECONDS):
+        return {
+            "available": False,
+            "reason": "GPU telemetry sampler lock timed out",
+            "telemetry_error": "sampling_lock_timeout",
+            "telemetry_stale": True,
+            "timestamp": now,
+        }
+    try:
         now = time.time()
         if _GPU_CACHE and now - _GPU_CACHE_TIME < 1.5:
             return dict(_GPU_CACHE)
@@ -253,7 +262,10 @@ def get_gpu_telemetry() -> dict[str, Any]:
         if live is not None:
             _GPU_CACHE, _GPU_CACHE_TIME = live, now
             return dict(live)
-        hw = detect_hardware()
+        # Static hardware inventory remains useful for device metadata, but
+        # optional OpenVINO discovery can block in Core.available_devices.
+        # Skip that unbounded probe in this telemetry sampling path.
+        hw = detect_hardware(include_openvino=False)
         gpus = hw.get("gpus", []) if isinstance(hw, dict) else []
         if not gpus:
             result = {"available": False, "reason": "no supported GPU telemetry provider detected"}
@@ -261,12 +273,19 @@ def get_gpu_telemetry() -> dict[str, Any]:
             gpu = dict(gpus[0])
             integrated = bool(gpu.get("integrated", False))
             reported_vram = int(gpu.get("vram_mb", 0) or 0)
+            reported_free = _safe_float(gpu.get("vram_free_mb"), default=float("nan"))
+            available_mb = (
+                reported_free
+                if not integrated and math.isfinite(reported_free) and 0 <= reported_free <= reported_vram
+                else None
+            )
             result = {
                 "available": True, "vendor": gpu.get("vendor", "unknown"), "backend": gpu.get("backend", "unknown"),
                 "gpu_name": gpu.get("name", "GPU"),
                 # Windows AdapterRAM on an iGPU is aperture metadata, not a safe
                 # dedicated-memory budget. Keep it diagnostic-only.
                 "vram_total_mb": 0 if integrated else reported_vram,
+                "vram_available_mb": available_mb,
                 "reported_adapter_memory_mb": reported_vram if integrated else 0,
                 "unified_memory_mb": int(gpu.get("unified_memory_mb", 0) or 0),
                 "integrated": integrated, "shared_memory": bool(gpu.get("shared_memory", integrated)),
@@ -274,14 +293,18 @@ def get_gpu_telemetry() -> dict[str, Any]:
             }
         _GPU_CACHE, _GPU_CACHE_TIME = result, now
         return dict(result)
+    finally:
+        _GPU_LOCK.release()
 
 
 def get_dynamic_token_budget(base_tokens: int = 32768, min_tokens: int = 8192, max_tokens: int = 65536) -> int:
     """Choose a conservative context ceiling from currently known graphics memory."""
     telemetry = get_gpu_telemetry()
     total_mb = float(telemetry.get("vram_total_mb", 0) or telemetry.get("unified_memory_mb", 0) or 0)
-    used_mb = float(telemetry.get("vram_used_mb", 0) or 0)
-    available_mb = max(0.0, total_mb - used_mb) if total_mb else 0.0
+    available_mb = _safe_float(telemetry.get("vram_available_mb"), default=float("nan"))
+    if not math.isfinite(available_mb) or not 0 <= available_mb <= total_mb:
+        used_mb = float(telemetry.get("vram_used_mb", 0) or 0)
+        available_mb = max(0.0, total_mb - used_mb) if total_mb else 0.0
     if total_mb <= 0:
         profile = detect_hardware().get("profile", "balanced")
         return min(base_tokens, 12288) if profile == "integrated" else min(base_tokens, 16384) if profile in {"cpu", "low"} else base_tokens

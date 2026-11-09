@@ -18,7 +18,7 @@ def _http_get_handler(monkeypatch, *, app, path: str):
     handler = http_server.Handler.__new__(http_server.Handler)
     handler.path = path
     handler.command = "GET"
-    handler.headers = {"Authorization": "Bearer t18-test-api-token"}
+    handler.headers = {}
     handler.client_address = ("127.0.0.1", 12345)
     handler.server = SimpleNamespace()
     handler._begin_trace = lambda _path: None
@@ -42,7 +42,6 @@ def _scoped_app(tmp_path, **components):
     )
     config = {
         "security": {
-            "api_token": "t18-test-api-token",
             "allowed_roots": [str(root.resolve())],
         }
     }

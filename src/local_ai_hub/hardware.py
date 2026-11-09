@@ -96,8 +96,20 @@ def _nvidia() -> list[dict[str, Any]]:
     if not smi:
         return []
     cp = _run([
-        smi, "--query-gpu=name,memory.total,driver_version", "--format=csv,noheader,nounits"
+        smi, "--query-gpu=name,memory.total,memory.free,driver_version,compute_cap", "--format=csv,noheader,nounits"
     ])
+    has_free_vram = True
+    if not cp or cp.returncode != 0:
+        cp = _run([
+            smi, "--query-gpu=name,memory.total,driver_version,compute_cap", "--format=csv,noheader,nounits"
+        ])
+        has_free_vram = False
+    if not cp or cp.returncode != 0:
+        # Fallback without compute_cap for legacy drivers
+        cp = _run([
+            smi, "--query-gpu=name,memory.total,driver_version", "--format=csv,noheader,nounits"
+        ])
+        has_free_vram = False
     if not cp or cp.returncode != 0:
         return []
     out: list[dict[str, Any]] = []
@@ -109,7 +121,32 @@ def _nvidia() -> list[dict[str, Any]]:
             vram = int(float(parts[1]))
         except Exception:
             vram = 0
-        out.append({"vendor": "nvidia", "name": parts[0], "vram_mb": vram, "driver": parts[2] if len(parts) > 2 else "", "backend": "cuda"})
+        free_index = 2 if has_free_vram else None
+        driver_index = 3 if has_free_vram else 2
+        cap_index = 4 if has_free_vram else 3
+        try:
+            vram_free = int(float(parts[free_index])) if free_index is not None and len(parts) > free_index else None
+        except (TypeError, ValueError):
+            vram_free = None
+        compute_cap: float | None = None
+        has_fp4: bool = False
+        if len(parts) > cap_index:
+            try:
+                compute_cap = float(parts[cap_index])
+                has_fp4 = compute_cap >= 10.0  # NVIDIA Blackwell (SM 10.0 / SM 12.0) native FP4 Tensor Cores
+            except (TypeError, ValueError):
+                compute_cap = None
+        entry: dict[str, Any] = {
+            "vendor": "nvidia",
+            "name": parts[0],
+            "vram_mb": vram,
+            "vram_free_mb": vram_free,
+            "driver": parts[driver_index] if len(parts) > driver_index else "",
+            "backend": "cuda",
+            "compute_cap": compute_cap,
+            "has_fp4": has_fp4,
+        }
+        out.append(entry)
     return out
 
 
@@ -269,7 +306,7 @@ def _safe_vram(val: Any) -> int:
 
 def choose_profile(gpus: list[dict[str, Any]], ram_gb: float, requested: str = "auto") -> str:
     requested = str(requested or "auto").strip().lower()
-    if requested in {"cpu", "integrated", "low", "balanced", "high", "max"}:
+    if requested in {"cpu", "integrated", "low", "balanced", "medium", "high", "max"}:
         return requested
     clean_gpus = [g for g in gpus if isinstance(g, dict)] if isinstance(gpus, list) else []
     try:
@@ -285,6 +322,8 @@ def choose_profile(gpus: list[dict[str, Any]], ram_gb: float, requested: str = "
             return "max"
         if unified >= 32:
             return "high"
+        if unified >= 24:
+            return "medium"
         if unified >= 16:
             return "balanced"
         return "low"
@@ -292,8 +331,10 @@ def choose_profile(gpus: list[dict[str, Any]], ram_gb: float, requested: str = "
     dedicated = max((_safe_vram(g.get("vram_mb", 0)) for g in clean_gpus if not bool(g.get("integrated"))), default=0)
     if dedicated >= 20 * 1024:
         return "max"
-    if dedicated >= 12 * 1024:
+    if dedicated >= 15 * 1024:
         return "high"
+    if dedicated >= 10 * 1024:
+        return "medium"
     if dedicated >= 6 * 1024:
         return "balanced"
     if dedicated > 0:
@@ -307,7 +348,7 @@ def choose_profile(gpus: list[dict[str, Any]], ram_gb: float, requested: str = "
 
 
 @lru_cache(maxsize=4)
-def detect_hardware(requested_profile: str = "auto") -> dict[str, Any]:
+def detect_hardware(requested_profile: str = "auto", *, include_openvino: bool = True) -> dict[str, Any]:
     total, available = _memory_bytes()
     gpus = _nvidia() or _amd() or _intel()
     if not gpus:
@@ -315,7 +356,7 @@ def detect_hardware(requested_profile: str = "auto") -> dict[str, Any]:
     total_gb = round(total / (1024 ** 3), 1) if total else 0.0
     profile_name = choose_profile(gpus, total_gb, requested_profile)
 
-    ov_devices = _openvino_devices()
+    ov_devices = _openvino_devices() if include_openvino else []
     runtime_npus = [dict(item) for item in ov_devices if item.get("kind") == "npu"]
     physical_npus = _windows_npus()
     npus = runtime_npus or physical_npus
@@ -334,6 +375,7 @@ def detect_hardware(requested_profile: str = "auto") -> dict[str, Any]:
     if requested_norm == "auto" and intel_npu and dedicated_vram <= 0 and total_gb >= 16:
         profile_name = "integrated"
 
+    has_fp4 = any(bool(g.get("has_fp4")) for g in gpus if isinstance(g, dict))
     return {
         "platform": sys_platform(),
         "os": platform.system().lower(),
@@ -341,6 +383,7 @@ def detect_hardware(requested_profile: str = "auto") -> dict[str, Any]:
         "cpu": {"name": platform.processor() or platform.machine(), "logical_cores": os.cpu_count() or 1},
         "ram": {"total_gb": total_gb, "available_gb": round(available / (1024 ** 3), 1) if available else 0.0},
         "gpus": gpus,
+        "has_fp4": has_fp4,
         "npus": npus,
         "openvino_devices": ov_devices,
         "openvino_gpu_devices": openvino_gpu_devices,
@@ -358,7 +401,7 @@ PROFILE_OVERRIDES: dict[str, dict[str, Any]] = {
             "general": "qwen2.5-coder:7b",
             "vision": "qwen3-vl:4b",
         },
-        "features": {"reranker": True},
+        "features": {"reranker": True, "search_summaries": False, "vision": True},
         "scheduler": {"max_parallel": 1, "max_loaded_models": 1},
         "ollama": {
             "num_parallel": 1,
@@ -379,6 +422,7 @@ PROFILE_OVERRIDES: dict[str, dict[str, Any]] = {
             "smart": {"parallel": 1, "context_tokens": 16384, "max_context_tokens": 24576, "max_prompt_tokens": 14000},
         },
         "preprocessing": {
+            "model": "qwen2.5-coder:0.5b",
             "cpu_workers": 1,
             "cpu_worker_sleep_seconds": 0.20,
             "idle_grace_seconds": 30.0,
@@ -387,8 +431,8 @@ PROFILE_OVERRIDES: dict[str, dict[str, Any]] = {
             "same_model_worker_passes": 1,
         },
         "ollama_subagents": {"profiles": {
-            "qwen-explorer": {"model": "qwen2.5-coder:3b"},
-            "qwen-drafter": {"model": "qwen2.5-coder:7b"},
+            "qwen-explorer": {"model": "qwen2.5-coder:1.5b"},
+            "qwen-drafter": {"model": "qwen2.5-coder:3b"},
             "qwen-critic": {"model": "qwen2.5-coder:7b"},
         }},
     },
@@ -432,12 +476,14 @@ PROFILE_OVERRIDES: dict[str, dict[str, Any]] = {
         },
         "ollama_subagents": {
             "profiles": {
-                "qwen-explorer": {"model": "qwen2.5-coder:3b"},
+                "qwen-explorer": {"model": "qwen2.5-coder:1.5b"},
                 "qwen-drafter": {"model": "qwen2.5-coder:3b"},
                 "qwen-critic": {"model": "qwen2.5-coder:7b"},
             }
         },
+        "features": {"reranker": True, "search_summaries": False, "vision": True},
         "preprocessing": {
+            "model": "qwen2.5-coder:1.5b",
             "idle_grace_seconds": 30.0,
             "max_preprocessing_projects": 1,
             "cpu_workers": 1,
@@ -456,6 +502,8 @@ PROFILE_OVERRIDES: dict[str, dict[str, Any]] = {
         },
     },
     "low": {
+        "features": {"reranker": True, "search_summaries": False, "vision": True},
+        "preprocessing": {"model": "qwen2.5-coder:1.5b"},
         "models": {
             "background_code": "qwen2.5-coder:3b",
             "fast_code": "qwen2.5-coder:3b",
@@ -465,7 +513,8 @@ PROFILE_OVERRIDES: dict[str, dict[str, Any]] = {
             "vision": "qwen3-vl:4b",
         },
         "scheduler": {"max_parallel": 1},
-        "ollama": {"num_parallel": 1},
+        "ollama": {"num_parallel": 1, "kv_cache_type": "q4_0"},
+        "llama_cpp": {"cache_type_k": "q4_0", "cache_type_v": "q4_0"},
         "background_gpu": {"parallel": 1, "file_batch_size": 1, "module_batch_size": 1},
         "cpu_retrieval": {"embedding_batch_size": 6, "reranker_batch_size": 2},
         "model_execution": {
@@ -474,52 +523,190 @@ PROFILE_OVERRIDES: dict[str, dict[str, Any]] = {
             "smart": {"parallel": 1, "context_tokens": 24576, "max_context_tokens": 32768, "max_prompt_tokens": 22000},
         },
         "ollama_subagents": {"profiles": {
-            "qwen-explorer": {"model": "qwen2.5-coder:3b"},
-            "qwen-drafter": {"model": "qwen2.5-coder:7b"},
+            "qwen-explorer": {"model": "qwen2.5-coder:1.5b"},
+            "qwen-drafter": {"model": "qwen2.5-coder:3b"},
             "qwen-critic": {"model": "qwen2.5-coder:7b"},
         }},
     },
     "balanced": {
+        "features": {"reranker": True, "search_summaries": True, "vision": True},
+        "preprocessing": {"model": "qwen2.5-coder:1.5b"},
         "models": {
             "background_code": "qwen2.5-coder:3b",
             "fast_code": "qwen2.5-coder:3b",
             "heavy_code": "qwen2.5-coder:7b",
             "reasoning": "qwen3.5:9b",
             "general": "qwen2.5-coder:7b",
-            "vision": "qwen3.5:9b",
+            "vision": "minicpm-v:8b",
         },
         "scheduler": {"max_parallel": 2},
-        "ollama": {"num_parallel": 2},
+        "ollama": {"num_parallel": 2, "kv_cache_type": "q4_0"},
+        "llama_cpp": {"cache_type_k": "q4_0", "cache_type_v": "q4_0"},
         "background_gpu": {"parallel": 2, "file_batch_size": 2, "module_batch_size": 2},
         "cpu_retrieval": {"embedding_batch_size": 12, "reranker_batch_size": 4},
+        "ollama_subagents": {"profiles": {
+            "qwen-explorer": {"model": "qwen2.5-coder:1.5b"},
+            "qwen-drafter": {"model": "qwen2.5-coder:3b"},
+            "qwen-critic": {"model": "qwen2.5-coder:7b"},
+        }},
+    },
+    "medium": {
+        "models": {
+            "background_code": "qwen2.5-coder:3b",
+            "fast_code": "qwen2.5-coder:7b",
+            "heavy_code": "qwen2.5-coder:7b",
+            "reasoning": "qwen3.5:9b",
+            "general": "qwen3.5:9b",
+            "vision": "minicpm-v:8b",
+        },
+        "features": {
+            "reranker": True,
+            "search_summaries": True,
+            "vision": True,
+            "local_semantic_analysis": True,
+            "cross_file_design": True,
+            "local_reranking": True,
+            "local_vision": True,
+            "local_code_generation": True,
+            "local_automation": True,
+        },
+        "preprocessing": {"model": "qwen2.5-coder:3b"},
+        "scheduler": {"max_parallel": 2},
+        "ollama": {"num_parallel": 2, "kv_cache_type": "q4_0"},
+        "llama_cpp": {"cache_type_k": "q4_0", "cache_type_v": "q4_0"},
+        "background_gpu": {"parallel": 4, "file_batch_size": 8, "module_batch_size": 6},
+        "cpu_retrieval": {"embedding_batch_size": 20, "reranker_batch_size": 6},
+        "routing": {
+            "max_fast_context_chars": 120000,
+            "reasoning_resident_fallback": True,
+        },
+        "token_saving": {
+            "default_repo_context_tokens": 16000,
+            "max_diff_tokens": 32000,
+            "max_local_input_tokens": 64000,
+            "max_inline_chars": 4000,
+        },
+        "local_tools": {
+            "auto_register_project": True,
+            "max_tool_result_chars": 12000,
+            "preprocessed_context_chars": 8000,
+        },
+        "resilience": {
+            "max_model_fallbacks": 2,
+        },
+        "ollama_subagents": {
+            "profiles": {
+                "qwen-explorer": {"model": "qwen2.5-coder:7b", "timeout_seconds": 180},
+                "qwen-drafter": {"model": "qwen2.5-coder:7b", "timeout_seconds": 300},
+                "qwen-critic": {"model": "qwen3.5:9b", "timeout_seconds": 420},
+            }
+        },
+        "model_execution": {
+            "background": {"parallel": 1, "context_tokens": 16384, "max_context_tokens": 24576, "max_prompt_tokens": 14000},
+            "fast": {"parallel": 2, "context_tokens": 32768, "max_context_tokens": 32768, "max_prompt_tokens": 28000},
+            "smart": {"parallel": 1, "context_tokens": 65536, "large_context_tokens": 65536, "max_context_tokens": 65536, "max_prompt_tokens": 52000},
+            "generic": {"parallel": 1, "context_tokens": 32768, "max_context_tokens": 32768, "max_prompt_tokens": 24000},
+        },
     },
     "high": {
         "models": {
             "background_code": "qwen2.5-coder:3b",
-            "fast_code": "qwen2.5-coder:3b",
-            "heavy_code": "qwen2.5-coder:7b",
+            "fast_code": "qwen2.5-coder:7b",
+            "heavy_code": "qwen2.5-coder:14b",
             "reasoning": "qwen3.5:9b",
             "general": "qwen3.5:9b",
-            "vision": "qwen3.5:9b",
+            "vision": "minicpm-v:8b",
         },
-        "scheduler": {"max_parallel": 3},
-        "ollama": {"num_parallel": 3},
-        "background_gpu": {"parallel": 3, "file_batch_size": 3, "module_batch_size": 3},
+        "features": {
+            "reranker": True,
+            "search_summaries": True,
+            "vision": True,
+            "local_semantic_analysis": True,
+            "cross_file_design": True,
+            "local_reranking": True,
+            "local_vision": True,
+            "local_code_generation": True,
+            "local_automation": True,
+        },
+        "preprocessing": {"model": "qwen2.5-coder:3b"},
+        "scheduler": {"max_parallel": 2},
+        "ollama": {"num_parallel": 2, "kv_cache_type": "q4_0"},
+        "llama_cpp": {"cache_type_k": "q4_0", "cache_type_v": "q4_0"},
+        "background_gpu": {"parallel": 4, "file_batch_size": 8, "module_batch_size": 6},
         "cpu_retrieval": {"embedding_batch_size": 20, "reranker_batch_size": 6},
+        "routing": {
+            "max_fast_context_chars": 120000,
+            "reasoning_resident_fallback": True,
+        },
+        "token_saving": {
+            "default_repo_context_tokens": 16000,
+            "max_diff_tokens": 32000,
+            "max_local_input_tokens": 64000,
+            "max_inline_chars": 4000,
+        },
+        "local_tools": {
+            "auto_register_project": True,
+            "max_tool_result_chars": 12000,
+            "preprocessed_context_chars": 8000,
+        },
+        "resilience": {
+            "max_model_fallbacks": 2,
+        },
+        "ollama_subagents": {
+            "profiles": {
+                "qwen-explorer": {"model": "qwen2.5-coder:7b", "timeout_seconds": 180},
+                "qwen-drafter": {"model": "qwen2.5-coder:14b", "timeout_seconds": 300},
+                "qwen-critic": {"model": "qwen2.5-coder:14b", "timeout_seconds": 420},
+            }
+        },
+        "model_execution": {
+            "background": {"parallel": 1, "context_tokens": 32768, "max_context_tokens": 32768, "max_prompt_tokens": 28000},
+            "fast": {"parallel": 2, "context_tokens": 32768, "max_context_tokens": 32768, "max_prompt_tokens": 28000},
+            "smart": {"parallel": 1, "context_tokens": 65536, "large_context_tokens": 65536, "max_context_tokens": 65536, "max_prompt_tokens": 52000},
+            "generic": {"parallel": 1, "context_tokens": 32768, "max_context_tokens": 32768, "max_prompt_tokens": 24000},
+        },
     },
     "max": {
         "models": {
-            "background_code": "qwen2.5-coder:3b",
-            "fast_code": "qwen2.5-coder:3b",
-            "heavy_code": "qwen3.5:9b",
+            "background_code": "qwen2.5-coder:7b",
+            "fast_code": "qwen2.5-coder:7b",
+            "heavy_code": "qwen2.5-coder:32b",
             "reasoning": "qwen3.5:9b",
             "general": "qwen3.5:9b",
-            "vision": "qwen3.5:9b",
+            "vision": "minicpm-v:8b",
         },
-        "scheduler": {"max_parallel": 4},
-        "ollama": {"num_parallel": 4},
-        "background_gpu": {"parallel": 4, "file_batch_size": 4, "module_batch_size": 4},
+        "features": {
+            "reranker": True,
+            "search_summaries": True,
+            "vision": True,
+            "local_semantic_analysis": True,
+            "cross_file_design": True,
+            "code_generation": True,
+            "local_code_generation": True,
+            "automation": True,
+            "local_automation": True,
+            "local_reranking": True,
+            "local_vision": True,
+        },
+        "preprocessing": {"model": "qwen2.5-coder:7b"},
+        "scheduler": {"max_parallel": 2},
+        "ollama": {"num_parallel": 2, "kv_cache_type": "q8_0"},
+        "llama_cpp": {"cache_type_k": "q8_0", "cache_type_v": "q8_0"},
+        "background_gpu": {"parallel": 6, "file_batch_size": 12, "module_batch_size": 8},
         "cpu_retrieval": {"embedding_batch_size": 32, "reranker_batch_size": 8},
+        "ollama_subagents": {
+            "profiles": {
+                "qwen-explorer": {"model": "qwen2.5-coder:7b", "timeout_seconds": 180},
+                "qwen-drafter": {"model": "qwen2.5-coder:14b", "timeout_seconds": 300},
+                "qwen-critic": {"model": "qwen2.5-coder:14b", "timeout_seconds": 420},
+            }
+        },
+        "model_execution": {
+            "background": {"parallel": 1, "context_tokens": 16384, "max_context_tokens": 24576, "max_prompt_tokens": 14000},
+            "fast": {"parallel": 2, "context_tokens": 32768, "max_context_tokens": 32768, "max_prompt_tokens": 28000},
+            "smart": {"parallel": 1, "context_tokens": 65536, "large_context_tokens": 65536, "max_context_tokens": 65536, "max_prompt_tokens": 52000},
+            "generic": {"parallel": 1, "context_tokens": 32768, "max_context_tokens": 32768, "max_prompt_tokens": 24000},
+        },
     },
 }
 
@@ -570,10 +757,47 @@ def profile_overrides(profile_name: str, detected: dict[str, Any] | None = None)
         for gpu in gpus
     )
     has_npu = bool(detected.get("npus"))
-    if has_npu or (profile_name in ("integrated", "cpu") and intel_integrated):
-        # Retrieval models are small enough to be useful on Intel/AMD NPU/iGPU while
-        # leaving the shared-memory LLM lane serial and conservative. Runtime
-        # failures fall back to the next OpenVINO device and finally CPU.
+    has_fp4 = any(bool(g.get("has_fp4")) for g in gpus if isinstance(g, dict))
+    has_nvidia = any(
+        "nvidia" in str(gpu.get("vendor", "")).lower()
+        or "nvidia" in str(gpu.get("name", "")).lower()
+        for gpu in gpus
+    )
+    if has_nvidia:
+        result = _deep_merge_dict(result, {
+            "models": {
+                "reranker_device": "cuda",
+            }
+        })
+        if profile_name in {"high", "max"}:
+            result = _deep_merge_dict(result, {"models": {"embedding_device": "cuda"}})
+
+    if has_fp4 and profile_name not in ("cpu", "integrated"):
+        # Prefer FP4 quantized variants whenever hardware-accelerated (e.g. Blackwell / compute capability >= 12.0)
+        fp4_models: dict[str, Any] = {}
+        curr_models = result.get("models", {})
+        if curr_models.get("general") == "qwen3.5:9b":
+            fp4_models["general"] = "qwen3.5:9b-nvfp4"
+        if fp4_models:
+            result = _deep_merge_dict(result, {"models": fp4_models})
+        sub_critic = result.get("ollama_subagents", {}).get("profiles", {}).get("qwen-critic", {})
+        if sub_critic.get("model") == "qwen3.5:9b":
+            result = _deep_merge_dict(result, {"ollama_subagents": {"profiles": {"qwen-critic": {"model": "qwen3.5:9b-nvfp4"}}}})
+    if has_npu:
+        # NPU takes priority in ANY profile: offload embeddings and reranker to dedicated NPU hardware,
+        # freeing GPU VRAM and CPU cores for LLM inference.
+        result = _deep_merge_dict(result, {
+            "models": {
+                "embedding": "BAAI/bge-small-en-v1.5",
+                "embedding_backend": "openvino", "embedding_device": "NPU",
+                "reranker": "cross-encoder/ms-marco-MiniLM-L6-v2",
+                "reranker_backend": "openvino", "reranker_device": "NPU",
+            },
+            "features": {"reranker": True},
+            "openvino": {"enabled": True},
+        })
+    elif profile_name in ("integrated", "cpu") and intel_integrated:
+        # Intel iGPU OpenVINO acceleration for integrated systems without discrete NPU
         result = _deep_merge_dict(result, {
             "models": {
                 "embedding": "BAAI/bge-small-en-v1.5",
@@ -581,8 +805,10 @@ def profile_overrides(profile_name: str, detected: dict[str, Any] | None = None)
                 "reranker": "cross-encoder/ms-marco-MiniLM-L6-v2",
                 "reranker_backend": "openvino", "reranker_device": "auto",
             },
+            "features": {"reranker": True},
             "openvino": {"enabled": True},
         })
+    result = _deep_merge_dict(result, {"features": {"local_reranking": True}})
     return result
 
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import nullcontext
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -90,6 +91,135 @@ def _embedding_model(cache, *, provider="ollama", model_name="test-model", dimen
     model._encode_ollama = encode_ollama
     model._encode_st_batch = encode_st
     return model
+
+
+def test_ollama_embedding_gpu_call_uses_expiring_owner_lease(tmp_path, monkeypatch):
+    from local_ai_hub.external_gpu_reservation import ExternalGpuReservationStore
+
+    model = EmbeddingModel.__new__(EmbeddingModel)
+    model._gpu_reservation_path = tmp_path / "external-gpu-reservation"
+    store = ExternalGpuReservationStore(model._gpu_reservation_path, ttl_seconds=30)
+    model._gpu_reservation_store = store
+    model._ollama_model_name = "test-embedding-model"
+    model.ollama_url = "http://127.0.0.1:11434"
+    model._execution_local = threading.local()
+    model._execution_local.gpu_fence_digest = None
+
+    class _Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self):
+            return b'{"embeddings":[[0.1,0.2]]}'
+
+    def urlopen(_request, *, timeout):
+        assert timeout == 30.0
+        record = store.read()
+        assert record is not None
+        assert record["owner"].startswith("embedding:")
+        assert record["state"] == "active"
+        assert record["expires_at"] > time.time()
+        return _Response()
+
+    monkeypatch.setattr("urllib.request.urlopen", urlopen)
+
+    assert model._encode_ollama(["hello"]) == [[0.1, 0.2]]
+    assert store.read() is None
+    assert not model._gpu_reservation_path.exists()
+
+
+def test_failed_ollama_embedding_keeps_active_lease_only_until_ttl(tmp_path, monkeypatch):
+    from local_ai_hub.external_gpu_reservation import ExternalGpuReservationStore
+
+    now = [time.time()]
+    model = EmbeddingModel.__new__(EmbeddingModel)
+    model._gpu_reservation_path = tmp_path / "external-gpu-reservation"
+    store = ExternalGpuReservationStore(
+        model._gpu_reservation_path, ttl_seconds=30, clock=lambda: now[0]
+    )
+    model._gpu_reservation_store = store
+    model._ollama_model_name = "test-embedding-model"
+    model.ollama_url = "http://127.0.0.1:11434"
+    model._execution_local = threading.local()
+    model._execution_local.gpu_fence_digest = None
+
+    def timeout(_request, *, timeout):
+        assert timeout == 30.0
+        raise TimeoutError("embedding backend timed out")
+
+    monkeypatch.setattr("urllib.request.urlopen", timeout)
+
+    assert model._encode_ollama(["hello"]) is None
+    record = store.read()
+    assert record is not None
+    assert record["state"] == "active"
+    assert record["expires_at"] == now[0] + 30
+
+    now[0] += 31
+    assert store.reap_expired() is True
+    assert store.read() is None
+
+
+def test_terminal_ollama_embedding_http_error_releases_active_lease(tmp_path, monkeypatch):
+    from urllib.error import HTTPError
+
+    from local_ai_hub.external_gpu_reservation import ExternalGpuReservationStore
+
+    model = EmbeddingModel.__new__(EmbeddingModel)
+    model._gpu_reservation_path = tmp_path / "external-gpu-reservation"
+    store = ExternalGpuReservationStore(model._gpu_reservation_path, ttl_seconds=30)
+    model._gpu_reservation_store = store
+    model._ollama_model_name = "test-embedding-model"
+    model.ollama_url = "http://127.0.0.1:11434"
+    model._execution_local = threading.local()
+    model._execution_local.gpu_fence_digest = None
+
+    def terminal_http_error(_request, *, timeout):
+        assert timeout == 30.0
+        raise HTTPError("http://127.0.0.1:11434/api/embed", 503, "unavailable", {}, None)
+
+    monkeypatch.setattr("urllib.request.urlopen", terminal_http_error)
+
+    assert model._encode_ollama(["hello"]) is None
+    assert store.read() is None
+    assert not model._gpu_reservation_path.exists()
+
+
+@pytest.mark.parametrize(
+    ("backend_result", "reservation_remains"),
+    [
+        pytest.param({"success": False, "error": "embedding model disabled"}, False, id="terminal-failure"),
+        pytest.param({"success": False, "outcome_unknown": True}, True, id="unknown-outcome"),
+        pytest.param({"success": True, "timed_out": True}, True, id="timeout-even-with-success"),
+    ],
+)
+def test_sentence_transformers_gpu_lease_release_requires_terminal_outcome(
+    tmp_path, monkeypatch, backend_result, reservation_remains,
+):
+    from local_ai_hub.external_gpu_reservation import ExternalGpuReservationStore
+
+    model = _embedding_model(_Cache(), provider="sentence-transformers")
+    model.device = "cuda"
+    model._gpu_reservation_path = tmp_path / "external-gpu-reservation"
+    store = ExternalGpuReservationStore(model._gpu_reservation_path, ttl_seconds=30)
+    model._gpu_reservation_store = store
+    model._execution_local = threading.local()
+    model._execution_local.gpu_fence_digest = None
+    monkeypatch.setattr("local_ai_hub.embeddings.uses_torch_cuda", lambda _backend, _device: True)
+    monkeypatch.setattr(
+        model.flight_group,
+        "do",
+        lambda _key, _operation: (backend_result, False),
+    )
+
+    result = model.encode(["hello"], query=True)
+
+    assert result["success"] is backend_result["success"]
+    assert (store.read() is not None) is reservation_remains
+    assert model._gpu_reservation_path.exists() is reservation_remains
 
 
 def test_embed_reuses_cached_vectors_and_preserves_batch_order():
@@ -285,6 +415,7 @@ def test_backend_fallback_is_reported_as_degraded():
     assert result["success"] is True
     assert result["degraded"] is True
     assert result["fallback"] == "sentence-transformers"
+    assert result["device"] == "cpu"
 
 
 def test_backend_fallback_reports_embedding_space_of_backend_that_encoded_vectors():
@@ -352,3 +483,65 @@ def test_embedding_l1_cache_evicts_at_configured_bound_and_reports_memory_entrie
     assert stats["entries"] <= stats["max_entries"]
     assert stats["evictions"] > 0
     print(f"embedding-cache L1 entries={stats['entries']}/{stats['max_entries']} evictions={stats['evictions']}")
+
+
+def test_sentence_transformers_cuda_inference_error_retries_on_cpu(monkeypatch):
+    model = EmbeddingModel.__new__(EmbeddingModel)
+    model.config = {"models": {"embedding": "test-embedding"}}
+    model.model_name = "test-embedding"
+    model.backend = "sentence-transformers"
+    model.device = "cuda"
+    model.active_backend = "sentence-transformers"
+    model.active_device = "cuda"
+    model._loaded_model_name = "test-embedding"
+    model._model = None
+    model._st_candidates = None
+    model._st_candidate_index = -1
+    model._load_error = None
+    model._load_error_time = 0.0
+    model.batch_size = 8
+    model._cpu_gate = type("Gate", (), {"slot": lambda *_args: nullcontext()})()
+    model._model_provenance = lambda _identity: {"revision": "test", "digest": "test"}
+
+    class BrokenCudaModel:
+        prompts = {}
+
+        def encode(self, *_args, **_kwargs):
+            raise RuntimeError("CUDA inference failed")
+
+    class CpuModel:
+        prompts = {}
+
+        def encode(self, *_args, **_kwargs):
+            return [[0.6, 0.8]]
+
+    cuda_model = BrokenCudaModel()
+    cpu_model = CpuModel()
+    loads = []
+
+    def ensure_st_model(*, ollama_fallback=False):
+        loads.append(model._st_candidate_index)
+        if model._st_candidate_index == -1:
+            model._st_candidates = model._candidate_specs()
+            model._st_candidate_index = 0
+            model._model = cuda_model
+            model.active_backend = "sentence-transformers"
+            model.active_device = "cuda"
+            return True
+        if model._st_candidates == model._candidate_specs() and model._st_candidate_index == 0:
+            model._st_candidate_index = 1
+            model._model = cpu_model
+            model.active_backend = "sentence-transformers"
+            model.active_device = "cpu"
+            return True
+        return False
+
+    monkeypatch.setattr(model, "_ensure_st_model", ensure_st_model)
+    monkeypatch.setattr("local_ai_hub.embeddings.release_model", lambda *_args, **_kwargs: None)
+
+    vectors, backend = model._encode_st_batch_locked(["hello"], query=False, priority=0)
+
+    assert vectors == [[0.6, 0.8]]
+    assert backend == "sentence-transformers"
+    assert model.active_device == "cpu"
+    assert loads == [-1, 0]

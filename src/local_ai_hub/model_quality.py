@@ -269,12 +269,12 @@ def _receipt_id(receipt: Mapping[str, Any]) -> str | None:
 def _reproducible_receipt(receipt: Any) -> bool:
     if not isinstance(receipt, Mapping) or not _receipt_id(receipt):
         return False
-    return bool(
-        receipt.get("reproducible")
-        or receipt.get("evaluation_hash")
-        or receipt.get("case_ids")
-        or receipt.get("suite_version")
-    )
+    if receipt.get("reproducible") is True:
+        return True
+    eval_hash = receipt.get("evaluation_hash")
+    suite_ver = receipt.get("suite_version")
+    case_ids = receipt.get("case_ids")
+    return bool(eval_hash and (suite_ver or case_ids))
 
 
 def promote_candidate(

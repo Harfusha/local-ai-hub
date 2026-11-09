@@ -229,6 +229,86 @@ def test_deterministic_extract_api_spec(tmp_path: Path):
     assert "post" in res["paths"]["/items"]
 
 
+def test_extract_api_spec_prunes_excluded_directories(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    (tmp_path / "routes.py").write_text(
+        "from fastapi import FastAPI\napp = FastAPI()\n"
+        "@app.get('/visible')\ndef visible(): return {}\n",
+        encoding="utf-8",
+    )
+    excluded_dirs = {".git", ".venv", "venv", "tool-envs", "node_modules", "__pycache__"}
+    for dirname in excluded_dirs:
+        nested = tmp_path / dirname / "nested"
+        nested.mkdir(parents=True)
+        (nested / "ignored.py").write_text(
+            "@app.get('/ignored')\ndef ignored(): return {}\n",
+            encoding="utf-8",
+        )
+
+    original_walk = os.walk
+    visited_roots: list[Path] = []
+
+    def tracking_walk(top: str | os.PathLike[str], *args, **kwargs):
+        for current, directories, files in original_walk(top, *args, **kwargs):
+            visited_roots.append(Path(current).relative_to(tmp_path))
+            yield current, directories, files
+
+    monkeypatch.setattr(os, "walk", tracking_walk)
+    engine = DeterministicEngine({"server": {"state_dir": str(tmp_path)}})
+    result = engine.extract_api_spec(str(tmp_path))
+
+    assert result["success"] is True
+    assert result["total_endpoints"] == 1
+    assert [ep["path"] for ep in result["endpoints"]] == ["/visible"]
+    assert visited_roots[0] == Path(".")
+    assert not any(path.parts and path.parts[0] in excluded_dirs for path in visited_roots)
+
+
+def test_extract_api_spec_reads_static_post_route_registry(tmp_path: Path):
+    (tmp_path / "http_route_registry.py").write_text(
+        "from dataclasses import dataclass\n"
+        "@dataclass(frozen=True)\n"
+        "class RouteRule:\n"
+        "    route_id: str\n"
+        "    paths: frozenset[str]\n"
+        "POST_ROUTE_REGISTRY = (\n"
+        "    RouteRule('post_health_1', frozenset(('/api/health',))),\n"
+        "    RouteRule('post_search_1', frozenset(('/api/search', '/api/search/'))),\n"
+        ")\n",
+        encoding="utf-8",
+    )
+
+    result = DeterministicEngine({"server": {"state_dir": str(tmp_path)}}).extract_api_spec(str(tmp_path))
+
+    assert result["success"] is True
+    assert result["total_endpoints"] == 3
+    assert result["paths"]["/api/health"]["post"]["operationId"] == "post_health_1"
+    assert result["paths"]["/api/search/"]["post"]["operationId"] == "post_search_1"
+
+
+def test_extract_api_spec_skips_tree_walk_for_authoritative_hub_registry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+):
+    registry = tmp_path / "src" / "local_ai_hub" / "http_route_registry.py"
+    registry.parent.mkdir(parents=True)
+    registry.write_text(
+        "API_ROUTE_REGISTRIES_AUTHORITATIVE = True\n"
+        "POST_ROUTE_REGISTRY = (\n"
+        "    RouteRule('post_health_1', frozenset(('/api/health',))),\n"
+        ")\n",
+        encoding="utf-8",
+    )
+
+    def unexpected_walk(*args, **kwargs):
+        pytest.fail("authoritative route registry should avoid repository-wide walk")
+
+    monkeypatch.setattr(os, "walk", unexpected_walk)
+    result = DeterministicEngine({"server": {"state_dir": str(tmp_path)}}).extract_api_spec(str(tmp_path))
+
+    assert result["success"] is True
+    assert result["total_endpoints"] == 1
+    assert result["paths"]["/api/health"]["post"]["operationId"] == "post_health_1"
+
+
 def test_deterministic_slice_dependency_graph(tmp_path: Path):
     code_file = tmp_path / "models_and_services.py"
     code_file.write_text(

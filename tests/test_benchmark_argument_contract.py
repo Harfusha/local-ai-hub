@@ -47,3 +47,6 @@ def test_generic_benchmark_without_arguments_dispatches_existing_suite(monkeypat
 
     assert result["success"] is True
     assert calls == [("/api/benchmark", {})]
+
+
+pytestmark = pytest.mark.slow

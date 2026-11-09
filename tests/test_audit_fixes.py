@@ -413,6 +413,41 @@ def test_schema_inspect_handles_canonicalized_root_alias(monkeypatch, tmp_path):
     assert "order-items" in result["tables"]
 
 
+def test_schema_discovery_uses_pruned_walk_instead_of_recursive_rglob(monkeypatch, tmp_path):
+    from contextlib import closing
+    import sqlite3
+    from local_ai_hub.deterministic import DeterministicEngine
+
+    root = tmp_path / "repo"
+    ignored_db = root / ".venv" / "cache" / "ignored.db"
+    valid_db = root / "data" / "app.sqlite"
+    ignored_db.parent.mkdir(parents=True)
+    valid_db.parent.mkdir(parents=True)
+    ignored_db.write_bytes(b"not a sqlite database")
+    with closing(sqlite3.connect(valid_db)) as con:
+        con.execute("CREATE TABLE app (id INTEGER PRIMARY KEY)")
+        con.commit()
+
+    engine = DeterministicEngine(
+        {"deterministic": {"enabled": True}, "server": {"state_dir": str(tmp_path)}},
+        MagicMock(),
+        MagicMock(),
+        MagicMock(),
+    )
+    monkeypatch.setattr(
+        Path,
+        "rglob",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("recursive rglob must not run")),
+    )
+
+    result = engine.schema_inspect(str(root))
+    explain = engine.explain_query(str(root), "SELECT * FROM app WHERE id = 1")
+
+    assert result["success"] is True
+    assert result["db_path"] == "data/app.sqlite"
+    assert explain["success"] is True
+
+
 def test_agent_memory_reap_cleans_embeddings_and_fts():
     import sqlite3
     from local_ai_hub.agent_memory import MemoryStore, MemoryRecord, MemoryKind
@@ -486,6 +521,29 @@ def test_agent_policy_budgets_bounded():
         engine.get_budget(f"task_{i}")
     
     assert len(engine._budgets) <= 512
+
+
+def test_sqlite_discovery_reparse_point_detection():
+    from types import SimpleNamespace
+    import stat
+    from local_ai_hub.deterministic import _is_directory_reparse_point
+
+    class FakeDirectory:
+        def __init__(self, *, mode, attributes):
+            self._metadata = SimpleNamespace(st_mode=mode, st_file_attributes=attributes)
+
+        def lstat(self):
+            return self._metadata
+
+        def is_junction(self):
+            return False
+
+    assert _is_directory_reparse_point(
+        FakeDirectory(mode=stat.S_IFDIR, attributes=0x400)
+    ) is True
+    assert _is_directory_reparse_point(
+        FakeDirectory(mode=stat.S_IFDIR, attributes=0)
+    ) is False
 
 
 

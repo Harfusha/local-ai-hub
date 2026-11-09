@@ -35,6 +35,8 @@ _MAX_TABLES = 512
 _MAX_ROWS = 1_000_000
 _MAX_CONFIG_DEPTH = 64
 _RETIRED_CONFIG_PATHS = {
+    "$.security.api_token", "$.security.supervisor_token",
+    "$.security.action_tokens", "$.security.api_token_permissions",
     "$.security.api_token_tenant", "$.security.api_token_principal",
     "$.security.tenant_derivation_key", "$.security.users",
     "$.scheduler.max_queued_per_tenant", "$.scheduler.max_inflight_per_tenant",

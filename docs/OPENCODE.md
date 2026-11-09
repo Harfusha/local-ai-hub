@@ -27,9 +27,10 @@ the authenticated LAC1 client and confirms the exact OpenCode process exited.
 Its test-only shim does not implement `/T`: this proves neither descendant
 termination nor a safe production replacement for OpenCode's `taskkill`.
 An attempted real-model smoke against the running Hub was denied before
-provider startup because its configured API token did not meet the provider's
-32-ASCII-character requirement. A subsequent provider status reported
-`stopped`. No real-model or GPU conclusion follows from that attempt.
+provider startup by an obsolete requirement for a configured 32-character Hub
+API token. Provider and restricted-profile credentials now derive from the
+session nonce; the launcher no longer needs a configured Hub API token. That
+attempt started no provider and establishes no real-model or GPU result.
 An isolated follow-up used a separate CPU-only Ollama instance with the
 already installed `qwen2.5-coder:0.5b`, a disposable project and the test-only
 single-process stop shim. Real OpenCode returned `OK` through the pipe;
@@ -284,15 +285,14 @@ and cloud access through other tools remain outside this check.
 `python tools/opencode_local.py --model MODEL --project PATH` is an experimental
 Windows launcher. The same launcher is available through
 `python tools/hubctl.py opencode --opencode-model MODEL --root PATH`; `--config`
-can select a Hub configuration. It requires a running updated Hub with a configured API token
-of at least 32 ASCII characters, the pinned verified OpenCode executable, and an
-explicit model. It starts a dedicated provider session and requests shutdown of
+can select a Hub configuration. It requires a running updated Hub, the pinned
+verified OpenCode executable, and an explicit model. It starts a dedicated provider session and requests shutdown of
 that same session on exit. Before starting, it checks the configured loopback
 Ollama inventory and refuses a missing model without downloading it. This check
 uses the launcher's configuration; it does not prove that a running Hub has
-reloaded that same configuration or that the model fits in GPU memory. After
-reserving the Hub scheduler, the provider also checks its own Ollama inventory
-and refuses to start if a different model is already resident. It repeats the
+reloaded that same configuration or that the model fits in GPU memory. At
+inference admission, the provider checks its own Ollama inventory and refuses
+the request if a different model is already resident. It repeats the
 version and resident-model checks on the same TCP connection used for each
 inference request; a closed connection is not replaced. These checks are snapshots:
 unrelated Ollama clients are not fenced and can race the check. Its managed OpenCode data lives under the configured
@@ -302,6 +302,11 @@ the agent to read project `AGENTS.md` instructions. Normal setup prepares its
 components only when requested; it does not run the launcher. The launcher does
 not sandbox shell network access or establish VRAM
 admission. An isolated end-to-end test used OpenCode with a fake backend only.
+Focused Windows verification on 2026-11-08 ran
+`python -m pytest -q tests/test_opencode_inference_session.py tests/test_opencode_launcher_integration.py tests/test_opencode_container_integration.py tests/test_opencode_mcp_container_integration.py tests/test_opencode_project_verification.py`;
+20 tests passed. This covers the pinned CLI, provider cleanup, and authenticated
+sandbox MCP bridge with a fake backend. It does not verify model-driven edits or
+complete local-only isolation.
 `python tools/setup.py --prepare-opencode-model MODEL` checks the running
 loopback Ollama inventory, downloads that one model only when absent, and checks
 the inventory again. `--skip-model-pull` makes this a presence check;
@@ -372,10 +377,12 @@ streaming chat endpoint to a single model and forwards only to a loopback
 backend. Fake-server tests cover authentication, model selection, concurrency,
 truncation and backend failure. An isolated OpenCode 2.2.5 process successfully
 used the bridge with a fake model backend, and the reservation was then released.
-The Hub now owns its lifecycle through authenticated experimental start, status
-and stop endpoints. Start requires a configured Hub API token of at least 32
-ASCII characters; only a nonce is returned, and the provider credential is
-derived locally. Stop is asynchronous and retains the fence on uncertainty.
+The Hub owns its lifecycle through experimental start, status and stop
+endpoints. Configured API-token protection remains active; loopback operation
+does not require a configured Hub API token. Only a nonce is returned, and
+provider/profile credentials derive from that session nonce. GPU admission is
+lazy and occurs when inference begins. Stop is asynchronous and retains the
+fence on uncertainty.
 Setup does not start or configure it; no actual Ollama or GPU test has run.
 Gaming mode blocks new starts. A request to enter gaming or maintenance starts
 provider shutdown and rejects the mode change until shutdown is confirmed.

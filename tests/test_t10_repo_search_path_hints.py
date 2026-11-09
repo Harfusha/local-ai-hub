@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import inspect
+
 import pytest
 from pathlib import Path
 
@@ -38,7 +40,7 @@ def _search_service(tmp_path: Path, preprocessor: object) -> LocalAIServices:
     services.repo_tools = RepositoryTools(config)
     services.evidence_store = None
     services._repo_cache_state = lambda _root: {"fingerprint": "rev-1", "kind": "test"}
-    services._repo_cached = lambda _operation, _root, _params, compute: compute()
+    services._repo_cached = lambda _operation, _root, _params, compute, **_kwargs: compute()
     return services
 
 
@@ -66,7 +68,8 @@ def test_repo_search_prioritizes_request_and_config_hints_without_narrowing(tmp_
     )
 
     result = services.repo_search(
-        str(tmp_path), "button", top_k=2, path_hints=[request_hint], scope="task"
+        str(tmp_path), "button", top_k=2, path_hints=[request_hint], scope="task",
+        search_mode="lexical",
     )
 
     assert [item["path"] for item in result["results"]] == [
@@ -77,7 +80,7 @@ def test_repo_search_prioritizes_request_and_config_hints_without_narrowing(tmp_
     assert "secret/button.php" not in {item["path"] for item in result["results"]}
 
     configured = services.repo_search(
-        str(tmp_path), "button", top_k=2, scope="task"
+        str(tmp_path), "button", top_k=2, scope="task", search_mode="lexical",
     )
     assert [item["path"] for item in configured["results"]] == [
         "templates/element/button.php",
@@ -98,6 +101,7 @@ def test_repo_search_default_scope_applies_public_repository_search_hint(tmp_pat
         str(tmp_path),
         "button",
         top_k=2,
+        search_mode="lexical",
         path_hints=[
             PathHint(
                 path="templates/element",
@@ -178,12 +182,41 @@ def test_repo_search_uses_path_override_include_only_as_priority(tmp_path: Path)
     )
     services = _search_service(tmp_path, None)
 
-    result = services.repo_search(str(tmp_path), "button", top_k=2)
+    result = services.repo_search(str(tmp_path), "button", top_k=2, search_mode="lexical")
 
     assert [item["path"] for item in result["results"]] == [
         "templates/element/button.php",
         "src/button.py",
     ]
+
+
+def test_exact_search_hint_ranking_does_not_resolve_each_result_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    candidate = docs / "guide.py"
+    candidate.write_text("installation\n", encoding="utf-8")
+    services = _search_service(tmp_path, None)
+    original_resolve = Path.resolve
+    candidate_resolutions = []
+
+    def track_candidate_resolution(path: Path, *args, **kwargs):
+        frame = inspect.currentframe().f_back
+        path_priority_call = any(
+            current.frame.f_code.co_name == "path_priority"
+            for current in inspect.getouterframes(frame)
+        )
+        if path == candidate and kwargs.get("strict") is False and path_priority_call:
+            candidate_resolutions.append(path)
+        return original_resolve(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "resolve", track_candidate_resolution)
+    result = services.repo_search(str(tmp_path), "installation", top_k=1)
+
+    assert result["success"] is True
+    assert result["results"][0]["path"] == "docs/guide.py"
+    assert candidate_resolutions == []
 
 
 def test_tool_repo_search_routes_request_hints_through_complete_service() -> None:
@@ -226,11 +259,11 @@ def test_repo_search_logs_preprocessor_candidate_failure_and_keeps_exact_fallbac
             raise PermissionError(f"private path: {tmp_path}")
 
     (tmp_path / "src").mkdir()
-    (tmp_path / "src" / "button.py").write_text("needle button\n", encoding="utf-8")
+    (tmp_path / "src" / "button.py").write_text("needleSymbol button\n", encoding="utf-8")
     services = _search_service(tmp_path, FailingPreprocessor())
 
     with caplog.at_level("DEBUG", logger="local_ai_hub.services"):
-        result = services.repo_search(str(tmp_path), "needle", top_k=5, scope="task")
+        result = services.repo_search(str(tmp_path), "needleSymbol", top_k=5, scope="task")
 
     assert result["success"] is True
     assert "src/button.py" in {item["path"] for item in result["results"]}
@@ -248,12 +281,12 @@ def test_repo_search_logs_deterministic_candidate_failure_and_keeps_exact_fallba
             raise PermissionError(f"private path: {tmp_path}")
 
     (tmp_path / "src").mkdir()
-    (tmp_path / "src" / "button.py").write_text("needle button\n", encoding="utf-8")
+    (tmp_path / "src" / "button.py").write_text("needleSymbol button\n", encoding="utf-8")
     services = _search_service(tmp_path, _CandidatePreprocessor([]))
     services.deterministic = FailingDeterministicIndex()
 
     with caplog.at_level("DEBUG", logger="local_ai_hub.services"):
-        result = services.repo_search(str(tmp_path), "needle", top_k=5, scope="task")
+        result = services.repo_search(str(tmp_path), "needleSymbol", top_k=5, scope="task")
 
     assert result["success"] is True
     assert "src/button.py" in {item["path"] for item in result["results"]}
@@ -262,27 +295,30 @@ def test_repo_search_logs_deterministic_candidate_failure_and_keeps_exact_fallba
     assert all(str(tmp_path) not in message for message in messages)
 
 
-def test_repo_search_logs_code_index_candidate_failure_and_keeps_exact_fallback(
-    tmp_path: Path, caplog: pytest.LogCaptureFixture
+def test_repo_search_skips_partial_code_index_for_natural_query_and_keeps_exact_search(
+    tmp_path: Path,
 ) -> None:
     class FailingCodeIndex:
-        @staticmethod
-        def related_paths(*_args, **_kwargs):
-            raise PermissionError(f"private path: {tmp_path}")
+        def __init__(self):
+            self.calls = 0
+
+        def related_paths(self, *_args, **_kwargs):
+            self.calls += 1
+            raise AssertionError("natural-language search must not scan the partial code index")
 
     (tmp_path / "src").mkdir()
     (tmp_path / "src" / "button.py").write_text("needle button\n", encoding="utf-8")
     services = _search_service(tmp_path, _CandidatePreprocessor([]))
-    services.code_index = FailingCodeIndex()
+    code_index = FailingCodeIndex()
+    services.code_index = code_index
 
-    with caplog.at_level("DEBUG", logger="local_ai_hub.services"):
-        result = services.repo_search(str(tmp_path), "needle", top_k=5, scope="task")
+    result = services.repo_search(
+        str(tmp_path), "needle", top_k=5, scope="task", search_mode="lexical",
+    )
 
     assert result["success"] is True
     assert "src/button.py" in {item["path"] for item in result["results"]}
-    messages = [record.getMessage() for record in caplog.records]
-    assert any("CodeIndex candidate search skipped (PermissionError)" in message for message in messages)
-    assert all(str(tmp_path) not in message for message in messages)
+    assert code_index.calls == 0
 
 
 def test_repo_search_does_not_claim_progressive_disclosure_without_receipts(tmp_path: Path) -> None:
@@ -296,7 +332,9 @@ def test_repo_search_does_not_claim_progressive_disclosure_without_receipts(tmp_
     services = _search_service(tmp_path, _CandidatePreprocessor([]))
     services.evidence_store = IncompleteEvidenceStore()
 
-    result = services.repo_search(str(tmp_path), "needle", top_k=5, scope="task")
+    result = services.repo_search(
+        str(tmp_path), "needle", top_k=5, scope="task", search_mode="lexical",
+    )
 
     assert result["success"] is True
     assert result["progressive_disclosure"] is False
@@ -331,3 +369,28 @@ def test_tool_repo_search_preserves_text_without_evidence_receipt() -> None:
 
     assert result["results"][0]["text"] == "needle button"
     assert result["progressive_disclosure"] is False
+
+
+@pytest.mark.parametrize(
+    ("search_mode", "query"),
+    [("lexical", "needle"), ("hybrid", "repoSearch")],
+)
+def test_repo_search_does_not_claim_complete_coverage_for_truncated_results(
+    tmp_path: Path, search_mode: str, query: str,
+) -> None:
+    services = _search_service(tmp_path, _CandidatePreprocessor([]))
+    services._repo_search_lexical = lambda *_args, **_kwargs: {
+        "success": True,
+        "results": [],
+        "has_more": False,
+        "truncated": True,
+        "truncation_reasons": ["candidate_file_limit"],
+    }
+
+    result = services.repo_search(
+        str(tmp_path), query, search_mode=search_mode,
+    )
+
+    assert result["success"] is True
+    assert result["truncated"] is True
+    assert result["coverage_complete"] is False

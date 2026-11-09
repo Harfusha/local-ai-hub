@@ -1,0 +1,28 @@
+{
+  "default_target_ref": "refs/heads/master",
+  "description": "Inspect operational logs and endpoint telemetry; fix confirmed slow/failing endpoints and improve request/response contracts with focused validation.",
+  "id": "plan_3a1fdfc49ddf",
+  "lifecycle": "draft",
+  "schema_version": 1,
+  "spec_refs": [],
+  "tasks": {
+    "task_endpoint_reliability_audit": {
+      "acceptance_criteria": [
+        "Recent endpoint failures and latency hotspots are classified from retained telemetry and trace evidence.",
+        "Confirmed server or response-contract defects are fixed at their source with focused regression coverage.",
+        "Focused checks pass and diff check is clean.",
+        "Live process has loaded the current source and representative endpoint/trace behavior is verified after separately authorized restart."
+      ],
+      "blocker": "Detailed request/response traces remain unclassified because enabling diagnostics stores unredacted payloads and paths; explicit approval remains pending. Current post-restart search used lexical fallback because rag_index_missing, and the first cold request spent 1102ms in search_hint_state.",
+      "clarifications": [],
+      "depends_on": [],
+      "description": "Audit current Hub logs and latency/failure data; classify expected caller failures versus server defects; fix confirmed performance and request/response projection issues; verify focused regression tests and live endpoints and traces after authorized restart.",
+      "kind": "analysis",
+      "next_action": "Investigate the cold search_hint_state delay and remaining high-p95/failing endpoints with sanitized telemetry. Classify generic request failures only after separate approval for unredacted detailed traces.",
+      "title": "Review logs, fix confirmed endpoint defects, verify live changes",
+      "work_phase": "verification",
+      "work_status": "in_progress"
+    }
+  },
+  "title": "Local AI Hub endpoint reliability audit"
+}

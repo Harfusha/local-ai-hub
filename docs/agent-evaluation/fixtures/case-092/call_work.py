@@ -43,7 +43,7 @@ if arguments["action"] == "submit":
     with (here / "work-submit-once.marker").open("x", encoding="utf-8") as stream:
         stream.write("submit attempted; inspect sandbox work state before any further action\n")
 env = os.environ.copy()
-for key in ("LOCAL_AI_TENANT", "LOCAL_AI_HUB_TOKEN", "LOCAL_AI_AGENT", "LOCAL_AI_AGENT_PROFILE"):
+for key in ("LOCAL_AI_TENANT", "LOCAL_AI_AGENT", "LOCAL_AI_AGENT_PROFILE"):
     env.pop(key, None)
 env.update(LOCAL_AI_CONFIG=str(config), PYTHONPATH=str(source / "src"), PYTHONDONTWRITEBYTECODE="1")
 params = StdioServerParameters(command=sys.executable, args=["-B", "-m", "local_ai_hub.mcp_server"], env=env, cwd=str(here))

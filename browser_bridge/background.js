@@ -57,9 +57,7 @@ async function post(path, payload, {retryServerErrors = false} = {}) {
     throw error;
   }
   const controller = new globalThis.AbortController();
-  const apiToken = String(globalThis.__LOCAL_AI_HUB_API_TOKEN__ || "").trim();
   const headers = {"Content-Type": "application/json"};
-  if (apiToken) headers["X-LocalAI-Token"] = apiToken;
   let response;
   try {
     response = await timed(fetch(`${HUB_URL}${path}`, {

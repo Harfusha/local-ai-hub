@@ -11,6 +11,7 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from local_ai_hub.features import FeatureSet
 from local_ai_hub.generator import generate_mcp_tool_schemas
+from local_ai_hub.client import HubClient
 from local_ai_hub import mcp_server as local_ai_mcp
 from local_ai_hub.operation_contracts import (
     OPERATION_CONTRACTS,
@@ -20,12 +21,41 @@ from local_ai_hub.operation_contracts import (
     operation_metadata,
     operation_output_schema,
     operation_parameters_schema,
+    operation_tool_input_schema,
     validate_operation_arguments,
     validate_operation_output,
 )
 
 
 TOOL = "local_ai_artifact"
+
+
+def test_reachability_dead_code_exposes_bounded_result_limit():
+    schema = operation_input_schema("local_ai_repo", "reachability_dead_code")
+    assert "limit" in schema["properties"]
+    assert schema["properties"]["limit"] == {
+        "type": "integer", "minimum": 1, "maximum": 200, "default": 100,
+    }
+    tool_schema = operation_tool_input_schema("local_ai_repo")
+    action_rule = next(
+        rule["then"] for rule in tool_schema["allOf"]
+        if rule["if"].get("properties", {}).get("action", {}).get("const") == "reachability_dead_code"
+    )
+    assert action_rule["properties"]["limit"] == {
+        "type": "integer", "minimum": 1, "maximum": 200, "default": 100,
+    }
+    assert validate_operation_arguments(
+        "local_ai_repo",
+        "reachability_dead_code",
+        {"action": "reachability_dead_code", "root": "C:/fixture", "limit": 1},
+    ) is None
+    for invalid_limit in (0, 201, True):
+        assert validate_operation_arguments(
+            "local_ai_repo",
+            "reachability_dead_code",
+            {"action": "reachability_dead_code", "root": "C:/fixture", "limit": invalid_limit},
+        ) is not None
+    assert "limit" not in operation_input_schema("local_ai_repo", "read_file")["properties"]
 
 
 @pytest.mark.parametrize("profile", ["compact", "standard"])
@@ -88,6 +118,79 @@ def test_artifact_runtime_validation_matches_action_contract():
     assert validate_operation_arguments(TOOL, "list", {}) is None
     assert "expected one of get, slice, list" in validate_operation_arguments(TOOL, "unknown", {})
     assert validate_operation_arguments(TOOL, "list", {"offset": 0}) == "offset is not valid for action='list'"
+
+
+def test_memory_record_requires_explicit_identity_and_preserves_session_id():
+    assert validate_operation_arguments(
+        "local_ai_coord", "memory_record", {"action": "memory_record"}
+    ) == "root is required for action='memory_record'"
+
+    valid = {
+        "action": "memory_record",
+        "root": "C:/fixture/repo",
+        "scope": "repository",
+        "key": "finding",
+        "value": "value",
+        "session_id": "session-fixture-101",
+    }
+    assert validate_operation_arguments("local_ai_coord", "memory_record", valid) is None
+
+    for alias_payload in (
+        {**valid, "name": "legacy-key"},
+        {**valid, "content": "legacy-value"},
+        {**valid, "query": "legacy-key"},
+    ):
+        assert validate_operation_arguments(
+            "local_ai_coord", "memory_record", alias_payload
+        ) is not None
+
+
+def test_hub_client_rejects_incomplete_memory_record_before_http():
+    calls = []
+    client = SimpleNamespace(post=lambda *args, **kwargs: calls.append((args, kwargs)))
+
+    result = HubClient.coord(client, "memory_record")
+
+    assert result["success"] is False
+    assert result["error"] == "root is required for action='memory_record'"
+    assert calls == []
+
+
+def test_hub_client_forwards_explicit_memory_record_identity(tmp_path):
+    calls = []
+    client = SimpleNamespace(
+        post=lambda *args, **kwargs: calls.append((args, kwargs)) or {"success": True}
+    )
+
+    result = HubClient.coord(
+        client,
+        "memory_record",
+        root=str(tmp_path),
+        scope="repository",
+        key="falsey-value-is-explicit",
+        value="",
+        session_id="session-fixture-101",
+    )
+
+    assert result["success"] is True
+    assert len(calls) == 1
+    payload = calls[0][0][1]
+    assert payload["root"] == str(tmp_path)
+    assert payload["scope"] == "repository"
+    assert payload["key"] == "falsey-value-is-explicit"
+    assert payload["value"] == ""
+    assert payload["session_id"] == "session-fixture-101"
+
+
+def test_hub_client_rejects_memory_mutations_without_explicit_root_and_scope():
+    calls = []
+    client = SimpleNamespace(post=lambda *args, **kwargs: calls.append((args, kwargs)))
+
+    for action in ("memory_delete", "memory_promote"):
+        result = HubClient.coord(client, action, record_id="mem_fixture")
+        assert result["success"] is False
+        assert result["status_code"] == 400
+    assert calls == []
 
 
 def test_artifact_handler_applies_registry_validation_before_backend_call(monkeypatch):
@@ -198,6 +301,8 @@ def test_runtime_validation_uses_gate_selector_and_action_fields():
         code_intelligence=False,
         status=True,
         work_orchestrator=True,
+        hardware_profile="high",
+        bounded_work_qualified=True,
     )
 
     assert validate_operation_call("local_ai_repo", {"action": "search"}, features=features) is None
@@ -257,7 +362,13 @@ def test_registry_metadata_and_selector_schemas_cover_all_public_tools():
         "work_orchestrator": True,
         "preprocessing": True,
         "batch_replacement": True,
+        "local_semantic_analysis": True,
+        "local_vision": True,
+        "local_code_generation": True,
+        "local_automation": True,
+        "bounded_local_work": True,
     })
+    config["hardware"] = {"profile": "high"}
     config.update({
         "server": {"auto_start_ollama": True},
         "commands": {"enabled": True},
@@ -280,6 +391,28 @@ def test_registry_metadata_and_selector_schemas_cover_all_public_tools():
         assert schema["parameters"]["properties"][selector]["enum"] == list(contract["actions"])
 
 
+@pytest.mark.parametrize(
+    ("profile", "qualified", "expected"),
+    [(profile, qualified, qualified) for profile in ("cpu", "integrated", "low", "balanced", "medium", "high", "max")
+     for qualified in (False, True)],
+)
+def test_rag_reranking_capability_is_available_in_every_profile_when_qualified(profile, qualified, expected):
+    config = {
+        "features": {"rag": True, "local_reranking": qualified},
+        "hardware": {"profile": profile},
+        "server": {"auto_start_ollama": True},
+    }
+
+    feature_set = FeatureSet.from_config(config)
+    status = feature_set.capability_status()["reranking"]
+
+    assert status["available"] is expected
+    assert status["minimum_profile"] == "cpu"
+    assert "search" in feature_set.supported_rag_actions()
+    if not expected:
+        assert status["reason"] == "qualification_or_feature_gate_disabled"
+
+
 def test_generated_parameters_are_registry_sourced_for_all_eight_tools():
     config = _config()
     config["features"].update({
@@ -295,10 +428,16 @@ def test_generated_parameters_are_registry_sourced_for_all_eight_tools():
         "work_orchestrator": True,
         "preprocessing": True,
         "batch_replacement": True,
+        "local_semantic_analysis": True,
+        "local_vision": True,
+        "local_code_generation": True,
+        "local_automation": True,
+        "bounded_local_work": True,
         "vision": True,
         "code_intelligence": True,
         "serena": True,
     })
+    config["hardware"] = {"profile": "high"}
     config.update({
         "server": {"auto_start_ollama": True},
         "commands": {"enabled": True},
@@ -314,7 +453,7 @@ def test_generated_parameters_are_registry_sourced_for_all_eight_tools():
 
     assert set(schemas) == set(OPERATION_CONTRACTS)
     for tool, schema in schemas.items():
-        assert schema["parameters"] == operation_parameters_schema(tool)
+        assert schema["parameters"] == operation_parameters_schema(tool, FeatureSet.from_config(config))
 
 
 def test_registry_schemas_keep_feature_filters_and_action_specific_requirements():
@@ -335,7 +474,9 @@ def test_registry_schemas_keep_feature_filters_and_action_specific_requirements(
         "vision": False,
         "code_intelligence": False,
         "serena": False,
+        "bounded_local_work": True,
     })
+    config["hardware"] = {"profile": "high"}
     config.update({
         "server": {"auto_start_ollama": True},
         "commands": {"enabled": True},
@@ -368,13 +509,14 @@ def test_registry_schemas_keep_feature_filters_and_action_specific_requirements(
 
     work_parameters = schemas["local_ai_work"]["parameters"]
     assert work_parameters["required"] == ["action"]
-    work_action_rules = {
-        row["if"]["properties"]["action"]["enum"][0]: row["then"]["required"]
-        for row in work_parameters["allOf"]
-    }
-    assert work_action_rules["submit"] == ["root", "task"]
-    assert work_action_rules["status"] == ["work_id"]
-    assert work_action_rules["continue"] == ["work_id", "answer"]
+    work_action_rules = {}
+    for row in work_parameters["allOf"]:
+        action_schema = row["if"]["properties"]["action"]
+        action = action_schema.get("const", action_schema.get("enum", [None])[0])
+        work_action_rules.setdefault(action, set()).update(row["then"].get("required", []))
+    assert work_action_rules["submit"] == {"root", "task", "mode"}
+    assert work_action_rules["status"] == {"work_id"}
+    assert work_action_rules["continue"] == {"work_id", "answer"}
 
 
 def test_status_uses_only_canonical_detail_schema():
@@ -445,10 +587,16 @@ def test_repo_search_timeout_respects_120_second_protocol_limit(monkeypatch):
 
     assert captured == {
         "path": "/api/search",
-        "payload": {"root": "C:/repo", "query": "needle", "top_k": 12, "limit": 24, "offset": 0, "enrich": False},
+        "payload": {"root": "C:/repo", "query": "needle", "top_k": 12, "limit": 24, "offset": 0, "enrich": False, "search_mode": "hybrid"},
         "timeout": 120,
         "path_hints": None,
     }
+
+    captured.clear()
+    local_ai_mcp._local_ai_repo_impl(
+        action="search", root="C:/repo", query="repo_search", search_mode="lexical",
+    )
+    assert captured["payload"]["search_mode"] == "lexical"
 
 
 @pytest.mark.parametrize(
@@ -504,6 +652,9 @@ def test_repo_path_hints_schema_is_bounded_and_context_scoped():
     assert item["additionalProperties"] is False
     context_schema = operation_input_schema("local_ai_repo", "context")
     search_schema = operation_input_schema("local_ai_repo", "search")
+    assert search_schema["properties"]["search_mode"]["enum"] == ["lexical", "rag", "hybrid"]
+    assert "default" not in search_schema["properties"]["search_mode"]
+    assert "hybrid for natural-language queries" in search_schema["properties"]["search_mode"]["description"]
     context_fields = ("path_hints", "directory_hints", "exclude_paths", "force_include_paths")
     assert all(field in context_schema["properties"] for field in context_fields)
     assert all(field not in search_schema["properties"] for field in context_fields[1:])
@@ -517,6 +668,9 @@ def test_repo_path_hints_schema_is_bounded_and_context_scoped():
 
     valid = {"path_hints": [{"path": "src/auth.py", "purpose": "repository_search", "scope": "repo_search"}]}
     assert validate_operation_arguments("local_ai_repo", "search", valid) is None
+    assert validate_operation_arguments("local_ai_repo", "search", {"search_mode": "hybrid"}) is None
+    assert validate_operation_arguments("local_ai_repo", "search", {"search_mode": "semantic"}) is not None
+    assert validate_operation_arguments("local_ai_repo", "context", {"search_mode": "hybrid"}) is not None
     context_hints = {
         "query": "Find authentication code",
         **valid,
@@ -968,7 +1122,9 @@ def test_output_validation_checks_shared_envelope_and_keeps_extra_payloads():
 
 def test_status_readiness_has_typed_identity_and_failure_contract():
     brief = {"success": True, "version": "1.0", "ollama_online": None,
-             "active_model": None, "degraded": False, "vram_pressure": "nominal"}
+             "active_model": None, "degraded": False, "vram_pressure": "nominal",
+             "hardware_profile": "low",
+             "capabilities": FeatureSet({"hardware": {"profile": "low"}}).capability_status()}
     assert validate_operation_output("local_ai_status", "brief", brief) is None
     assert validate_operation_output("local_ai_status", "brief", {**brief, "degraded": "false"}) is not None
     assert validate_operation_output("local_ai_status", "brief", {**brief, "active_model": 42}) is not None
@@ -1003,6 +1159,7 @@ def _stub_registered_mcp_tool(monkeypatch, tool_name: str, value: Any):
         if tool_name == "local_ai_task":
             monkeypatch.setattr(mcp_server.FEATURES, "tasks", True)
             monkeypatch.setattr(mcp_server.FEATURES, "has_any_model", lambda: True)
+            monkeypatch.setattr(mcp_server.FEATURES, "local_semantic_analysis", True)
         mcp_server.mcp.tool()(getattr(mcp_server, tool_name))
         registered_tool = manager._tools[tool_name]
         monkeypatch.setattr(registered_tool, "is_async", True)
@@ -1063,7 +1220,7 @@ def test_disabled_tool_dispatch_registration_is_scoped(monkeypatch: pytest.Monke
         ("local_ai_repo", {"action": "pipeline", "steps": [{"action": "profile"}]}),
         ("local_ai_repo", {"action": "preprocess", "is_worktree": True, "parent_root": "."}),
         ("local_ai_status", {"detail": "brief"}),
-        ("local_ai_task", {"action": "eval_suite", "task": "Evaluate Python cases", "cases": []}),
+        ("local_ai_task", {"action": "compress", "context": "Evaluate Python cases"}),
         ("local_ai_coord", {"action": "task_complete", "task_id": "task-1", "criterion": "c1", "board_id": "board-1"}),
     ],
 )
@@ -1087,8 +1244,13 @@ def test_registered_mcp_dispatch_accepts_handler_inputs(
             "coalesced_waiters": 0,
             "vram_pressure": "nominal",
             "context_budget_factor": 1.0,
+            "hardware_profile": "low",
+            "capabilities": FeatureSet({"hardware": {"profile": "low"}}).capability_status(),
         })
     calls = _stub_registered_mcp_tool(monkeypatch, tool_name, result)
+    if tool_name == "local_ai_task" and arguments.get("action") == "reason":
+        monkeypatch.setattr(local_ai_mcp.FEATURES, "hardware_profile", "high")
+        monkeypatch.setattr(local_ai_mcp.FEATURES, "local_semantic_analysis", True)
     response = asyncio.run(mcp_server.mcp.call_tool(tool_name, arguments))
 
     assert response[1]["success"] is True, response[1]
@@ -1204,7 +1366,9 @@ def test_registered_mcp_dispatch_rejects_non_object_output_without_replaying_han
 
 
 def test_status_brief_output_requires_identity_and_preserves_failures():
-    payload = {"success": True, "version": "1.0", "ollama_online": True, "active_model": None, "degraded": False}
+    payload = {"success": True, "version": "1.0", "ollama_online": True, "active_model": None, "degraded": False,
+               "hardware_profile": "low",
+               "capabilities": FeatureSet({"hardware": {"profile": "low"}}).capability_status()}
     schema = operation_output_schema("local_ai_status", "brief")
     assert schema["anyOf"]
     assert validate_operation_output("local_ai_status", "brief", payload) is None

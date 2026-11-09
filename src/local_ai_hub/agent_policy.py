@@ -699,12 +699,12 @@ class PolicyEngine:
         reason: str, limits: Mapping[str, Any], authorization_actor: str,
         response_budget_tokens: int | None = None,
     ) -> dict[str, Any]:
-        """Storage operation; transport must supply its authenticated task actor.
+        """Storage operation; transport must supply its authorized local actor.
 
         Recheck persisted ownership and scope under the same write lock as the
         budget and audit. Never create a task/budget or reset consumption here.
         """
-        if type(authorization_actor) is not str or authorization_actor not in {"api_token", "action_token", "local"}:
+        if type(authorization_actor) is not str or authorization_actor != "local":
             raise PermissionError("verified transport authorization required")
         if response_budget_tokens is not None and (type(response_budget_tokens) is not int or response_budget_tokens < 128):
             raise ValueError("response budget must be an integer of at least 128")

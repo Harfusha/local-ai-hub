@@ -21,6 +21,7 @@ from types import MappingProxyType
 from typing import Any, Literal, Mapping
 
 from .process_utils import clean_git_env, hidden_run_kwargs
+from .sqlite_support import connect_sqlite
 
 
 _MAX_CONFIG_BYTES = 256 * 1024
@@ -32,7 +33,7 @@ _MAX_REQUEST_PATH_HINTS = 64
 _GIT_TIMEOUT_SECONDS = 1.5
 _PHASES = frozenset({"rag", "call_graph", "modules"})
 _PATH_POLICY_PHASES = _PHASES | {"search", "repository_search", "preprocess", "test"}
-_MODEL_PROFILES = frozenset({"integrated", "balanced", "high", "max"})
+_MODEL_PROFILES = frozenset({"integrated", "balanced", "medium", "high", "max"})
 _ENV_KEY = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _ENV_REFERENCE = re.compile(r"^\$\{([A-Za-z_][A-Za-z0-9_]*)\}$")
 _KEY = re.compile(r"^[A-Za-z][A-Za-z0-9_.-]{0,63}$")
@@ -1168,6 +1169,7 @@ class ProjectPathPolicy:
         hard_denied: bool = False,
         binary: bool = False,
         size_bytes: int | None = None,
+        _resolved_candidate: Path | None = None,
     ) -> bool:
         settings = self.settings
         project_root = self.project_root
@@ -1185,7 +1187,17 @@ class ProjectPathPolicy:
                 return False
             lexical_candidate = Path(os.path.abspath(candidate))
             lexical_relative = lexical_candidate.relative_to(project_root).as_posix()
-            resolved = candidate.resolve(strict=True)
+            if _resolved_candidate is None:
+                resolved = candidate.resolve(strict=True)
+            else:
+                resolved = Path(_resolved_candidate)
+                if not resolved.is_absolute():
+                    return False
+                resolved_relative_for_identity = resolved.relative_to(project_root)
+                if os.path.normcase(os.path.normpath(str(resolved_relative_for_identity))) != os.path.normcase(
+                    os.path.normpath(str(Path(lexical_relative)))
+                ):
+                    return False
             if not resolved.is_relative_to(project_root):
                 return False
             resolved_relative = resolved.relative_to(project_root).as_posix()
@@ -1568,13 +1580,10 @@ class ProjectPathHintStore:
         self, *, ensure_schema: bool = True, existing_only: bool = False
     ) -> sqlite3.Connection:
         if existing_only:
-            database_uri = f"{self.database.as_uri()}?mode=ro"
-            connection = sqlite3.connect(
-                database_uri, timeout=2.0, uri=True
-            )
+            connection = connect_sqlite(self.database, timeout_seconds=2.0, read_only=True)
         else:
             self.database.parent.mkdir(parents=True, exist_ok=True)
-            connection = sqlite3.connect(self.database, timeout=2.0)
+            connection = connect_sqlite(self.database, timeout_seconds=2.0, wal=True)
         connection.execute("PRAGMA busy_timeout = 2000")
         if ensure_schema:
             connection.execute(

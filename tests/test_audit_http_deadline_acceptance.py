@@ -52,17 +52,16 @@ def test_unknown_post_rejects_without_waiting_for_an_unaccepted_body(monkeypatch
         _stop_server(server, thread)
 
 
-def test_real_handler_times_out_trickled_head_then_accepts_token_authenticated_request(monkeypatch):
+def test_real_handler_times_out_trickled_head_then_accepts_loopback_request_without_hub_token(monkeypatch):
     import local_ai_hub.http_server as server_module
 
-    token = "wire-test-token-123456789"
     monkeypatch.setattr(
         server_module,
         "APP",
         type("AppStub", (), {
             "config": {
                 "server": {"keepalive_timeout_seconds": 1.0, "request_timeout_seconds": 1.0},
-                "security": {"api_token": token, "api_token_permissions": ["read"]},
+                "security": {},
                 "_config_path": "",
                 "_runtime_override_path": "",
             }
@@ -108,7 +107,6 @@ def test_real_handler_times_out_trickled_head_then_accepts_token_authenticated_r
 
         request = urllib.request.Request(
             f"http://127.0.0.1:{server.server_port}/api/config",
-            headers={"X-LocalAI-Token": token},
         )
         with urllib.request.urlopen(request, timeout=3) as response:
             payload = json.loads(response.read().decode("utf-8"))

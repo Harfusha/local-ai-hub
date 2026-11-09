@@ -26,12 +26,65 @@ from .normalizer import tokenize_query_terms
 from .process_utils import canonical_root, hidden_run_kwargs, popen_managed, terminate_tree
 from .retrieval import is_source_context_query, source_context_path_tier
 from .search_pagination import MAX_PAGE_SIZE, MAX_PAGE_WINDOW, pagination_bounds_error
+from .search_modes import prefers_lexical_precision
 
 
 _WORD = re.compile(r"[A-Za-z_][A-Za-z0-9_./:-]{1,80}")
 MAX_EXACT_SEARCH_FILES = 8000
 MAX_EXACT_GIT_PATHS = 128_000
 MAX_EXACT_GIT_PATH_BYTES = 32 * 1024 * 1024
+_INSTALLATION_INTENT_TERMS = frozenset({
+    "install", "installation", "setup", "configure", "configuration", "quickstart",
+    "nainstalovat", "instalovat", "instalace", "nastavit", "nastavení", "spustit",
+})
+
+
+@lru_cache(maxsize=1024)
+def _intent_query_terms(query: str) -> frozenset[str]:
+    return frozenset(term.casefold() for term in tokenize_query_terms(query))
+
+
+def _is_installation_intent(query_terms: frozenset[str]) -> bool:
+    if query_terms.intersection(_INSTALLATION_INTENT_TERMS):
+        return True
+    if {"set", "up"}.issubset(query_terms):
+        return True
+    return any(term.startswith(("install", "instal", "nainstal")) for term in query_terms)
+
+
+@lru_cache(maxsize=8192)
+def _intent_path_adjustment(query: str, relative_path: str) -> float:
+    """Prefer user-facing install guides over tests for natural how-to queries."""
+    if prefers_lexical_precision(query):
+        return 0.0
+    query_terms = _intent_query_terms(query)
+    if not _is_installation_intent(query_terms):
+        return 0.0
+    path = relative_path.casefold().replace("\\", "/").strip("/")
+    if not path or any(part in {"plans", "specs", "superpowers"} for part in path.split("/")):
+        return 0.0
+    name = path.rsplit("/", 1)[-1]
+    if "prompt" in name and not query_terms.intersection({"prompt", "prompts"}):
+        return 0.0
+    if path.startswith("tests/") or "/tests/" in path:
+        return -8.0
+    if path in {"readme.md", "docs/readme.md"}:
+        return 24.0
+    if path == "docs/installation.md":
+        return 72.0
+    install_intent = _is_installation_intent(query_terms)
+    setup_intent = query_terms.intersection({"setup", "quickstart", "spustit"}) or {
+        "set", "up",
+    }.issubset(query_terms)
+    configuration_intent = query_terms.intersection({"configure", "configuration", "nastavit", "nastavení"})
+    documentation_entrypoint = (
+        (install_intent and name.startswith(("install", "setup", "getting_started", "getting-started", "quickstart")))
+        or (setup_intent and name.startswith(("setup", "getting_started", "getting-started", "quickstart")))
+        or (configuration_intent and name.startswith(("configure", "configuration", "setup")))
+    )
+    if path.startswith("docs/") and name.endswith(".md") and documentation_entrypoint:
+        return 56.0
+    return 0.0
 
 
 class GitFileInventory(list[Path]):
@@ -155,6 +208,25 @@ _SYMBOL_PATTERNS = [
     re.compile(r"^\s*class\s+([A-Za-z_]\w*)"),
     re.compile(r"^\s*(?:public|private|protected|internal|static|final|virtual|override|abstract|sealed|partial|async|export|default|const|let|var|function|func|fn|type|interface|enum|struct|record|trait|impl|namespace|module)\s+(?:[\w<>,?\[\].]+\s+)*([A-Za-z_]\w*)"),
 ]
+
+
+@lru_cache(maxsize=1)
+def _unicode_lower_expansions() -> tuple[frozenset[str], frozenset[str]]:
+    """Source and output characters of multi-character lowercase mappings."""
+    sources: set[str] = set()
+    expanded: set[str] = set()
+    for codepoint in range(0x110000):
+        source = chr(codepoint)
+        lowered = source.lower()
+        if len(lowered) > 1:
+            sources.add(source)
+            expanded.update(lowered)
+    return frozenset(sources), frozenset(expanded)
+
+
+def _lower_expansion_characters() -> frozenset[str]:
+    """Characters emitted by multi-character Unicode lowercase mappings."""
+    return _unicode_lower_expansions()[1]
 
 
 @lru_cache(maxsize=1)
@@ -338,7 +410,7 @@ class RepositoryTools:
             raise ValueError(f"root directory does not exist: {path}")
         return path
 
-    def _git_files(self, root: Path, *, max_files: int | None = None) -> GitFileInventory | None:
+    def _git_files(self, root: Path, *, max_files: int | None = None, force: bool = False) -> GitFileInventory | None:
         """Stream a bounded tracked + untracked Git inventory.
 
         At most ``max_files`` paths are retained (the default hard bound is
@@ -353,7 +425,7 @@ class RepositoryTools:
         root_resolved = root.resolve(strict=False)
         with self._git_files_lock:
             cached = self._git_files_cache.get(key)
-            if cached and (self.git_files_cache_ttl <= 0 or now - cached[0] <= self.git_files_cache_ttl):
+            if not force and cached and (self.git_files_cache_ttl <= 0 or now - cached[0] <= self.git_files_cache_ttl):
                 self._git_stats["file_list_hits"] += 1
                 return GitFileInventory(
                     [(root_resolved / rel) for rel in cached[1][:limit]],
@@ -374,7 +446,7 @@ class RepositoryTools:
             now = time.monotonic()
             with self._git_files_lock:
                 cached = self._git_files_cache.get(key)
-                if cached and (self.git_files_cache_ttl <= 0 or now - cached[0] <= self.git_files_cache_ttl):
+                if not force and cached and (self.git_files_cache_ttl <= 0 or now - cached[0] <= self.git_files_cache_ttl):
                     self._git_stats["file_list_hits"] += 1
                     self._git_stats["file_list_coalesced"] += 1
                     return GitFileInventory(
@@ -534,8 +606,8 @@ class RepositoryTools:
         )
 
     @staticmethod
-    def _inventory_path_safe(base: Path, path: Path) -> bool:
-        """Reject links and Windows reparse points before traversal or stat."""
+    def _resolve_inventory_path_safe(base: Path, path: Path) -> tuple[Path, Path] | None:
+        """Resolve an inventory path after rejecting links and reparse points."""
         try:
             relative = path.relative_to(base)
             current = base
@@ -543,11 +615,18 @@ class RepositoryTools:
                 current = current / part
                 info = current.lstat()
                 if stat.S_ISLNK(info.st_mode) or getattr(info, "st_file_attributes", 0) & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0):
-                    return False
-            path.resolve(strict=True).relative_to(base.resolve(strict=True))
-            return True
+                    return None
+            resolved_base = base.resolve(strict=True)
+            resolved_path = path.resolve(strict=True)
+            resolved_path.relative_to(resolved_base)
+            return resolved_base, resolved_path
         except (OSError, RuntimeError, ValueError):
-            return False
+            return None
+
+    @staticmethod
+    def _inventory_path_safe(base: Path, path: Path) -> bool:
+        """Reject links and Windows reparse points before traversal or stat."""
+        return RepositoryTools._resolve_inventory_path_safe(base, path) is not None
 
     def _iter_files_with_stat(
         self, root: str, max_depth: int = 25, *, project_settings: Any | None = None,
@@ -662,12 +741,11 @@ class RepositoryTools:
     ) -> tuple[str, list[str]]:
         """Cache decoded file content/hash by stat identity across different repo queries."""
         if max_bytes is not None:
-            # Re-stat even when the caller supplied a snapshot. The bounded read
-            # below also catches growth after this check without allocating it all.
+            # Re-stat and enforce the bound before cache lookup. Cache misses and
+            # identities that need content verification still use a bounded read.
             stat = path.stat()
             if stat.st_size > max_bytes:
                 raise FileTooLargeError(f"{path} exceeds {max_bytes} bytes")
-            force = True
         stat_was_supplied = stat is not None
         if stat is None:
             stat = path.stat()
@@ -1199,6 +1277,12 @@ class RepositoryTools:
         "a", "an", "and", "are", "as", "at", "be", "by", "for", "from", "in", "into", "is", "it",
         "of", "on", "or", "the", "to", "with", "implement", "implementation", "implementing", "missing",
         "change", "changes", "fix", "fixing", "add", "added", "update", "updated", "make", "ensure", "support",
+        # Common Czech request glue. Keep this list conservative: lexical symbol
+        # and literal matching still uses the untouched query separately.
+        "jak", "kde", "kdy", "pro", "přes", "proc", "proč", "do", "od", "jako", "zda", "zde",
+        "který", "která", "které", "kterou", "kterým", "kterých", "kterými", "je", "jsou", "byl",
+        "byla", "bylo", "byli", "být", "může", "mohou", "mám", "máme", "chci", "potřebuji",
+        "najdu", "najít", "hledat", "funguje", "fungovat",
     })
 
     def search_terms(self, query: str) -> list[str]:
@@ -1241,7 +1325,7 @@ class RepositoryTools:
 
     def _git_grep_command(self, base: Path, terms: list[str], max_matches: int) -> list[str]:
         cmd = [
-            "git", "-C", str(base), "grep", "-n", "-I", "-i", "--no-color", "--full-name", "--untracked",
+            "git", "-C", str(base), "grep", "-n", "-I", "-i", "-F", "--no-color", "--full-name", "--untracked",
             "-m", str(max(1, min(8, self.max_snippets_per_file * 2))),
         ]
         for term in terms[: self.max_search_terms]:
@@ -1281,7 +1365,7 @@ class RepositoryTools:
                 added_chars = len(relative) + 4
                 if added_chars + fixed_chars > 20_000:
                     return None, True
-                if current and (len(current) >= 192 or current_chars + added_chars + fixed_chars > 20_000):
+                if current and (len(current) >= 512 or current_chars + added_chars + fixed_chars > 20_000):
                     batches.append(current)
                     current = []
                     current_chars = 0
@@ -1294,7 +1378,7 @@ class RepositoryTools:
 
         deadline = time.monotonic() + self.ripgrep_timeout
         for batch in batches:
-            cmd = [self._rg, "--json", "--ignore-case", "--max-count", str(max(2, self.max_snippets_per_file * 3))]
+            cmd = [self._rg, "--json", "--fixed-strings", "--ignore-case", "--max-count", str(max(2, self.max_snippets_per_file * 3))]
             for term in terms[:12]:
                 cmd.extend(["-e", term])
             if batch is None:
@@ -1484,21 +1568,14 @@ class RepositoryTools:
 
     def _project_file_allowed(
         self, base: Path, path: Path, project_settings: Any, *, force_include: bool = False,
+        project_path_policy: Any | None = None,
     ) -> bool:
         try:
-            if not self._inventory_path_safe(base, path):
+            resolved_paths = self._resolve_inventory_path_safe(base, path)
+            if resolved_paths is None:
                 return False
-            if path.is_symlink():
-                return False
-            lexical_relative = Path(os.path.abspath(path)).relative_to(base)
-            current = base
-            for part in lexical_relative.parts:
-                current = current / part
-                if current.is_symlink():
-                    return False
-            resolved = path.resolve(strict=True)
-            resolved.relative_to(base)
-            relative_path = resolved.relative_to(base)
+            resolved_base, resolved = resolved_paths
+            relative_path = resolved.relative_to(resolved_base)
             relative = relative_path.as_posix()
             if any(part.casefold() in _HARD_SEARCH_DIRS for part in relative_path.parts[:-1]):
                 return False
@@ -1514,12 +1591,20 @@ class RepositoryTools:
             soft_ignored = any(part.casefold() in self.ignore_dirs for part in relative_path.parts[:-1])
             if soft_ignored and not force_include:
                 return False
-            from .project_config import path_is_allowed
+            if project_path_policy is None:
+                from .project_config import path_is_allowed
 
-            if not path_is_allowed(
-                base, resolved, project_settings, phase="search",
-                soft_ignored=soft_ignored and not force_include, size_bytes=size_bytes,
-            ):
+                allowed = path_is_allowed(
+                    base, resolved, project_settings, phase="search",
+                    soft_ignored=soft_ignored and not force_include, size_bytes=size_bytes,
+                )
+            else:
+                allowed = project_path_policy.allows(
+                    resolved, phase="search",
+                    soft_ignored=soft_ignored and not force_include, size_bytes=size_bytes,
+                    _resolved_candidate=resolved,
+                )
+            if not allowed:
                 return False
             return self._path_extension_is_searchable(resolved, project_settings=project_settings)
         except (ImportError, OSError, RuntimeError, TypeError, ValueError):
@@ -1591,21 +1676,60 @@ class RepositoryTools:
     def _iter_project_search_files(
         self, base: Path, project_settings: Any, max_depth: int,
         *, git_inventory: Any = _UNSET_GIT_INVENTORY,
+        candidate_limit: int | None = None,
+        candidate_priority_terms: Iterable[str] = (),
+        phase_timings_ms: dict[str, float] | None = None,
     ) -> Iterable[Path]:
         limit = max(1, min(int(self.max_files), 100_000))
+        if candidate_limit is not None:
+            limit = min(limit, max(1, int(candidate_limit)))
         _text, _binary, _forced, maximum = self._project_settings_values(project_settings)
+        from .project_config import ProjectPathPolicy
+
+        project_path_policy = ProjectPathPolicy(base, project_settings)
         forced_paths = self._expand_project_force_paths(base, project_settings, limit)
         seen: set[str] = set()
         yielded = 0
         for path in forced_paths:
-            key = str(path.resolve(strict=False))
-            if key in seen or not self._project_file_allowed(base, path, project_settings, force_include=True):
+            try:
+                key = os.path.normcase(path.relative_to(base).as_posix())
+            except ValueError:
+                continue
+            if key in seen or not self._project_file_allowed(
+                base, path, project_settings, force_include=True,
+                project_path_policy=project_path_policy,
+            ):
                 continue
             seen.add(key)
             yielded += 1
             yield path
             if yielded >= limit:
                 return
+
+        pinned_context = getattr(project_settings, "pinned_context", ())
+        if isinstance(pinned_context, (list, tuple)):
+            for raw_path in pinned_context[:_MAX_PATH_CONTROLS]:
+                if not isinstance(raw_path, str) or not raw_path.strip():
+                    continue
+                relative_path = Path(raw_path.replace("\\", "/"))
+                if relative_path.is_absolute() or any(
+                    part in {"", ".", ".."} for part in relative_path.parts
+                ):
+                    continue
+                path = base / relative_path
+                key = os.path.normcase(relative_path.as_posix())
+                # Pinned context improves candidate order, but does not bypass
+                # project access policy, extension checks, or symlink guards.
+                if key in seen or not self._project_file_allowed(
+                    base, path, project_settings,
+                    project_path_policy=project_path_policy,
+                ):
+                    continue
+                seen.add(key)
+                yielded += 1
+                yield path
+                if yielded >= limit:
+                    return
 
         git_files = (
             self._git_files(base)
@@ -1639,24 +1763,100 @@ class RepositoryTools:
             except (OSError, RuntimeError, ValueError):
                 pass
 
-        for path in candidates:
-            if yielded >= limit:
-                break
-            try:
-                relative_path = path.relative_to(base)
-                _ = relative_path.as_posix()
-            except ValueError:
-                continue
-            key = str(path.resolve(strict=False))
-            if key in seen or any(part.casefold() in _HARD_SEARCH_DIRS for part in relative_path.parts[:-1]):
-                continue
-            if any(part.casefold() in self.ignore_dirs for part in relative_path.parts[:-1]):
-                continue
-            if not self._project_file_allowed(base, path, project_settings):
-                continue
-            seen.add(key)
-            yielded += 1
-            yield path
+        candidate_priority_started = time.perf_counter()
+        entry_points = getattr(project_settings, "entry_points", ())
+        entry_point_parts: list[tuple[str, ...]] = []
+        if isinstance(entry_points, (list, tuple)):
+            for raw_entry in entry_points[:_MAX_PATH_CONTROLS]:
+                if not isinstance(raw_entry, str) or not raw_entry.strip():
+                    continue
+                normalized_entry = raw_entry.replace("\\", "/").strip("/")
+                parts = tuple(part for part in normalized_entry.split("/") if part)
+                if (
+                    not parts or any(part in {".", ".."} for part in parts)
+                    or PureWindowsPath(normalized_entry).is_absolute()
+                    or PureWindowsPath(normalized_entry).drive
+                ):
+                    continue
+                entry_point_parts.append(parts)
+        if entry_point_parts and candidates:
+            priority_groups: list[list[Path]] = [[] for _ in entry_point_parts]
+            remaining_candidates: list[Path] = []
+            for candidate in candidates:
+                try:
+                    relative_parts = candidate.relative_to(base).parts
+                except ValueError:
+                    remaining_candidates.append(candidate)
+                    continue
+                matched_rank = next((
+                    rank for rank, prefix in enumerate(entry_point_parts)
+                    if relative_parts[:len(prefix)] == prefix
+                ), None)
+                if matched_rank is None:
+                    remaining_candidates.append(candidate)
+                else:
+                    priority_groups[matched_rank].append(candidate)
+            candidates = [
+                *[path for group in priority_groups for path in group],
+                *remaining_candidates,
+            ]
+
+        priority_terms = {
+            term.casefold() for term in candidate_priority_terms
+            if isinstance(term, str) and term
+        }
+        if candidate_limit is not None and priority_terms and candidates:
+            indexed = list(enumerate(candidates))
+
+            def path_term_rank(item: tuple[int, Path]) -> tuple[int, int]:
+                position, candidate = item
+                stem = candidate.stem.casefold()
+                overlap = sum(
+                    1 for term in priority_terms
+                    if stem == term
+                    or (len(term) >= 4 and stem.startswith(term))
+                    or (len(stem) >= 4 and term.startswith(stem))
+                )
+                return (-overlap, position)
+
+            candidates = [path for _position, path in sorted(indexed, key=path_term_rank)]
+
+        if phase_timings_ms is not None:
+            phase_timings_ms["candidate_priority_sort_ms"] = round(
+                (time.perf_counter() - candidate_priority_started) * 1000.0, 1,
+            )
+
+        if candidate_limit is not None:
+            candidates = candidates[:max(0, limit - yielded)]
+
+        candidate_path_validation_started = time.perf_counter()
+        try:
+            for path in candidates:
+                if yielded >= limit:
+                    break
+                try:
+                    relative_path = path.relative_to(base)
+                    _ = relative_path.as_posix()
+                except ValueError:
+                    continue
+                key = os.path.normcase(relative_path.as_posix())
+                if key in seen or any(part.casefold() in _HARD_SEARCH_DIRS for part in relative_path.parts[:-1]):
+                    continue
+                if any(part.casefold() in self.ignore_dirs for part in relative_path.parts[:-1]):
+                    continue
+                if not self._project_file_allowed(
+                    base, path, project_settings,
+                    project_path_policy=project_path_policy,
+                ):
+                    continue
+                seen.add(key)
+                yielded += 1
+                yield path
+        finally:
+            if phase_timings_ms is not None:
+                phase_timings_ms["candidate_path_validation_ms"] = round(
+                    (time.perf_counter() - candidate_path_validation_started) * 1000.0, 1,
+                )
 
     def _read_search_snapshots(
         self, jobs: list[tuple[Any, Path]],
@@ -1719,10 +1919,27 @@ class RepositoryTools:
         context_lines: int | None, project_settings: Any | None,
         git_inventory: Any, force_include_paths: list[str] | tuple[str, ...],
         path_priority: Callable[[str], tuple[int, int, int]] | None,
+        installation_intent_priority: bool,
     ) -> dict[str, Any]:
         """Count every eligible result while retaining only the requested prefix."""
         terms = self._terms(query)
-        phrase = query.strip().lower()
+        raw_phrase = query.strip()
+        phrase = raw_phrase.lower()
+        symbol_query = (
+            bool(raw_phrase)
+            and not any(ch.isspace() for ch in raw_phrase)
+            and (
+                any(ch in raw_phrase for ch in ("_", "::", "/", "\\", ".", "+", "#", "$", ":"))
+                or re.search(r"[a-z][A-Z]", raw_phrase) is not None
+            )
+        )
+        case_sensitive_symbol_query = symbol_query and raw_phrase.isascii()
+        if not terms and phrase:
+            terms = [phrase]
+        declaration_pattern = (
+            re.compile(r"^\s*(?:async\s+)?(?:def|class)\s+([^\W\d]\w*)\b")
+            if phrase.isidentifier() else None
+        )
         if not terms and not phrase:
             return {
                 "success": True, "root": str(base), "results": [], "terms": [],
@@ -1732,6 +1949,11 @@ class RepositoryTools:
             }
 
         snippet_lines = max(1, min(int(context_lines), 40)) if context_lines is not None else self.snippet_lines
+        project_path_policy = None
+        if project_settings is not None:
+            from .project_config import ProjectPathPolicy
+
+            project_path_policy = ProjectPathPolicy(base, project_settings)
         retain_count = offset + limit
         file_cap = max(1, min(int(self.max_files), MAX_EXACT_SEARCH_FILES))
         deadline = time.monotonic() + 60.0
@@ -1750,12 +1972,127 @@ class RepositoryTools:
                 configured_state_relative = None
 
         matching_relpaths: set[str] | None = None
-        if self.use_ripgrep and self._rg and terms:
-            rg_cmd = [
-                self._rg, "--glob-case-insensitive", "--files-with-matches",
-                "--fixed-strings", "--ignore-case", "--hidden", "--no-ignore",
-                "--no-messages", "-g", "!.git/**",
+        git_grep_candidates_authoritative = False
+        ripgrep_candidates_authoritative = False
+        # Ripgrep uses simple Unicode folding. Use it only where candidate
+        # coverage is provably complete; Python verifies candidates and counts.
+        simple_casefold_query = all(
+            len(char.lower()) == 1
+            and len(char.casefold()) == 1
+            and char.lower() == char.casefold()
+            for char in phrase
+        ) and all(
+            len(char.lower()) == 1
+            and len(char.casefold()) == 1
+            and char.lower() == char.casefold()
+            for term in terms
+            for char in term
+        )
+        # Python verifies text with .lower(), while ripgrep uses Unicode simple
+        # folding. Add source characters whose lowercase expansion contains a
+        # query character so ripgrep remains a complete candidate filter; Python
+        # still verifies every candidate and produces exact counts.
+        lower_expansion_characters = _lower_expansion_characters()
+        expansion_candidate_sources = tuple(
+            source for source in _unicode_lower_expansions()[0]
+            if any(char in phrase for char in source.lower())
+        ) if any(char in lower_expansion_characters for char in phrase) else ()
+        lower_complete_query = (
+            case_sensitive_symbol_query
+            or not any(char in lower_expansion_characters for char in phrase)
+            or bool(expansion_candidate_sources)
+        )
+        ripgrep_candidates_complete = (
+            bool(terms)
+            and len(terms) <= 16
+            and lower_complete_query
+            and (phrase.isascii() or simple_casefold_query)
+        )
+        if (
+            self.use_git_grep
+            and self.prefer_git
+            and (base / ".git").exists()
+            and ripgrep_candidates_complete
+            and not (self.use_ripgrep and self._rg)
+        ):
+            git_grep_cmd = [
+                "git", "-C", str(base), "grep", "--files-with-matches",
+                "--fixed-strings", "--text", "--null",
+                "--untracked", "--exclude-standard",
             ]
+            if not case_sensitive_symbol_query:
+                git_grep_cmd.append("--ignore-case")
+            candidate_terms = [raw_phrase] if case_sensitive_symbol_query else terms[:16]
+            for term in candidate_terms:
+                git_grep_cmd.extend(["-e", term])
+            if not case_sensitive_symbol_query:
+                for source in expansion_candidate_sources:
+                    git_grep_cmd.extend(["-e", source])
+            if (
+                not case_sensitive_symbol_query
+                and phrase and len(phrase) <= 120 and phrase not in terms
+            ):
+                git_grep_cmd.extend(["-e", phrase])
+            pathspecs: list[str] = ["."]
+            for directory_name in sorted(self.ignore_dirs):
+                pathspecs.append(f":(exclude,glob)**/{directory_name}/**")
+            project_excludes = getattr(project_settings, "exclude_paths", ())
+            if isinstance(project_excludes, (list, tuple)):
+                for pattern in project_excludes:
+                    if not isinstance(pattern, str):
+                        continue
+                    if re.fullmatch(r"(?:[A-Za-z0-9_.-]+/)*[A-Za-z0-9_.-]+/\*\*", pattern):
+                        if not any(part in {".", ".."} for part in pattern[:-3].split("/")):
+                            pathspecs.append(f":(exclude,glob){pattern}")
+                    elif re.fullmatch(r"[A-Za-z0-9_.-]+\*?", pattern):
+                        pathspecs.append(f":(exclude,glob){pattern}")
+            if configured_state_relative and configured_state_relative.parts and all(
+                not any(char in part for char in "*?[]{}")
+                for part in configured_state_relative.parts
+            ):
+                pathspecs.append(
+                    f":(exclude,glob){configured_state_relative.as_posix()}/**"
+                )
+            git_grep_cmd.extend(["--", *pathspecs])
+            try:
+                proc = subprocess.run(
+                    git_grep_cmd,
+                    capture_output=True,
+                    text=False,
+                    timeout=min(self.git_grep_timeout, 10.0),
+                    check=False,
+                    cwd=str(base),
+                    **hidden_run_kwargs(),
+                )
+                if proc.returncode in (0, 1):
+                    git_grep_candidates_authoritative = True
+                    matching_relpaths = set()
+                    for raw_path in proc.stdout.split(b"\0"):
+                        if not raw_path:
+                            continue
+                        try:
+                            relative = raw_path.decode("utf-8", errors="surrogateescape")
+                            p = Path(relative)
+                            if p.is_absolute():
+                                rel_path = p.resolve(strict=False).relative_to(base).as_posix()
+                            else:
+                                rel_path = p.as_posix()
+                                if rel_path.startswith("./"):
+                                    rel_path = rel_path[2:]
+                            matching_relpaths.add(rel_path)
+                        except (OSError, RuntimeError, TypeError, ValueError):
+                            continue
+            except Exception:
+                matching_relpaths = None
+
+        if matching_relpaths is None and self.use_ripgrep and self._rg and ripgrep_candidates_complete:
+            rg_cmd = [
+                self._rg, "--glob-case-insensitive", "--files-with-matches", "--text",
+                "--fixed-strings", "--hidden", "--no-ignore",
+                "-g", "!.git/**",
+            ]
+            if not case_sensitive_symbol_query:
+                rg_cmd.append("--ignore-case")
             # Exact search applies the project's ignore policy after candidate
             # discovery, so mirror those directory exclusions in ripgrep too.
             # Otherwise --no-ignore scans large ignored environments/state
@@ -1763,14 +2100,39 @@ class RepositoryTools:
             # pass can inspect the repository's eligible files.
             for d in sorted(self.ignore_dirs):
                 rg_cmd.extend(["-g", f"!**/{d}/**"])
+            # Only translate literal, root-relative directory exclusions. More
+            # expressive project patterns retain their existing post-filtering;
+            # guessing glob equivalence here could hide eligible matches.
+            project_excludes = getattr(project_settings, "exclude_paths", ())
+            # Project globs are case-sensitive on POSIX, while this ripgrep
+            # invocation uses case-insensitive globs for built-in ignores.
+            if os.name == "nt" and isinstance(project_excludes, (list, tuple)):
+                for pattern in project_excludes:
+                    if not isinstance(pattern, str):
+                        continue
+                    if re.fullmatch(r"(?:[A-Za-z0-9_.-]+/)*[A-Za-z0-9_.-]+/\*\*", pattern):
+                        if any(part in {".", ".."} for part in pattern[:-3].split("/")):
+                            continue
+                        rg_cmd.extend(["-g", f"!{pattern}"])
+                    elif re.fullmatch(r"[A-Za-z0-9_.-]+\*?", pattern):
+                        # Safe basename-only file patterns can be applied before
+                        # rg reads ignored user config and backup files.
+                        rg_cmd.extend(["-g", f"!{pattern}"])
             if configured_state_relative and configured_state_relative.parts and all(
                 not any(char in part for char in "*?[]{}")
                 for part in configured_state_relative.parts
             ):
                 rg_cmd.extend(["-g", f"!{configured_state_relative.as_posix()}/**"])
-            for term in terms[:16]:
+            candidate_terms = [raw_phrase] if case_sensitive_symbol_query else terms[:16]
+            for term in candidate_terms:
                 rg_cmd.extend(["-e", term])
-            if phrase and len(phrase) <= 120 and phrase not in terms:
+            if not case_sensitive_symbol_query:
+                for source in expansion_candidate_sources:
+                    rg_cmd.extend(["-e", source])
+            if (
+                not case_sensitive_symbol_query
+                and phrase and len(phrase) <= 120 and phrase not in terms
+            ):
                 rg_cmd.extend(["-e", phrase])
             rg_cmd.append(".")
             try:
@@ -1786,7 +2148,9 @@ class RepositoryTools:
                     **hidden_run_kwargs(),
                 )
                 if proc.returncode in (0, 1):
-                    matching_relpaths = set()
+                    candidate_paths: set[str] = set()
+                    candidate_bytes = 0
+                    candidates_complete = not proc.stderr
                     for line in proc.stdout.splitlines():
                         raw_line = line.strip()
                         if not raw_line:
@@ -1799,17 +2163,85 @@ class RepositoryTools:
                                 rel_p = p.as_posix()
                                 if rel_p.startswith("./"):
                                     rel_p = rel_p[2:]
-                            matching_relpaths.add(rel_p)
-                        except (OSError, ValueError):
-                            continue
+                            candidate_bytes += len(rel_p.encode("utf-8", errors="surrogateescape"))
+                            candidate_paths.add(rel_p)
+                            if (
+                                len(candidate_paths) > MAX_EXACT_GIT_PATHS
+                                or candidate_bytes > MAX_EXACT_GIT_PATH_BYTES
+                            ):
+                                candidates_complete = False
+                                break
+                        except (OSError, RuntimeError, ValueError, UnicodeError):
+                            candidates_complete = False
+                            break
+                    if candidates_complete:
+                        matching_relpaths = candidate_paths
+                        ripgrep_candidates_authoritative = True
             except Exception:
                 matching_relpaths = None
+
+        if (
+            ripgrep_candidates_authoritative
+            and matching_relpaths is not None
+            and self.prefer_git
+            and (base / ".git").exists()
+        ):
+            if not matching_relpaths:
+                git_grep_candidates_authoritative = True
+            else:
+                try:
+                    ignore_input = b"".join(
+                        relative.encode("utf-8", errors="surrogateescape") + b"\0"
+                        for relative in sorted(matching_relpaths)
+                    )
+                    ignored = subprocess.run(
+                        ["git", "-C", str(base), "check-ignore", "--stdin", "-z"],
+                        input=ignore_input,
+                        capture_output=True,
+                        text=False,
+                        timeout=min(self.git_files_timeout, 10.0),
+                        check=False,
+                        cwd=str(base),
+                        **hidden_run_kwargs(text=False),
+                    )
+                    if ignored.returncode in (0, 1) and not ignored.stderr:
+                        ignored_relpaths = {
+                            Path(raw.decode("utf-8", errors="surrogateescape")).as_posix()
+                            for raw in ignored.stdout.split(b"\0")
+                            if raw
+                        }
+                        if ignored_relpaths.issubset(matching_relpaths):
+                            matching_relpaths.difference_update(ignored_relpaths)
+                            git_grep_candidates_authoritative = True
+                except Exception:
+                    pass
 
         def candidates() -> Iterable[Path]:
             if git_inventory is not _UNSET_GIT_INVENTORY and getattr(git_inventory, "complete", True) is False:
                 raise _IncompleteGitInventory(
                     f"Git inventory is truncated at the {file_cap}-file exact-search bound"
                 )
+
+            # A successful `git grep --files-with-matches --untracked
+            # --exclude-standard` pass is already an authoritative, bounded
+            # candidate set for this literal query. Re-reading every Git path
+            # just to intersect it repeats the expensive part of exact search.
+            # Exact Python matching below still reads, validates and counts each
+            # eligible current source before results are returned.
+            if git_grep_candidates_authoritative and matching_relpaths is not None:
+                forced_inventory: set[str] = set()
+                for forced_path in self._expand_project_force_paths(
+                    base, project_settings, file_cap, extra_patterns=force_patterns,
+                ):
+                    try:
+                        forced_inventory.add(forced_path.relative_to(base).as_posix())
+                    except (OSError, RuntimeError, ValueError):
+                        continue
+                for relative in sorted(matching_relpaths | forced_inventory):
+                    if time.monotonic() >= deadline:
+                        raise TimeoutError("exact repository search exceeded 60 seconds")
+                    yield base / relative
+                return
 
             if self.prefer_git and (base / ".git").exists():
                 process = popen_managed(
@@ -1834,18 +2266,24 @@ class RepositoryTools:
                 pending = bytearray()
                 inventory: set[str] = set()
                 inventory_bytes = 0
+                inventory_path_count = 0
 
                 def remember_path(raw: bytes) -> None:
-                    nonlocal inventory_bytes
+                    nonlocal inventory_bytes, inventory_path_count
                     if not raw:
                         return
                     inventory_bytes += len(raw)
                     if inventory_bytes > MAX_EXACT_GIT_PATH_BYTES:
                         raise _IncompleteGitInventory("Git exact-search path bytes exceeded bounded inventory")
-                    relative = raw.decode("utf-8", errors="surrogateescape").replace("\\", "/")
-                    inventory.add(Path(relative).as_posix())
-                    if len(inventory) > MAX_EXACT_GIT_PATHS:
+                    inventory_path_count += 1
+                    if inventory_path_count > MAX_EXACT_GIT_PATHS:
                         raise _IncompleteGitInventory("Git exact-search path count exceeded bounded inventory")
+                    relative = raw.decode("utf-8", errors="surrogateescape").replace("\\", "/")
+                    normalized = Path(relative).as_posix()
+                    # Keep Git's complete bounded inventory check, but retain
+                    # only content candidates before deterministic ordering.
+                    if matching_relpaths is None or normalized in matching_relpaths:
+                        inventory.add(normalized)
 
                 try:
                     assert process.stdout is not None
@@ -1907,6 +2345,9 @@ class RepositoryTools:
             def raise_walk_error(error: OSError) -> None:
                 raise error
 
+            # Without a Git inventory, a successful complete ripgrep pass is
+            # authoritative for file contents. Git roots keep their inventory
+            # contract above; this accelerator only avoids a filesystem walk.
             if matching_relpaths is not None:
                 forced_inventory: set[str] = set()
                 for forced_path in self._expand_project_force_paths(
@@ -1932,15 +2373,39 @@ class RepositoryTools:
                 for filename in filenames:
                     yield Path(directory) / filename
 
+        priority_path: str | None = None
+        cached_priority = (0, 0, 0)
+
         class _WorstFirst:
             __slots__ = ("rank", "item")
 
             def __init__(self, item: dict[str, Any]) -> None:
+                nonlocal priority_path, cached_priority
                 self.item = item
-                priority = path_priority(str(item["path"])) if path_priority else (0, 0, 0)
-                self.rank = (
+                relative = str(item["path"])
+                if relative != priority_path:
+                    cached_priority = path_priority(relative) if path_priority else (0, 0, 0)
+                    if (
+                        installation_intent_priority
+                        and len(cached_priority) >= 2
+                        and _intent_path_adjustment(query, relative) > 0
+                    ):
+                        # A generic configured entry point must not outrank the
+                        # actual user guide for a natural installation question.
+                        # Keep explicit request hints first, then rank matching
+                        # installation docs ahead of durable generic hints.
+                        cached_priority = (
+                            cached_priority[0], 0, *cached_priority[2:]
+                        )
+                    priority_path = relative
+                priority = cached_priority
+                score_rank = (
                     *priority, -float(item["score"]),
                     str(item["path"]), int(item["start_line"]),
+                )
+                self.rank = (
+                    (int(item.get("path_hit_ordinal", 0)), *score_rank)
+                    if phrase.isidentifier() else score_rank
                 )
 
             def __lt__(self, other: Any) -> bool:
@@ -1983,14 +2448,13 @@ class RepositoryTools:
                     # through the full safety and project-policy checks below.
                     if matching_relpaths is not None and rel not in matching_relpaths and not forced:
                         continue
-                    if path.is_symlink():
-                        continue
                     if project_settings is None:
-                        if self._is_ignored_relative_path(relative):
+                        if path.is_symlink() or self._is_ignored_relative_path(relative):
                             continue
                     elif not self._project_file_allowed(
                         base, path, project_settings,
                         force_include=forced,
+                        project_path_policy=project_path_policy,
                     ):
                         continue
                     if callable(extension_check) and not extension_check(
@@ -2036,7 +2500,9 @@ class RepositoryTools:
                     }
 
                 path_lower = rel.lower()
+                path_score = sum(1 for term in terms if term in path_lower) * 2
                 file_best: list[Any] = []
+                file_matched_terms: set[str] = set()
                 current_bucket: int | None = None
                 bucket_best: dict[str, Any] | None = None
 
@@ -2053,13 +2519,20 @@ class RepositoryTools:
                     matched = [term for term in terms if term in low]
                     if not matched:
                         continue
+                    file_matched_terms.update(matched)
                     score = float(
                         len(matched) * 3
-                        + sum(1 for term in terms if term in path_lower) * 2
+                        + path_score
                         + sum(min(low.count(term), 3) * 0.5 for term in matched)
                     )
+                    if installation_intent_priority:
+                        score += _intent_path_adjustment(query, rel)
                     if phrase and len(phrase) <= 120 and phrase in low:
                         score += 8
+                    if declaration_pattern is not None:
+                        declaration = declaration_pattern.match(line)
+                        if declaration is not None and declaration.group(1).lower() == phrase:
+                            score += 6
                     start = max(0, idx - snippet_lines)
                     end = min(len(lines), idx + snippet_lines + 1)
                     hit = {
@@ -2076,12 +2549,18 @@ class RepositoryTools:
                         bucket_best = hit
                 finish_bucket()
                 total_matches += len(file_best)
-                for entry in file_best:
+                coverage_bonus = max(0, len(file_matched_terms) - 1) * 2.0
+                ranked_file_best = sorted(file_best, key=lambda entry: entry.rank)
+                for path_hit_ordinal, entry in enumerate(ranked_file_best):
                     hit = entry.item
-                    retain(global_best, {
+                    hit["score"] += coverage_bonus
+                    global_hit = {
                         key: hit[key]
                         for key in ("path", "start_line", "end_line", "score", "file_sha256")
-                    }, retain_count)
+                    }
+                    if phrase.isidentifier():
+                        global_hit["path_hit_ordinal"] = path_hit_ordinal
+                    retain(global_best, global_hit, retain_count)
         except TimeoutError as exc:
             return {
                 "success": False, "root": str(base), "results": [],
@@ -2102,6 +2581,8 @@ class RepositoryTools:
             }
 
         ranked = [entry.item for entry in sorted(global_best, key=lambda entry: entry.rank)]
+        for reference in ranked:
+            reference.pop("path_hit_ordinal", None)
         page_refs = ranked[offset:offset + limit]
         page_by_path: dict[str, list[dict[str, Any]]] = {}
         for reference in page_refs:
@@ -2149,13 +2630,26 @@ class RepositoryTools:
         self, root: str, query: str, limit: int = 12, context_lines: int | None = None,
         *, project_settings: Any | None = None,
         git_inventory: Any = _UNSET_GIT_INVENTORY,
+        candidate_paths: list[str] | tuple[str, ...] | None = None,
+        candidate_query: str | None = None,
         offset: int = 0,
         exact_count: bool = False,
         force_include_paths: list[str] | tuple[str, ...] = (),
         path_priority: Callable[[str], tuple[int, int, int]] | None = None,
+        installation_intent_priority: bool = True,
     ) -> dict[str, Any]:
         base = self._root(root)
+        if type(installation_intent_priority) is not bool:
+            return {"success": False, "status_code": 400, "terminal": True,
+                    "retryable": False, "error": "installation_intent_priority must be a boolean",
+                    "root": str(base), "results": []}
         if exact_count:
+            if candidate_paths is not None:
+                return {
+                    "success": False, "root": str(base), "results": [],
+                    "error": "candidate_paths cannot be used for exact-count search",
+                    "terminal": True, "retryable": False,
+                }
             exact_limit = limit
             bounds_error = pagination_bounds_error(exact_limit, offset)
             if bounds_error:
@@ -2169,7 +2663,7 @@ class RepositoryTools:
             return self._exact_search_page(
                 base, query, exact_limit, offset, context_lines,
                 project_settings, git_inventory, force_include_paths,
-                path_priority,
+                path_priority, installation_intent_priority,
             )
         if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1:
             return {"success": False, "status_code": 400, "terminal": True, "retryable": False,
@@ -2177,8 +2671,21 @@ class RepositoryTools:
         if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
             return {"success": False, "status_code": 400, "terminal": True, "retryable": False,
                     "error": "offset must be a nonnegative integer", "root": str(base), "results": []}
-        terms = self._terms(query)
+        if candidate_paths is not None:
+            if (not isinstance(candidate_paths, (list, tuple)) or not candidate_paths or len(candidate_paths) > 64
+                    or any(type(item) is not str or not item or "\x00" in item
+                           or Path(item).is_absolute() or ".." in Path(item.replace("\\", "/")).parts
+                           for item in candidate_paths)):
+                return {"success": False, "status_code": 400, "terminal": True, "retryable": False,
+                        "error": "candidate_paths must contain 1 to 64 safe relative paths",
+                        "root": str(base), "results": []}
+            git_inventory = [base / Path(item.replace("\\", "/")) for item in candidate_paths]
+        candidate_text = candidate_query if type(candidate_query) is str and candidate_query else query
+        terms = self._terms(candidate_text)
+        expanded_terms = set(terms).difference(self._terms(query))
         phrase = query.strip().lower()
+        if not terms and phrase:
+            terms = [phrase]
         if not terms and not phrase:
             return {
                 "success": True, "root": str(base), "results": [],
@@ -2195,25 +2702,147 @@ class RepositoryTools:
         truncation_reasons: list[str] = []
         # Keep candidate scanning bounded independently of caller pagination.
         # Pages beyond this ranked working set remain explicitly truncated.
-        candidate_limit = max(1, self.max_hits * 4)
+        # Installation queries often fan out over setup scripts and old plans.
+        # Give that intent a larger bounded recall window so one noisy path
+        # cannot hide the actual user guide. Other queries retain the smaller
+        # default window; response size stays controlled by pagination.
+        install_intent = installation_intent_priority and _is_installation_intent(
+            _intent_query_terms(query)
+        )
+        candidate_limit = max(
+            4,
+            min(
+                self.max_hits * (8 if install_intent else 4),
+                limit * (8 if install_intent else 6),
+            ),
+        )
+        candidate_path_budget = max(256, min(512, candidate_limit * 4))
         candidate_engine = "python"
         project_candidates = None
+        priority_relpaths: set[str] = set()
+        search_phase_timings_ms: dict[str, float] = {
+            "git_inventory_ms": 0.0,
+            "project_file_iteration_ms": 0.0,
+        }
+        candidate_discovery_started = time.perf_counter()
         if project_settings is not None:
-            project_candidates = []
-            for path in self._iter_project_search_files(
-                base, project_settings, 25, git_inventory=git_inventory,
-            ):
-                if len(project_candidates) >= candidate_limit + 1:
-                    break
-                project_candidates.append(path)
+            # Bounded non-exact search can use the cached Git path inventory.
+            # Falling back to a fresh os.walk here repeatedly enumerates large
+            # ignored workspace trees before the ripgrep candidate cap applies.
+            candidate_inventory = (
+                _UNSET_GIT_INVENTORY if git_inventory is None else git_inventory
+            )
+            # Select query-name matches before the bounded inventory prefix.
+            # The iterator validates path policy and symlink safety on every
+            # selected path before ripgrep can read its contents.
+            git_inventory_started = time.perf_counter()
+            if candidate_inventory is _UNSET_GIT_INVENTORY:
+                candidate_inventory = self._git_files(base)
+            search_phase_timings_ms["git_inventory_ms"] = round(
+                (time.perf_counter() - git_inventory_started) * 1000.0, 1,
+            )
+            project_file_iteration_started = time.perf_counter()
+            project_candidates = list(self._iter_project_search_files(
+                base, project_settings, 25, git_inventory=candidate_inventory,
+                candidate_limit=candidate_path_budget + 16,
+                candidate_priority_terms=terms,
+                phase_timings_ms=search_phase_timings_ms,
+            ))
+            search_phase_timings_ms["project_file_iteration_ms"] = round(
+                (time.perf_counter() - project_file_iteration_started) * 1000.0, 1,
+            )
+            if (
+                isinstance(candidate_inventory, list)
+                and len(candidate_inventory) > candidate_path_budget
+            ) or len(project_candidates) >= candidate_path_budget:
+                truncation_reasons.append("candidate_file_limit")
+        elif candidate_paths is not None:
+            # This is an explicitly incomplete candidate set for hybrid search,
+            # never a source of exact lexical counts or complete-coverage claims.
+            project_candidates = [base / Path(item.replace("\\", "/")) for item in candidate_paths]
+        search_phase_timings_ms["candidate_discovery_ms"] = round(
+            (time.perf_counter() - candidate_discovery_started) * 1000.0, 1,
+        )
+        accelerator_search_started = time.perf_counter()
         if project_candidates is None:
             candidates, accelerator_failed = self._ripgrep_candidates(
                 base, terms, candidate_limit + 1,
             )
         else:
-            candidates, accelerator_failed = self._ripgrep_candidates(
-                base, terms, candidate_limit + 1, candidate_paths=project_candidates,
-            )
+            candidate_budget = candidate_limit + 1
+            priority_terms = {term.casefold() for term in terms if isinstance(term, str) and term}
+            priority_candidates: list[Path] = []
+            remaining_candidates: list[Path] = []
+            for candidate in project_candidates:
+                try:
+                    path_stem = candidate.relative_to(base).stem.casefold()
+                except ValueError:
+                    remaining_candidates.append(candidate)
+                    continue
+                overlap = sum(
+                    1 for term in priority_terms
+                    if path_stem == term
+                    or (len(term) >= 4 and path_stem.startswith(term))
+                    or (len(path_stem) >= 4 and term.startswith(path_stem))
+                )
+                (priority_candidates if overlap else remaining_candidates).append(candidate)
+
+            priority_candidates.sort(key=lambda candidate: (
+                0 if candidate.relative_to(base).stem.casefold() in priority_terms else 1,
+                len(candidate.relative_to(base).stem),
+                candidate.as_posix().casefold(),
+            ))
+            priority_file_limit = max(4, min(16, self.max_hits))
+            remaining_candidates.extend(priority_candidates[priority_file_limit:])
+            priority_candidates = priority_candidates[:priority_file_limit]
+            # Ripgrep batches have a fixed command-size ceiling. Passing the
+            # entire repository inventory can spawn several expensive scans
+            # per natural query, even after enough candidates exist. Keep the
+            # prioritized files, then inspect a bounded inventory prefix; the
+            # explicit truncation flag prevents claiming complete coverage.
+            if len(remaining_candidates) > candidate_path_budget:
+                remaining_candidates = remaining_candidates[:candidate_path_budget]
+                if "candidate_file_limit" not in truncation_reasons:
+                    truncation_reasons.append("candidate_file_limit")
+            project_candidates = [*priority_candidates, *remaining_candidates]
+            priority_relpaths = {
+                candidate.relative_to(base).as_posix()
+                for candidate in priority_candidates
+            }
+
+            if priority_candidates:
+                priority_matches, priority_failed = self._ripgrep_candidates(
+                    base, terms, candidate_budget,
+                    candidate_paths=priority_candidates,
+                )
+            else:
+                priority_matches, priority_failed = None, False
+            if priority_matches is None:
+                candidates, accelerator_failed = self._ripgrep_candidates(
+                    base, terms, candidate_budget,
+                    candidate_paths=project_candidates,
+                )
+                accelerator_failed = accelerator_failed or priority_failed
+            else:
+                remaining_matches: list[tuple[str, int]] | None = []
+                remaining_failed = False
+                remaining_budget = candidate_budget - len(priority_matches)
+                if remaining_candidates and remaining_budget > 0:
+                    remaining_matches, remaining_failed = self._ripgrep_candidates(
+                        base, terms, remaining_budget,
+                        candidate_paths=remaining_candidates,
+                    )
+                if remaining_matches is None:
+                    candidates = priority_matches
+                    accelerator_failed = False
+                else:
+                    candidates = []
+                    seen_matches: set[tuple[str, int]] = set()
+                    for match in (*priority_matches, *remaining_matches):
+                        if match not in seen_matches:
+                            seen_matches.add(match)
+                            candidates.append(match)
+                    accelerator_failed = False
         accelerated = candidates is not None
         if accelerated:
             candidate_engine = "ripgrep"
@@ -2228,10 +2857,19 @@ class RepositoryTools:
         if candidates is not None and len(candidates) > candidate_limit:
             truncation_reasons.append("result_limit")
             candidates = candidates[:candidate_limit]
+        search_phase_timings_ms["accelerator_search_ms"] = round(
+            (time.perf_counter() - accelerator_search_started) * 1000.0, 1,
+        )
+        candidate_scan_started = time.perf_counter()
         if candidates:
             per_path_lines: dict[str, list[int]] = {}
             for rel, line_no in candidates:
                 per_path_lines.setdefault(rel, []).append(line_no)
+            # For a small set of query-matching filenames, inspect current
+            # content fully. Ripgrep's per-file cap can hide the specific term
+            # near the end of a source file behind repeated generic matches.
+            for rel in priority_relpaths:
+                per_path_lines.setdefault(rel, [])
             read_jobs: list[tuple[Any, Path]] = []
             for rel, line_numbers in per_path_lines.items():
                 resolved_info = self._resolve_under_base(base, rel)
@@ -2249,17 +2887,33 @@ class RepositoryTools:
                     continue
                 scanned += 1
                 path_lower = rel.lower()
-                for line_no in line_numbers:
+                source_lines = (
+                    range(1, len(lines) + 1)
+                    if rel in priority_relpaths else line_numbers
+                )
+                for line_no in source_lines:
                     idx = line_no - 1
                     if idx < 0 or idx >= len(lines): continue
                     low = lines[idx].lower()
                     matched = [t for t in terms if t in low]
                     path_matches = sum(1 for t in terms if t in path_lower)
                     score = float(len(matched) * 3 + path_matches * 2 + sum(min(low.count(t), 3) * 0.5 for t in matched))
+                    if expanded_terms:
+                        # Expansion terms matching a filename are strong intent
+                        # evidence in bounded hybrid candidates; keep exact lexical
+                        # ranking unchanged when no query expansion was applied.
+                        stem = Path(rel).stem.lower()
+                        title_matches = sum(1 for term in expanded_terms if term in stem)
+                        score += min(40.0, title_matches * 20.0)
                     if phrase and len(phrase) <= 120 and phrase in low: score += 8
+                    if installation_intent_priority:
+                        score += _intent_path_adjustment(query, rel)
                     start = max(0, idx - effective_snippet_lines); end = min(len(lines), idx + effective_snippet_lines + 1)
                     snippet = self._format_search_snippet(lines, start, end)
                     hits.append({"path": rel, "start_line": start + 1, "end_line": end, "score": round(score, 3), "text": snippet, "file_sha256": file_hash})
+        search_phase_timings_ms["candidate_scan_ms"] = round(
+            (time.perf_counter() - candidate_scan_started) * 1000.0, 1,
+        )
         # A timeout/error from both bounded accelerators must not trigger an
         # unbounded O(repository) Python scan. A valid accelerated zero result is
         # still final; Python remains the fallback only when no accelerator exists.
@@ -2312,6 +2966,8 @@ class RepositoryTools:
                     if phrase and len(phrase) <= 120 and phrase in low:
                         score += 8
                     score += sum(min(low.count(t), 3) * 0.5 for t in matched)
+                    if installation_intent_priority:
+                        score += _intent_path_adjustment(query, rel)
                     start = max(0, idx - effective_snippet_lines)
                     end = min(len(lines), idx + effective_snippet_lines + 1)
                     snippet = self._format_search_snippet(lines, start, end)
@@ -2359,6 +3015,7 @@ class RepositoryTools:
             "truncated": bool(truncation_reasons or read_errors or has_more),
             "truncation_reasons": truncation_reasons,
             "read_errors": read_errors,
+            "search_phase_timings_ms": search_phase_timings_ms,
         }
         if python_fallback_scanned is not None:
             result["python_fallback_files_scanned"] = python_fallback_scanned
@@ -3165,7 +3822,7 @@ class RepositoryTools:
             }
         if git_inventory is _UNSET_GIT_INVENTORY:
             try:
-                git_inventory = self._git_files(base, max_files=MAX_EXACT_GIT_PATHS)
+                git_inventory = self._git_files(base, max_files=MAX_EXACT_GIT_PATHS, force=True)
             except TypeError:
                 git_inventory = self._git_files(base)
         git_metadata = base / ".git"
@@ -3747,16 +4404,37 @@ class RepositoryTools:
             norm_offset = 0
 
         clean_pattern = pattern.strip() if isinstance(pattern, str) and pattern.strip() else "*"
+        pattern_lower = clean_pattern.lower()
         matched: list[str] = []
 
-        for p in self.iter_files(base):
+        git_inventory = self._git_files(base)
+        if git_inventory is not None and git_inventory.complete:
+            # Filter the complete Git path inventory before touching the filesystem.
+            # Glob misses need no symlink, reparse-point, or file-size checks.
+            candidates = git_inventory
+            validate_candidate = True
+        else:
+            candidates = self.iter_files(base)
+            validate_candidate = False
+
+        for p in candidates:
             try:
-                rel = str(p.relative_to(base)).replace("\\", "/")
+                relative = p.relative_to(base)
+                rel = str(relative).replace("\\", "/")
             except ValueError:
                 continue
             name = p.name
-            if fnmatch.fnmatch(rel.lower(), clean_pattern.lower()) or fnmatch.fnmatch(name.lower(), clean_pattern.lower()):
-                matched.append(rel)
+            if not (fnmatch.fnmatch(rel.lower(), pattern_lower) or fnmatch.fnmatch(name.lower(), pattern_lower)):
+                continue
+            if validate_candidate:
+                if self._is_ignored_relative_path(relative) or not self._inventory_path_safe(base, p):
+                    continue
+                try:
+                    if p.stat().st_size > self.max_file_bytes:
+                        continue
+                except OSError:
+                    continue
+            matched.append(rel)
 
         total = len(matched)
         sliced = matched[norm_offset : norm_offset + norm_limit]

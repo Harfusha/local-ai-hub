@@ -134,7 +134,7 @@ def test_locked_sqlite_retries_degrade_at_real_http_boundary(
 
     app = SimpleNamespace(
         logger=logging.getLogger("task14-test"),
-        config={"monitoring": {"live_max_batch": 200}},
+        config={"monitoring": {"live_max_batch": 200}, "hardware": {"profile": "balanced"}, "features": {"local_semantic_analysis": True}},
         realtime_status=lambda **_kwargs: exhausted_read(),
         async_jobs=SimpleNamespace(submit=submit_with_side_effect),
     )
@@ -173,7 +173,7 @@ def test_nonbusy_sqlite_error_keeps_internal_error_response(api, monkeypatch, me
 
     app = SimpleNamespace(
         logger=logging.getLogger("task14-test"),
-        config={"monitoring": {"live_max_batch": 200}},
+        config={"monitoring": {"live_max_batch": 200}, "hardware": {"profile": "balanced"}, "features": {"local_semantic_analysis": True}},
         realtime_status=lambda **_kwargs: retry_busy(fail, retries=2, base_delay_seconds=0),
         async_jobs=SimpleNamespace(
             submit=lambda *_args: retry_busy(fail, retries=2, base_delay_seconds=0)

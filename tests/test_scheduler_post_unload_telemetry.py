@@ -37,6 +37,8 @@ def test_mixed_backend_requires_admission_for_initial_or_same_name_switch(active
     scheduler._last_switch = 0.0
     scheduler._switch_sequence = 0
     scheduler._stats = Counter()
+    scheduler._internal_gpu_uncertain = False
+    scheduler._internal_gpu_uncertain_since = None
     scheduler._model_blocked_until = {}
     scheduler._model_last_error = {}
     scheduler.switch_failure_cooldown = 1.0
@@ -65,6 +67,8 @@ def test_required_mixed_admission_fails_closed_without_telemetry():
     scheduler._last_switch = 0.0
     scheduler._switch_sequence = 0
     scheduler._stats = Counter()
+    scheduler._internal_gpu_uncertain = False
+    scheduler._internal_gpu_uncertain_since = None
     scheduler._model_blocked_until = {}
     scheduler._model_last_error = {}
     scheduler.switch_failure_cooldown = 1.0
@@ -114,6 +118,31 @@ def test_post_unload_rejects_explicitly_unavailable_measurement(sample):
 
     assert result["state"] == "rejected"
     assert result["reason"] == "post_unload_vram_unavailable"
+
+
+def test_normal_admission_rejects_unavailable_stale_vram_capacity():
+    class Balancer:
+        def status(self, force=False):
+            return {
+                "available": False,
+                "pressure_level": "unknown",
+                "context_budget_factor": 0.25,
+                "throttle_background": True,
+                "vram_total_mb": 8192.0,
+                "vram_available_mb": 7168.0,
+                "telemetry_stale": True,
+                "telemetry_wait_timed_out": True,
+            }
+
+    result = scheduler_with_balancer(Balancer())._admission(
+        background=False,
+        model="target-model",
+    )
+
+    assert result["state"] == "rejected"
+    assert result["reason"] == "vram_telemetry_unavailable"
+    assert result["vram_admission"] == "unknown"
+    assert "vram_available_bytes" not in result
 
 
 def test_post_unload_requests_refresh_without_changing_normal_status():

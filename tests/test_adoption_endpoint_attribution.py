@@ -253,6 +253,7 @@ def test_second_opinion_model_override_through_mcp_and_http(tmp_path, monkeypatc
     config.write_text(f'[server]\nstate_dir = "{state.as_posix()}"\nauto_start_ollama = false\n'
         '[ollama]\nenabled = false\n[smart_ollama]\nenabled = false\n'
         '[observability]\nenabled = false\n[background_gpu]\nenabled = false\n[preprocessing]\nenabled = false\n'
+        '[features]\nlocal_semantic_analysis = true\n'
         '[models]\nfast_code = "qwen2.5-coder:1.5b"\nheavy_code = "qwen2.5-coder:3b"\n'
         'reasoning = "qwen2.5-coder:7b"\ngeneral = "qwen2.5-coder:1.5b"\n', encoding="utf-8")
     app = LocalAIApp(str(config))
@@ -265,6 +266,8 @@ def test_second_opinion_model_override_through_mcp_and_http(tmp_path, monkeypatc
     client.base_url = f"http://127.0.0.1:{client._http_port}"
     monkeypatch.setattr(mcp_server, "CLIENT", client)
     monkeypatch.setattr(mcp_server.FEATURES, "tasks", True)
+    monkeypatch.setattr(mcp_server.FEATURES, "hardware_profile", "balanced")
+    monkeypatch.setattr(mcp_server.FEATURES, "local_semantic_analysis", True)
     monkeypatch.setattr(mcp_server.FEATURES, "has_any_model", lambda: True)
     monkeypatch.setattr(mcp_server, "_record_adoption", lambda *_a, **_kw: None)
     monkeypatch.setattr(mcp_server, "_record_tool_accounting", lambda **_kw: None)
@@ -284,7 +287,7 @@ def test_second_opinion_model_override_through_mcp_and_http(tmp_path, monkeypatc
                 "task": "Check this conclusion", "candidate": "A bounded candidate", "model": model, "complexity": "fast",
                 "max_response_tokens": 1600}))[1]
         allowed = call("qwen2.5-coder:7b")
-        assert allowed["success"] is True, allowed
+        assert allowed["success"] is True, allowed.get("error", allowed)
         assert calls == ["qwen2.5-coder:7b"]
         refused = call("qwen2.5-coder:1.5b")
         assert refused["success"] is False and "quality floor" in refused["error"], refused

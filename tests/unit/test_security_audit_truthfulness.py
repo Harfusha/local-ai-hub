@@ -1,7 +1,9 @@
 """Deferred static scan contracts; fixtures contain invented credentials only."""
+import re
 from types import SimpleNamespace
 
-from local_ai_hub.deterministic import DeterministicEngine
+import local_ai_hub.deterministic as deterministic
+from local_ai_hub.deterministic import DeterministicEngine, _pattern_match_lines
 
 
 def _scan(root, paths, limit=50):
@@ -58,6 +60,40 @@ def test_unreadable_source_prevents_clean_verdict(tmp_path):
     assert result["scan_errors"][0]["error_type"] == "FileNotFoundError"
     assert "error" in result["scan_errors"][0]
     assert len(result["scan_errors"][0]["error"]) > 0
+
+
+def test_pattern_match_line_mapping_scans_each_prefix_span_once():
+    class CountingText(str):
+        counted_chars = 0
+
+        def count(self, sub, start=0, end=None):
+            end = len(self) if end is None else end
+            type(self).counted_chars += max(0, end - start)
+            return super().count(sub, start, end)
+
+    text = CountingText("\n".join("pickle.loads(payload)" for _ in range(512)))
+    assert _pattern_match_lines(text, re.compile(r"pickle\.loads")) == list(range(1, 513))
+    assert CountingText.counted_chars <= len(text)
+
+
+def test_security_audit_parses_each_python_file_once(tmp_path, monkeypatch):
+    source = tmp_path / "unsafe.py"
+    source.write_text(
+        "import subprocess\nsubprocess.run(command, shell=True)\n",
+        encoding="utf-8",
+    )
+    parse_count = 0
+    original_parse = deterministic.ast.parse
+
+    def count_parse(*args, **kwargs):
+        nonlocal parse_count
+        parse_count += 1
+        return original_parse(*args, **kwargs)
+
+    monkeypatch.setattr(deterministic.ast, "parse", count_parse)
+    result = _scan(tmp_path, [source])
+    assert result["scan_complete"] is True
+    assert parse_count == 1
 
 
 def test_shell_injection_finding_belongs_to_call_with_shell_enabled(tmp_path):

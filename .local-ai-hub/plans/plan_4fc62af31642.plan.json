@@ -1,0 +1,31 @@
+{
+  "default_target_ref": "refs/heads/master",
+  "description": "Fix evidence-backed endpoint underuse across both agent platforms. Keep native command execution and ownership rules intact; make deterministic/indexed Hub calls the normal route when applicable and semantic calls explicitly conditional.",
+  "id": "plan_4fc62af31642",
+  "lifecycle": "draft",
+  "schema_version": 1,
+  "spec_refs": [],
+  "tasks": {
+    "task_endpoint_routing": {
+      "acceptance_criteria": [
+        "Generated MCP schemas and agent instructions use one profile capability/action source and never advertise disabled actions.",
+        "High-profile defaults enable all intended profile-tier capabilities; lower profiles omit actions below their minimum tier.",
+        "Static and installed skill/prompt surfaces contain no stale fixed action lists that contradict the active schema.",
+        "Every enabled public MCP tool and action family has a concrete trigger and task intent; active-profile filters suppress unavailable actions.",
+        "local_ai_task is recommended by default for second-pass semantic review, uncertain reasoning, exploration, and evidence/log compression when matching actions, backend readiness, and quality gates are available.",
+        "Exact repository search, facts, tests, builds, and deterministic checks retain authoritative repo/native execution paths; semantic task work interprets evidence rather than duplicating these operations.",
+        "Runtime permission, quality, backend, and task-context checks remain authoritative; no guidance invents per-task grants.",
+        "Static review confirms Codex and Antigravity outputs align."
+      ],
+      "blocker": null,
+      "clarifications": [],
+      "depends_on": [],
+      "description": "Generated routing now contains task-specific triggers for each profile-enabled MCP action family. local_ai_task semantic QA is a default second pass when review/reason/explore actions and quality gates are exposed. Exact lookup and deterministic/native validation retain authority.",
+      "kind": "code",
+      "next_action": "Review generated prompt/schema output and focused tests; reconcile the current runtime's active task action set before claiming semantic QA is available.",
+      "title": "Fix endpoint routing in Codex and Antigravity",
+      "work_status": "in_progress"
+    }
+  },
+  "title": "Make applicable Local AI Hub endpoints default in Codex and Antigravity"
+}

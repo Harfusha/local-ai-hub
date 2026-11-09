@@ -1,3 +1,4 @@
+import pytest
 from pathlib import Path
 import os
 import sys
@@ -102,6 +103,47 @@ class GpuMonitorTests(unittest.TestCase):
                 gpu_monitor._WINDOWS_REFRESHING,
             ) = prior
 
+    def test_hardware_fallback_preserves_measured_free_vram(self):
+        hardware = {
+            "gpus": [{
+                "vendor": "nvidia",
+                "backend": "cuda",
+                "name": "NVIDIA GPU",
+                "vram_mb": 16303,
+                "vram_free_mb": 3000,
+            }]
+        }
+        with patch.object(gpu_monitor, "_GPU_CACHE", {}), \
+                patch.object(gpu_monitor, "_GPU_CACHE_TIME", 0.0), \
+                patch.object(gpu_monitor, "_nvidia_live", return_value=None), \
+                patch.object(gpu_monitor, "_rocm_live", return_value=None), \
+                patch.object(gpu_monitor, "_windows_live", return_value=None), \
+                patch.object(gpu_monitor, "detect_hardware", return_value=hardware) as detect_hardware:
+            result = gpu_monitor.get_gpu_telemetry()
+
+        self.assertEqual(result["vram_total_mb"], 16303)
+        self.assertEqual(result["vram_available_mb"], 3000)
+        self.assertFalse(result["live_metrics"])
+        detect_hardware.assert_called_once_with(include_openvino=False)
+
+    def test_dynamic_budget_uses_explicit_available_vram_measurement(self):
+        telemetry = {
+            "vram_total_mb": 16303,
+            "vram_used_mb": 0,
+            "vram_available_mb": 3000,
+        }
+        with patch.object(gpu_monitor, "get_gpu_telemetry", return_value=telemetry):
+            budget = gpu_monitor.get_dynamic_token_budget(
+                base_tokens=65536,
+                min_tokens=8192,
+                max_tokens=65536,
+            )
+
+        self.assertEqual(budget, 16384)
+
 
 if __name__ == "__main__":
     unittest.main()
+
+
+pytestmark = pytest.mark.slow

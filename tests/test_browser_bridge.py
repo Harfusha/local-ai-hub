@@ -537,20 +537,15 @@ def test_default_browser_origin_policy_is_fail_closed() -> None:
     assert 'allowed_origins = ["chrome-extension://*"]' not in defaults.read_text(encoding="utf-8")
 
 
-def test_explicit_api_token_authorization_can_replace_origin_allow_list() -> None:
+def test_retired_hub_token_cannot_replace_browser_origin_allow_list() -> None:
     token_config = {"browser_bridge": {"enabled": True, "allowed_origins": []}}
-    capability = issue_capture_capability(
-        token_config,
-        origin="chrome-extension://configured-by-token",
-        tab_id=7,
-        window_id=3,
-        api_token_authorized=True,
-    )
-    result = validate_capture_request(
-        capability,
-        {"origin": "chrome-extension://configured-by-token", "tab_id": 7, "window_id": 3},
-    )
-    assert result["success"] is True
+    with pytest.raises(CaptureProtocolError, match="origin is not permitted"):
+        issue_capture_capability(
+            token_config,
+            origin="chrome-extension://configured-by-token",
+            tab_id=7,
+            window_id=3,
+        )
 
 
 def test_capture_payload_preserves_full_dom_and_requires_none_attestation() -> None:

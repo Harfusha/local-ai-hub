@@ -37,7 +37,7 @@ class RepoStateTracker:
         self.max_untracked_walk_files = max(32, int(cfg.get("max_untracked_walk_files", 2048)))
         self.non_git_max_files = int(cfg.get("non_git_max_files", config.get("search", {}).get("max_files", 8000)))
         self.degraded_max_files = max(128, int(cfg.get("degraded_fingerprint_max_files", 2048)))
-        self.non_git_ignore_dirs = set(config.get("rag", {}).get("ignore_dirs", [".git", "node_modules", "vendor", "dist", "build", "bin", "obj", ".cache"]))
+        self.non_git_ignore_dirs = set(config.get("rag", {}).get("ignore_dirs", [".git", "node_modules", "vendor", "dist", "build", "bin", "obj", ".cache", ".venv", "tool-envs", "site-packages"]))
         self.cache = MemoryLRUCache(int(cfg.get("fingerprint_l1_entries", 128)), self.ttl)
         self._lock = threading.RLock()
         self._flight_lock = threading.Lock()
@@ -101,8 +101,10 @@ class RepoStateTracker:
     def _directory_signature(self, path: Path, root: Path) -> dict[str, Any]:
         entries: list[tuple[str, int, int, int, int]] = []
         truncated = False
+        def raise_walk_error(error: OSError) -> None:
+            raise error
         try:
-            for dirpath, dirnames, filenames in os.walk(path):
+            for dirpath, dirnames, filenames in os.walk(path, onerror=raise_walk_error):
                 dirnames[:] = sorted(d for d in dirnames if d not in self.non_git_ignore_dirs)
                 for name in sorted(filenames):
                     child = Path(dirpath) / name
@@ -111,6 +113,7 @@ class RepoStateTracker:
                         rel = str(child.relative_to(root)).replace("\\", "/")
                         entries.append((rel, int(stat.st_mtime_ns), int(stat.st_size), int(getattr(stat, "st_ctime_ns", 0)), int(getattr(stat, "st_ino", 0))))
                     except OSError:
+                        truncated = True
                         continue
                     if len(entries) >= self.max_untracked_walk_files:
                         truncated = True
@@ -118,7 +121,7 @@ class RepoStateTracker:
                 if truncated:
                     break
         except OSError:
-            pass
+            truncated = True
         # If a huge untracked directory is truncated, make the signature intentionally
         # volatile at the foreground fingerprint TTL. That keeps work bounded without
         # pretending the unseen tail is cache-stable. Filesystem watchers still provide
@@ -217,8 +220,10 @@ class RepoStateTracker:
     def _filesystem_result(self, root_path: Path, *, limit: int, degraded_reason: str = "") -> dict[str, Any]:
         entries: list[tuple[str, int, int, int, int]] = []
         truncated = False
+        def raise_walk_error(error: OSError) -> None:
+            raise error
         try:
-            for dirpath, dirnames, filenames in os.walk(root_path):
+            for dirpath, dirnames, filenames in os.walk(root_path, onerror=raise_walk_error):
                 dirnames[:] = sorted(d for d in dirnames if d not in self.non_git_ignore_dirs)
                 for name in sorted(filenames):
                     path = Path(dirpath) / name
@@ -227,6 +232,7 @@ class RepoStateTracker:
                         rel = str(path.relative_to(root_path)).replace("\\", "/")
                         entries.append((rel, int(stat.st_mtime_ns), int(stat.st_size), int(getattr(stat, "st_ctime_ns", 0)), int(getattr(stat, "st_ino", 0))))
                     except OSError:
+                        truncated = True
                         continue
                     if len(entries) >= limit:
                         truncated = True
@@ -235,6 +241,7 @@ class RepoStateTracker:
                     break
             digest = stable_hash({"entries": entries, "truncated": truncated})
         except OSError:
+            truncated = True
             digest = stable_hash(str(root_path))
         result = {
             "success": True, "root": str(root_path), "kind": "filesystem" if not degraded_reason else "degraded-filesystem",
@@ -323,6 +330,10 @@ class RepoStateTracker:
                 return self._degraded_result(root_path, cache_key, "git status omitted branch identity")
             signatures = [(rel, self._path_signature(root_path, rel)) for rel in changed_names[: self.max_changed_paths]]
             changed_truncated = len(changed_names) > self.max_changed_paths
+            inventory_truncated = changed_truncated or any(
+                isinstance(signature, dict) and signature.get("truncated") is True
+                for _, signature in signatures
+            )
             digest = stable_hash({
                 "head": head,
                 "status": status_raw.hex(),
@@ -335,6 +346,7 @@ class RepoStateTracker:
                 "dirty": bool(status_raw), "changed_files": len(changed_names),
                 "changed_paths": changed_names[: self.max_changed_paths], "fingerprint": digest,
                 "created_at": time.time(), "degraded": False, "stale": False,
+                "truncated": inventory_truncated,
             }
             self._last_good[cache_key] = dict(result)
             self._slow_until.pop(cache_key, None)

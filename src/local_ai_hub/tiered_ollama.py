@@ -85,9 +85,14 @@ class TieredOllamaRuntime:
         return reader(model) if callable(reader) else None
 
     @staticmethod
-    def _details(runtime: Any) -> list[dict[str, Any]]:
+    def _details(runtime: Any, *, force_refresh: bool = False) -> list[dict[str, Any]]:
         try:
-            rows = runtime.loaded_model_details()
+            rows = runtime.loaded_model_details(force_refresh=force_refresh)
+        except TypeError:
+            try:
+                rows = runtime.loaded_model_details()
+            except Exception:
+                return []
         except Exception:
             return []
         return [row for row in rows if isinstance(row, dict)]
@@ -434,10 +439,10 @@ class TieredOllamaRuntime:
     def installed_models(self) -> list[str]:
         return self.fast.installed_models()
 
-    def loaded_model_details(self) -> list[dict[str, Any]]:
+    def loaded_model_details(self, *, force_refresh: bool = False) -> list[dict[str, Any]]:
         rows: list[dict[str, Any]] = []
         for endpoint, runtime in (("fast", self.fast), ("smart", self.smart)):
-            for row in self._details(runtime):
+            for row in self._details(runtime, force_refresh=force_refresh):
                 item = dict(row)
                 item["endpoint"] = endpoint
                 rows.append(item)

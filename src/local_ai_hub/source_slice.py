@@ -50,6 +50,13 @@ def read_source_slice(
         candidate = Path(path).expanduser()
         if not candidate.is_absolute():
             candidate = root / candidate
+        try:
+            candidate.resolve(strict=False).relative_to(root)
+        except ValueError:
+            return failure(
+                "source path must be within the workspace; if the source belongs to "
+                "a different authorized workspace, provide that workspace's absolute path as root"
+            )
         target = candidate.resolve(strict=True)
         try:
             relative = target.relative_to(root)
@@ -110,7 +117,7 @@ def read_source_slice(
             if line_start <= total_lines <= requested_end:
                 selected_chars += len(line)
                 selected_parts.append(line)
-    if line_start > total_lines and total_lines:
+    if line_start > (total_lines if total_lines else 1):
         return failure("line_start exceeds the source line count")
     selected = "".join(selected_parts)
     if offset > selected_chars:

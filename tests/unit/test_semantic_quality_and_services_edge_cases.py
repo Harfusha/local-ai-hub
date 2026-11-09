@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 from local_ai_hub import semantic_quality
@@ -8,6 +10,8 @@ from local_ai_hub.services import (
     _split_review_diff,
     cache_decision_reason,
     _redact_guard_reason,
+    _review_failure_details,
+    LocalAIServices,
 )
 
 
@@ -69,3 +73,62 @@ def test_services_helper_edge_cases():
     redacted = _redact_guard_reason("reason with \x00 null bytes and token: secret123")
     assert "\x00" not in redacted
     assert "secret123" not in redacted
+
+
+def test_review_failure_details_preserves_safe_scheduler_state_only():
+    response = {
+        "success": False,
+        "error": "raw backend text with private prompt",
+        "error_code": "gpu_outcome_unknown",
+        "outcome_unknown": True,
+        "retryable": False,
+        "operation_not_started": True,
+        "model": "local-model",
+        "path": "C:/private/project/file.py",
+        "partial_reviews": ["private review text"],
+    }
+
+    details = _review_failure_details(response)
+
+    assert details == {
+        "error_code": "gpu_outcome_unknown",
+        "outcome_unknown": True,
+        "retryable": False,
+        "operation_not_started": True,
+        "model": "local-model",
+    }
+
+
+def test_chunked_review_failure_exposes_scheduler_rejection(monkeypatch):
+    service = LocalAIServices.__new__(LocalAIServices)
+    service.config = {"token_saving": {"max_local_input_tokens": 4096}}
+    service.deterministic = None
+    service.incident_store = None
+    service.vram_balancer = None
+    service.router = SimpleNamespace(classify=lambda *args: {"model": "fast", "complexity": "fast"})
+    service._resident_optimize = lambda route, *args: route
+    service.model_policy = SimpleNamespace(
+        tier_for=lambda model: "fast",
+        profile=lambda *args, **kwargs: SimpleNamespace(prompt_budget_tokens=2048),
+    )
+    service.delegate = lambda payload: {
+        "success": False,
+        "error": "raw backend detail",
+        "error_code": "gpu_outcome_unknown",
+        "outcome_unknown": True,
+        "retryable": False,
+        "operation_not_started": True,
+    }
+    monkeypatch.setattr(
+        "local_ai_hub.services._split_review_diff",
+        lambda diff_text, max_tokens: ["segment one", "segment two"],
+    )
+
+    result = service.review_diff({"diff": "diff --git a/a.py b/a.py\n+pass\n"})
+
+    assert result["success"] is False
+    assert result["error_code"] == "gpu_outcome_unknown"
+    assert result["outcome_unknown"] is True
+    assert result["retryable"] is False
+    assert result["operation_not_started"] is True
+    assert "raw backend detail" not in str(result)

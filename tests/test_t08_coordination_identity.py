@@ -300,13 +300,11 @@ def test_http_context_ignores_client_coordination_identity(tmp_path: Path, monke
     config_path.write_text(
         f'[server]\nstate_dir = "{(tmp_path / "state").as_posix()}"\n'
         "\n[security]\n"
-        'api_token = "coordination-identity-test-token"\n'
         f'allowed_roots = ["{tmp_path.as_posix()}"]\n'
         "\n[agent_state]\nenabled = true\n",
         encoding="utf-8",
     )
     app = LocalAIApp(str(config_path))
-    api_token = "coordination-identity-test-token"
     session_id = "session-coordination-http-test"
     app.agent_tasks.create(
         GoalContract(goal="Compile trusted repository context"),
@@ -369,7 +367,7 @@ def test_http_context_ignores_client_coordination_identity(tmp_path: Path, monke
         request = urllib.request.Request(
             f"http://127.0.0.1:{server.server_address[1]}/api/agent-state/context",
             data=payload,
-            headers={"Content-Type": "application/json", "Connection": "close", "X-LocalAI-Token": api_token},
+            headers={"Content-Type": "application/json", "Connection": "close"},
             method="POST",
         )
         with urllib.request.urlopen(request) as response:
@@ -381,7 +379,7 @@ def test_http_context_ignores_client_coordination_identity(tmp_path: Path, monke
                 "root": str(root_b),
                 "query": "memory",
             }).encode("utf-8"),
-            headers={"Content-Type": "application/json", "Connection": "close", "X-LocalAI-Token": api_token},
+            headers={"Content-Type": "application/json", "Connection": "close"},
             method="POST",
         )
         with urllib.request.urlopen(forged_find) as response:
@@ -393,7 +391,7 @@ def test_http_context_ignores_client_coordination_identity(tmp_path: Path, monke
                 "record_id": attacker.record_id,
                 "root": str(root_b),
             }).encode("utf-8"),
-            headers={"Content-Type": "application/json", "Connection": "close", "X-LocalAI-Token": api_token},
+            headers={"Content-Type": "application/json", "Connection": "close"},
             method="POST",
         )
         try:

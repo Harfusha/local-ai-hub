@@ -303,6 +303,30 @@ class ReviewDiffChunkingTests(unittest.TestCase):
 
         self.assertFalse(result["success"])
         self.assertIn("cannot be split safely", result["error"])
+        self.assertIs(result.get("retryable"), False)
+        self.assertIs(result.get("terminal"), True)
+        services.delegate.assert_not_called()
+
+    def test_async_review_segment_limit_is_terminal_known_failure(self):
+        sections = []
+        for index in range(9):
+            sections.append(
+                f"diff --git a/file_{index}.py b/file_{index}.py\n"
+                f"--- a/file_{index}.py\n+++ b/file_{index}.py\n"
+                "@@ -1 +1 @@\n-" + "oldword " * 300 + "\n+" + "newword " * 300 + "\n"
+            )
+        diff_text = "".join(sections)
+        services = self._services(diff_text, estimate_tokens(diff_text), changed_files=[f"file_{i}.py" for i in range(9)])
+        services.config["token_saving"]["max_local_input_tokens"] = 2048
+        services.config["review"] = {"max_async_chunks": 8}
+        services.delegate = MagicMock(return_value={"success": True, "text": "Should not run."})
+
+        result = LocalAIServices.review_diff(services, {"root": ".", "_async_job": True})
+
+        self.assertFalse(result["success"])
+        self.assertGreater(result["review_chunks"], 8)
+        self.assertIs(result.get("retryable"), False)
+        self.assertIs(result.get("terminal"), True)
         services.delegate.assert_not_called()
 
     def test_async_review_allows_bounded_large_diff(self):

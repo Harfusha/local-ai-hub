@@ -35,8 +35,7 @@ def isolated_hub(tmp_path, monkeypatch):
             '[agent_state]\nenabled = true\n'
             '[prewarm]\nenabled = false\n'
             '[headless]\nmanage_ollama = false\n'
-            '[security]\napi_token = "isolated-session-acceptance-token"\n'
-            'api_token_permissions = ["read", "write"]\n'
+            '[security]\n'
             f'allowed_roots = ["{tmp_path.as_posix()}"]\n', encoding="utf-8",
         )
 
@@ -74,9 +73,7 @@ def isolated_hub(tmp_path, monkeypatch):
         request = urllib.request.Request(
             f"http://127.0.0.1:{server.server_address[1]}{endpoint}",
             data=json.dumps(payload).encode(),
-            headers={"Content-Type": "application/json",
-                     "X-LocalAI-Token": "isolated-session-acceptance-token",
-                     "Connection": "close"}, method="POST",
+            headers={"Content-Type": "application/json", "Connection": "close"}, method="POST",
         )
         try:
             with urllib.request.urlopen(request, timeout=20) as response:

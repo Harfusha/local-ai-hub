@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 import math
+import re
 from typing import Any
 
 from .prompt_contracts import capability_for
@@ -208,6 +209,10 @@ class ModelExecutionPolicy:
                 target = min(target, 32768)
             if safe_vram < 8192 and not self._is_small_model(model):
                 target = min(target, 8192)
+        else:
+            # Unknown VRAM cannot justify the configured 32K–65K contexts.
+            # Keep a bounded 16K fallback until fresh device telemetry is available.
+            target = min(target, 16384)
 
         target = min(max_ctx, max(4096, target))
         if max(256, safe_out) + reserve + 1024 > target:
@@ -244,7 +249,14 @@ class ModelExecutionPolicy:
     @staticmethod
     def _is_small_model(model: str) -> bool:
         low = _clean_str(model).lower()
-        return any(tag in low for tag in ("0.5b", "1.5b", "3b", ":1b", ":2b"))
+        patterns = (
+            r"(?:^|[\W_])0?\.5b\b",
+            r"(?:^|[\W_])1\.5b\b",
+            r"(?:^|[\W_])(?<![0-9])3b\b",
+            r"(?:^|[\W_])1b\b",
+            r"(?:^|[\W_])2b\b",
+        )
+        return any(re.search(pat, low) for pat in patterns)
 
     def apply_payload(
         self,

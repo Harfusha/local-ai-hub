@@ -11,7 +11,6 @@ from typing import Any, Callable
 from .generator import generate_opencode_runtime_config
 from .opencode_models import ModelPreparationError, ensure_model, local_inventory
 from .opencode_provider_service import derive_provider_token
-from .opencode_boundary import derive_local_profile_token
 from .state_paths import configured_state_dir
 
 
@@ -101,9 +100,7 @@ def launch_opencode(
     if not project.is_dir() or not executable.is_file() or not (install_dir / "tools" / "opencode_goal" / "index.js").is_file():
         raise LaunchError("project, OpenCode executable or goal plugin is unavailable")
     cfg = client.config
-    hub_token = cfg.get("security", {}).get("api_token", "")
     hub_port = cfg.get("server", {}).get("port")
-    derive_provider_token(hub_token, "validation-nonce-0123456789")
     generate_opencode_runtime_config(cfg, install_dir, hub_python, model=model, provider_port=1, hub_port=hub_port)
     try:
         ensure_model(model, inventory=lambda: local_inventory(cfg.get("server", {}).get("ollama_url", "")),
@@ -123,10 +120,7 @@ def launch_opencode(
         raise LaunchError("provider start was not confirmed; inspect provider status")
     nonce = started["nonce"]
     try:
-        provider_token = derive_provider_token(hub_token, nonce)
-        profile_token = derive_local_profile_token(hub_token, nonce)
-        if profile_token is None:
-            raise ValueError("invalid OpenCode profile credential")
+        provider_token = derive_provider_token(nonce)
     except ValueError:
         raise LaunchError("provider start was not confirmed; inspect provider status") from None
 
@@ -144,7 +138,7 @@ def launch_opencode(
             env.update({
                 "OPENCODE_DISABLE_PROJECT_CONFIG": "1", "OPENCODE_CONFIG_CONTENT": json.dumps(runtime, separators=(",", ":")),
                 "OPENCODE_DISABLE_MODELS_FETCH": "1", "OPENCODE_DISABLE_AUTOUPDATE": "1",
-                "OPENCODE_CONFIG_DIR": config_dir, "LOCAL_AI_HUB_TOKEN": profile_token,
+                "OPENCODE_CONFIG_DIR": config_dir,
                 "LOCAL_AI_OPENCODE_PROVIDER_TOKEN": provider_token,
                 "XDG_CONFIG_HOME": config_dir, "XDG_DATA_HOME": str(profile / "data"),
                 "XDG_CACHE_HOME": str(profile / "cache"), "XDG_STATE_HOME": str(profile / "state"),

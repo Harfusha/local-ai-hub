@@ -22,7 +22,15 @@ class VRAMBalancer:
         self._lock = threading.RLock()
         self._condition = threading.Condition(self._lock)
         self._sampling = False
-        self._sample_wait_timeout_seconds = 3.0
+        self._sampling_started_at = 0.0
+        self._sampling_generation = 0
+        self._sampling_token: int | None = None
+        self._sampling_workers: set[int] = set()
+        self._max_sampling_workers = 2
+        self._sampling_start_error: str | None = None
+        # Windows GPU telemetry may use a bounded 4-second PowerShell probe.
+        # Keep the sampler timeout above that limit to avoid restarting a valid probe.
+        self._sample_wait_timeout_seconds = 5.0
         self._last_status: dict[str, Any] = {}
         self._last_check_time = 0.0
         self._status_generation = 0
@@ -40,10 +48,29 @@ class VRAMBalancer:
             if not force:
                 if not self._sampling:
                     self._start_sampling_locked()
-                result = self._sampling_timeout_fallback_locked()
-                result["telemetry_wait_timed_out"] = False
-                result["telemetry_error"] = "sample_pending" if self._sampling else "sample_start_failed"
-                result["telemetry_sampling"] = self._sampling
+                if self._sampling and now - self._sampling_started_at >= self._sample_wait_timeout_seconds:
+                    result = self._sampling_timeout_fallback_locked()
+                    self._sampling = False
+                    self._sampling_token = None
+                    self._sampling_started_at = 0.0
+                    self._start_sampling_locked()
+                    result["telemetry_sampling"] = self._sampling
+                    result["telemetry_active_probes"] = len(self._sampling_workers)
+                elif not self._sampling:
+                    result = self._sampling_timeout_fallback_locked()
+                    if self._sampling_start_error == "sample_start_failed":
+                        result["telemetry_wait_timed_out"] = False
+                        result["telemetry_error"] = "sample_start_failed"
+                    else:
+                        result["telemetry_wait_timed_out"] = True
+                        result["telemetry_error"] = "sample_wait_timeout"
+                    result["telemetry_sampling"] = False
+                    result["telemetry_active_probes"] = len(self._sampling_workers)
+                else:
+                    result = self._sampling_pending_status_locked()
+                    result["telemetry_wait_timed_out"] = False
+                    result["telemetry_error"] = "sample_pending" if self._sampling else "sample_start_failed"
+                    result["telemetry_sampling"] = self._sampling
                 return result
 
             wait_deadline = time.monotonic() + self._sample_wait_timeout_seconds
@@ -64,8 +91,12 @@ class VRAMBalancer:
                 self._start_sampling_locked()
                 if not self._sampling:
                     result = self._sampling_timeout_fallback_locked()
-                    result["telemetry_wait_timed_out"] = False
-                    result["telemetry_error"] = "sample_start_failed"
+                    if self._sampling_start_error == "sample_start_failed":
+                        result["telemetry_wait_timed_out"] = False
+                        result["telemetry_error"] = "sample_start_failed"
+                    else:
+                        result["telemetry_wait_timed_out"] = True
+                        result["telemetry_error"] = "sample_worker_capacity"
                     return result
 
             while self._sampling:
@@ -83,29 +114,76 @@ class VRAMBalancer:
 
     def _start_sampling_locked(self) -> None:
         """Start at most one bounded probe; caller holds the state condition."""
-        self._sampling = True
-        try:
-            threading.Thread(target=self._sample_gpu_telemetry, daemon=True, name="vram-telemetry").start()
-        except RuntimeError:
+        if len(self._sampling_workers) >= self._max_sampling_workers:
             self._sampling = False
+            self._sampling_token = None
+            self._sampling_started_at = 0.0
+            self._sampling_start_error = "sample_worker_capacity"
+            return
+        self._sampling_generation += 1
+        token = self._sampling_generation
+        self._sampling = True
+        self._sampling_token = token
+        self._sampling_started_at = time.monotonic()
+        self._sampling_start_error = None
+        self._sampling_workers.add(token)
+        try:
+            threading.Thread(
+                target=self._sample_gpu_telemetry,
+                args=(token,),
+                daemon=True,
+                name="vram-telemetry",
+            ).start()
+        except RuntimeError:
+            self._sampling_workers.discard(token)
+            self._sampling = False
+            self._sampling_token = None
+            self._sampling_started_at = 0.0
+            self._sampling_start_error = "sample_start_failed"
             self._condition.notify_all()
 
-    def _sample_gpu_telemetry(self) -> None:
+    def _sample_gpu_telemetry(self, token: int) -> None:
         try:
             # GPU telemetry can invoke bounded subprocess probes. Keep those waits
             # out of the state lock and status caller so both stay responsive.
-            self._status_from_telemetry(get_gpu_telemetry())
+            self._status_from_telemetry(get_gpu_telemetry(), sampling_generation=token)
         except Exception:
             with self._condition:
-                fallback = self._sampling_timeout_fallback_locked()
-                fallback["telemetry_error"] = "sample_failed"
-                self._last_status = fallback
-                self._last_check_time = time.monotonic()
-                self._status_generation += 1
+                if self._sampling_token == token:
+                    fallback = self._sampling_timeout_fallback_locked()
+                    fallback["telemetry_sampling"] = False
+                    fallback["telemetry_active_probes"] = max(0, len(self._sampling_workers) - 1)
+                    fallback["telemetry_error"] = "sample_failed"
+                    self._last_status = fallback
+                    self._last_check_time = time.monotonic()
+                    self._status_generation += 1
         finally:
             with self._condition:
-                self._sampling = False
+                self._sampling_workers.discard(token)
+                if self._sampling_token == token:
+                    self._sampling = False
+                    self._sampling_token = None
+                    self._sampling_started_at = 0.0
                 self._condition.notify_all()
+
+    def _sampling_pending_status_locked(self) -> dict[str, Any]:
+        """Keep a recent valid sample available during its bounded refresh window."""
+        now = time.monotonic()
+        sample_age = max(0.0, now - self._last_check_time)
+        if (
+            self._last_status
+            and self._last_status.get("available") is True
+            and self._last_status.get("pressure_level") != "unknown"
+            and sample_age <= self._sample_wait_timeout_seconds
+        ):
+            result = dict(self._last_status)
+            result["telemetry_stale"] = True
+            result["telemetry_wait_timed_out"] = False
+            result["telemetry_sampling"] = self._sampling
+            result["telemetry_error"] = "sample_pending"
+            result["sample_age_seconds"] = sample_age
+            return result
+        return self._sampling_timeout_fallback_locked()
 
     def _sampling_timeout_fallback_locked(self) -> dict[str, Any]:
         """Return conservative status when another telemetry probe stalls.
@@ -158,6 +236,8 @@ class VRAMBalancer:
         result["throttle_background"] = True
         result["telemetry_stale"] = True
         result["telemetry_wait_timed_out"] = True
+        result["telemetry_sampling"] = self._sampling
+        result["telemetry_active_probes"] = len(self._sampling_workers)
         result["telemetry_error"] = "sample_wait_timeout"
         result["sample_timestamp"] = None
         result["sample_age_seconds"] = None
@@ -180,11 +260,20 @@ class VRAMBalancer:
         except (TypeError, ValueError, OverflowError):
             return default
 
-    def _status_from_telemetry(self, gpu: dict[str, Any]) -> dict[str, Any]:
+    def _status_from_telemetry(
+        self,
+        gpu: dict[str, Any],
+        *,
+        sampling_generation: int | None = None,
+    ) -> dict[str, Any]:
         with self._lock:
+            if sampling_generation is not None and sampling_generation != self._sampling_token:
+                return dict(self._last_status)
             now = time.monotonic()
             def unknown_sample(reason: str) -> dict[str, Any]:
                 result = self._sampling_timeout_fallback_locked()
+                result["telemetry_sampling"] = False
+                result["telemetry_active_probes"] = max(0, len(self._sampling_workers) - 1)
                 result["telemetry_wait_timed_out"] = False
                 result["telemetry_error"] = reason
                 result["sample_timestamp"] = None

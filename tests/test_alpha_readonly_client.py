@@ -25,7 +25,7 @@ def test_alpha_client_rejects_workspace_writing_backends(tmp_path, setting):
     config = (
         '[server]\nbind = "127.0.0.1"\nport = 34567\n'
         f'state_dir = {json.dumps((tmp_path / "state").as_posix())}\n'
-        '[security]\napi_token = "' + 'x' * 32 + '"\n'
+        '[security]\n'
         f'allowed_roots = [{json.dumps(workspace.as_posix())}]\n'
         f'[preprocessing]\nenabled = {boolean(flags["preprocessing"])}\n'
         f'fs_watcher_enabled = {boolean(flags["watcher"])}\n'

@@ -30,7 +30,7 @@ BOOLEAN_SETTINGS = (
     "features.dashboard",
     "features.work_orchestrator",
 )
-HARDWARE_PROFILES = ("auto", "cpu", "integrated", "low", "balanced", "high", "max")
+HARDWARE_PROFILES = ("auto", "cpu", "integrated", "low", "balanced", "medium", "high", "max")
 NON_BOOLEAN_JSON_VALUES = (0, 1, 1.0, None, "true", [], {})
 NON_PROFILE_JSON_VALUES = (True, False, 0, 1, 1.0, None, [], {}, "unsupported")
 

@@ -38,29 +38,31 @@ from local_ai_hub.rag import RAGStore, _regex_ast_chunks
         ),
     ],
 )
-def test_lexical_chunks_keep_balanced_blocks_and_reconstruct_source(language, source) -> None:
-    chunks = _regex_ast_chunks(source, language, size=32)
+def test_lexical_chunks_bound_oversized_blocks_and_reconstruct_source(language, source) -> None:
+    chunks = _regex_ast_chunks(source, language, size=96)
 
     assert chunks
     assert "".join(chunks) == source
+    assert all(len(chunk) <= 96 for chunk in chunks)
     unit_marker = {
         "typescript": "export function first(input: string)",
         "c_sharp": "public class Worker {",
         "go": "func Run(input string) string {",
         "rust": "fn run<'a>(input: &'a str) -> String {",
     }[language]
-    unit = next(chunk for chunk in chunks if unit_marker in chunk)
-    assert unit.rstrip().endswith("}")
+    assert any(unit_marker in chunk for chunk in chunks)
 
 
-def test_oversized_function_body_remains_one_complete_chunk() -> None:
-    body = "x" * 500
-    source = f"fn large() {{\n{body}\n}}\nfn next() {{ ok(); }}"
+def test_oversized_function_body_splits_at_safe_lines_and_reconstructs() -> None:
+    body = "".join(f"  work_{index}();\n" for index in range(80))
+    source = f"fn large() {{\n{body}}}\nfn next() {{ ok(); }}"
 
     chunks = _regex_ast_chunks(source, "rust", size=48)
 
     assert "".join(chunks) == source
-    assert any("fn large() {" in chunk and body in chunk and "fn next()" not in chunk for chunk in chunks)
+    assert all(len(chunk) <= 48 for chunk in chunks)
+    assert any("fn large() {" in chunk for chunk in chunks)
+    assert any("work_79();" in chunk for chunk in chunks)
     assert any("fn next() { ok(); }" in chunk for chunk in chunks)
 
 
@@ -155,4 +157,7 @@ def test_tree_sitter_absence_dispatches_to_lexical_chunker(monkeypatch) -> None:
     chunks = store._chunks(source, "file.go")
 
     assert "".join(chunks) == source
-    assert any("func run() {" in chunk and "}" in chunk for chunk in chunks)
+    assert any("func run() {" in chunk for chunk in chunks)
+    assert any("work();" in chunk for chunk in chunks)
+    assert chunks[-1].rstrip().endswith("}")
+    assert all(len(chunk) <= 40 for chunk in chunks)

@@ -22,6 +22,9 @@ def test_mcp_dispatches_without_local_model_execution(monkeypatch):
     monkeypatch.setattr(mcp_server, "load_operational_mode", lambda *_args, **_kwargs: SimpleNamespace(mode="active", revision=0))
     monkeypatch.setattr(mcp_server, "operational_mode_gate_error", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(mcp_server, "_compact", lambda result, *args, **kwargs: result)
+    monkeypatch.setattr(mcp_server.FEATURES, "tasks", True)
+    monkeypatch.setattr(mcp_server.FEATURES, "hardware_profile", "high")
+    monkeypatch.setattr(mcp_server.FEATURES, "local_automation_qualified", True)
     monkeypatch.setattr(mcp_server.CLIENT, "post", lambda path, payload, **kwargs: calls.append((path, payload, kwargs)) or {"success": True, "automation": {"session_id": "s", "session_key": "k"}})
     result = mcp_server.local_ai_task(action="automation", root="C:/repo", task_id="t", automation={"op": "open", "mode": "isolated", "url": "http://localhost/"})
     assert result["automation"]["session_key"] == "k"
@@ -100,7 +103,7 @@ def test_actual_http_task_root_binding_and_session_lifecycle(tmp_path):
     state = tmp_path / "state"
     root = tmp_path / "repo"
     root.mkdir()
-    config.write_text(f'[server]\nstate_dir="{state.as_posix()}"\n[security]\napi_token="automation-test-token"\nallowed_roots=["{tmp_path.as_posix()}"]\n[agent_state]\nenabled=true\n[code_intelligence]\nenabled=false\n', encoding="utf-8")
+    config.write_text(f'[server]\nstate_dir="{state.as_posix()}"\n[hardware]\nprofile="high"\n[features]\nlocal_automation=true\n[security]\nallowed_roots=["{tmp_path.as_posix()}"]\n[agent_state]\nenabled=true\n[code_intelligence]\nenabled=false\n', encoding="utf-8")
     app = LocalAIApp(str(config))
     calls = []
     class Backend:
@@ -115,9 +118,9 @@ def test_actual_http_task_root_binding_and_session_lifecycle(tmp_path):
     server = http_server.LocalAIHTTPServer(("127.0.0.1", 0), http_server.Handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
-    def post(path, payload, token="automation-test-token"):
+    def post(path, payload):
         request = urllib.request.Request(f"http://127.0.0.1:{server.server_address[1]}{path}", data=json.dumps(payload).encode(),
-            headers={"Content-Type": "application/json", "X-LocalAI-Token": token}, method="POST")
+            headers={"Content-Type": "application/json"}, method="POST")
         try:
             with urllib.request.urlopen(request, timeout=10) as response:
                 return json.load(response)
@@ -133,7 +136,8 @@ def test_actual_http_task_root_binding_and_session_lifecycle(tmp_path):
         assert opened["success"], opened
         session = opened["automation"]
         operation = {"op": "act", "session_id": session["session_id"], "session_key": session["session_key"], "request_id": "actual-http-snapshot", "command": "snapshot"}
-        denied = post("/api/task/automation", {**base, "automation": operation}, token="wrong")
+        wrong_session = {**operation, "session_key": "wrong"}
+        denied = post("/api/task/automation", {**base, "automation": wrong_session})
         assert denied["success"] is False
         assert not calls
         foreign = tmp_path / "foreign"

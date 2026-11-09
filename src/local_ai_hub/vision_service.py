@@ -371,8 +371,11 @@ class VisionService:
                 repo_context = None
                 root = str(args.get("root") or "").strip()
                 fix_requested = any(
-                    marker in prompt.lower()
-                    for marker in ("fix", "repair", "implement", "change", "correct")
+                    marker in prompt.casefold()
+                    for marker in (
+                        "fix", "repair", "implement", "change", "correct",
+                        "oprav", "upravit", "sprav", "implementuj", "změň", "změnit",
+                    )
                 )
                 if root and fix_requested and self.repo_tools is not None:
                     findings = asdict(parsed).get("findings", [])

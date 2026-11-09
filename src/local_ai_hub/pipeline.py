@@ -261,7 +261,10 @@ class LocalAgentPipeline:
             )
             packed["context_source"] = "deterministic"
         else:
-            packed = self.services._hybrid_context(root, task, workspace=args.get("workspace"), max_tokens=budget)
+            packed = self.services._hybrid_context(
+                root, task, workspace=args.get("workspace"), max_tokens=budget,
+                quality_first=True,
+            )
             if isinstance(packed, dict): packed["context_source"] = "hybrid"
         if not packed.get("success"):
             return packed
@@ -368,7 +371,15 @@ class LocalAgentPipeline:
             except Exception:
                 explorer_confidence = 0.0
             missing = structured.get("missing_evidence", []) if isinstance(structured, dict) else []
-            if explorer_confidence >= self.explorer_skip_worker_confidence and not missing:
+            has_grounded_evidence = bool(
+                packed.get("evidence")
+                or (isinstance(structured, dict) and (structured.get("evidence") or structured.get("evidence_ids")))
+            )
+            if (
+                explorer_confidence >= self.explorer_skip_worker_confidence
+                and not missing
+                and has_grounded_evidence
+            ):
                 need_worker = False
                 plan = dict(plan)
                 plan["worker"] = False
@@ -501,9 +512,33 @@ class LocalAgentPipeline:
                 return cancelled_result()
             if _is_repetition_loop(critic):
                 return _repetition_loop_failure(critic, stage="critic", mode=mode)
+            if critic and not critic.get("success"):
+                if mode == "quality":
+                    return {
+                        "success": False,
+                        "error": f"Critic stage failed: {critic.get('error', 'unknown error')}",
+                        "verification_incomplete": True,
+                        "pipeline": {
+                            "mode": mode,
+                            "degraded": True,
+                            "failed_stage": "critic",
+                            "stages": (["explorer"] if plan.get("explorer") else ["deterministic-explorer"])
+                            + (["worker"] if need_worker else []),
+                        },
+                        "canonical": {
+                            "task": task,
+                            "worker": {"used": need_worker, "model": worker.get("model")},
+                            "critic": {"used": True, "error": critic.get("error"), "success": False},
+                        },
+                    }
 
         if cancelled():
             return cancelled_result()
+        critic_success = bool(critic and critic.get("success"))
+        pipeline_stages = (["explorer"] if plan.get("explorer") else ["deterministic-explorer"]) + (["worker"] if need_worker else [])
+        if critic_success:
+            pipeline_stages.append("critic")
+
         worker_structured = worker.get("structured") if isinstance(worker.get("structured"), dict) else None
         canonical_text = str(worker_structured.get("summary", "") if worker_structured else worker.get("text", ""))
         if worker_structured and worker_structured.get("actions"):
@@ -533,7 +568,7 @@ class LocalAgentPipeline:
                 "deterministic": {k: deterministic.get(k) for k in ("intent", "confidence", "facts", "dependencies", "scripts", "test_candidates", "evidence") if isinstance(deterministic, dict) and k in deterministic},
                 "explorer": {"model": explorer.get("model"), "cache_hit": explorer.get("stage_cache_hit", False)},
                 "worker": {"used": need_worker, "model": worker.get("model"), "cache_hit": worker.get("stage_cache_hit", False)},
-                "critic": {"used": bool(critic), "model": critic.get("model") if critic else None, "cache_hit": critic.get("stage_cache_hit", False) if critic else False},
+                "critic": {"used": bool(critic), "success": critic_success if critic else None, "model": critic.get("model") if critic else None, "cache_hit": critic.get("stage_cache_hit", False) if critic else False},
                 "structured": {"explorer": explorer.get("structured"), "worker": worker.get("structured"), "critic": critic.get("structured") if critic else None},
             },
             "repo_context": {
@@ -542,7 +577,13 @@ class LocalAgentPipeline:
                 "scanned_files": packed.get("scanned_files", 0),
             },
             "impact": {k: impact.get(k) for k in ("changed_files", "suggested_tests", "risk") if isinstance(impact, dict) and k in impact},
-            "pipeline": {"mode": mode, "degraded": False, "confidence": plan.get("confidence"), "stages": (["explorer"] if plan.get("explorer") else ["deterministic-explorer"]) + (["worker"] if need_worker else []) + (["critic"] if critic else [])},
+            "pipeline": {
+                "mode": mode,
+                "degraded": bool(critic and not critic_success),
+                "failed_stage": "critic" if (critic and not critic_success) else None,
+                "confidence": plan.get("confidence"),
+                "stages": pipeline_stages,
+            },
         }
 
     def stats(self) -> dict[str, Any]:

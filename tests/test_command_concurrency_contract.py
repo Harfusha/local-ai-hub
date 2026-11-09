@@ -1078,6 +1078,7 @@ def test_run_reuses_tool_identity_and_reports_command_phase_timings(tmp_path, mo
 
 
 def test_affected_test_selection_covers_transitive_dependency_graph(tmp_path) -> None:
+    from local_ai_hub.code_index import CodeIndex
     from local_ai_hub.deterministic import DeterministicEngine
     from local_ai_hub.repo_tools import RepositoryTools
 
@@ -1099,7 +1100,16 @@ def test_affected_test_selection_covers_transitive_dependency_graph(tmp_path) ->
     config = {
         "server": {"state_dir": str(tmp_path.parent / f"{tmp_path.name}-hub-state")},
     }
-    engine = DeterministicEngine(config, RepositoryTools(config))
+    repo_tools = RepositoryTools(config)
+    code_index = CodeIndex(config, repo_tools)
+    indexed = code_index.update_files_batch(str(tmp_path), [
+        "src/__init__.py", "src/shared.py", "src/core.py", "src/app.py",
+        "tests/__init__.py", "tests/test_shared.py", "tests/test_core.py",
+        "tests/test_app.py", "tests/test_unrelated.py",
+    ])
+    assert indexed["success"] is True
+    engine = DeterministicEngine(config, repo_tools)
+    engine.code_index = code_index
 
     result = engine.affected_tests(str(tmp_path), changed_paths=["src/shared.py"])
 

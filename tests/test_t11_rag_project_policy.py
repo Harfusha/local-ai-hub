@@ -66,6 +66,29 @@ def test_rag_ingest_uses_rag_policy_not_preprocess_exclusions(tmp_path: Path, en
     assert _stored_paths(store, workspace) == {"preprocess-only.py", "included.py"}
 
 
+def test_rag_reindex_removes_file_newly_excluded_by_project_policy(tmp_path: Path) -> None:
+    root, config = _project(tmp_path)
+    backup_dir = root / "backups"
+    backup_dir.mkdir()
+    (backup_dir / "private.py").write_text("private = True\n", encoding="utf-8")
+    store = RAGStore(config, services=RecordingEmbedder())
+    workspace = store.workspace_id(str(root))
+
+    first = store.index(root=str(root), workspace=workspace)
+    assert first["success"] is True
+    assert "backups/private.py" in _stored_paths(store, workspace)
+
+    (root / ".local-ai.toml").write_text(
+        'exclude_paths = ["general.py", "backups/**"]\n'
+        'force_include_paths = ["general.py"]\n',
+        encoding="utf-8",
+    )
+    second = store.index(root=str(root), workspace=workspace)
+
+    assert second["success"] is True
+    assert "backups/private.py" not in _stored_paths(store, workspace)
+
+
 @pytest.mark.parametrize("entrypoint", ["index", "index_step", "index_paths_step"])
 def test_rag_skip_phase_is_respected_by_each_ingest_entrypoint(tmp_path: Path, entrypoint: str) -> None:
     root, config = _project(tmp_path, skip_rag=True)

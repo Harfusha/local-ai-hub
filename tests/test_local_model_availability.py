@@ -759,6 +759,105 @@ def test_prepare_model_propagates_cancel_and_deadline_to_llama_cpp() -> None:
     assert received["deadline"] > time.monotonic()
 
 
+def test_mixed_provider_admission_timeout_is_marked_not_started() -> None:
+    runtime = object.__new__(OllamaRuntime)
+    runtime.config = {
+        "llama_cpp": {"managed_with_ollama": True, "model_load_timeout_seconds": 5.0}
+    }
+    runtime._mixed_provider_lock = threading.Lock()
+
+    with pytest.raises(TimeoutError) as raised:
+        runtime.prepare_model(
+            "model", should_stop=lambda: False, deadline=time.monotonic() - 1.0,
+        )
+
+    assert getattr(raised.value, "operation_not_started", False) is True
+
+
+def test_mixed_model_preparation_starts_managed_backend_before_inventory() -> None:
+    runtime = object.__new__(OllamaRuntime)
+    runtime.config = {
+        "ollama": {"enabled": True},
+        "llama_cpp": {
+            "managed_with_ollama": True,
+            "managed_model_logical": "candidate",
+            "model_load_timeout_seconds": 5.0,
+            "fallback_to_ollama": False,
+        },
+    }
+    runtime._mixed_provider_lock = threading.Lock()
+    calls: list[str] = []
+    runtime.llama_cpp = SimpleNamespace(
+        _entry=lambda _model: ({"context_length": 4096}, "http://127.0.0.1:12438"),
+    )
+    runtime.llama_cpp_managed = SimpleNamespace(
+        is_online=lambda: False,
+        ensure_running=lambda **_kwargs: calls.append("ensure_running") or True,
+        status=lambda: {"online": False, "mode": ""},
+    )
+    runtime.loaded_model_inventory = lambda **_kwargs: calls.append("inventory") or {
+        "complete": False,
+        "models": [],
+    }
+
+    with pytest.raises(ollama_module.ModelPreparationAdmissionRejected) as raised:
+        runtime.prepare_model(
+            "candidate",
+            post_unload_admission=lambda: {"state": "admitted"},
+        )
+
+    assert raised.value.admission["reason"] == "mixed_inventory_incomplete"
+    assert calls == ["ensure_running", "inventory"]
+
+
+def test_mixed_model_preparation_fails_fast_when_managed_start_fails() -> None:
+    runtime = object.__new__(OllamaRuntime)
+    runtime.config = {
+        "ollama": {"enabled": True},
+        "llama_cpp": {
+            "managed_with_ollama": True,
+            "managed_model_logical": "candidate",
+            "model_load_timeout_seconds": 5.0,
+            "fallback_to_ollama": False,
+        },
+    }
+    runtime._mixed_provider_lock = threading.Lock()
+    calls: list[str] = []
+    runtime.llama_cpp = SimpleNamespace(
+        _entry=lambda _model: ({"context_length": 4096}, "http://127.0.0.1:12438"),
+    )
+    runtime.llama_cpp_managed = SimpleNamespace(
+        is_online=lambda: False,
+        ensure_running=lambda **_kwargs: calls.append("ensure_running") or False,
+        status=lambda: {"online": False, "mode": "", "last_error": "managed server failed to start"},
+    )
+    runtime.loaded_model_inventory = lambda **_kwargs: pytest.fail("offline backend inventory must not block model preparation")
+
+    with pytest.raises(ollama_module.ModelPreparationAdmissionRejected) as raised:
+        runtime.prepare_model(
+            "candidate",
+            post_unload_admission=lambda: {"state": "admitted"},
+        )
+
+    assert raised.value.admission["reason"] == "mixed_managed_backend_unavailable"
+    assert "managed server failed to start" in raised.value.admission["detail"]
+    assert calls == ["ensure_running"]
+
+
+def test_mixed_provider_admission_cancel_is_marked_not_started() -> None:
+    runtime = object.__new__(OllamaRuntime)
+    runtime.config = {
+        "llama_cpp": {"managed_with_ollama": True, "model_load_timeout_seconds": 5.0}
+    }
+    runtime._mixed_provider_lock = threading.Lock()
+
+    with pytest.raises(InterruptedError) as raised:
+        runtime.prepare_model("model", should_stop=lambda: True)
+
+    assert getattr(raised.value, "preparation_cancelled", False) is True
+    assert getattr(raised.value, "operation_not_started", False) is True
+
+
 def test_interruptible_json_retries_http_5xx(monkeypatch) -> None:
     runtime = object.__new__(OllamaRuntime)
     runtime.config = {"ollama": {"enabled": True, "request_attempts": 2, "retry_delay_seconds": 0}}

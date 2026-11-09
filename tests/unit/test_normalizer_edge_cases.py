@@ -31,6 +31,13 @@ def test_postprocess_model_output_repairs_unclosed_tilde_fence() -> None:
     assert cleaned == "~~~python\ndef hello():\n    print('world')\n~~~"
 
 
+def test_postprocess_model_output_preserves_runtime_markers_inside_fenced_code() -> None:
+    raw = "```text\n<plan>example</plan>\n[DONE]\n<|im_end|>\n```"
+    cleaned, thinking = postprocess_model_output(raw, role="code")
+    assert cleaned == raw
+    assert thinking is None
+
+
 def test_postprocess_patch_starts_at_hunk_header_when_preamble_present() -> None:
     diff_text = "Here is the fix for your issue:\n@@ -1,3 +1,3 @@\n-foo\n+bar\n baz"
     cleaned = postprocess_patch(diff_text)

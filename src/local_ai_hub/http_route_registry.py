@@ -6,6 +6,9 @@ from types import MappingProxyType
 from typing import Mapping
 
 
+API_ROUTE_REGISTRIES_AUTHORITATIVE = True
+
+
 @dataclass(frozen=True, slots=True)
 class RouteRule:
     route_id: str
@@ -54,6 +57,7 @@ POST_ROUTE_REGISTRY: tuple[RouteRule, ...] = (
     RouteRule('post_coord_plan_bind_task_1', frozenset(('/api/coord/plan_bind_task',))),
     RouteRule('post_coord_plan_reconcile_steering_1', frozenset(('/api/coord/plan_reconcile_steering',))),
     RouteRule('post_benchmark_run_1', frozenset(('/api/benchmark/run',))),
+    RouteRule('post_gpu_reservation_1', frozenset(('/api/gpu-reservation',))),
     RouteRule('post_delegate_repo_1', frozenset(('/api/delegate/repo',))),
     RouteRule('post_solve_repo_1', frozenset(('/api/solve/repo',))),
     RouteRule('post_route_1', frozenset(('/api/route',))),

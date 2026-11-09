@@ -412,6 +412,9 @@ def test_agent_state_bundle_recovers_after_partial_memory_commit(tmp_path: Path,
 
 def test_invalid_pending_journal_fails_app_startup_closed(tmp_path: Path):
     config_dir = tmp_path / "target-app"
+    from local_ai_hub.state_lifecycle import write_state_version
+
+    write_state_version(config_dir / "state")
     journal_dir = config_dir / "state" / "bundle-imports"
     journal_dir.mkdir(parents=True)
     (journal_dir / "invalid.json").write_text('{"schema_version":1,"import_id":"bad"}', encoding="utf-8")

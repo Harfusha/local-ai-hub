@@ -40,7 +40,10 @@ def test_semantic_cache_stores_vector_as_blob(tmp_path: Path):
     cache.set("test_scope", "sample search query", {"answer": 42})
     
     with closing(sqlite3.connect(cache.path)) as con:
-        row = con.execute("SELECT vector_blob FROM semantic_entries WHERE scope_key='test_scope'").fetchone()
+        row = con.execute(
+            "SELECT vector_blob FROM semantic_entries WHERE scope_key=?",
+            (cache._scoped_key("test_scope"),),
+        ).fetchone()
         assert row is not None
         blob = row[0]
         assert isinstance(blob, (bytes, memoryview))

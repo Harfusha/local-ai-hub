@@ -54,7 +54,7 @@ def main():
         port = sock.getsockname()[1]
     config = root / ('config-' + str(port) + '.toml')
     with config.open('x', encoding='utf-8') as stream:
-        stream.write('[server]\nbind = "127.0.0.1"\nport = ' + str(port) + '\nstate_dir = ' + json.dumps(str(state)) + '\nauto_start_ollama = false\n[security]\napi_token = ""\nallowed_roots = [' + json.dumps(str(workspace)) + ']\n[ollama]\nenabled = false\n[llama_cpp]\nenabled = false\n[code_intelligence]\nenabled = false\nserena_enabled = false\npreprocess_serena = false\n[headless]\nmanage_ollama = false\n[resilience]\nwatchdog_enabled = false\n[setup]\ninstall_dir = ' + json.dumps(str(root/'install')) + '\n')
+        stream.write('[server]\nbind = "127.0.0.1"\nport = ' + str(port) + '\nstate_dir = ' + json.dumps(str(state)) + '\nauto_start_ollama = false\n[security]\nallowed_roots = [' + json.dumps(str(workspace)) + ']\n[ollama]\nenabled = false\n[llama_cpp]\nenabled = false\n[code_intelligence]\nenabled = false\nserena_enabled = false\npreprocess_serena = false\n[headless]\nmanage_ollama = false\n[resilience]\nwatchdog_enabled = false\n[setup]\ninstall_dir = ' + json.dumps(str(root/'install')) + '\n')
     env = dict(os.environ, LOCAL_AI_CONFIG=str(config))
     env.pop('PYTHONPATH', None)
     with (root/'supervisor.log').open('ab') as log:

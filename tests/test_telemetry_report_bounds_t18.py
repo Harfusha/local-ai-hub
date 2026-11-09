@@ -93,7 +93,7 @@ def test_telemetry_report_http_route_accepts_error_page_parameters(tmp_path):
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
-        url = f"http://127.0.0.1:{server.server_address[1]}/api/telemetry/report?error_limit=2&error_offset=2"
+        url = f"http://127.0.0.1:{server.server_address[1]}/api/telemetry/report?error_limit=2&error_offset=2&flush=1"
         with urllib.request.urlopen(url) as response:
             payload = json.loads(response.read().decode("utf-8"))
         assert payload["success"] is True
@@ -101,7 +101,7 @@ def test_telemetry_report_http_route_accepts_error_page_parameters(tmp_path):
         assert payload["report"]["error_fingerprints_page"]["offset"] == 2
         assert payload["report"]["error_fingerprints_page"]["total"] == 5
 
-        bounded_url = f"http://127.0.0.1:{server.server_address[1]}/api/telemetry/report?error_limit=1000000000&error_offset=-10"
+        bounded_url = f"http://127.0.0.1:{server.server_address[1]}/api/telemetry/report?error_limit=1000000000&error_offset=-10&flush=1"
         with urllib.request.urlopen(bounded_url) as response:
             bounded_body = response.read()
             bounded_payload = json.loads(bounded_body.decode("utf-8"))

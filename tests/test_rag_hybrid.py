@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sqlite3
 import errno
+import os
 import threading
 
 import pytest
@@ -73,6 +74,18 @@ def test_hybrid_rag_search_combines_fts_and_vector(tmp_path):
     assert search_res.get("hybrid") is True
 
 
+def test_workspace_chunk_presence_is_indexed_and_fast_to_check(tmp_path):
+    store = _store(tmp_path)
+    root = tmp_path / "chunk-presence"
+    root.mkdir()
+    workspace = store.workspace_id(str(root))
+
+    assert store.has_workspace_chunks(workspace=workspace) is False
+    (root / "module.py").write_text("def indexed_function(): return 1\n", encoding="utf-8")
+    assert store.index_step(str(root), max_files=10)["success"] is True
+    assert store.has_workspace_chunks(workspace=workspace) is True
+
+
 def test_index_embeds_changed_chunks_without_undefined_text_list(tmp_path):
     store = _store(tmp_path)
     root = tmp_path / "project-index"
@@ -86,6 +99,123 @@ def test_index_embeds_changed_chunks_without_undefined_text_list(tmp_path):
     assert result["embedded_chunks"] > 0
     assert len(store.services.calls) == 1
     assert store.services.calls[0]
+
+
+def test_index_rechecks_content_when_size_and_mtime_are_unchanged(tmp_path):
+    store = _store(tmp_path)
+    root = tmp_path / "same-stat-edit"
+    root.mkdir()
+    source = root / "module.py"
+    source.write_text("def indexed_value(): return 'alpha'\n", encoding="utf-8")
+    first = store.index(str(root), workspace="same-stat-edit")
+    assert first["success"] is True
+
+    original_stat = source.stat()
+    source.write_text("def indexed_value(): return 'bravo'\n", encoding="utf-8")
+    os.utime(source, ns=(original_stat.st_atime_ns, original_stat.st_mtime_ns))
+    assert source.stat().st_size == original_stat.st_size
+    assert source.stat().st_mtime_ns == original_stat.st_mtime_ns
+
+    second = store.index(str(root), workspace="same-stat-edit")
+
+    assert second["success"] is True
+    assert second["changed_files"] == 1
+    with closing(store._connect()) as con:
+        rows = con.execute(
+            "SELECT text FROM chunks WHERE workspace=? AND path=?",
+            ("same-stat-edit", "module.py"),
+        ).fetchall()
+    assert rows
+    assert "bravo" in " ".join(row[0] for row in rows)
+    assert "alpha" not in " ".join(row[0] for row in rows)
+
+
+def test_index_rechunks_files_when_chunker_version_changes(tmp_path, monkeypatch):
+    store = _store(tmp_path)
+    root = tmp_path / "chunker-version"
+    root.mkdir()
+    (root / "module.py").write_text("def indexed_value(): return 'stable source'\n", encoding="utf-8")
+    workspace = "chunker-version"
+    monkeypatch.setattr(rag_module, "RAG_CHUNKER_VERSION", "v1", raising=False)
+
+    first = store.index(str(root), workspace=workspace)
+    assert first["success"] is True
+
+    monkeypatch.setattr(rag_module, "RAG_CHUNKER_VERSION", "v2", raising=False)
+    monkeypatch.setattr(store, "_chunks", lambda *_args, **_kwargs: ["version two chunk"])
+    second = store.index(str(root), workspace=workspace)
+
+    assert second["success"] is True
+    assert second["changed_files"] == 1
+    with closing(store._connect()) as con:
+        rows = con.execute(
+            "SELECT text FROM chunks WHERE workspace=? AND path=?",
+            (workspace, "module.py"),
+        ).fetchall()
+    assert [row[0] for row in rows] == ["version two chunk"]
+
+
+def test_semantic_search_marks_old_chunker_index_as_incomplete(tmp_path, monkeypatch):
+    store = _store(tmp_path)
+    root = tmp_path / "stale-chunker-index"
+    root.mkdir()
+    (root / "module.py").write_text("def indexed_value(): return 'stable source'\n", encoding="utf-8")
+    workspace = "stale-chunker-index"
+    monkeypatch.setattr(rag_module, "RAG_CHUNKER_VERSION", "v1", raising=False)
+    assert store.index(str(root), workspace=workspace)["success"] is True
+
+    monkeypatch.setattr(rag_module, "RAG_CHUNKER_VERSION", "v2", raising=False)
+    result = store.search(
+        "stable source", workspace=workspace, top_k=2,
+        use_reranker=False, semantic_only=True,
+    )
+
+    assert result["success"] is True
+    assert result["reindex_required"] is True
+    assert result["degraded"] is True
+    assert result["index_state"] == "stale"
+
+
+def test_semantic_backend_failure_preserves_chunker_stale_status(tmp_path, monkeypatch):
+    store = _store(tmp_path)
+    root = tmp_path / "backend-failure-stale-chunker"
+    root.mkdir()
+    (root / "module.py").write_text("def indexed_value(): return 'stable source'\n", encoding="utf-8")
+    workspace = "backend-failure-stale-chunker"
+    monkeypatch.setattr(rag_module, "RAG_CHUNKER_VERSION", "v1", raising=False)
+    assert store.index(str(root), workspace=workspace)["success"] is True
+
+    monkeypatch.setattr(rag_module, "RAG_CHUNKER_VERSION", "v2", raising=False)
+    monkeypatch.setattr(
+        "local_ai_hub.opencode_boundary.generation_denial",
+        lambda: "backend unavailable",
+    )
+    result = store.search(
+        "stable source", workspace=workspace, top_k=2,
+        use_reranker=False, semantic_only=True,
+    )
+
+    assert result["success"] is True
+    assert result["reindex_required"] is True
+    assert result["degraded"] is True
+    assert result["index_state"] == "stale"
+
+
+def test_incremental_index_reports_full_rebuild_after_chunker_change(tmp_path, monkeypatch):
+    store = _store(tmp_path)
+    root = tmp_path / "incremental-stale-chunker"
+    root.mkdir()
+    (root / "module.py").write_text("def indexed_value(): return 'stable source'\n", encoding="utf-8")
+    workspace = "incremental-stale-chunker"
+    monkeypatch.setattr(rag_module, "RAG_CHUNKER_VERSION", "v1", raising=False)
+    assert store.index(str(root), workspace=workspace)["success"] is True
+
+    monkeypatch.setattr(rag_module, "RAG_CHUNKER_VERSION", "v2", raising=False)
+    result = store.index_paths_step(str(root), workspace=workspace, paths=["module.py"])
+
+    assert result["success"] is True
+    assert result["reindex_required"] is True
+    assert result["processed_paths"] == ["module.py"]
 
 
 def test_index_paths_step_sets_embedding_space_before_nonempty_records(tmp_path):
@@ -127,6 +257,41 @@ def test_search_marks_heuristic_rerank_as_degraded_not_model_reranked(tmp_path):
     assert result["reranked"] is False
     assert result["degraded"] is True
     assert result["fallback"] == "heuristic_rerank"
+
+
+def test_search_uses_configured_cpu_reranker(tmp_path):
+    store = _store(tmp_path)
+    root = tmp_path / "project"
+    root.mkdir()
+    (root / "installation.py").write_text(
+        "def install_local_ai_hub():\n    return 'ready'\n", encoding="utf-8",
+    )
+    assert store.index_step(str(root), max_files=10)["success"] is True
+    calls = []
+
+    class _CpuReranker:
+        device = "cpu"
+        active_device = "cpu"
+
+        def rerank(self, query, documents, **kwargs):
+            calls.append((query, documents, kwargs))
+            return {
+                "success": True,
+                "results": [{"index": index, "score": 1.0 - index}
+                            for index in range(len(documents))],
+            }
+
+    store.reranker = _CpuReranker()
+    result = store.search(
+        "install Local AI Hub", use_reranker=True,
+        workspace=store.workspace_id(str(root)),
+    )
+
+    assert calls
+    assert calls[0][2]["allow_cpu_fallback"] is False
+    assert result["reranked"] is True
+    assert result["degraded"] is False
+    assert result.get("fallback") != "heuristic_rerank"
 
 
 def test_search_propagates_embedding_backend_fallback_status(tmp_path):
@@ -196,6 +361,62 @@ def test_search_reports_degraded_when_index_has_no_matching_embedding_space(tmp_
     assert result["results"] == []
     assert result["degraded"] is True
     assert result["fallback"] == "embedding_space_mismatch"
+
+
+def test_semantic_only_search_skips_embedder_for_known_stale_index(tmp_path):
+    store = _store(tmp_path)
+    store.services.space_id = "space-current"
+    workspace = "known-stale-space"
+    with closing(store._connect()) as con:
+        store._store_workspace_embedding_space(con, workspace, "space-old")
+        con.commit()
+
+    result = store._search_uncached("query", workspace, top_k=2, use_reranker=False, semantic_only=True)
+
+    assert result["success"] is True
+    assert result["results"] == []
+    assert result["fallback"] == "embedding_space_mismatch"
+    assert result["reindex_required"] is True
+    assert store.services.calls == []
+
+
+def test_semantic_search_skips_embedder_for_empty_workspace(tmp_path):
+    store = _store(tmp_path)
+    workspace = "empty-workspace"
+
+    result = store.search("query", workspace=workspace, use_reranker=False, semantic_only=True)
+
+    assert result["success"] is True
+    assert result["results"] == []
+    assert result["fallback"] == "empty_index"
+    assert result["index_state"] == "empty"
+    assert store.services.calls == []
+
+
+def test_semantic_only_uses_runtime_identity_when_configured_digest_is_stale(tmp_path):
+    store = _store(tmp_path)
+    store.config["models"]["embedding_digest"] = "configured-digest"
+    store.services._active_cache_identity = "prior-runtime-identity"
+    store.services.embed = lambda texts, **_kwargs: {
+        "success": True, "embedding_space_id": "runtime-space",
+        "embeddings": [[1.0, 0.0] for _ in texts],
+    }
+    workspace = "runtime-space-match"
+    with closing(store._connect()) as con:
+        con.execute(
+            "INSERT INTO chunks(workspace,path,chunk_no,content_hash,text,embedding,embedding_space) "
+            "VALUES(?,?,?,?,?,?,?)",
+            (workspace, "target.py", 0, "target", "the target result", "[1.0,0.0]", "runtime-space"),
+        )
+        store._store_workspace_embedding_space(con, workspace, "runtime-space")
+        con.commit()
+
+    result = store._search_uncached("target query", workspace, top_k=2,
+                                    use_reranker=False, semantic_only=True)
+
+    assert result["success"] is True
+    assert result["results"][0]["path"] == "target.py"
+    assert result.get("degraded") is not True
 
 
 def test_search_reports_pending_rebuild_for_partial_embedding_space(tmp_path):
@@ -370,7 +591,7 @@ def test_public_search_cache_tracks_runtime_embedding_dimension(tmp_path):
     store.services.embeddings = runtime
     calls = []
 
-    def uncached(query, workspace,  top_k=8, use_reranker=True, priority=3, scope_path=None):
+    def uncached(query, workspace,  top_k=8, use_reranker=True, priority=3, scope_path=None, **_kwargs):
         calls.append(runtime._active_embedding_dimension)
         return {"success": True, "results": [{"path": f"dimension-{runtime._active_embedding_dimension}"}]}
 

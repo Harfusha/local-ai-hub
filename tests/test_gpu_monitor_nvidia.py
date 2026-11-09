@@ -35,3 +35,19 @@ def test_nvidia_unavailable_or_invalid_free_memory_stays_unknown(monkeypatch, fr
 def test_nvidia_incomplete_csv_cannot_prove_free_memory(monkeypatch):
     sample, _ = nvidia_sample(monkeypatch, "RTX Test, 12, 2000, 8192, 40, 55\n")
     assert sample is None
+
+
+def test_gpu_telemetry_lock_contention_fails_closed_without_waiting(monkeypatch):
+    monkeypatch.setattr(gpu_monitor, "_GPU_LOCK_TIMEOUT_SECONDS", 0.01)
+    assert gpu_monitor._GPU_LOCK.acquire(blocking=False)
+    try:
+        result = gpu_monitor.get_gpu_telemetry()
+    finally:
+        gpu_monitor._GPU_LOCK.release()
+
+    assert result["available"] is False
+    assert result["telemetry_error"] == "sampling_lock_timeout"
+    assert result["telemetry_stale"] is True
+
+
+pytestmark = pytest.mark.slow

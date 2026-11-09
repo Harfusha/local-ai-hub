@@ -30,21 +30,15 @@ def test_http_dispatch_rejects_retired_tenant_headers(header):
     assert sent[0][1]["error_code"] == "retired_tenant_header"
 
 
-def test_config_keeps_api_token_permissions_and_allowed_roots(tmp_path):
-    validate_config({
-        "security": {
-            "api_token": "local-secret",
-            "api_token_permissions": ["read", "write"],
-            "allowed_roots": [str(tmp_path)],
-        },
-    })
+def test_config_keeps_allowed_roots_without_hub_api_token(tmp_path):
+    validate_config({"security": {"allowed_roots": [str(tmp_path)]}})
 
 
 @pytest.mark.parametrize("field", ["users", "api_token_tenant", "api_token_principal"])
 @pytest.mark.parametrize("value", [None, False, ""])
 def test_config_rejects_retired_principal_configuration_by_presence(field, value):
     with pytest.raises(ConfigError, match=field):
-        validate_config({"security": {"api_token": "local-secret", field: value}})
+        validate_config({"security": {field: value}})
 
 
 def test_sdk_and_http_have_no_principal_selector():

@@ -438,9 +438,15 @@ def test_worktree_cache_seed_logs_expected_sqlite_failures_without_paths(tmp_pat
     child.mkdir()
 
     class BrokenCacheStore:
+        def __init__(self):
+            self.connect_calls = 0
+
         def _connect(self):
+            self.connect_calls += 1
             raise sqlite3.OperationalError("database is locked")
 
+    code_index = BrokenCacheStore()
+    deterministic = BrokenCacheStore()
     repo_tools = RepositoryTools(config)
     pre = ProjectPreprocessor(
         config,
@@ -449,8 +455,8 @@ def test_worktree_cache_seed_logs_expected_sqlite_failures_without_paths(tmp_pat
         scheduler=None,
         runtime=None,
         repo_tools=repo_tools,
-        code_index=BrokenCacheStore(),
-        deterministic=BrokenCacheStore(),
+        code_index=code_index,
+        deterministic=deterministic,
     )
     monkeypatch.setattr(pre, "_connect", BrokenCacheStore()._connect)
     try:
@@ -458,8 +464,10 @@ def test_worktree_cache_seed_logs_expected_sqlite_failures_without_paths(tmp_pat
             stats = pre._seed_from_parent(str(child), str(parent))
 
         assert stats == {"file_refs": 0, "code_index": 0, "deterministic": 0}
+        assert code_index.connect_calls == 0
+        assert deterministic.connect_calls == 1
         messages = [record.getMessage() for record in caplog.records]
-        assert len(messages) == 3
+        assert len(messages) == 2
         assert all("OperationalError" in message for message in messages)
         assert all(str(tmp_path) not in message for message in messages)
     finally:
@@ -901,3 +909,84 @@ def test_repo_pipeline_composite_action(tmp_path: Path, monkeypatch):
     assert res["steps_completed"] == 2
     assert "affected_tests" in res["results"]
     assert "security_audit" in res["results"]
+
+
+def test_code_index_inventory_uses_bounded_streaming_reads(tmp_path: Path, monkeypatch):
+    root = tmp_path / "repository"
+    root.mkdir()
+    config = {
+        "server": {"state_dir": str(tmp_path / "state")},
+        "preprocessing": {"enabled": True, "fs_watcher_enabled": False},
+    }
+
+    class StreamingCursor:
+        def __init__(self, rows):
+            self.rows = iter(rows)
+            self.batch_sizes = []
+
+        def fetchmany(self, size):
+            self.batch_sizes.append(size)
+            batch = []
+            for _ in range(size):
+                try:
+                    batch.append(next(self.rows))
+                except StopIteration:
+                    break
+            return batch
+
+        def fetchone(self):
+            return (1,)
+
+        def fetchall(self):
+            pytest.fail("code-index inventory must not materialize the full result")
+
+    class Connection:
+        def __init__(self, cursor):
+            self.cursor = cursor
+
+        def execute(self, *_args):
+            return self.cursor
+
+        def close(self):
+            pass
+
+    class CodeIndex:
+        def __init__(self):
+            self.pruned_paths = None
+
+        def prune(self, _root, paths):
+            self.pruned_paths = list(paths)
+            return {"success": True}
+
+    cursor = StreamingCursor([
+        {"path": f"module_{index}.py", "content_hash": f"hash-{index}", "size": 8}
+        for index in range(600)
+    ])
+    code_index = CodeIndex()
+    pre = ProjectPreprocessor(
+        config,
+        services=None,
+        rag=None,
+        scheduler=None,
+        runtime=None,
+        repo_tools=RepositoryTools(config),
+        code_index=code_index,
+    )
+    pre._init_db()
+    monkeypatch.setattr(pre, "_connect", lambda: Connection(cursor))
+    monkeypatch.setattr(pre, "_prune_missing_file_refs", lambda _root: None)
+    monkeypatch.setattr(pre, "_project_settings", lambda _root: None)
+    monkeypatch.setattr(
+        pre,
+        "_project_path_allowed",
+        lambda _root, path, *_args, **_kwargs: path != "module_17.py",
+    )
+    monkeypatch.setattr(pre, "_set_project", lambda *_args, **_kwargs: None)
+    try:
+        pre._step_code_index({"root": str(root), "generation": 1})
+
+        assert cursor.batch_sizes == [256, 256, 256, 256]
+        assert len(code_index.pruned_paths) == 599
+        assert "module_17.py" not in code_index.pruned_paths
+    finally:
+        pre.close()

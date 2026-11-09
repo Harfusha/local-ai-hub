@@ -112,3 +112,31 @@ def test_execution_profile_helpers_and_policy_nan_inf_bool_resilience() -> None:
     assert "keep_alive" not in clean_payload
     assert clean_payload["options"]["num_ctx"] == applied_prof.num_ctx
     assert "temperature" not in clean_payload["options"]
+
+
+def test_unknown_vram_caps_large_smart_context() -> None:
+    policy = ModelExecutionPolicy(
+        {
+            "models": {"heavy_code": "qwen3.5:9b"},
+            "model_execution": {
+                "smart": {
+                    "context_tokens": 65536,
+                    "large_context_tokens": 65536,
+                    "max_context_tokens": 65536,
+                    "context_reserve_tokens": 2048,
+                    "parallel": 1,
+                }
+            },
+        }
+    )
+
+    profile = policy.profile(
+        "qwen3.5:9b",
+        role="reasoning",
+        requested_ctx=65536,
+        input_tokens=1024,
+        output_tokens=512,
+        vram_free_mb=None,
+    )
+
+    assert profile.num_ctx <= 16384

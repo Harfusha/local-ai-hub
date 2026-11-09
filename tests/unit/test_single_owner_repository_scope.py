@@ -53,15 +53,19 @@ def test_root_confinement_preserves_repository_boundaries(tmp_path):
     other = tmp_path / "other"
     allowed.mkdir()
     other.mkdir()
-    config = {"security": {"api_token": "owner-secret", "allowed_roots": [str(allowed)]}}
+    config = {"security": {"allowed_roots": [str(allowed)]}}
     assert authorized_repository_root(config, str(allowed)) == str(allowed.resolve())
     with pytest.raises(RepositoryScopeError, match="outside allowed_roots"):
         authorized_repository_root(config, str(other))
 
 
-def test_token_does_not_remove_root_confinement(tmp_path):
+def test_tokenless_hub_keeps_configured_root_confinement(tmp_path):
+    allowed = tmp_path / "allowed"
+    outside = tmp_path / "outside"
+    allowed.mkdir()
+    outside.mkdir()
     with pytest.raises(RepositoryScopeError, match="outside allowed_roots"):
-        authorized_repository_root({"security": {"api_token": "owner-secret"}}, str(tmp_path))
+        authorized_repository_root({"security": {"allowed_roots": [str(allowed)]}}, str(outside))
 
 
 @pytest.mark.parametrize("root", [None, "", ".", False, 1, "C:/invalid\x00root"])
@@ -121,7 +125,7 @@ def test_http_incident_binds_repository_without_partition(monkeypatch, tmp_path)
     from local_ai_hub import http_server
 
     monkeypatch.setattr(http_server, "APP", SimpleNamespace(config={
-        "security": {"api_token": "owner-secret", "allowed_roots": [str(tmp_path)]},
+        "security": {"allowed_roots": [str(tmp_path)]},
     }))
     handler = http_server.Handler.__new__(http_server.Handler)
     handler.headers = Message()
@@ -132,28 +136,18 @@ def test_http_incident_binds_repository_without_partition(monkeypatch, tmp_path)
     assert "_authorization_tenant" not in handler.__dict__
 
 
-@pytest.mark.parametrize("supplied,permission,expected", [
-    ("a" * 32, "read", True),
-    ("wrong-token", "read", False),
-    ("a" * 32, "write", False),
-])
 @pytest.mark.parametrize("method", ["GET", "POST"])
-def test_token_and_permission_checks_remain_independent_of_identity(
-    monkeypatch, supplied, permission, expected, method,
-):
+def test_loopback_authorization_is_tokenless(monkeypatch, method):
     from email.message import Message
     from types import SimpleNamespace
 
     from local_ai_hub import http_server
 
-    monkeypatch.setattr(http_server, "APP", SimpleNamespace(config={"security": {
-        "api_token": "a" * 32, "api_token_permissions": ["read"],
-    }}))
+    monkeypatch.setattr(http_server, "APP", SimpleNamespace(config={"security": {}}))
     handler = http_server.Handler.__new__(http_server.Handler)
     handler.command = method
     handler.headers = Message()
-    handler.headers["X-LocalAI-Token"] = supplied
     handler.client_address = ("127.0.0.1", 10000)
-    assert handler._authorized(action=f"files:{permission}", permission=permission) is expected
-    if expected:
-        assert handler._authorization_actor == "api_token"
+    assert handler._authorized(action="files:read", permission="read") is True
+    assert handler._authorization_actor == "local"
+    assert handler._authorization_permissions == frozenset()

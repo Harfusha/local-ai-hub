@@ -102,12 +102,20 @@ def validate_config(data: dict[str, Any]) -> None:
     if not isinstance(data, dict):
         raise ConfigError("configuration root must be a TOML table")
 
-    for name in ("server", "security", "hardware", "openvino", "scheduler", "commands", "client", "mcp", "code_intelligence", "bundles", "resilience", "ollama", "llama_cpp", "ollama_subagents", "agent_state", "work_orchestrator", "browser_bridge", "headless", "features", "rag"):
+    for name in ("server", "security", "hardware", "openvino", "scheduler", "commands", "client", "mcp", "code_intelligence", "code_index", "bundles", "resilience", "ollama", "llama_cpp", "ollama_subagents", "agent_state", "work_orchestrator", "browser_bridge", "headless", "features", "rag"):
         if name in data and not isinstance(data[name], dict):
             raise ConfigError(f"[{name}] must be a TOML table")
 
     if "scope" in data.get("rag", {}):
         raise ConfigError("rag.scope was removed; use actual workspace/repository scope")
+
+    server = data.get("server", {})
+    if isinstance(server, dict) and server.get("bind", "127.0.0.1") != "127.0.0.1":
+        raise ConfigError("server.bind must be 127.0.0.1; Local AI Hub is loopback-only")
+
+    code_index = data.get("code_index", {})
+    if isinstance(code_index, dict):
+        _number(code_index, "max_index_bytes", minimum=1_048_576, maximum=100 * 1024 * 1024 * 1024)
 
     for retired_key in ("max_queued_per_tenant", "max_inflight_per_tenant"):
         if retired_key in data.get("scheduler", {}):
@@ -190,8 +198,8 @@ def validate_config(data: dict[str, Any]) -> None:
     if not isinstance(models.get("allow_hf_downloads", False), bool):
         raise ConfigError("models.allow_hf_downloads must be boolean")
     profile = str(hardware.get("profile", "auto") or "auto").lower()
-    if profile not in {"auto", "cpu", "integrated", "low", "balanced", "high", "max"}:
-        raise ConfigError("hardware.profile must be one of auto, cpu, integrated, low, balanced, high, max")
+    if profile not in {"auto", "cpu", "integrated", "low", "balanced", "medium", "high", "max"}:
+        raise ConfigError("hardware.profile must be one of auto, cpu, integrated, low, balanced, medium, high, max")
 
     openvino = data.get("openvino", {})
     if isinstance(openvino, dict):
@@ -219,6 +227,11 @@ def validate_config(data: dict[str, Any]) -> None:
         backend = llama_cpp.get("backend", "auto")
         if not isinstance(backend, str) or backend not in {"auto", "cuda"}:
             raise ConfigError("llama_cpp.backend must be auto or cuda")
+        cache_types = {"f32", "f16", "bf16", "q8_0", "q4_0", "q4_1", "iq4_nl", "q5_0", "q5_1"}
+        for cache_key in ("cache_type_k", "cache_type_v"):
+            cache_type = llama_cpp.get(cache_key)
+            if cache_type is not None and (not isinstance(cache_type, str) or cache_type not in cache_types):
+                raise ConfigError(f"llama_cpp.{cache_key} must be a supported llama.cpp KV cache type")
         if "managed_model_sha256" in llama_cpp:
             digest = llama_cpp["managed_model_sha256"]
             if not isinstance(digest, str) or len(digest) != 64 or any(c not in "0123456789abcdef" for c in digest):
@@ -315,41 +328,17 @@ def validate_config(data: dict[str, Any]) -> None:
     if security is not None:
         if not isinstance(security, dict):
             raise ConfigError("security must be a TOML table")
+        for retired_key in ("api_token", "supervisor_token", "action_tokens", "api_token_permissions"):
+            if retired_key in security:
+                raise ConfigError(f"security.{retired_key} was removed; remove Hub API token configuration")
         if "allow_remote" in security:
             raise ConfigError("security.allow_remote was removed; Local AI Hub has no remote access mode")
         for key in ("allowed_hosts", "allowed_origins"):
             if security.get(key):
                 raise ConfigError(f"security.{key} was removed; Local AI Hub accepts local origins only")
-        allowed_permissions = {"monitor", "read", "write", "admin"}
-        permissions = security.get("api_token_permissions")
-        if permissions is not None and (
-            not isinstance(permissions, list)
-            or not permissions
-            or any(not isinstance(item, str) or item.strip().lower() not in allowed_permissions for item in permissions)
-        ):
-            raise ConfigError("security.api_token_permissions must contain monitor, read, write, or admin")
         for retired_key in ("api_token_tenant", "api_token_principal", "tenant_derivation_key", "users"):
             if retired_key in security:
                 raise ConfigError(f"security.{retired_key} was removed; Local AI Hub has a single local owner")
-        credential_values: list[str] = []
-        for key in ("api_token", "supervisor_token"):
-            credential = security.get(key)
-            if credential is not None and (not isinstance(credential, str) or len(credential) > 4096):
-                raise ConfigError(f"security.{key} must be a string of at most 4096 characters")
-            if credential:
-                credential_values.append(credential)
-
-        action_tokens = security.get("action_tokens", {})
-        if not isinstance(action_tokens, dict) or any(
-            not isinstance(action, str) or not action.strip() or
-            not isinstance(token, str) or not token or len(token) > 4096
-            for action, token in action_tokens.items()
-        ):
-            raise ConfigError("security.action_tokens must map action names to non-empty tokens")
-        credential_values.extend(action_tokens.values())
-
-        if len(credential_values) != len(set(credential_values)):
-            raise ConfigError("security credentials must be unique across API, supervisor, and action tokens")
 
         allowed_roots = security.get("allowed_roots", [])
         if (
@@ -364,7 +353,7 @@ def validate_config(data: dict[str, Any]) -> None:
         except (ValueError, OSError) as exc:
             raise ConfigError(f"security.allowed_roots invalid path: {exc}") from exc
         if security.get("allow_anonymous") is True:
-            raise ConfigError("security.allow_anonymous is unsupported; an empty api_token trusts loopback clients only, and a configured token is required for all protected requests")
+            raise ConfigError("security.allow_anonymous was removed; Hub access is loopback-only and uses no API token")
         if "client_host" in server:
             raise ConfigError("server.client_host was removed; Hub clients connect only to 127.0.0.1")
         bind = str(server.get("bind", "127.0.0.1"))

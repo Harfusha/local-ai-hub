@@ -300,8 +300,16 @@ class ScopeLeaseStore:
 
                     # Build wait-for graph from persistent waits and proposed contention
                     wait_rows = con.execute(
-                        "SELECT owner, blocked_by FROM lease_waits WHERE root_id=? AND updated_at>?",
-                        (root_id, now - 3600),
+                        """
+                        SELECT w.owner, w.blocked_by
+                        FROM lease_waits w
+                        WHERE w.root_id = ? AND w.updated_at > ?
+                          AND EXISTS (
+                              SELECT 1 FROM leases l
+                              WHERE l.owner = w.blocked_by AND l.root_id = w.root_id AND l.expires_at > ?
+                          )
+                        """,
+                        (root_id, now - 3600, now),
                     ).fetchall()
                     graph: dict[str, set[str]] = {}
                     for u, v in wait_rows:
@@ -435,9 +443,27 @@ class ScopeLeaseStore:
                     )
                 for scope_id, path in released_scopes:
                     con.execute(
-                        "DELETE FROM lease_waits WHERE blocked_by=? AND root_id=? AND requested_path=?",
-                        (owner, scope_id, path),
+                        """
+                        DELETE FROM lease_waits
+                        WHERE blocked_by = ? AND root_id = ?
+                          AND (
+                              requested_path = ?
+                              OR requested_path LIKE (? || '/%')
+                              OR ? LIKE (requested_path || '/%')
+                          )
+                        """,
+                        (owner, scope_id, path, path, path),
                     )
+                for scope_id in roots:
+                    has_active = con.execute(
+                        "SELECT 1 FROM leases WHERE owner=? AND root_id=? LIMIT 1",
+                        (owner, scope_id),
+                    ).fetchone()
+                    if not has_active:
+                        con.execute(
+                            "DELETE FROM lease_waits WHERE blocked_by=? AND root_id=?",
+                            (owner, scope_id),
+                        )
                 con.execute("COMMIT")
                 return count
         return {"success": True, "released_rows": retry_busy(write, retries=4)}

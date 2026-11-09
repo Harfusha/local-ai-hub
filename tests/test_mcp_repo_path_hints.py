@@ -108,7 +108,7 @@ def test_api_search_route_consumes_t03_hint_and_returns_repository_hit(
         "stale": False,
         "degraded": False,
     }
-    services._repo_cached = lambda _operation, _root, _params, compute: compute()
+    services._repo_cached = lambda _operation, _root, _params, compute, **_kwargs: compute()
     services.repo_tools = repo_tools
     services.learner = None
     services.deterministic = None

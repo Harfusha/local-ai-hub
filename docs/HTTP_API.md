@@ -1,5 +1,22 @@
 # HTTP API
 
+`POST /api/search` skips exact total counting by default to keep repository
+search responsive. Its response reports `count_exact`; callers that need a
+precise `total_matches` can send `exact_count: true`. `exact_count` must be a
+JSON boolean. When omitted or false, clients must treat `total_matches` as
+non-exact and use `count_exact` as the authority.
+
+Code declaration lookup (`POST /api/code/declaration` and legacy
+`GET /api/code/find_declaration`) returns HTTP 404 with
+`error_code=declaration_not_found`, `terminal=true` and `retryable=false` when
+the requested symbol is absent. An empty symbol returns HTTP 400 with
+`error_code=invalid_symbol`; successful lookups return HTTP 200.
+
+`POST /api/patch/validate` returns HTTP 200 when validation completes, including
+when `valid=false`; `success` reports that the validation ran, while `valid` and
+`syntax_valid` report its result. Missing, empty or non-string patch input
+returns a terminal HTTP 400 response.
+
 Patch and repair operations forward verification receipts produced by the command
 broker. A successful command without a receipt reports
 `verification_receipt_warning`; it does not mint fallback evidence or establish
@@ -28,11 +45,25 @@ The service defaults to `127.0.0.1:11435`. `/health` is a lightweight liveness e
 `GET /api/telemetry/report?error_limit=25&error_cursor=` starts a stable error-group snapshot; continue with returned `report.error_fingerprints_page.next_cursor`. Cursor pages order by fingerprint, type, component and operation; cursor carries an event-ID watermark and fixed cutoff, so later writes or rolling-window expiry do not move groups mid-walk. Normal telemetry retention cleanup can still remove expired rows. `error_offset` remains for legacy callers; do not combine it with a cursor. Malformed or mixed cursors return HTTP 400.
 Status cache responses report `snapshot_cached` and `status_age_ms`. A concurrent request during a cold snapshot build returns `success:false`, `degraded:true`, and `snapshot_warming:true`; retry after `retry_after_ms`. A request during refresh can receive a cached snapshot marked `snapshot_stale:true`. Master admin authorization and result audit paths are retained. Successful async-job submissions, idempotent replays, and coalesced submissions report `durability: "sqlite_committed"` only after the SQLite transaction commits. For a lost response, retry with the same caller-supplied `request_id` to recover the persisted job instead of creating a duplicate.
 
-Operational mode is persisted in the configured state directory as `active`, `gaming`, or `maintenance`. `GET /api/mode` reports the current mode; authenticated loopback `POST /api/mode` coordinates admission and transition work. `hubctl mode <mode>`, `hubctl pause`, and `hubctl resume` use the live API when the Hub is healthy, without starting it; when it is offline, they update the shared state file directly. The dashboard connection badge shows mode, revision, and degraded state. Gaming permits explicitly classified deterministic and cheap read-only agent actions, including async-job status, wait, result, cancel, and evaluation reports. Maintenance rejects agent MCP actions except the operator health tool, and rejects agent HTTP `POST` actions before request tracing or route handling. This includes cheap reads, async-job controls, and evaluation reports. Mode, health, telemetry-report, control, and dashboard operator paths remain available. Both paused modes block model-backed MCP work. Gaming unload requests are best-effort; CUDA cache requests and model-reference drops do not prove physical VRAM release.
+Operational mode is persisted in the configured state directory as `active`, `gaming`, or `maintenance`. `GET /api/mode` reports the current mode; loopback `POST /api/mode` coordinates admission and transition work. `hubctl mode <mode>`, `hubctl pause`, and `hubctl resume` use the live API when the Hub is healthy, without starting it; when it is offline, they update the shared state file directly. The dashboard connection badge shows mode, revision, and degraded state. Gaming permits explicitly classified deterministic and cheap read-only agent actions, including async-job status, wait, result, cancel, and evaluation reports. Maintenance rejects agent MCP actions except the operator health tool, and rejects agent HTTP `POST` actions before request tracing or route handling. This includes cheap reads, async-job controls, and evaluation reports. Mode, health, telemetry-report, control, and dashboard operator paths remain available. Both paused modes block model-backed MCP work. Gaming unload requests are best-effort; CUDA cache requests and model-reference drops do not prove physical VRAM release.
 
 When inference or preprocessing is active, a gaming transition persists the mode and reports unload as deferred; running work is not force-terminated. The service does not queue an automatic unload retry after that work finishes, so an operator must repeat `POST /api/mode` once the Hub is quiescent. A timed-out in-process release returns at its deadline, but its daemon worker may continue holding model locks until reference destruction completes. These results do not prove physical GPU memory release.
 
 Repository endpoints cover profile/map/code-index/deterministic/search/context, code symbols/diagnostics/AST, import resolution, dependency/security/test/refactor/dead-code/callgraph analysis and git status. Code-intelligence queries use `/api/code-intelligence/query`; session management uses `/api/code-intelligence/control`.
+
+Repository search accepts `lexical`, `rag`, and `hybrid` modes. Lexical mode
+keeps exact query text, exact match counts, and offset pagination. RAG returns
+bounded semantic candidates and never claims an exact corpus count; its current
+implementation combines embedding similarity with full-text candidates.
+Hybrid fuses those RAG candidates with a separate bounded lexical candidate
+set, deduplicates paths, and keeps exact lexical counts in
+`lexical_total_matches`. Natural-language semantic queries may receive bounded
+query expansion (including Czech-to-English terms, installation/setup
+synonyms, and code-index storage/eviction terms); exact lexical queries are never rewritten. Responses report source,
+index coverage/freshness, degradation, and reranker state.
+For compact symbol-like queries, RAG candidates are retained only when the
+literal appears in the current source excerpt or path; hybrid keeps its
+lexical candidates ahead of semantic neighbors.
 
 `local_ai_repo(action="context")` and `POST /api/context/pack` share the adaptive-only context contract. For non-trivial work, pass `task_id` or `phase`, or `guarded: true`; this is default-on guidance for agent integrations. Omitted mode selects `adaptive`; other values reject before retrieval.
 
@@ -55,7 +86,7 @@ Memory promotion requires explicit approval. Relevant repository revision change
 
 Operational endpoints cover doctor, DB optimization, cache purge, log tail and service control. Bundles export as ZIP and import only as raw `application/zip` or `application/octet-stream`. Validation commands use the agent host's bounded native command tool and its authorization controls; no public command execution endpoint is exposed.
 
-JSON requests require a JSON content type and bounded `Content-Length`; malformed JSON returns 400 and oversized bodies 413. Authenticated deployments use `X-LocalAI-Token`. Errors are JSON objects with `success:false` where applicable.
+JSON requests require a JSON content type and bounded `Content-Length`; malformed JSON returns 400 and oversized bodies 413. The Hub binds to loopback and requires no API credential; non-loopback bind settings reject at startup. Errors are JSON objects with `success:false` where applicable.
 
 `POST /api/memory/put` accepts optional non-negative integer `expected_version`. Version `0` denotes a key with no prior writes; each write advances that key's generation, and deleting a stored memo advances its retained generation so delete-and-recreate cannot reset the version. Expiration hides a memo but does not advance its generation; a writer holding the last generation may recreate the key unless a later write or deletion has advanced it. A stale version returns `success:false`, `version_conflict:true`, and `current_version` without changing the memo. Omitting the field preserves last-writer-wins behavior. Memory `get` and `search` responses include the current version; a missing `get` also returns the retained generation.
 

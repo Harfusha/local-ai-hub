@@ -97,7 +97,7 @@ class SwarmCoordinator:
         if self.db_path.exists():
             uri = f"{self.db_path.resolve().as_uri()}?mode=ro"
             try:
-                with closing(sqlite3.connect(uri, uri=True, timeout=5.0)) as con:
+                with closing(connect_sqlite(uri, uri=True, timeout_seconds=5.0, read_only=True)) as con:
                     validate_durable_schema(
                         con,
                         self.db_path,
@@ -1101,7 +1101,12 @@ def execute_swarm_dag(
                     out = fn()
                     success = True
                     if isinstance(out, dict):
-                        success = out.get("success", True) is True
+                        if "success" in out:
+                            success = out["success"] is True
+                        elif "error" in out or "errors" in out or "failed" in out:
+                            success = False
+                        else:
+                            success = True
                     elif isinstance(out, bool):
                         success = out
                     return step_id, success, out

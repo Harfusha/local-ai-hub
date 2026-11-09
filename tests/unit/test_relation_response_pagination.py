@@ -90,6 +90,29 @@ def test_deterministic_fallback_keeps_caller_and_callee_directions_and_offsets(t
     assert callers["offset"] == callees["offset"] == 1
 
 
+def test_deterministic_caller_fallback_keeps_qualified_symbol_as_incomplete_candidates(tmp_path):
+    root = tmp_path / "qualified-fallback"
+    (root / "pkg").mkdir(parents=True)
+    (root / "pkg" / "paths.py").write_text(
+        "def normalize_path(value):\n    return value.strip()\n", encoding="utf-8",
+    )
+    (root / "consumer.py").write_text(
+        "from pkg.paths import normalize_path\n\n"
+        "def load_project(value):\n    return normalize_path(value)\n",
+        encoding="utf-8",
+    )
+    engine = DeterministicEngine(
+        {"server": {"state_dir": str(tmp_path / "state")}}, repo_tools=_repo_tools(tmp_path),
+    )
+
+    result = engine.find_callers(str(root), "pkg.paths::normalize_path")
+
+    assert result["success"] is True
+    assert any(row["file"] == "consumer.py" and row["caller"] == "load_project" for row in result["callers"])
+    assert result["coverage"]["complete"] is False
+    assert "qualified_symbol_scope_not_resolved" in result["coverage"]["incomplete_reasons"]
+
+
 def test_deterministic_fallback_marks_parse_failures_incomplete(tmp_path):
     root = tmp_path / "fallback"
     root.mkdir()

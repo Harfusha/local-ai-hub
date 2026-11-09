@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from .json_utils import dumps as json_dumps
 
+import bisect
 import hashlib
 import importlib
 import heapq
@@ -19,7 +20,6 @@ from contextlib import closing
 from pathlib import Path
 from typing import Any, Iterable
 
-from . import __version__
 from .cache import SQLiteCache, TieredCache, SingleFlightCache, stable_hash
 from .normalizer import normalize_query
 from .scheduler import QueueFullError
@@ -40,6 +40,18 @@ from collections import OrderedDict
 
 _MAX_RERANK_CANDIDATES = 512
 _INDEX_EMBED_BATCH_SIZE = 64
+# Stable compatibility identity for the current RAG index contract. Keep this
+# independent of Hub releases; embedding and chunk parameters are fingerprinted
+# below. Bump only when index semantics change without a corresponding parameter.
+RAG_INDEX_COMPAT_VERSION = "6.0.0"
+_INSTALL_INTENT_RE = re.compile(
+    r"(?<!\w)(?:install(?:ation|ing)?|setup|set\s+up|bootstrap|getting\s+started|"
+    r"instal\w*|nainstal\w*|zprovozn\w*)(?!\w)",
+    re.IGNORECASE,
+)
+_INSTALL_SEMANTIC_TERMS = ("install", "installation", "setup", "bootstrap", "getting started")
+# Increment when chunk boundaries or chunk extraction semantics change.
+RAG_CHUNKER_VERSION = "python-ast-contiguous-gaps-v2"
 # Approximate pruning stays opt-in until representative recall is validated.
 _CENTROID_FILTER_ENABLED = False
 _CENTROID_FILTER_MIN_CHUNKS = 10_000
@@ -59,6 +71,26 @@ _REGEX_AST_BUDGET_SECONDS = 0.5
 _REGEX_AST_MAX_BLOCK_DEPTH = 4096
 _REGEX_AST_MAX_BLOCKS = 4096
 _RUST_LIFETIME_RE = re.compile(r"'[A-Za-z_][A-Za-z0-9_]*")
+
+
+def _semantic_embedding_query(query: str) -> str:
+    """Add bounded cross-language aliases for clear installation intent only."""
+    clean_query = normalize_query(query)
+    if not clean_query or not _INSTALL_INTENT_RE.search(clean_query):
+        return clean_query
+
+    words = set(re.findall(r"[^\W_]+", clean_query.casefold()))
+    has_english_install = any(word.startswith("install") for word in words)
+    terms = tuple(
+        term for term in _INSTALL_SEMANTIC_TERMS
+        if not (
+            (term in {"install", "installation"} and has_english_install)
+            or all(part in words for part in term.split())
+        )
+    )
+    if not terms:
+        return clean_query
+    return f"{clean_query} {' '.join(terms)}"
 
 
 def _centroid_threshold_reached(chunk_count: int) -> bool:
@@ -211,13 +243,14 @@ def _regex_ast_chunks(text: str, language: str, size: int = 4500) -> list[str]:
     including oversized classes or functions. Ambiguous, malformed, or over-budget
     input is kept as one complete chunk rather than split at an unsafe boundary.
     """
-    if language not in {"typescript", "c_sharp", "go", "rust"}:
+    if language not in {"typescript", "javascript", "c_sharp", "go", "rust", "java", "cpp", "c", "php"}:
         return []
     if len(text) > _REGEX_AST_MAX_SOURCE_CHARS or size < 1:
         return [text] if text.strip() else []
 
     deadline = time.monotonic() + _REGEX_AST_BUDGET_SECONDS
     spans: list[tuple[int, int]] = []
+    safe_newlines: list[int] = []
     braces: list[int] = []
     segment_start = 0
     index = 0
@@ -256,6 +289,8 @@ def _regex_ast_chunks(text: str, language: str, size: int = 4500) -> list[str]:
 
         if text.startswith("//", index):
             newline = text.find("\n", index + 2)
+            if newline >= 0:
+                safe_newlines.append(newline + 1)
             index = text_length if newline < 0 else newline + 1
             continue
         if text.startswith("/*", index):
@@ -384,6 +419,9 @@ def _regex_ast_chunks(text: str, language: str, size: int = 4500) -> list[str]:
                     continue
                 return [text] if text.strip() else []
 
+        if text[index] == "\n":
+            safe_newlines.append(index + 1)
+
         if text[index] == "{":
             if language == "typescript" and not braces:
                 # A typed function can contain a structural return type before
@@ -419,6 +457,7 @@ def _regex_ast_chunks(text: str, language: str, size: int = 4500) -> list[str]:
                 if cursor < text_length and text[cursor] == "\n":
                     cursor += 1
                     index = cursor
+                    safe_newlines.append(cursor)
                 spans.append((segment_start, index))
                 segment_start = index
             continue
@@ -432,6 +471,23 @@ def _regex_ast_chunks(text: str, language: str, size: int = 4500) -> list[str]:
         return [text] if text.strip() else []
 
     chunks: list[str] = []
+
+    def split_at_safe_newlines(start: int, end: int) -> list[str]:
+        parts: list[str] = []
+        cursor = start
+        while end - cursor > size:
+            break_index = bisect.bisect_right(safe_newlines, cursor + size) - 1
+            if break_index < 0 or safe_newlines[break_index] <= cursor:
+                break_index = bisect.bisect_right(safe_newlines, cursor)
+                if break_index >= len(safe_newlines) or safe_newlines[break_index] >= end:
+                    break
+            boundary = safe_newlines[break_index]
+            parts.append(text[cursor:boundary])
+            cursor = boundary
+        if cursor < end:
+            parts.append(text[cursor:end])
+        return parts
+
     pending_parts: list[str] = []
     pending_chars = 0
     for start, end in spans:
@@ -447,7 +503,7 @@ def _regex_ast_chunks(text: str, language: str, size: int = 4500) -> list[str]:
                 chunks.append("".join(pending_parts))
                 pending_parts = []
                 pending_chars = 0
-            chunks.append(block)
+            chunks.extend(split_at_safe_newlines(start, end))
         else:
             pending_parts.append(block)
             pending_chars += len(block)
@@ -532,7 +588,7 @@ class RAGStore:
         cpu_cfg = config.get("cpu_retrieval", {})
         model_cfg = config.get("models", {})
         self.index_fingerprint = stable_hash({
-            "app_version": __version__,
+            "app_version": RAG_INDEX_COMPAT_VERSION,
             "embedding": model_cfg.get("embedding"),
             "backend": model_cfg.get("embedding_backend"),
             "device": model_cfg.get("embedding_device"),
@@ -591,7 +647,7 @@ class RAGStore:
             ) from exc
         uri = db_path.resolve().as_uri() + "?mode=ro"
         try:
-            with closing(sqlite3.connect(uri, uri=True, timeout=1.0)) as con:
+            with closing(connect_sqlite(uri, uri=True, timeout_seconds=1.0, read_only=True)) as con:
                 known_tables = ("chunks", "files", "project_file_owners", "rag_meta", "chunk_fts")
                 tables = {str(row[0]) for row in con.execute(
                     "SELECT name FROM sqlite_master WHERE type='table' AND name IN (?,?,?,?,?)",
@@ -739,6 +795,15 @@ class RAGStore:
     @staticmethod
     def workspace_id(root: str) -> str:
         return canonical_workspace_id(root)
+
+    def has_workspace_chunks(self, *, workspace: str) -> bool:
+        """Return whether a workspace has semantic chunks before model work."""
+        if type(workspace) is not str or not workspace:
+            return False
+        with closing(self._connect()) as con:
+            return con.execute(
+                "SELECT 1 FROM chunks WHERE workspace=? LIMIT 1", (workspace,)
+            ).fetchone() is not None
 
     def project_config_api(self) -> Any | None:
         """Load project policy lazily so shared revisions without the API still work."""
@@ -895,7 +960,7 @@ class RAGStore:
             ast_chunks = self._ast_chunks(text, lang, size, overlap)
             if ast_chunks:
                 return ast_chunks
-        if lang in {"typescript", "c_sharp", "go", "rust"}:
+        if lang in {"typescript", "javascript", "c_sharp", "go", "rust", "java", "cpp", "c", "php"}:
             lexical_chunks = _regex_ast_chunks(text, lang, size)
             if lexical_chunks:
                 return lexical_chunks
@@ -925,25 +990,67 @@ class RAGStore:
         preamble_header = f"# [Module context]\n{preamble}\n\n" if preamble else ""
 
         chunks: list[str] = []
+        covered = [False] * len(lines)
+
+        def mark_covered(node: Any) -> None:
+            for index in range(node.lineno - 1, node.end_lineno):
+                covered[index] = True
+
         for node in tree.body:
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
                 block = "".join(lines[node.lineno - 1 : node.end_lineno]).strip()
                 full_chunk = f"{preamble_header}{block}" if preamble_header and not block.startswith(preamble[:50]) else block
                 if len(full_chunk) <= size:
                     chunks.append(full_chunk)
+                    mark_covered(node)
                 else:
                     if isinstance(node, ast.ClassDef):
                         cls_header = f"class {node.name}:\n"
                         for item in node.body:
                             if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                                mark_covered(item)
                                 m_block = "".join(lines[item.lineno - 1 : item.end_lineno]).strip()
                                 sub = f"{preamble_header}{cls_header}    # method {item.name}\n{m_block}"
                                 if len(sub) <= size:
                                     chunks.append(sub)
                                 else:
-                                    chunks.extend(self._text_chunks(sub, size, overlap))
+                                    header_prefix = f"# [Enclosing: class {node.name} -> def {item.name}]\n"
+                                    chunk_size = max(32, size - len(header_prefix)) if len(header_prefix) < size else size
+                                    sub_chunks = self._text_chunks(sub, chunk_size, overlap)
+                                    for idx, sc in enumerate(sub_chunks):
+                                        if idx > 0 and header_prefix.strip() not in sc and len(header_prefix) + len(sc) <= size:
+                                            sc = f"{header_prefix}{sc}"
+                                        chunks.append(sc)
                     else:
-                        chunks.extend(self._text_chunks(full_chunk, size, overlap))
+                        mark_covered(node)
+                        fn_sig = "".join(lines[node.lineno - 1 : (node.body[0].lineno - 1 if getattr(node, "body", None) else node.end_lineno)]).strip()
+                        if not fn_sig:
+                            fn_sig = f"def {getattr(node, 'name', 'function')}"
+                        header_prefix = f"# [Enclosing: {fn_sig}]\n"
+                        chunk_size = max(32, size - len(header_prefix)) if len(header_prefix) < size else size
+                        sub_chunks = self._text_chunks(full_chunk, chunk_size, overlap)
+                        for idx, sc in enumerate(sub_chunks):
+                            if idx > 0 and header_prefix.strip() not in sc and len(header_prefix) + len(sc) <= size:
+                                sc = f"{header_prefix}{sc}"
+                            chunks.append(sc)
+
+        # Definitions are not the whole module: retain constants, docstrings,
+        # decorators, top-level statements and non-method class members too.
+        gaps: list[str] = []
+        gap_start = 0
+        while gap_start < len(lines):
+            if covered[gap_start]:
+                gap_start += 1
+                continue
+            gap_end = gap_start + 1
+            while gap_end < len(lines) and not covered[gap_end]:
+                gap_end += 1
+            gap = "".join(lines[gap_start:gap_end])
+            if gap.strip():
+                gaps.append(gap)
+            gap_start = gap_end
+        for gap in gaps:
+            chunks.extend(self._text_chunks(gap, size, overlap))
 
         return [c for c in chunks if c.strip()]
 
@@ -1064,6 +1171,41 @@ class RAGStore:
     @staticmethod
     def _workspace_embedding_space_key(workspace: str) -> str:
         return "workspace_embedding_space:" + stable_hash({"workspace": workspace})
+
+    @staticmethod
+    def _workspace_chunker_version_key(workspace: str) -> str:
+        return "workspace_chunker_version:" + stable_hash({"workspace": workspace})
+
+    def _stored_workspace_chunker_version(
+        self, con: sqlite3.Connection, workspace: str,
+    ) -> str | None:
+        row = con.execute(
+            "SELECT value FROM rag_meta WHERE key=?",
+            (self._workspace_chunker_version_key(workspace),),
+        ).fetchone()
+        return str(row[0]) if row is not None and row[0] else None
+
+    def _workspace_chunker_index_is_current(
+        self, con: sqlite3.Connection, workspace: str,
+    ) -> bool:
+        stored = self._stored_workspace_chunker_version(con, workspace)
+        if stored is not None:
+            return stored == RAG_CHUNKER_VERSION
+        has_files = con.execute(
+            "SELECT 1 FROM files WHERE workspace=? LIMIT 1", (workspace,),
+        ).fetchone()
+        has_chunks = con.execute(
+            "SELECT 1 FROM chunks WHERE workspace=? LIMIT 1", (workspace,),
+        ).fetchone()
+        return has_files is None and has_chunks is None
+
+    def _store_workspace_chunker_version(
+        self, con: sqlite3.Connection, workspace: str,
+    ) -> None:
+        con.execute(
+            "INSERT OR REPLACE INTO rag_meta(key,value) VALUES(?,?)",
+            (self._workspace_chunker_version_key(workspace), RAG_CHUNKER_VERSION),
+        )
 
     @staticmethod
     def _workspace_index_generation_key(workspace: str) -> str:
@@ -1590,6 +1732,8 @@ class RAGStore:
                 "SELECT path,chunk_no,content_hash,embedding,embedding_space FROM chunks WHERE workspace=?",
                 (workspace,),
             ).fetchall()
+            stored_chunker_version = self._stored_workspace_chunker_version(con, workspace)
+        chunker_version_changed = stored_chunker_version != RAG_CHUNKER_VERSION
         old_files = {r[0]: {"mtime_ns": int(r[1]), "size": int(r[2]), "content_hash": r[3]} for r in old_files_rows}
         persisted_spaces = {
             str(r[4]).strip()
@@ -1648,39 +1792,65 @@ class RAGStore:
         deleted_paths = sorted(old_paths - current_paths)
         unchanged_paths: list[str] = []
         changed_paths: list[str] = []
+        rag_cfg = self.config.get("rag", {})
+        max_file_bytes = max(0, int(rag_cfg.get("max_file_bytes", 2_000_000)))
+        settings = project_context.settings if project_context is not None else None
+        if settings is not None and settings.max_file_size_bytes is not None:
+            max_file_bytes = min(max_file_bytes, int(settings.max_file_size_bytes))
+        verified_raw_by_path: dict[str, bytes] = {}
+        read_uncertain_paths: set[str] = set()
+        skipped = 0
+        read_files = 0
         for rel, (_path, mtime_ns, size) in current_meta.items():
             old = old_files.get(rel)
             if (
                 old and old["mtime_ns"] == mtime_ns and old["size"] == size
-                and rel not in uncertain_retry_paths
+                and rel not in uncertain_retry_paths and not embedding_space_changed
             ):
-                unchanged_paths.append(rel)
+                # Stat metadata can be preserved across edits. Verify the
+                # persisted content digest before trusting an indexed file.
+                try:
+                    raw = _read_bounded_file(_path, max_file_bytes)
+                    if raw is None:
+                        skipped += 1
+                        read_uncertain_paths.add(rel)
+                        unchanged_paths.append(rel)
+                        continue
+                    read_files += 1
+                    file_hash = hashlib.sha1(raw, usedforsecurity=False).hexdigest()
+                except Exception:
+                    skipped += 1
+                    read_uncertain_paths.add(rel)
+                    unchanged_paths.append(rel)
+                    continue
+                if file_hash == old.get("content_hash"):
+                    unchanged_paths.append(rel)
+                else:
+                    changed_paths.append(rel)
+                    verified_raw_by_path[rel] = raw
             else:
                 changed_paths.append(rel)
         if embedding_space_changed:
             unchanged_paths = []
             changed_paths = sorted(current_meta)
+        elif chunker_version_changed:
+            unchanged_paths = []
+            changed_paths = sorted(current_meta)
 
         changed_records: list[dict[str, Any]] = []
         file_rows: list[tuple[str, int, int, str]] = []
-        read_uncertain_paths: set[str] = set()
-        skipped = 0
-        read_files = 0
         reused_chunks = 0
         changed_indices: list[int] = []
-        rag_cfg = self.config.get("rag", {})
         dedup_near_duplicates = bool(rag_cfg.get("dedup_near_duplicates", True))
         max_hamming = int(rag_cfg.get("near_duplicate_max_hamming", 4))
         near_duplicates_skipped = 0
-        max_file_bytes = max(0, int(rag_cfg.get("max_file_bytes", 2_000_000)))
-        settings = project_context.settings if project_context is not None else None
-        if settings is not None and settings.max_file_size_bytes is not None:
-            max_file_bytes = min(max_file_bytes, int(settings.max_file_size_bytes))
 
         for rel in changed_paths:
             path, mtime_ns, size = current_meta[rel]
             try:
-                raw = _read_bounded_file(path, max_file_bytes)
+                raw = verified_raw_by_path.pop(rel, None)
+                if raw is None:
+                    raw = _read_bounded_file(path, max_file_bytes)
                 if raw is None:
                     skipped += 1
                     read_uncertain_paths.add(rel)
@@ -1802,6 +1972,14 @@ class RAGStore:
                         changed_records[duplicate_idx]["embedding"] = embedding
                         changed_records[duplicate_idx]["embedding_space"] = batch_space
 
+        chunker_version_publishable = (
+            not chunker_version_changed
+            or (
+                not discovery_errors and not read_uncertain_paths and skipped == 0
+                and len(file_rows) == len(current_meta)
+            )
+        )
+
         # One transaction publishes all changed/deleted file state atomically.
         # The embed phase is intentionally outside this retry: a transient writer
         # must not cause expensive model work to run again.
@@ -1852,6 +2030,8 @@ class RAGStore:
                     ],
                 )
                 self._store_workspace_embedding_space(con, workspace, embedding_space)
+                if chunker_version_changed and chunker_version_publishable:
+                    self._store_workspace_chunker_version(con, workspace)
                 uncertainty_changed = self._update_workspace_read_uncertainty(
                     con, workspace,
                     uncertain_paths=read_uncertain_paths,
@@ -1893,6 +2073,7 @@ class RAGStore:
             "read_uncertain_paths": sorted(read_uncertain_paths),
             "near_duplicates_skipped": near_duplicates_skipped,
             "embedding_space_id": embedding_space,
+            "reindex_required": bool(chunker_version_changed and not chunker_version_publishable),
         }
 
 
@@ -2036,6 +2217,20 @@ class RAGStore:
                 )
             except ProjectPolicySyncError as exc:
                 return {"success": False, "error": str(exc), "retryable": exc.retryable}
+            with closing(self._connect()) as con:
+                stored_chunker_version = self._stored_workspace_chunker_version(con, workspace)
+                workspace_has_index = (
+                    con.execute(
+                        "SELECT 1 FROM files WHERE workspace=? LIMIT 1", (workspace,),
+                    ).fetchone() is not None
+                    or con.execute(
+                        "SELECT 1 FROM chunks WHERE workspace=? LIMIT 1", (workspace,),
+                    ).fetchone() is not None
+                )
+            chunker_reindex_required = (
+                workspace_has_index and stored_chunker_version != RAG_CHUNKER_VERSION
+            )
+            initialize_chunker_version = not workspace_has_index
             with closing(self._connect()) as con:
                 stored_space = self._stored_workspace_embedding_space(con, workspace)
                 legacy_rows = (
@@ -2380,6 +2575,8 @@ class RAGStore:
                     )
                     if embedding_space:
                         self._store_workspace_embedding_space(con, workspace, embedding_space)
+                    if initialize_chunker_version:
+                        self._store_workspace_chunker_version(con, workspace)
                     uncertainty_changed = self._update_workspace_read_uncertainty(
                         con, workspace,
                         uncertain_paths=read_uncertain_paths,
@@ -2409,6 +2606,7 @@ class RAGStore:
             "processed_paths": processed_paths, "embedded_chunks": embedded_chunks,
             "reused_chunks": reused_chunks,
             "read_uncertain_paths": sorted(read_uncertain_paths),
+            "reindex_required": chunker_reindex_required,
         }
 
     def index_step(
@@ -2601,28 +2799,54 @@ class RAGStore:
             result["deterministic_postprocess"] = {"deduplicated": removed}
         return result
 
-    def search(self, query: str, *, workspace: str, top_k: int = 8, use_reranker: bool = True, priority: int = 3, scope_path: str | None = None, deadline: float | None = None, cancel_event: Any | None = None) -> dict[str, Any]:
+    def search(self, query: str, *, workspace: str, top_k: int = 8, use_reranker: bool = True, priority: int = 3, scope_path: str | None = None, deadline: float | None = None, cancel_event: Any | None = None, semantic_only: bool = False) -> dict[str, Any]:
         clean_query = normalize_query(query)
+        embedding_query = _semantic_embedding_query(clean_query) if semantic_only else clean_query
+        semantic_search_options = (
+            {"semantic_only": True, "embedding_query": embedding_query}
+            if semantic_only else {}
+        )
         from .opencode_boundary import generation_denial
 
         if generation_denial() is not None:
-            # Do not join another client's semantic singleflight or invoke an
-            # embedding provider: this request uses the existing lexical index.
-            result = self._search_uncached(clean_query, workspace, top_k, False, priority, scope_path, lexical_only=True)
-            result["search_cache"] = {"hit": False, "coalesced": False}
+            if semantic_only:
+                result = {
+                    "success": True, "workspace": workspace, "results": [], "degraded": True,
+                    "fallback": "embedding_backend", "reason": "generation_denied",
+                    "retrieval_mode": "semantic_only_unavailable",
+                    "search_cache": {"hit": False, "coalesced": False},
+                }
+            else:
+                # Do not join another client's semantic singleflight or invoke an
+                # embedding provider: this request uses the existing lexical index.
+                result = self._search_uncached(
+                    clean_query, workspace, top_k, False, priority, scope_path, lexical_only=True,
+                )
+                result["search_cache"] = {"hit": False, "coalesced": False}
+            with closing(self._connect()) as con:
+                chunker_index_current = self._workspace_chunker_index_is_current(con, workspace)
+            if not chunker_index_current:
+                result["degraded"] = True
+                result["reindex_required"] = True
+                result["index_state"] = "stale"
+                result["stale_reason"] = "chunker_version_mismatch"
             return self._postprocess_search_payload(result, top_k)
         revision = self.revision(workspace=workspace)
         cache_identity_known = self._embedding_space_cache_identity_known()
         query_space = self._embedding_space_id()
         with closing(self._connect()) as con:
             generation = self._workspace_index_generation(con, workspace)
+            stored_chunker_version = self._stored_workspace_chunker_version(con, workspace)
         cache_dimension = self._embedding_dimension_cache_identity()
 
         def cache_key(space: str | None, dimension: dict[str, Any], index_generation: int) -> str:
             return stable_hash({
                 "workspace": workspace, "revision": revision, "generation": index_generation,
-                "query": clean_query, "top_k": top_k, "reranker": use_reranker,
+                "query": clean_query, "top_k": top_k, "reranker": use_reranker, "semantic_only": semantic_only,
+                "semantic_query": embedding_query,
                 "scope_path": scope_path,
+                "chunker_version": RAG_CHUNKER_VERSION,
+                "stored_chunker_version": stored_chunker_version,
                 "embedding_space": space if cache_identity_known else None,
                 "embedding_dimension": dimension,
             })
@@ -2635,10 +2859,12 @@ class RAGStore:
                 raw_result = self._search_uncached(
                     clean_query, workspace, top_k, use_reranker, priority, scope_path,
                     deadline=deadline, cancel_event=cancel_event,
+                    allow_cpu_fallback=False, **semantic_search_options,
                 )
             else:
                 raw_result = self._search_uncached(
                     clean_query, workspace, top_k, use_reranker, priority, scope_path,
+                    allow_cpu_fallback=False, **semantic_search_options,
                 )
             observed_identity["space"] = self._embedding_space_id()
             observed_identity["dimension"] = self._embedding_dimension_cache_identity()
@@ -2659,24 +2885,38 @@ class RAGStore:
                 key = cache_key(str(actual_space) if actual_space else None, actual_dimension, generation)
                 computed_raw = raw
                 raw, hit, coalesced = self.search_flight.get_or_compute(key, lambda: computed_raw)
-            if isinstance(raw, dict) and raw.get("retrieval_mode") == "lexical_fallback":
+            if isinstance(raw, dict) and (raw.get("retrieval_mode") == "lexical_fallback" or raw.get("fallback") == "embedding_backend"):
                 self.search_flight.cache.delete(key)
         else:
             if deadline is not None or cancel_event is not None:
                 raw = self._search_uncached(
                     clean_query, workspace, top_k, use_reranker, priority, scope_path,
                     deadline=deadline, cancel_event=cancel_event,
+                    allow_cpu_fallback=False, **semantic_search_options,
                 )
             else:
-                raw = self._search_uncached(clean_query, workspace, top_k, use_reranker, priority, scope_path)
+                raw = self._search_uncached(
+                    clean_query, workspace, top_k, use_reranker, priority, scope_path,
+                    allow_cpu_fallback=False, **semantic_search_options,
+                )
             hit, coalesced = False, False
         with closing(self._connect()) as con:
             latest_generation = self._workspace_index_generation(con, workspace)
+            latest_chunker_index_current = self._workspace_chunker_index_is_current(con, workspace)
         if latest_generation != generation:
-            raw = self._search_uncached(clean_query, workspace, top_k, use_reranker, priority, scope_path)
+            raw = self._search_uncached(
+                clean_query, workspace, top_k, use_reranker, priority, scope_path,
+                allow_cpu_fallback=False, **semantic_search_options,
+            )
             hit, coalesced = False, False
         result = dict(raw) if isinstance(raw, dict) else {"success": False, "error": "search failed"}
+        result["index_revision"] = revision
         result["search_cache"] = {"hit": hit, "coalesced": coalesced, "revision": revision}
+        if not latest_chunker_index_current:
+            result["degraded"] = True
+            result["reindex_required"] = True
+            result["index_state"] = "stale"
+            result["stale_reason"] = "chunker_version_mismatch"
         return self._postprocess_search_payload(result, top_k) if isinstance(result, dict) else result
 
     @staticmethod
@@ -2932,9 +3172,49 @@ class RAGStore:
                 return None
         return centers_array, {key: tuple(value) for key, value in buckets.items()}, retained_bytes
 
-    def _search_uncached(self, query: str, workspace: str, top_k: int = 8, use_reranker: bool = True, priority: int = 3, scope_path: str | None = None, deadline: float | None = None, cancel_event: Any | None = None, *, lexical_only: bool = False) -> dict[str, Any]:
+    def _search_uncached(self, query: str, workspace: str, top_k: int = 8, use_reranker: bool = True, priority: int = 3, scope_path: str | None = None, deadline: float | None = None, cancel_event: Any | None = None, *, lexical_only: bool = False, semantic_only: bool = False, embedding_query: str | None = None, allow_cpu_fallback: bool = True) -> dict[str, Any]:
         with closing(self._connect()) as con:
             uncertain_paths = self._workspace_read_uncertain_paths(con, workspace)
+            has_chunks = con.execute(
+                "SELECT 1 FROM chunks WHERE workspace=? LIMIT 1", (workspace,)
+            ).fetchone() is not None
+            stored_embedding_space = (
+                self._stored_workspace_embedding_space(con, workspace)
+                if semantic_only else None
+            )
+
+        # If both index and active embedder identities are already established,
+        # reject a stale vector space before loading or invoking the embedder.
+        # This keeps a known-incompatible index from adding model latency to a
+        # request that must degrade to lexical search anyway.
+        # Only an explicit service space is safe for an early reject. A cached
+        # backend identity can change when this request falls back at runtime.
+        active_embedding_identity = getattr(self.services, "space_id", None)
+        if (
+            semantic_only
+            and stored_embedding_space
+            and active_embedding_identity
+            and self._embedding_space_is_resolved()
+            and self._embedding_space_id() != stored_embedding_space
+        ):
+            return {
+                "success": True, "workspace": workspace, "results": [],
+                "degraded": True, "fallback": "embedding_space_mismatch",
+                "reason": "indexed vectors do not match the active query embedding space",
+                "reindex_required": True,
+            }
+
+        if semantic_only and not has_chunks:
+            if uncertain_paths:
+                return {
+                    "success": True, "workspace": workspace, "results": [],
+                    "degraded": True, "fallback": "source_read_uncertain",
+                    "index_state": "stale", "reindex_required": True,
+                }
+            return {
+                "success": True, "workspace": workspace, "results": [],
+                "degraded": True, "fallback": "empty_index", "index_state": "empty",
+            }
 
         def visible(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
             return [item for item in candidates if "*" not in uncertain_paths and str(item.get("path", "")) not in uncertain_paths]
@@ -2943,7 +3223,7 @@ class RAGStore:
             query_result = {"success": False, "error": "opencode_local_lexical_only"}
         else:
             try:
-                query_result = self.services.embed([query], priority=priority, query=True)
+                query_result = self.services.embed([embedding_query if embedding_query is not None else query], priority=priority, query=True)
             except Exception as exc:
                 query_result = {"success": False, "error": str(exc)}
         if query_result.get("success"):
@@ -2964,6 +3244,9 @@ class RAGStore:
             if not valid_query_vector:
                 query_result = {**query_result, "success": False, "error": "invalid_query_embedding"}
         if not query_result.get("success"):
+            if semantic_only:
+                return {"success": True, "workspace": workspace, "results": [], "degraded": True,
+                        "fallback": "embedding_backend", "reason": str(query_result.get("error", "embedder_unavailable"))}
             lexical_backend = "fts5"
             candidates = visible(self._search_fts_candidates(
                 query, workspace, max(16, top_k * 2), scope_path,
@@ -2997,6 +3280,13 @@ class RAGStore:
             }
         query_vec = query_result["embeddings"][0]
         embedding_space = self._embedding_space_id(query_result)
+        if semantic_only and stored_embedding_space and embedding_space != stored_embedding_space:
+            return {
+                "success": True, "workspace": workspace, "results": [],
+                "degraded": True, "fallback": "embedding_space_mismatch",
+                "reason": "indexed vectors do not match the active query embedding space",
+                "reindex_required": True,
+            }
         embedding_space_resolved = self._embedding_space_is_resolved(query_result)
         stored_embedding_space: str | None = None
         stored_embedding_space_read = False
@@ -3243,7 +3533,7 @@ class RAGStore:
         ]
 
         # Hybrid search: combine vector candidates with FTS5 keyword hits via Reciprocal Rank Fusion (RRF)
-        fts_candidates = visible(self._search_fts_candidates(
+        fts_candidates = [] if semantic_only else visible(self._search_fts_candidates(
             query, workspace, 16, scope_path, embedding_space, uncertain_paths
         ))
 
@@ -3306,14 +3596,14 @@ class RAGStore:
                     or getattr(self.reranker, "device", None)
                     or ""
                 ).strip().lower()
-                if reranker_device and reranker_device not in {"unknown", "none", "auto"} and not reranker_device.startswith("cpu"):
+                if reranker_device and reranker_device not in {"unknown", "none"}:
                     try:
                         rr = self.reranker.rerank(
                             query,
                             [c["text"] for c in candidates],
                             top_k=top_k,
                             priority=priority,
-                            allow_cpu_fallback=False,
+                            allow_cpu_fallback=allow_cpu_fallback,
                         )
                         if rr.get("success"):
                             ordered: list[dict[str, Any]] = []
@@ -3348,7 +3638,7 @@ class RAGStore:
 
         if heuristic_fallback:
             fallbacks.append("heuristic_rerank")
-        elif reranker_failed:
+        if reranker_failed:
             fallbacks.append("reranker")
 
         graphrag_enriched = False

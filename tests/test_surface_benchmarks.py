@@ -444,6 +444,7 @@ def test_graph_edge_found_requires_true_positive_edges() -> None:
 
 
 def test_synthetic_repository_declares_pytest_for_affected_test_selection(tmp_path: Path) -> None:
+    from local_ai_hub.code_index import CodeIndex
     from local_ai_hub.deterministic import DeterministicEngine
     from local_ai_hub.repo_tools import RepositoryTools
 
@@ -451,8 +452,17 @@ def test_synthetic_repository_declares_pytest_for_affected_test_selection(tmp_pa
         tmp_path, file_count=1, rag_chunks=1,
     )
     config = {"server": {"state_dir": str(tmp_path / "state")}}
-    engine = DeterministicEngine(config, RepositoryTools(config))
     root = tmp_path / "repo"
+    repo_tools = RepositoryTools(config)
+    code_index = CodeIndex(config, repo_tools)
+    indexed = code_index.update_files_batch(str(root), [
+        *[path.relative_to(root).as_posix() for path in files],
+        test_path.relative_to(root).as_posix(),
+        "pytest.ini",
+    ])
+    assert indexed["success"] is True
+    engine = DeterministicEngine(config, repo_tools)
+    engine.code_index = code_index
     result = engine.affected_tests(
         str(root), changed_paths=[files[0].relative_to(root).as_posix()],
     )
@@ -1517,7 +1527,7 @@ def test_run_benchmark_is_isolated_and_preserves_existing_scratch_data(
     assert "total_memory_bytes" in result["metadata"]["platform"]
     assert result["metadata"]["synthetic_file_count"] == 12
     assert result["metadata"]["rag_chunk_count"] == 20
-    assert result["metadata"]["stage_repetitions"] == {"light": 3, "comparison": 2}
+    assert result["metadata"]["stage_repetitions"] == {"light": 3, "comparison": 2, "paired": 2}
     sqlite_index_stage = result["stages"]["hub_sqlite_index"]
     expected_sqlite_index_ids = {
         "cold": [
@@ -1815,7 +1825,7 @@ def test_component_baselines_measure_graph_rag_batch_parent_seed_and_serena(tmp_
     parent_seed = stages["parent_worktree_seed"]
     assert parent_seed["status"] == "passed"
     assert parent_seed["measurement"] == "ProjectPreprocessor._seed_from_parent"
-    assert parent_seed["seeded_rows"]["code_index"] > 0
+    assert parent_seed["seeded_rows"]["code_index"] == 0
     assert parent_seed["sample_ids_by_regime"]["cold"] == parent_seed["sample_ids_by_regime"]["warm"]
     assert len(parent_seed["sample_ids_by_regime"]["cold"]) == 2
     assert parent_seed["sample_independence_status"] == "established"
@@ -2844,7 +2854,7 @@ def test_cli_persists_and_reports_baseline_comparison(tmp_path: Path, capsys: py
     output = json.loads(capsys.readouterr().out)
     assert output["comparison"]["status"] == "inconclusive"
     assert exit_code == 2
-    assert output["metadata"]["stage_repetitions"] == {"light": 2, "comparison": 1}
+    assert output["metadata"]["stage_repetitions"] == {"light": 2, "comparison": 1, "paired": 1}
     assert Path(output["record_path"]).is_relative_to(state_dir)
 
 

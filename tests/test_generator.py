@@ -158,7 +158,7 @@ class TestSkillReferences:
         "cfg",
         [
             {"features": {"tasks": False}},
-            {"features": {"tasks": True}, "server": {"auto_start_ollama": False}},
+            {"features": {"tasks": True}, "ollama": {"enabled": False}},
         ],
     )
     def test_references_gate_semantic_handoff_when_local_tasks_unavailable(self, cfg):
@@ -168,7 +168,7 @@ class TestSkillReferences:
             normalized = generated.lower()
             assert "deterministic/indexed evidence only" in normalized
             assert "semantic delegation is on-demand" not in normalized
-            assert "local_ai_task" not in generated
+            assert "local_ai_task" not in generated or "semantic delegation is on-demand" not in normalized
 
     def test_references_include_semantic_handoff_in_tools_card_when_enabled(self):
         refs = generate_skill_references({"ollama": {"enabled": True}})
@@ -187,6 +187,34 @@ class TestGlobalPolicyGeneration:
         assert "native command tool" in policy
         assert "local_ai_task" in policy
         assert "local_ai_rag" in policy
+
+    def test_canonical_prompts_share_hardware_tier_policy(self):
+        install = (ROOT / "docs" / "INSTALL_PROMPT.md").read_text(encoding="utf-8")
+        update = (ROOT / "docs" / "UPDATE_PROMPT.md").read_text(encoding="utf-8")
+        section_title = "## Hardware-tiered local-model capabilities"
+
+        assert section_title in install and section_title in update
+        install_section = install.split(section_title, 1)[1]
+        update_section = update.split(section_title, 1)[1]
+        assert install_section == update_section
+        assert "features.search_summaries=true" in install_section
+        assert 'mode="bounded"' in install_section
+
+    def test_tiered_instructions_promote_only_exposed_actions(self):
+        low = generate_global_policy({"hardware": {"profile": "low"}})
+        balanced = generate_global_policy({"features": {"search_summaries": True, "local_semantic_analysis": True}, "hardware": {"profile": "balanced"}})
+        high = generate_global_policy({"features": {"local_semantic_analysis": True, "local_vision": True, "local_code_generation": True, "bounded_local_work": True}, "hardware": {"profile": "high"}})
+
+        assert 'local_ai_task(action="compress")' in low
+        assert 'local_ai_task(action="reason")' not in low
+        assert 'summarize_results=true' not in low
+        assert "tier-available semantic actions only" in balanced
+        assert 'summarize_results=true' in balanced
+        assert 'local_ai_work(action="submit"' not in balanced
+        assert 'local_ai_work(action="submit"' in high
+        gated_high = generate_global_policy({"hardware": {"profile": "high"}})
+        assert 'local_ai_task(action="reason")' not in gated_high
+        assert 'local_ai_work(action="submit"' not in gated_high
 
     def test_policy_reuses_fresh_evidence_and_keeps_exact_lookups_bounded(self):
         generated = (generate_global_policy({}), generate_skill_markdown({}))
@@ -234,18 +262,20 @@ class TestTokenEconomyPolicyGeneration:
         "cfg",
         [
             {"features": {"tasks": False}},
-            {"features": {"tasks": True}, "server": {"auto_start_ollama": False}},
+            {"features": {"tasks": True}, "ollama": {"enabled": False}},
         ],
     )
     def test_policy_omits_local_task_when_local_tasks_unavailable(self, cfg):
         policy = generate_token_economy_policy(cfg)
 
-        assert "local_ai_task" not in policy
+        assert "Local model routing follows the active hardware profile" not in policy
 
     def test_policy_keeps_local_task_wording_when_enabled(self):
-        policy = generate_token_economy_policy({})
+        policy = generate_token_economy_policy({"ollama": {"enabled": True}})
 
-        assert "- Local model routing follows the active hardware profile and user overrides; use `local_ai_task` for bounded semantic generation, reasoning, review, independent second opinions and compression." in policy
+        assert "- Local model routing follows the active `" in policy
+        assert "This profile exposes `local_ai_task` actions:" in policy
+        assert "use only these actions." in policy
 
 
 class TestMcpSchemasGeneration:
@@ -263,7 +293,7 @@ class TestMcpSchemasGeneration:
         }
 
     def test_empty_config_omits_backend_dependent_tools(self):
-        schemas = generate_mcp_tool_schemas({})
+        schemas = generate_mcp_tool_schemas({"ollama": {"enabled": False}})
         assert "local_ai_task" not in schemas
         assert "local_ai_work" not in schemas
         assert "local_ai_repo" in schemas
@@ -275,16 +305,72 @@ class TestMcpSchemasGeneration:
         assert "local_ai_repo" in schemas
 
     def test_repo_schema_actions_dynamically_filtered(self):
-        schemas_full = generate_mcp_tool_schemas({})
+        schemas_full = generate_mcp_tool_schemas({"ollama": {"enabled": True}, "hardware": {"profile": "high"}})
         repo_actions_full = schemas_full["local_ai_repo"]["parameters"]["properties"]["action"]["enum"]
         assert "semantic" in repo_actions_full
         assert "preprocess" in repo_actions_full
         assert "verify_receipt" not in repo_actions_full
         assert "verify_receipt" in schemas_full["local_ai_coord"]["parameters"]["properties"]["action"]["enum"]
 
+    def test_work_schema_keeps_recovery_but_hides_submit_below_high(self):
+        schemas = generate_mcp_tool_schemas({"hardware": {"profile": "balanced"}})
+        actions = schemas["local_ai_work"]["parameters"]["properties"]["action"]["enum"]
+
+        assert "submit" not in actions
+        assert {"status", "wait", "get", "cancel"}.issubset(actions)
+
+    def test_work_schema_exposes_submit_at_high(self):
+        schemas = generate_mcp_tool_schemas({"features": {"bounded_local_work": True}, "hardware": {"profile": "high"}})
+        work_schema = schemas["local_ai_work"]["parameters"]
+        actions = work_schema["properties"]["action"]["enum"]
+
+        assert "submit" in actions
+        submit_condition = next(
+            item["then"] for item in work_schema["allOf"]
+            if item["if"]["properties"].get("action", {}).get("const") == "submit"
+            and item["then"].get("properties", {}).get("mode", {}).get("const") == "bounded"
+        )
+        assert "mode" in submit_condition["required"]
+        assert submit_condition["properties"]["mode"]["const"] == "bounded"
+
+    def test_search_summary_option_is_hidden_below_balanced(self):
+        schemas = generate_mcp_tool_schemas({"hardware": {"profile": "low"}})
+
+        assert "summarize_results" not in schemas["local_ai_repo"]["parameters"]["properties"]
+
+    def test_search_summary_option_is_exposed_from_balanced(self):
+        schemas = generate_mcp_tool_schemas({"features": {"search_summaries": True}, "hardware": {"profile": "balanced"}})
+
+        assert schemas["local_ai_repo"]["parameters"]["properties"]["summarize_results"]["type"] == "boolean"
+
+    def test_eval_suite_exposes_bounded_task_specific_case_rubric(self):
+        schemas = generate_mcp_tool_schemas({})
+        cases_schema = schemas["local_ai_task"]["parameters"]["properties"]["cases"]
+        case_schema = cases_schema["items"]
+        properties = case_schema["properties"]
+
+        assert cases_schema["minItems"] == 1
+        assert cases_schema["maxItems"] == 32
+        assert case_schema["additionalProperties"] is False
+        assert properties["max_words"] == {"type": "integer", "minimum": 1, "maximum": 1000}
+        assert properties["include_response_text"] == {"type": "boolean"}
+        assert properties["allowed_citations"]["maxItems"] == 32
+        assert properties["required_citations"]["items"]["pattern"] == r"^\[[^\[\]\r\n]+:\d+-\d+\]$"
+        assert properties["forbidden_phrases"]["items"]["maxLength"] == 512
+
+    def test_task_schema_tiers_semantic_and_generation_actions(self):
+        low = generate_mcp_tool_schemas({"hardware": {"profile": "low"}})["local_ai_task"]["parameters"]["properties"]["action"]["enum"]
+        balanced = generate_mcp_tool_schemas({"features": {"local_semantic_analysis": True}, "hardware": {"profile": "balanced"}})["local_ai_task"]["parameters"]["properties"]["action"]["enum"]
+        high = generate_mcp_tool_schemas({"features": {"local_semantic_analysis": True, "local_vision": True, "local_code_generation": True, "local_automation": True}, "hardware": {"profile": "high"}})["local_ai_task"]["parameters"]["properties"]["action"]["enum"]
+
+        assert "compress" in low and "reason" not in low and "review" not in low
+        assert "reason" in balanced and "review" in balanced and "vision" not in balanced
+        assert {"vision", "scaffold", "complete_code", "automation"}.issubset(high)
+
         schemas_trimmed = generate_mcp_tool_schemas({
+            "hardware": {"profile": "high"},
             "code_intelligence": {"enabled": False},
-            "features": {"preprocessing": False, "agent_os": False},
+            "features": {"preprocessing": False, "agent_os": False, "local_semantic_analysis": True},
         })
         repo_actions_trimmed = schemas_trimmed["local_ai_repo"]["parameters"]["properties"]["action"]["enum"]
         assert "semantic" not in repo_actions_trimmed
@@ -328,7 +414,7 @@ class TestMcpSchemasGeneration:
         "cfg",
         [
             {"features": {"tasks": False}},
-            {"features": {"tasks": True}, "server": {"auto_start_ollama": False}},
+            {"features": {"tasks": True}, "ollama": {"enabled": False}},
         ],
     )
     def test_disabled_repo_schema_uses_deterministic_evidence_only(self, cfg):

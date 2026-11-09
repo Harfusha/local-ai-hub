@@ -31,7 +31,7 @@ def budget_case(tmp_path):
 
 def increase(case, **overrides):
     policy, _, root = case
-    arguments = dict(actor="owner", authorization_actor="api_token", repo_root=str(root), reason="Finish existing validation",
+    arguments = dict(actor="owner", authorization_actor="local", repo_root=str(root), reason="Finish existing validation",
                      limits={"max_compute_seconds": 20})
     arguments.update(overrides)
     return policy.increase_task_budget("existing", **arguments)
@@ -48,7 +48,7 @@ def test_increase_preserves_usage_and_omitted_limits_and_records_audit(budget_ca
         row = con.execute(
             "SELECT actor,payload FROM agent_events WHERE event_id=?", (result["audit_event_id"],)
         ).fetchone()
-    assert row[0] == "api_token"
+    assert row[0] == "local"
     payload = json.loads(row[1])
     assert payload["task_owner"] == "owner"
     assert payload["reason"] == "Finish existing validation"
@@ -120,7 +120,7 @@ def test_missing_task_does_not_create_budget(budget_case):
     with pytest.raises(KeyError):
         policy.increase_task_budget("missing", actor="owner", repo_root=str(root),
                                     reason="existing only", limits={"max_tokens": 200},
-                                    authorization_actor="api_token")
+                                    authorization_actor="local")
     assert not policy.has_budget("missing")
 
 
@@ -147,7 +147,7 @@ def test_concurrent_engines_cannot_apply_same_increase_twice(budget_case):
         try:
             return policy.increase_task_budget(
                 "existing", actor="owner", repo_root=str(root), reason="finish",
-                limits={"max_compute_seconds": 20}, authorization_actor="api_token",
+                limits={"max_compute_seconds": 20}, authorization_actor="local",
             )["success"]
         except ValueError:
             return False
@@ -185,8 +185,8 @@ def test_broker_uses_persisted_task_owner_for_owner_admin_request(budget_case):
     policy, _, root = budget_case
     result = budget_broker(budget_case).increase_task_budget(
         "existing", root=str(root), reason="finish existing task",
-        limits={"max_compute_seconds": 20}, authorization_actor="api_token",
-        authorization_permissions=frozenset({"admin"}),
+        limits={"max_compute_seconds": 20}, authorization_actor="local",
+        authorization_permissions=frozenset(),
     )
     assert result["success"] is True
     assert policy.get_budget("existing").used_compute_seconds == 11
@@ -252,15 +252,13 @@ def http_budget_handler(budget_case, monkeypatch):
     from types import SimpleNamespace
     from local_ai_hub import http_server
     _, state, root = budget_case
-    config = {"security": {"api_token": "owner-token-at-least-sixteen",
-                           "supervisor_token": "supervisor-token-at-least-sixteen",
-                           "api_token_permissions": ["admin"], "allowed_roots": [str(root)]}}
+    config = {"security": {"allowed_roots": [str(root)]}}
     audit = []
     app = SimpleNamespace(config=config, agent_tasks=TaskStore(state),
                           commands=budget_broker(budget_case),
                           telemetry=SimpleNamespace(record_system=lambda *a, **kw: audit.append((a, kw))))
     monkeypatch.setattr(http_server, "APP", app)
-    # Coordination ID normally comes from the server project resolver. All token,
+    # Coordination ID normally comes from the server project resolver. Root,
     # canonical root/allowlist, task-scope and persisted budget checks remain real.
     monkeypatch.setattr(http_server, "_trusted_project_context",
                         lambda _: SimpleNamespace(coordination_id="repository"))
@@ -268,8 +266,7 @@ def http_budget_handler(budget_case, monkeypatch):
     handler.path = "/api/agent-state/tasks"
     handler.command = "POST"
     handler.client_address = ("127.0.0.1", 0)
-    handler.headers = {"X-LocalAI-Token": config["security"]["api_token"],
-                       "X-LocalAI-Agent": "forged-unrelated-agent"}
+    handler.headers = {"X-LocalAI-Agent": "forged-unrelated-agent"}
     replies = []
     handler._send = lambda status, payload: replies.append((status, payload))
     payload = {"action": "budget_increase", "root": str(root), "task_id": "existing",
@@ -284,24 +281,18 @@ def test_http_owner_admin_changes_budget_without_agent_header_authority(http_bud
     assert replies[-1][1]["budget"]["used_compute_seconds"] == 11
     with closing(sqlite3.connect(budget_case[1].db_path)) as con:
         assert con.execute('SELECT actor FROM agent_events WHERE event_id=?',
-                           (replies[-1][1]['audit_event_id'],)).fetchone()[0] == 'api_token'
+                           (replies[-1][1]['audit_event_id'],)).fetchone()[0] == 'local'
     assert budget_case[0].get_budget("existing").max_compute_seconds == 20
 
 
-@pytest.mark.parametrize("case", ["wrong_token", "no_write", "supervisor", "remote_without_token", "caller_owner", "no_root", "wrong_root"])
+@pytest.mark.parametrize("case", ["retired_token_config", "remote", "caller_owner", "no_root", "wrong_root"])
 def test_http_rejects_untrusted_authority_and_scope(http_budget_handler, budget_case, case, tmp_path):
     handler, payload, replies, config, _ = http_budget_handler
     policy, _, _ = budget_case
     before = policy.get_budget("existing")
-    if case == "wrong_token":
-        handler.headers["X-LocalAI-Token"] = "wrong-token"
-    elif case == "no_write":
-        config["security"]["api_token_permissions"] = ["read"]
-    elif case == "supervisor":
-        handler.headers["X-LocalAI-Token"] = config["security"]["supervisor_token"]
-    elif case == "remote_without_token":
-        config["security"].update(api_token="", supervisor_token="")
-        handler.headers.clear()
+    if case == "retired_token_config":
+        config["security"]["api_token"] = "retired"
+    elif case == "remote":
         handler.client_address = ("192.0.2.10", 0)
     elif case == "caller_owner":
         payload["owner"] = "owner"
@@ -316,20 +307,15 @@ def test_http_rejects_untrusted_authority_and_scope(http_budget_handler, budget_
     assert policy.get_budget("existing") == before
 
 
-@pytest.mark.parametrize("case,expected_actor", [("write", "api_token"), ("local", "local")])
 @pytest.mark.parametrize("failed", [False, True])
 def test_budget_increase_uses_ordinary_write_access_and_real_audit_identity(
-        http_budget_handler, budget_case, case, expected_actor, failed):
+        http_budget_handler, budget_case, failed):
     handler, payload, replies, config, _ = http_budget_handler
     policy, state, _ = budget_case
     tasks = TaskStore(state)
     if failed:
         tasks.fail('existing', actor='watchdog', reason='TASK_BUDGET_EXCEEDED')
     original_task = tasks.get('existing')
-    config["security"]["api_token_permissions"] = ["write"]
-    if case == "local":
-        config["security"].update(api_token="", supervisor_token="")
-        handler.headers.clear()
     before = policy.get_budget("existing")
     handler._task_budget_increase(payload)
     assert replies[-1][0] == 200, replies
@@ -343,13 +329,12 @@ def test_budget_increase_uses_ordinary_write_access_and_real_audit_identity(
     with closing(sqlite3.connect(state.db_path)) as con:
         actor, body = con.execute('SELECT actor,payload FROM agent_events WHERE event_id=?',
                                   (result['audit_event_id'],)).fetchone()
-    assert actor == expected_actor
+    assert actor == "local"
     assert json.loads(body)['task_owner'] == original_task.owner
 
 
 @pytest.mark.parametrize("actor,permissions", [
-    ("local", frozenset()), ("api_token", frozenset({"write"})),
-    ("action_token", frozenset({"api:write"})),
+    ("local", frozenset()),
 ])
 def test_broker_accepts_ordinary_write_clients(budget_case, actor, permissions):
     _, _, root = budget_case

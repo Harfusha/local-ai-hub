@@ -84,7 +84,9 @@ def test_mcp_solve_tool_returns_pipeline_evidence(tmp_path, monkeypatch):
     pipeline = _pipeline(tmp_path, {"success": True, "text": "answer", "tool_agent": {"tool_evidence": counts}})
     result = pipeline.solve_repo({"root": str(tmp_path), "task": "find symbol"})
     monkeypatch.setattr(mcp_server.CLIENT, "post", lambda path, payload, **kwargs: result)
-    response = asyncio.run(mcp_server.mcp.call_tool("local_ai_repo", {
-        "action": "solve", "root": str(tmp_path), "task": "find symbol", "max_response_tokens": 1600,
-    }))
-    assert response[1]["tool_evidence"]["explorer"]["counts"] == counts
+    monkeypatch.setattr(mcp_server.FEATURES, "hardware_profile", "high")
+    monkeypatch.setattr(mcp_server.FEATURES, "local_semantic_analysis", True)
+    response = mcp_server.local_ai_repo(
+        action="solve", root=str(tmp_path), task="find symbol", max_response_tokens=1600,
+    )
+    assert response["tool_evidence"]["explorer"]["counts"] == counts

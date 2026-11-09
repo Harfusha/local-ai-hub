@@ -25,6 +25,7 @@ def _enable_rag(monkeypatch: Any, backend: _Backend) -> None:
     monkeypatch.setattr(mcp_server._ACCOUNTING_REPORTER, "record", lambda _event: None)
     monkeypatch.setattr(mcp_server.FEATURES, "rag", True)
     monkeypatch.setattr(mcp_server.FEATURES, "tasks", False)
+    monkeypatch.setattr(mcp_server.FEATURES, "local_reranking_qualified", False)
     monkeypatch.setattr(mcp_server, "_timeout", lambda kind: {"quick": 11.0, "long": 77.0}[kind])
 
 
@@ -33,6 +34,9 @@ def _enable_work(monkeypatch: Any, backend: _Backend) -> None:
     monkeypatch.setattr(mcp_server._ACCOUNTING_REPORTER, "record", lambda _event: None)
     monkeypatch.setattr(mcp_server.FEATURES, "work_orchestrator", True)
     monkeypatch.setattr(mcp_server.FEATURES, "tasks", False)
+    monkeypatch.setattr(mcp_server.FEATURES, "hardware_profile", "high")
+    monkeypatch.setattr(mcp_server.FEATURES, "bounded_work_tier", True)
+    monkeypatch.setattr(mcp_server.FEATURES, "bounded_work_qualified", True)
     monkeypatch.setattr(mcp_server, "_timeout", lambda kind: {"quick": 11.0, "long": 77.0}[kind])
 
 
@@ -72,7 +76,7 @@ def test_mcp_rag_search_clamps_top_k_and_uses_root_workspace_default(monkeypatch
         (
             "POST",
             "/api/rag/search",
-            {"root": str(tmp_path), "query": "release gate", "workspace": mcp_server.canonical_workspace_id(str(tmp_path)), "top_k": 12, "use_reranker": True},
+            {"root": str(tmp_path), "query": "release gate", "workspace": mcp_server.canonical_workspace_id(str(tmp_path)), "top_k": 12, "use_reranker": False},
             {},
         )
     ]
@@ -215,7 +219,7 @@ def test_mcp_work_submit_forwards_closed_task_contract(monkeypatch: Any, tmp_pat
         task="Implement release receipt handling",
         acceptance_criteria=["Receipt verifies", "Failure remains terminal"],
         constraints=["No network writes"],
-        mode="plan_then_execute",
+        mode="bounded",
         permissions={"allow_network": False},
         budget={"max_steps": 4},
         timeout_seconds=45,
@@ -233,7 +237,7 @@ def test_mcp_work_submit_forwards_closed_task_contract(monkeypatch: Any, tmp_pat
                 "task_id": "",
                 "acceptance_criteria": ["Receipt verifies", "Failure remains terminal"],
                 "constraints": ["No network writes"],
-                "mode": "plan_then_execute",
+                "mode": "bounded",
                 "permissions": {"allow_network": False},
                 "budget": {"max_steps": 4},
                 "timeout_seconds": 45,
@@ -269,7 +273,7 @@ def test_mcp_work_status_forwards_work_identity(monkeypatch: Any) -> None:
                 "task_id": "",
                 "acceptance_criteria": [],
                 "constraints": [],
-                "mode": "execute",
+                "mode": "bounded",
                 "permissions": {},
                 "budget": {},
                 "timeout_seconds": 90.0,
@@ -305,7 +309,7 @@ def test_mcp_work_wait_forwards_timeout_and_uses_long_transport_timeout(monkeypa
                 "task_id": "",
                 "acceptance_criteria": [],
                 "constraints": [],
-                "mode": "execute",
+                "mode": "bounded",
                 "permissions": {},
                 "budget": {},
                 "timeout_seconds": 23.5,
@@ -347,7 +351,7 @@ def test_mcp_work_get_forwards_projection_options(monkeypatch: Any) -> None:
                 "task_id": "",
                 "acceptance_criteria": [],
                 "constraints": [],
-                "mode": "execute",
+                "mode": "bounded",
                 "permissions": {},
                 "budget": {},
                 "timeout_seconds": 90.0,
@@ -383,7 +387,7 @@ def test_mcp_work_cancel_returns_cancelled_state(monkeypatch: Any) -> None:
                 "task_id": "",
                 "acceptance_criteria": [],
                 "constraints": [],
-                "mode": "execute",
+                "mode": "bounded",
                 "permissions": {},
                 "budget": {},
                 "timeout_seconds": 90.0,
@@ -426,7 +430,7 @@ def test_mcp_work_continue_forwards_answer_and_preserves_updated_state(monkeypat
                 "task_id": "",
                 "acceptance_criteria": [],
                 "constraints": [],
-                "mode": "execute",
+                "mode": "bounded",
                 "permissions": {},
                 "budget": {},
                 "timeout_seconds": 90.0,

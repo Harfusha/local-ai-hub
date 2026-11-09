@@ -40,11 +40,10 @@ def authorized_repository_root(config: Mapping[str, Any], raw: Any) -> str:
     security = config.get("security", {})
     if not isinstance(security, Mapping):
         raise RepositoryScopeError("invalid security configuration", "invalid_security", 403)
-    token = security.get("api_token", "")
     allowed = security.get("allowed_roots", [])
-    if not isinstance(token, str) or not isinstance(allowed, list):
+    if not isinstance(allowed, list):
         raise RepositoryScopeError("invalid root authorization configuration", "invalid_security", 403)
-    if token or allowed:
+    if allowed:
         for entry in allowed:
             try:
                 root.relative_to(canonical_repository_root(entry))

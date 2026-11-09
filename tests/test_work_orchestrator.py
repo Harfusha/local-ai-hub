@@ -4,6 +4,7 @@ import json
 import subprocess
 import threading
 import time
+import urllib.error
 import urllib.request
 from pathlib import Path
 from types import SimpleNamespace
@@ -416,6 +417,9 @@ def test_mcp_work_preserves_explicit_null_budget_for_server_validation(monkeypat
     calls = []
     client = mcp_server.HubClient(auto_start=False)
     monkeypatch.setattr(mcp_server.FEATURES, 'work_orchestrator', True)
+    monkeypatch.setattr(mcp_server.FEATURES, 'hardware_profile', 'high')
+    monkeypatch.setattr(mcp_server.FEATURES, 'bounded_work_tier', True)
+    monkeypatch.setattr(mcp_server.FEATURES, 'bounded_work_qualified', True)
     monkeypatch.setattr(mcp_server, 'CLIENT', client)
     monkeypatch.setattr(client, 'post', lambda endpoint, payload, **kwargs: calls.append(payload) or {'success':False, 'error':'invalid budget'})
     monkeypatch.setattr(mcp_server._ACCOUNTING_REPORTER, 'record', lambda event: None)
@@ -1045,11 +1049,25 @@ enabled = true
             headers={"Content-Type": "application/json"},
             method="POST",
         )
-        with urllib.request.urlopen(request, timeout=3) as response:
-            payload = json.loads(response.read().decode("utf-8"))
+        with pytest.raises(urllib.error.HTTPError) as not_found:
+            urllib.request.urlopen(request, timeout=3)
+        payload = json.loads(not_found.value.read().decode("utf-8"))
+        assert not_found.value.code == 404
         assert payload["success"] is False
         assert payload["work_id"] == "missing"
         assert "not found" in payload["error"]
+        submit = urllib.request.Request(
+            f"http://127.0.0.1:{server.server_address[1]}/api/work-orders",
+            data=json.dumps({"action": "submit", "mode": "bounded", "root": str(tmp_path), "task": "bounded task"}).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with pytest.raises(urllib.error.HTTPError) as rejected:
+            urllib.request.urlopen(submit, timeout=3)
+        rejection = json.loads(rejected.value.read().decode("utf-8"))
+        assert rejected.value.code == 403
+        assert rejection["error_code"] == "hardware_profile_too_low"
+        assert rejection["minimum_profile"] == "high"
     finally:
         server.shutdown()
         server.server_close()
@@ -1063,6 +1081,34 @@ def test_work_order_http_schema_rejects_oversized_identifier():
 
     with pytest.raises(RequestBodyError, match="work_id"):
         Handler._validate_payload("/api/work-orders", {"action": "status", "work_id": "x" * 129})
+
+
+def test_direct_http_model_routes_share_capability_tier_registry():
+    from local_ai_hub.http_server import _http_hardware_capability_error
+
+    low = {"hardware": {"profile": "low"}}
+    balanced = {"features": {"local_semantic_analysis": True}, "hardware": {"profile": "balanced"}}
+
+    assert _http_hardware_capability_error("/api/reason", {}, low)["minimum_profile"] == "balanced"
+    assert _http_hardware_capability_error("/api/reason", {}, balanced) is None
+    assert _http_hardware_capability_error("/api/delegate/repo", {}, balanced) is None
+    assert _http_hardware_capability_error("/api/delegate/repo", {}, low)["minimum_profile"] == "balanced"
+    high = {"features": {"local_semantic_analysis": True}, "hardware": {"profile": "high"}}
+    assert _http_hardware_capability_error("/api/solve/repo", {}, balanced)["minimum_profile"] == "medium"
+    assert _http_hardware_capability_error("/api/solve/repo", {}, high) is None
+    assert _http_hardware_capability_error("/api/reason", {}, {"hardware": {"profile": "high"}})["error_code"] == "capability_feature_disabled"
+    assert _http_hardware_capability_error("/api/async-jobs", {"action": "submit", "job_action": "review_diff"}, balanced) is None
+    assert _http_hardware_capability_error("/api/async-jobs", {"action": "submit", "job_action": "review_diff"}, low)["minimum_profile"] == "balanced"
+    assert _http_hardware_capability_error("/api/async-jobs", {"action": "status"}, low) is None
+    assert _http_hardware_capability_error("/api/task/automation", {}, high)["error_code"] == "capability_feature_disabled"
+    automation = {"features": {"local_automation": True}, "hardware": {"profile": "high"}}
+    assert _http_hardware_capability_error("/api/task/automation", {}, automation) is None
+    assert _http_hardware_capability_error("/api/work-orders", {"action": "status"}, low) is None
+    mode_error = _http_hardware_capability_error(
+        "/api/work-orders", {"action": "submit", "mode": "execute"}, {"hardware": {"profile": "high"}}
+    )
+    assert mode_error["error_code"] == "bounded_mode_required"
+    assert mode_error["status_code"] == 400
 
 def test_orchestrator_uses_verification_store_from_services(tmp_path):
     services = FakeServices("")

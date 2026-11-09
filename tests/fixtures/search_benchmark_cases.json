@@ -1,0 +1,225 @@
+{
+  "schema_version": 1,
+  "case_set": "agent-search-manual-2026-11-05-v2",
+  "labeling": "Expected paths are manually judged relevant targets, not exhaustive corpus truth. Source anchors verify labels against this checkout.",
+  "cases": [
+    {
+      "id": "exact-repo-search",
+      "query": "repo_search",
+      "language": "symbol",
+      "expected_paths": ["src/local_ai_hub/services.py", "src/local_ai_hub/mcp_server.py"],
+      "negative": false,
+      "evidence": [
+        {"path": "src/local_ai_hub/services.py", "anchor": "def repo_search("},
+        {"path": "src/local_ai_hub/mcp_server.py", "anchor": "repo_search"}
+      ]
+    },
+    {
+      "id": "exact-page-symbol",
+      "query": "_exact_search_page",
+      "language": "symbol",
+      "expected_paths": ["src/local_ai_hub/repo_tools.py"],
+      "negative": false,
+      "evidence": [{"path": "src/local_ai_hub/repo_tools.py", "anchor": "def _exact_search_page"}]
+    },
+    {
+      "id": "exact-code-index-budget-symbol",
+      "query": "max_index_bytes",
+      "language": "symbol",
+      "expected_paths": ["docs/CODE_INDEX.md", "src/local_ai_hub/code_index.py"],
+      "negative": false,
+      "evidence": [
+        {"path": "docs/CODE_INDEX.md", "anchor": "max_index_bytes"},
+        {"path": "src/local_ai_hub/code_index.py", "anchor": "self.max_index_bytes"}
+      ]
+    },
+    {
+      "id": "exact-rag-preprocess",
+      "query": "_step_rag",
+      "language": "symbol",
+      "expected_paths": ["src/local_ai_hub/preprocess.py"],
+      "negative": false,
+      "evidence": [{"path": "src/local_ai_hub/preprocess.py", "anchor": "def _step_rag"}]
+    },
+    {
+      "id": "exact-pagination",
+      "query": "pagination_bounds_error",
+      "language": "symbol",
+      "expected_paths": ["src/local_ai_hub/search_pagination.py"],
+      "negative": false,
+      "evidence": [{"path": "src/local_ai_hub/search_pagination.py", "anchor": "def pagination_bounds_error"}]
+    },
+    {
+      "id": "exact-operator-cpp",
+      "query": "C++",
+      "language": "symbol",
+      "expected_paths": ["src/local_ai_hub/repo_tools.py", "docs/INSTALL_PROMPT.md"],
+      "negative": false,
+      "evidence": [
+        {"path": "src/local_ai_hub/repo_tools.py", "anchor": "\".cpp\": \"C++\""},
+        {"path": "docs/INSTALL_PROMPT.md", "anchor": "C++"}
+      ]
+    },
+    {
+      "id": "english-installation",
+      "query": "Local AI Hub installation",
+      "language": "en",
+      "expected_paths": ["docs/INSTALLATION.md", "CONTRIBUTING.md"],
+      "negative": false,
+      "evidence": [
+        {"path": "docs/INSTALLATION.md", "anchor": "# Installation"},
+        {"path": "CONTRIBUTING.md", "anchor": "## Getting started"}
+      ]
+    },
+    {
+      "id": "czech-index-budget",
+      "query": "Jak omezit velikost code indexu?",
+      "language": "cs",
+      "expected_paths": ["docs/CODE_INDEX.md", "src/local_ai_hub/code_index.py"],
+      "negative": false,
+      "evidence": [
+        {"path": "docs/CODE_INDEX.md", "anchor": "max_index_bytes"},
+        {"path": "src/local_ai_hub/code_index.py", "anchor": "self.max_index_bytes"}
+      ]
+    },
+    {
+      "id": "czech-index-limit-setup",
+      "query": "Jak nastavit limit code indexu?",
+      "language": "cs",
+      "expected_paths": ["docs/CODE_INDEX.md", "src/local_ai_hub/code_index.py"],
+      "negative": false,
+      "evidence": [
+        {"path": "docs/CODE_INDEX.md", "anchor": "max_index_bytes"},
+        {"path": "src/local_ai_hub/code_index.py", "anchor": "def enforce_size_limit"}
+      ]
+    },
+    {
+      "id": "english-hybrid-degradation",
+      "query": "How does hybrid search handle an unavailable RAG index?",
+      "language": "en",
+      "expected_paths": ["src/local_ai_hub/services.py"],
+      "negative": false,
+      "evidence": [{"path": "src/local_ai_hub/services.py", "anchor": "lexical_fallback"}]
+    },
+    {
+      "id": "english-install-without-ollama",
+      "query": "How do I set up Local AI Hub on Windows without running Ollama?",
+      "language": "en",
+      "expected_paths": ["docs/INSTALLATION.md"],
+      "negative": false,
+      "evidence": [{"path": "docs/INSTALLATION.md", "anchor": "do not install or start Ollama"}]
+    },
+    {
+      "id": "english-install-direct",
+      "query": "How to install the local AI hub on Windows",
+      "language": "en",
+      "expected_paths": ["docs/INSTALLATION.md"],
+      "negative": false,
+      "evidence": [{"path": "docs/INSTALLATION.md", "anchor": "Bootstrap & One-Command Setup"}]
+    },
+    {
+      "id": "czech-install-direct",
+      "query": "Jak nainstalovat a spustit Local AI Hub",
+      "language": "cs",
+      "expected_paths": ["docs/INSTALLATION.md"],
+      "negative": false,
+      "evidence": [{"path": "docs/INSTALLATION.md", "anchor": "Bootstrap & One-Command Setup"}]
+    },
+    {
+      "id": "negative-unknown-symbol",
+      "query_b64": "bm9uZXhpc3RlbnRfYWdlbnRfc3ltYm9sXzIwMjYxMTA0",
+      "language": "symbol",
+      "expected_paths": [],
+      "negative": true,
+      "evidence": []
+    },
+    {
+      "id": "english-hybrid-unavailable-rag",
+      "query": "How does hybrid search report an unavailable RAG index?",
+      "language": "en",
+      "expected_paths": ["src/local_ai_hub/services.py"],
+      "negative": false,
+      "evidence": [{"path": "src/local_ai_hub/services.py", "anchor": "rag_search_skipped"}]
+    },
+    {
+      "id": "english-changed-file-incremental-rag",
+      "query": "How does preprocessing refresh RAG for changed files?",
+      "language": "en",
+      "expected_paths": ["src/local_ai_hub/preprocess.py"],
+      "negative": false,
+      "evidence": [{"path": "src/local_ai_hub/preprocess.py", "anchor": "def _step_rag"}]
+    },
+    {
+      "id": "english-search-result-pagination",
+      "query": "Where are search result limit and offset validated?",
+      "language": "en",
+      "expected_paths": ["src/local_ai_hub/search_pagination.py"],
+      "negative": false,
+      "evidence": [{"path": "src/local_ai_hub/search_pagination.py", "anchor": "def pagination_bounds_error("}]
+    },
+    {
+      "id": "english-installation-guide-setup",
+      "query": "Which guide explains installing Local AI Hub on Windows?",
+      "language": "en",
+      "expected_paths": ["docs/INSTALLATION.md"],
+      "negative": false,
+      "evidence": [{"path": "docs/INSTALLATION.md", "anchor": "Bootstrap & One-Command Setup"}]
+    },
+    {
+      "id": "czech-hybrid-unavailable-rag",
+      "query": "Jak hybridní hledání označí nedostupný RAG index?",
+      "language": "cs",
+      "expected_paths": ["src/local_ai_hub/services.py"],
+      "negative": false,
+      "evidence": [{"path": "src/local_ai_hub/services.py", "anchor": "rag_search_skipped"}]
+    },
+    {
+      "id": "czech-incremental-rag",
+      "query": "Jak preprocessing obnoví RAG po změně souborů?",
+      "language": "cs",
+      "expected_paths": ["src/local_ai_hub/preprocess.py"],
+      "negative": false,
+      "evidence": [{"path": "src/local_ai_hub/preprocess.py", "anchor": "def _step_rag"}]
+    },
+    {
+      "id": "czech-search-result-pagination",
+      "query": "Kde se ověřuje limit a offset výsledků hledání?",
+      "language": "cs",
+      "expected_paths": ["src/local_ai_hub/search_pagination.py"],
+      "negative": false,
+      "evidence": [{"path": "src/local_ai_hub/search_pagination.py", "anchor": "def pagination_bounds_error("}]
+    },
+    {
+      "id": "czech-code-index-one-hop",
+      "query": "Jak hluboko hledá deterministické vyhledávání související symboly?",
+      "language": "cs",
+      "expected_paths": ["src/local_ai_hub/deterministic.py"],
+      "negative": false,
+      "evidence": [{"path": "src/local_ai_hub/deterministic.py", "anchor": "depth=1"}]
+    },
+    {
+      "id": "czech-search-worktree-scope",
+      "query": "Jak se vyhledávání drží kořene aktuálního worktree?",
+      "language": "cs",
+      "expected_paths": ["src/local_ai_hub/repo_tools.py"],
+      "negative": false,
+      "evidence": [{"path": "src/local_ai_hub/repo_tools.py", "anchor": "worktree_root"}]
+    },
+    {
+      "id": "negative-unknown-hybrid-symbol",
+      "query_b64": "bm9uZXhpc3RlbnRfaHlicmlkX3N5bWJvbF8yMDI2MTEwNQ==",
+      "language": "symbol",
+      "expected_paths": [],
+      "negative": true,
+      "evidence": []
+    },
+    {
+      "id": "negative-unrelated-agent-task",
+      "query_b64": "SG93IGRvIEkgdHJhaW4gYSBkcmFnb24gdG8gcGFyc2UgdmlvbGV0X2ZpbmNoXzIwMjYxMTA1Pw==",
+      "language": "en",
+      "expected_paths": [],
+      "negative": true,
+      "evidence": []
+    }
+  ]
+}

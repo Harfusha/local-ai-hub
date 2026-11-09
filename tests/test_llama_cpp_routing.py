@@ -323,7 +323,7 @@ class LlamaCppRoutingTests(unittest.TestCase):
         router = LlamaCppRouter(self._config())
         lines = [b'data: {"choices":[{"delta":{"content":"too late"}}]}\n']
         clock = Mock(wraps=time)
-        clock.monotonic.side_effect = [100.0, 100.0, 101.0]
+        clock.monotonic.side_effect = [100.0, 100.0, 100.0, 101.0]
         with patch.object(router, "ensure_model", return_value=True) as ensure_model, \
              patch("local_ai_hub.llama_cpp.time", clock), \
              patch("local_ai_hub.llama_cpp._open_interruptible_response", return_value=_Response(lines=lines)) as open_request:
@@ -339,7 +339,7 @@ class LlamaCppRoutingTests(unittest.TestCase):
         router = LlamaCppRouter(self._config())
         shared_monotonic = time.monotonic
         clock = Mock(wraps=time)
-        clock.monotonic.side_effect = [100.0, 100.0, 100.1, 100.2]
+        clock.monotonic.return_value = 100.0
         with patch.object(router, "ensure_model", return_value=False) as ensure_model, \
              patch("local_ai_hub.llama_cpp.time", clock):
             # Other Hub workers must retain their real shared deadline clock.
@@ -371,6 +371,210 @@ class LlamaCppRoutingTests(unittest.TestCase):
         self.assertFalse(result.get("_lah_backend_unavailable"))
         ensure_model.assert_called_once()
         open_request.assert_not_called()
+
+    def test_managed_model_load_and_unload_are_serialized(self):
+        router = LlamaCppRouter(self._config(), managed_runtime=object())
+        load_entered = threading.Event()
+        allow_load_to_finish = threading.Event()
+        unload_lock_attempted = threading.Event()
+        unload_lock_acquired = threading.Event()
+        unload_entered = threading.Event()
+        results = {}
+
+        class _ObservedLock:
+            def __init__(self):
+                self.lock = threading.RLock()
+
+            def acquire(self, timeout=-1):
+                observing_unload = load_entered.is_set() and not allow_load_to_finish.is_set()
+                if observing_unload:
+                    unload_lock_attempted.set()
+                acquired = self.lock.acquire(timeout=timeout)
+                if observing_unload and acquired:
+                    unload_lock_acquired.set()
+                return acquired
+
+            def release(self):
+                self.lock.release()
+
+        router._generation_lock = _ObservedLock()
+
+        def load(*_args, **_kwargs):
+            load_entered.set()
+            return allow_load_to_finish.wait(timeout=2.0)
+
+        def unload(*_args, **_kwargs):
+            unload_entered.set()
+            return True
+
+        def run_unload():
+            results["unload"] = router.unload_model("qwen2.5-coder:3b")
+
+        with patch.object(router, "_ensure_model_once", side_effect=load), patch.object(
+            router, "_unload_model_once", side_effect=unload
+        ):
+            loading = threading.Thread(
+                target=lambda: results.update(
+                    load=router.ensure_model("qwen2.5-coder:3b", timeout=2.0)
+                )
+            )
+            loading.start()
+            self.assertTrue(load_entered.wait(timeout=1.0))
+
+            unloading = threading.Thread(target=run_unload)
+            unloading.start()
+            self.assertTrue(unload_lock_attempted.wait(timeout=1.0))
+            try:
+                self.assertFalse(unload_lock_acquired.is_set())
+                self.assertFalse(unload_entered.is_set())
+            finally:
+                allow_load_to_finish.set()
+            loading.join(timeout=1.0)
+            unloading.join(timeout=1.0)
+
+        self.assertFalse(loading.is_alive())
+        self.assertFalse(unloading.is_alive())
+        self.assertTrue(unload_lock_acquired.is_set())
+        self.assertTrue(unload_entered.is_set())
+        self.assertEqual(results, {"load": True, "unload": True})
+
+    def test_managed_inference_blocks_concurrent_model_unload(self):
+        router = LlamaCppRouter(self._config(), managed_runtime=object())
+        stream_started = threading.Event()
+        allow_stream_to_finish = threading.Event()
+        unload_lock_attempted = threading.Event()
+        unload_lock_acquired = threading.Event()
+        unload_entered = threading.Event()
+        chunks = []
+        results = {}
+
+        class _ObservedLock:
+            def __init__(self):
+                self.lock = threading.RLock()
+
+            def acquire(self, timeout=-1):
+                observing_unload = stream_started.is_set() and not allow_stream_to_finish.is_set()
+                if observing_unload:
+                    unload_lock_attempted.set()
+                acquired = self.lock.acquire(timeout=timeout)
+                if observing_unload and acquired:
+                    unload_lock_acquired.set()
+                return acquired
+
+            def release(self):
+                self.lock.release()
+
+        class _GatedResponse(_Response):
+            def __iter__(self):
+                stream_started.set()
+                if not allow_stream_to_finish.wait(timeout=2.0):
+                    return
+                yield b'data: {"choices":[{"delta":{"content":"ok"}}]}\n'
+                yield b'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n'
+
+        router._generation_lock = _ObservedLock()
+        response = _GatedResponse()
+
+        @contextmanager
+        def keep_response_open(value, *_args, **_kwargs):
+            yield value
+
+        def run_request():
+            results["request"] = router.request_stream(
+                "/api/generate",
+                {"model": "qwen2.5-coder:3b", "prompt": "hi"},
+                chunks.append,
+                timeout=2.0,
+            )
+
+        def run_unload():
+            results["unload"] = router.unload_model("qwen2.5-coder:3b")
+
+        with patch.object(router, "ensure_model", return_value=True), patch.object(
+            router, "_unload_model_once", side_effect=lambda *_args, **_kwargs: unload_entered.set() or True
+        ), patch("local_ai_hub.llama_cpp._open_interruptible_response", return_value=response), patch(
+            "local_ai_hub.llama_cpp._cancel_response_on_stop", side_effect=keep_response_open
+        ):
+            requesting = threading.Thread(target=run_request)
+            requesting.start()
+            self.assertTrue(stream_started.wait(timeout=1.0))
+
+            unloading = threading.Thread(target=run_unload)
+            unloading.start()
+            self.assertTrue(unload_lock_attempted.wait(timeout=1.0))
+            try:
+                self.assertFalse(unload_lock_acquired.is_set())
+                self.assertFalse(unload_entered.is_set())
+            finally:
+                allow_stream_to_finish.set()
+            requesting.join(timeout=1.0)
+            unloading.join(timeout=1.0)
+
+        self.assertFalse(requesting.is_alive())
+        self.assertFalse(unloading.is_alive())
+        self.assertTrue(unload_lock_acquired.is_set())
+        self.assertTrue(unload_entered.is_set())
+        self.assertEqual(chunks, ["ok"])
+        self.assertEqual(results.get("request", {}).get("response"), "ok")
+        self.assertIs(results.get("unload"), True)
+
+    def test_managed_inference_cancellation_releases_slot_for_unload(self):
+        router = LlamaCppRouter(self._config(), managed_runtime=object())
+        sock = _BlockingSocket()
+        response = _BlockingResponse(sock)
+        cancelled = threading.Event()
+        unload_lock_attempted = threading.Event()
+        unload_entered = threading.Event()
+        results = {}
+
+        class _ObservedLock:
+            def __init__(self):
+                self.lock = threading.RLock()
+
+            def acquire(self, timeout=-1):
+                if response.read_started.is_set() and not cancelled.is_set():
+                    unload_lock_attempted.set()
+                return self.lock.acquire(timeout=timeout)
+
+            def release(self):
+                self.lock.release()
+
+        router._generation_lock = _ObservedLock()
+
+        def run_request():
+            results["request"] = router.request_stream(
+                "/api/generate",
+                {"model": "qwen2.5-coder:3b", "prompt": "hi"},
+                lambda _text: None,
+                timeout=2.0,
+                should_stop=cancelled.is_set,
+            )
+
+        def run_unload():
+            results["unload"] = router.unload_model("qwen2.5-coder:3b")
+
+        with patch.object(router, "ensure_model", return_value=True), patch.object(
+            router, "_unload_model_once", side_effect=lambda *_args, **_kwargs: unload_entered.set() or True
+        ), patch("local_ai_hub.llama_cpp._open_interruptible_response", return_value=response):
+            requesting = threading.Thread(target=run_request)
+            requesting.start()
+            self.assertTrue(response.read_started.wait(timeout=1.0))
+
+            unloading = threading.Thread(target=run_unload)
+            unloading.start()
+            self.assertTrue(unload_lock_attempted.wait(timeout=1.0))
+            self.assertFalse(unload_entered.is_set())
+            cancelled.set()
+            requesting.join(timeout=1.0)
+            unloading.join(timeout=1.0)
+
+        self.assertFalse(requesting.is_alive())
+        self.assertFalse(unloading.is_alive())
+        self.assertTrue(sock.closed.is_set())
+        self.assertTrue(response.exited)
+        self.assertTrue(results.get("request", {}).get("preempted"))
+        self.assertIs(results.get("unload"), True)
+        self.assertTrue(unload_entered.is_set())
 
     def test_health_timeout_and_cancellation_are_not_cached(self):
         for cancelled in (False, True):
@@ -929,15 +1133,15 @@ class LlamaCppRoutingTests(unittest.TestCase):
             "low": "qwen2.5-coder:3b",
             "balanced": "qwen2.5-coder:3b",
             "high": "qwen2.5-coder:3b",
-            "max": "qwen2.5-coder:3b",
+            "max": "qwen2.5-coder:7b",
         }
         expected_fast = {
             "cpu": "qwen2.5-coder:3b",
             "integrated": "qwen2.5-coder:3b",
             "low": "qwen2.5-coder:3b",
             "balanced": "qwen2.5-coder:3b",
-            "high": "qwen2.5-coder:3b",
-            "max": "qwen2.5-coder:3b",
+            "high": "qwen2.5-coder:7b",
+            "max": "qwen2.5-coder:7b",
         }
         expected_reasoning = {
             "cpu": "qwen3.5:9b",
@@ -952,16 +1156,16 @@ class LlamaCppRoutingTests(unittest.TestCase):
             "integrated": "qwen2.5-coder:7b",
             "low": "qwen2.5-coder:7b",
             "balanced": "qwen2.5-coder:7b",
-            "high": "qwen2.5-coder:7b",
-            "max": "qwen3.5:9b",
+            "high": "qwen2.5-coder:14b",
+            "max": "qwen2.5-coder:32b",
         }
         expected_vision = {
             "cpu": "qwen3-vl:4b",
             "integrated": "qwen3-vl:4b",
             "low": "qwen3-vl:4b",
-            "balanced": "qwen3.5:9b",
-            "high": "qwen3.5:9b",
-            "max": "qwen3.5:9b",
+            "balanced": "minicpm-v:8b",
+            "high": "minicpm-v:8b",
+            "max": "minicpm-v:8b",
         }
         expected_general = {
             "cpu": "qwen2.5-coder:7b",

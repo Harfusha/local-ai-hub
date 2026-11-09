@@ -159,7 +159,8 @@ def test_dry_install_copy_keeps_portable_toml_version_models_policy_and_schemas(
         "local_diagnostic_dispatch",
     )
     for feature in rollout_features:
-        assert defaults["features"][feature] is True
+        expected_default = feature != "local_diagnostic_dispatch"
+        assert defaults["features"][feature] is expected_default
         assert config["features"][feature] is defaults["features"][feature]
         assert all(f"`features.{feature}`" in prompt for prompt in prompts)
     for gate in (
@@ -218,7 +219,7 @@ def test_install_update_security_prompts_match_current_http_contract() -> None:
         assert "overrides are removed and rejected" in normalized
         assert "there is no remote-access switch" in normalized
         assert "at least 16 characters" not in normalized
-        assert "empty api_token" in normalized and "unauthenticated" in normalized
+        assert "loopback http/mcp requests are tokenless" in normalized
         assert "agents, chats, projects and worktrees are not tenants" in normalized
         assert "retired fields/headers reject explicitly" in normalized
         for unsupported_claim in (

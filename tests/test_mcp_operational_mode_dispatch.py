@@ -18,6 +18,8 @@ def _mode(monkeypatch, name: str) -> None:
 
     monkeypatch.setattr(mcp_server, "load_operational_mode", load_mode, raising=False)
     monkeypatch.setattr(mcp_server.FEATURES, "tasks", True)
+    monkeypatch.setattr(mcp_server.FEATURES, "hardware_profile", "balanced")
+    monkeypatch.setattr(mcp_server.FEATURES, "local_semantic_analysis", True)
     monkeypatch.setattr(mcp_server.FEATURES, "has_any_model", lambda: True)
 
 

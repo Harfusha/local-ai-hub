@@ -1,0 +1,34 @@
+{
+  "accountable_role": "primary",
+  "default_target_ref": "refs/heads/master",
+  "description": "Audit the current prompt and result catalog; add dedicated isolated scenarios for confirmed regression classes not yet covered; sync counts.",
+  "id": "plan_eval_prompt_gaps_20261108",
+  "lifecycle": "active",
+  "schema_version": 1,
+  "spec_refs": [],
+  "tasks": {
+    "task_coverage": {
+      "acceptance_criteria": [
+        "Source-supported gated actions remain in prompts; missing live exposure is recorded GATED/UNAVAILABLE per run.",
+        "Only cases with fully duplicate objective and branches are removed or merged; unique action/subfunction coverage remains.",
+        "Prompt IDs, key, results, README, action map and contract index reconcile.",
+        "Every retained prompt has its own GPT-6 Luna low/medium isolated chat result or concrete NOT_RUN/BLOCKED evidence.",
+        "Quality fixes and per-chat evidence, fixture and cleanup are recorded.",
+        "Confirmed runtime defects discovered by practical prompts are fixed with focused regression tests and installed/runtime-verified when authorized.",
+        "Full pytest remains unrun."
+      ],
+      "accountable_role": "primary",
+      "blocker": null,
+      "clarifications": [],
+      "depends_on": [],
+      "description": "Audit the full prompt catalog for genuine redundancy and quality defects; preserve source-supported actions omitted from a session as GATED/UNAVAILABLE, not removed. Run each retained prompt in its own GPT-6 Luna low/medium chat, record evidence and limits, and fix confirmed runtime defects found by those practical tests with focused regression tests. Do not run full pytest.",
+      "kind": "documentation",
+      "next_action": "Continue targeted practical audit of CASE130 deterministic/structural action coverage and the next unverified retained prompt. Keep isolated GPT-6 Luna Low/Medium sessions, record per-case evidence, and do not run the full prompt suite or full pytest.",
+      "order": 1,
+      "title": "Audit and stress-test prompt catalog",
+      "work_phase": "verification",
+      "work_status": "in_progress"
+    }
+  },
+  "title": "Close missing evaluation prompt scenarios"
+}

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import hashlib
 import math
 import os
+from pathlib import Path
 import threading
 import time
 from typing import Any
@@ -52,6 +54,10 @@ class Reranker:
         self._load_error: str | None = None
         self._load_error_time: float = 0.0
         self.flight_group = SingleFlightGroup(shards=16, default_timeout_seconds=60.0)
+        self._gpu_reservation_path = configured_state_dir(cfg) / "external-gpu-reservation"
+        from .external_gpu_reservation import ExternalGpuReservationStore
+
+        self._gpu_reservation_store = ExternalGpuReservationStore(self._gpu_reservation_path)
         self.cache_enabled = bool(cache_cfg.get("reranker", True))
         self.cache = TieredCache(
             SQLiteCache(
@@ -121,7 +127,10 @@ class Reranker:
                     seen.add(key)
                     result.append((backend, device))
             return result
-        return [("torch", self.device)]
+        candidates = [("torch", self.device)]
+        if str(self.device).lower().startswith("cuda"):
+            candidates.append(("torch", "cpu"))
+        return candidates
 
     def _load_candidate(self, index: int) -> bool:
         candidates = self._candidate_specs()
@@ -150,6 +159,11 @@ class Reranker:
                 kwargs["device"] = "cpu"
                 kwargs["backend"] = "openvino"
                 ov_model_kwargs: dict[str, Any] = {"device": str(device).lower()}
+                npu_static = str(device).upper().startswith("NPU")
+                if npu_static:
+                    # OpenVINO's NPU plugin requires static shapes. Defer its
+                    # first compile until the CrossEncoder transformer is reshaped.
+                    ov_model_kwargs["compile"] = False
                 cache_dir = openvino_cache_dir(self.config)
                 if cache_dir is not None:
                     ov_model_kwargs["ov_config"] = {"CACHE_DIR": str(cache_dir)}
@@ -163,13 +177,57 @@ class Reranker:
                         allow_downloads=models_cfg.get("allow_hf_downloads") is True)
                 from sentence_transformers import CrossEncoder
                 try:
-                    return CrossEncoder(self.model_name, local_files_only=True, **kwargs)
+                    model = CrossEncoder(self.model_name, local_files_only=True, **kwargs)
                 except Exception:
-                    models_cfg = self.config.get("models") if isinstance(self.config, dict) else None
-                    allow_hf = models_cfg.get("allow_hf_downloads") is True if isinstance(models_cfg, dict) else False
-                    if not allow_hf:
-                        raise
-                    return CrossEncoder(self.model_name, **kwargs)
+                    # Check local snapshot cache across standard directories
+                    clean_name = str(self.model_name).replace("/", "--")
+                    bases = []
+                    if os.environ.get("HF_HOME"):
+                        bases.append(Path(os.environ["HF_HOME"]) / "hub")
+                    bases.extend([
+                        Path.home() / ".cache" / "huggingface" / "hub",
+                        Path(os.path.expanduser("~")) / ".cache" / "huggingface" / "hub",
+                    ])
+                    user_prof = os.environ.get("USERPROFILE")
+                    if user_prof:
+                        bases.append(Path(user_prof) / ".cache" / "huggingface" / "hub")
+                    if os.name == "nt":
+                        sys_drive = os.environ.get("SystemDrive", "C:")
+                        if not sys_drive.endswith(("\\", "/")):
+                            sys_drive += "\\"
+                        usr_name = os.environ.get("USERNAME")
+                        if usr_name:
+                            bases.append(Path(sys_drive) / "Users" / usr_name / ".cache" / "huggingface" / "hub")
+                    snapshot_found = None
+                    seen = set()
+                    for base in bases:
+                        b_str = str(base.resolve(strict=False))
+                        if b_str in seen:
+                            continue
+                        seen.add(b_str)
+                        hub_dir = base / f"models--{clean_name}" / "snapshots"
+                        if hub_dir.is_dir():
+                            for snapshot in hub_dir.iterdir():
+                                if snapshot.is_dir() and (snapshot / "config.json").exists() and ((snapshot / "model.safetensors").exists() or (snapshot / "pytorch_model.bin").exists()):
+                                    snapshot_found = str(snapshot)
+                                    break
+                        if snapshot_found:
+                            break
+                    if snapshot_found:
+                        model = CrossEncoder(snapshot_found, **kwargs)
+                    else:
+                        models_cfg = self.config.get("models") if isinstance(self.config, dict) else None
+                        allow_hf = models_cfg.get("allow_hf_downloads") is True if isinstance(models_cfg, dict) else False
+                        if not allow_hf:
+                            raise
+                        model = CrossEncoder(self.model_name, **kwargs)
+                if backend == "openvino" and str(device).upper().startswith("NPU"):
+                    ov_model = getattr(model, "transformers_model", None)
+                    if ov_model is None:
+                        raise RuntimeError("OpenVINO NPU reranker does not expose a reshapeable transformer")
+                    ov_model.reshape(self.batch_size, self.max_length)
+                    ov_model.compile()
+                return model
 
             self._model = load_model(
                 self,
@@ -201,7 +259,11 @@ class Reranker:
             if self._load_error is not None and start >= len(candidates) and time.time() - self._load_error_time < 15.0:
                 return False
             for index in range(start, len(candidates)):
-                if not allow_cpu_fallback and str(candidates[index][1]).strip().lower().startswith("cpu"):
+                if (
+                    not allow_cpu_fallback
+                    and index > 0
+                    and str(candidates[index][1]).strip().lower().startswith("cpu")
+                ):
                     continue
                 if self._load_candidate(index):
                     return True
@@ -233,6 +295,7 @@ class Reranker:
         while True:
             if not self._ensure_model(allow_cpu_fallback=allow_cpu_fallback):
                 return None
+
             if self._model is None:
                 continue
             try:
@@ -241,20 +304,152 @@ class Reranker:
                         model = self._model
                         if model is None:
                             continue
-                        return model.predict(pairs, batch_size=self.batch_size, show_progress_bar=False)
+                        is_openvino_npu = (
+                            self.active_backend == "openvino"
+                            and str(self.active_device or "").upper().startswith("NPU")
+                        )
+                        predict_pairs = pairs
+                        predict_kwargs: dict[str, Any] = {"batch_size": self.batch_size}
+                        if is_openvino_npu:
+                            remainder = len(pairs) % self.batch_size
+                            if pairs and remainder:
+                                predict_pairs = pairs + [pairs[-1]] * (self.batch_size - remainder)
+                            predict_kwargs["processing_kwargs"] = {
+                                "text": {
+                                    "padding": "max_length",
+                                    "max_length": self.max_length,
+                                    "truncation": True,
+                                }
+                            }
+                        scores = model.predict(predict_pairs, show_progress_bar=False, **predict_kwargs)
+                        return scores[:len(pairs)] if is_openvino_npu else scores
             except Exception as exc:
-                if self.backend == "openvino" and self.active_backend == "openvino":
-                    failed = self.active_device or "openvino"
-                    self._load_error = f"openvino/{failed} inference failed: {exc}"
-                    self._load_error_time = time.time()
-                    self._model = None
-                    self.active_backend = None
-                    self.active_device = None
-                    if self._ensure_model(allow_cpu_fallback=allow_cpu_fallback):
-                        continue
+                failed = self.active_device or self.backend
+                self._load_error = f"{self.active_backend or self.backend}/{failed} inference failed: {exc}"
+                self._load_error_time = time.time()
+                self._model = None
+                self.active_backend = None
+                self.active_device = None
+                if allow_cpu_fallback and self._ensure_model(allow_cpu_fallback=allow_cpu_fallback):
+                    continue
                 return None
 
+    def _needs_cuda_admission(self) -> bool:
+        if uses_torch_cuda(self.active_backend, self.active_device):
+            return True
+        if self.active_backend is not None:
+            return False
+        return any(uses_torch_cuda(backend, device) for backend, device in self._candidate_specs())
+
+    def _claim_gpu_reservation(self) -> tuple[str, str] | bool:
+        store = getattr(self, "_gpu_reservation_store", None)
+        if store is None:
+            return False
+        digest = hashlib.sha256(os.urandom(32)).hexdigest()
+        try:
+            record = store.reserve(
+                digest,
+                owner=f"reranker:{os.getpid()}:{threading.get_ident()}",
+            )
+            generation = record.get("generation") if isinstance(record, dict) else None
+            if not isinstance(generation, str) or not generation:
+                return False
+            if not store.renew(digest, generation, state="active"):
+                store.release(digest, generation)
+                return False
+        except (OSError, ValueError):
+            return False
+        return digest, generation
+
+    def _release_gpu_reservation(self, reservation: tuple[str, str]) -> bool:
+        store = getattr(self, "_gpu_reservation_store", None)
+        if store is None:
+            return False
+        digest, generation = reservation
+        try:
+            return bool(
+                store.renew(digest, generation, state="idle")
+                and store.release(digest, generation)
+            )
+        except (OSError, ValueError):
+            return False
+
     def rerank(
+        self,
+        query: str,
+        documents: list[str],
+        top_k: int | None = None,
+        priority: int = 3,
+        allow_cpu_fallback: bool = True,
+    ) -> dict[str, Any]:
+        if not self.enabled or not documents or not isinstance(documents, (list, tuple)):
+            return self._rerank_without_admission(
+                query,
+                documents,
+                top_k=top_k,
+                priority=priority,
+                allow_cpu_fallback=allow_cpu_fallback,
+            )
+        reservation = self._claim_gpu_reservation() if self._needs_cuda_admission() else None
+        if reservation is False:
+            return {
+                "success": False,
+                "error_code": "gpu_reserved",
+                "error": "GPU admission is unavailable",
+                "retryable": True,
+                "results": [],
+            }
+        result: dict[str, Any] | None = None
+        lease_lost: threading.Event | None = None
+        try:
+            if isinstance(reservation, tuple):
+                store = getattr(self, "_gpu_reservation_store", None)
+                if store is None:
+                    return {
+                        "success": False,
+                        "error_code": "gpu_reservation_lost",
+                        "error": "GPU reservation store is unavailable",
+                        "retryable": True,
+                        "results": [],
+                    }
+                with store.keepalive(reservation[0], reservation[1], state="active") as lease_lost:
+                    if lease_lost.is_set():
+                        return {
+                            "success": False,
+                            "error_code": "gpu_reservation_lost",
+                            "error": "GPU reservation was lost before reranking started",
+                            "retryable": True,
+                            "results": [],
+                        }
+                    result = self._rerank_without_admission(
+                        query,
+                        documents,
+                        top_k=top_k,
+                        priority=priority,
+                        allow_cpu_fallback=allow_cpu_fallback,
+                    )
+                    if lease_lost.is_set():
+                        result = {
+                            "success": False,
+                            "error_code": "gpu_reservation_lost",
+                            "error": "GPU reservation was lost during reranking; results were discarded",
+                            "retryable": True,
+                            "results": [],
+                        }
+                return result
+            result = self._rerank_without_admission(
+                query,
+                documents,
+                top_k=top_k,
+                priority=priority,
+                allow_cpu_fallback=allow_cpu_fallback,
+            )
+            return result
+        finally:
+            if isinstance(reservation, tuple) and not (lease_lost is not None and lease_lost.is_set()):
+                self._release_gpu_reservation(reservation)
+
+    def _rerank_without_admission(
         self,
         query: str,
         documents: list[str],

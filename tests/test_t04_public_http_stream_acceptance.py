@@ -3,22 +3,17 @@ from __future__ import annotations
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
-from urllib.error import HTTPError
-
-import pytest
-
 from local_ai_hub import http_server
 from local_ai_hub.client import HubClient
 
 
-def test_public_http_conversation_auth_stream_cancel_and_deadline(tmp_path, monkeypatch) -> None:
+def test_public_http_conversation_stream_cancel_and_deadline(tmp_path, monkeypatch) -> None:
     from contextlib import ExitStack
     from local_ai_hub.agent_events import AgentEvent
     from local_ai_hub.agent_identity import ScopeContext
     from local_ai_hub.agent_tasks import GoalContract
     from local_ai_hub.app import LocalAIApp
 
-    token = "T04_PUBLIC_HTTP_STREAM_SECRET_123"
     with ExitStack() as cleanup:
         server = http_server.LocalAIHTTPServer(("127.0.0.1", 0), http_server.Handler)
         server.daemon_threads = True
@@ -27,8 +22,8 @@ def test_public_http_conversation_auth_stream_cancel_and_deadline(tmp_path, monk
         config.write_text(
             f'[server]\nbind="127.0.0.1"\nport={server.server_address[1]}\n'
             f'state_dir="{(tmp_path / "state").as_posix()}"\nmax_stream_duration_seconds=5\n'
-            f'[security]\napi_token="{token}"\n'
-            f'allowed_roots=["{tmp_path.as_posix()}"]\n[agent_state]\nenabled=true\n',
+            '[hardware]\nprofile="balanced"\n[features]\nlocal_semantic_analysis=true\n'
+            f'[security]\nallowed_roots=["{tmp_path.as_posix()}"]\n[agent_state]\nenabled=true\n',
             encoding="utf-8",
         )
         app = LocalAIApp(str(config))
@@ -54,14 +49,6 @@ def test_public_http_conversation_auth_stream_cancel_and_deadline(tmp_path, monk
         cleanup.callback(server.shutdown)
         client = HubClient(config_path=str(config), auto_start=False)
         cleanup.callback(client.close)
-        unauth_config = tmp_path / "unauthorized.toml"
-        unauth_config.write_text(
-            f'[server]\nbind="127.0.0.1"\nport={server.server_address[1]}\n'
-            f'state_dir="{(tmp_path / "unauth-state").as_posix()}"\n',
-            encoding="utf-8",
-        )
-        unauth_client = HubClient(config_path=str(unauth_config), auto_start=False)
-        cleanup.callback(unauth_client.close)
         root = tmp_path
         assert http_server._root_is_allowed(
             http_server._strict_root_path(str(root)), app.config["security"]["allowed_roots"]
@@ -88,17 +75,9 @@ def test_public_http_conversation_auth_stream_cancel_and_deadline(tmp_path, monk
             AgentEvent.create(stream_id, "update", {"public": True}, idempotency_key="t04-public-seed")
         )
         assert appended.error is None, appended.error
-        unauthorized_events = unauth_client.stream_events(stream_id=stream_id, timeout=1)
-        cleanup.callback(unauthorized_events.close)
         authorized_events = None
         deadline_events = None
         try:
-            denied = unauth_client.post(
-                "/api/delegate", {"task": "unauthorized conversation", "conversation": True}
-            )
-            assert denied["status_code"] == 401
-            assert generated == []
-
             release_active_before_start = app.async_jobs.resource_release_active()
             assert release_active_before_start is False
             started = client.post(
@@ -114,11 +93,6 @@ def test_public_http_conversation_auth_stream_cancel_and_deadline(tmp_path, monk
             assert continued["conversation_id"] == started["conversation_id"]
             assert len(generated) == 2
 
-            with pytest.raises(HTTPError) as error:
-                next(unauthorized_events)
-            assert error.value.code == 401
-            error.value.close()
-
             cancel = threading.Event()
             authorized_events = client.stream_events(
                 stream_id=stream_id, root=str(root), timeout=0, cancel_event=cancel
@@ -126,8 +100,8 @@ def test_public_http_conversation_auth_stream_cancel_and_deadline(tmp_path, monk
             cleanup.callback(authorized_events.close)
             try:
                 kind, payload = next(authorized_events)
-            except HTTPError as exc:
-                pytest.fail(f"authorized event stream rejected ({exc.code}): {exc.read()!r}")
+            except Exception as exc:
+                raise AssertionError(f"tokenless event stream rejected: {type(exc).__name__}") from exc
             if kind == "replay_page":
                 kind, payload = next(authorized_events)
             if kind == "task.created":

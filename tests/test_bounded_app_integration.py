@@ -20,10 +20,11 @@ def test_registered_mcp_http_bounded_patch_and_real_broker(tmp_path, monkeypatch
     config = tmp_path / "isolated.toml"
     config.write_text(
         "[server]\nstate_dir = " + json.dumps(str(tmp_path / "state"))
-        + "\nauto_start_ollama = false\n[ollama]\nenabled = false\n[smart_ollama]\nenabled = false"
+        + "\nauto_start_ollama = false\n[ollama]\nenabled = true\n[smart_ollama]\nenabled = false"
         + "\n[observability]\nenabled = false\n[background_gpu]\nenabled = false"
         + "\n[preprocessing]\nenabled = false\n[security]\nallowed_roots = ["
-        + json.dumps(str(root)) + "]\n[work_orchestrator]\nenabled = true\n", encoding="utf-8",
+        + json.dumps(str(root)) + "]\n[hardware]\nprofile = \"high\"\n"
+        + "[features]\nbounded_local_work = true\n[work_orchestrator]\nenabled = true\n", encoding="utf-8",
     )
     app = LocalAIApp(str(config))
     monkeypatch.setattr(http_server, "APP", app)
@@ -35,6 +36,11 @@ def test_registered_mcp_http_bounded_patch_and_real_broker(tmp_path, monkeypatch
     client.base_url = f"http://127.0.0.1:{client._http_port}"
     monkeypatch.setattr(mcp_server, "CLIENT", client)
     monkeypatch.setattr(mcp_server.FEATURES, "work_orchestrator", True)
+    monkeypatch.setattr(mcp_server.FEATURES, "hardware_profile", "high")
+    monkeypatch.setattr(mcp_server.FEATURES, "bounded_work_tier", True)
+    monkeypatch.setattr(mcp_server.FEATURES, "bounded_work_qualified", True)
+    monkeypatch.setattr(mcp_server.FEATURES, "tasks", True)
+    monkeypatch.setattr(mcp_server.FEATURES, "has_any_model", lambda: True)
     monkeypatch.setattr(mcp_server, "_record_adoption", lambda *args, **kwargs: None)
     monkeypatch.setattr(mcp_server, "_record_tool_accounting", lambda **kwargs: None)
     if scenario in {"handoff_storage_none", "handoff_storage_error", "handoff_keep"}:
@@ -171,7 +177,7 @@ def test_mcp_claim_budget_preserves_real_lease_identity(tmp_path, monkeypatch):
     root = init_repo(tmp_path)
     config = tmp_path / "isolated.toml"
     config.write_text("[server]\nstate_dir = " + json.dumps(str(tmp_path / "state"))
-        + "\nauto_start_ollama = false\n[ollama]\nenabled = false\n[smart_ollama]\nenabled = false"
+        + "\nauto_start_ollama = false\n[ollama]\nenabled = true\n[smart_ollama]\nenabled = false"
         + "\n[observability]\nenabled = false\n[background_gpu]\nenabled = false"
         + "\n[preprocessing]\nenabled = false\n[security]\nallowed_roots = ["
         + json.dumps(str(root)) + "]\n", encoding="utf-8")
@@ -233,7 +239,8 @@ def test_mcp_reports_active_bounded_deadline_without_terminal_handoff(tmp_path, 
         + "\nauto_start_ollama = false\n[ollama]\nenabled = false\n[smart_ollama]\nenabled = false"
         + "\n[observability]\nenabled = false\n[background_gpu]\nenabled = false"
         + "\n[preprocessing]\nenabled = false\n[security]\nallowed_roots = ["
-        + json.dumps(str(root)) + "]\n[work_orchestrator]\nenabled = true\n", encoding="utf-8")
+        + json.dumps(str(root)) + "]\n[hardware]\nprofile = \"high\"\n"
+        + "[features]\nbounded_local_work = true\n[work_orchestrator]\nenabled = true\n", encoding="utf-8")
     app = LocalAIApp(str(config))
     monkeypatch.setattr(http_server, "APP", app)
     server = http_server.LocalAIHTTPServer(("127.0.0.1", 0), http_server.Handler)
@@ -244,6 +251,11 @@ def test_mcp_reports_active_bounded_deadline_without_terminal_handoff(tmp_path, 
     client.base_url = f"http://127.0.0.1:{client._http_port}"
     monkeypatch.setattr(mcp_server, "CLIENT", client)
     monkeypatch.setattr(mcp_server.FEATURES, "work_orchestrator", True)
+    monkeypatch.setattr(mcp_server.FEATURES, "hardware_profile", "high")
+    monkeypatch.setattr(mcp_server.FEATURES, "bounded_work_tier", True)
+    monkeypatch.setattr(mcp_server.FEATURES, "bounded_work_qualified", True)
+    monkeypatch.setattr(mcp_server.FEATURES, "tasks", True)
+    monkeypatch.setattr(mcp_server.FEATURES, "has_any_model", lambda: True)
     monkeypatch.setattr(mcp_server, "_record_adoption", lambda *args, **kwargs: None)
     monkeypatch.setattr(mcp_server, "_record_tool_accounting", lambda **kwargs: None)
     entered, release = threading.Event(), threading.Event()

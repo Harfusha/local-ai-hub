@@ -652,7 +652,7 @@ def test_mcp_forwards_bounded_scope(monkeypatch, tmp_path):
     from local_ai_hub import mcp_server
 
     calls = []
-    monkeypatch.setattr(mcp_server, "FEATURES", SimpleNamespace(work_orchestrator=True))
+    monkeypatch.setattr(mcp_server, "FEATURES", SimpleNamespace(work_orchestrator=True, hardware_profile="high", bounded_work_tier=True, bounded_work_qualified=True))
     monkeypatch.setattr(mcp_server, "CLIENT", SimpleNamespace(post=lambda path, payload, **kwargs: calls.append((path, payload)) or {"success": True}))
     monkeypatch.setattr(mcp_server, "_client_root", lambda root: root)
     mcp_server.local_ai_work.__wrapped__(
@@ -672,6 +672,9 @@ def test_bounded_scope_reaches_work_endpoint_through_mcp(monkeypatch, tmp_path):
     from local_ai_hub import mcp_server
     calls = []
     monkeypatch.setattr(mcp_server.FEATURES, "work_orchestrator", True)
+    monkeypatch.setattr(mcp_server.FEATURES, "hardware_profile", "high")
+    monkeypatch.setattr(mcp_server.FEATURES, "bounded_work_tier", True)
+    monkeypatch.setattr(mcp_server.FEATURES, "bounded_work_qualified", True)
     monkeypatch.setattr(mcp_server, "CLIENT", SimpleNamespace(post=lambda path, payload, **kwargs: calls.append((path, payload)) or {"success": True, "status": "queued", "work_id": "w1"}))
     monkeypatch.setattr(mcp_server, "_client_root", lambda root: root)
     monkeypatch.setattr(mcp_server, "_record_adoption", lambda *args, **kwargs: None)

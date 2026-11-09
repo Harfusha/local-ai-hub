@@ -8,9 +8,11 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from local_ai_hub import http_server
+from local_ai_hub.commands import CommandBroker
 from local_ai_hub.leases import ScopeLeaseStore
 from local_ai_hub.process_utils import run_hidden
 from local_ai_hub.resilience import RecoveryJournal
+from local_ai_hub.work_fencing import FencingLeaseStore
 
 
 def _linked_worktrees(parent: Path, name: str) -> tuple[Path, Path]:
@@ -94,12 +96,52 @@ def test_http_lease_routes_resolve_namespace_and_isolate_linked_worktrees(tmp_pa
             "root": str(malformed), "paths": ["src/shared.py"],
         })["success"] is False
 
+        broker = CommandBroker({"server": {"state_dir": str(state_dir)}})
+        broker.set_fencing_lease_store(FencingLeaseStore(state_dir / "fences.sqlite3"))
+        recovery_task = "broker-http-lease-conflict"
+        recovery_attempt = broker.fencing_lease_store.claim_attempt(
+            worktree_b,
+            recovery_task,
+            "broker-recovery",
+            ttl_seconds=60,
+            coordination_id=broker._transaction_namespace_kwargs(
+                worktree_b, broker.fencing_lease_store
+            )["coordination_id"],
+        )
+        transaction_parent = tmp_path / "broker-recovery-transactions"
+        transaction_parent.mkdir()
+        (transaction_parent / "conflict.journal.json").write_text(
+            json.dumps({
+                "schema": 1,
+                "transaction_id": "conflict",
+                "source_root": str(worktree_b),
+                "task_id": recovery_task,
+                "paths": ["src/shared.py"],
+                "files": {"src/shared.py": {"before": {}, "after": {}}},
+            }),
+            encoding="utf-8",
+        )
+        recovery = broker._recover_transaction_journals(
+            source=worktree_b,
+            task_id=recovery_task,
+            transaction_parent=transaction_parent,
+            lease_owner="broker-recovery",
+            work_attempt_fence=recovery_attempt,
+        )
+        assert recovery is not None
+        assert recovery["success"] is False
+        assert recovery["failure_kind"] == "destination_conflict"
+        assert recovery["outcome_unknown"] is True
+        assert (worktree_b / "src/shared.py").read_text(encoding="utf-8") == "baseline\n"
+
         url_a = "/api/leases?" + urllib.parse.urlencode({"root": str(worktree_a)})
         url_c = "/api/leases?" + urllib.parse.urlencode({"root": str(unrelated)})
         state_a = request("GET", url_a)
         state_c = request("GET", url_c)
         assert [lease["lease_id"] for lease in state_a["leases"]] == [claim_a["lease_id"]]
-        assert [wait["owner"] for wait in state_a["waits"]] == ["task-b"]
+        assert {wait["owner"] for wait in state_a["waits"]} == {
+            "broker-recovery", "task-b",
+        }
         assert [lease["lease_id"] for lease in state_c["leases"]] == [claim_c["lease_id"]]
         assert state_c["waits"] == []
 

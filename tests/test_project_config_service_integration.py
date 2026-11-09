@@ -376,7 +376,7 @@ def test_repo_search_fails_closed_when_exact_page_includes_unsearchable_extensio
     services._repo_cache_state = lambda _root: {
         "fingerprint": "revision-1", "stale": False, "degraded": False
     }
-    services._repo_cached = lambda _operation, _root, _params, compute: compute()
+    services._repo_cached = lambda _operation, _root, _params, compute, **_kwargs: compute()
     services.learner = None
     services.deterministic = SimpleNamespace(
         related_paths=lambda *_args: ["src/main.py"]
@@ -867,7 +867,7 @@ def test_repo_search_propagates_exact_search_inventory_failure(
     )
     services.code_index = services.preprocessor = services.evidence_store = None
 
-    result = services.repo_search(str(tmp_path), "needle")
+    result = services.repo_search(str(tmp_path), "needle", search_mode="lexical")
 
     assert result["success"] is False
     assert result["status_code"] == 503

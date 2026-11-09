@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import secrets
 import threading
+import math
+import time
 from typing import Any
 
 from .opencode_model_names import validate_local_model_name
@@ -17,33 +19,152 @@ class InferenceSessionError(RuntimeError):
 
 
 class ExternalInferenceSession:
-    def __init__(self, scheduler: Any, model: str, token: str) -> None:
+    def __init__(self, scheduler: Any, model: str, token: str = "", *, idle_timeout_seconds: float = 900) -> None:
         self._scheduler = scheduler
         self._model = model
         self._token = token
         self._lock = threading.Lock()
         self._request: str | None = None
         self._uncertain = False
+        self._uncertain_since: float | None = None
         self._closed = False
+        self._idle_timeout_seconds = idle_timeout_seconds
+        self._idle_timer: threading.Timer | None = None
+        self._timer_generation = 0
+        self._lease_timer: threading.Timer | None = None
+        self._lease_timer_generation = 0
+
+    def _reservation_ttl(self) -> float:
+        ttl = getattr(self._scheduler, "external_gpu_ttl_seconds", None)
+        if ttl is None:
+            store = getattr(self._scheduler, "_external_gpu_store", None)
+            ttl = getattr(store, "ttl_seconds", 60.0) if store is not None else 60.0
+        try:
+            val = float(ttl)
+            if math.isfinite(val) and val > 0:
+                return val
+        except (TypeError, ValueError):
+            pass
+        return 60.0
+
+    def _heartbeat_delay(self) -> float:
+        ttl = self._reservation_ttl()
+        return max(1.0, min(ttl / 3.0, 20.0))
+
+    def _mark_uncertain(self) -> None:
+        if not self._uncertain:
+            self._uncertain_since = time.monotonic()
+        self._uncertain = True
+
+    def _cancel_idle_timer(self) -> None:
+        self._timer_generation += 1
+        if self._idle_timer is not None:
+            self._idle_timer.cancel()
+            self._idle_timer = None
+
+    def _arm_idle_timer(self) -> None:
+        self._cancel_idle_timer()
+        generation = self._timer_generation
+        timer = threading.Timer(self._idle_timeout_seconds, self._expire_idle, args=(generation,))
+        timer.daemon = True
+        self._idle_timer = timer
+        timer.start()
+
+    def _cancel_lease_timer(self) -> None:
+        self._lease_timer_generation += 1
+        if self._lease_timer is not None:
+            self._lease_timer.cancel()
+            self._lease_timer = None
+
+    def _arm_lease_timer(self, request: str | None = None) -> None:
+        self._cancel_lease_timer()
+        generation = self._lease_timer_generation
+        delay = self._heartbeat_delay()
+        timer = threading.Timer(delay, self._renew_lease, args=(generation, request))
+        timer.daemon = True
+        self._lease_timer = timer
+        timer.start()
+
+    def _renew_lease(self, generation: int, request: str | None) -> None:
+        with self._lock:
+            if (generation != self._lease_timer_generation or self._closed or self._request != request
+                    or self._uncertain or not self._token):
+                return
+            renew = getattr(self._scheduler, "renew_external_gpu", None)
+            if not callable(renew):
+                self._lease_timer = None
+                return
+            state = "active" if request is not None else "idle"
+            try:
+                renewed = renew(self._token, state=state) is True
+            except Exception:
+                renewed = False
+            if not renewed:
+                self._mark_uncertain()
+                self._lease_timer = None
+                return
+            self._lease_timer = None
+            self._arm_lease_timer(request)
+
+    def _renew_active_lease(self, generation: int, request: str) -> None:
+        self._renew_lease(generation, request)
+
+    def _expire_idle(self, generation: int) -> None:
+        with self._lock:
+            if generation != self._timer_generation or self._closed or self._request is not None or self._uncertain or not self._token:
+                return
+            self._cancel_lease_timer()
+            try:
+                released = self._scheduler.release_external_gpu(self._token) is True
+            except Exception:
+                released = False
+            if released:
+                self._token = ""
+                self._idle_timer = None
+            else:
+                self._mark_uncertain()
 
     @classmethod
-    def open(cls, scheduler: Any, model: str) -> ExternalInferenceSession:
+    def open(cls, scheduler: Any, model: str, *, idle_timeout_seconds: float = 900) -> ExternalInferenceSession:
+        if isinstance(idle_timeout_seconds, bool) or not isinstance(idle_timeout_seconds, (int, float)) or not math.isfinite(idle_timeout_seconds) or idle_timeout_seconds <= 0:
+            raise ValueError("idle timeout must be a positive finite number")
         try:
             validate_local_model_name(model)
         except ValueError as exc:
             raise InferenceSessionError(str(exc)) from exc
-        token = scheduler.reserve_external_gpu()
-        if not isinstance(token, str) or not token:
-            raise InferenceSessionError("GPU reservation unavailable")
-        return cls(scheduler, model, token)
+        # A bridge may remain idle for a long time. Claim the GPU only when an
+        # inference request is actually about to start.
+        return cls(scheduler, model, idle_timeout_seconds=idle_timeout_seconds)
 
     def start_request(self, model: str) -> str:
         with self._lock:
-            if self._closed or self._uncertain or self._request is not None:
+            if self._closed or self._request is not None:
                 raise InferenceSessionError("session is not available")
             if model != self._model:
                 raise InferenceSessionError("session model cannot change")
+            if self._uncertain:
+                if (self._uncertain_since is None
+                        or time.monotonic() - self._uncertain_since < self._reservation_ttl()):
+                    raise InferenceSessionError("session is not available")
+                self._token = ""
+                token = self._scheduler.reserve_external_gpu()
+                if not isinstance(token, str) or not token:
+                    raise InferenceSessionError("GPU reservation unavailable")
+                self._token = token
+                self._uncertain = False
+                self._uncertain_since = None
+            if not self._token:
+                token = self._scheduler.reserve_external_gpu()
+                if not isinstance(token, str) or not token:
+                    raise InferenceSessionError("GPU reservation unavailable")
+                self._token = token
+            renew = getattr(self._scheduler, "renew_external_gpu", None)
+            if callable(renew) and renew(self._token, state="active") is not True:
+                self._mark_uncertain()
+                raise InferenceSessionError("GPU reservation renewal was not confirmed")
+            self._cancel_idle_timer()
             self._request = secrets.token_urlsafe(24)
+            self._arm_lease_timer(self._request)
             return self._request
 
     def finish_request(self, request: str, *, terminal_confirmed: bool) -> None:
@@ -53,9 +174,28 @@ class ExternalInferenceSession:
                 raise InferenceSessionError("unknown request")
             if type(terminal_confirmed) is not bool:
                 raise InferenceSessionError("terminal confirmation must be boolean")
+            self._cancel_lease_timer()
             self._request = None
             if not terminal_confirmed:
-                self._uncertain = True
+                self._mark_uncertain()
+            else:
+                token = self._token
+                try:
+                    renew = getattr(self._scheduler, "renew_external_gpu", None)
+                    idle_confirmed = (
+                        not token
+                        or not callable(renew)
+                        or renew(token, state="idle") is True
+                    )
+                    released = idle_confirmed and (
+                        not token or self._scheduler.release_external_gpu(token) is True
+                    )
+                except Exception:
+                    released = False
+                if not released:
+                    self._mark_uncertain()
+                else:
+                    self._token = ""
 
     def relay_stream(self, model: str, source: Any, sink: Any, *, preflight: Any = None) -> None:
         """Relay a bounded-parsed SSE stream; only clean EOF after DONE is terminal."""
@@ -84,9 +224,13 @@ class ExternalInferenceSession:
 
     def close(self) -> None:
         with self._lock:
-            if self._closed or self._request is not None or self._uncertain:
+            if self._uncertain:
+                raise InferenceSessionError("session outcome is uncertain; GPU reservation remains fenced")
+            if self._closed or self._request is not None:
                 raise InferenceSessionError("session cannot safely release GPU")
-            if self._scheduler.release_external_gpu(self._token) is not True:
+            self._cancel_idle_timer()
+            self._cancel_lease_timer()
+            if self._token and not self._uncertain and self._scheduler.release_external_gpu(self._token) is not True:
                 raise InferenceSessionError("GPU reservation release was not confirmed")
             self._closed = True
             self._token = ""

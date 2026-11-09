@@ -256,7 +256,7 @@ class AgentStateStore:
         ("table", "agent_incidents", "agent_incidents"): "4b4e60c8124637cb345f05d386428fc7bcb9c23b518af0b17125f3a4bfaf85d7",
         ("table", "agent_knowledge_links", "agent_knowledge_links"): "729e5c852a59ef150c488ccfb998a8a4dab606a052d353d94360aa2793a62426",
         ("table", "agent_learning_candidates", "agent_learning_candidates"): "3b8650b155c972e370825d72cf2222c005401a696b7f996a991c1f9d552b5caa",
-        ("table", "agent_memory_embeddings", "agent_memory_embeddings"): "468df99dabe588d9475009d02108f2fdadfcf63e83a7aedf6d7a36a9ead965b5",
+        ("table", "agent_memory_embeddings", "agent_memory_embeddings"): "282899bb465cddbcbe5cb4aafbac17a159860de991e61d5704bd277cf6fda810",
         ("table", "agent_memory_fts", "agent_memory_fts"): "a3f3691e421244a8516c26f942a893b8b7a112b7771e9ba84ecded8eab4e3755",
         ("table", "agent_memory_fts_config", "agent_memory_fts_config"): "e78061e43ffaa4b703c9aa4a44e02c6bae4128c3b1aad6a4324e6d3b97772c02",
         ("table", "agent_memory_fts_content", "agent_memory_fts_content"): "3ad7416c82b07bb41be9b2d30e58886c16cef8d5ab7a31f2834dc2d087fd6368",
@@ -337,7 +337,7 @@ class AgentStateStore:
                 existed_before_open = self.db_path.exists()
                 if existed_before_open and self.db_path.stat().st_size > 0:
                     self._preflight_schema_read_only()
-                con = sqlite3.connect(self.db_path, timeout=5.0)
+                con = connect_sqlite(self.db_path, timeout_seconds=5.0, wal=True)
                 try:
                     if not con.in_transaction:
                         con.execute("BEGIN IMMEDIATE")
@@ -496,7 +496,7 @@ class AgentStateStore:
                 try:
                     uri = f"{snapshot_db.resolve().as_uri()}?mode=ro"
                     remaining = max(0.001, deadline - time.monotonic())
-                    with closing(sqlite3.connect(uri, uri=True, timeout=min(0.01, remaining))) as con:
+                    with closing(connect_sqlite(uri, uri=True, timeout_seconds=min(0.01, remaining), read_only=True)) as con:
                         busy_ms = max(1, min(10, int(remaining * 1000)))
                         con.execute(f"PRAGMA busy_timeout={busy_ms}")
                         con.set_progress_handler(lambda: 1 if time.monotonic() >= deadline else 0, 1000)

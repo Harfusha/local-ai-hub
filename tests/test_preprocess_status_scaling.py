@@ -177,3 +177,24 @@ def test_status_keeps_sqlite_index_error_fallback(tmp_path: Path) -> None:
     assert result["projects"][0]["root"] == roots[1]
     assert result["projects"][0]["phase_progress_pct"] == 0.0
     assert result["projects"][0]["active_detail"] == "AST symbol extraction: 0/2 files (0.0%)"
+
+
+def test_file_card_generation_respects_configured_batch_limit():
+    class _ObservedBatch(Exception):
+        pass
+
+    preprocessor = ProjectPreprocessor.__new__(ProjectPreprocessor)
+    preprocessor.config = {"background_gpu": {"file_batch_size": 8}}
+    observed: list[int] = []
+
+    def observe(_root: str, batch_size: int):
+        observed.append(batch_size)
+        raise _ObservedBatch
+
+    preprocessor._find_next_files = observe
+    try:
+        preprocessor._step_file_card({"root": "C:/repo"})
+    except _ObservedBatch:
+        pass
+
+    assert observed == [8]

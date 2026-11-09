@@ -305,12 +305,29 @@ class RoutingEngine:
             name = base.rsplit(".", 1)[0]
             path_key = normalized.casefold()
             test_file = base.casefold()
-            is_existing_python_test = (
-                (path_key.startswith("tests/") or "/tests/" in path_key)
-                and test_file.startswith("test_")
-                and test_file.endswith(".py")
+            is_existing_test = (
+                ((path_key.startswith("tests/") or "/tests/" in path_key) and (
+                    (test_file.startswith("test_") and test_file.endswith(".py"))
+                    or (test_file.startswith("test_") and test_file.endswith((".ts", ".tsx", ".js", ".jsx")))
+                    or test_file.endswith(".test.ts") or test_file.endswith(".spec.ts")
+                    or test_file.endswith(".test.js") or test_file.endswith(".spec.js")
+                    or test_file.endswith("_test.rs")
+                ))
+                or test_file.endswith("_test.go")
             )
-            test_target = normalized if is_existing_python_test else f"tests/test_{name}.py"
+            if is_existing_test:
+                test_target = normalized
+            elif normalized.endswith((".ts", ".tsx")):
+                test_target = f"tests/{name}.test.ts"
+            elif normalized.endswith((".js", ".jsx")):
+                test_target = f"tests/{name}.test.js"
+            elif normalized.endswith(".go"):
+                parent = normalized.rsplit("/", 1)[0] if "/" in normalized else ""
+                test_target = f"{parent}/{name}_test.go" if parent else f"{name}_test.go"
+            elif normalized.endswith(".rs"):
+                test_target = f"tests/{name}_test.rs"
+            else:
+                test_target = f"tests/test_{name}.py"
             if test_target not in selected:
                 selected.append(test_target)
 

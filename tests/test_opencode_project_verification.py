@@ -67,7 +67,6 @@ def test_goal_verification_uses_real_broker_and_persisted_receipts(tmp_path, mon
     import urllib.error
     import urllib.request
     from local_ai_hub import http_server
-    from local_ai_hub.opencode_boundary import derive_local_profile_token
     from local_ai_hub.app import LocalAIApp
     from local_ai_hub.project_config import resolve_project_context
 
@@ -84,8 +83,8 @@ def test_goal_verification_uses_real_broker_and_persisted_receipts(tmp_path, mon
     config.write_text(f'[server]\nstate_dir = "{state.as_posix()}"\nauto_start_ollama = false\n'
                       '[agent_state]\nenabled = true\n[ollama]\nenabled = false\n'
                       '[llama_cpp]\nmode = "off"\n[background_gpu]\nenabled = false\n'
-                      f'[preprocessing]\nenabled = false\n[security]\napi_token = "{"x" * 40}"\n'
-                      f'allowed_roots = ["{root.as_posix()}"]\n', encoding="utf-8")
+                      f'[preprocessing]\nenabled = false\n[security]\nallowed_roots = ["{root.as_posix()}"]\n',
+                      encoding="utf-8")
     app = LocalAIApp(str(config))
     try:
         repository_id = resolve_project_context(root, state).coordination_id
@@ -109,9 +108,6 @@ def test_goal_verification_uses_real_broker_and_persisted_receipts(tmp_path, mon
                                ScopeContext(task_id="http-task", repository_id=repository_id, session_id="session"),
                                task_id="http-task", actor="opencode-local", repo_root=str(root))
         monkeypatch.setattr(http_server, "APP", app)
-        nonce = "n" * 32
-        monkeypatch.setattr(app.opencode_provider, "status", lambda: {"success": True, "state": "running", "nonce": nonce})
-        restricted = derive_local_profile_token("x" * 40, nonce)
         server = http_server.LocalAIHTTPServer(("127.0.0.1", 0), http_server.Handler)
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
@@ -123,8 +119,8 @@ def test_goal_verification_uses_real_broker_and_persisted_receipts(tmp_path, mon
         monkeypatch.setattr(app.commands, "run", run)
         body = {"action": "project_command", "root": str(root), "task_id": "http-task",
                 "session_id": "session", "alias": "test"}
-        def post(payload, request_id="a" * 32, token=restricted):
-            headers = {"Content-Type": "application/json", "X-LocalAI-Token": token, "X-LocalAI-Agent": "cloud-agent"}
+        def post(payload, request_id="a" * 32):
+            headers = {"Content-Type": "application/json", "X-LocalAI-Agent": "cloud-agent"}
             if request_id is not None:
                 headers["X-LocalAI-Request-ID"] = request_id
             request = urllib.request.Request(
@@ -137,10 +133,6 @@ def test_goal_verification_uses_real_broker_and_persisted_receipts(tmp_path, mon
                 post(body, request_id=None)
             assert missing_id.value.code == 400
             missing_id.value.close()
-            with pytest.raises(urllib.error.HTTPError) as master_denied:
-                post(body, request_id="b" * 32, token="x" * 40)
-            assert master_denied.value.code == 403
-            master_denied.value.close()
             mismatch = post({**body, "session_id": "other"}, request_id="c" * 32)
             assert mismatch["success"] is False and mismatch["error_code"] == "goal_binding_mismatch"
             with monkeypatch.context() as scoped_patch:

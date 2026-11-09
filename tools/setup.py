@@ -241,6 +241,7 @@ def install_skill(source_skill: Path, target: Path) -> None:
 COMPANION_SKILLS: list[str] = [
     "token-economizer",
     "caveman",
+    "plan-led-work",
     "tool-orchestration",
     "ollama-quality-routing",
 ]
@@ -361,7 +362,7 @@ def merge_antigravity_skill_policy(path: Path, backup_enabled: bool) -> None:
     policy = f"""{ANTIGRAVITY_POLICY_BEGIN}
 ## Antigravity automatic skill activation
 
-At the start of each conversation, read `~/.gemini/skills/using-superpowers/SKILL.md` and follow the applicable Superpowers workflow. For coding and repository tasks, read `~/.gemini/skills/local-ai-orchestrator/SKILL.md` and use available Local AI Hub MCP tools. Read `~/.gemini/skills/caveman/SKILL.md` and use its ultra mode while preserving technical facts and clarity. If the user says `normal mode` or `stop caveman`, stop Caveman style for the rest of the conversation unless they explicitly re-enable it.
+At the start of each conversation, read `~/.gemini/skills/using-superpowers/SKILL.md` and follow the applicable Superpowers workflow. For coding and repository tasks, read `~/.gemini/skills/local-ai-orchestrator/SKILL.md` and use available Local AI Hub MCP tools. Call applicable endpoints directly from the main agent; managing native subagents does not replace Hub retrieval, artifact, or coordination calls. For every non-trivial repository task, start with indexed `local_ai_repo` evidence; use `local_ai_artifact` for exact source after locating it; use `local_ai_coord` for durable task/verification state, memory, or shared edits; use `local_ai_rag` when indexed retrieval cannot answer; use exposed `local_ai_task` semantic actions for matching bounded review, reasoning, exploration or compression tasks after evidence. Consider `local_ai_work` only for explicitly requested closed delegation that passes quality and permission checks. Keep tests/builds on the host-native command tool. Read `~/.gemini/skills/caveman/SKILL.md` and use its ultra mode while preserving technical facts and clarity. For substantial multi-step work, read `~/.gemini/skills/plan-led-work/SKILL.md`: use Superpowers for specifications; use Local AI Hub `plan_reconcile_steering` for changed requirements, `task_checkpoint`/`plan_bind_task` for synced progress and recovery, `session_briefing` for resumption, and the receipt gate for completion when exposed by the active MCP schema. If an action is absent, use the supported project-plan interface or report the precise blocker; never edit plan storage directly. Reuse valid evidence instead of repeating full audits. If the user says `normal mode` or `stop caveman`, stop Caveman style for the rest of the conversation unless they explicitly re-enable it.
 If any required skill or the Hub is unavailable, report the precise limitation and use the allowed fallback; do not claim activation from installation alone.
 {ANTIGRAVITY_POLICY_END}"""
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -839,11 +840,13 @@ def generate_autosetup_policy(skills_dir: Path) -> str:
     orch_skill = (skills_dir / "local-ai-orchestrator" / "SKILL.md").as_posix()
     tok_skill_path = skills_dir / "token-economizer" / "SKILL.md"
     tok_skill = tok_skill_path.as_posix()
+    plan_skill = (skills_dir / "plan-led-work" / "SKILL.md").as_posix()
     return (
         f"{AUTOSETUP_BEGIN}\n"
-        "## Local AI Hub and Token-economizer automatic setup\n\n"
+        "## Local AI Hub, plan-led work, and Token-economizer automatic setup\n\n"
         f"- For every coding or repository task, load and follow `{orch_skill}` to orchestrate Local AI Hub tools before repository discovery, even when the user does not name the skill.\n"
         f"- Load and follow `{tok_skill}` before repository discovery for bounded output limits.\n"
+        f"- For substantial multi-step work, load and follow `{plan_skill}`: use Superpowers for specifications; use Hub `plan_reconcile_steering` for changed requirements, `task_checkpoint`/`plan_bind_task` for synced progress and recovery, `session_briefing` for resumption, and authentic receipts for completion when exposed by the active MCP schema. If an action is absent, use the supported project-plan interface or report the precise blocker; never edit plan storage directly. Reuse valid evidence instead of repeating full audits. Report `Done / Next / Blocked` updates at milestones.\n"
         "- Use tools already available in the environment; missing optional setup helpers do not block repository discovery or validation.\n"
         f"{AUTOSETUP_END}"
     )
@@ -1174,7 +1177,6 @@ def prepare_opencode_components(
     """Prepare components without claiming runtime or target-GPU acceptance."""
     from local_ai_hub.opencode_hardware import inspect_opencode_hardware
     from local_ai_hub.opencode_models import ModelPreparationError, ensure_model, local_inventory, local_pull
-    from local_ai_hub.opencode_provider_service import derive_provider_token
 
     if not _opencode_platform_supported():
         raise ValueError("OpenCode component preparation currently supports Windows x64 only")
@@ -1193,10 +1195,6 @@ def prepare_opencode_components(
         local_pull(ollama, origin, name)
     model_result = ensure_model(candidate, inventory=lambda: local_inventory(origin), pull=pull_candidate, allow_pull=allow_pull)
     pending = ["runtime and GPU admission not verified", "local-only isolation and goal acceptance incomplete"]
-    try:
-        derive_provider_token(cfg.get("security", {}).get("api_token", ""), "validation-nonce-0123456789")
-    except ValueError:
-        pending.append("Hub API token of at least 32 ASCII characters required")
     return {"complete": False, "runtime_verified": False, "profile": profile["profile"],
             "candidate": candidate, "executable": str(executable), "model": model_result, "pending": pending}
 
@@ -1388,7 +1386,7 @@ def main() -> int:
         raise SystemExit("Python 3.11+ is required. Use install.ps1/install.sh to bootstrap a supported Python automatically.")
     parser = argparse.ArgumentParser(description="Install Local AI Hub")
     parser.add_argument("--config", type=Path, default=None, help="Import/replace config from this path. Without it, reruns preserve the installed config.")
-    parser.add_argument("--profile", choices=["auto", "cpu", "integrated", "low", "balanced", "high", "max"])
+    parser.add_argument("--profile", choices=["auto", "cpu", "integrated", "low", "balanced", "medium", "high", "max"])
     parser.add_argument("--skip-model-pull", action="store_true")
     parser.add_argument("--skip-local-nlp-preload", action="store_true")
     parser.add_argument("--skip-tools", action="store_true", help="Do not install Serena")

@@ -1,6 +1,7 @@
 from pathlib import Path
 
 from local_ai_hub.generator import _semantic_handoff_contract
+from local_ai_hub.features import FeatureSet
 from local_ai_hub.routing import targeted_semantic_handoff
 
 
@@ -8,8 +9,15 @@ GUIDANCE = "For non-trivial edits, request evidence-grounded local test suggesti
 
 
 def test_generated_guidance_has_actionable_local_workflow():
-    text = _semantic_handoff_contract(None)
-    assert GUIDANCE in text
+    features = FeatureSet.from_config({
+        "ollama": {"enabled": True},
+        "hardware": {"profile": "high"},
+        "features": {"local_semantic_analysis": True},
+    })
+    text = _semantic_handoff_contract(features)
+    assert "Semantic delegation is on-demand" in text
+    assert "cloud planning is never blocked" in text
+    assert "Deterministic/indexed evidence is authoritative" in text
     assert "unavailable" in text
     assert 'local_ai_task(action="review")' in text
     assert 'local_ai_task(action="delegate")' in text

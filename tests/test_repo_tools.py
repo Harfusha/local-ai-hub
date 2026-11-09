@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import hashlib
 import io
+import shutil
 import subprocess
 import time
 from pathlib import Path
+
+import pytest
 
 from local_ai_hub.config import load_config
 import local_ai_hub.repo_tools as repo_tools_module
@@ -41,6 +44,35 @@ def _cfg(tmp_path: Path):
     path = tmp_path / "config.toml"
     path.write_text(f'[server]\nstate_dir = "{(tmp_path / "state").as_posix()}"\n[hardware]\nprofile="cpu"\n', encoding="utf-8")
     return load_config(str(path))
+
+
+def test_ripgrep_project_candidates_stay_in_one_bounded_argument_batch(tmp_path: Path, monkeypatch):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    tools = RepositoryTools(_cfg(tmp_path))
+    tools._rg = "rg"
+    monkeypatch.setattr(
+        tools, "_resolve_under_base",
+        lambda _base, path: (repo / Path(path), Path(path)),
+    )
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append((cmd, kwargs))
+        return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    paths = [Path(f"src/module_{index}.py") for index in range(250)]
+
+    matches, failed = tools._ripgrep_candidates(repo, ["needle"], 10, candidate_paths=paths)
+
+    assert not failed
+    assert matches == []
+    assert len(calls) == 1
+    cmd, kwargs = calls[0]
+    assert "--files-from" not in cmd
+    assert cmd[cmd.index("--") + 1:] == [path.as_posix() for path in paths]
+    assert kwargs["cwd"] == str(repo)
 
 
 def test_generated_tool_metadata_never_enters_inventory(tmp_path: Path):
@@ -384,3 +416,126 @@ def test_git_grep_timeout_reaps_owned_process(tmp_path: Path, monkeypatch):
     assert timed_out is True
     assert calls[0] == ("terminate", process.pid, process)
     assert calls[1][0] == "wait"
+
+
+
+def test_find_files_git_inventory_prefilters_pattern(tmp_path: Path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "alpha.py").write_text("print(1)\n", encoding="utf-8")
+    (repo / "beta.txt").write_text("hello\n", encoding="utf-8")
+    (repo / "sub").mkdir()
+    (repo / "sub" / "gamma.py").write_text("print(2)\n", encoding="utf-8")
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
+    subprocess.run(["git", "-C", str(repo), "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-qm", "base"], check=True)
+
+    tools = RepositoryTools(_cfg(tmp_path))
+    res = tools.find_files(str(repo), pattern="*.py")
+    assert res["success"] is True
+    assert sorted(res["files"]) == ["alpha.py", "sub/gamma.py"]
+
+
+def test_exact_search_uses_expansion_candidates_without_scanning_unrelated_files(tmp_path: Path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "unicode.txt").write_text("İstanbul\n", encoding="utf-8")
+    (repo / "unrelated.txt").write_text("xyz\n", encoding="utf-8")
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-qm", "base"],
+        check=True,
+    )
+
+    tools = RepositoryTools(_cfg(tmp_path))
+    if tools._rg is None or shutil.which("rg") is None:
+        pytest.skip("ripgrep is required for Unicode candidate acceleration")
+
+    result = tools.search(str(repo), "i", exact_count=True)
+
+    assert result["success"] is True
+    assert result["count_exact"] is True
+    assert result["total_matches"] == 1
+    assert result["scanned_files"] == 1
+    assert result["results"][0]["path"] == "unicode.txt"
+
+
+def test_exact_search_prunes_ignored_directories_before_ripgrep(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    repo = tmp_path / "repo"
+    (repo / "src").mkdir(parents=True)
+    (repo / ".venv" / "site-packages").mkdir(parents=True)
+    (repo / "src" / "visible.txt").write_text("needle\n", encoding="utf-8")
+    (repo / ".venv" / "site-packages" / "ignored.txt").write_text("needle\n", encoding="utf-8")
+    (repo / ".gitignore").write_text(".venv/\n", encoding="utf-8")
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    subprocess.run(["git", "-C", str(repo), "add", ".gitignore", "src/visible.txt"], check=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-qm", "base"],
+        check=True,
+    )
+
+    tools = RepositoryTools(_cfg(tmp_path))
+    if tools._rg is None or shutil.which("rg") is None:
+        pytest.skip("ripgrep is required for exact search candidate pruning")
+
+    original_run = subprocess.run
+    ripgrep_calls: list[list[str]] = []
+
+    def record_ripgrep(cmd, **kwargs):
+        if Path(str(cmd[0])).name.lower().startswith("rg"):
+            ripgrep_calls.append([str(part) for part in cmd])
+        return original_run(cmd, **kwargs)
+
+    monkeypatch.setattr(repo_tools_module.subprocess, "run", record_ripgrep)
+    result = tools.search(str(repo), "needle", exact_count=True)
+
+    assert result["success"] is True
+    assert result["count_exact"] is True
+    assert result["total_matches"] == 1
+    assert result["scanned_files"] == 1
+    assert len(ripgrep_calls) == 1
+    assert "!**/.venv/**" in ripgrep_calls[0]
+
+
+def test_read_snapshot_with_max_bytes_reuses_verified_content(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    source = tmp_path / "module.py"
+    original = b"answer = 42\n"
+    updated = b"answer = 43\n"
+    source.write_bytes(original)
+    original_stat = source.stat()
+    real_stat = Path.stat
+    real_open = Path.open
+    change_time = [100]
+    reads: list[Path] = []
+
+    def stable_stat(path: Path, *args, **kwargs):
+        if path == source:
+            return original_stat
+        return real_stat(path, *args, **kwargs)
+
+    def counted_open(path: Path, mode="r", *args, **kwargs):
+        if path == source and mode == "rb":
+            reads.append(path)
+        return real_open(path, mode, *args, **kwargs)
+
+    tools = RepositoryTools(_cfg(tmp_path))
+    monkeypatch.setattr(tools, "_windows_change_time", lambda _path: change_time[0])
+    monkeypatch.setattr(Path, "stat", stable_stat)
+    monkeypatch.setattr(Path, "open", counted_open)
+
+    original_hash, original_lines = tools._read_snapshot(source, max_bytes=64)
+    assert original_lines == ["answer = 42"]
+    assert reads == [source]
+
+    assert tools._read_snapshot(source, max_bytes=64) == (original_hash, original_lines)
+    assert reads == [source]
+    assert tools.snapshot_hits == 1
+
+    source.write_bytes(updated)
+    change_time[0] += 1
+    updated_hash, updated_lines = tools._read_snapshot(source, max_bytes=64)
+
+    assert updated_hash == hashlib.sha256(updated).hexdigest()
+    assert updated_lines == ["answer = 43"]
+    assert reads == [source, source]

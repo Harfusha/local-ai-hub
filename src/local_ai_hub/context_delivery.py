@@ -132,8 +132,13 @@ def prepare_context_delivery(value: dict[str, Any], budget: int) -> dict[str, An
         if not result.get("error"):
             result["error"] = "compiled context is incomplete"
     # The MCP wire carries both structured content and its text envelope.
-    # Reserve room for exact identities, decisions, citations and accounting.
-    text_budget = max(32, int(budget) // 6)
+    # Dynamically allocate text budget from remaining room after accounting for metadata.
+    saved_text = context.get("text", "")
+    context["text"] = ""
+    envelope_tokens = json_tokens(result)
+    context["text"] = saved_text
+    margin = 64
+    text_budget = max(32, int(budget) - envelope_tokens - margin)
     if json_tokens(context["text"]) > text_budget:
         context["text"] = _prefix(context["text"], text_budget)
         context.update({"success": False, "complete": False, "partial": True, "truncated": True})

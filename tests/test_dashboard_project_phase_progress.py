@@ -13,8 +13,8 @@ def _project_phase_projection(project, complete=False):
     assert node, "Node is required for the dashboard runtime regression"
     phases = re.search(r"const PHASES\s*=\s*(\[[\s\S]*?\]);", DASHBOARD_HTML)
     assert phases
-    start = DASHBOARD_HTML.index("const phaseObj=PHASES.find")
-    end = DASHBOARD_HTML.index("\n    const variants=", start)
+    start = DASHBOARD_HTML.index("const phaseIndex=PHASES.findIndex")
+    end = DASHBOARD_HTML.index("const phaseDetailText=", start)
     script = "const PHASES=" + phases.group(1) + ";"
     script += "const x=" + json.dumps(project) + ";const isComplete=" + json.dumps(complete) + ";const n=String;"
     script += DASHBOARD_HTML[start:end]

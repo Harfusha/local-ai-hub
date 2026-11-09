@@ -281,6 +281,17 @@ def test_task_creation_and_retrieval(store: TaskStore):
 
 
 
+def test_task_create_idempotency_conflict_raises_typed_error(store: TaskStore):
+    from local_ai_hub.agent_tasks import TaskIdempotencyConflictError
+    c1 = contract_with_criteria("criterion 1")
+    t1 = store.create(c1, task_context(), task_id="t-idemp-1", idempotency_key="key-idemp-1")
+    assert t1.task_id == "t-idemp-1"
+
+    c2 = contract_with_criteria("criterion 2")
+    with pytest.raises(TaskIdempotencyConflictError, match="task create idempotency key conflicts"):
+        store.create(c2, task_context(), task_id="t-idemp-1", idempotency_key="key-idemp-1")
+
+
 def test_transition_idempotency_reuse_by_different_actor_is_rejected(store: TaskStore):
     task = store.create(contract_with_criteria(), task_context())
     store.transition(

@@ -10,7 +10,7 @@ import threading
 import time
 from contextlib import closing
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Sequence
 from urllib.parse import quote, unquote
 
 from .sqlite_support import connect_sqlite
@@ -132,37 +132,68 @@ def get_registered_surface_catalog() -> list[dict[str, str]]:
         "/api/audit/tail", "/api/logs/tail", "/api/benchmark/summary",
         "/health", "/ready", "/dashboard"
     )
+    try:
+        from .http_route_registry import TELEMETRY_SAFE_GET_ROUTE_LABELS
+        for path in sorted(TELEMETRY_SAFE_GET_ROUTE_LABELS):
+            _add("endpoint", path)
+    except Exception:
+        pass
     for path in get_paths:
         _add("endpoint", path)
 
-    # MCP tools & common actions
-    mcp_items = (
-        "local_ai_status",
-        "local_ai_task",
-        "local_ai_task:review",
-        "local_ai_task:second_opinion",
-        "local_ai_task:explore",
-        "local_ai_task:reason",
-        "local_ai_task:compress",
-        "local_ai_repo",
-        "local_ai_repo:context",
-        "local_ai_repo:search",
-        "local_ai_repo:code_index",
-        "local_ai_repo:solve",
-        "local_ai_repo:review_diff",
-        "local_ai_repo:security_audit",
-        "local_ai_rag",
-        "local_ai_rag:query",
-        "local_ai_coord",
-        "local_ai_coord:task_create",
-        "local_ai_coord:task_checkpoint",
-        "local_ai_coord:memory_record",
-        "local_ai_coord:memory_find",
-        "local_ai_work",
-        "local_ai_artifact",
-    )
-    for m in mcp_items:
-        _add("mcp", m)
+    # MCP tools & registered actions
+    try:
+        from .operation_contracts import (
+            _ADOPTION_TOOL_NAMES,
+            _STATUS_ACTIONS,
+            _REPO_ACTIONS,
+            _TASK_ACTIONS,
+            _RAG_ACTIONS,
+            _COORD_ACTIONS,
+            _WORK_ACTIONS,
+            _ARTIFACT_ACTIONS,
+        )
+        tool_action_map = {
+            "local_ai_status": _STATUS_ACTIONS,
+            "local_ai_repo": _REPO_ACTIONS,
+            "local_ai_task": _TASK_ACTIONS,
+            "local_ai_rag": _RAG_ACTIONS,
+            "local_ai_coord": _COORD_ACTIONS,
+            "local_ai_work": _WORK_ACTIONS,
+            "local_ai_artifact": _ARTIFACT_ACTIONS,
+        }
+        for tool in _ADOPTION_TOOL_NAMES:
+            _add("mcp", tool)
+            for action in sorted(tool_action_map.get(tool, ())):
+                _add("mcp", f"{tool}:{action}")
+    except Exception:
+        mcp_items = (
+            "local_ai_status",
+            "local_ai_task",
+            "local_ai_task:review",
+            "local_ai_task:second_opinion",
+            "local_ai_task:explore",
+            "local_ai_task:reason",
+            "local_ai_task:compress",
+            "local_ai_repo",
+            "local_ai_repo:context",
+            "local_ai_repo:search",
+            "local_ai_repo:code_index",
+            "local_ai_repo:solve",
+            "local_ai_repo:review_diff",
+            "local_ai_repo:security_audit",
+            "local_ai_rag",
+            "local_ai_rag:query",
+            "local_ai_coord",
+            "local_ai_coord:task_create",
+            "local_ai_coord:task_checkpoint",
+            "local_ai_coord:memory_record",
+            "local_ai_coord:memory_find",
+            "local_ai_work",
+            "local_ai_artifact",
+        )
+        for m in mcp_items:
+            _add("mcp", m)
 
     return catalog
 
@@ -291,6 +322,7 @@ class EndpointStatsStore:
                 "p99_ms": 0.0,
                 "last_used": 0.0,
                 "status": "unused",
+                "issues": [],
             }
             if include_buckets:
                 entry["bucket_counts"] = [0] * NUM_BUCKETS
@@ -320,6 +352,7 @@ class EndpointStatsStore:
                             "p99_ms": 0.0,
                             "last_used": 0.0,
                             "status": "unused",
+                            "issues": [],
                         }
                         if include_buckets:
                             entry["bucket_counts"] = [0] * NUM_BUCKETS
@@ -360,13 +393,17 @@ class EndpointStatsStore:
                     p50, p95, p99 = calculate_percentiles(b_counts, calls)
                     succ_rate = round((succ / calls) * 100.0, 1) if calls > 0 else None
 
+                    issues: list[str] = []
                     status = "active"
                     if calls == 0:
                         status = "unused"
-                    elif succ_rate is not None and succ_rate < 90.0:
-                        status = "failing"
-                    elif p95 >= 1000.0:
-                        status = "slow"
+                    else:
+                        if succ_rate is not None and succ_rate < 90.0:
+                            issues.append("failing")
+                        if p95 >= 1000.0:
+                            issues.append("slow")
+                        if issues:
+                            status = issues[0]
 
                     entry = {
                         "type": itype,
@@ -380,6 +417,7 @@ class EndpointStatsStore:
                         "p99_ms": p99,
                         "last_used": l_used,
                         "status": status,
+                        "issues": issues,
                     }
                     if include_buckets:
                         entry["bucket_counts"] = b_counts
@@ -389,8 +427,8 @@ class EndpointStatsStore:
 
         all_items = list(known_map.values())
         unused_count = sum(1 for it in all_items if it["calls"] == 0)
-        slow_count = sum(1 for it in all_items if it["status"] == "slow")
-        failing_count = sum(1 for it in all_items if it["status"] == "failing")
+        slow_count = sum(1 for it in all_items if "slow" in it["issues"])
+        failing_count = sum(1 for it in all_items if "failing" in it["issues"])
 
         if not include_unused:
             items = [it for it in all_items if it["calls"] > 0]

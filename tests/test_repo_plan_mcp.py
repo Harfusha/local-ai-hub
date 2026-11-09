@@ -197,3 +197,42 @@ def test_plan_edit_small_budget_tracks_real_file_write(monkeypatch, tmp_path):
     assert result.get("mutation_applied") is True, result
     plan = services.plan_get(root=str(root), plan_id="plan_release")
     assert plan["plan"]["tasks"]["task_parser"]["description"] == "long " * 500
+
+
+def test_plan_task_edit_stale_revision_does_not_write(monkeypatch, tmp_path):
+    from local_ai_hub.services import LocalAIServices
+
+    root = tmp_path / "repo"
+    root.mkdir()
+    services = LocalAIServices.__new__(LocalAIServices)
+    services.config = {"server": {"state_dir": str(tmp_path / "state")},
+                       "security": {"allowed_roots": [str(root)]}}
+    assert services.plan_init(root=str(root))["success"]
+    created = services.plan_create(root=str(root), plan_id="plan_cas", title="CAS")
+
+    first = services.plan_task_edit(
+        root=str(root), plan_id="plan_cas", task_id="task_parser",
+        task_data={"title": "Accepted"}, expected_revision=created["file_revision"],
+        idempotency_key="cas-first",
+    )
+    assert first["success"] is True, first
+
+    class Client:
+        def coord(self, action, **kwargs):
+            assert action == "plan_task_edit"
+            return services.plan_task_edit(**kwargs)
+
+    monkeypatch.setattr(mcp_server.FEATURES, "coord", True)
+    monkeypatch.setattr(mcp_server, "CLIENT", Client())
+    _, result = asyncio.run(mcp_server.mcp.call_tool("local_ai_coord", {
+        "action": "plan_task_edit", "root": str(root), "plan_id": "plan_cas",
+        "task_id": "task_parser", "task_data": {"title": "Stale write"},
+        "expected_revision": created["file_revision"],
+        "idempotency_key": "cas-stale", "max_response_tokens": 512,
+    }))
+
+    assert result["success"] is False
+    assert result.get("mutation_applied") is not True
+    persisted = services.plan_get(root=str(root), plan_id="plan_cas")
+    assert persisted["file_revision"] == first["file_revision"]
+    assert persisted["plan"]["tasks"]["task_parser"]["title"] == "Accepted"

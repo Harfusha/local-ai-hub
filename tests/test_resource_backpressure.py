@@ -59,7 +59,7 @@ def test_foreground_admission_is_degraded_under_resource_pressure(tmp_path) -> N
 
 
 def test_foreground_vram_rejection_is_not_mislabeled_as_background():
-    scheduler = _scheduler(None, {"pressure_level": "nominal", "context_budget_factor": 1.0,
+    scheduler = _scheduler(None, {"available": True, "pressure_level": "nominal", "context_budget_factor": 1.0,
                                   "throttle_background": False, "vram_total_mb": 8192,
                                   "vram_available_mb": 512})
     scheduler._model_vram_bytes = {"fast": 3 * 1024 * 1024 * 1024}
@@ -77,7 +77,7 @@ def test_foreground_vram_rejection_is_not_mislabeled_as_background():
 
 
 def test_async_vram_rejection_is_not_mislabeled_as_background():
-    scheduler = _scheduler(None, {"pressure_level": "nominal", "context_budget_factor": 1.0,
+    scheduler = _scheduler(None, {"available": True, "pressure_level": "nominal", "context_budget_factor": 1.0,
                                   "throttle_background": False, "vram_total_mb": 8192,
                                   "vram_available_mb": 0})
     try:

@@ -30,12 +30,24 @@ class SyntheticBackend:
                 "eval_count": 10}
 
 
+class InlineScheduler:
+    """Synchronous scheduler fixture matching the shared admission contract."""
+
+    def submit(self, model, *, source, execute, priority=5, wait_timeout=None,
+               background=False, cancel_event=None):
+        assert model == "synthetic:1"
+        assert source.startswith("tool-agent:")
+        assert callable(execute)
+        return execute()
+
+
 def test_reviewed_raw_harness_cases_round_trip(tmp_path):
     cases = {}
     for case in ("C1", "C2", "C3"):
         root = tmp_path / case
         prepare_fixture(root, case)
         cases[case] = run_tool_case(case, root, "synthetic:1", SyntheticBackend(case),
+                                    scheduler=InlineScheduler(),
                                     context_tokens=16384, timeout_seconds=10)
     store = ArtifactStore(tmp_path / "state")
     runtime = SyntheticBackend("C1")

@@ -1,0 +1,147 @@
+# Code-index budget and coverage
+
+The built-in code index is intentionally partial. Preprocessing admits files that
+the Hub has actually served as evidence, plus one level of eligible local Python
+imports, relative JavaScript/TypeScript modules, and literal relative PHP
+includes. Unresolved or ambiguous dependencies remain unknown. It does not claim
+whole-project symbol coverage. Search responses must keep their coverage and
+freshness fields visible and use source-based fallback when the requested file
+is not indexed.
+
+Direct deterministic affected-test queries may open the existing code index, but
+they never admit every project file as a side effect. Only preprocessing admits
+files from actual Hub evidence use. An absent or partial dependency graph keeps
+`selection_complete=false`; heuristic test matches remain a fallback.
+
+`[code_index].max_index_bytes` sets the shared code-index SQLite budget. The
+default is 536,870,912 bytes (512 MiB), including the database and its WAL/SHM
+sidecars. When over budget, preprocessing evicts the lowest recorded-use files
+first, then the oldest files. Parse blobs share this database; eviction removes
+only blobs no indexed file references, preserving shared parse-cache entries.
+
+Eviction removes derived rows in one bounded transaction and invalidates query
+generations. Small databases use a five-second bounded `VACUUM`; larger databases
+use up to 65,536 incremental pages per preprocessing pass when incremental
+auto-vacuum is enabled. Startup skips the one-time full-database conversion when
+the database already exceeds its configured budget. Such a legacy database may
+need a scheduled maintenance window before SQLite can return all freed space to
+the filesystem.
+
+`CodeIndex.enforce_size_limit(dry_run=True)` reports candidate paths and an
+estimate without changing the database. The normal result reports before/after
+page counts and physical bytes; `within_budget` is false when a bounded pass
+could not release enough space. Existing SQLite free pages count toward the
+reclaim estimate before live files are selected for eviction, so reusable pages
+alone do not evict indexed files. A later preprocessing pass can continue cleanup.
+
+`python tools/cleanup_code_index.py --dry-run` opens the existing database in
+SQLite read-only/query-only mode and skips schema initialization. It can measure
+while the Hub is online; `hub_online` reports whether that state was confirmed.
+The dry-run holds a read snapshot and reports orphan-trigram candidates,
+protected roots, and stale file rows whose source paths no longer exist. Stale
+file scans are bounded by `--max-roots` and `--max-paths-per-root` (20,000 by
+default); oversized roots are skipped and reported. Active Git roots stay
+protected. When more roots remain, `next_stale_root` is a keyset cursor for the
+next bounded run; pass it with `--after-root`. Dry-run output shows at most 20
+stale path examples per root. `--apply` still requires the Hub to be confirmed
+offline. Apply deletes bounded orphan trigram rows and derived rows for missing
+source files; it preserves shared parse blobs and never removes roots or source
+files. The report separates logical source bytes from SQLite physical bytes
+and reusable pages. Use `--compact` only for a confirmed-offline apply when
+returning pages to the filesystem is needed.
+
+Live dry-run on 2026-11-05 (`--max-rows 1000 --max-roots 16`) found 6,904 orphan
+trigram rows, but zero eligible rows across three scanned roots: all three roots
+were active Git roots and stayed protected. It reported 317,538,408 physical
+bytes before and after, zero reusable pages, and zero bytes released. This is a
+live-install measurement, not a cleanup or compaction run.
+
+Earlier live dry-run on 2026-11-06 (`--max-rows 10000 --max-roots 128
+--max-paths-per-root 64`) found 6,904 orphan-trigram candidates and zero
+eligible rows. It found zero stale files, zero reusable pages, and released
+zero physical bytes. The SQLite file plus WAL/SHM measured 470,814,720 bytes;
+active roots stayed protected. See
+`docs/CODE_INDEX_STORAGE_AUDIT_2026-11-06.md` for table row counts, measured
+payload sizes, and attribution limits.
+
+This cap covers the code-index database only. RAG, deterministic facts and
+preprocessing metadata have separate lifecycles.
+
+Admission is checked before each new single-file or batch write. The writer
+reserves conservative space for parse payloads, symbols, references, edges, and
+SQLite indexes. Near the cap, one bounded eviction pass runs before the write.
+Current and other running preprocessing roots are protected; if their active
+root snapshot is unavailable, eviction is refused. If the database still cannot
+fit the estimate, the write is deferred and reports `budget_limited=true` with
+`coverage_complete=false`. Removed source files are still pruned. The project
+waits five minutes before retrying, so it does not spin while the cap is full.
+
+Preprocessing status exposes the actual `code_index_files` count and marks its
+coverage as incomplete by contract. A completed preprocessing project therefore
+does not imply complete code-index coverage. Search continues to verify indexed
+candidates against current source and falls back to source search when coverage
+is partial or a candidate is stale.
+
+## Earlier read-only live SQLite snapshot — 2026-11-06
+
+A read-only SQLite connection measured the live database and its sidecars at
+431,702,016 bytes total: 431,669,248-byte main file, zero-byte WAL, and
+32,768-byte SHM. SQLite reported 105,388 pages of 4,096 bytes, zero free pages,
+and incremental auto-vacuum mode. The database contained 577 files, 12,477
+symbols, 143,542 references, 153,498 edges, 1,532,661 symbol-trigram rows,
+578 parse blobs, and 831 file-usage rows across two roots; the larger root had
+292 files.
+
+The configured default limit is 536,870,912 bytes (512 MiB), and no
+`code_index.max_index_bytes` override was present in `config.toml`. This
+snapshot did not mutate, clean, or vacuum the database. The later same-day
+snapshot and table-page attribution are recorded in
+`docs/CODE_INDEX_STORAGE_AUDIT_2026-11-06.md`; the earlier measurement did not
+capture the database/WAL/SHM split, so it cannot explain the change between
+snapshots. The Python SQLite build had no `dbstat` virtual table, but the later
+audit used the installed `sqlite3_analyzer` to measure table and index page
+shares. Zero free pages in both snapshots means neither showed reusable pages
+for SQLite to return to the filesystem.
+
+## Synthetic bounded-inventory benchmark — 2026-11-06
+
+Reproduce with:
+
+```powershell
+.\.venv\Scripts\python.exe tools/benchmark_code_index_inventory.py --rows 50000 --repeats 7 --batch-size 256
+```
+
+The benchmark compares the former full-list materialization with 256-row
+`fetchmany` batches over 50,000 synthetic rows in warm, in-memory SQLite. Both
+paths selected the same 45,454 eligible paths. Full materialization measured
+227.73 ms median, 238.01 ms nearest-rank p95, and 15,149,929 median peak Python
+bytes. Bounded batches measured 156.02 ms median, 162.12 ms p95, and 7,791,301
+median peak Python bytes: 31.5% lower median time and 48.6% lower peak Python
+allocation in this microbenchmark.
+
+This isolates inventory materialization and filtering. It excludes project path
+policy, filesystem reads, locks, disk I/O, scheduler work, index writes, and the
+running service. It is synthetic evidence for the bounded-read change, not an
+end-to-end preprocessing or search latency claim.
+
+A second same-day run measured full materialization at 232.64 ms median and
+242.18 ms p95, versus 167.73 ms median and 199.72 ms p95 for bounded batches.
+Peak Python allocation remained 15,149,929 B versus 7,791,301 B. The timing
+shift across runs shows host-level variation; both runs retained the same
+eligible-path count and lower allocation for bounded batches.
+
+## Synthetic code-index eviction benchmark — 2026-11-06
+
+Reproduce with:
+
+```powershell
+python tools/benchmark_code_index_budget.py
+```
+
+On a temporary synthetic repository, eviction reduced physical SQLite storage
+from 17,223,680 B to 10,170,368 B (7,053,312 B released) after evicting six of
+16 indexed files. The hot file stayed indexed and the result fit the synthetic
+12,056,576 B budget. A separate write-admission case reserved 65,536 B and
+remained within its 16,437,247 B cap. This demonstrates synthetic SQLite page
+release and admission behavior; it does not measure eviction or latency in the
+installed Hub database.

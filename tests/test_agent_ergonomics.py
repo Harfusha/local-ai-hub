@@ -34,6 +34,22 @@ from local_ai_hub.repo_tools import RepositoryTools
 from local_ai_hub.response_budget import budget_response, json_tokens
 
 
+@pytest.fixture(autouse=True)
+def _qualified_local_capability_profile(monkeypatch):
+    """Model a configured high-profile installation for direct tool-contract tests."""
+    for name, value in {
+        "tasks": True,
+        "hardware_profile": "high",
+        "bounded_work_tier": True,
+        "local_semantic_analysis": True,
+        "local_vision_qualified": True,
+        "local_code_generation_qualified": True,
+        "local_automation_qualified": True,
+        "bounded_work_qualified": True,
+    }.items():
+        monkeypatch.setattr(FEATURES, name, value)
+
+
 def test_repo_tools_apply_patch_exact_crlf_and_whitespace(tmp_path: Path):
     """Point 4: Verify exact, CRLF-tolerant, and whitespace-tolerant patch behavior."""
     repo = tmp_path / "repo"
@@ -154,11 +170,13 @@ def test_task_adoption_and_claim(tmp_path: Path):
     assert fetched is not None
     assert fetched.owner == "gemini"
 
-    # Verify that verification receipt and proof artifact were cleanly rebound to new owner gemini
-    rebound_rcpt = verification_store.completion(task.task_id, current_revision="rev-1").receipts[0]
-    assert rebound_rcpt.owner == "gemini"
+    # Verify that verification receipt and proof artifact remain immutable with original author codex, while completion accepts valid adoption lineage
+    completion_result = verification_store.completion(task.task_id, current_revision="rev-1")
+    assert completion_result.complete is True
+    rebound_rcpt = completion_result.receipts[0]
+    assert rebound_rcpt.owner == "codex"
     rebound_doc = artifact_store.get(ev_id)
-    assert json.loads(rebound_doc["text"])["owner"] == "gemini"
+    assert json.loads(rebound_doc["text"])["owner"] == "codex"
 
 
 def test_dense_response_profile():
@@ -190,7 +208,8 @@ def test_schema_polymorphism_and_validation():
     coord_err = validate_operation_arguments(
         "local_ai_coord",
         "memory_record",
-        {"key": "test_k", "value": "test_v", "confidence": 0.9, "root": "."},
+        {"key": "test_k", "value": "test_v", "confidence": 0.9,
+         "root": str(Path.cwd().resolve()), "scope": "repository"},
     )
     assert coord_err is None
 
@@ -323,6 +342,45 @@ def test_call_graph_structure():
     assert res["depth"] == 1
 
 
+def test_call_graph_preserves_incomplete_index_metadata():
+    from unittest.mock import MagicMock
+    from local_ai_hub.services import LocalAIServices
+
+    services = LocalAIServices.__new__(LocalAIServices)
+    services.code_find_declaration = MagicMock(return_value={"success": True, "path": "target.py", "line": 1, "kind": "function"})
+    services.callers = MagicMock(return_value={
+        "success": True, "callers": [], "coverage": {"complete": False},
+        "freshness": {"status": "not_checked"}, "index_available": True, "truncated": False,
+    })
+    services.callees = MagicMock(return_value={
+        "success": True, "callees": [], "coverage": {"complete": False},
+        "freshness": {"status": "not_checked"}, "index_available": True, "truncated": False,
+    })
+
+    result = services.call_graph(".", "target", depth=1)
+
+    assert result["coverage"]["complete"] is False, result
+    assert result["freshness"]["status"] == "not_checked", result
+    assert result["index_available"] is True, result
+    assert result["partial"] is True, result
+
+
+def test_call_graph_does_not_hide_subquery_failure():
+    from unittest.mock import MagicMock
+    from local_ai_hub.services import LocalAIServices
+
+    services = LocalAIServices.__new__(LocalAIServices)
+    services.code_find_declaration = MagicMock(return_value={"success": True, "path": "target.py", "line": 1, "kind": "function"})
+    services.callers = MagicMock(return_value={"success": False, "error": "index unavailable", "callers": []})
+    services.callees = MagicMock(return_value={"success": True, "callees": []})
+
+    result = services.call_graph(".", "target", depth=1)
+
+    assert result["success"] is False, result
+    assert result["partial"] is True, result
+    assert result["subquery_errors"]["callers"] == "index unavailable", result
+
+
 def test_repo_query_task_aliasing():
     """Point 1: Verify query and task are gracefully aliased in local_ai_repo."""
     from unittest.mock import patch
@@ -438,6 +496,7 @@ def test_checkpoint_and_incident_canonical_inputs(tmp_path: Path):
         assert mock_client.post.called
         post_kwargs = mock_client.post.call_args[0]
         payload = post_kwargs[1]
+        assert payload["root"] == str(tmp_path)
         assert payload["message"] == "bug in regex"
         assert payload["operation_class"] == "ValueError"
         assert payload["affected_paths"] == ["src/re.py"]
@@ -1201,18 +1260,56 @@ def test_coord_task_create_accepts_title_and_description():
 
 
 # ---------------------------------------------------------------------------
-# 10. local_ai_coord memory_record accepts content= and name=
+# 10. local_ai_coord memory_record rejects content= and name=
 # ---------------------------------------------------------------------------
 
-def test_coord_memory_record_accepts_content_and_name():
+def test_coord_memory_record_rejects_content_and_name():
     with patch("local_ai_hub.mcp_server.CLIENT") as mc:
-        mc.coord.return_value = {"success": True, "memory_id": "M1"}
-        res = local_ai_coord(action="memory_record", root="/repo", name="api_key_format", content="Starts with sk-")
-        assert res.get("success") is True, f"memory_record with name/content failed: {res}"
-        assert mc.coord.call_count >= 1
-        kwargs = mc.coord.call_args[1]
-        assert kwargs.get("key") == "api_key_format"
-        assert kwargs.get("value") == "Starts with sk-"
+        incomplete = local_ai_coord(
+            action="memory_record",
+            root=str(Path.cwd().resolve()),
+            scope="repository",
+            name="api_key_format",
+            content="Starts with sk-",
+        )
+        aliased = local_ai_coord(
+            action="memory_record",
+            root=str(Path.cwd().resolve()),
+            scope="repository",
+            key="canonical-key",
+            value="canonical-value",
+            name="legacy-key",
+            content="legacy-value",
+        )
+        assert incomplete.get("success") is False
+        assert aliased.get("success") is False
+        deletion = local_ai_coord(action="memory_delete", record_id="mem_fixture")
+        promotion = local_ai_coord(action="memory_promote", record_id="mem_fixture")
+        assert deletion.get("success") is False
+        assert promotion.get("success") is False
+        assert mc.coord.call_count == 0
+
+
+def test_coord_memory_mutations_forward_only_canonical_arguments():
+    with patch("local_ai_hub.mcp_server.CLIENT.post", return_value={"success": True}) as post:
+        common = {"root": str(Path.cwd().resolve()), "scope": "repository"}
+        record = local_ai_coord(
+            action="memory_record", key="test-key", value="", session_id="session-fixture", **common
+        )
+        deletion = local_ai_coord(action="memory_delete", record_id="mem-fixture", **common)
+        promotion = local_ai_coord(
+            action="memory_promote", record_id="mem-fixture", target_scope="branch", **common
+        )
+
+    assert record.get("success") is True
+    assert deletion.get("success") is True
+    assert promotion.get("success") is True
+    memory_calls = [call for call in post.call_args_list if call.args[0] == "/api/agent-state/memory"]
+    assert len(memory_calls) == 3
+    record_payload = memory_calls[0].args[1]
+    assert record_payload["value"] == ""
+    assert record_payload["session_id"] == "session-fixture"
+    assert "name" not in record_payload and "content" not in record_payload
 
 
 # ---------------------------------------------------------------------------
@@ -1511,7 +1608,7 @@ def test_status_rejects_action_aliases():
 # ---------------------------------------------------------------------------
 
 def test_work_accepts_id_alias_and_goal():
-    with patch("local_ai_hub.mcp_server.CLIENT") as mc,          patch.object(FEATURES, "work_orchestrator", True):
+    with patch("local_ai_hub.mcp_server.CLIENT") as mc, patch.object(FEATURES, "work_orchestrator", True), patch.object(FEATURES, "bounded_work_tier", True):
         mc.post.return_value = {"success": True, "work_id": "W-123", "status": "running"}
         res_get = local_ai_work(action="get", id="W-123")
         assert res_get.get("success") is True, f"work get with id= failed: {res_get}"

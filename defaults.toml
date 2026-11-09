@@ -15,8 +15,7 @@ overload_wait_seconds = 0.05
 max_request_body_bytes = 16777216 # 16 MiB for JSON/API requests; bundle upload has its own limit
 
 [security]
-# HTTP access is loopback-only. An empty token trusts local clients; a configured token is enforced.
-api_token = "" # optional token for trusted local integrations
+# HTTP access is loopback-only and requires no API credential.
 
 [automation]
 enabled = false
@@ -38,8 +37,7 @@ allow_physical_input = false
 [browser_bridge]
 # Capture is explicit: only the extension action click can request the current tab.
 enabled = true
-# Empty by default: operators must configure the exact extension origin (or
-# protect the route with the hub API token). Never use a wildcard origin.
+# Empty by default: operators must configure the exact extension origin. Never use a wildcard origin.
 allowed_origins = []
 capability_ttl_seconds = 60
 max_payload_bytes = 12582912
@@ -86,7 +84,8 @@ cloud_provider = ""
 # A mapped llama.cpp route takes precedence; when unavailable, Ollama is used
 # only if fallback_to_ollama is true and Ollama is enabled.
 mode = "auto" # off | auto (external only) | on (managed llama.cpp)
-model_load_timeout_seconds = 600
+# Bound foreground model preparation so a stalled provider cannot pin requests for minutes.
+model_load_timeout_seconds = 60
 managed_model_filename = "hub-qwen-15.gguf"
 fallback_to_ollama = false
 
@@ -199,7 +198,7 @@ reasoning_resident_fallback = false
 # process-global in Ollama. The foreground runner is unloaded before lease.
 enabled = true
 process_priority = "idle"
-ollama_url = "http://127.0.0.1:11436"
+ollama_url = "http://127.0.0.1:11438"
 # Optional serial CPU lane used while the GPU worker is not eligible. It is a
 # separate Ollama process, so it cannot alter the foreground GPU profile.
 cpu_fallback_enabled = false
@@ -211,7 +210,7 @@ max_queue = 32
 keep_alive = "10m"
 request_timeout_seconds = 90
 flash_attention = true
-kv_cache_type = "q8_0"
+kv_cache_type = "q4_0"
 gpu_overhead_bytes = 268435456
 max_cpu_offload_fraction = 0.12
 profile_retry_cooldown_seconds = 120.0
@@ -221,7 +220,7 @@ module_batch_size = 4
 [scheduler]
 # Balanced baseline; the hardware profile overlays this before explicit user values.
 # Optional conservative per-model VRAM upper bounds for cold-start admission.
-model_vram_estimates_bytes = {}
+model_vram_estimates_bytes = {"qwen3.5:4b-nvfp4" = 6442450944, "qwen3.5:9b" = 6096900060, "qwen3.5:9b-nvfp4" = 6096900060, "qwen2.5-coder:7b" = 6853448695, "qwen2.5-coder:14b" = 10737418240, "qwen2.5-coder:32b" = 21474836480, "mistral-nemo:12b" = 8589934592, "minicpm-v:8b" = 6442450944}
 max_parallel = 2
 max_loaded_models = 1
 max_queue = 256
@@ -302,7 +301,7 @@ num_parallel = 2
 allow_integrated_gpu = false
 enable_vulkan = false
 flash_attention = true
-kv_cache_type = "q8_0"
+kv_cache_type = "q4_0"
 gpu_overhead_bytes = 268435456 # reserve 256 MiB so desktop VRAM pressure does not turn into an OOM
 keep_alive = "10m" # release idle model weights promptly; VRAM-aware requests shorten this further under pressure
 request_attempts = 1
@@ -317,7 +316,7 @@ model = ""
 num_parallel = 1
 context_length = 32768
 flash_attention = true
-kv_cache_type = "q8_0"
+kv_cache_type = "q4_0"
 keep_alive = "10m"
 startup_timeout_seconds = 30
 handoff_timeout_seconds = 10
@@ -365,6 +364,11 @@ compression_chunk_tokens = 8000
 # Cloud model input/output rates used for USD savings estimates.
 cloud_input_token_cost_usd_per_million = 3.0
 cloud_output_token_cost_usd_per_million = 3.0
+# Pricing profile: "claude-5-sonnet", "claude-5-haiku", "claude-5-opus", "gpt-6", "gpt-6-mini", "gemini-3-flash", "gemini-3-pro", "claude-3-5-sonnet", "gpt-4o", "gemini-2-flash", or "custom"
+pricing_profile = "claude-5-sonnet"
+# Cloud model input/output and prompt caching rates for realistic range estimates
+cloud_cache_read_token_cost_usd_per_million = 0.25
+cloud_cache_write_token_cost_usd_per_million = 3.125
 # Large local responses are stored outside agent context and represented by a compact preview + artifact id.
 compact_responses = true
 max_inline_chars = 1800
@@ -487,6 +491,8 @@ startup_model = "fast_code"
 delay_seconds = 1.5
 # Allow managed backends to finish startup before abandoning prewarm.
 backend_wait_seconds = 30.0
+# Keep optional startup prewarm retries under four minutes.
+max_attempts = 24
 
 [search]
 special_filenames = ["Dockerfile", "Containerfile", "docker-compose.yml", "docker-compose.yaml", "compose.yml", "compose.yaml", "Makefile", "GNUmakefile", "justfile", "Gemfile", "Pipfile", ".env", ".env.example", ".env.sample", ".gitlab-ci.yml", ".gitlab-ci.yaml", "azure-pipelines.yml", "azure-pipelines.yaml"]
@@ -580,10 +586,12 @@ subagents = true # advisory local profiles (qwen-explorer, etc.)
 agent_os = true # durable execution: tasks, verification receipts, memory
 dashboard = true # realtime web dashboard at /dashboard
 work_orchestrator = true # whole-task DAG execution and verified handoff (local_ai_work)
+bounded_local_work = true # allow bounded work submission on high/max profile
 enriched_search = true # source-enriched repository search
 batch_replacement = true # atomic repository batch replacement
 diagnostic_artifacts = true # persist command diagnostic artifacts
-local_diagnostic_dispatch = true # opt in to bounded local failure diagnosis
+local_diagnostic_dispatch = false # opt in to bounded local failure diagnosis
+local_reranking = true # enable optional RAG search reranking in every hardware profile
 reranker = true
 install_local_nlp_dependencies = true
 install_openvino_dependencies = true
@@ -628,11 +636,11 @@ host_tool_timeout_seconds = 900
 # Aggregate agent-facing budgets are enforced after semantic projection. Exact
 # source/log detail remains available through local_ai_artifact.
 enabled = true
-default_tokens = 3200
+default_tokens = 8192
 max_tokens = 16000
 reuse_cache_size = 256
 ledger_size = 512
-tool_tokens = { local_ai_status = 1200, local_ai_task = 4000, local_ai_repo = 3200, local_ai_rag = 3000, local_ai_coord = 3200, local_ai_artifact = 4000, local_ai_work = 4000 }
+tool_tokens = { local_ai_status = 2000, local_ai_task = 8192, local_ai_repo = 8192, local_ai_rag = 6000, local_ai_coord = 8192, local_ai_artifact = 8192, local_ai_work = 8192 }
 
 [workflow]
 direct_repo_context_tokens = 3000
@@ -886,6 +894,9 @@ enabled = true
 max_query_results = 30
 # Content-addressed parser cache is shared across paths/worktrees.
 parse_blob_max_entries = 100000
+# Hard cap for the derived code-index SQLite database and its WAL/SHM sidecars.
+# Coldest/least-used files evict first; bounded SQLite compaction returns pages.
+max_index_bytes = 536870912
 
 [evidence]
 # Immutable exact source slices are addressed by compact IDs and fetched lazily.

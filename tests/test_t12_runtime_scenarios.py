@@ -110,10 +110,11 @@ def test_t12_prepare_model_honors_stop_before_model_load() -> None:
 
     runtime.llama_cpp = LlamaRuntime()
 
-    with pytest.raises(ModelPreparationCancelled):
+    with pytest.raises(ModelPreparationCancelled) as exc_info:
         runtime.prepare_model("reranker-model", should_stop=lambda: True)
 
     assert calls == []
+    assert exc_info.value.operation_not_started is True
 
 
 def test_t12_prepare_model_forwards_deadline_and_stop_to_embedding_load() -> None:
@@ -824,7 +825,7 @@ def test_t12_runtime_cancel_holds_admission_until_child_inference_exits() -> Non
         assert scenario_done.wait(2)
         assert scenario_result[0]["metrics"]["cancelled"] is True
         assert scenario_result[0]["metrics"]["cleanup_complete"] is True
-        assert next_inference_started.wait(1)
+        assert next_inference_started.wait(1), second_result
         next_thread.join(1)
         assert not next_thread.is_alive()
         assert second_result[0]["success"] is True

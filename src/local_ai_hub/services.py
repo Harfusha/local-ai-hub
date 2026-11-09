@@ -21,7 +21,7 @@ from concurrent.futures import ThreadPoolExecutor, wait
 from dataclasses import asdict
 from contextlib import closing, contextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 from . import __version__
 from .artifacts import ArtifactStore
@@ -37,7 +37,16 @@ from .ollama_subagents import OllamaSubagentCatalog
 from .process_utils import canonical_root
 from .repo_tools import RepositoryTools
 from .search_pagination import MAX_PAGE_SIZE, MAX_PAGE_WINDOW, pagination_bounds_error
-from .scheduler import SchedulerCancelledError
+from .search_modes import (
+    canonical_search_mode,
+    default_search_mode,
+    deduplicate_search_files,
+    expand_semantic_query,
+    fuse_search_results,
+    lexical_precision_query,
+    prefers_lexical_precision,
+)
+from .scheduler import SchedulerCancelledError, SchedulerTimeoutError
 from .router import ModelRouter, review_diff_complexity
 from .sqlite_support import connect_sqlite
 from .adoption_metrics import AdoptionMetricsStore
@@ -61,6 +70,24 @@ from .retrieval import (
     prioritize_source_context_paths,
     source_context_path_tier,
 )
+
+
+def _rag_fragment_matches_source(fragment: str, source: str) -> bool:
+    """Verify indexed text while accounting for deterministic AST chunk wrappers."""
+    normalized_fragment = fragment.replace("\r\n", "\n").replace("\r", "\n")
+    normalized_source = source.replace("\r\n", "\n").replace("\r", "\n")
+    if normalized_fragment in normalized_source:
+        return True
+    marker = "# [Module context]\n"
+    if not normalized_fragment.startswith(marker):
+        return False
+    _preamble, separator, body = normalized_fragment[len(marker):].partition("\n\n")
+    if not separator or not body:
+        return False
+    method_wrapper = re.search(r"(?m)^    # method [^\n]*\n", body)
+    if method_wrapper is not None:
+        body = body[method_wrapper.end():]
+    return bool(body) and body in normalized_source
 
 
 class _LinkedCancelEvent:
@@ -242,16 +269,45 @@ def _review_text_error(value: Any) -> str | None:
     # Match SUMMARY: with tolerance for markdown headers (#, ##), bullet points (- , * ),
     # bolding (**SUMMARY:** or **SUMMARY**), backticks (`SUMMARY:`), or 1 introductory line.
     match = re.search(
-        r"(?:^|\n)(?:#{1,6}\s*)?(?:\*{1,2}|`{1,3})?(?:(?:\d+[\.\)]|[-*+])\s+)?(?:\*{1,2}|`{1,3})?SUMMARY(?:\*{1,2}|`{1,3})?:?[ \t]*(.*)$",
+        r"(?:^|\n)(?:#{1,6}\s*)?(?:\*{1,2}|`{1,3})?(?:(?:\d+[\.\)]|[-*+])\s+)?(?:\*{1,2}|`{1,3})?(?:SUMMARY|SYNTHESIS|OVERALL SUMMARY)(?:\*{1,2}|`{1,3})?:?[ \t]*(.*)$",
         text,
         re.IGNORECASE | re.DOTALL,
     )
-    if match is None or match.start() > 250:
+    if match is None or match.start() > 1000:
         return "Model output did not start with the required SUMMARY: header."
     words = re.findall(r"[^\W\d_]+", match.group(1), flags=re.UNICODE)
     if len(words) < 1:
         return "Model returned an incomplete or malformed review summary."
     return None
+
+
+def _review_failure_details(response: Any) -> dict[str, Any]:
+    """Preserve bounded execution state when a chunked review fails."""
+    if not isinstance(response, dict):
+        return {}
+    details: dict[str, Any] = {}
+    error_code = response.get("error_code")
+    if isinstance(error_code, str):
+        error_code = error_code.strip()
+        if re.fullmatch(r"[A-Za-z0-9_.-]{1,100}", error_code):
+            details["error_code"] = error_code
+    for key in (
+        "retryable",
+        "operation_not_started",
+        "timed_out",
+        "outcome_unknown",
+        "cancelled",
+        "cleanup_unconfirmed",
+        "output_truncated",
+        "terminal",
+    ):
+        value = response.get(key)
+        if isinstance(value, bool):
+            details[key] = value
+    model = response.get("model")
+    if isinstance(model, str) and model.strip():
+        details["model"] = model.strip()[:120]
+    return details
 
 
 def _review_model_identity(value: Any) -> str:
@@ -1049,7 +1105,10 @@ class LocalAIServices:
             fast = self.preprocessor.cache_fingerprint(root)
             if isinstance(fast, dict) and fast.get("fingerprint"):
                 return fast
-        return self.repo_state.fingerprint(root)
+        tracker = getattr(self, "repo_state", None)
+        if tracker is not None and hasattr(tracker, "fingerprint"):
+            return tracker.fingerprint(root)
+        return {}
 
     def _resident_optimize(self, route: dict[str, Any], task_type_override: str, complexity_override: str) -> dict[str, Any]:
         cfg = self.config.get("routing", {})
@@ -1065,6 +1124,7 @@ class LocalAIServices:
         models = self.config["models"]
         desired = route["model"]
         reason = None
+        resident_execution_role = None
         if route["task_type"] in {"code", "review"}:
             if desired == models.get("fast_code") and active == models.get("heavy_code"):
                 # Heavy meets the fast tier quality gate. Once benchmark history exists,
@@ -1087,16 +1147,24 @@ class LocalAIServices:
             route["task_type"] == "reasoning"
             and cfg.get("reasoning_resident_fallback", False)
             and task_type_override == "auto"
-            and active == models.get("heavy_code")
+            and active in {models.get("heavy_code"), models.get("fast_code")}
         ):
             desired = active
-            reason = "resident-heavy-reasoning-fallback"
+            reason = (
+                "resident-heavy-reasoning-fallback"
+                if active == models.get("heavy_code")
+                else "resident-fast-reasoning-fallback"
+            )
+            if active == models.get("fast_code"):
+                resident_execution_role = "fast_code"
 
         if desired != route["model"]:
             route = dict(route)
             route["original_model"] = route["model"]
             route["model"] = desired
             route["resident_optimization"] = reason
+            if resident_execution_role is not None:
+                route["resident_execution_role"] = resident_execution_role
         return route
 
     def _fallback_models(self, requested: str) -> list[str]:
@@ -1171,6 +1239,7 @@ class LocalAIServices:
         repository_revision: str = "",
         trace_system_override: str | None = None,
         cancel_event: threading.Event | None = None,
+        route: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         from .operational_mode import (
             OperationalModeSnapshot,
@@ -1198,6 +1267,7 @@ class LocalAIServices:
                 return rejection
         trace_system = system if trace_system_override is None else str(trace_system_override)
         mode_pause_result: dict[str, Any] | None = None
+        effective_route = dict(route) if isinstance(route, Mapping) else {}
         if cancel_event is None:
             from .client import CURRENT_REQUEST_CANCEL_EVENT
             cancel_event = CURRENT_REQUEST_CANCEL_EVENT.get()
@@ -1286,14 +1356,24 @@ class LocalAIServices:
         semantic_scope_data = {
             "model": model, "system": system, "options": options, "think": base_payload.get("think"), "execution": execution_scope,
             "context": norm_context_fp, "source": source.split(":", 1)[0], "app_version": __version__,
+            "repository_revision": repository_revision,
         }
         if project_config_digest or project_namespace:
             semantic_scope_data.update({
-                "repository_revision": repository_revision,
                 "project_config_digest": project_config_digest,
                 "project_namespace": project_namespace,
             })
         semantic_scope = stable_hash(semantic_scope_data)
+        is_code_bound = (
+            admission_action in {
+                "review", "review_diff", "solve", "complete_code", "generate_tests", "scaffold",
+            }
+            or source.startswith("code_")
+            or source.startswith("repo:")
+            or bool(project_namespace)
+            or bool(semantic_context_fingerprint)
+        )
+        allow_semantic_cache = use_cache and not (is_code_bound and not repository_revision)
         started = time.perf_counter()
         cache_layer = "miss"
         semantic_score = 0.0
@@ -1301,7 +1381,7 @@ class LocalAIServices:
 
         def compute_inner() -> dict[str, Any]:
             nonlocal semantic_score
-            if use_cache and semantic_query:
+            if allow_semantic_cache and semantic_query:
                 semantic, semantic_score = self.semantic_cache.get(semantic_scope, semantic_query)
                 if isinstance(semantic, dict):
                     reused = copy.deepcopy(semantic)
@@ -1378,11 +1458,16 @@ class LocalAIServices:
                         }
                     if cancel_event is not None and cancel_event.is_set():
                         return cancelled_result()
+                    candidate_role = (
+                        str(effective_route.get("resident_execution_role") or role)
+                        if candidate_model == str(effective_route.get("model") or "")
+                        else role
+                    )
                     # A smart->fast resilience fallback may have a smaller context window
                     # than the originally requested model. Re-fit locally instead of
                     # relying on implicit server truncation or turning an outage into OOM.
                     candidate_hint = self.model_policy.profile(
-                        candidate_model, role=role, input_tokens=prepared.estimated_tokens, output_tokens=max_tokens,
+                        candidate_model, role=candidate_role, input_tokens=prepared.estimated_tokens, output_tokens=max_tokens,
                         background=source.startswith("preprocess:"),
                         vram_free_mb=vram_free,
                     )
@@ -1392,7 +1477,7 @@ class LocalAIServices:
                         {"model": candidate_model, "prompt": candidate_prepared.text, "system": system, "stream": False,
                          "keep_alive": self.config.get("ollama", {}).get("keep_alive", "-1"),
                          "options": {"num_predict": max_tokens, "temperature": float(temperature)}},
-                        role=role, input_tokens=candidate_prepared.estimated_tokens, output_tokens=max_tokens,
+                        role=candidate_role, input_tokens=candidate_prepared.estimated_tokens, output_tokens=max_tokens,
                         background=source.startswith("preprocess:"), preserve_explicit_think=False,
                         vram_free_mb=vram_free,
                     )
@@ -1534,11 +1619,20 @@ class LocalAIServices:
                                 "final_response_produced": bool(clean_text.strip()), "final_response_status": "truncated",
                                 "terminal": True, "retryable": False, "_cacheable": False,
                                 **({"_lah_backend_completed": True} if response.get("done") is True else {})}
+                    if not clean_text.strip():
+                        return {
+                            "success": False, "error": "local model returned empty response",
+                            "error_code": "model_empty_response", "model": candidate_model,
+                            "requested_model": requested_model, "text": "", "thinking": thinking,
+                            "final_response_produced": False, "final_response_status": "empty",
+                            "terminal": False, "retryable": True, "_cacheable": False,
+                            "_lah_retry_count": int(response.get("_lah_retry_count", 0) or 0),
+                        }
                     return {
                         "success": True, "model": candidate_model, "requested_model": requested_model,
                         "text": clean_text, "thinking": thinking,
-                        "final_response_produced": bool(clean_text.strip()),
-                        "final_response_status": "produced" if clean_text.strip() else "empty",
+                        "final_response_produced": True,
+                        "final_response_status": "produced",
                         "load_duration_ns": response.get("load_duration", 0), "eval_count": response.get("eval_count", 0),
                         "prompt_eval_count": response.get("prompt_eval_count", 0),
                         "prompt_eval_duration_ns": response.get("prompt_eval_duration", 0),
@@ -1548,7 +1642,7 @@ class LocalAIServices:
                         **({"context_recovery": response["context_recovery"]} if response.get("context_recovery") is not None else {}),
                         "_lah_provider": response.get("_lah_provider", "ollama"),
                         "_lah_cache_origin": "ollama", "fallback_used": candidate_model != requested_model,
-                        "_cacheable": candidate_model == requested_model and bool(clean_text.strip()) and not response.get("context_recovery"),
+                        "_cacheable": candidate_model == requested_model and not response.get("context_recovery"),
                     }
 
                 try:
@@ -1692,7 +1786,7 @@ class LocalAIServices:
 
         def compute() -> dict[str, Any]:
             nonlocal semantic_score
-            if not semantic_query:
+            if not semantic_query or not allow_semantic_cache:
                 return compute_inner()
             # Different phrasings with the same strict semantic scope serialize only on a cache miss.
             # The second request rechecks semantic cache after the first completes, coalescing paraphrases.
@@ -1704,7 +1798,7 @@ class LocalAIServices:
                     reused["_lah_semantic_similarity"] = semantic_score
                     return reused
                 result = compute_inner()
-                if isinstance(result, dict) and result.get("success", "error" not in result) and not result.get("fallback_used", False) and result.get("_cacheable", True) and not result.get("context_recovery"):
+                if allow_semantic_cache and isinstance(result, dict) and result.get("success", "error" not in result) and not result.get("fallback_used", False) and result.get("_cacheable", True) and not result.get("context_recovery"):
                     clean = {k: v for k, v in result.items() if not str(k).startswith("_lah_")}
                     try:
                         self.semantic_cache.set(semantic_scope, semantic_query, clean)
@@ -1795,14 +1889,13 @@ class LocalAIServices:
             "local_compute_tokens_avoided_est": max(0, int(cached_compute_tokens)),
         }
 
-        if self.tuner is not None and cache_layer == "ollama":
+        success = bool(result.get("success", "error" not in result))
+        if self.tuner is not None and cache_layer == "ollama" and success:
             self._observe_tuner_safely(
                 str(result.get("model", model)),
                 result,
                 (time.perf_counter() - started) * 1000,
             )
-
-        success = bool(result.get("success", "error" not in result))
         error_type = "" if success else "model_request_failed"
         self.telemetry.record(
             action=source, model=str(result.get("model", model)), cache_hit=effective_cache_hit, coalesced=coalesced,
@@ -1895,6 +1988,7 @@ class LocalAIServices:
                 route["model"], prompt, system, max_tokens, temperature, source=source, priority=priority,
                 internal=True, use_cache=False, trace_system_override=trace_system,
                 cancel_event=cancel_event,
+                route=route,
             )
         except Exception:
             self.conversations.discard(conversation.conversation_id)
@@ -1943,6 +2037,7 @@ class LocalAIServices:
                 internal=True, use_cache=False,
                 trace_system_override=str(settings.get("trace_system", settings["system"])),
                 cancel_event=cancel_event,
+                route=settings.get("route"),
             )
         except Exception:
             self.conversations.abort(conversation_id)
@@ -2105,6 +2200,7 @@ class LocalAIServices:
             project_namespace=project_namespace,
             repository_revision=project_revision or str(args.get("repository_revision", "")),
             use_cache=project_context is None or bool(project_namespace),
+            route=route,
             **({"cancel_event": cancel_event} if cancel_event is not None else {}),
         )
         if cancel_event is not None and cancel_event.is_set() and result.get("success") is True:
@@ -2324,6 +2420,7 @@ class LocalAIServices:
             int(args.get("max_tokens", 4096)), float(args.get("temperature", 0.2)),
             source="second-opinion", priority=int(args.get("priority", 6)),
             semantic_query=f"{question}\n{focus}", semantic_context_fingerprint=stable_hash({"candidate": candidate, "context": context}),
+            route=route,
             **({"cancel_event": cancel_event} if cancel_event is not None else {}),
         )
         if cancel_event is not None and cancel_event.is_set() and result.get("success") is True:
@@ -3048,28 +3145,70 @@ class LocalAIServices:
         evidence = value.get("evidence")
         if not isinstance(evidence, list) or not evidence:
             return True
-        validate = getattr(getattr(self, "evidence_store", None), "validate_current", None)
-        if not callable(validate) or len(evidence) > 64:
+        evidence_store = getattr(self, "evidence_store", None)
+        if len(evidence) > 64:
             return False
         try:
+            evidence_ids = [
+                item.get("evidence_id")
+                for item in evidence
+                if isinstance(item, dict)
+            ]
+            if len(evidence_ids) != len(evidence):
+                return False
+            validate_many = getattr(evidence_store, "validate_current_many", None)
+            if callable(validate_many):
+                return validate_many(evidence_ids) is True
+            validate = getattr(evidence_store, "validate_current", None)
+            if not callable(validate):
+                return False
             return all(isinstance(item, dict) and isinstance(item.get("evidence_id"), str)
                        and bool(item["evidence_id"]) and validate(item["evidence_id"]) is True
                        for item in evidence)
         except Exception:
             return False
 
-    def _repo_cached(self, operation: str, root: str, params: dict[str, Any], compute: Any) -> dict[str, Any]:
+    def _repo_cached(
+        self, operation: str, root: str, params: dict[str, Any], compute: Any,
+        *, state_override: dict[str, Any] | None = None,
+        cache_results: bool = True,
+    ) -> dict[str, Any]:
         # Worktrees/temp repositories can disappear between an agent request and a
         # coalesced background computation. Treat that as a stale input, not a hub 500.
         try:
             self._touch_project(root)
-            state = self._repo_cache_state(root) or {}
+            tracker = getattr(self, "repo_state", None)
+
+            if not cache_results:
+                state = state_override if isinstance(state_override, dict) else self._repo_cache_state(root) or {}
+            elif operation == "search" and tracker is not None:
+                # Exact counts cover the whole repository, including files not
+                # present in the previous page. A TTL-cached fingerprint cannot
+                # prove that no new match appeared since the previous request.
+                state = (
+                    state_override if isinstance(state_override, dict)
+                    else tracker.fingerprint(root, force=True) or {}
+                )
+            else:
+                state = self._repo_cache_state(root) or {}
             fingerprint = state.get("fingerprint")
-            if not isinstance(fingerprint, str) or not fingerprint.strip():
+            changed_files = state.get("changed_files")
+            search_state_incomplete = operation == "search" and (
+                bool(state.get("degraded") or state.get("stale") or state.get("truncated"))
+                or bool(params.get("force_include_patterns"))
+                or (isinstance(changed_files, int) and not isinstance(changed_files, bool)
+                    and changed_files > getattr(tracker, "max_changed_paths", changed_files))
+            )
+            if not cache_results:
+                raw = compute()
+                hit = coalesced = False
+                cache_degraded = bool(state.get("degraded", False))
+                cache_reason = "live_source_search"
+            elif not isinstance(fingerprint, str) or not fingerprint.strip() or search_state_incomplete:
                 raw = compute()
                 hit = coalesced = False
                 cache_degraded = True
-                cache_reason = "missing_or_invalid_fingerprint"
+                cache_reason = "incomplete_search_fingerprint" if search_state_incomplete else "missing_or_invalid_fingerprint"
             else:
                 # Physical-root identity isolates clean clones with otherwise
                 # identical fingerprints while collapsing lexical aliases.
@@ -3135,7 +3274,530 @@ class LocalAIServices:
         *,
         limit: int | None = None,
         offset: int = 0,
+        search_mode: str | None = None,
+        exact_count: bool = True,
     ) -> dict[str, Any]:
+        if type(exact_count) is not bool:
+            return {
+                "success": False, "error": "exact_count must be a boolean",
+                "status_code": 400, "terminal": True, "retryable": False,
+                "root": root, "results": [], "total_matches": 0,
+                "count_exact": False, "has_more": False,
+            }
+        mode = default_search_mode(query) if search_mode is None else canonical_search_mode(search_mode)
+        if mode is None:
+            return {
+                "success": False, "error": "search_mode must be lexical, rag, or hybrid",
+                "status_code": 400, "terminal": True, "retryable": False,
+                "search_mode": search_mode, "results": [], "total_matches": 0,
+                "count_exact": False, "has_more": False,
+            }
+        page_limit = max(1, int(top_k)) if limit is None else limit
+        bounds_error = pagination_bounds_error(page_limit, offset)
+        if bounds_error:
+            return {
+                "success": False, "error": bounds_error, "status_code": 400,
+                "root": root, "results": [], "total_matches": 0, "has_more": False,
+                "limit": page_limit if type(page_limit) is int and 1 <= page_limit <= MAX_PAGE_SIZE else None,
+                "offset": offset if type(offset) is int and 0 <= offset < MAX_PAGE_WINDOW else None,
+                "search_mode": mode,
+            }
+        if mode == "lexical":
+            lexical_query = (
+                lexical_precision_query(query)
+                if prefers_lexical_precision(query) else query
+            )
+            result = self._repo_search_lexical(
+                root, lexical_query, top_k, context_lines, enrich, path_hints, scope,
+                limit=page_limit, offset=offset, exact_count=exact_count,
+                installation_intent_priority=not prefers_lexical_precision(query),
+            )
+            result.update({
+                "search_mode": "lexical", "result_source": "lexical",
+                "index_state": "current_sources" if result.get("success") is True else "unavailable",
+                "coverage_complete": (
+                    result.get("success") is True
+                    and result.get("truncated") is False
+                    and result.get("has_more") is False
+                    and result.get("read_errors", 0) == 0
+                ),
+                "reranker": {"requested": False, "used": False, "degraded": False},
+            })
+            for item in result.get("results", []) if result.get("success") is True else []:
+                if isinstance(item, dict):
+                    item["sources"] = ["lexical"]
+                    item["result_source"] = "lexical"
+            return result
+
+        if mode == "hybrid" and prefers_lexical_precision(query):
+            lexical_query = lexical_precision_query(query)
+            result = self._repo_search_lexical(
+                root, lexical_query, top_k, context_lines, enrich, path_hints, scope,
+                limit=page_limit, offset=offset, exact_count=exact_count,
+            )
+            succeeded = result.get("success") is True
+            lexical_count = result.get("total_matches")
+            lexical_count_exact = result.get("count_exact") is True
+            result.update({
+                "search_mode": "hybrid",
+                "result_source": "lexical",
+                "coverage_complete": (
+                    succeeded
+                    and result.get("truncated") is False
+                    and result.get("has_more") is False
+                    and result.get("read_errors", 0) == 0
+                ),
+                "degraded": not succeeded,
+                "degradation_reason": None if succeeded else result.get("error", "lexical_search_unavailable"),
+                "index_state": "current_sources" if succeeded else "unavailable",
+                "candidate_freshness": "verified_against_current_sources" if succeeded else "unknown",
+                "lexical_total_matches": lexical_count,
+                "lexical_count_exact": lexical_count_exact,
+                "rag_candidate_count": 0,
+                "rag_candidate_count_exact": False,
+                "rag_search_skipped": True,
+                "rag_skip_reason": "exact_lexical_precision",
+                "reranker": {
+                    "requested": bool(self.config.get("features", {}).get("reranker", True)),
+                    "used": False,
+                    "degraded": not succeeded,
+                    "skipped_reason": "exact_lexical_precision",
+                },
+            })
+            for item in result.get("results", []) if succeeded else []:
+                if isinstance(item, dict):
+                    item["sources"] = ["lexical"]
+                    item["result_source"] = "lexical"
+            return result
+
+        semantic_query, query_expansion_applied = expand_semantic_query(query)
+        candidate_query = semantic_query
+        # Search fallback needs both the user's original lexical anchors and
+        # the expansion terms. RepoTools separates added terms for ranking, so
+        # passing only the suffix can hide exact source wording (for example
+        # "installation" when expansion contains only "install").
+        rag_rows, rag_meta = self._repo_rag_search(
+            root,
+            semantic_query,
+            max(32, page_limit),
+        )
+        search_cache = rag_meta.get("search_cache")
+        search_cache_fields = {}
+        if isinstance(search_cache, dict):
+            if type(search_cache.get("hit")) is bool:
+                search_cache_fields["cache_hit"] = search_cache["hit"]
+            if type(search_cache.get("coalesced")) is bool:
+                search_cache_fields["coalesced"] = search_cache["coalesced"]
+
+        def lexical_preprocessed_candidates() -> tuple[str, ...] | None:
+            preprocessor = getattr(self, "preprocessor", None)
+            if prefers_lexical_precision(query) or preprocessor is None:
+                return None
+            try:
+                candidate_limit = 128
+                candidates = preprocessor.candidate_paths(
+                    root, candidate_query, candidate_limit,
+                )
+                return tuple(candidates[:candidate_limit]) if candidates else None
+            except (OSError, sqlite3.Error, ValueError) as candidate_exc:
+                logger.debug(
+                    "Hybrid preprocessing candidates skipped (%s)",
+                    type(candidate_exc).__name__,
+                )
+                return None
+
+        if prefers_lexical_precision(query):
+            literal = query.casefold()
+            rag_rows = [
+                row for row in rag_rows
+                if literal in str(row.get("text", "")).casefold()
+                or literal in str(row.get("path", "")).casefold()
+            ]
+        if rag_meta.get("success") is not True:
+            if mode == "hybrid":
+                lexical_candidate_paths = lexical_preprocessed_candidates()
+                result = self._repo_search_lexical(
+                    root, query, top_k, context_lines, enrich, path_hints, scope,
+                    limit=page_limit, offset=offset, exact_count=False,
+                    candidate_paths=lexical_candidate_paths,
+                    candidate_query=(
+                        candidate_query
+                        if query_expansion_applied
+                        else None
+                    ),
+                    installation_intent_priority=(
+                        mode == "hybrid" and not prefers_lexical_precision(query)
+                    ),
+                )
+                result["results"] = deduplicate_search_files(result.get("results", []))
+                result.update({
+                    "search_mode": "hybrid", "result_source": "lexical_fallback",
+                    "coverage_complete": False, "degraded": True,
+                    "total_matches": None, "count_exact": False, "has_more": None,
+                    "degradation_reason": rag_meta.get("reason", "rag_unavailable"),
+                    "index_state": rag_meta.get("index_state", "unavailable"),
+                    "index_coverage": rag_meta.get("index_coverage", "unknown_or_partial"),
+                    "candidate_freshness": "verified_against_current_sources",
+                    "lexical_total_matches": None, "lexical_count_exact": False,
+                    "reranker": rag_meta.get("reranker", {"requested": True, "used": False, "degraded": True}),
+                    "lexical_candidate_source": (
+                        "preprocess_index" if lexical_candidate_paths else "current_source_scan"
+                    ),
+                    "lexical_preprocessed_candidate_count": len(lexical_candidate_paths or ()),
+                    "query_expansion_applied": query_expansion_applied,
+                })
+                for item in result.get("results", []):
+                    if isinstance(item, dict):
+                        item["sources"] = ["lexical"]
+                        item["result_source"] = "lexical_fallback"
+                return result
+            return {
+                "success": False, "status_code": 503, "root": root,
+                "search_mode": "rag", "results": [], "total_matches": None,
+                "count_exact": False, "has_more": None, "offset": offset,
+                "limit": page_limit, "coverage_complete": False,
+                "degraded": True, "degradation_reason": rag_meta.get("reason", "rag_unavailable"),
+                "index_state": rag_meta.get("index_state", "unavailable"),
+                "reranker": rag_meta.get("reranker", {"requested": True, "used": False, "degraded": True}),
+                **search_cache_fields,
+            }
+
+        if mode == "rag":
+            rows = rag_rows[offset : offset + page_limit]
+            return {
+                "success": True, "root": root, "search_mode": "rag",
+                "result_source": "rag", "results": rows,
+                "total_matches": None, "count_exact": False,
+                "candidate_count": len(rag_rows), "candidate_count_exact": False,
+                "has_more": True if offset + len(rows) < len(rag_rows) else None,
+                "offset": offset, "limit": page_limit, "coverage_complete": False,
+                "index_state": rag_meta.get("index_state", "unknown"),
+                "index_coverage": rag_meta.get("index_coverage", "unknown_or_partial"),
+                "candidate_freshness": rag_meta.get("candidate_freshness", "verified_against_current_sources"),
+                "stale_candidate_count": rag_meta.get("stale_candidate_count", 0),
+                "stale_candidate_reasons": rag_meta.get("stale_candidate_reasons", {}),
+                "stale_candidate_details": rag_meta.get("stale_candidate_details", []),
+                "index_revision": rag_meta.get("index_revision"),
+                "query_expansion_applied": query_expansion_applied,
+                "degraded": bool(rag_meta.get("degraded")),
+                "degradation_reason": rag_meta.get("degradation_reason"),
+                "reranker": rag_meta.get("reranker", {}),
+                **search_cache_fields,
+            }
+
+        if not rag_rows and rag_meta.get("degraded"):
+            lexical_candidate_paths = lexical_preprocessed_candidates()
+            result = self._repo_search_lexical(
+                root, query, top_k, context_lines, enrich, path_hints, scope,
+                limit=page_limit, offset=offset, exact_count=False,
+                candidate_paths=lexical_candidate_paths,
+                candidate_query=(
+                    candidate_query
+                    if query_expansion_applied
+                    else None
+                ),
+                installation_intent_priority=(
+                    mode == "hybrid" and not prefers_lexical_precision(query)
+                ),
+            )
+            result.update({
+                "search_mode": "hybrid", "result_source": "lexical_fallback",
+                "coverage_complete": False, "degraded": True,
+                "total_matches": None, "count_exact": False, "has_more": None,
+                "degradation_reason": rag_meta.get("degradation_reason") or rag_meta.get("fallback") or rag_meta.get("reason") or "rag_backend_degraded",
+                "index_state": rag_meta.get("index_state", "unknown"),
+                "index_coverage": rag_meta.get("index_coverage", "unknown_or_partial"),
+                "candidate_freshness": rag_meta.get("candidate_freshness", "unknown"),
+                "stale_candidate_count": rag_meta.get("stale_candidate_count", 0),
+                "stale_candidate_reasons": rag_meta.get("stale_candidate_reasons", {}),
+                "stale_candidate_details": rag_meta.get("stale_candidate_details", []),
+                "lexical_total_matches": None, "lexical_count_exact": False,
+                "lexical_candidate_source": (
+                    "preprocess_index" if lexical_candidate_paths else "current_source_scan"
+                ),
+                "lexical_preprocessed_candidate_count": len(lexical_candidate_paths or ()),
+                "rag_candidate_count": 0, "rag_candidate_count_exact": False,
+                "reranker": rag_meta.get("reranker", {}),
+                "query_expansion_applied": query_expansion_applied,
+                **search_cache_fields,
+            })
+            result["results"] = deduplicate_search_files(result.get("results", []))
+            for item in result.get("results", []):
+                if isinstance(item, dict):
+                    item["sources"] = ["lexical"]
+                    item["result_source"] = "lexical_fallback"
+            return result
+
+        lexical_limit = min(MAX_PAGE_SIZE, max(page_limit + offset, 64))
+        lexical_candidate_query = candidate_query if query_expansion_applied else query
+        lexical_candidate_paths = None
+        preprocessor = getattr(self, "preprocessor", None)
+        if not prefers_lexical_precision(query) and preprocessor is not None:
+            try:
+                candidates = preprocessor.candidate_paths(
+                    root, lexical_candidate_query, max(64, page_limit),
+                )
+                if candidates:
+                    lexical_candidate_paths = tuple(candidates[:64])
+            except (OSError, sqlite3.Error, ValueError) as candidate_exc:
+                logger.debug(
+                    "Preprocessing hybrid lexical candidates skipped (%s)",
+                    type(candidate_exc).__name__,
+                )
+        lexical_result = self._repo_search_lexical(
+            root, query, top_k, context_lines, enrich, path_hints, scope,
+            limit=lexical_limit, offset=0, exact_count=False,
+            candidate_paths=lexical_candidate_paths,
+            candidate_query=lexical_candidate_query if lexical_candidate_paths and query_expansion_applied else None,
+            installation_intent_priority=(
+                mode == "hybrid" and not prefers_lexical_precision(query)
+            ),
+        )
+        if lexical_result.get("success") is not True:
+            return {
+                "success": True, "root": root, "search_mode": "hybrid",
+                "result_source": "rag_fallback", "results": rag_rows[offset:offset + page_limit],
+                "total_matches": None, "count_exact": False,
+                "candidate_count": len(rag_rows), "candidate_count_exact": False,
+                "has_more": None, "offset": offset, "limit": page_limit,
+                "coverage_complete": False, "degraded": True,
+                "degradation_reason": "lexical_backend_unavailable",
+                "index_state": rag_meta.get("index_state", "unknown"),
+                "index_coverage": rag_meta.get("index_coverage", "unknown_or_partial"),
+                "candidate_freshness": rag_meta.get("candidate_freshness", "verified_against_current_sources"),
+                "stale_candidate_count": rag_meta.get("stale_candidate_count", 0),
+                "stale_candidate_reasons": rag_meta.get("stale_candidate_reasons", {}),
+                "stale_candidate_details": rag_meta.get("stale_candidate_details", []),
+                "query_expansion_applied": query_expansion_applied,
+                "reranker": rag_meta.get("reranker", {}),
+                **search_cache_fields,
+            }
+        fused, fusion_meta = fuse_search_results(
+            lexical_result.get("results", []), rag_rows, limit=page_limit, offset=offset,
+            lexical_first=(
+                prefers_lexical_precision(query)
+                or bool(lexical_candidate_paths and query_expansion_applied)
+            ),
+        )
+        return {
+            "success": True, "root": root, "search_mode": "hybrid",
+            "result_source": "hybrid", "results": fused, **fusion_meta,
+            "lexical_priority": prefers_lexical_precision(query),
+            "lexical_total_matches": lexical_result.get("total_matches"),
+            "lexical_count_exact": lexical_result.get("count_exact") is True,
+            "lexical_candidate_source": "preprocessed_index" if lexical_candidate_paths else "current_source_scan",
+            "lexical_preprocessed_candidate_count": len(lexical_candidate_paths or ()),
+            "rag_candidate_count": len(rag_rows), "rag_candidate_count_exact": False,
+            "coverage_complete": False,
+            "index_state": rag_meta.get("index_state", "unknown"),
+            "index_coverage": rag_meta.get("index_coverage", "unknown_or_partial"),
+            "candidate_freshness": rag_meta.get("candidate_freshness", "verified_against_current_sources"),
+            "stale_candidate_count": rag_meta.get("stale_candidate_count", 0),
+            "stale_candidate_reasons": rag_meta.get("stale_candidate_reasons", {}),
+            "stale_candidate_details": rag_meta.get("stale_candidate_details", []),
+            "index_revision": rag_meta.get("index_revision"),
+            "query_expansion_applied": query_expansion_applied,
+            "degraded": bool(rag_meta.get("degraded")),
+            "degradation_reason": rag_meta.get("degradation_reason"),
+            "reranker": rag_meta.get("reranker", {}),
+            **search_cache_fields,
+        }
+
+    def _repo_rag_search(self, root: str, query: str, top_k: int) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        rag = getattr(self, "rag", None)
+        reranker_requested = bool(self.config.get("features", {}).get("reranker", True))
+        if rag is None or not self.config.get("features", {}).get("rag", True):
+            return [], {"success": False, "reason": "rag_disabled", "index_state": "unavailable",
+                        "reranker": {"requested": reranker_requested, "used": False,
+                                     "degraded": reranker_requested}}
+        try:
+            base = Path(root).expanduser().resolve(strict=True)
+            if not base.is_dir():
+                raise ValueError("repository root is not a directory")
+            workspace = rag.workspace_id(str(base))
+            rag.require_workspace_root(workspace=workspace, root=str(base))
+            use_reranker = reranker_requested
+            has_chunks = getattr(rag, "has_workspace_chunks", None)
+            if callable(has_chunks):
+                workspace_indexed = has_chunks(workspace=workspace)
+            else:
+                workspaces = {
+                    str(item.get("workspace")): item
+                    for item in rag.list_workspaces() if isinstance(item, dict)
+                }
+                workspace_info = workspaces.get(workspace)
+                workspace_indexed = bool(
+                    workspace_info and int(workspace_info.get("files", 0)) > 0
+                )
+            if not workspace_indexed:
+                return [], {
+                    "success": False, "reason": "rag_index_missing", "index_state": "missing",
+                    "reranker": {"requested": use_reranker, "used": False,
+                                 "degraded": bool(use_reranker)},
+                }
+            raw = rag.search(query, workspace=workspace, top_k=min(MAX_PAGE_SIZE, max(1, top_k)),
+                             use_reranker=use_reranker, semantic_only=True, priority=1)
+            if not isinstance(raw, dict) or raw.get("success") is not True:
+                raise RuntimeError("rag_search_failed")
+            project_context = rag.project_context(base)
+            max_bytes = int(self.config.get("rag", {}).get("max_file_bytes", 2_000_000))
+            valid: list[dict[str, Any]] = []
+            stale = 0
+            stale_reasons = {
+                "source_changed_during_read": 0,
+                "source_read_failed": 0,
+                "fragment_mismatch": 0,
+            }
+            stale_details: list[dict[str, Any]] = []
+            source_cache: dict[str, tuple[str, int, int]] = {}
+            seen_paths: set[str] = set()
+            for candidate in raw.get("results", []):
+                if not isinstance(candidate, dict):
+                    continue
+                rel = candidate.get("path")
+                if type(rel) is not str or not rel or "\x00" in rel:
+                    continue
+                rel_path = Path(rel)
+                if rel_path.is_absolute() or ".." in rel_path.parts:
+                    continue
+                target = (base / rel_path).resolve(strict=True)
+                authorized_rel: str | None = None
+                try:
+                    target.relative_to(base)
+                    stat = target.stat()
+                    if not target.is_file() or stat.st_size > max_bytes:
+                        continue
+                    rel_key = os.path.normcase(target.relative_to(base).as_posix())
+                    if rel_key in seen_paths:
+                        continue
+                    allowed, kind = rag._project_path_decision(base, target, project_context,
+                                                               phase="search", size_bytes=int(stat.st_size))
+                    if not allowed or kind == "binary":
+                        continue
+                    authorized_rel = target.relative_to(base).as_posix()
+                    fragment = str(candidate.get("text") or "")
+                    source_meta = source_cache.get(rel_key)
+                    if source_meta is None:
+                        source = target.read_text(encoding="utf-8", errors="replace").replace("\r\n", "\n").replace("\r", "\n")
+                        after_stat = target.stat()
+                        if (after_stat.st_mtime_ns, after_stat.st_size) != (stat.st_mtime_ns, stat.st_size):
+                            stale += 1
+                            reason = "source_changed_during_read"
+                            stale_reasons[reason] += 1
+                            if len(stale_details) < 32:
+                                detail = {"path": authorized_rel, "reason": reason}
+                                if type(candidate.get("chunk_no")) is int:
+                                    detail["chunk_no"] = candidate["chunk_no"]
+                                stale_details.append(detail)
+                            continue
+                        source_meta = (source, int(after_stat.st_mtime_ns), int(after_stat.st_size))
+                        source_cache[rel_key] = source_meta
+                    source = source_meta[0]
+                    if not fragment or not _rag_fragment_matches_source(fragment, source):
+                        stale += 1
+                        reason = "fragment_mismatch"
+                        stale_reasons[reason] += 1
+                        if len(stale_details) < 32:
+                            detail = {"path": authorized_rel, "reason": reason}
+                            if type(candidate.get("chunk_no")) is int:
+                                detail["chunk_no"] = candidate["chunk_no"]
+                            stale_details.append(detail)
+                        continue
+                except (OSError, ValueError):
+                    stale += 1
+                    reason = "source_read_failed"
+                    stale_reasons[reason] += 1
+                    if authorized_rel is not None and len(stale_details) < 32:
+                        detail = {"path": authorized_rel, "reason": reason}
+                        if type(candidate.get("chunk_no")) is int:
+                            detail["chunk_no"] = candidate["chunk_no"]
+                        stale_details.append(detail)
+                    continue
+                item = dict(candidate)
+                item["path"] = target.relative_to(base).as_posix()
+                item["sources"] = ["rag"]
+                item["result_source"] = "rag"
+                item["source_mtime_ns"] = source_meta[1]
+                item["source_size_bytes"] = source_meta[2]
+                valid.append(item)
+                seen_paths.add(rel_key)
+            degraded = bool(raw.get("degraded") or stale or raw.get("reindex_required"))
+            raw_fallbacks = raw.get("fallbacks", [])
+            if not isinstance(raw_fallbacks, list):
+                raw_fallbacks = []
+            reason = "stale_or_denied_candidates" if stale else (
+                raw.get("fallback") or (raw_fallbacks[0] if raw_fallbacks else None)
+            )
+            if raw.get("degraded") and not reason:
+                reason = "rag_backend_degraded"
+            return valid, {
+                "success": True,
+                "index_state": "stale" if (stale or raw.get("reindex_required")) else "available",
+                "index_coverage": "unknown_or_partial",
+                "candidate_freshness": "partially_verified" if stale else "verified_against_current_sources",
+                "stale_candidate_count": stale,
+                "stale_candidate_reasons": stale_reasons,
+                "stale_candidate_details": stale_details,
+                "index_revision": raw.get("index_revision"), "degraded": degraded,
+                "degradation_reason": reason,
+                "search_cache": raw.get("search_cache") if isinstance(raw.get("search_cache"), dict) else {},
+                "reranker": {"requested": use_reranker, "used": raw.get("reranked") is True,
+                             "degraded": bool(use_reranker and raw.get("reranked") is not True),
+                             "degradation_reasons": list(raw.get("fallbacks", [])) if isinstance(raw.get("fallbacks"), list) else []},
+            }
+        except Exception as exc:
+            return [], {"success": False, "reason": type(exc).__name__, "index_state": "unavailable",
+                        "reranker": {"requested": reranker_requested, "used": False,
+                                     "degraded": reranker_requested}}
+
+    @staticmethod
+    def _hint_directory_candidates(file_inventory, hint_root: Path, target: Path):
+        """Filter tracked paths lexically; path policy validates before reading."""
+        for raw_candidate in file_inventory:
+            try:
+                candidate = Path(raw_candidate)
+                if candidate.is_absolute():
+                    relative = candidate.relative_to(hint_root)
+                else:
+                    if candidate.drive:
+                        continue
+                    relative = candidate
+                if any(part in {".."} for part in relative.parts):
+                    continue
+                candidate = hint_root / relative
+                candidate.relative_to(hint_root)
+            except (TypeError, ValueError):
+                continue
+            if candidate == target or target in candidate.parents:
+                yield candidate
+
+    def _repo_search_lexical(
+        self,
+        root: str,
+        query: str,
+        top_k: int = 12,
+        context_lines: int | None = None,
+        enrich: bool = False,
+        path_hints: list[Any] | tuple[Any, ...] | None = None,
+        scope: str = "repo_search",
+        *,
+        limit: int | None = None,
+        offset: int = 0,
+        exact_count: bool = True,
+        candidate_paths: list[str] | tuple[str, ...] | None = None,
+        candidate_query: str | None = None,
+        installation_intent_priority: bool = False,
+    ) -> dict[str, Any]:
+        search_started = time.perf_counter()
+        phase_timings_ms: dict[str, float] = {
+            "search_hint_state_ms": 0.0,
+            "search_saved_hints_ms": 0.0,
+            "search_hint_digest_ms": 0.0,
+            "search_learning_record_ms": 0.0,
+            "search_hint_inventory_ms": 0.0,
+            "search_hint_path_validation_ms": 0.0,
+            "search_priority_setup_ms": 0.0,
+        }
         page_limit = max(1, int(top_k)) if limit is None else limit
         bounds_error = pagination_bounds_error(page_limit, offset)
         if bounds_error:
@@ -3157,9 +3819,11 @@ class LocalAIServices:
                 "feature": "enriched_search",
                 "error": "enriched search is disabled (features.enriched_search=false)",
             }
-        # Search itself is case-insensitive and whitespace-tolerant. Use the same
-        # canonical form for cache identity so equivalent agent queries reuse work.
-        query = normalize_query(query).casefold()
+        symbol_like_query = prefers_lexical_precision(query)
+        # Natural-language search is case-insensitive, but symbol queries retain
+        # their original casing so exact identifiers are not broadened.
+        normalized_query = normalize_query(query, strip_punctuation=False)
+        query = normalized_query if symbol_like_query else normalized_query.casefold()
         eff_ctx_lines = int(context_lines) if context_lines is not None else (8 if enrich else None)
         from .project_config import (
             PathHint,
@@ -3171,6 +3835,7 @@ class LocalAIServices:
             validate_path_hint,
         )
 
+        project_config_started = time.perf_counter()
         try:
             project_context = resolve_project_context(
                 root,
@@ -3184,6 +3849,10 @@ class LocalAIServices:
                 "terminal": True,
                 "retryable": False,
             }
+        finally:
+            phase_timings_ms["project_config_ms"] = round(
+                (time.perf_counter() - project_config_started) * 1000.0, 1,
+            )
         if project_context.resolution.error_codes:
             return {
                 "success": False,
@@ -3238,20 +3907,38 @@ class LocalAIServices:
                     )
                 ):
                     request_hints.append(hint)
+        fingerprint_started = time.perf_counter()
         try:
-            workspace_state = self._repo_cache_state(root) or {}
+            tracker = getattr(self, "repo_state", None)
+            fingerprint = getattr(tracker, "fingerprint", None)
+            workspace_state = (
+                fingerprint(root) or {}
+                if callable(fingerprint)
+                else self._repo_cache_state(root) or {}
+            )
         except Exception:
             workspace_state = {}
+        finally:
+            phase_timings_ms["workspace_fingerprint_ms"] = round(
+                (time.perf_counter() - fingerprint_started) * 1000.0, 1,
+            )
         repository_revision = (
             str(workspace_state.get("fingerprint") or "")
             if not workspace_state.get("stale") and not workspace_state.get("degraded")
             else ""
         )
+        search_preparation_started = time.perf_counter()
+        search_hint_state_started = time.perf_counter()
+        saved_hints_started = time.perf_counter()
         saved_hints = project_context.path_hints(
             purpose="repository_search",
             scope=search_scope,
             repository_revision=repository_revision,
         )
+        phase_timings_ms["search_saved_hints_ms"] = round(
+            (time.perf_counter() - saved_hints_started) * 1000.0, 1,
+        )
+        hint_digest_started = time.perf_counter()
         effective_hints = [*saved_hints, *request_hints]
         request_hint_digest = stable_hash([
             {
@@ -3266,33 +3953,69 @@ class LocalAIServices:
             }
             for hint in effective_hints
         ])
+        phase_timings_ms["search_hint_digest_ms"] = round(
+            (time.perf_counter() - hint_digest_started) * 1000.0, 1,
+        )
+        learning_record_started = time.perf_counter()
         if self.learner is not None:
-            try: self.learner.record(root, query)
-            except Exception: pass
-        # Local AI deterministic facts/symbols are the cheapest candidate source.
-        paths: list[str] = []
-        if self.deterministic is not None:
-            try: paths.extend(self.deterministic.related_paths(root, query, max(16, top_k * 3)))
-            except (OSError, sqlite3.Error, ValueError) as candidate_exc:
-                logger.debug(
-                    "Deterministic candidate search skipped (%s)",
-                    type(candidate_exc).__name__,
-                )
-        if self.code_index is not None:
             try:
-                for p in self.code_index.related_paths(root, query, max(16, top_k * 3)):
-                    if p not in paths: paths.append(p)
-            except (OSError, sqlite3.Error, ValueError) as candidate_exc:
-                logger.debug(
-                    "CodeIndex candidate search skipped (%s)",
-                    type(candidate_exc).__name__,
-                )
+                self.learner.record(root, query)
+            except Exception:
+                pass
+        phase_timings_ms["search_learning_record_ms"] = round(
+            (time.perf_counter() - learning_record_started) * 1000.0, 1,
+        )
+        phase_timings_ms["search_hint_state_ms"] = round(
+            (time.perf_counter() - search_hint_state_started) * 1000.0, 1,
+        )
+        # Partial-index hints help exact symbol lookup, but they do not add
+        # completeness. Natural-language and hybrid search already have bounded
+        # source/RAG candidates, so avoid blocking them on broad index scans.
+        use_index_candidates = exact_count and symbol_like_query
+        paths: list[str] = []
+        if use_index_candidates and self.deterministic is not None:
+            # Graph lookups are optional hints; avoid SQLite LIKE scans over an
+            # index that exceeds its budget. Current-source search stays complete.
+            code_index_hint_safe = True
+            code_index = getattr(self, "code_index", None)
+            measure_storage = getattr(code_index, "measure_storage", None)
+            if callable(measure_storage):
+                max_index_bytes = getattr(code_index, "max_index_bytes", None)
+                if type(max_index_bytes) is not int or max_index_bytes < 1:
+                    code_index_hint_safe = False
+                else:
+                    try:
+                        storage = measure_storage()
+                        physical_bytes = (
+                            storage.get("physical_bytes") if isinstance(storage, dict) else None
+                        )
+                        code_index_hint_safe = (
+                            type(physical_bytes) is int and physical_bytes <= max_index_bytes
+                        )
+                    except (OSError, sqlite3.Error, TypeError, ValueError) as storage_exc:
+                        logger.debug(
+                            "Code-index size unavailable; expensive symbol hints skipped (%s)",
+                            type(storage_exc).__name__,
+                        )
+                        code_index_hint_safe = False
+            if code_index_hint_safe:
+                try: paths.extend(self.deterministic.related_paths(root, query, max(16, top_k * 3)))
+                except (OSError, sqlite3.Error, ValueError) as candidate_exc:
+                    logger.debug(
+                        "Deterministic candidate search skipped (%s)",
+                        type(candidate_exc).__name__,
+                    )
+        # Exact source search provides complete lexical counts. The partial
+        # code index may exceed tens of GiB and is not worth opening as a hint.
         # Warm preprocessing maintains FTS + semantic cards specifically so agents do
         # not need broad scans. Treat these only as candidates; exact source search
         # remains the fallback when a card/FTS hint produces no matches.
-        if self.preprocessor is not None:
+        if use_index_candidates and self.preprocessor is not None:
             try:
-                for p in self.preprocessor.candidate_paths(root, query, max(16, top_k * 3)):
+                candidate_search = getattr(self.preprocessor, "candidate_paths_lexical", None)
+                if not callable(candidate_search):
+                    candidate_search = self.preprocessor.candidate_paths
+                for p in candidate_search(root, query, max(16, top_k * 3)):
                     if p not in paths:
                         paths.append(p)
             except (OSError, sqlite3.Error, ValueError) as candidate_exc:
@@ -3307,6 +4030,7 @@ class LocalAIServices:
             for pattern, action in project_context.settings.path_overrides.items()
             if action == "include"
         )
+        hint_path_validation_started = time.perf_counter()
         try:
             extension_is_searchable = getattr(
                 self.repo_tools, "_path_extension_is_searchable", None
@@ -3331,18 +4055,18 @@ class LocalAIServices:
                     if file_inventory is None:
                         inventory_loader = getattr(self.repo_tools, "_git_files", None)
                         if hint_root is not None and callable(inventory_loader):
-                            file_inventory = inventory_loader(hint_root)
+                            hint_inventory_started = time.perf_counter()
+                            try:
+                                file_inventory = inventory_loader(hint_root, force=exact_count)
+                            except TypeError:
+                                file_inventory = inventory_loader(hint_root)
+                            phase_timings_ms["search_hint_inventory_ms"] += round(
+                                (time.perf_counter() - hint_inventory_started) * 1000.0, 1,
+                            )
                     if file_inventory is not None:
-                        def under_hint_directory():
-                            for raw_candidate in file_inventory:
-                                try:
-                                    candidate = Path(raw_candidate).resolve(strict=False)
-                                    candidate.relative_to(hint_root)
-                                except (OSError, RuntimeError, ValueError):
-                                    continue
-                                if candidate == target or target in candidate.parents:
-                                    yield candidate
-                        candidates = under_hint_directory()
+                        candidates = self._hint_directory_candidates(
+                            file_inventory, hint_root, target,
+                        )
                     else:
                         def walk_hint_directory():
                             count = 0
@@ -3388,6 +4112,12 @@ class LocalAIServices:
             # Hints enrich bounded targeted search; invalid policy never blocks normal search.
             hinted_search_paths = []
             hinted_force_include = False
+        phase_timings_ms["search_hint_path_validation_ms"] = round(
+            (time.perf_counter() - hint_path_validation_started) * 1000.0, 1,
+        )
+        search_priority_setup_started = time.perf_counter()
+        if candidate_paths and hinted_search_paths:
+            candidate_paths = tuple(dict.fromkeys((*candidate_paths, *hinted_search_paths)))[:64]
         paths = list(dict.fromkeys([*hinted_search_paths, *paths]))
 
         def compute() -> dict[str, Any]:
@@ -3430,7 +4160,7 @@ class LocalAIServices:
             source_focused = _source_focused_query(query)
 
             def path_priority(relative: str) -> tuple[int, int, int]:
-                candidate = (hint_root / relative).resolve(strict=False) if hint_root else None
+                candidate = hint_root / relative if hint_root else None
 
                 def matches(roots: tuple[Path, ...]) -> bool:
                     return bool(candidate and any(
@@ -3450,16 +4180,46 @@ class LocalAIServices:
                     ),
                 )
 
-            full_result = self.repo_tools.search(
-                root, query, context_lines=eff_ctx_lines,
-                project_settings=project_context.settings,
-                git_inventory=file_inventory,
-                limit=page_limit,
-                offset=offset,
-                exact_count=True,
-                force_include_paths=list(force_include_patterns),
-                path_priority=path_priority,
+            search_options = {
+                "context_lines": eff_ctx_lines,
+                "project_settings": project_context.settings,
+                "git_inventory": file_inventory,
+                "candidate_paths": candidate_paths,
+                "limit": page_limit,
+                "offset": offset,
+                "exact_count": exact_count,
+                "force_include_paths": list(force_include_patterns),
+                "path_priority": path_priority,
+                "installation_intent_priority": installation_intent_priority,
+            }
+            if candidate_query and candidate_query != query:
+                search_options["candidate_query"] = normalize_query(
+                    candidate_query, strip_punctuation=False,
+                ).casefold()
+            phase_timings_ms["search_priority_setup_ms"] = round(
+                (time.perf_counter() - search_priority_setup_started) * 1000.0, 1,
             )
+            phase_timings_ms["search_preparation_ms"] = round(
+                (time.perf_counter() - search_preparation_started) * 1000.0, 1,
+            )
+            repo_search_started = time.perf_counter()
+            try:
+                full_result = self.repo_tools.search(
+                    root, query, **search_options,
+                )
+            finally:
+                phase_timings_ms["repo_tools_search_ms"] = round(
+                    (time.perf_counter() - repo_search_started) * 1000.0, 1,
+                )
+            if isinstance(full_result, dict):
+                repo_search_phases = full_result.pop("search_phase_timings_ms", None)
+                if isinstance(repo_search_phases, dict):
+                    phase_timings_ms.update({
+                        f"repo_tools_{name}": duration_ms
+                        for name, duration_ms in repo_search_phases.items()
+                        if isinstance(name, str)
+                    })
+            result_materialization_started = time.perf_counter()
             if not isinstance(full_result, dict) or not full_result.get("success", True):
                 result = dict(full_result) if isinstance(full_result, dict) else {
                     "success": False, "error": "repository search failed"
@@ -3485,6 +4245,7 @@ class LocalAIServices:
                         combined.append(dict(item))
                         seen_hits.add(key)
 
+            result_path_validation_started = time.perf_counter()
             base = Path(root).expanduser().resolve(strict=True)
             allowed_results: list[dict[str, Any]] = []
             extension_is_searchable = getattr(
@@ -3516,7 +4277,11 @@ class LocalAIServices:
                     continue
                 item["path"] = target.relative_to(base).as_posix()
                 allowed_results.append(item)
+            phase_timings_ms["search_result_path_validation_ms"] = round(
+                (time.perf_counter() - result_path_validation_started) * 1000.0, 1,
+            )
 
+            result_prioritization_started = time.perf_counter()
             override_patterns = tuple(
                 pattern
                 for pattern, action in project_context.settings.path_overrides.items()
@@ -3529,9 +4294,9 @@ class LocalAIServices:
                     for pattern in override_patterns
                 ),
             )
-            candidate_paths = [str(item["path"]) for item in override_order]
+            result_paths = [str(item["path"]) for item in override_order]
             configured_usage = project_context.prioritize_paths(
-                candidate_paths,
+                result_paths,
                 purpose="repository_search",
                 scope=search_scope,
                 repository_revision=repository_revision,
@@ -3546,14 +4311,16 @@ class LocalAIServices:
                 repository_revision=repository_revision,
                 config_digest=project_context.config_digest,
             )
+            phase_timings_ms["search_result_prioritization_ms"] = round(
+                (time.perf_counter() - result_prioritization_started) * 1000.0, 1,
+            )
             hint_used = configured_usage.hint_used or request_usage.hint_used
             hint_fallback_used = (
                 configured_usage.fallback_used or request_usage.fallback_used
             ) and not hint_used
-            path_rank = {path: rank for rank, path in enumerate(request_usage.paths)}
-            allowed_results.sort(
-                key=lambda item: path_rank.get(str(item["path"]), len(path_rank))
-            )
+            # The exact search has already applied path priorities before
+            # pagination. Reordering this page by path groups duplicate hits
+            # and destroys score order and consistency across page boundaries.
             result = dict(full_result)
             count_is_exact = (
                 full_result.get("count_exact") is True
@@ -3561,6 +4328,33 @@ class LocalAIServices:
                 and not isinstance(full_result.get("total_matches"), bool)
             )
             if not count_is_exact:
+                if not exact_count:
+                    candidate_page = allowed_results[:page_limit]
+                    result["results"] = candidate_page
+                    result["total_matches"] = None
+                    result["matches_count"] = None
+                    result["count_exact"] = False
+                    result["candidate_count"] = len(allowed_results)
+                    result["candidate_count_exact"] = False
+                    result["offset"] = offset
+                    result["limit"] = page_limit
+                    result["has_more"] = (
+                        True if full_result.get("has_more") or len(allowed_results) > page_limit
+                        else None
+                    )
+                    result["truncated"] = bool(full_result.get("truncated"))
+                    result["preprocessed_hit"] = bool(
+                        paths and any(str(item.get("path")) in set(paths) for item in candidate_page)
+                    )
+                    result["path_hint_usage"] = {
+                        "hint_used": hint_used,
+                        "fallback_used": hint_fallback_used,
+                        "hint_helped": None,
+                    }
+                    phase_timings_ms["result_materialization_ms"] = round(
+                        (time.perf_counter() - result_materialization_started) * 1000.0, 1,
+                    )
+                    return result
                 return {
                     "success": False,
                     "error": "repository search could not produce an exact match count",
@@ -3616,9 +4410,13 @@ class LocalAIServices:
                                 hit["enclosing_symbol"] = symbol
                     except (OSError, ValueError):
                         continue
+            phase_timings_ms["result_materialization_ms"] = round(
+                (time.perf_counter() - result_materialization_started) * 1000.0, 1,
+            )
             # Exact search snippets become immutable evidence so agent projections can
             # send coordinates first and raw source only for the top few hits.
             if self.evidence_store is not None and isinstance(result.get("results"), list):
+                evidence_store_started = time.perf_counter()
                 try:
                     result = dict(result)
                     stored_results = self.evidence_store.put_many(
@@ -3641,8 +4439,12 @@ class LocalAIServices:
                     )
                     result = dict(result)
                     result["progressive_disclosure"] = False
+                finally:
+                    phase_timings_ms["evidence_store_ms"] = round(
+                        (time.perf_counter() - evidence_store_started) * 1000.0, 1,
+                    )
             return result
-        return self._repo_cached(
+        result = self._repo_cached(
             "search",
             root,
             {
@@ -3652,12 +4454,25 @@ class LocalAIServices:
                 "offset": offset,
                 "ci": paths[:24],
                 "ctx": eff_ctx_lines,
+                "enrich": enrich,
                 "scope": search_scope,
                 "config_digest": project_context.config_digest,
                 "path_hints_digest": request_hint_digest,
+                "exact_count": exact_count,
+                "candidate_query": candidate_query or "",
+                "force_include_patterns": list(force_include_patterns),
             },
             compute,
+            state_override=workspace_state,
+            cache_results=False,
         )
+        if isinstance(result, dict):
+            result = dict(result)
+            phase_timings_ms["total_ms"] = round(
+                (time.perf_counter() - search_started) * 1000.0, 1,
+            )
+            result["phase_timings_ms"] = phase_timings_ms
+        return result
 
     def _refresh_changed_intelligence(self, root: str) -> None:
         """Synchronize only Git-changed files before serving a cache-miss intelligence query.
@@ -3708,8 +4523,16 @@ class LocalAIServices:
                 else:
                     missing.append(rel)
             if self.code_index is not None:
-                if existing and hasattr(self.code_index, "update_files_batch"):
-                    self.code_index.update_files_batch(str(base), existing)
+                # A changed source path is not evidence that the Hub used it.
+                # Refresh only paths already admitted by demand-driven
+                # preprocessing; new paths wait for actual evidence use.
+                reindex_existing = getattr(self.code_index, "files_needing_reindex", None)
+                indexed_changes = (
+                    reindex_existing(str(base), existing, only_existing=True)
+                    if existing and callable(reindex_existing) else []
+                )
+                if indexed_changes and hasattr(self.code_index, "update_files_batch"):
+                    self.code_index.update_files_batch(str(base), indexed_changes)
                 for rel in missing:
                     try:
                         self.code_index.update_file(str(base), rel)
@@ -4417,7 +5240,16 @@ class LocalAIServices:
     def ast_outline(self, root: str, path: str) -> dict[str, Any]:
         return self.deterministic_operation("ast-outline", root, {"path": path}, lambda: self.deterministic.ast_outline(root, path))
 
-    def batch_replace(self, root: str, edits: list[dict[str, Any]], dry_run: bool = False) -> dict[str, Any]:
+    def batch_replace(
+        self,
+        root: str,
+        edits: list[dict[str, Any]],
+        dry_run: bool = False,
+        *,
+        owner: str | None = None,
+        lease_id: str | None = None,
+        lease_store: Any | None = None,
+    ) -> dict[str, Any]:
         if not rollout_feature_enabled(self.config, "batch_replacement"):
             return {
                 "success": False,
@@ -4427,7 +5259,38 @@ class LocalAIServices:
             }
         if not self.deterministic:
             return {"success": False, "error": "deterministic engine disabled"}
-        return self.deterministic.batch_replace(root, edits, dry_run=dry_run)
+        if (owner is None) != (lease_id is None):
+            return {"success": False, "error": "owner and lease_id must be supplied together"}
+        owned_paths: list[str] = []
+        if owner is not None and lease_id is not None:
+            if (
+                not isinstance(owner, str) or not owner or owner != owner.strip() or "\x00" in owner
+                or not isinstance(lease_id, str) or not lease_id or lease_id != lease_id.strip() or "\x00" in lease_id
+            ):
+                return {"success": False, "error": "invalid owner or lease_id"}
+            if lease_store is None or not callable(getattr(lease_store, "list", None)):
+                return {"success": False, "error": "lease store unavailable for owner verification"}
+            try:
+                leases = lease_store.list(root)
+            except Exception as exc:
+                return {"success": False, "error": f"unable to verify active lease: {type(exc).__name__}"}
+            root_path = Path(root).expanduser().resolve()
+            for lease in leases:
+                if not isinstance(lease, dict) or lease.get("owner") != owner or lease.get("lease_id") != lease_id:
+                    continue
+                lease_root = lease.get("root")
+                lease_path = lease.get("path")
+                if not isinstance(lease_root, str) or not isinstance(lease_path, str) or not lease_path:
+                    continue
+                try:
+                    if Path(lease_root).expanduser().resolve() != root_path:
+                        continue
+                    owned_paths.append(lease_path)
+                except (OSError, RuntimeError, ValueError):
+                    continue
+            if not owned_paths:
+                return {"success": False, "error": "active lease not found for owner, lease_id, and repository root"}
+        return self.deterministic.batch_replace(root, edits, dry_run=dry_run, owned_paths=owned_paths)
 
     def refactor_impact(self, root: str, file_path: str, symbol: str) -> dict[str, Any]:
         return self.deterministic_operation("refactor-impact", root, {"file": file_path, "symbol": symbol}, lambda: self.deterministic.refactor_impact(root, file_path, symbol))
@@ -4490,10 +5353,64 @@ class LocalAIServices:
             }
 
         callers_res = self.callers(root, symbol, limit=limit)
-        caller_items = callers_res.get("callers", []) if isinstance(callers_res, dict) and callers_res.get("success") else []
+        callers_ok = isinstance(callers_res, dict) and callers_res.get("success") is True
+        caller_items = callers_res.get("callers", []) if callers_ok else []
 
         callees_res = self.callees(root, symbol, limit=limit)
-        callee_items = callees_res.get("callees", []) if isinstance(callees_res, dict) and callees_res.get("success") else []
+        callees_ok = isinstance(callees_res, dict) and callees_res.get("success") is True
+        callee_items = callees_res.get("callees", []) if callees_ok else []
+
+        caller_coverage = callers_res.get("coverage") if isinstance(callers_res, dict) else None
+        callee_coverage = callees_res.get("coverage") if isinstance(callees_res, dict) else None
+        coverage_complete = (
+            callers_ok and callees_ok
+            and isinstance(caller_coverage, dict) and caller_coverage.get("complete") is True
+            and isinstance(callee_coverage, dict) and callee_coverage.get("complete") is True
+        )
+        if coverage_complete:
+            coverage_reason = None
+        elif not isinstance(caller_coverage, dict) or not isinstance(callee_coverage, dict):
+            coverage_reason = "subquery_coverage_missing"
+        else:
+            coverage_reason = "subquery_coverage_incomplete"
+
+        caller_freshness = callers_res.get("freshness") if isinstance(callers_res, dict) else None
+        callee_freshness = callees_res.get("freshness") if isinstance(callees_res, dict) else None
+        freshness_statuses = [
+            item.get("status") for item in (caller_freshness, callee_freshness)
+            if isinstance(item, dict) and isinstance(item.get("status"), str)
+        ]
+        if "not_checked" in freshness_statuses:
+            freshness_status = "not_checked"
+        elif not freshness_statuses:
+            freshness_status = "not_reported"
+        elif len(set(freshness_statuses)) == 1:
+            freshness_status = freshness_statuses[0]
+        else:
+            freshness_status = "mixed"
+
+        index_states = [
+            item.get("index_available") for item in (callers_res, callees_res)
+            if isinstance(item, dict) and isinstance(item.get("index_available"), bool)
+        ]
+        index_available = False if False in index_states else True if len(index_states) == 2 and all(index_states) else None
+        subquery_errors = {
+            name: response.get("error")
+            for name, response, succeeded in (
+                ("callers", callers_res, callers_ok), ("callees", callees_res, callees_ok),
+            )
+            if not succeeded and isinstance(response, dict) and response.get("error")
+        }
+        truncated = any(
+            response.get("truncated") is True
+            for response in (callers_res, callees_res)
+            if isinstance(response, dict)
+        )
+        stale = any(
+            response.get("stale") is True
+            for response in (callers_res, callees_res)
+            if isinstance(response, dict)
+        )
 
         expanded_callers = []
         if depth > 1 and caller_items:
@@ -4514,7 +5431,7 @@ class LocalAIServices:
                     expanded_callees.append({"symbol": callee_sym, "calls": sub_callees})
 
         result = {
-            "success": True,
+            "success": callers_ok and callees_ok,
             "symbol": symbol,
             "found_in": found_in,
             "callers": caller_items,
@@ -4522,6 +5439,22 @@ class LocalAIServices:
             "callees": callee_items,
             "callee_count": len(callee_items),
             "depth": depth,
+            "partial": not (callers_ok and callees_ok and coverage_complete and freshness_status not in {"not_checked", "not_reported", "mixed"}) or truncated or stale,
+            "coverage": {
+                "complete": coverage_complete,
+                "reason": coverage_reason,
+                "callers": caller_coverage,
+                "callees": callee_coverage,
+            },
+            "freshness": {
+                "status": freshness_status,
+                "callers": caller_freshness,
+                "callees": callee_freshness,
+            },
+            "index_available": index_available,
+            "truncated": truncated,
+            "stale": stale,
+            "subquery_errors": subquery_errors,
         }
         if depth > 1:
             result["hierarchy"] = {
@@ -4885,6 +5818,12 @@ class LocalAIServices:
                     tasks: dict[str, Any] | None = None,
                     accountable_role: str | None = None, owner: str = "agent",
                     idempotency_key: str = "") -> dict[str, Any]:
+        if not plan_id:
+            import uuid
+            plan_id = f"plan_{uuid.uuid4().hex[:12]}"
+        elif not plan_id.startswith("plan_"):
+            clean_plan = re.sub(r"[^A-Za-z0-9_-]", "_", plan_id).strip("_")
+            plan_id = f"plan_{clean_plan}"[:80]
         arguments = dict(plan_id=plan_id, title=title, description=description,
                          lifecycle=lifecycle, default_target_ref=default_target_ref,
                          owner=owner, idempotency_key=idempotency_key)
@@ -4905,9 +5844,27 @@ class LocalAIServices:
     def plan_task_edit(self, root: str = "", plan_id: str = "", task_id: str = "",
                        task_data: dict[str, Any] | None = None, expected_revision: str = "",
                        idempotency_key: str = "", owner: str = "agent") -> dict[str, Any]:
+        if task_data and "status" in task_data and "work_status" not in task_data:
+            task_data = dict(task_data)
+            task_data["work_status"] = task_data.pop("status")
+        if task_data and "verification" in task_data and "results" not in task_data:
+            task_data = dict(task_data)
+            ver = task_data.pop("verification")
+            if isinstance(ver, str) and ver.strip():
+                task_data["results"] = [{"kind": "evidence_reference", "evidence_id": "inline", "summary": ver.strip()[:2048]}]
+            elif isinstance(ver, list):
+                task_data["results"] = ver
         arguments = dict(plan_id=plan_id, task_id=task_id, task_data=task_data,
                          expected_revision=expected_revision, idempotency_key=idempotency_key, owner=owner)
         ws = self._plan_workspace(root, "plan_task_edit", arguments)
+        if task_id and not task_id.startswith("task_"):
+            try:
+                plan_info = ws.get_plan(plan_id)
+                plan_tasks = plan_info.get("plan", {}).get("tasks", {})
+                if task_id not in plan_tasks and f"task_{task_id}" in plan_tasks:
+                    task_id = f"task_{task_id}"
+            except Exception:
+                pass
         allowed = {"title", "description", "kind", "work_status", "depends_on", "clarifications",
                    "acceptance_criteria", "next_action", "blocker", "order", "accountable_role",
                    "work_phase", "spec_refs", "scope", "results", "deliveries"}
@@ -5276,12 +6233,12 @@ class LocalAIServices:
             def compute() -> dict[str, Any]:
                 try:
                     models = getattr(self, "config", {}).get("models", {})
-                    model = getattr(self, "config", {}).get("context_relevance_model") or models.get("general") or models.get("fast_code") or "context-relevance"
+                    model = getattr(self, "config", {}).get("context_relevance_model") or models.get("fast_code") or models.get("general") or "context-relevance"
                     generated = self._generate(
                         str(model),
                         json.dumps(payload, ensure_ascii=True, separators=(",", ":")),
                         "Return JSON only. Use only supplied deterministic evidence IDs. Never invent repository facts, repeat source text, reveal secrets, or use the user prompt as evidence.",
-                        min(512, max(64, int(request.token_budget) // 4)),
+                        min(1024, max(128, int(request.token_budget) // 2)),
                         0.0,
                         source="context-relevance", priority=4,
                         semantic_query="context relevance",
@@ -5745,6 +6702,7 @@ class LocalAIServices:
         if isinstance(packed, dict):
             packed["context_source"] = "deterministic-fast"
             packed["degraded"] = True
+            packed["degraded_reason"] = "deterministic_only"
             packed["continuation"] = {
                 "available": True, "mode": "adaptive",
                 "hint": "Retry the adaptive context pack when deterministic-only context is insufficient.",
@@ -6541,7 +7499,11 @@ class LocalAIServices:
             lexical_candidate_limit = max(1, min(64, int(search_cfg.get("context_top_k", 14))))
         except (TypeError, ValueError, OverflowError):
             lexical_candidate_limit = 14
-        if path_controls_active and path_inventory_state != "used" and len(candidate_paths) < lexical_candidate_limit:
+        if (
+            (path_controls_active or quality_first)
+            and path_inventory_state != "used"
+            and len(candidate_paths) < lexical_candidate_limit
+        ):
             # Hints bias candidate ordering; they must not turn a bounded adaptive
             # lookup into a search restricted to hinted paths. Fill sparse indexed
             # candidates with a bounded lexical pass, then apply explicit excludes.
@@ -7232,7 +8194,7 @@ class LocalAIServices:
         vram_free_mb = None
         try:
             if getattr(self, "vram_balancer", None):
-                vram_status = self.vram_balancer.status()
+                vram_status = self.vram_balancer.status(force=True)
                 if vram_status.get("available", "vram_available_mb" in vram_status):
                     vram_free_mb = vram_status.get("vram_available_mb")
         except Exception:
@@ -7280,6 +8242,8 @@ class LocalAIServices:
             return {
                 "success": False,
                 "error": "The selected model's prompt budget is too small for a safe diff review.",
+                "terminal": True,
+                "retryable": False,
                 "changed_files": diff.get("changed_files", []),
                 "effective_prompt_budget_tokens": effective_prompt_budget_tokens,
             }
@@ -7293,6 +8257,8 @@ class LocalAIServices:
                     f"A diff fragment exceeds the {review_chunk_token_budget}-token review budget and cannot be split safely. "
                     "Narrow the diff or exclude generated/minified files."
                 ),
+                "terminal": True,
+                "retryable": False,
                 "changed_files": diff.get("changed_files", []),
                 "diff_truncated": bool(diff.get("truncated", False)),
                 "largest_review_chunk_tokens": largest_review_chunk_tokens,
@@ -7311,6 +8277,8 @@ class LocalAIServices:
                     f"Review requires {len(review_chunks)} segments; the safe limit is "
                     f"{max_review_chunks}. Narrow the diff or lower diff_tokens."
                 ),
+                "terminal": True,
+                "retryable": False,
                 "changed_files": diff.get("changed_files", []),
                 "diff_truncated": bool(diff.get("truncated", False)),
                 "review_chunks": len(review_chunks),
@@ -7360,12 +8328,14 @@ class LocalAIServices:
             if not isinstance(response, dict) or response.get("success") is False:
                 if len(review_chunks) == 1 and isinstance(response, dict):
                     return response
-                return {
+                failure = {
                     "success": False,
                     "error": f"Review segment {index}/{len(review_chunks)} failed.",
                     "failed_segment": index,
                     "partial_reviews": [str(item.get("text", "")) for item in primary_results],
                 }
+                failure.update(_review_failure_details(response))
+                return failure
             output_error = _review_text_error(response.get("text"))
             if output_error:
                 if format_recovery_used:
@@ -7583,7 +8553,41 @@ class LocalAIServices:
         chunks = [text[i:i + chunk_chars] for i in range(0, len(text), chunk_chars)]
         summaries: list[str] = []
         per_chunk_out = max(180, min(700, target_tokens // max(1, len(chunks)) + 120))
-        general_model = str(self.config.get("models", {}).get("general", self.config.get("models", {}).get("fast_code", "qwen2.5-coder:7b")))
+        models = self.config.get("models", {})
+        models = models if isinstance(models, dict) else {}
+        general_model = str(models.get("general", models.get("fast_code", "qwen2.5-coder:7b")))
+        requested_role = args.get("model_role")
+        requested_model = args.get("model")
+        if requested_role is not None and requested_model not in (None, ""):
+            return {
+                "success": False, "status_code": 400, "terminal": True, "retryable": False,
+                "error": "compress accepts only one of model_role or model",
+            }
+        if requested_role is not None:
+            if type(requested_role) is not str or requested_role not in {"fast_code", "general"}:
+                return {
+                    "success": False, "status_code": 400, "terminal": True, "retryable": False,
+                    "error": "compress model_role must be fast_code or general",
+                }
+            selected_model = models.get(requested_role)
+            if type(selected_model) is not str or not selected_model.strip():
+                return {
+                    "success": False, "status_code": 400, "terminal": True, "retryable": False,
+                    "error": f"compress model_role {requested_role!r} is not configured",
+                }
+            general_model = selected_model
+        elif requested_model not in (None, ""):
+            configured_models = {
+                configured
+                for configured in models.values()
+                if type(configured) is str and configured.strip()
+            }
+            if type(requested_model) is not str or requested_model not in configured_models:
+                return {
+                    "success": False, "status_code": 400, "terminal": True, "retryable": False,
+                    "error": "compress model must match a configured model",
+                }
+            general_model = requested_model
         for index, chunk in enumerate(chunks):
             if cancel_event is not None and cancel_event.is_set():
                 return cancelled()
@@ -7867,12 +8871,28 @@ class LocalAIServices:
     def validate_patch(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Validate whether a diff patch applies cleanly and preserves valid syntax."""
         reject_retired_tenancy_fields(payload)
-        diff_text = str(payload.get("patch", payload.get("diff", "")))
+        diff_text = payload.get("patch", payload.get("diff", ""))
+        if not isinstance(diff_text, str):
+            return {
+                "success": False,
+                "status_code": 400,
+                "terminal": True,
+                "retryable": False,
+                "error_code": "invalid_patch",
+                "error": "patch must be a string",
+            }
         if not diff_text.strip():
-            return {"success": False, "error": "empty patch"}
+            return {
+                "success": False,
+                "status_code": 400,
+                "terminal": True,
+                "retryable": False,
+                "error_code": "patch_required",
+                "error": "empty patch",
+            }
 
         affected_files: list[str] = []
-        errors: list[str] = []
+        syntax_errors: list[str] = []
         previous_old: str | None = None
         hunks = 0
 
@@ -7891,26 +8911,27 @@ class LocalAIServices:
             if line.startswith("--- "):
                 previous_old = patch_path(line[4:])
                 if previous_old is None:
-                    errors.append("invalid old patch path")
+                    syntax_errors.append("invalid old patch path")
             elif line.startswith("+++ "):
                 current = patch_path(line[4:])
                 if previous_old is None or current is None:
-                    errors.append("patch file header is malformed")
+                    syntax_errors.append("patch file header is malformed")
                 elif current != "/dev/null":
                     affected_files.append(current)
                 previous_old = None
             elif line.startswith("@@ "):
                 if not re.match(r"^@@ -\d+(?:,\d+)? \+\d+(?:,\d+)? @@", line):
-                    errors.append("invalid hunk header")
+                    syntax_errors.append("invalid hunk header")
                 else:
                     hunks += 1
 
         if previous_old is not None:
-            errors.append("patch has an unpaired file header")
+            syntax_errors.append("patch has an unpaired file header")
         if not affected_files:
-            errors.append("patch changes no files")
+            syntax_errors.append("patch changes no files")
         if not hunks:
-            errors.append("patch contains no hunks")
+            syntax_errors.append("patch contains no hunks")
+        errors = list(syntax_errors)
         valid = not errors
         applicability_checked = False
         if valid and payload.get("root"):
@@ -7926,7 +8947,12 @@ class LocalAIServices:
                         timeout=timeout, check=False, **hidden_run_kwargs(text=True),
                     )
                     if checked.returncode != 0:
-                        errors.append((checked.stderr or checked.stdout or "git apply --check failed").strip()[:500])
+                        check_error = (checked.stderr or checked.stdout or "git apply --check failed").strip()[:500]
+                        errors.append(check_error)
+                        if any(marker in check_error.casefold() for marker in (
+                            "corrupt patch", "patch fragment without header", "unrecognized input",
+                        )):
+                            syntax_errors.append(check_error)
                 except FileNotFoundError:
                     errors.append("git is unavailable for applicability check")
                 except subprocess.TimeoutExpired:
@@ -7934,9 +8960,9 @@ class LocalAIServices:
             valid = not errors
 
         return {
-            "success": valid,
+            "success": True,
             "valid": valid,
-            "syntax_valid": valid,
+            "syntax_valid": not syntax_errors,
             "applicability_checked": applicability_checked,
             "files_affected": list(dict.fromkeys(affected_files)),
             "errors": errors,
@@ -8721,10 +9747,74 @@ class LocalAIServices:
         suite_name = str(payload.get("suite_name", "default"))
         requested_model = str(payload.get("model") or getattr(self, "config", {}).get("models", {}).get("fast_code", "qwen2.5-coder:3b"))
         benchmark_kind = str(payload.get("benchmark_kind", "text") or "text").strip().lower()
-        cases = payload.get("cases") or [
-            {"id": "c1", "input": "def add(a, b):", "expected": "return a + b"},
-            {"id": "c2", "input": "def is_even(n):", "expected": "return n % 2 == 0"},
-        ]
+        raw_cases = payload.get("cases")
+        if raw_cases is None:
+            cases = [
+                {"id": "c1", "input": "def add(a, b):", "expected": "return a + b"},
+                {"id": "c2", "input": "def is_even(n):", "expected": "return n % 2 == 0"},
+            ]
+        elif not isinstance(raw_cases, list) or not 1 <= len(raw_cases) <= 32 or any(not isinstance(item, dict) for item in raw_cases):
+            return {
+                "success": False, "status_code": 400, "terminal": True, "retryable": False,
+                "error_code": "invalid_eval_suite_cases",
+                "message": "cases must contain 1 to 32 objects; omit cases to use the built-in suite",
+            }
+        else:
+            cases = raw_cases
+        for case in cases:
+            supported_case_fields = {
+                "id", "input", "expected", "max_words", "allowed_citations",
+                "required_citations", "forbidden_phrases", "include_response_text",
+            }
+            unknown_fields = set(case) - supported_case_fields
+            if unknown_fields:
+                return {
+                    "success": False, "status_code": 400, "terminal": True, "retryable": False,
+                    "error_code": "invalid_eval_case_rubric",
+                    "message": f"unsupported eval case fields: {', '.join(sorted(str(item) for item in unknown_fields))}",
+                }
+            max_words = case.get("max_words")
+            if "max_words" in case and (type(max_words) is not int or not 1 <= max_words <= 1000):
+                return {
+                    "success": False, "status_code": 400, "terminal": True, "retryable": False,
+                    "error_code": "invalid_eval_case_rubric", "message": "max_words must be an integer from 1 to 1000",
+                }
+            if "include_response_text" in case and type(case["include_response_text"]) is not bool:
+                return {
+                    "success": False, "status_code": 400, "terminal": True, "retryable": False,
+                    "error_code": "invalid_eval_case_rubric",
+                    "message": "include_response_text must be a boolean",
+                }
+            rubric_lists: dict[str, list[str]] = {}
+            for field in ("allowed_citations", "required_citations", "forbidden_phrases"):
+                if field not in case:
+                    continue
+                value = case[field]
+                if (
+                    not isinstance(value, list) or not 1 <= len(value) <= 32
+                    or any(not isinstance(item, str) or not item.strip() or len(item) > 512 for item in value)
+                ):
+                    return {
+                        "success": False, "status_code": 400, "terminal": True, "retryable": False,
+                        "error_code": "invalid_eval_case_rubric", "message": f"{field} must contain 1 to 32 nonempty strings of at most 512 characters",
+                    }
+                rubric_lists[field] = value
+            citation_pattern = re.compile(r"\[[^\[\]\r\n]+:\d+-\d+\]")
+            allowed = rubric_lists.get("allowed_citations")
+            for field in ("allowed_citations", "required_citations"):
+                for citation in rubric_lists.get(field, []):
+                    if citation_pattern.fullmatch(citation) is None:
+                        return {
+                            "success": False, "status_code": 400, "terminal": True, "retryable": False,
+                            "error_code": "invalid_eval_case_rubric", "message": f"{field} entries must use [path:start-end] form",
+                        }
+            if "required_citations" in rubric_lists and (
+                allowed is None or any(item not in allowed for item in rubric_lists["required_citations"])
+            ):
+                return {
+                    "success": False, "status_code": 400, "terminal": True, "retryable": False,
+                    "error_code": "invalid_eval_case_rubric", "message": "required_citations must be included in allowed_citations",
+                }
         configured_roles = tuple(
             str(role)
             for role, model in (getattr(self, "config", {}).get("models", {}) or {}).items()
@@ -8768,23 +9858,53 @@ class LocalAIServices:
         results = []
         passed = 0
         execution_failures = 0
+        model_digest = None
+        digest_reader = getattr(getattr(self, "runtime", None), "model_digest", None)
+        if callable(digest_reader):
+            try:
+                candidate_digest = digest_reader(requested_model)
+                if isinstance(candidate_digest, str) and re.fullmatch(r"[0-9a-f]{64}", candidate_digest):
+                    model_digest = candidate_digest
+            except Exception:
+                # Installed-model identity is useful provenance, but must not
+                # turn an otherwise valid evaluation into an execution failure.
+                model_digest = None
         for case in cases:
             c_id = str(case.get("id", "case"))
             c_in = str(case.get("input", ""))
             c_exp = str(case.get("expected", ""))
             started = time.perf_counter()
             try:
-                response = self.runtime.request("/api/generate", {
+                request_payload = {
                     "model": requested_model,
                     "prompt": c_in,
                     "system": "Return the shortest correct answer containing the requested completion. Output only the answer; no greeting, explanation, or generic advice.",
                     "stream": False,
                     # Evaluation cases measure visible task output, not hidden
-                    # reasoning.  Without this, Qwen3.5 can consume the whole
+                    # reasoning. Without this, Qwen3.5 can consume the whole
                     # small eval budget in `thinking` and look like a bad model.
                     "think": False,
                     "options": {"num_predict": 128, "temperature": 0.0},
-                })
+                }
+
+                def execute_case() -> dict[str, Any]:
+                    return self.runtime.request("/api/generate", request_payload)
+
+                scheduler = getattr(self, "scheduler", None)
+                scheduler_submit = getattr(scheduler, "submit", None)
+                if callable(scheduler_submit):
+                    response = scheduler_submit(
+                        requested_model, source="eval_suite", execute=execute_case, priority=2,
+                    )
+                else:
+                    llama_config = getattr(self, "config", {}).get("llama_cpp", {})
+                    if isinstance(llama_config, dict) and llama_config.get("managed_with_ollama") is True:
+                        response = {
+                            "error": "Scheduler required for managed mixed model evaluation; preparation unavailable",
+                            "error_code": "scheduler_required",
+                        }
+                    else:
+                        response = execute_case()
                 response = response if isinstance(response, dict) else {"error": "runtime returned a non-object response"}
                 error = str(response.get("error", "") or "")
                 response_text = str(response.get("response", response.get("text", "")) or "")
@@ -8801,20 +9921,46 @@ class LocalAIServices:
                 lowered_text = response_text.casefold()
                 generic_markers = ("certainly!", "below is", "here is", "this function", "hope this helps")
                 generic_filler = any(marker in lowered_text for marker in generic_markers)
-                concise_limit = max(240, len(c_exp) * 6)
+                response_words = len(response_text.split())
+                max_words = case.get("max_words")
+                concise = response_words <= max_words if type(max_words) is int else len(response_text.strip()) <= max(240, len(c_exp) * 6)
                 style_quality = {
                     "contains_expected": is_pass,
                     "exact_expected": response_text.strip() == c_exp.strip(),
                     "generic_filler": generic_filler,
-                    "concise": len(response_text.strip()) <= concise_limit,
-                    "quality_pass": bool(is_pass and not generic_filler and len(response_text.strip()) <= concise_limit),
+                    "concise": concise,
                 }
+                allowed_citations = case.get("allowed_citations")
+                required_citations = case.get("required_citations")
+                forbidden_phrases = case.get("forbidden_phrases")
+                quality_checks = [is_pass, not generic_filler, concise]
+                if isinstance(allowed_citations, list):
+                    found_citations = re.findall(r"\[[^\[\]\r\n]+:\d+-\d+\]", response_text)
+                    bracketed_items = re.findall(r"\[[^\[\]\r\n]*\]", response_text)
+                    citation_precision = (
+                        bool(found_citations) and len(found_citations) == len(bracketed_items)
+                        and all(item in allowed_citations for item in found_citations)
+                    )
+                    style_quality["citation_precision"] = citation_precision
+                    quality_checks.append(citation_precision)
+                if isinstance(required_citations, list):
+                    required_present = all(item in response_text for item in required_citations)
+                    style_quality["required_citations_present"] = required_present
+                    quality_checks.append(required_present)
+                if isinstance(forbidden_phrases, list):
+                    forbidden_absent = not any(item.casefold() in lowered_text for item in forbidden_phrases)
+                    style_quality["forbidden_phrases_absent"] = forbidden_absent
+                    quality_checks.append(forbidden_absent)
+                style_quality["quality_pass"] = bool(all(quality_checks))
                 result = {
                     "case_id": c_id,
                     "model": requested_model,
+                    "model_digest": model_digest,
+                    "model_digest_status": "verified_installed" if model_digest else "unavailable",
                     "passed": is_pass,
                     "status": status,
                     "response_chars": len(response_text),
+                    "response_words": response_words,
                     "response_tokens_est": estimate_tokens(response_text),
                     "response_sha256": hashlib.sha256(response_text.encode("utf-8")).hexdigest(),
                     "response_preview": response_text[:240],
@@ -8822,8 +9968,31 @@ class LocalAIServices:
                     "duration_ms": round((time.perf_counter() - started) * 1000, 2),
                     "style_quality": style_quality,
                 }
+                if case.get("include_response_text") is True:
+                    result["response_text"] = response_text[:4096]
+                    result["response_text_truncated"] = len(response_text) > 4096
                 if error:
                     result["error"] = error
+                for key in (
+                    "error_code", "job_id", "scheduler_state", "timed_out", "outcome_unknown",
+                    "wait_reason", "request_not_sent", "operation_not_started", "in_progress", "retryable", "terminal",
+                ):
+                    value = response.get(key)
+                    if key in {
+                        "timed_out", "outcome_unknown", "request_not_sent", "operation_not_started",
+                        "in_progress", "retryable", "terminal",
+                    } and type(value) is not bool:
+                        continue
+                    if key in {"error_code", "scheduler_state", "wait_reason"} and not isinstance(value, str):
+                        continue
+                    if key == "job_id" and not (
+                        isinstance(value, str) and value
+                    ) and not (
+                        isinstance(value, int) and not isinstance(value, bool) and value >= 0
+                    ):
+                        continue
+                    if key in response:
+                        result[key] = value
             except Exception as exc:
                 is_pass = False
                 execution_failures += 1
@@ -8840,6 +10009,19 @@ class LocalAIServices:
                     "response_preview_truncated": False,
                     "duration_ms": round((time.perf_counter() - started) * 1000, 2),
                 }
+                if isinstance(exc, TimeoutError):
+                    result["timed_out"] = True
+                    if isinstance(exc, SchedulerTimeoutError):
+                        result["job_id"] = exc.job_id
+                        result["scheduler_state"] = exc.state
+                        if isinstance(exc.wait_reason, str):
+                            result["wait_reason"] = exc.wait_reason
+                        if exc.state == "pending":
+                            result.update(request_not_sent=True, operation_not_started=True)
+                        else:
+                            result.update(outcome_unknown=True, retryable=False)
+                    else:
+                        result.update(outcome_unknown=True, retryable=False)
             results.append(result)
             if is_pass:
                 passed += 1

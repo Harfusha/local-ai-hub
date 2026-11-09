@@ -28,6 +28,14 @@ def test_tokenize_query_terms_custom_stop_words_types():
     assert "foo" not in terms2
 
 
+def test_tokenize_query_terms_does_not_split_unicode_sentence_words():
+    terms = {term.casefold() for term in tokenize_query_terms("Přes nejbližší výsledek pro uživatele", min_len=2)}
+    assert "přes" in terms
+    assert "řes" not in terms
+    assert "nejbližší" in terms
+    assert "žší" not in terms
+
+
 def test_normalize_query_null_bytes_and_types():
     # Null bytes must be stripped
     norm = normalize_query("hello\x00world\x00test")

@@ -31,8 +31,10 @@ from urllib.parse import parse_qs, quote, unquote, urlparse
 
 from . import __version__
 from .app import LocalAIApp
+from .features import FeatureSet
 from .http_transport import RequestHeadReader
 from .opencode_boundary import path_allowed as _opencode_path_allowed, payload_allowed as _opencode_payload_allowed, scoped_http_request as _opencode_scoped_http_request
+from .operation_contracts import capability_feature_gate, capability_minimum_profile, capability_profile_available
 
 _STATUS_DEPENDENCY_TIMEOUT_SECONDS = 0.25
 _STATUS_TOTAL_BUDGET_SECONDS = 1.0
@@ -92,7 +94,8 @@ from .dashboard import DASHBOARD_HTML
 from .config import ConfigError, deep_merge, load_config, save_runtime_overrides, validate_config
 from .delivery import decide_delivery
 from .resilience import RecoveryJournal
-from .sqlite_support import is_busy_error
+from .sqlite_support import connect_sqlite, is_busy_error
+from .search_modes import default_agent_search_mode
 from .agent_identity import AgentScope, ScopeContext
 from .project_config import resolve_project_context
 from .state_paths import configured_state_dir
@@ -100,6 +103,7 @@ from .agent_tasks import (
     CheckpointResponseBudgetError,
     CompletionGateError,
     GoalContract,
+    TaskIdempotencyConflictError,
     TaskWorktreeError,
     TaskCheckpoint,
     TaskStatus,
@@ -110,7 +114,12 @@ from .agent_verification import VerificationReceipt
 from .task_context import build_context_request, compose_task_context
 from .agent_learning import ImprovementCandidate, SLOObservation
 from .operation_contracts import normalize_transport_error
-from .search_pagination import MAX_HTTP_PAGE_RESPONSE_BYTES, pagination_bounds_error
+from .search_pagination import (
+    MAX_HTTP_PAGE_RESPONSE_BYTES,
+    MAX_PAGE_SIZE,
+    MAX_PAGE_WINDOW,
+    pagination_bounds_error,
+)
 from .json_utils import dumps as json_dumps, dumps_bytes as json_dumps_bytes, loads as json_loads
 from .process_utils import process_identity, process_owner_state, process_parent_pid
 
@@ -591,33 +600,20 @@ def _token_matches(supplied: str, expected: str) -> bool:
 
 
 def _redact_config_secrets(config: dict[str, Any]) -> dict[str, Any]:
+    security_settings = config.get("security")
+    if isinstance(security_settings, dict) and "users" in security_settings:
+        raise ValueError("security.users was removed; configuration projection requires canonical settings")
+    serialized_config = json_dumps(config, default=str)
+    config_stamp = hashlib.sha256(serialized_config.encode("utf-8")).hexdigest()
     cached = getattr(_redact_config_secrets, "_cached", None)
-    config_stamp = (id(config), len(config), tuple(sorted(config.keys())))
     if cached is not None and cached[0] == config_stamp:
-        return dict(cached[1])
-    view = json.loads(json_dumps(config, default=str))
+        return json.loads(cached[1])
+    view = json.loads(serialized_config)
     if "_config_path" in view:
         view["_config_path"] = _safe_config_file_label(view["_config_path"])
     if "_runtime_override_path" in view:
         view["_runtime_override_path"] = _safe_config_file_label(view["_runtime_override_path"])
-    security = view.get("security")
-    if not isinstance(security, dict):
-        return view
-    if security.get("api_token"):
-        security["api_token"] = "***configured***"
-    if security.get("supervisor_token"):
-        security["supervisor_token"] = "***configured***"
-    action_tokens = security.get("action_tokens")
-    if isinstance(action_tokens, dict):
-        security["action_tokens"] = {
-            str(action): "***configured***"
-            for action, token in action_tokens.items() if token
-        }
-    elif action_tokens:
-        security["action_tokens"] = "***configured***"
-    if "users" in security:
-        raise ValueError("security.users was removed; configuration projection requires canonical settings")
-    _redact_config_secrets._cached = (config_stamp, view)
+    _redact_config_secrets._cached = (config_stamp, json_dumps(view, default=str))
     return view
 
 
@@ -668,7 +664,7 @@ def _http_mode_policy(method: str, path: str, payload: Mapping[str, Any] | None 
         return "gaming_read"
     if path == "/api/async-jobs" and action in {"status", "wait", "result", "cancel", "evaluation_report"}:
         return "existing_job"
-    if path == "/api/work-orders" and action in {"status", "get", "cancel"}:
+    if path == "/api/work-orders" and action in {"status", "wait", "get", "cancel"}:
         return "existing_job"
     if path == "/api/speculative-lint" and action in {"status", "cancel"}:
         return "existing_job"
@@ -685,6 +681,82 @@ def _http_mode_policy(method: str, path: str, payload: Mapping[str, Any] | None 
     if path == "/api/agent-state/blackboard" and action in {"get", "list", "read"}:
         return "gaming_read"
     return "gaming_read" if path in HTTP_MODE_GAMING_READ_POST_PATHS else "blocked"
+
+
+def _http_hardware_capability_error(
+    path: str, payload: Mapping[str, Any] | None, config: Mapping[str, Any] | None,
+) -> dict[str, Any] | None:
+    """Apply the shared hardware ceiling to direct HTTP semantic/write routes."""
+    action_by_path = {
+        "/api/solve/repo": ("local_ai_repo", "solve"),
+        "/api/review/diff": ("local_ai_repo", "review_diff"),
+        "/api/delegate/repo": ("local_ai_repo", "delegate"),
+        "/api/delegate": ("local_ai_task", "delegate"),
+        "/api/reason": ("local_ai_task", "reason"),
+        "/api/review": ("local_ai_task", "review"),
+        "/api/second-opinion": ("local_ai_task", "second_opinion"),
+        "/api/conversations/continue": ("local_ai_task", "continue"),
+        "/api/delegate/batch": ("local_ai_task", "batch"),
+        "/api/task/vision": ("local_ai_task", "vision"),
+        "/api/complete": ("local_ai_task", "complete_code"),
+        "/api/task/scaffold": ("local_ai_task", "scaffold"),
+        "/api/task/speculative_draft": ("local_ai_task", "speculative_draft"),
+        "/api/task/automation": ("local_ai_task", "automation"),
+    }
+    capability = action_by_path.get(path)
+    if path == "/api/async-jobs" and isinstance(payload, Mapping):
+        action = payload.get("action", "submit")
+        if action == "submit":
+            job_action = payload.get("job_action", "")
+            if job_action == "review_diff":
+                capability = ("local_ai_repo", "review_diff")
+            else:
+                capability = ("local_ai_task", job_action if isinstance(job_action, str) and job_action else "submit")
+    if path == "/api/work-orders" and isinstance(payload, Mapping):
+        if payload.get("action", "submit") == "submit":
+            if payload.get("mode") != "bounded":
+                return {
+                    "success": False, "unsupported": True,
+                    "error_code": "bounded_mode_required",
+                    "error": "work-order submit requires mode='bounded'",
+                    "terminal": True, "retryable": False, "status_code": 400,
+                }
+            capability = ("local_ai_work", "submit")
+    if capability is None:
+        return None
+    effective = (config or {}).get("_hardware", {})
+    hardware = effective if isinstance(effective, Mapping) and "profile" in effective else (config or {}).get("hardware", {})
+    profile = hardware.get("profile", "low") if isinstance(hardware, Mapping) else "low"
+    minimum = capability_minimum_profile(*capability)
+    requirement = f"the {minimum} profile or higher"
+    if minimum == "high":
+        requirement = "the high or max hardware profile"
+    if not capability_profile_available(profile, minimum):
+        return {
+            "success": False,
+            "unsupported": True,
+            "status_code": 403,
+            "error_code": "hardware_profile_too_low",
+            "error": f"{capability[0]} action '{capability[1]}' requires {requirement}",
+            "hardware_profile": profile if isinstance(profile, str) else "low",
+            "minimum_profile": minimum,
+            "terminal": True,
+            "retryable": False,
+        }
+    required_feature = capability_feature_gate(*capability)
+    features = (config or {}).get("features", {})
+    if required_feature and (not isinstance(features, Mapping) or features.get(required_feature) is not True):
+        return {
+            "success": False,
+            "unsupported": True,
+            "status_code": 403,
+            "error_code": "capability_feature_disabled",
+            "error": f"{capability[0]} action '{capability[1]}' requires features.{required_feature}=true",
+            "required_feature": required_feature,
+            "terminal": True,
+            "retryable": False,
+        }
+    return None
 
 
 def _operational_mode_api() -> Any:
@@ -1249,6 +1321,8 @@ def _telemetry_http_outcome(status: int, data: Any, path: str = "") -> tuple[boo
         return True, "terminal_client_result", False
     if success:
         return True, "", False
+    if status < 400:
+        return False, "application_error", True
     return False, "http_error", True
 
 
@@ -1420,6 +1494,10 @@ class LocalAIHTTPServer(ThreadingHTTPServer):
             self.socket.setsockopt(socket.SOL_SOCKET, exclusive, 1)
         super().server_bind()
 
+    def verify_request(self, request: Any, client_address: Any) -> bool:
+        """Reject non-loopback peers before any HTTP route, including health."""
+        return _is_loopback_client_address(client_address)
+
     def configure_rate_limit(self, requests: int, window_seconds: float) -> None:
         """Apply config-driven rate limit values after server creation."""
         with self._rate_lock:
@@ -1518,15 +1596,11 @@ def _task_create_contract(payload: Mapping[str, Any]) -> GoalContract:
 
 
 def _safe_agent(handler: Any) -> str:
-    agent_fn = getattr(handler, "_agent", None)
-    if callable(agent_fn):
-        try:
-            return agent_fn() or "generic"
-        except Exception:
-            pass
     headers = getattr(handler, "headers", None)
     if headers is not None and hasattr(headers, "get"):
-        return headers.get("X-LocalAI-Agent") or "generic"
+        value = headers.get("X-LocalAI-Agent")
+        if isinstance(value, str) and value.strip():
+            return value.strip()
     return "generic"
 
 
@@ -1634,24 +1708,11 @@ class Handler(BaseHTTPRequestHandler):
         header = lambda name, default="": request_headers.get(name, default)
         request_origin = str(header("Origin", "") or "").strip()
         bridge_path = str(getattr(self, "path", "")).startswith("/api/browser/") or str(getattr(self, "path", "")) == "/api/vision/review"
-        requested_headers = str(header("Access-Control-Request-Headers", "") or "").lower()
-        token_preflight = str(getattr(self, "command", "")) == "OPTIONS" and ("x-localai-token" in requested_headers or "authorization" in requested_headers)
         if request_origin and bridge_path and APP is not None and origin_allowed(APP.config, request_origin):
             self.send_header("Access-Control-Allow-Origin", request_origin)
             self.send_header("Access-Control-Allow-Methods", "POST, OPTIONS")
-            self.send_header("Access-Control-Allow-Headers", "Content-Type, X-LocalAI-Token, Authorization")
+            self.send_header("Access-Control-Allow-Headers", "Content-Type")
             self.send_header("Vary", "Origin")
-        elif request_origin and bridge_path and APP is not None:
-            expected_token = str(APP.config.get("security", {}).get("api_token", ""))
-            supplied_token = str(header("X-LocalAI-Token", "") or "")
-            auth_header = str(header("Authorization", "") or "")
-            if auth_header.lower().startswith("bearer "):
-                supplied_token = auth_header[7:].strip()
-            if expected_token and (hmac.compare_digest(supplied_token, expected_token) or token_preflight):
-                self.send_header("Access-Control-Allow-Origin", request_origin)
-                self.send_header("Access-Control-Allow-Methods", "POST, OPTIONS")
-                self.send_header("Access-Control-Allow-Headers", "Content-Type, X-LocalAI-Token, Authorization")
-                self.send_header("Vary", "Origin")
         if html:
             script_source = f"'nonce-{nonce}'" if nonce else "'none'"
             self.send_header("Content-Security-Policy", f"default-src 'none'; connect-src 'self'; img-src 'self' data:; style-src 'unsafe-inline'; script-src {script_source}; script-src-attr 'unsafe-inline'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'")
@@ -1711,7 +1772,7 @@ class Handler(BaseHTTPRequestHandler):
         work_limit_reached = False
         try:
             uri = f"file:{target_db.as_posix()}?mode=ro"
-            con = sqlite3.connect(uri, uri=True, timeout=3.0)
+            con = connect_sqlite(uri, uri=True, timeout_seconds=3.0, read_only=True)
             try:
                 con.setlimit(sqlite3.SQLITE_LIMIT_LENGTH, _DB_QUERY_MAX_RESPONSE_BYTES)
                 con.set_authorizer(_readonly_authorizer)
@@ -1918,21 +1979,26 @@ class Handler(BaseHTTPRequestHandler):
             return
         try:
             failed = status >= 400 or (isinstance(data, dict) and data.get("success") is False)
-            detail = "request failed" if failed else ""
             if isinstance(data, dict):
                 data = self._safe_debug_trace_request(data)
             else:
                 data = {"output": self._safe_debug_trace_request({"output": data}).get("output", "")}
+            trace_response = dict(data)
+            if isinstance(status, int) and not isinstance(status, bool) and 100 <= status <= 599:
+                trace_response["http_status_code"] = status
+            response_error = (data.get("error") or data.get("message")) if isinstance(data, dict) else None
+            detail = (
+                str(response_error)[:512]
+                if failed and isinstance(response_error, str) and response_error.strip()
+                else "request failed" if failed else ""
+            )
             state = "failed" if failed else "done"
             update = getattr(store, "update", None)
             if callable(update):
-                if getattr(self, "_debug_stream_capture", False):
-                    update(trace_id, response=data)
-                else:
-                    update(trace_id, output=data)
+                update(trace_id, response=trace_response)
                 finished = store.finish(trace_id, state=state, error=detail)
             else:
-                finished = store.finish(trace_id, state=state, response=data, error=detail)
+                finished = store.finish(trace_id, state=state, response=trace_response, error=detail)
             if not finished:
                 # A concurrent event writer can briefly hold SQLite's write lock.
                 # Do not mark the trace finished until the terminal write is real;
@@ -1940,10 +2006,10 @@ class Handler(BaseHTTPRequestHandler):
                 # being left visibly running without creating retry loops.
                 time.sleep(0.02)
                 if callable(update):
-                    update(trace_id, output=data)
+                    update(trace_id, response=trace_response)
                     finished = store.finish(trace_id, state=state, error=detail)
                 else:
-                    finished = store.finish(trace_id, state=state, response=data, error=detail)
+                    finished = store.finish(trace_id, state=state, response=trace_response, error=detail)
             if finished:
                 self._debug_trace_finished = True
         except Exception:
@@ -2614,35 +2680,7 @@ class Handler(BaseHTTPRequestHandler):
 
 
     def _agent(self) -> str:
-        if self._opencode_profile_credential():
-            return "opencode-local"
         return _safe_agent(self)
-
-    def _opencode_profile_credential(self) -> bool:
-        from .opencode_boundary import derive_local_profile_token
-
-        config = getattr(APP, "config", {}) if APP is not None else {}
-        security = config.get("security", {}) if isinstance(config, dict) else {}
-        supplied = self.headers.get("X-LocalAI-Token", "")
-        auth = self.headers.get("Authorization", "")
-        if isinstance(auth, str) and auth.lower().startswith("bearer "):
-            supplied = auth[7:].strip()
-        if not isinstance(supplied, str):
-            return False
-        pieces = supplied.split(".")
-        if len(pieces) != 3 or pieces[0] != "lahoc1":
-            return False
-        nonce = pieces[1]
-        expected = derive_local_profile_token(security.get("api_token", ""), nonce) if isinstance(security, dict) else None
-        if not expected or not _token_matches(supplied, expected):
-            return False
-        try:
-            provider = getattr(APP, "opencode_provider", None)
-            status = provider.status() if provider is not None else None
-        except Exception:
-            return False
-        return bool(isinstance(status, dict) and status.get("success") is True and status.get("state") == "running"
-                    and status.get("nonce") == nonce)
 
     def _authorization_permission(self) -> str:
         path = urlparse(str(getattr(self, "path", ""))).path
@@ -2684,111 +2722,24 @@ class Handler(BaseHTTPRequestHandler):
         self._authorization_actor = "unrecognized"
         self._authorization_root = None
         self._authorization_permissions = frozenset()
-        self._authorization_status = 401
-        if APP is None:
-            return _is_loopback_client_address(getattr(self, "client_address", None))
-        security = APP.config.get("security", {})
+        self._authorization_status = 403
+        config = getattr(APP, "config", {}) if APP is not None else {}
+        security = config.get("security", {}) if isinstance(config, dict) else {}
         if not isinstance(security, dict):
             return False
-        expected = security.get("api_token", "") or ""
-        supervisor_token = security.get("supervisor_token", "") or ""
-        action_tokens = security.get("action_tokens", {}) or {}
-        if (
-            not isinstance(expected, str)
-            or not isinstance(supervisor_token, str)
-            or not isinstance(action_tokens, dict)
-            or any(not isinstance(key, str) or not isinstance(value, str) for key, value in action_tokens.items())
-            or "users" in security
-        ):
+        retired_fields = {
+            "api_token", "supervisor_token", "action_tokens", "api_token_permissions",
+            "api_token_tenant", "api_token_principal", "tenant_derivation_key", "users",
+        }
+        if retired_fields.intersection(security):
             return False
-        configured_tokens = [token for token in (expected, supervisor_token, *action_tokens.values()) if token]
-        if len(configured_tokens) != len(set(configured_tokens)):
+        is_loopback = _is_loopback_client_address(getattr(self, "client_address", None))
+        if not is_loopback:
             return False
-        if action is None:
-            action = _http_admin_action(
-                str(getattr(self, "command", "")),
-                urlparse(str(getattr(self, "path", ""))).path,
-            )
-        supplied = self.headers.get("X-LocalAI-Token", "")
-        auth = self.headers.get("Authorization", "")
-        if auth.lower().startswith("bearer "):
-            supplied = auth[7:].strip()
-        global_valid = _token_matches(supplied, expected)
-        profile_valid = self._opencode_profile_credential()
-        supervisor_valid = _token_matches(supplied, supervisor_token)
-        scoped = str(action_tokens.get(action, "")) if action else ""
-        scoped_valid = len(scoped) >= 16 and _token_matches(supplied, scoped)
-        matching_credentials = int(global_valid) + int(profile_valid) + int(supervisor_valid) + int(scoped_valid)
-        if matching_credentials > 1:
-            return False
-        local_client = _is_loopback_client_address(getattr(self, "client_address", None))
-        if profile_valid:
-            path = urlparse(str(getattr(self, "path", ""))).path
-            method = str(getattr(self, "command", "GET")).upper()
-            admission_path = str(getattr(self, "path", "")) if path == "/api/live/status" else path
-            if not local_client or path.startswith("/api/opencode/provider/") or not _opencode_path_allowed("opencode-local", method, admission_path):
-                self._authorization_status = 403
-                return False
-        if supervisor_valid:
-            self._authorization_actor = "supervisor"
-            self._authorization_permissions = frozenset({"admin:read", "admin:write"})
-            required = (
-                permission.strip().lower()
-                if isinstance(permission, str) and ":" in permission
-                else action.strip().lower()
-                if isinstance(action, str) and ":" in action
-                else self._required_permission()
-            )
-            if required not in self._authorization_permissions:
-                self._authorization_status = 403
-                return False
-            self._authorization_status = 200
-            return True
-        if scoped_valid:
-            self._authorization_actor = "action_token"
-            self._authorization_permissions = frozenset({str(action)})
-            self._authorization_status = 200
-            return True
-        if global_valid or profile_valid:
-            grants = security.get("api_token_permissions", ["monitor", "read", "write", "admin"])
-            allowed = {
-                "monitor": {"monitor", "read", "write", "admin"},
-                "read": {"read", "write", "admin"},
-                "write": {"write", "admin"},
-                "admin": {"admin"},
-            }
-            requested = permission
-            if requested is None and isinstance(action, str) and ":" in action:
-                requested = action
-            if isinstance(requested, str) and ":" in requested:
-                resource, _, verb = requested.partition(":")
-                needed = "admin" if resource == "admin" else "monitor" if resource == "dashboard" and verb == "read" else verb
-            elif isinstance(requested, str):
-                needed = requested
-            elif requested is not None:
-                needed = None
-            else:
-                needed = self._authorization_permission()
-            self._authorization_actor = "api_token"
-            self._authorization_permissions = frozenset(
-                item.strip().lower() for item in grants if isinstance(item, str)
-            ) if isinstance(grants, list) else frozenset()
-            if (
-                not isinstance(grants, list)
-                or any(not isinstance(item, str) for item in grants)
-                or needed not in allowed
-                or not ({item.strip().lower() for item in grants} & allowed[needed])
-            ):
-                self._authorization_status = 403
-                return False
-            self._authorization_status = 200
-            return True
-        if expected or supervisor_token or action_tokens:
-            return False
-        self._authorization_actor = "local" if local_client else "unrecognized"
-        if local_client:
-            self._authorization_status = 200
-        return local_client
+        self._authorization_actor = "local"
+        self._authorization_permissions = frozenset()
+        self._authorization_status = 200
+        return True
 
     def _audit_admin_authorization(self, action: str, *, allowed: bool) -> bool:
         if APP is None:
@@ -2905,6 +2856,19 @@ class Handler(BaseHTTPRequestHandler):
         if not hasattr(request_headers, "get"):
             request_headers = {}
         header = lambda name, default="": request_headers.get(name, default)
+        if (
+            header("X-LocalAI-Client", "") == "dashboard"
+            and str(header("Sec-Fetch-Site", "")).strip().lower() != "same-origin"
+        ):
+            self._send(403, {"success": False, "error": "forbidden: dashboard requests must be same-origin"})
+            return False
+        if (
+            header("X-LocalAI-Client", "") == "dashboard"
+            and str(getattr(self, "command", "GET")).upper() not in {"GET", "HEAD"}
+            and not str(header("Origin", "")).strip()
+        ):
+            self._send(403, {"success": False, "error": "forbidden: dashboard mutation requires Origin"})
+            return False
         host_header = str(header("Host", "") or "").strip()
         if host_header:
             host_name = host_header.split(":", 1)[0].strip("[]").lower()
@@ -2929,18 +2893,9 @@ class Handler(BaseHTTPRequestHandler):
                 allowed_origins.add(bind)
 
             bridge_origin = False
-            bridge_token = False
             if str(getattr(self, "path", "")).startswith("/api/browser/") or str(getattr(self, "path", "")) == "/api/vision/review":
                 bridge_origin = origin_allowed(APP.config, origin_header)
-                expected_token = str(APP.config.get("security", {}).get("api_token", ""))
-                supplied_token = str(header("X-LocalAI-Token", "") or "")
-                auth_header = str(header("Authorization", "") or "")
-                if auth_header.lower().startswith("bearer "):
-                    supplied_token = auth_header[7:].strip()
-                requested_headers = str(header("Access-Control-Request-Headers", "") or "").lower()
-                token_preflight = str(getattr(self, "command", "")) == "OPTIONS" and ("x-localai-token" in requested_headers or "authorization" in requested_headers)
-                bridge_token = bool(expected_token and (hmac.compare_digest(supplied_token, expected_token) or token_preflight))
-            if origin_host not in allowed_origins and not bridge_origin and not bridge_token:
+            if origin_host not in allowed_origins and not bridge_origin:
                 self._send(403, {"success": False, "error": "forbidden: cross-origin requests are not allowed"})
                 return False
         return True
@@ -2950,11 +2905,6 @@ class Handler(BaseHTTPRequestHandler):
             return False
         if not self._reject_identity_fields(parse_qs(urlparse(str(getattr(self, "path", ""))).query, keep_blank_values=True)):
             return False
-        local_mode_read = (
-            str(getattr(self, "command", "")).upper() == "GET"
-            and urlparse(str(getattr(self, "path", ""))).path == "/api/mode"
-            and _is_loopback_client_address(getattr(self, "client_address", None))
-        )
         action = _http_admin_action(
             str(getattr(self, "command", "")),
             urlparse(str(getattr(self, "path", ""))).path,
@@ -2962,9 +2912,6 @@ class Handler(BaseHTTPRequestHandler):
         self._admin_action = action or ""
         self._admin_result_audited = False
         authorized = self._authorized(action, permission=permission)
-        if not authorized and local_mode_read:
-            self._authorization_actor = "local"
-            authorized = True
         if not authorized:
             if action:
                 self._audit_admin_authorization(action, allowed=False)
@@ -3099,6 +3046,18 @@ class Handler(BaseHTTPRequestHandler):
                 or not minimum <= value <= maximum
             ):
                 raise RequestBodyError(f"{name} must be a finite number from {minimum:g} to {maximum:g}")
+
+        if path == "/api/search":
+            if "top_k" in payload:
+                bounded_integer(payload["top_k"], "top_k", 1, MAX_PAGE_SIZE)
+            if payload.get("context_lines") is not None:
+                bounded_integer(payload["context_lines"], "context_lines", 0, 40)
+            if payload.get("limit") is not None:
+                bounded_integer(payload["limit"], "limit", 1, MAX_PAGE_SIZE)
+            if "offset" in payload:
+                bounded_integer(payload["offset"], "offset", 0, MAX_PAGE_WINDOW - 1)
+            if "enrich" in payload and type(payload["enrich"]) is not bool:
+                raise RequestBodyError("enrich must be a boolean")
 
         if path.startswith("/api/agent-state/") and "action" in payload:
             action = _agent_action_selector(payload)
@@ -3352,18 +3311,24 @@ class Handler(BaseHTTPRequestHandler):
             self._send(403, {"success": False, "unsupported": True, "error": "work orchestrator is disabled", "terminal": True}); return
         action = str(payload.get("action", "submit")).strip().lower().replace("-", "_")
         work_id = str(payload.get("work_id", "")).strip()
+
+        def send_work_result(result: Any) -> None:
+            if isinstance(result, dict) and result.get("error") == "work order not found":
+                self._send(404, {**result, "terminal": True, "retryable": False}); return
+            self._send(200, result)
+
         if action == "submit":
             self._send(200, APP.work_orchestrator.submit(payload)); return
         if action == "status":
-            self._send(200, APP.work_orchestrator.status(work_id)); return
+            send_work_result(APP.work_orchestrator.status(work_id)); return
         if action == "wait":
-            self._send(200, APP.work_orchestrator.wait(work_id, float(payload.get("timeout_seconds", 90)))); return
+            send_work_result(APP.work_orchestrator.wait(work_id, float(payload.get("timeout_seconds", 90)))); return
         if action == "get":
-            self._send(200, APP.work_orchestrator.get(work_id, profile=str(payload.get("response_profile", "")), return_fields=payload.get("return_fields") if isinstance(payload.get("return_fields"), list) else None, max_output_tokens=int(payload.get("max_output_tokens", 0) or 0))); return
+            send_work_result(APP.work_orchestrator.get(work_id, profile=str(payload.get("response_profile", "")), return_fields=payload.get("return_fields") if isinstance(payload.get("return_fields"), list) else None, max_output_tokens=int(payload.get("max_output_tokens", 0) or 0))); return
         if action == "cancel":
-            self._send(200, APP.work_orchestrator.cancel(work_id)); return
+            send_work_result(APP.work_orchestrator.cancel(work_id)); return
         if action == "continue":
-            self._send(200, APP.work_orchestrator.continue_work(work_id, str(payload.get("answer", "")))); return
+            send_work_result(APP.work_orchestrator.continue_work(work_id, str(payload.get("answer", "")))); return
         self._send(400, {"success": False, "error": "unknown work-order action", "terminal": True}); return
 
     def _handle_post_async_jobs(self, payload: Any) -> None:
@@ -3647,7 +3612,8 @@ class Handler(BaseHTTPRequestHandler):
                     if reliability_success and request_evaluation is not None:
                         APP.telemetry.record_request_evaluation(request_evaluation, duration_ms=elapsed_ms)
                     if record_operational_error and err:
-                        APP.telemetry.record_error("http", path, err, request_id=str(getattr(self, "_trace_request_id", "")), agent=self._agent(), error_type_override=outcome_error_type, error_code_override="http_request_failed", retryable=status in {429, 500, 502, 503, 504})
+                        error_code = "application_error" if outcome_error_type == "application_error" else "http_request_failed"
+                        APP.telemetry.record_error("http", path, err, request_id=str(getattr(self, "_trace_request_id", "")), agent=self._agent(), error_type_override=outcome_error_type, error_code_override=error_code, retryable=status in {429, 500, 502, 503, 504})
                     if APP is not None and getattr(APP, "endpoint_stats", None) is not None:
                         try:
                             req_root = getattr(self, "_request_root", "") or (data.get("root") if isinstance(data, dict) else "")
@@ -5138,7 +5104,8 @@ class Handler(BaseHTTPRequestHandler):
                 root = (query.get("root") or ["."])[0]
                 sym = (query.get("symbol") or query.get("name") or [""])[0]
                 rel_path = (query.get("path") or [None])[0]
-                self._send(200, APP.services.code_find_declaration(root, sym, path=rel_path))
+                result = APP.services.code_find_declaration(root, sym, path=rel_path)
+                self._send(result.get("status_code", 200), result)
                 return
             if path == "/api/code/find_implementations":
                 root = (query.get("root") or ["."])[0]
@@ -5207,7 +5174,9 @@ class Handler(BaseHTTPRequestHandler):
                     revisions = {key: query[key][0] for key in ("rev1", "rev2") if key in query}
                     max_lines = int((query.get("max_lines") or [1000])[0])
                     base_val = (query.get("base") or ["HEAD"])[0]
-                    self._send(200, APP.services.git_diff(root, path=p, staged=staged, max_lines=max_lines, base=base_val, **revisions))
+                    if not revisions and base_val != "HEAD":
+                        revisions = {"rev1": base_val, "rev2": "HEAD"}
+                    self._send(200, APP.services.git_diff(root, path=p, staged=staged, max_lines=max_lines, **revisions))
                 else:
                     self._send(200, {"success": False, "error": "deterministic engine disabled"})
                 return
@@ -6038,6 +6007,13 @@ class Handler(BaseHTTPRequestHandler):
             )
             self._send(status, mode_rejection)
             return
+        hardware_rejection = _http_hardware_capability_error(
+            path, payload if isinstance(payload, Mapping) else None,
+            getattr(APP, "config", {}),
+        )
+        if hardware_rejection is not None:
+            self._send(int(hardware_rejection.get("status_code", 403)), hardware_rejection)
+            return
         allowed_agent_state_post = {
             "/api/agent-state/memory",
             "/api/agent-state/tasks",
@@ -6070,8 +6046,6 @@ class Handler(BaseHTTPRequestHandler):
             request_id = self.headers.get("X-LocalAI-Request-ID", "")
             if not isinstance(request_id, str) or not re.fullmatch(r"[0-9a-f]{32}", request_id):
                 self._send(400, {"success": False, "error": "project_command requires a 32-character request id", "terminal": True, "retryable": False}); return
-            if not self._opencode_profile_credential():
-                self._send(403, {"success": False, "error_code": "opencode_profile_required", "terminal": True, "retryable": False}); return
             recovery = getattr(APP, "recovery", None)
             if not isinstance(recovery, RecoveryJournal):
                 self._send(503, {"success": False, "error_code": "request_journal_unavailable", "terminal": True, "retryable": False}); return
@@ -6146,6 +6120,10 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, {"success": True, "reset": False, "available": False}); return
             req_root = str(payload.get("root", "") or "")
             ok = store.reset(root=req_root)
+            if payload.get("purge_telemetry", False) or req_root in ("", "all", "__all__"):
+                t_store = getattr(APP, "telemetry", None)
+                if t_store is not None and hasattr(t_store, "reset"):
+                    t_store.reset()
             self._send(200, {"success": ok, "reset": ok, "root": req_root}); return
         if path == "/api/telemetry/tool-accounting":
             # Internal MCP reporter path: do not journal or recursively count this
@@ -6316,7 +6294,7 @@ class Handler(BaseHTTPRequestHandler):
                     self._send(501, capture_failure("unsupported")); return
                 origin = str(payload.get("origin", ""))
                 try:
-                    capability = issue_capture_capability(APP.config, origin=origin, tab_id=payload.get("tab_id"), window_id=payload.get("window_id"), api_token_authorized=bool(APP.config.get("security", {}).get("api_token")) and self._authorized())
+                    capability = issue_capture_capability(APP.config, origin=origin, tab_id=payload.get("tab_id"), window_id=payload.get("window_id"))
                 except Exception as exc:
                     code = getattr(exc, "error_code", "permission_denied")
                     status = int(getattr(exc, "status", 403))
@@ -6518,6 +6496,11 @@ class Handler(BaseHTTPRequestHandler):
                             "response_budget": {"requested_tokens": exc.requested_tokens,
                                                 "required_tokens": exc.required_tokens,
                                                 "unit": "estimated_tokens"},
+                        }); return
+                    except TaskIdempotencyConflictError as exc:
+                        self._send(409, {
+                            "success": False, "error": str(exc), "terminal": True, "retryable": False,
+                            "mutation_applied": False, "operation_not_started": True,
                         }); return
                     except TaskWorktreeError as exc:
                         error_payload = {
@@ -6894,7 +6877,18 @@ class Handler(BaseHTTPRequestHandler):
                 idempotency_key = str(payload.get("idempotency_key", "")).strip()
                 actor = self._agent() or "agent"
                 if action == "record":
-                    rec_data = payload.get("record") or {}
+                    raw_record = payload.get("record")
+                    if raw_record is not None and not isinstance(raw_record, dict):
+                        self._send(400, {"success": False, "error": "memory record must be an object", "terminal": True, "retryable": False}); return
+                    requested_root = payload.get("root")
+                    if (
+                        not isinstance(requested_root, str)
+                        or not requested_root.strip()
+                        or not Path(requested_root).expanduser().is_absolute()
+                    ):
+                        self._send(400, {"success": False, "error": "memory record requires an explicit absolute root", "terminal": True, "retryable": False}); return
+                    rec_data = raw_record or {}
+                    value_supplied = "value" in rec_data if rec_data else "value" in payload
                     if not rec_data:
                         rec_data = {
                             "kind": payload.get("kind", MemoryKind.FACT.value),
@@ -6902,7 +6896,7 @@ class Handler(BaseHTTPRequestHandler):
                             # Defaulting here to TASK made a repository-only
                             # write impossible to read back by root.
                             "scope": payload.get("scope"),
-                            "key": str(payload.get("key") or payload.get("query") or ""),
+                            "key": payload.get("key"),
                             "value": payload.get("value"),
                             "scope_id": str(payload.get("scope_id", "")),
                             "confidence": payload.get("confidence", 1.0),
@@ -6914,6 +6908,12 @@ class Handler(BaseHTTPRequestHandler):
                             "expires_at": payload.get("expires_at"),
                             "ttl_seconds": payload.get("ttl_seconds"),
                         }
+                    if rec_data.get("scope") is not None and (not isinstance(rec_data["scope"], str) or not rec_data["scope"].strip()):
+                        self._send(400, {"success": False, "error": "memory record scope must be a non-empty string when provided", "terminal": True, "retryable": False}); return
+                    if not isinstance(rec_data.get("key"), str) or not rec_data["key"].strip():
+                        self._send(400, {"success": False, "error": "memory record requires a non-empty key", "terminal": True, "retryable": False}); return
+                    if not value_supplied:
+                        self._send(400, {"success": False, "error": "memory record requires an explicit value", "terminal": True, "retryable": False}); return
                     try:
                         raw_kind = str(rec_data.get("kind", MemoryKind.FACT.value)).lower()
                         try:
@@ -6923,7 +6923,6 @@ class Handler(BaseHTTPRequestHandler):
                         raw_scope = rec_data.get("scope")
                         requested_scope = _parse_memory_scope(raw_scope)
                         provenance = dict(rec_data.get("provenance") or {})
-                        requested_root = payload.get("root") or rec_data.get("root") or provenance.get("root")
                         project_identity = self._memory_project_identity(requested_root)
                         if requested_root and project_identity is None:
                             self._send(400, {"success": False, "error": "memory project identity could not be resolved", "terminal": True, "retryable": False}); return
@@ -7084,7 +7083,7 @@ class Handler(BaseHTTPRequestHandler):
                     if not rec:
                         if not payload.get("scope") and getattr(APP, "agent_memory", None) and getattr(APP.agent_memory, "state_store", None) and APP.agent_memory.state_store.db_path.exists():
                             try:
-                                con = sqlite3.connect(APP.agent_memory.state_store.db_path)
+                                con = connect_sqlite(APP.agent_memory.state_store.db_path, timeout_seconds=5.0, read_only=True)
                                 try:
                                     row = con.execute("SELECT scope FROM agent_memory_records WHERE record_id = ?", (record_id_val,)).fetchone()
                                     if row:
@@ -7731,7 +7730,23 @@ class Handler(BaseHTTPRequestHandler):
                 model = str(payload.get("model", ""))
                 prompt = str(payload.get("prompt", payload.get("task", "")))
                 num_tokens = int(payload.get("num_tokens", payload.get("max_tokens", 40)))
-                res = APP.benchmark_runner.run(model=model, prompt=prompt or "def test(): pass\n", num_tokens=num_tokens)
+                res = APP.benchmark_runner.run(
+                    model=model,
+                    prompt=prompt or "def test(): pass\n",
+                    num_tokens=num_tokens,
+                    context_tokens=payload.get("context_tokens"),
+                )
+                self._send(200, res); return
+            if 'post_gpu_reservation_1' in post_route_ids:
+                scheduler = getattr(APP, "scheduler", None)
+                if scheduler is None:
+                    self._send(503, {"success": False, "error": "scheduler unavailable"}); return
+                res = scheduler.gpu_reservation_operation(
+                    action=str(payload.get("action", "")),
+                    generation=payload.get("generation", ""),
+                    consent=payload.get("consent"),
+                    audit_reason=payload.get("audit_reason", ""),
+                )
                 self._send(200, res); return
             if 'post_delegate_repo_1' in post_route_ids:
                 connection = getattr(self, "connection", None) if getattr(self, "headers", {}).get("X-LocalAI-Cancel-On-Disconnect") == "1" else None
@@ -7795,7 +7810,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, APP.services.generate_tests(payload))
                 return
             if 'post_patch_validate_1' in post_route_ids:
-                self._send(200, APP.services.validate_patch(payload))
+                result = APP.services.validate_patch(payload)
+                self._send(result.get("status_code", 200), result)
                 return
             if 'post_query_expand_1' in post_route_ids:
                 q = payload.get("query", "")
@@ -7919,7 +7935,14 @@ class Handler(BaseHTTPRequestHandler):
                 root = str(payload.get("root", "."))
                 edits = payload.get("edits") or payload.get("replacements") or []
                 dry_run = bool(payload.get("dry_run", False))
-                self._send(200, APP.services.batch_replace(root, edits if isinstance(edits, list) else [], dry_run=dry_run))
+                self._send(200, APP.services.batch_replace(
+                    root,
+                    edits if isinstance(edits, list) else [],
+                    dry_run=dry_run,
+                    owner=payload.get("owner"),
+                    lease_id=payload.get("lease_id"),
+                    lease_store=APP.leases,
+                ))
                 return
             if 'post_maintenance_optimize_db_1' in post_route_ids:
                 self._send(200, APP.services.optimize_databases())
@@ -8141,19 +8164,57 @@ class Handler(BaseHTTPRequestHandler):
                     int(payload.get("max_dependents", APP.config.get("workflow", {}).get("impact_max_dependents", 30))),
                 )); return
             if 'post_search_1' in post_route_ids:
+                if "exact_count" in payload and type(payload["exact_count"]) is not bool:
+                    self._send(400, {
+                        "success": False,
+                        "status_code": 400,
+                        "terminal": True,
+                        "retryable": False,
+                        "error": "exact_count must be a boolean",
+                    })
+                    return
+                if "search_mode" in payload and (
+                    type(payload["search_mode"]) is not str
+                    or payload["search_mode"] not in {"lexical", "rag", "hybrid"}
+                ):
+                    self._send(400, {"success": False, "terminal": True, "retryable": False,
+                                     "error": "search_mode must be lexical, rag, or hybrid"}); return
+                query_text = str(payload.get("query", ""))
+                search_mode = payload.get("search_mode")
+                if "search_mode" not in payload:
+                    search_mode = default_agent_search_mode(query_text)
                 result = APP.services.repo_search(
                     str(payload.get("root", ".")),
-                    str(payload.get("query", "")),
+                    query_text,
                     int(payload.get("top_k", 12)),
                     context_lines=int(payload["context_lines"]) if payload.get("context_lines") is not None else None,
                     enrich=bool(payload.get("enrich", False)),
                     limit=payload.get("limit", 24),
                     offset=payload.get("offset", 0),
                     path_hints=payload.get("path_hints"),
+                    search_mode=search_mode,
+                    exact_count=payload.get("exact_count", False),
                 )
                 status = int(result.pop("status_code", 200))
                 self._send(status, result); return
             if path == "/api/context/pack":
+                context_request_started = time.perf_counter()
+
+                def attach_context_phase_timings(
+                    result: Any, preparation_ms: float, retrieval_ms: float,
+                ) -> Any:
+                    if not isinstance(result, dict):
+                        return result
+                    timings = result.get("phase_timings_ms")
+                    timings = dict(timings) if isinstance(timings, dict) else {}
+                    timings.update({
+                        "request_preparation_ms": preparation_ms,
+                        "context_retrieval_ms": retrieval_ms,
+                        "total_ms": round((time.perf_counter() - context_request_started) * 1000.0, 1),
+                    })
+                    result["phase_timings_ms"] = timings
+                    return result
+
                 root = str(payload.get("root", ".")); query_text = str(payload.get("query", ""))
                 configured_tokens = APP.config.get("token_saving", {}).get("default_repo_context_tokens", 8000)
                 raw_max_tokens = payload.get("max_tokens", payload.get("token_budget", configured_tokens))
@@ -8319,6 +8380,10 @@ class Handler(BaseHTTPRequestHandler):
 
                     request = ConsistencyRequest(root=root, task_id=str(payload.get("task_id", "")), session_id=str(payload.get("session_id", "")), query=guarded_query, phase=phase, focus=focus_values, workspace=str(payload.get("workspace", "")), preload_profile=str(payload.get("preload_profile", "")), token_budget=max_tokens, changed_paths=tuple(str(item) for item in (payload.get("changed_paths") or [])), base=str(payload.get("base", "HEAD")), staged=bool(payload.get("staged", False)), override_reason=str(payload.get("override_reason", "")), approval=approval, path_hints=path_controls.path_hints if path_controls else (), directory_hints=path_controls.directory_hints if path_controls else (), exclude_paths=path_controls.exclude_paths if path_controls else (), force_include_paths=path_controls.force_include_paths if path_controls else (), project_config_digest=project_config_digest)
                     has_task_id = bool(str(payload.get("task_id", "")).strip())
+                    context_preparation_ms = round(
+                        (time.perf_counter() - context_request_started) * 1000.0, 1,
+                    )
+                    context_retrieval_started = time.perf_counter()
                     try:
                         result = APP.services.adaptive_context_pack(
                             request,
@@ -8334,6 +8399,9 @@ class Handler(BaseHTTPRequestHandler):
                             "degraded_reason": "repository_context_unavailable",
                             "error": f"repository context unavailable: {type(exc).__name__}",
                         }
+                    context_retrieval_ms = round(
+                        (time.perf_counter() - context_retrieval_started) * 1000.0, 1,
+                    )
                     repository_failed = isinstance(result, dict) and result.get("success") is False
                     if repository_failed and (not (guarded_requested and has_task_id) or auto_injected_task):
                         status_code = 503 if result.get("retryable") is True else 500
@@ -8425,12 +8493,29 @@ class Handler(BaseHTTPRequestHandler):
                                         result["task_id"] = payload.get("task_id", "")
                     if isinstance(result, dict) and "query" not in result:
                         result["query"] = guarded_query
+                    attach_context_phase_timings(
+                        result, context_preparation_ms, context_retrieval_ms,
+                    )
                     self._send(200, result); return
                 if mode == "fast":
+                    context_preparation_ms = round(
+                        (time.perf_counter() - context_request_started) * 1000.0, 1,
+                    )
+                    context_retrieval_started = time.perf_counter()
                     result = APP.services.fast_context(root, query_text, max_tokens)
+                    context_retrieval_ms = round(
+                        (time.perf_counter() - context_retrieval_started) * 1000.0, 1,
+                    )
                     if isinstance(result, dict):
                         result["delivery_mode"] = mode
+                    attach_context_phase_timings(
+                        result, context_preparation_ms, context_retrieval_ms,
+                    )
                     self._send(200, result); return
+                context_preparation_ms = round(
+                    (time.perf_counter() - context_request_started) * 1000.0, 1,
+                )
+                context_retrieval_started = time.perf_counter()
                 result = APP.services._hybrid_context(
                     root, query_text,
                     workspace=payload.get("workspace"), max_tokens=max_tokens,
@@ -8449,8 +8534,14 @@ class Handler(BaseHTTPRequestHandler):
                     force_include_paths=path_controls.force_include_paths if path_controls else (),
                     retrieval_weights=project_retrieval_weights,
                 )
+                context_retrieval_ms = round(
+                    (time.perf_counter() - context_retrieval_started) * 1000.0, 1,
+                )
                 if isinstance(result, dict):
                     result["delivery_mode"] = mode
+                attach_context_phase_timings(
+                    result, context_preparation_ms, context_retrieval_ms,
+                )
                 self._send(200, result); return
             if 'post_artifact_get_1' in post_route_ids:
                 self._handle_post_artifact_get(payload)
@@ -8495,7 +8586,16 @@ class Handler(BaseHTTPRequestHandler):
                 if not workspace:
                     self._send(400, {"success": False, "error": "workspace is required"}); return
                 APP.rag.require_workspace_root(workspace=workspace, root=payload["root"])
-                self._send(200, APP.rag.search(str(payload.get("query", "")), workspace=workspace, top_k=int(payload.get("top_k", 8)), use_reranker=bool(payload.get("use_reranker", True)))); return
+                try:
+                    reranking_available = FeatureSet(APP.config).capability_status().get("reranking", {}).get("available") is True
+                except Exception:
+                    reranking_available = False
+                use_reranker = payload.get("use_reranker") is True and reranking_available
+                self._send(200, APP.rag.search(
+                    str(payload.get("query", "")), workspace=workspace,
+                    top_k=int(payload.get("top_k", 8)), use_reranker=use_reranker,
+                    semantic_only=True,
+                )); return
             if 'post_speculative_draft_1' in post_route_ids:
                 connection = getattr(self, "connection", None) if getattr(self, "headers", {}).get("X-LocalAI-Cancel-On-Disconnect") == "1" else None
                 if connection is not None:
@@ -8515,8 +8615,11 @@ class Handler(BaseHTTPRequestHandler):
             if 'post_reachability_dead_code_1' in post_route_ids:
                 root = str(payload.get("root", "."))
                 eps = payload.get("entrypoints")
+                limit = payload.get("limit", 100)
+                if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 200:
+                    self._send(400, {"success": False, "error": "limit must be an integer from 1 to 200"}); return
                 if APP.deterministic is not None:
-                    self._send(200, APP.deterministic.reachability_dead_code(root, entrypoints=eps)); return
+                    self._send(200, APP.deterministic.reachability_dead_code(root, entrypoints=eps, limit=limit)); return
                 else:
                     self._send(200, {"success": False, "error": "deterministic engine disabled"}); return
             if 'post_mutation_test_1' in post_route_ids:
@@ -8679,7 +8782,8 @@ class Handler(BaseHTTPRequestHandler):
                     self._send(400, {"success": False, "status_code": 400, "terminal": True, "retryable": False, "error": bounds_error}); return
                 self._send(200, APP.services.code_find_implementations(str(payload.get("root", ".")), str(payload.get("symbol", "")), path=payload.get("path"), limit=limit, offset=offset)); return
             if 'post_declaration_1' in post_route_ids:
-                self._send(200, APP.services.code_find_declaration(str(payload.get("root", ".")), str(payload.get("symbol", "")), path=payload.get("path"))); return
+                result = APP.services.code_find_declaration(str(payload.get("root", ".")), str(payload.get("symbol", "")), path=payload.get("path"))
+                self._send(result.get("status_code", 200), result); return
             if 'post_repo_secret_scan_1' in post_route_ids:
                 if "git_history" in payload:
                     self._send(400, {

@@ -252,6 +252,11 @@ def test_code_index_phase_applies_project_file_size_limit(tmp_path, monkeypatch)
     (root / "large.py").write_text("x = 'too large'\n", encoding="utf-8")
     pre = _preprocessor(tmp_path)
     submitted = []
+    pre.services = SimpleNamespace(evidence_store=SimpleNamespace(
+        recent_paths=lambda _root, limit: [
+            {"path": "small.py"}, {"path": "large.py"},
+        ][:limit],
+    ))
     pre.code_index = SimpleNamespace(
         prune=lambda *_args: {"success": True},
         files_needing_reindex=lambda _root, items: items,

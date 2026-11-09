@@ -414,6 +414,7 @@
             "blocked",
             "source_ready",
             "done",
+            "completed",
             "cancelled"
           ]
         },

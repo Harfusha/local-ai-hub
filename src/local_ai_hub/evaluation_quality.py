@@ -58,9 +58,12 @@ def paired_retrieval_delta(baseline, candidate):
             raise ValueError("baseline query identities differ")
         if any(before[key][5].keys() != after[key][5].keys() for key in before):
             raise ValueError("baseline metric contracts differ")
+        scopes = {"symbol_ast" if before[k][2] is not None else "path_only" for k in before}
+        if len(scopes) > 1:
+            raise ValueError("mixed measurement scopes across benchmark cases are not supported in paired delta")
         deltas = {name: sum(after[key][5][name] - before[key][5][name] for key in before) / len(before)
                   for name in next(iter(before.values()))[5]}
-    except (ValueError, TypeError, AttributeError) as exc:
+    except (ValueError, TypeError, AttributeError, KeyError) as exc:
         return {"success": False, "status": "unverified", "reason": str(exc)}
     paired_scope = "symbol_ast" if next(iter(before.values()))[2] is not None else "path_only"
     return {"success": True, "status": "paired", "case_count": len(before),

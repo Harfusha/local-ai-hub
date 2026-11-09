@@ -1,0 +1,116 @@
+{
+  "default_target_ref": "refs/heads/master",
+  "description": "14 nálezů z šestého kola hloubkového auditu (commit 2176b0e, 2026-11-08). Pokrývá: GPU lease lifecycle (C04), proof immutability a adopce úloh (C01, C05), pipeline stage contracts a confidence gate (C02, C03), preprocessing retry a schema validation (C06, C07), background GPU admission (C12), autotune vzorky (C08), automation souběžnost (C09), negative knowledge SQL limit (C10), PHP/C# export validator (C11), task search index startup (C13) a benchmark souběžnost (C14).",
+  "id": "plan_audit_round6_fixes_20261108",
+  "lifecycle": "draft",
+  "schema_version": 1,
+  "spec_refs": [],
+  "tasks": {
+    "task_c01_c05_proof_immutability": {
+      "acceptance_criteria": [
+        "ArtifactStore zachovává content-addressed identitu art_HASH(text) bez mutací",
+        "Execution recordy jsou immutable a jejich SHA256 výpočet se shoduje se čtečkou",
+        "Adopce úloh funguje přes lineární evidenci předchozích autorizovaných vlastníků"
+      ],
+      "blocker": null,
+      "clarifications": [],
+      "depends_on": [],
+      "description": "Proof immutability a adopce úloh bez mutace existujících artefaktů, oprava hashování execution recordů (C01, C05, T6-03, T6-04)",
+      "kind": "code",
+      "next_action": "",
+      "title": "P0-B: Proof immutability a adopce úloh (C01, C05)",
+      "work_status": "completed"
+    },
+    "task_c02_c03_pipeline_contracts": {
+      "acceptance_criteria": [
+        "Critic failure v quality režimu nevrací degraded=False a success=True",
+        "Worker se nepřeskočí pouze na základě self-reported confidence bez deterministických důkazů"
+      ],
+      "blocker": null,
+      "clarifications": [],
+      "depends_on": [],
+      "description": "Critic stage result contracts a deterministické ověřování confidence pro worker skip (C02, C03, T6-05, T6-06)",
+      "kind": "code",
+      "next_action": "",
+      "title": "P1-A: Pipeline stage contracts a confidence gate (C02, C03)",
+      "work_status": "completed"
+    },
+    "task_c04_gpu_lease_lifecycle": {
+      "acceptance_criteria": [
+        "Active internal and external GPU operations retain exclusive fencing across lease TTLs",
+        "Inactive expired unknown outcomes recover automatically after bounded lease expiry",
+        "Opening an idle OpenCode bridge creates no GPU reservation",
+        "Confirmed terminal external requests release reservation immediately",
+        "No unrelated repository worktree changes are overwritten"
+      ],
+      "blocker": null,
+      "clarifications": [],
+      "depends_on": [],
+      "description": "Fix all GPU outcome-unknown and stale reservation causes. Keep active inference fenced with TTL-aware heartbeats; recover inactive expired uncertainty; avoid reserving GPU before external inference begins and release after confirmed terminal completion.",
+      "kind": "code",
+      "next_action": "Review focused GPU diff and obtain runtime verification after current source-only checks.",
+      "title": "P0-A: GPU lease lifecycle, unnecessary reservations, and stale outcome recovery",
+      "work_status": "in_progress"
+    },
+    "task_c06_c07_preprocess_retry_schema": {
+      "acceptance_criteria": [
+        "Dočasné chyby generování karet neblokují budoucí retry (oddělený stav od hotové karty)",
+        "BackgroundGPUWorker validuje výstup proti JSON schema a nevrací nepravdivé success=True"
+      ],
+      "blocker": null,
+      "clarifications": [],
+      "depends_on": [],
+      "description": "Preprocessing fallback retry logika a validace schématu v background GPU (C06, C07, T6-07, T6-08)",
+      "kind": "code",
+      "next_action": "",
+      "title": "P1-B: Preprocessing retry a schema validace (C06, C07)",
+      "work_status": "completed"
+    },
+    "task_c08_c09_c10_c11_c13_c14_p2_fixes": {
+      "acceptance_criteria": [
+        "Autotuner observe nepočítá neúspěšné požadavky do inference EMA",
+        "AutomationBroker execute reap a start/stop backendu neblokuje ostatní sessions",
+        "IncidentStore find_negative_knowledge má SQL limit a FTS ranking",
+        "Static exports validator ověřuje name v PHP a C# souborech",
+        "Task search backfill kontroluje digest před rekurzivním trigram parse",
+        "Benchmark persist_record je atomický pod zámkem souboru"
+      ],
+      "blocker": null,
+      "clarifications": [],
+      "depends_on": [],
+      "description": "P2 opravy: C08 (autotune), C09 (automation locking), C10 (negative knowledge SQL limit), C11 (PHP/C# symbol), C13 (task index digest), C14 (benchmark atomický zápis)",
+      "kind": "code",
+      "next_action": "",
+      "title": "P2: Optimalizace a opravy stability (C08-C11, C13-C14)",
+      "work_status": "completed"
+    },
+    "task_c12_gpu_offload_admission": {
+      "acceptance_criteria": [
+        "Chybějící měření modelu v loaded_model_details nevede k automatickému schválení admission"
+      ],
+      "blocker": null,
+      "clarifications": [],
+      "depends_on": [],
+      "description": "Vyžadovat potvrzenou residency/offload telemetrii pro background GPU admission (C12, T6-09)",
+      "kind": "code",
+      "next_action": "",
+      "title": "P1-C: Background GPU admission offload kontrola (C12)",
+      "work_status": "completed"
+    },
+    "task_regression_test_suite_round6": {
+      "acceptance_criteria": [
+        "Všech 14 testů T6-01 až T6-14 v test_audit_round6_regressions.py prochází",
+        "Existující testovací sada nevykazuje žádné regrese"
+      ],
+      "blocker": null,
+      "clarifications": [],
+      "depends_on": [],
+      "description": "Vytvořit a spustit sadu regresních testů T6-01 až T6-14 pokrývající všechny nálezy šestého kola auditu",
+      "kind": "code",
+      "next_action": "",
+      "title": "Regresní testovací matice T6-01 až T6-14",
+      "work_status": "completed"
+    }
+  },
+  "title": "Audit Round 6: Opravy a regresní testy (commit 2176b0e)"
+}

@@ -57,3 +57,71 @@ def test_reranker_init_and_candidate_specs_malformed_config() -> None:
     rr2 = Reranker({"models": {"reranker": "bge\0reranker\0test"}})
     assert "\0" not in rr2.model_name
     assert rr2.model_name == "bgererankertest"
+
+
+def test_openvino_npu_reranker_uses_static_shape_before_compile() -> None:
+    rr = Reranker({
+        "models": {"reranker": "test-reranker", "reranker_backend": "openvino", "reranker_device": "NPU"},
+        "cpu_retrieval": {"reranker_batch_size": 8, "reranker_max_length": 384},
+    })
+    rr._candidate_specs = lambda: [("openvino", "NPU")]
+    ov_model = MagicMock()
+    cross_encoder = MagicMock(transformers_model=ov_model)
+    cross_encoder_factory = MagicMock(return_value=cross_encoder)
+    sentence_transformers = MagicMock(CrossEncoder=cross_encoder_factory)
+
+    with patch.dict("sys.modules", {"sentence_transformers": sentence_transformers}):
+        with patch(
+            "local_ai_hub.reranker.load_model",
+            side_effect=lambda _owner, *, uses_cuda, factory: factory(),
+        ):
+            assert rr._load_candidate(0)
+
+    model_kwargs = cross_encoder_factory.call_args.kwargs["model_kwargs"]
+    assert model_kwargs == {"device": "npu", "compile": False}
+    ov_model.reshape.assert_called_once_with(8, 384)
+    ov_model.compile.assert_called_once_with()
+
+
+def test_openvino_npu_reranker_predict_pads_partial_static_batch() -> None:
+    rr = Reranker({
+        "models": {"reranker_backend": "openvino", "reranker_device": "NPU"},
+        "cpu_retrieval": {"reranker_max_length": 384, "reranker_batch_size": 8},
+    })
+    rr.active_backend = "openvino"
+    rr.active_device = "NPU"
+    rr._model = MagicMock()
+    rr._ensure_model = MagicMock(return_value=True)
+    rr._model.predict.return_value = list(range(8))
+    pairs = [("query", "document one"), ("query", "document two")]
+
+    assert rr._predict(pairs, priority=1) == [0, 1]
+
+    rr._model.predict.assert_called_once_with(
+        pairs + [pairs[-1]] * 6,
+        batch_size=8,
+        show_progress_bar=False,
+        processing_kwargs={
+            "text": {"padding": "max_length", "max_length": 384, "truncation": True}
+        },
+    )
+
+
+def test_openvino_npu_reranker_without_transformer_uses_cpu_fallback() -> None:
+    rr = Reranker({
+        "models": {"reranker": "test-reranker", "reranker_backend": "openvino", "reranker_device": "NPU"},
+    })
+    rr._candidate_specs = lambda: [("openvino", "NPU"), ("torch", "cpu")]
+    cross_encoder_factory = MagicMock(side_effect=[object(), object()])
+    sentence_transformers = MagicMock(CrossEncoder=cross_encoder_factory)
+
+    with patch.dict("sys.modules", {"sentence_transformers": sentence_transformers}):
+        with patch(
+            "local_ai_hub.reranker.load_model",
+            side_effect=lambda _owner, *, uses_cuda, factory: factory(),
+        ):
+            assert rr._ensure_model()
+
+    assert rr.active_backend == "torch"
+    assert rr.active_device == "cpu"
+    assert cross_encoder_factory.call_count == 2

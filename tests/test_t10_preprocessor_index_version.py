@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from contextlib import closing
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -28,7 +29,11 @@ def test_preprocessor_queues_unchanged_files_after_analyzer_version_change(tmp_p
         "preprocessing": {"code_index_files_per_step": 8},
     }
     preprocessor = ProjectPreprocessor(
-        config, services=None, rag=None, scheduler=None, runtime=None,
+        config,
+        services=SimpleNamespace(evidence_store=SimpleNamespace(
+            recent_paths=lambda _root, limit: [{"path": "module.py"}][:limit],
+        )),
+        rag=None, scheduler=None, runtime=None,
         repo_tools=repo_tools, code_index=index,
     )
     root_key = canonical_root(str(root))

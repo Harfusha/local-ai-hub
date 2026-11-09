@@ -6,93 +6,54 @@ from local_ai_hub import http_server
 from local_ai_hub.opencode_boundary import path_allowed, payload_allowed, generation_scope
 
 
-def test_scoped_token_forces_local_profile_and_cannot_authorize_other_routes(monkeypatch):
-    from local_ai_hub.opencode_boundary import derive_local_profile_token
-
-    master = "x" * 40
-    nonce = "n" * 32
-    scoped = derive_local_profile_token(master, nonce)
-    assert scoped != master
-    provider = SimpleNamespace(status=lambda: {"success": True, "state": "running", "nonce": nonce})
-    monkeypatch.setattr(http_server, "APP", SimpleNamespace(config={"security": {"api_token": master}}, opencode_provider=provider))
+def test_loopback_http_is_tokenless_and_remote_peers_reject(monkeypatch):
+    monkeypatch.setattr(http_server, "APP", SimpleNamespace(config={"security": {}}))
     handler = http_server.Handler.__new__(http_server.Handler)
-    handler.headers = {"X-LocalAI-Token": scoped, "X-LocalAI-Agent": "cloud-agent"}
+    handler.headers = {"X-LocalAI-Token": "ignored", "Authorization": "Bearer ignored", "X-LocalAI-Agent": "cloud-agent"}
     handler.client_address = ("127.0.0.1", 12345)
     handler.command = "POST"
     handler.path = "/api/search"
-    assert handler._agent() == "opencode-local"
-    assert handler._authorized() is True
-    handler.headers = {"Authorization": f"Bearer {scoped}", "X-LocalAI-Agent": "cloud-agent"}
-    assert handler._agent() == "opencode-local"
+    assert handler._agent() == "cloud-agent"
     assert handler._authorized() is True
     handler.client_address = ("192.0.2.1", 12345)
     assert handler._authorized() is False
     handler.client_address = ("127.0.0.1", 12345)
-    handler.command = "GET"
-    for path, expected in (("/api/live/status?light=1", True), ("/api/live/status", False),
-                           ("/api/live/status?light=1&detail=traces", False), ("/api/live/status?light=0", False)):
-        handler.path = path
-        assert handler._authorized() is expected
-    handler.command = "POST"
-    handler.path = "/api/task"
-    assert handler._authorized() is False
+    handler.headers = {"X-LocalAI-Agent": "cloud-agent"}
     handler.path = "/api/search"
-    provider.status = lambda: {"success": True, "state": "running", "nonce": "z" * 32}
+    monkeypatch.setattr(http_server, "APP", SimpleNamespace(config={"security": {"api_token": "retired"}}))
     assert handler._authorized() is False
-    provider.status = lambda: {"success": True, "state": "stopped"}
-    assert handler._authorized() is False
-    handler.headers = {"X-LocalAI-Token": master, "X-LocalAI-Agent": "cloud-agent"}
-    assert handler._agent() == "cloud-agent"
-    assert handler._authorized() is True
 
 
-def test_local_client_never_falls_back_to_config_master_token(monkeypatch):
+def test_local_client_ignores_retired_hub_token_environment(monkeypatch):
     from local_ai_hub import client
-    from local_ai_hub.opencode_boundary import derive_local_profile_token
 
-    master = "x" * 40
-    source = {"server": {"port": 11435}, "security": {"api_token": master,
-              "supervisor_token": "supervisor-secret", "action_tokens": {"admin": "action-secret"}}, "client": {}}
+    source = {"server": {"port": 11435}, "security": {"allowed_roots": []}, "client": {}}
     monkeypatch.setattr(client, "load_config", lambda *_args, **_kwargs: source)
     monkeypatch.setenv("LOCAL_AI_AGENT_PROFILE", "opencode-local")
-    monkeypatch.delenv("LOCAL_AI_HUB_TOKEN", raising=False)
+    monkeypatch.setenv("LOCAL_AI_HUB_TOKEN", "retired-secret")
     local = client.HubClient(auto_start=False)
-    assert local.api_token == ""
-    assert local.config["security"]["api_token"] == ""
-    assert local.config["security"]["supervisor_token"] == ""
-    assert local.config["security"]["action_tokens"] == {}
-    assert source["security"]["api_token"] == master
-    monkeypatch.setenv("LOCAL_AI_HUB_TOKEN", master)
-    with pytest.raises(ValueError, match="restricted"):
-        client.HubClient(auto_start=False)
-    scoped = derive_local_profile_token(master, "n" * 32)
-    monkeypatch.setenv("LOCAL_AI_HUB_TOKEN", scoped)
-    local = client.HubClient(auto_start=False)
-    assert local.api_token == scoped and local.config["security"]["api_token"] == scoped
-    monkeypatch.setenv("LOCAL_AI_AGENT_PROFILE", "cloud-agent")
-    assert client.HubClient(auto_start=False).api_token == master
+    assert not hasattr(local, "api_token")
+    assert local.config["security"] == {"allowed_roots": []}
+    assert source["security"] == {"allowed_roots": []}
 
 
-def test_local_mcp_configuration_does_not_retain_owner_credentials(tmp_path):
+def test_local_mcp_configuration_ignores_retired_hub_token_environment(tmp_path):
     import subprocess
     import sys
-    from local_ai_hub.opencode_boundary import derive_local_profile_token
 
-    master = "m" * 40
-    scoped = derive_local_profile_token(master, "n" * 32)
     config = tmp_path / "config.toml"
     config.write_text(f'[server]\nstate_dir = "{(tmp_path / "state").as_posix()}"\n'
-                      f'[security]\napi_token = "{master}"\nsupervisor_token = "{"s" * 40}"\n'
-                      '[security.action_tokens]\n"test:write" = "action-secret-value"\n', encoding="utf-8")
+                      '[security]\nallowed_roots = []\n', encoding="utf-8")
     env = dict(os.environ, LOCAL_AI_CONFIG=str(config), LOCAL_AI_AGENT_PROFILE="opencode-local",
-               LOCAL_AI_HUB_TOKEN=scoped)
+               LOCAL_AI_HUB_TOKEN="retired-secret")
+    env.pop("LOCAL_AI_TENANT", None)
     script = '''
 import local_ai_hub.mcp_server as m
 for config in (m.CFG, m.CLIENT.config):
     security = config["security"]
-    assert security["api_token"] == __import__("os").environ["LOCAL_AI_HUB_TOKEN"]
-    assert security["supervisor_token"] == ""
-    assert security["action_tokens"] == {}
+    assert "api_token" not in security
+    assert "api_token_permissions" not in security
+assert not hasattr(m.CLIENT, "api_token")
 '''
     result = subprocess.run([sys.executable, "-c", script], env=env, capture_output=True, text=True,
                             timeout=20, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))

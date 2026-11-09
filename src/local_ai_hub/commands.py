@@ -30,8 +30,21 @@ from collections.abc import Mapping, Sequence
 from functools import wraps
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Protocol
+from typing import Any, Protocol
 
+from . import command_streams as _command_streams
+from .command_policy import (
+    DANGEROUS_EXES,
+    KNOWN_PYTHON_MODULES,
+    MUTATING_WORDS,
+    PURE_VALIDATORS,
+    READ_FILTERS,
+    READ_ONLY,
+    VALIDATORS,
+    VOLATILE_READS,
+)
+MultiplexEvent = _command_streams.MultiplexEvent
+StreamMultiplexer = _command_streams.StreamMultiplexer
 from .cache import SQLiteCache, TieredCache, stable_hash
 from .command_transactions import (
     create_private_transaction_snapshot_with_manifest,
@@ -2288,143 +2301,6 @@ def _restore_rollback_scope(
 
 
 @dataclass(frozen=True)
-class MultiplexEvent:
-    source_id: str
-    stream_name: str
-    text: str
-    timestamp: float
-    sequence: int
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "source_id": self.source_id,
-            "stream_name": self.stream_name,
-            "text": self.text,
-            "timestamp": self.timestamp,
-            "sequence": self.sequence,
-        }
-
-
-class StreamMultiplexer:
-    """Thread-safe stream multiplexer that coordinates concurrent output streams
-
-    from parallel workers/tests, preventing line-tearing, interleaving lines,
-    and tagging each line with its source and stream identity.
-    """
-
-    def __init__(self, *, clock_fn: Callable[[], float] | None = None) -> None:
-        self._lock = threading.Lock()
-        self._events: list[MultiplexEvent] = []
-        self._buffers: dict[tuple[str, str], list[str]] = {}
-        self._outputs: dict[str, dict[str, list[str]]] = {}
-        self._sequence = 0
-        self._clock_fn = clock_fn or time.monotonic
-        self._subscribers: list[Callable[[MultiplexEvent], None]] = []
-
-    def write(self, source_id: str, stream_name: str, chunk: str) -> list[MultiplexEvent]:
-        """Atomically buffer and emit complete lines for a source stream."""
-        if not chunk:
-            return []
-        emitted: list[MultiplexEvent] = []
-        key = (source_id, stream_name)
-        with self._lock:
-            buf = self._buffers.setdefault(key, [])
-            buf.append(chunk)
-            full_text = "".join(buf)
-            lines = full_text.splitlines(keepends=True)
-            if not lines:
-                return []
-            if not lines[-1].endswith(("\n", "\r")):
-                self._buffers[key] = [lines.pop()]
-            else:
-                self._buffers[key] = []
-
-            for line in lines:
-                stripped_line = line.rstrip("\r\n")
-                self._sequence += 1
-                ev = MultiplexEvent(
-                    source_id=source_id,
-                    stream_name=stream_name,
-                    text=stripped_line,
-                    timestamp=self._clock_fn(),
-                    sequence=self._sequence,
-                )
-                self._events.append(ev)
-                source_streams = self._outputs.setdefault(source_id, {})
-                source_streams.setdefault(stream_name, []).append(stripped_line)
-                emitted.append(ev)
-
-        for ev in emitted:
-            for sub in self._subscribers:
-                try:
-                    sub(ev)
-                except Exception:
-                    pass
-        return emitted
-
-    def flush(self, source_id: str | None = None) -> list[MultiplexEvent]:
-        """Flush any pending partial lines for a specific source or all sources."""
-        emitted: list[MultiplexEvent] = []
-        with self._lock:
-            keys = [k for k in list(self._buffers.keys()) if source_id is None or k[0] == source_id]
-            for key in keys:
-                pending = "".join(self._buffers.get(key, []))
-                self._buffers[key] = []
-                if pending:
-                    for line in pending.splitlines():
-                        if not line:
-                            continue
-                        self._sequence += 1
-                        ev = MultiplexEvent(
-                            source_id=key[0],
-                            stream_name=key[1],
-                            text=line,
-                            timestamp=self._clock_fn(),
-                            sequence=self._sequence,
-                        )
-                        self._events.append(ev)
-                        source_streams = self._outputs.setdefault(key[0], {})
-                        source_streams.setdefault(key[1], []).append(line)
-                        emitted.append(ev)
-
-        for ev in emitted:
-            for sub in self._subscribers:
-                try:
-                    sub(ev)
-                except Exception:
-                    pass
-        return emitted
-
-    def get_source_output(self, source_id: str, stream_name: str | None = None) -> str:
-        with self._lock:
-            streams = self._outputs.get(source_id, {})
-            if stream_name is not None:
-                return "\n".join(streams.get(stream_name, []))
-            lines: list[str] = []
-            for ev in self._events:
-                if ev.source_id == source_id:
-                    lines.append(ev.text)
-            return "\n".join(lines)
-
-    def get_events(self, source_id: str | None = None) -> list[MultiplexEvent]:
-        with self._lock:
-            if source_id is None:
-                return list(self._events)
-            return [ev for ev in self._events if ev.source_id == source_id]
-
-    def format_unified(self, *, tag_prefix: bool = True) -> str:
-        with self._lock:
-            events = list(self._events)
-        if not tag_prefix:
-            return "\n".join(ev.text for ev in events)
-        return "\n".join(f"[{ev.source_id}:{ev.stream_name}] {ev.text}" for ev in events)
-
-    def subscribe(self, callback: Callable[[MultiplexEvent], None]) -> None:
-        with self._lock:
-            self._subscribers.append(callback)
-
-
-@dataclass(frozen=True)
 class CommandInvocation:
     """Validated subprocess input that cannot request shell interpretation."""
 
@@ -3214,47 +3090,15 @@ class _CommandSingleflightEvent(threading.Event):
 class CommandBroker:
     """Safe shared command runner with repo-state-aware cache and single-flight."""
 
-    READ_ONLY = {
-        "git", "rg", "ripgrep", "grep", "findstr", "where", "which",
-        "fd", "fdfind", "find", "cat", "type", "head", "tail", "wc",
-        "diff", "cmp", "sort", "uniq", "cut", "tr", "file", "stat",
-        "echo", "pwd", "tree", "jq", "yq", "ls", "dir",
-        "tasklist", "whoami", "hostname", "systeminfo", "ver", "ipconfig", "netstat",
-        "fc", "comp", "attrib", "set", "env", "printenv",
-    }
-    READ_FILTERS = {
-        "grep", "ripgrep", "rg", "findstr", "select-string", "find", "head", "tail", "wc", "sort", "uniq", "cut", "tr", "jq", "yq",
-        "cat", "type", "format-table", "select-object", "convertto-json", "convertfrom-json", "out-string", "out-null", "tee", "more", "less",
-    }
-    # Repository snapshots cannot establish freshness for host/process/network
-    # observations. These commands remain allowed reads, never cached results.
-    VOLATILE_READS = frozenset({
-        "tasklist", "whoami", "hostname", "systeminfo", "ver", "ipconfig", "netstat",
-        "set", "env", "printenv",
-    })
-    VALIDATORS = {
-        "pytest", "phpunit", "phpstan", "ruff", "mypy", "eslint", "tsc", "cargo",
-        "dotnet", "go", "npm", "pnpm", "yarn", "bun", "composer", "make", "cmake",
-        "ctest", "mvn", "mvnw", "gradle", "gradlew", "gradlew.bat", "flake8", "pylint",
-        "black", "isort", "bandit", "shellcheck", "yamllint",
-    }
-    PURE_VALIDATORS = {
-        "pytest", "phpunit", "phpstan", "pest", "ruff", "mypy", "eslint", "tsc",
-        "pyflakes", "flake8", "pylint", "bandit", "radon", "yamllint", "shellcheck",
-        "markdownlint", "biome", "oxlint", "clippy", "coverage", "vitest", "jest",
-        "mocha", "ava", "playwright", "cypress", "tox", "nox", "pre-commit",
-    }
-    KNOWN_PYTHON_MODULES = {
-        "pytest", "ruff", "mypy", "unittest", "compileall", "pyflakes", "flake8",
-        "pylint", "bandit", "coverage", "tox", "nox", "pre_commit", "pre-commit",
-        "build", "wheel", "setuptools", "flit", "local_ai_hub", "local_ai_hub.generator",
-        "pip", "json.tool", "platform", "sysconfig", "site", "venv", "pydoc", "black", "isort",
-    }
-    MUTATING_WORDS = {
-        "commit", "push", "pull", "merge", "rebase", "reset", "clean", "checkout", "switch", "restore", "add", "stash", "apply",
-        "install", "update", "upgrade", "publish", "deploy", "migrate", "migration", "seed", "format", "fix", "write", "delete", "remove",
-    }
-    DANGEROUS_EXES = {"rm", "del", "erase", "rmdir", "shutdown", "reboot", "poweroff", "mkfs", "diskpart", "format"}
+    # Keep the historical class-level surface while policy data lives separately.
+    READ_ONLY = READ_ONLY
+    READ_FILTERS = READ_FILTERS
+    VOLATILE_READS = VOLATILE_READS
+    VALIDATORS = VALIDATORS
+    PURE_VALIDATORS = PURE_VALIDATORS
+    KNOWN_PYTHON_MODULES = KNOWN_PYTHON_MODULES
+    MUTATING_WORDS = MUTATING_WORDS
+    DANGEROUS_EXES = DANGEROUS_EXES
 
     def __init__(self, config: dict[str, Any], artifacts: Any = None, repo_state: Any = None):
         self.config = config
@@ -3379,11 +3223,7 @@ class CommandBroker:
         """Repair only a sessionless task through verified write authority."""
         if (type(authorization_actor) is not str
                 or type(authorization_permissions) is not frozenset
-                or not (
-                    authorization_actor == "local" and not authorization_permissions
-                    or authorization_actor == "api_token" and bool(authorization_permissions & {"write", "admin"})
-                    or authorization_actor == "action_token" and "api:write" in authorization_permissions
-                )):
+                or authorization_actor != "local" or authorization_permissions):
             raise PermissionError("task session write authorization required")
         if self.task_store is None:
             raise RuntimeError("task authority unavailable")
@@ -3407,17 +3247,12 @@ class CommandBroker:
     ) -> dict[str, Any]:
         """Ordinary authorized write, separate from exhausted execution admission.
 
-        Authorization values must come from the transport's verified credential
-        context, never request fields or the advisory agent profile header.
+        Authorization values come from the loopback transport context, never
+        request fields or the advisory agent profile header.
         """
         if (type(authorization_actor) is not str
                 or type(authorization_permissions) is not frozenset
-                or not (
-                    authorization_actor == "local" and not authorization_permissions
-                    or authorization_actor == "api_token" and bool(
-                        authorization_permissions & {"write", "admin"})
-                    or authorization_actor == "action_token" and "api:write" in authorization_permissions
-                )):
+                or authorization_actor != "local" or authorization_permissions):
             raise PermissionError("task budget write authorization required")
         if self.task_store is None or self.policy_engine is None:
             raise RuntimeError("task budget authority unavailable")
@@ -5927,6 +5762,14 @@ class CommandBroker:
                 return _terminate_and_confirm_windows_job_empty(job_handle)
             if os.name != "nt" and process is not None and process.pid > 0:
                 try:
+                    try:
+                        os.killpg(process.pid, 0)
+                    except ProcessLookupError:
+                        return True
+                    except PermissionError:
+                        return False
+                    except Exception:
+                        return False
                     kwargs: dict[str, Any] = {"grace_seconds": float(self.terminate_grace_seconds)}
                     sig = inspect.signature(terminate_tree)
                     if "process_group" in sig.parameters:

@@ -514,12 +514,25 @@ def get_worktree_status(
 
     locked = False
     lock_reason = ""
-    # Check parent repo if available
     try:
-        parent_repo = target.parent
-        is_locked, reason = is_worktree_locked(parent_repo, target, timeout=timeout_seconds)
-        locked = is_locked
-        lock_reason = reason
+        proc_main = subprocess.run(
+            ["git", "-C", str(target), "rev-parse", "--git-common-dir"],
+            capture_output=True,
+            text=True,
+            timeout=max(0.5, float(timeout_seconds)),
+            check=False,
+            **hidden_run_kwargs(),
+        )
+        if proc_main.returncode == 0 and proc_main.stdout.strip():
+            main_git = (target / proc_main.stdout.strip()).resolve()
+            main_repo = main_git.parent if main_git.name == ".git" else main_git
+            is_locked, reason = is_worktree_locked(main_repo, target, timeout=timeout_seconds)
+            locked = is_locked
+            lock_reason = reason
+        else:
+            is_locked, reason = is_worktree_locked(target.parent, target, timeout=timeout_seconds)
+            locked = is_locked
+            lock_reason = reason
     except Exception:
         pass
 

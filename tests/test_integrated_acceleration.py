@@ -115,7 +115,7 @@ def test_balanced_profile_uses_1_5b_background_and_3b_fast_tiers() -> None:
     assert cfg["models"]["fast_code"] == "qwen2.5-coder:3b"
     assert cfg["models"]["heavy_code"] == "qwen2.5-coder:7b"
     assert cfg["models"]["reasoning"] == "qwen3.5:9b"
-    assert cfg["models"]["vision"] == "qwen3.5:9b"
+    assert cfg["models"]["vision"] == "minicpm-v:8b"
 
 
 def test_openvino_auto_candidates_prioritize_npu_then_gpu_then_cpu(monkeypatch: pytest.MonkeyPatch) -> None:

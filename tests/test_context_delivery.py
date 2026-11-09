@@ -481,7 +481,6 @@ def test_taskless_context_pack_cache_identity_includes_repository_root(monkeypat
     cfg_path = tmp_path / "config.toml"
     cfg_path.write_text(
         f'[server]\nbind = "127.0.0.1"\nport = 11497\nstate_dir = "{(tmp_path / "state").as_posix()}"\n'
-        f'[security]\napi_token = "context-pack-owner-token"\n'
         f'allowed_roots = ["{tmp_path.as_posix()}"]\n',
         encoding="utf-8",
     )
@@ -504,11 +503,10 @@ def test_taskless_context_pack_cache_identity_includes_repository_root(monkeypat
     thread.start()
     try:
         for root in (root_a, root_b):
-            token = "context-pack-owner-token"
             request = urllib.request.Request(
                 f"http://127.0.0.1:{server.server_address[1]}/api/context/pack",
                 data=json.dumps({"root": str(root), "query": "same query", "mode": "adaptive"}).encode(),
-                headers={"Content-Type": "application/json", "X-LocalAI-Token": token},
+                headers={"Content-Type": "application/json"},
                 method="POST",
             )
             with urllib.request.urlopen(request) as response:
@@ -811,6 +809,7 @@ def test_deterministic_context_continuation_uses_adaptive_mode():
 
     assert result["context_source"] == "deterministic-fast"
     assert result["degraded"] is True
+    assert result["degraded_reason"] == "deterministic_only"
     assert result["continuation"]["mode"] == "adaptive"
 
 

@@ -798,7 +798,7 @@ def test_behavioral_links_only_reference_inventoried_operations():
             "/api/agent-state/swarm/",
             "test_http_get_agent_state_swarm_detail_forwards_swarm_id",
         ),
-        ("/api/config", "test_http_get_config_redacts_configured_token"),
+        ("/api/config", "test_http_get_config_contains_no_retired_token_setting"),
         ("/api/capabilities", "test_http_get_capabilities_returns_surface_and_features"),
         ("/api/audit/tail", "test_http_get_audit_tail_forwards_limit"),
         ("/api/audit_dependencies", "test_http_get_audit_dependencies_forwards_root"),
@@ -1165,7 +1165,12 @@ def test_check_mode_with_real_schema_generator_does_not_write_coverage(tmp_path,
     before = {root: snapshot_tree(root) for root in scoped_roots}
 
     def reject_write(file, *args, **kwargs):
-        pytest.fail("--check schema fallback attempted a filesystem mutation")
+        try:
+            target = Path(os.fsdecode(file)).resolve(strict=False)
+        except (OSError, TypeError, ValueError):
+            return
+        if any(target == root.resolve() or root.resolve() in target.parents for root in scoped_roots):
+            pytest.fail("--check schema fallback attempted a filesystem mutation")
 
     original_builtin_open = builtins.open
     original_io_open = io.open
@@ -2128,6 +2133,17 @@ def test_existing_cli_argv_calls_link_each_operation():
 
     assert selector in links["CLI operation::agent-state"]
     assert selector in links["CLI operation::cleanup"]
+
+
+def test_dynamic_client_target_matches_concrete_coord_routes():
+    target = {"method": "POST", "path": "/api/coord/{act}"}
+    route = {"method": "POST", "path": "/api/coord/plan_init"}
+
+    assert MODULE._matches_route(target, [route])
+    assert not MODULE._matches_route(
+        target,
+        [{"method": "GET", "path": "/api/coord/plan_init"}],
+    )
 
 
 def test_hubclient_target_links_match_the_client_method_handler():

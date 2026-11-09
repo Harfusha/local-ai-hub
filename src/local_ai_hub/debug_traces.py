@@ -200,7 +200,7 @@ class DebugTraceStore:
             return
         uri = f"{self.path.as_uri()}?mode=ro"
         try:
-            with closing(sqlite3.connect(uri, uri=True, timeout=1.0)) as con:
+            with closing(connect_sqlite(uri, uri=True, timeout_seconds=1.0, read_only=True)) as con:
                 tables = {
                     str(row[0]) for row in con.execute(
                         "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"

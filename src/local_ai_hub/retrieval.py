@@ -24,9 +24,15 @@ _DOCUMENT_PATH = re.compile(r"(?:^|\s)[\w./\\-]+\.(?:md|rst|adoc)(?:$|\s)", re.I
 _SOURCE_ACTION = re.compile(
     r"\b(?:implement\w*|fix|debug|diagnos\w*|trace|audit|refactor)\b", re.IGNORECASE,
 )
+_CZECH_SOURCE_ACTION = re.compile(r"\b(?:najdi|najít|oprav|opravit|diagnostikuj|vysleduj)\b", re.IGNORECASE)
+_CZECH_SOURCE_OBJECT = re.compile(
+    r"\b(?:chybu|chyba|funkci|funkce|metodu|metoda|implementaci|implementace|komponentu|komponenta|kód|zdrojový|zdrojová)\b",
+    re.IGNORECASE,
+)
 _SOURCE_SUFFIXES = {
     ".py", ".pyi", ".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".go",
     ".rs", ".java", ".cs", ".cpp", ".cc", ".c", ".h", ".hpp", ".sql",
+    ".php", ".rb", ".vue", ".svelte",
 }
 _CONFIG_SUFFIXES = {".toml", ".yaml", ".yml", ".json"}
 _MAX_FUSION_PATHS_PER_GROUP = 4096
@@ -45,7 +51,12 @@ def _canonical_fusion_path(value: object) -> str | None:
 def is_source_context_query(query: str) -> bool:
     """Recognize source work while reserving clear documentation requests."""
     text = str(query or "")
-    if not _SOURCE_QUERY.search(text):
+    localized_source_intent = (
+        bool(_CZECH_SOURCE_ACTION.search(text))
+        and bool(_CZECH_SOURCE_OBJECT.search(text))
+        and not bool(_DOCUMENT_OBJECT.search(text))
+    )
+    if not _SOURCE_QUERY.search(text) and not localized_source_intent:
         return False
     mentions_document = bool(_DOCUMENT_OBJECT.search(text) or _DOCUMENT_PATH.search(text))
     explicit_document_task = (

@@ -21,6 +21,17 @@ import urllib.request
 # Maximum file lines permitted for direct full reads in Antigravity
 MAX_DIRECT_READ_LINES = 80
 
+
+def _get_max_direct_read_lines() -> int:
+    import os
+    env_val = os.environ.get('LOCAL_AI_MAX_READ_LINES')
+    if env_val:
+        try:
+            return max(10, int(env_val))
+        except ValueError:
+            pass
+    return MAX_DIRECT_READ_LINES
+
 # Paths exempted from line limit (system, instructions, small configs, artifacts)
 WHITELIST_PATH_PARTS = {
     ".gemini",
@@ -167,11 +178,13 @@ def handle_pre_invocation(_payload: dict[str, Any]) -> dict[str, Any]:
     startup_note = "[Local AI Hub offline; auto-starting in background...]\n" if started else ""
     reminder = (
         startup_note +
-        "[LOCAL AI HUB POLICY] Mandate: Prioritize local-ai MCP tools via "
+        "[LOCAL AI HUB POLICY] For applicable repository work, directly call Local AI Hub MCP endpoints; using native subagents does not replace these calls. Invoke through "
         'call_mcp_tool(ServerName="local-ai", ToolName="<tool>", Arguments={...}).\n'
-        '- Repository search / context / facts: call local_ai_repo(action="context"|"search"|"code_index"|"security_audit", root="...").\n'
-        '- Task contracts, checkpoints, memory: call local_ai_coord(action="task_create"|"task_checkpoint"|"memory_record"|"memory_find", ...).\n'
-        '- Code review, second opinion, reasoning: call local_ai_task(action="review"|"second_opinion"|"explore", ...).\n'
+        '- Non-trivial repository work: start with local_ai_repo(action="context"|"search"|"code_index", root="..."); use local_ai_artifact for exact source slices.\n'
+        '- Multi-step work, memory, shared findings or leases: use the matching local_ai_coord action.\n'
+        '- Semantic retrieval: use local_ai_rag only after indexed paths are insufficient.\n'
+        '- Bounded semantic review/reasoning: use an exposed local_ai_task action when it fits; never send raw logs or open-ended edits.\n'
+        '- Run bounded tests with the host-native command tool. Skip only endpoints irrelevant to the task or unavailable in the active schema.\n'
         '- Token economy: Never read full files >80 lines; use local_ai_repo or targeted line slices (StartLine/EndLine).'
     )
     return {
@@ -209,6 +222,17 @@ def _check_read_file(args: dict[str, Any]) -> dict[str, Any]:
 
     start_line = args.get("StartLine")
     end_line = args.get("EndLine")
+    max_lines = _get_max_direct_read_lines()
+
+    p = None
+    line_count = None
+    try:
+        p = Path(path_str)
+        if p.is_file():
+            with open(p, "rb") as f:
+                line_count = sum(1 for _ in f)
+    except Exception:
+        pass
 
     if start_line is not None and end_line is not None:
         try:
@@ -216,13 +240,14 @@ def _check_read_file(args: dict[str, Any]) -> dict[str, Any]:
             e = int(end_line)
             if e >= s:
                 diff = e - s + 1
-                if diff <= MAX_DIRECT_READ_LINES:
+                if diff <= max_lines:
                     return {"decision": "allow"}
+                total_note = f" File '{p.name}' has {line_count} lines total." if (p and line_count is not None) else ""
                 return {
                     "decision": "deny",
                     "reason": (
-                        f"Requested line range ({s}-{e}, {diff} lines) exceeds the {MAX_DIRECT_READ_LINES}-line limit "
-                        f"(Local AI Hub Token Economy policy). Specify a narrower slice (<= {MAX_DIRECT_READ_LINES} lines) "
+                        f"Requested line range ({s}-{e}, {diff} lines) exceeds the {max_lines}-line limit "
+                        f"(Local AI Hub Token Economy policy).{total_note} Specify a narrower slice (<= {max_lines} lines) "
                         f'or use call_mcp_tool(ServerName="local-ai", ToolName="local_ai_repo", Arguments={{"action": "context", "query": "...", "root": "..."}}).'
                     ),
                 }
@@ -230,24 +255,16 @@ def _check_read_file(args: dict[str, Any]) -> dict[str, Any]:
             pass
 
     # Check file on disk if full read attempted
-    try:
-        p = Path(path_str)
-        if p.is_file():
-            # Fast line count
-            with open(p, "rb") as f:
-                line_count = sum(1 for _ in f)
-            if line_count > MAX_DIRECT_READ_LINES:
-                return {
-                    "decision": "deny",
-                    "reason": (
-                        f"Full read of '{p.name}' ({line_count} lines > {MAX_DIRECT_READ_LINES}) prohibited by "
-                        f"Local AI Hub Token Economy policy. Specify targeted slice with StartLine and EndLine "
-                        f'(<= {MAX_DIRECT_READ_LINES} lines) or use call_mcp_tool(ServerName="local-ai", ToolName="local_ai_repo", '
-                        f'Arguments={{"action": "context", "query": "...", "root": "..."}}).'
-                    ),
-                }
-    except Exception:
-        pass
+    if p and line_count is not None and line_count > max_lines:
+        return {
+            "decision": "deny",
+            "reason": (
+                f"Full read of '{p.name}' ({line_count} lines > {max_lines}) prohibited by "
+                f"Local AI Hub Token Economy policy. Specify targeted slice with StartLine and EndLine "
+                f'(<= {max_lines} lines) or use call_mcp_tool(ServerName="local-ai", ToolName="local_ai_repo", '
+                f'Arguments={{"action": "context", "query": "...", "root": "..."}}).'
+            ),
+        }
 
     return {"decision": "allow"}
 

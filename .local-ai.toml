@@ -1,19 +1,27 @@
 # Local AI Hub project configuration
 project_type = "python"
-model_profile = "balanced"
-pinned_context = ["README.md", "defaults.toml"]
+model_profile = "high"
+pinned_context = ["README.md", "defaults.toml", "docs/INSTALLATION.md", "docs/CODE_INDEX.md"]
 entry_points = ["src", "tools"]
 exclude_paths = [
     ".pytest_cache/**",
+    ".merge-checks/**",
+    "**/*.egg-info/**",
     ".handoff/**",
     "state/**",
     "**/__pycache__/**",
     ".t*/**",
+    "backups/**",
+    "config.toml",
+    "config.toml.bak*",
+    "config.toml.local-ai-hub-backup-*",
 ]
 
 [preprocess]
 exclude_paths = [
     "state/**",
+    ".merge-checks/**",
+    "**/*.egg-info/**",
     ".handoff/**",
     "generated-artifact-archive/**",
     "logs/**",

@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+import local_ai_hub.rag as rag_module
 from local_ai_hub.rag import RAGStore
 
 
@@ -29,6 +30,19 @@ def _config(state_dir: Path) -> dict:
         "rag": {"extensions": [".py"], "max_file_bytes": 1_000_000},
         "models": {"embedding": "same-configured-model", "embedding_backend": "test"},
     }
+
+
+def test_hub_release_does_not_invalidate_rag_index_fingerprint(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    config = _config(tmp_path / "state")
+    first = RAGStore(config, services=SpaceEmbedder("space-a"))
+    fingerprint = first.index_fingerprint
+
+    monkeypatch.setattr(rag_module, "__version__", "next-release", raising=False)
+    second = RAGStore(config, services=SpaceEmbedder("space-a"))
+
+    assert second.index_fingerprint == fingerprint
 
 
 def test_full_index_reembeds_unchanged_files_when_embedding_space_changes(tmp_path: Path):

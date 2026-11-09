@@ -269,3 +269,21 @@ def test_non_stream_request_can_retry_without_exposing_partial_chunks(monkeypatc
 
     assert attempts == 2
     assert result["response"] == "complete"
+
+
+def test_successful_ollama_stream_reports_provider(monkeypatch: pytest.MonkeyPatch):
+    class Response:
+        def __iter__(self):
+            return iter([b'{"response":"complete","done":true}\n'])
+
+    @contextmanager
+    def open_response(*_args, **_kwargs):
+        yield Response()
+
+    monkeypatch.setattr(ollama_module, "_open_interruptible_response", open_response)
+    monkeypatch.setattr(ollama_module, "_cancel_response_on_stop", lambda *_args, **_kwargs: nullcontext())
+
+    result = _runtime().request_stream("/api/generate", {"model": "test"}, lambda _text: None, timeout=2)
+
+    assert result["response"] == "complete"
+    assert result["_lah_provider"] == "ollama"

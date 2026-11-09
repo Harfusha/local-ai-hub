@@ -1,10 +1,10 @@
 # Local AI Hub
 
-Local AI Hub **5.1.3** is a local, deterministic-first tool and inference layer for coding agents such as Codex, Claude Code, Gemini CLI, Cursor, Windsurf, VS Code/Copilot and other MCP clients. Its purpose is to keep repetitive repository discovery, code-relationship analysis, validation, retrieval and bounded local reasoning off the cloud agent's context while sharing the resulting work across agents.
+Local AI Hub **6.0.0** is a local, deterministic-first tool and inference layer for coding agents such as Codex, Claude Code, Gemini CLI, Cursor, Windsurf, VS Code/Copilot and other MCP clients. Its purpose is to keep repetitive repository discovery, code-relationship analysis, validation, retrieval and bounded local reasoning off the cloud agent's context while sharing the resulting work across agents.
 
 The public interface is intentionally small: **7 MCP tools** (`local_ai_status`, `local_ai_task`, `local_ai_repo`, `local_ai_rag`, `local_ai_coord`, `local_ai_work`, `local_ai_artifact`). Serena is managed behind that surface by default, so agents gain language-aware symbols without paying for additional MCP schemas on every turn.
 
-Local AI Hub 5.1.3 uses one current runtime contract across packaging, HTTP, MCP, telemetry, caches and dashboard state. Token efficiency is accounted end-to-end at the MCP boundary: gross repository/context/output avoidance is measured separately from tool-call and tool-response protocol cost, producing a signed net cloud-token delta. Deterministic/indexed retrieval, context/diff/outline compaction and artifact-backed projection contribute to cloud savings only when an explicit measured baseline exists; diagnostic candidate sizes are not proof that a cloud agent would have read the same payload. Local cache/single-flight reuse is reported separately as local-compute avoidance, and tool-catalog schema exposure is shown as a separate conservative scenario.
+Local AI Hub 6.0.0 uses one current runtime contract across packaging, HTTP, MCP, telemetry, caches and dashboard state. Token efficiency is accounted end-to-end at the MCP boundary: gross repository/context/output avoidance is measured separately from tool-call and tool-response protocol cost, producing a signed net cloud-token delta. Deterministic/indexed retrieval, context/diff/outline compaction and artifact-backed projection contribute to cloud savings only when an explicit measured baseline exists; diagnostic candidate sizes are not proof that a cloud agent would have read the same payload. Local cache/single-flight reuse is reported separately as local-compute avoidance, and tool-catalog schema exposure is shown as a separate conservative scenario.
 
 ## What it does
 
@@ -107,7 +107,7 @@ Run `python tools/hubctl.py generate` (or `python tools/setup.py --generate-only
 
 `[hardware].profile = "auto"` is the default. Detection considers OS, CPU architecture, RAM and available NVIDIA/AMD/Intel/Apple graphics. The selected profile overlays conservative scheduler, context, background-work and batch defaults **before** `config.toml` is merged, so explicit user configuration always wins.
 
-Profiles: `cpu`, `integrated`, `low`, `balanced`, `high`, `max`.
+Profiles: `cpu`, `integrated`, `low`, `balanced`, `medium`, `high`, `max`.
 
 `integrated` is selected for shared-memory iGPUs (for example Intel Arc Graphics on Core Ultra notebooks) instead of sizing the machine from the tiny `AdapterRAM` aperture value reported by Windows. It keeps one LLM/model resident at a time, uses `qwen2.5-coder:1.5b` for preprocessing, 3b for background and quick requests, 7b for heavy/general code tasks, 9b for hard reasoning, and `qwen3-vl:4b` for vision. The balanced profile uses 1.5b preprocessing, 3b fast, 7b heavy/general and 9b reasoning/vision. High uses 1.5b preprocessing, 3b fast, 7b heavy and 9b general/reasoning/vision. Max uses 1.5b preprocessing, 3b fast and 9b heavy/general/reasoning/vision.
 
@@ -242,7 +242,7 @@ python tools/telemetry_report.py --days 30
 
 ## Evidence-gated rollout controls
 
-Cost-bearing adoption capabilities are disabled by default: `features.enriched_search`, `features.batch_replacement`, `features.diagnostic_artifacts`, and `features.local_diagnostic_dispatch`. Set only one flag to literal TOML `true` for a 10–20% suitable-task pilot. Other values, including strings such as `"true"`, remain disabled.
+In the default configuration, `features.enriched_search`, `features.batch_replacement`, and `features.diagnostic_artifacts` are enabled, while `features.local_diagnostic_dispatch` is disabled by default. Each retains an independent rollback switch. Set a flag to literal TOML `true` or `false` to configure. Other values, including strings such as `"true"`, remain disabled.
 
 Capture a 14-day read-only baseline first. Compare the pilot with `/api/adoption` for token reduction, latency, first-pass validation, terminal Hub failures, and native fallback rate. Promote a flag only when quality does not regress and the measured benefit persists. Roll back immediately by setting that flag to `false`, restarting the Hub, and regenerating agent instructions with `python tools/hubctl.py generate`. Disabled features return a structured unavailable result before search enrichment, replacement writes, artifact persistence, or local diagnostic dispatch can begin. A `local_diagnostic_dispatch` pilot alone stores only its bounded failure preview as context; it never stores raw command output and does not require `diagnostic_artifacts=true`.
 

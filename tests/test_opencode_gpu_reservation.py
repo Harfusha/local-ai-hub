@@ -12,13 +12,90 @@ import pytest
 from local_ai_hub.scheduler import AffinityScheduler
 
 
+def _set_embedding_reservation_store(model, reservation_path):
+    from local_ai_hub.external_gpu_reservation import ExternalGpuReservationStore
+
+    model._gpu_reservation_path = reservation_path
+    model._gpu_reservation_store = ExternalGpuReservationStore(reservation_path)
+
+
+def test_owned_external_reservation_expires_in_memory_after_files_disappear(tmp_path, monkeypatch):
+    now = [0.0]
+    monkeypatch.setattr(time, "monotonic", lambda: now[0])
+    scheduler = AffinityScheduler(
+        SimpleNamespace(loaded_model_details=lambda: []),
+        {"server": {"state_dir": str(tmp_path)}},
+    )
+    try:
+        token = scheduler.reserve_external_gpu()
+        assert token
+        reservation_path = tmp_path / "external-gpu-reservation"
+        metadata_path = tmp_path / "external-gpu-reservation.lease.json"
+        reservation_path.unlink()
+        metadata_path.unlink()
+
+        assert scheduler._external_gpu_reserved()
+        now[0] = 901.0
+        assert not scheduler._external_gpu_reserved()
+        assert scheduler.reserve_external_gpu()
+    finally:
+        scheduler.close()
+
+
+def test_consent_release_reconciles_scheduler_cache_after_reservation_file_disappears(tmp_path):
+    scheduler = AffinityScheduler(
+        SimpleNamespace(loaded_model_details=lambda: []),
+        {"server": {"state_dir": str(tmp_path)}},
+    )
+    try:
+        token = scheduler.reserve_external_gpu()
+        assert token
+        reservation_path = tmp_path / "external-gpu-reservation"
+        reservation_path.unlink()
+        (tmp_path / "external-gpu-reservation.lease.json").unlink()
+
+        assert scheduler._external_gpu_reserved() is True
+        assert scheduler._external_gpu_store.release_current_with_consent(
+            consent=True,
+            audit_reason="operator confirmed stale reservation should be cleared",
+        ) is True
+
+        assert scheduler._external_gpu_reserved() is False
+        assert scheduler.reserve_external_gpu() is not None
+    finally:
+        scheduler.close()
+
+
+def test_unknown_internal_outcome_still_reaps_expired_external_fence(tmp_path):
+    from local_ai_hub.external_gpu_reservation import ExternalGpuReservationStore
+
+    now = [100.0]
+    reservation_path = tmp_path / "external-gpu-reservation"
+    store = ExternalGpuReservationStore(reservation_path, ttl_seconds=10, clock=lambda: now[0])
+    assert store.claim_internal("a" * 64)
+    os.utime(reservation_path, (80.0, 80.0))
+
+    scheduler = AffinityScheduler(
+        SimpleNamespace(loaded_model_details=lambda: []),
+        {"server": {"state_dir": str(tmp_path)}},
+    )
+    scheduler._external_gpu_store = store
+    scheduler._internal_gpu_uncertain = True
+    try:
+        assert scheduler._external_gpu_reserved() is True
+        assert scheduler._claim_internal_gpu() is False
+        assert not reservation_path.exists()
+    finally:
+        scheduler.close()
+
+
 def test_cuda_embedding_encode_excludes_external_session_and_retains_unknown(tmp_path):
     from local_ai_hub.embeddings import EmbeddingModel
 
     scheduler = AffinityScheduler(SimpleNamespace(loaded_model_details=lambda: []),
                                   {"server": {"state_dir": str(tmp_path)}})
     model = EmbeddingModel.__new__(EmbeddingModel)
-    model._gpu_reservation_path = tmp_path / "external-gpu-reservation"
+    _set_embedding_reservation_store(model, tmp_path / "external-gpu-reservation")
     model._execution_local = SimpleNamespace()
     model.backend = "sentence-transformers"
     model.device = "cuda:0"
@@ -39,7 +116,7 @@ def test_cuda_embedding_encode_excludes_external_session_and_retains_unknown(tmp
         assert model.encode(["text"])["success"] is False
         assert len(called) == 1
         assert scheduler.release_external_gpu(token)
-        outcome = {"success": False, "error": "unknown inference outcome"}
+        outcome = {"success": False, "error": "unknown inference outcome", "outcome_unknown": True}
         assert model.encode(["text"])["success"] is False
         assert (tmp_path / "external-gpu-reservation").exists()
         assert scheduler.reserve_external_gpu() is None
@@ -53,7 +130,7 @@ def test_cuda_auto_embedding_reuses_fence_and_retains_uncertain_ollama(tmp_path,
     scheduler = AffinityScheduler(SimpleNamespace(loaded_model_details=lambda: []),
                                   {"server": {"state_dir": str(tmp_path)}})
     model = EmbeddingModel.__new__(EmbeddingModel)
-    model._gpu_reservation_path = tmp_path / "external-gpu-reservation"
+    _set_embedding_reservation_store(model, tmp_path / "external-gpu-reservation")
     model._execution_local = SimpleNamespace()
     model._ollama_model_name = "embedding-model"
     model.ollama_url = "http://127.0.0.1:11434"
@@ -109,7 +186,7 @@ finally:
         return result.stdout.strip()
 
     model = EmbeddingModel.__new__(EmbeddingModel)
-    model._gpu_reservation_path = tmp_path / "external-gpu-reservation"
+    _set_embedding_reservation_store(model, tmp_path / "external-gpu-reservation")
     model._execution_local = SimpleNamespace()
     model._ollama_model_name = "embedding-model"
     model.ollama_url = "http://127.0.0.1:11434"
@@ -132,8 +209,10 @@ from pathlib import Path
 from types import SimpleNamespace
 import sys, urllib.request
 from local_ai_hub.embeddings import EmbeddingModel
+from local_ai_hub.external_gpu_reservation import ExternalGpuReservationStore
 m = EmbeddingModel.__new__(EmbeddingModel)
 m._gpu_reservation_path = Path(sys.argv[1]) / "external-gpu-reservation"
+m._gpu_reservation_store = ExternalGpuReservationStore(m._gpu_reservation_path)
 m._execution_local = SimpleNamespace()
 m._ollama_model_name = "embedding-model"
 m.ollama_url = "http://127.0.0.1:11434"
@@ -173,7 +252,7 @@ def test_ollama_embeddings_exclude_external_session_and_keep_unknown_fence(tmp_p
     config = {"server": {"state_dir": str(tmp_path)}}
     scheduler = AffinityScheduler(SimpleNamespace(loaded_model_details=lambda: []), config)
     model = EmbeddingModel.__new__(EmbeddingModel)
-    model._gpu_reservation_path = tmp_path / "external-gpu-reservation"
+    _set_embedding_reservation_store(model, tmp_path / "external-gpu-reservation")
     model._execution_local = SimpleNamespace()
     model._ollama_model_name = "embedding-model"
     model.ollama_url = "http://127.0.0.1:11434"
@@ -283,6 +362,31 @@ def test_cancel_before_model_preparation_does_not_quarantine_gpu(tmp_path):
         other.close()
 
 
+def test_cancel_during_prepare_with_not_started_does_not_quarantine_gpu(tmp_path):
+    class PreparationCancelledNotStarted(Exception):
+        preparation_cancelled = True
+        operation_not_started = True
+
+    config = {"server": {"state_dir": str(tmp_path)}}
+    def prepare(*_args, **_kwargs):
+        raise PreparationCancelledNotStarted("cancelled before load")
+
+    runtime = SimpleNamespace(loaded_model_details=lambda: [], prepare_model=prepare)
+    scheduler = AffinityScheduler(runtime, config)
+    other = AffinityScheduler(SimpleNamespace(loaded_model_details=lambda: []), config)
+    try:
+        with pytest.raises(TimeoutError):
+            scheduler.submit("model", source="test", execute=lambda: {"success": True}, wait_timeout=0.2)
+        with scheduler._cond:
+            assert not scheduler._internal_gpu_uncertain
+            assert scheduler._release_internal_gpu()
+        token = other.reserve_external_gpu()
+        assert token and other.release_external_gpu(token)
+    finally:
+        scheduler.close()
+        other.close()
+
+
 def test_cancel_after_model_preparation_begins_retains_fence(tmp_path):
     class PreparationCancelled(Exception):
         preparation_cancelled = True
@@ -349,6 +453,61 @@ def test_failed_prewarm_retains_gpu_fence(tmp_path, raises):
     finally:
         scheduler.close()
         other.close()
+
+
+def test_preparation_exception_proven_not_started_does_not_quarantine_gpu(tmp_path):
+    class PreparationNotStarted(RuntimeError):
+        operation_not_started = True
+
+    config = {"server": {"state_dir": str(tmp_path)}}
+    scheduler = AffinityScheduler(SimpleNamespace(loaded_model_details=lambda: []), config)
+    other = AffinityScheduler(SimpleNamespace(loaded_model_details=lambda: []), config)
+
+    def switch(_model):
+        raise PreparationNotStarted("backend call never started")
+
+    scheduler._perform_switch = switch
+    try:
+        with pytest.raises(PreparationNotStarted):
+            scheduler.prewarm("model")
+        with scheduler._cond:
+            assert not scheduler._internal_gpu_uncertain
+            assert scheduler._release_internal_gpu()
+        token = other.reserve_external_gpu()
+        assert token and other.release_external_gpu(token)
+    finally:
+        scheduler.close()
+        other.close()
+
+
+def test_offline_prewarm_starts_backend_under_scheduler_gpu_lease(tmp_path):
+    class _StartableRuntime:
+        scheduler = None
+        online = False
+
+        def loaded_model_details(self, **_kwargs):
+            return []
+
+        def is_online(self):
+            return self.online
+
+        def ensure_running(self):
+            assert self.scheduler._internal_gpu_digest
+            self.online = True
+            return True
+
+        def prepare_model(self, _model, **_kwargs):
+            assert self.online
+            return []
+
+    runtime = _StartableRuntime()
+    scheduler = AffinityScheduler(runtime, {"server": {"state_dir": str(tmp_path)}})
+    runtime.scheduler = scheduler
+    try:
+        assert scheduler.prewarm("model") is True
+        assert runtime.online is True
+    finally:
+        scheduler.close()
 
 
 def test_failed_dispatched_model_preparation_retains_gpu_fence(tmp_path):
@@ -1105,3 +1264,6 @@ def test_external_reservation_rejects_existing_gpu_work(field, value, tmp_path):
             setattr(scheduler, field, original)
     finally:
         scheduler.close()
+
+
+pytestmark = pytest.mark.slow

@@ -21,6 +21,26 @@ from local_ai_hub.llama_cpp_runtime import LlamaCppManagedRuntime, llama_cpp_bac
 
 class LlamaCppRuntimeTests(unittest.TestCase):
     def _prepared_fallback(self, runtime):
+        port, _ = runtime.llama_cpp_managed._port_and_url()
+        probe = socket.socket()
+        try:
+            probe.bind(("127.0.0.1", port))
+            probe.close()
+        except OSError:
+            probe.close()
+            free_probe = socket.socket()
+            free_probe.bind(("127.0.0.1", 0))
+            free_port = free_probe.getsockname()[1]
+            free_probe.close()
+            port_patch = patch.object(
+                runtime.llama_cpp_managed,
+                "_port_and_url",
+                return_value=(free_port, f"http://127.0.0.1:{free_port}"),
+            )
+            port_patch.start()
+            self.addCleanup(port_patch.stop)
+            if "candidate" in runtime.config.get("llama_cpp", {}).get("models", {}):
+                runtime.config["llama_cpp"]["models"]["candidate"]["url"] = f"http://127.0.0.1:{free_port}"
         guard = runtime._reserve_mixed_cuda_endpoint()
         self.assertIsNotNone(guard)
         runtime._mixed_fallback_guard = guard
@@ -121,12 +141,16 @@ class LlamaCppRuntimeTests(unittest.TestCase):
 
         for fallback, expected in ((True, "ollama"), (False, "error")):
             with self.subTest(fallback=fallback), tempfile.TemporaryDirectory() as temp:
+                probe = socket.socket()
+                probe.bind(("127.0.0.1", 0))
+                port = probe.getsockname()[1]
+                probe.close()
                 runtime = OllamaRuntime({
                     "server": {"state_dir": temp, "ollama_url": "http://127.0.0.1:11434"},
                     "ollama": {"enabled": True, "request_attempts": 1},
                     "llama_cpp": {"mode": "on", "backend": "cuda", "managed_with_ollama": True,
                                   "managed_model_sha256": "a" * 64, "managed_model_logical": "candidate",
-                                  "fallback_to_ollama": fallback, "models": {"candidate": {"url": "http://127.0.0.1:12438"}}},
+                                  "fallback_to_ollama": fallback, "models": {"candidate": {"url": f"http://127.0.0.1:{port}"}}},
                 })
                 runtime.llama_cpp = SimpleNamespace(request_stream=lambda *args, **kwargs: None)
                 if fallback:
@@ -355,7 +379,8 @@ class LlamaCppRuntimeTests(unittest.TestCase):
                               "managed_model_sha256": "a" * 64, "managed_model_logical": "candidate",
                               "models": {"candidate": {"url": "http://127.0.0.1:12438", "context_length": 512}}},
             })
-            with (patch.object(runtime, "loaded_model_inventory", return_value={"complete": True, "models": []}),
+            with (patch.object(runtime.llama_cpp_managed, "ensure_running", return_value=True),
+                  patch.object(runtime, "loaded_model_inventory", return_value={"complete": True, "models": []}),
                   patch.object(runtime.llama_cpp, "ensure_model", return_value=True) as load):
                 with self.assertRaises(ModelPreparationAdmissionRejected) as rejected:
                     runtime.prepare_model("candidate", post_unload_admission=lambda: {"state": "admitted"})
@@ -446,13 +471,15 @@ class LlamaCppRuntimeTests(unittest.TestCase):
                 try:
                     runtime.prepare_model("candidate", deadline=time.monotonic() + 0.1)
                 except Exception as exc:
-                    results.append(type(exc))
+                    results.append(exc)
             with runtime._mixed_provider_lock:
                 thread = threading.Thread(target=prepare)
                 thread.start()
                 thread.join(timeout=2)
             self.assertFalse(thread.is_alive())
-            self.assertEqual(results, [TimeoutError])
+            self.assertEqual(len(results), 1)
+            self.assertIsInstance(results[0], TimeoutError)
+            self.assertTrue(getattr(results[0], "operation_not_started", False))
 
     def test_mixed_fallback_can_reuse_ollama_when_cuda_is_stopped(self):
         from local_ai_hub.ollama import OllamaRuntime
@@ -548,7 +575,8 @@ class LlamaCppRuntimeTests(unittest.TestCase):
             row = {"name": "candidate", "backend": "ollama", "endpoint_id": "http://127.0.0.1:11434"}
             selected_row = {"name": "candidate", "backend": "llama.cpp-cuda", "endpoint_url": "http://127.0.0.1:12438", "status": "loaded"}
             snapshots = [{"complete": True, "models": [row]}, {"complete": True, "models": []}, {"complete": True, "models": [selected_row]}]
-            with (patch.object(runtime, "loaded_model_inventory", side_effect=snapshots),
+            with (patch.object(runtime.llama_cpp_managed, "ensure_running", return_value=True),
+                  patch.object(runtime, "loaded_model_inventory", side_effect=snapshots),
                   patch.object(runtime, "unload_inventory_model", side_effect=lambda *_a, **_kw: events.append("unload") or True),
                   patch.object(runtime.llama_cpp, "ensure_model", side_effect=lambda *_a, **_kw: events.append("load") or True)):
                 evicted = runtime.prepare_model("candidate", post_unload_admission=lambda: events.append("admit") or {"state": "admitted"})
@@ -667,7 +695,8 @@ class LlamaCppRuntimeTests(unittest.TestCase):
             events = []
             other = {"name": "other", "backend": "ollama", "context_length": 4096}
             snapshots = [{"complete": False}, {"complete": True, "models": [other]}, {"complete": True, "models": []}]
-            with (patch.object(runtime, "loaded_model_inventory", side_effect=snapshots),
+            with (patch.object(runtime.llama_cpp_managed, "ensure_running", return_value=True),
+                  patch.object(runtime, "loaded_model_inventory", side_effect=snapshots),
                   patch.object(runtime, "_reserve_mixed_cuda_endpoint", return_value=guard),
                   patch.object(runtime, "ensure_running", return_value=True),
                   patch.object(runtime, "unload_inventory_model", side_effect=lambda *_a, **_kw: events.append("unload") or True),
@@ -934,6 +963,55 @@ class LlamaCppRuntimeTests(unittest.TestCase):
                 runtime.provision()
             self.assertEqual((binary.parent / "cudart64_13.dll").read_bytes(), b"runtime")
 
+    def test_cuda_provision_omits_cpu_variants_not_enabled_by_windows(self):
+        with tempfile.TemporaryDirectory() as temp:
+            runtime = LlamaCppManagedRuntime({
+                "server": {"state_dir": temp},
+                "llama_cpp": {"backend": "cuda"},
+                "_hardware": {"gpus": [{"vendor": "nvidia"}]},
+            })
+            archives = {}
+            for name, members in (
+                ("cuda-server.zip", {
+                    "llama-server.exe": b"server",
+                    "ggml-cpu-x64.dll": b"generic",
+                    "ggml-cpu-haswell.dll": b"avx2",
+                    "ggml-cpu-alderlake.dll": b"avx-vnni",
+                    "ggml-cpu-zen4.dll": b"avx512",
+                }),
+                ("cuda-libs.zip", {"cudart64_13.dll": b"runtime"}),
+            ):
+                data = io.BytesIO()
+                with zipfile.ZipFile(data, "w") as bundle:
+                    for member, payload in members.items():
+                        bundle.writestr(member, payload)
+                archives[name] = data.getvalue()
+            specs = tuple((name, hashlib.sha256(data).hexdigest(), "zip") for name, data in archives.items())
+            runtime.model_path.parent.mkdir(parents=True)
+            runtime.model_path.write_bytes(b"model")
+
+            def download(_url, destination, expected_sha256, _max_bytes, timeout):
+                data = archives[Path(destination).name]
+                self.assertEqual(hashlib.sha256(data).hexdigest(), expected_sha256)
+                destination.write_bytes(data)
+
+            with (
+                patch.object(runtime, "_host_platform", return_value=("win32", "amd64")),
+                patch("local_ai_hub.llama_cpp_runtime.CUDA_WINDOWS_X64", specs),
+                patch("local_ai_hub.llama_cpp_runtime.MODEL_SHA256", hashlib.sha256(b"model").hexdigest()),
+                patch("local_ai_hub.llama_cpp_runtime._windows_avx512f_available", return_value=False),
+                patch.object(runtime, "_download", side_effect=download),
+            ):
+                binary = runtime.provision()
+                self.assertEqual((binary.parent / "ggml-cpu-x64.dll").read_bytes(), b"generic")
+                self.assertEqual((binary.parent / "ggml-cpu-haswell.dll").read_bytes(), b"avx2")
+                self.assertFalse((binary.parent / "ggml-cpu-alderlake.dll").exists())
+                self.assertFalse((binary.parent / "ggml-cpu-zen4.dll").exists())
+
+                (binary.parent / "ggml-cpu-zen4.dll").write_bytes(b"stale installed variant")
+                runtime.provision()
+                self.assertFalse((binary.parent / "ggml-cpu-zen4.dll").exists())
+
     def test_backend_selection_is_explicit_and_ollama_has_precedence(self):
         self.assertEqual(llama_cpp_backend_selection({"ollama": {"enabled": True}, "llama_cpp": {"mode": "on"}}), "ollama")
         self.assertFalse(llama_cpp_managed_selected({"ollama": {"enabled": True}, "llama_cpp": {"mode": "on"}}))
@@ -1054,6 +1132,64 @@ class LlamaCppRuntimeTests(unittest.TestCase):
             self.assertIn('llama_cpp.mode = "on"', guidance, relative)
             self.assertIn('"auto"', guidance, relative)
             self.assertNotIn("never installs or starts llama.cpp automatically", guidance, relative)
+
+
+    def test_ensure_model_aborts_when_cancel_check_raises(self):
+        from local_ai_hub.llama_cpp import LlamaCppRouter
+
+        router = LlamaCppRouter({"llama_cpp": {
+            "mode": "on",
+            "models": {"candidate": {"url": "http://127.0.0.1:12438", "served_model": "fp4"}},
+        }})
+
+        def cancel_check():
+            raise RuntimeError("cancel state unavailable")
+
+        with patch.object(router, "_healthy", return_value=False) as health:
+            self.assertFalse(router.ensure_model("candidate", timeout=1, should_stop=cancel_check))
+        health.assert_not_called()
+
+    def test_request_stream_preempts_when_cancel_check_raises(self):
+        from local_ai_hub.llama_cpp import LlamaCppRouter
+
+        router = LlamaCppRouter({"llama_cpp": {
+            "mode": "on",
+            "models": {"candidate": {"url": "http://127.0.0.1:12438", "served_model": "fp4"}},
+        }})
+
+        def cancel_check():
+            raise RuntimeError("cancel state unavailable")
+
+        with patch.object(router, "ensure_model", return_value=False) as load:
+            result = router.request_stream(
+                "/api/chat", {"model": "candidate", "messages": []}, None,
+                timeout=1, should_stop=cancel_check,
+            )
+        self.assertTrue(result.get("preempted"))
+        load.assert_not_called()
+
+    def test_unload_model_preserves_recovery_state_when_cancel_check_raises(self):
+        from local_ai_hub.llama_cpp import LlamaCppRouter
+
+        router = LlamaCppRouter({"llama_cpp": {
+            "mode": "on",
+            "models": {"candidate": {"url": "http://127.0.0.1:12438", "served_model": "fp4"}},
+        }})
+        recovery = {"served_model": "fp4", "recovery_original_alias": "original"}
+        details = {"model": "candidate"}
+        router._active_recoveries["candidate"] = recovery
+        router._models["__loaded_details__"] = details
+
+        def cancel_check():
+            raise RuntimeError("cancel state unavailable")
+
+        with patch.object(router, "_unload_model_once", return_value=False) as unload:
+            self.assertFalse(router.unload_model(
+                "candidate", should_stop=cancel_check, deadline=time.monotonic() + 1,
+            ))
+        unload.assert_not_called()
+        self.assertIs(router._active_recoveries["candidate"], recovery)
+        self.assertIs(router._models["__loaded_details__"], details)
 
 
 if __name__ == "__main__":

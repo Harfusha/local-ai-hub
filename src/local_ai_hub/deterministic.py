@@ -3,6 +3,7 @@ from __future__ import annotations
 from .json_utils import dumps as json_dumps
 
 import ast
+import hashlib
 import io
 import json
 import logging
@@ -55,6 +56,21 @@ from .state_paths import configured_state_dir
 
 
 logger = logging.getLogger(__name__)
+
+
+def _is_directory_reparse_point(path: Path) -> bool:
+    try:
+        metadata = path.lstat()
+        if stat.S_ISLNK(metadata.st_mode):
+            return True
+        reparse_point = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+        if getattr(metadata, "st_file_attributes", 0) & reparse_point:
+            return True
+        is_junction = getattr(path, "is_junction", None)
+        return callable(is_junction) and is_junction()
+    except OSError:
+        return True
+
 
 _MAX_SCHEMA_SCAN_DIRS = 10_000
 _MAX_SCHEMA_SCAN_FILES = 512
@@ -166,7 +182,10 @@ def _bounded_schema_files(
     migrations_only: bool = False,
 ) -> list[Path]:
     """Collect schema candidates without materializing unbounded directory listings."""
-    skip_dirs = {".git", ".venv", "venv", "node_modules", "__pycache__", "state", "artifacts"}
+    skip_dirs = {
+        ".git", ".venv", "venv", "node_modules", "__pycache__", "state", "artifacts",
+        "test", "tests", "__tests__", "fixture", "fixtures", "tool-envs",
+    }
     canonical_root = root.resolve(strict=True)
     pending = [canonical_root]
     candidates: list[Path] = []
@@ -264,8 +283,21 @@ _SECURITY_AUDIT_SMELLS: list[tuple[str, re.Pattern[str]]] = [
 ]
 
 
-def _python_shell_injection_lines(source: str) -> list[int]:
-    tree = ast.parse(source)
+def _pattern_match_lines(text: str, pattern: re.Pattern[str]) -> list[int]:
+    """Map regex matches to lines with one cumulative scan, not repeated prefixes."""
+    line_number = 1
+    previous_start = 0
+    matched_lines: set[int] = set()
+    for match in pattern.finditer(text):
+        line_number += text.count("\n", previous_start, match.start())
+        matched_lines.add(line_number)
+        previous_start = match.start()
+    return sorted(matched_lines)
+
+
+def _python_shell_injection_lines(source: str, *, tree: ast.AST | None = None) -> list[int]:
+    if tree is None:
+        tree = ast.parse(source)
     scope_types = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)
     parents: dict[ast.AST, ast.AST] = {}
     scopes: list[ast.AST] = [tree]
@@ -639,6 +671,12 @@ class DeterministicEngine:
               PRIMARY KEY(content_hash,analyzer_version,filename));
             CREATE INDEX IF NOT EXISTS idx_manifest_blobs_updated ON manifest_blobs(updated_at);
 
+            CREATE TABLE IF NOT EXISTS unreferenced_symbols(
+              root TEXT NOT NULL, path TEXT NOT NULL, name TEXT NOT NULL,
+              kind TEXT NOT NULL, line INTEGER NOT NULL DEFAULT 0, updated_at REAL NOT NULL,
+              PRIMARY KEY(root, path, name));
+            CREATE INDEX IF NOT EXISTS idx_unref_sym_root ON unreferenced_symbols(root);
+
             CREATE TABLE IF NOT EXISTS test_source_links(
               root TEXT NOT NULL, source_path TEXT NOT NULL, test_path TEXT NOT NULL,
               confidence REAL NOT NULL DEFAULT 1.0, updated_at REAL NOT NULL,
@@ -653,7 +691,7 @@ class DeterministicEngine:
         except sqlite3.OperationalError:
             pass
         con.execute("CREATE TABLE IF NOT EXISTS _det_batch_active(root TEXT PRIMARY KEY)")
-        initialize_row_counts(con, ("files", "facts", "dependencies", "scripts"))
+        initialize_row_counts(con, ("files", "facts", "dependencies", "scripts", "unreferenced_symbols"))
         # Source writes from any SQLite connection must invalidate both cache tiers,
         # including raw external writes that do not call _bump_generation().
         had_invalidation_triggers = con.execute(
@@ -806,6 +844,7 @@ class DeterministicEngine:
         # Keep only the current generation; these rows are cheap to regenerate and
         # retaining stale generations only grows the DB.
         con.execute("DELETE FROM query_cache WHERE root=? AND generation<>?", (root_s, generation))
+        con.execute("DELETE FROM unreferenced_symbols WHERE root=?", (root_s,))
         for key in [k for k in self._query_l1 if k[0] == root_s]:
             self._query_l1.pop(key, None)
         self._stats["query_invalidations"] += 1
@@ -1840,20 +1879,46 @@ class DeterministicEngine:
 
     def build(self, root: str, paths: list[str] | None = None, limit: int = 0) -> dict[str, Any]:
         base = Path(root).expanduser().resolve()
-        candidates = paths or [str(p.relative_to(base)).replace("\\", "/") for p in self.repo_tools.iter_files(str(base))]
-        if limit > 0:
-            candidates = candidates[:limit]
+        root_s = str(base)
+        if paths is None:
+            return {
+                "success": False, "root": root_s, "updated": 0, "cached": 0,
+                "failed": 0, "files": 0, "remaining": 0,
+                "coverage_complete": False, "reason": "explicit_paths_required",
+            }
+        requested = list(dict.fromkeys(str(path) for path in paths if isinstance(path, str) and path))
+        if not requested:
+            return {
+                "success": True, "root": root_s, "updated": 0, "cached": 0,
+                "failed": 0, "files": 0, "remaining": 0, "coverage_complete": True,
+            }
+        if type(limit) is not int or limit < 0:
+            return {
+                "success": False, "root": root_s, "updated": 0, "cached": 0,
+                "failed": len(requested), "files": 0, "remaining": len(requested),
+                "coverage_complete": False, "reason": "invalid_limit",
+            }
+        configured_limit = max(
+            1, int(self.config.get("preprocessing", {}).get("deterministic_files_per_step", 256))
+        )
+        batch_limit = min(limit, configured_limit) if limit else configured_limit
+        candidates = requested[:batch_limit]
         updated = cached = failed = 0
         for path in candidates:
             try:
                 result = self.update_file(str(base), path)
                 cached += int(bool(result.get("cached")))
                 updated += int(bool(result.get("success")) and not result.get("cached"))
+                failed += int(result.get("success") is not True)
             except Exception:
                 failed += 1
-        self.prune(str(base), candidates if paths is None else [str(p.relative_to(base)).replace("\\", "/") for p in self.repo_tools.iter_files(str(base))])
-        self.refresh_manifests(str(base))
-        return {"success": True, "root": str(base), "updated": updated, "cached": cached, "failed": failed, "files": len(candidates)}
+        remaining = max(0, len(requested) - len(candidates))
+        coverage_complete = remaining == 0 and failed == 0
+        return {
+            "success": failed == 0, "root": root_s, "updated": updated, "cached": cached,
+            "failed": failed, "files": len(candidates), "remaining": remaining,
+            "coverage_complete": coverage_complete,
+        }
 
     @staticmethod
     def _purpose(script: str) -> str:
@@ -2760,6 +2825,55 @@ class DeterministicEngine:
                 con.execute("PRAGMA wal_checkpoint(PASSIVE)")
         except sqlite3.DatabaseError:
             pass
+
+    def get_centrality_ranks(self, root: str) -> dict[str, float]:
+        """Compute normalized in-degree centrality score [0.0, 1.0] for source files."""
+        root_s = str(root)
+        with closing(self._connect()) as con:
+            files = [
+                str(r[0])
+                for r in con.execute(
+                    "SELECT path FROM files WHERE root=? AND is_test=0", (root_s,)
+                ).fetchall()
+            ]
+            if not files:
+                return {}
+            import_rows = con.execute(
+                "SELECT path, name, value FROM facts WHERE root=? AND kind='import'", (root_s,)
+            ).fetchall()
+
+        in_degrees: dict[str, int] = {f: 0 for f in files}
+        stem_to_paths: dict[str, list[str]] = {}
+        for f in files:
+            stem = PurePosixPath(f).stem.lower()
+            stem_to_paths.setdefault(stem, []).append(f)
+
+        STD_MODULES = {
+            "os", "sys", "re", "json", "time", "math", "typing", "pathlib", "logging",
+            "collections", "io", "subprocess", "threading", "datetime", "functools",
+            "itertools", "unittest", "pytest", "asyncio", "http", "socket", "urllib",
+            "copy", "shutil", "tempfile", "traceback", "gc", "stat", "uuid", "hashlib",
+            "base64", "contextlib", "abc", "react", "express", "lodash", "axios", "fs",
+            "path", "events", "util", "crypto", "stream", "buffer",
+        }
+        seen_edges: set[tuple[str, str]] = set()
+        for row in import_rows:
+            importing_path = str(row[0])
+            name = str(row[1] or row[2] or "").lower().replace("\\", "/")
+            parts = name.split(".")
+            for part in parts:
+                if part in STD_MODULES:
+                    continue
+                for candidate in stem_to_paths.get(part, []):
+                    edge = (importing_path, candidate)
+                    if candidate != importing_path and edge not in seen_edges:
+                        seen_edges.add(edge)
+                        in_degrees[candidate] = in_degrees.get(candidate, 0) + 1
+
+        max_deg = max(in_degrees.values()) if in_degrees else 0
+        if max_deg <= 0:
+            return {f: 0.0 for f in files}
+        return {f: round(deg / max_deg, 4) for f, deg in in_degrees.items()}
 
     def semantic_needed(self, root: str, path: str) -> bool:
         """Return whether semantic RAG is worth indexing this path.
@@ -3860,12 +3974,89 @@ class DeterministicEngine:
             except Exception as exc:
                 return {"success": False, "error": str(exc), "dead_symbols": []}
 
+        if not dead and self.code_index is None:
+            try:
+                with self._lock, closing(self._connect()) as con:
+                    rows = con.execute(
+                        """SELECT name, kind, path, line
+                           FROM facts
+                           WHERE root=? AND kind IN ('function', 'class')
+                             AND path NOT LIKE '%/test/%' AND path NOT LIKE '%/tests/%'
+                             AND path NOT LIKE '%_test.%' AND path NOT LIKE '%.test.%'
+                           ORDER BY path, line""",
+                        (resolved,),
+                    ).fetchall()
+                    for r in rows:
+                        s_name, s_kind, s_path, s_line = str(r[0]), str(r[1]), str(r[2]), int(r[3])
+                        if s_name in EXCLUDED_NAMES or s_name.startswith("test_") or s_name.startswith("On"):
+                            continue
+                        if Path(s_path).name.lower() in ("main.py", "app.py", "index.ts", "index.js", "program.cs"):
+                            continue
+                        count = con.execute(
+                            "SELECT COUNT(*) FROM facts WHERE root=? AND (name=? OR value=?) AND path<>?",
+                            (resolved, s_name, s_name, s_path),
+                        ).fetchone()[0]
+                        if count == 0:
+                            dead.append({
+                                "name": s_name,
+                                "kind": s_kind,
+                                "path": s_path,
+                                "line": s_line,
+                                "container": "",
+                                "reason": "0 references found in deterministic facts",
+                            })
+                            if len(dead) >= limit:
+                                break
+            except Exception:
+                pass
+
         return {
             "success": True,
             "root": resolved,
             "dead_symbols_count": len(dead),
             "dead_symbols": dead,
         }
+
+    def precompute_dead_code(self, root: str, limit: int = 500) -> dict[str, Any]:
+        """Precompute unreferenced symbols across the repository and persist them."""
+        resolved = self._root(root)
+        dead_info = self.detect_dead_code(resolved, limit=limit)
+        items = dead_info.get("dead_symbols", [])
+        now = time.time()
+        with self._lock, closing(self._connect()) as con:
+            con.execute("DELETE FROM unreferenced_symbols WHERE root=?", (resolved,))
+            if items:
+                con.executemany(
+                    """INSERT OR REPLACE INTO unreferenced_symbols(root, path, name, kind, line, updated_at)
+                       VALUES (?, ?, ?, ?, ?, ?)""",
+                    [(resolved, str(i["path"]), str(i["name"]), str(i["kind"]), int(i.get("line", 0)), now) for i in items],
+                )
+            con.commit()
+        return {"success": True, "root": resolved, "count": len(items), "symbols": items}
+
+    def get_unreferenced_symbols(self, root: str, limit: int = 50) -> list[dict[str, Any]]:
+        """Retrieve precomputed unreferenced symbols instantly from cache."""
+        resolved = self._root(root)
+        with self._lock, closing(self._connect()) as con:
+            rows = con.execute(
+                """SELECT path, name, kind, line, updated_at
+                   FROM unreferenced_symbols
+                   WHERE root=?
+                   ORDER BY path, line
+                   LIMIT ?""",
+                (resolved, limit),
+            ).fetchall()
+        return [
+            {
+                "path": str(r[0]),
+                "name": str(r[1]),
+                "kind": str(r[2]),
+                "line": int(r[3]),
+                "updated_at": float(r[4]),
+                "reason": "0 references found across repository (precomputed)",
+            }
+            for r in rows
+        ]
 
     KNOWN_CVE_SIGNATURES = {
         "newtonsoft.json": ("13.0.1", "CVE-2024-21907 (Improper Handling of Highly Nested Data)"),
@@ -4030,53 +4221,79 @@ class DeterministicEngine:
         impacted_tests: list[str] = []
         symbols_to_check: list[str] = [target_symbol] if target_symbol else []
 
-        if self.code_index is not None:
-            try:
-                with self.code_index._lock, closing(self.code_index._connect()) as con:
-                    if not symbols_to_check:
-                        sym_rows = con.execute(
-                            "SELECT name FROM symbols WHERE root=? AND path=? AND kind IN ('class','function','method')",
-                            (resolved, target_path),
-                        ).fetchall()
-                        symbols_to_check = [str(r[0]) for r in sym_rows]
-                    
-                    for sym in symbols_to_check:
-                        edge_rows = con.execute(
-                            "SELECT src, dst, path, line, kind FROM edges WHERE root=? AND dst=?",
-                            (resolved, sym),
-                        ).fetchall()
-                        for r in edge_rows:
-                            caller_path = str(r[2])
-                            impacted_files.add(caller_path)
-                            callers.append({
-                                "caller_symbol": str(r[0]),
-                                "target_symbol": str(r[1]),
-                                "path": caller_path,
-                                "line": int(r[3]),
-                                "kind": str(r[4]),
-                            })
-                            if "/test" in caller_path.lower() or "test_" in caller_path.lower() or ".test." in caller_path.lower():
-                                impacted_tests.append(caller_path)
-                        
-                        ref_rows = con.execute(
-                            "SELECT path, line, kind FROM refs WHERE root=? AND name=? AND path<>?",
-                            (resolved, sym, target_path),
-                        ).fetchall()
-                        for r in ref_rows:
-                            rp = str(r[0])
-                            impacted_files.add(rp)
-                            if "/test" in rp.lower() or "test_" in rp.lower() or ".test." in rp.lower():
-                                impacted_tests.append(rp)
-            except Exception:
-                pass
+        def failure(error: str, *, index_available: bool) -> dict[str, Any]:
+            return {
+                "success": False,
+                "error": error,
+                "root": resolved,
+                "target_file": target_path,
+                "symbols_analyzed": symbols_to_check,
+                "risk_level": "UNKNOWN",
+                "impacted_files_count": 0,
+                "impacted_files": [],
+                "callers_count": 0,
+                "callers": [],
+                "impacted_tests": [],
+                "recommendations": [],
+                "index_available": index_available,
+                "freshness": {"status": "not_checked"},
+                "coverage": {
+                    "complete": False,
+                    "reason": "index_query_failed" if index_available else "index_unavailable",
+                },
+            }
+
+        if self.code_index is None:
+            return failure("code index unavailable", index_available=False)
+
+        try:
+            with self.code_index._lock, closing(self.code_index._connect()) as con:
+                if not symbols_to_check:
+                    sym_rows = con.execute(
+                        "SELECT name FROM symbols WHERE root=? AND path=? AND kind IN ('class','function','method')",
+                        (resolved, target_path),
+                    ).fetchall()
+                    symbols_to_check = [str(r[0]) for r in sym_rows]
+
+                for sym in symbols_to_check:
+                    symbol_name = sym.replace("\\", "/").rsplit("/", 1)[-1].rsplit("::", 1)[-1].rsplit(".", 1)[-1]
+                    edge_rows = con.execute(
+                        "SELECT src, dst, path, line, kind FROM edges "
+                        "WHERE root=? AND (dst=? OR (kind='calls' AND dst_name=?))",
+                        (resolved, sym, symbol_name),
+                    ).fetchall()
+                    for r in edge_rows:
+                        caller_path = str(r[2])
+                        impacted_files.add(caller_path)
+                        callers.append({
+                            "caller_symbol": str(r[0]),
+                            "target_symbol": str(r[1]),
+                            "path": caller_path,
+                            "line": int(r[3]),
+                            "kind": str(r[4]),
+                        })
+                        if "/test" in caller_path.lower() or "test_" in caller_path.lower() or ".test." in caller_path.lower():
+                            impacted_tests.append(caller_path)
+
+                    ref_rows = con.execute(
+                        "SELECT path, line, kind FROM refs WHERE root=? AND name=? AND path<>?",
+                        (resolved, sym, target_path),
+                    ).fetchall()
+                    for r in ref_rows:
+                        rp = str(r[0])
+                        impacted_files.add(rp)
+                        if "/test" in rp.lower() or "test_" in rp.lower() or ".test." in rp.lower():
+                            impacted_tests.append(rp)
+        except Exception as exc:
+            return failure(f"code index query failed: {exc}", index_available=True)
 
         ext_files = [f for f in impacted_files if f != target_path]
         if len(ext_files) == 0:
-            risk = "LOW"
+            observed_risk = "LOW"
         elif len(ext_files) <= 3:
-            risk = "MEDIUM"
+            observed_risk = "MEDIUM"
         else:
-            risk = "HIGH"
+            observed_risk = "HIGH"
 
         impacted_tests = list(dict.fromkeys(impacted_tests))
         recommendations = []
@@ -4092,13 +4309,22 @@ class DeterministicEngine:
             "root": resolved,
             "target_file": target_path,
             "symbols_analyzed": symbols_to_check,
-            "risk_level": risk,
+            "risk_level": "UNKNOWN",
+            "observed_risk_level": observed_risk,
             "impacted_files_count": len(ext_files),
             "impacted_files": sorted(ext_files),
             "callers_count": len(callers),
             "callers": callers[:30],
             "impacted_tests": impacted_tests,
             "recommendations": recommendations,
+            "index_available": True,
+            "freshness": {"status": "not_checked"},
+            "coverage": {
+                "complete": False,
+                "reason": "index_freshness_not_checked",
+                "returned_callers": min(len(callers), 30),
+                "callers_truncated": len(callers) > 30,
+            },
         }
 
     def resolve_imports(self, root: str, unknown_symbols: list[str], language: str = "auto") -> dict[str, Any]:
@@ -5215,7 +5441,7 @@ def test_{sym}_regression_edge_cases():
         max_targets = 40
         max_file_bytes = min(int(getattr(self.repo_tools, "max_file_bytes", 1_000_000)), 256_000)
         max_total_bytes = 2_000_000
-        deadline = time.monotonic() + 2.0
+        deadline = time.monotonic() + 5.0
         target_paths: list[tuple[str, Path, os.stat_result]] = []
         enumerated = 0
         try:
@@ -5443,20 +5669,14 @@ def test_{sym}_regression_edge_cases():
         code_index = self.code_index
         if code_index is None:
             # Direct DeterministicEngine callers may not receive the shared index
-            # that services inject. Build it lazily from RepositoryTools' bounded
-            # inventory so dependency traversal still selects transitive tests.
+            # that services inject. Open the existing index lazily; preprocessing
+            # owns demand-based admission and this query must not index the project.
             try:
                 from .code_index import CodeIndex
 
                 candidate_index = CodeIndex(self.config, self.repo_tools)
-                candidate_paths = [
-                    path.relative_to(resolved_root).as_posix()
-                    for path in self.repo_tools.iter_files(str(resolved_root))
-                ]
-                indexed = candidate_index.update_files_batch(str(resolved_root), candidate_paths)
-                if indexed.get("success"):
-                    self.code_index = candidate_index
-                    code_index = candidate_index
+                self.code_index = candidate_index
+                code_index = candidate_index
             except Exception:
                 code_index = None
         if code_index is not None:
@@ -6061,7 +6281,23 @@ def test_{sym}_regression_edge_cases():
         code_smell_patterns = _SECURITY_AUDIT_SMELLS
 
         findings: list[dict[str, Any]] = []
-        candidate_files = self.repo_tools.iter_files(str(resolved_root))
+        raw_files = list(self.repo_tools.iter_files(str(resolved_root)))
+        def _sec_priority(p: Path) -> int:
+            try:
+                parts = p.relative_to(resolved_root).parts
+            except ValueError:
+                return 2
+            if not parts or len(parts) == 1:
+                return 0
+            top = parts[0].lower()
+            if top in {"src", "lib", "app", "core", "server", "api"}:
+                return 0
+            if top in {"tools", "scripts", "bin"}:
+                return 1
+            if top in {"tests", "test", "fixtures"}:
+                return 3
+            return 2
+        candidate_files = sorted(raw_files, key=_sec_priority)
         scanned_files = 0
         eligible_files = 0
         skipped_files = 0
@@ -6143,6 +6379,15 @@ def test_{sym}_regression_edge_cases():
                             })
                             break
 
+                python_tree: ast.AST | None = None
+                if rel.lower().endswith(".py") and len(findings) < limit and time.monotonic() < deadline:
+                    try:
+                        python_tree = ast.parse(txt)
+                    except (SyntaxError, ValueError):
+                        scan_complete = False
+                        if len(scan_errors) < 20:
+                            scan_errors.append({"path": rel, "error_type": "ASTParseError"})
+
                 for name, pat in code_smell_patterns:
                     if len(findings) >= limit or time.monotonic() >= deadline:
                         scan_complete = False
@@ -6152,26 +6397,18 @@ def test_{sym}_regression_edge_cases():
                     if name == "Shell Injection Risk":
                         if not rel.lower().endswith(".py"):
                             continue
-                        try:
-                            line_numbers = _python_shell_injection_lines(txt)
-                        except (SyntaxError, ValueError):
-                            scan_complete = False
-                            if len(scan_errors) < 20:
-                                scan_errors.append({"path": rel, "error_type": "ASTParseError"})
-                            line_numbers = []
+                        line_numbers = (
+                            _python_shell_injection_lines(txt, tree=python_tree)
+                            if python_tree is not None else []
+                        )
                     elif name == "Unsafe eval/exec" and rel.lower().endswith(".py"):
-                        try:
-                            parsed = ast.parse(txt)
-                        except (SyntaxError, ValueError):
-                            scan_complete = False
-                            if len(scan_errors) < 20:
-                                scan_errors.append({"path": rel, "error_type": "ASTParseError"})
+                        if python_tree is None:
                             line_numbers = []
                         else:
                             line_numbers = sorted(
                                 {
                                     node.lineno
-                                    for node in ast.walk(parsed)
+                                    for node in ast.walk(python_tree)
                                     if isinstance(node, ast.Call)
                                     and (
                                         isinstance(node.func, ast.Name)
@@ -6184,12 +6421,7 @@ def test_{sym}_regression_edge_cases():
                                 }
                             )
                     else:
-                        line_numbers = sorted(
-                            {
-                                txt[:match.start()].count("\n") + 1
-                                for match in pat.finditer(txt)
-                            }
-                        )
+                        line_numbers = _pattern_match_lines(txt, pat)
                     for line_no in line_numbers:
                         matched_line = lines[line_no - 1].strip() if line_no <= len(lines) else ""
                         if matched_line.startswith(("#", "//", "/*", "*")):
@@ -6770,7 +7002,7 @@ def test_{sym}_regression_edge_cases():
             return {"success": False, "status_code": 400, "error": "symbol must be a non-empty string", "terminal": True, "retryable": False}
 
         sym = symbol.strip()
-        if (direction == "callers" and ("::" in sym or "." in sym)) or (direction == "callees" and "." in sym):
+        if (direction == "callers" and "." in sym and "::" not in sym) or (direction == "callees" and "." in sym):
             return {
                 "success": False, "terminal": True, "retryable": False,
                 "error": "deterministic Python relation fallback requires an unqualified symbol or canonical :: qualification",
@@ -6796,6 +7028,11 @@ def test_{sym}_regression_edge_cases():
         source_files_seen = 0
         unsupported_languages: set[str] = set()
         matching_definitions: set[str] = set()
+        qualified_caller_symbol = direction == "callers" and "::" in sym
+        caller_symbol_name = sym.rsplit("::", 1)[-1] if qualified_caller_symbol else sym
+        if qualified_caller_symbol:
+            incomplete = True
+            incomplete_reasons.add("qualified_symbol_scope_not_resolved")
 
         def walk_error(_error: OSError) -> None:
             nonlocal incomplete
@@ -6925,7 +7162,7 @@ def test_{sym}_regression_edge_cases():
                         target = call_name(node.func)
                         scope = ".".join(self.scope_stack) if self.scope_stack else "<module>"
                         if direction == "callers":
-                            matched = target == sym
+                            matched = target == caller_symbol_name
                         else:
                             qualified_scope = "::".join([part for part in (module_identity, *self.scope_stack) if part])
                             if "::" in sym or "." in sym:
@@ -7044,6 +7281,10 @@ def test_{sym}_regression_edge_cases():
 
     def find_dead_code(self, root: str, limit: int = 50) -> dict[str, Any]:
         """Detect potentially dead/uncalled functions and classes in repository."""
+        cached = self.get_unreferenced_symbols(root, limit=limit)
+        if cached:
+            return {"success": True, "root": self._root(root), "dead_code": cached}
+
         if self.code_index is not None:
             try:
                 st = self.code_index.status(root)
@@ -7061,33 +7302,39 @@ def test_{sym}_regression_edge_cases():
         defs: dict[str, dict[str, Any]] = {}
         usages: set[str] = set()
 
-        for p in p_root.rglob("*.py"):
-            if not p.is_file():
-                continue
-            rel_parts = p.relative_to(p_root).parts
-            if any(part.startswith((".", "node_modules", "venv", ".git", "test")) for part in rel_parts):
-                continue
-            rel = str(p.relative_to(p_root)).replace("\\", "/")
-            try:
-                content = p.read_text(encoding="utf-8", errors="replace")
-                tree = ast.parse(content, filename=str(p))
-                for node in ast.walk(tree):
-                    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                        if not node.name.startswith("_") and node.name not in ("main", "run", "cli", "app"):
-                            defs[f"{rel}::{node.name}"] = {
-                                "file": rel, "name": node.name, "line": node.lineno, "kind": "function"
-                            }
-                    elif isinstance(node, ast.ClassDef):
-                        if not node.name.startswith("_"):
-                            defs[f"{rel}::{node.name}"] = {
-                                "file": rel, "name": node.name, "line": node.lineno, "kind": "class"
-                            }
-                    elif isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
-                        usages.add(node.id)
-                    elif isinstance(node, ast.Attribute) and isinstance(node.ctx, ast.Load):
-                        usages.add(node.attr)
-            except Exception:
-                continue
+        for dirpath, dirnames, filenames in os.walk(p_root):
+            dirnames[:] = [
+                d for d in dirnames
+                if not (
+                    d.startswith((".", "node_modules", "venv", ".git", "test", "tool-envs", "site-packages"))
+                    or d in {"tool-envs", "venv", ".venv", "site-packages", "node_modules", "__pycache__", "build", "dist"}
+                )
+            ]
+            for fname in filenames:
+                if not fname.endswith(".py"):
+                    continue
+                p = Path(dirpath) / fname
+                rel = str(p.relative_to(p_root)).replace("\\", "/")
+                try:
+                    content = p.read_text(encoding="utf-8", errors="replace")
+                    tree = ast.parse(content, filename=str(p))
+                    for node in ast.walk(tree):
+                        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                            if not node.name.startswith("_") and node.name not in ("main", "run", "cli", "app"):
+                                defs[f"{rel}::{node.name}"] = {
+                                    "file": rel, "name": node.name, "line": node.lineno, "kind": "function"
+                                }
+                        elif isinstance(node, ast.ClassDef):
+                            if not node.name.startswith("_"):
+                                defs[f"{rel}::{node.name}"] = {
+                                    "file": rel, "name": node.name, "line": node.lineno, "kind": "class"
+                                }
+                        elif isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
+                            usages.add(node.id)
+                        elif isinstance(node, ast.Attribute) and isinstance(node.ctx, ast.Load):
+                            usages.add(node.attr)
+                except Exception:
+                    continue
 
         dead_candidates: list[dict[str, Any]] = []
         for key, item in defs.items():
@@ -7650,6 +7897,27 @@ def test_{sym}_regression_edge_cases():
             "findings": findings,
         }
 
+    @staticmethod
+    def _find_sqlite_database(p_root: Path) -> Path | None:
+        """Find a SQLite file without traversing generated or environment trees."""
+        ignored_dirs = {"node_modules", "venv", "tool-envs", "site-packages", ".venv"}
+        sqlite_suffixes = {".sqlite3", ".db", ".sqlite"}
+        for current, dirnames, filenames in os.walk(p_root, topdown=True, followlinks=False):
+            current_path = Path(current)
+            kept_dirs: list[str] = []
+            for dirname in dirnames:
+                if dirname.startswith(".") or dirname.lower() in ignored_dirs:
+                    continue
+                child = current_path / dirname
+                if _is_directory_reparse_point(child):
+                    continue
+                kept_dirs.append(dirname)
+            dirnames[:] = sorted(kept_dirs)
+            for filename in sorted(filenames):
+                if Path(filename).suffix.lower() in sqlite_suffixes:
+                    return current_path / filename
+        return None
+
     def schema_inspect(self, root: str, db_path: str | None = None) -> dict[str, Any]:
         """Inspect SQLite database schema (tables, columns, indexes, foreign keys)."""
         p_root = Path(self._root(root))
@@ -7658,13 +7926,7 @@ def test_{sym}_regression_edge_cases():
             p = Path(db_path)
             target_db = p if p.is_absolute() else p_root / p
         else:
-            for ext in ("*.sqlite3", "*.db", "*.sqlite"):
-                for cand in p_root.rglob(ext):
-                    if not any(part.startswith((".", "node_modules", "venv")) for part in cand.parts):
-                        target_db = cand
-                        break
-                if target_db:
-                    break
+            target_db = self._find_sqlite_database(p_root)
 
         if not target_db or not target_db.is_file():
             return {"success": False, "error": f"no SQLite database found in root: {root}"}
@@ -7678,7 +7940,7 @@ def test_{sym}_regression_edge_cases():
         tables: dict[str, Any] = {}
         try:
             database_uri = f"{resolved_db.as_uri()}?mode=ro"
-            with closing(sqlite3.connect(database_uri, uri=True)) as con:
+            with closing(connect_sqlite(database_uri, uri=True, timeout_seconds=5.0, read_only=True)) as con:
                 tbl_rows = con.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").fetchall()
                 for (tbl_name,) in tbl_rows:
                     safe_tbl = tbl_name.replace('"', '""')
@@ -7707,13 +7969,7 @@ def test_{sym}_regression_edge_cases():
             p = Path(db_path)
             target_db = p if p.is_absolute() else p_root / p
         else:
-            for ext in ("*.sqlite3", "*.db", "*.sqlite"):
-                for cand in p_root.rglob(ext):
-                    if not any(part.startswith((".", "node_modules", "venv")) for part in cand.parts):
-                        target_db = cand
-                        break
-                if target_db:
-                    break
+            target_db = self._find_sqlite_database(p_root)
 
         if not target_db or not target_db.is_file():
             return {"success": False, "error": "no SQLite database found for query explain"}
@@ -7730,7 +7986,7 @@ def test_{sym}_regression_edge_cases():
         try:
             resolved_db = target_db.resolve(strict=True)
             relative_db = resolved_db.relative_to(p_root)
-            with closing(sqlite3.connect(f"{resolved_db.as_uri()}?mode=ro", uri=True)) as con:
+            with closing(connect_sqlite(resolved_db, timeout_seconds=5.0, read_only=True)) as con:
                 rows = con.execute(f"EXPLAIN QUERY PLAN {clean_query}").fetchall()
                 plan_items = [{"id": r[0], "parent": r[1], "detail": r[3]} for r in rows]
                 uses_index = any("USING INDEX" in item["detail"] or "USING COVERING INDEX" in item["detail"] for item in plan_items)
@@ -8391,7 +8647,7 @@ def test_{sym}_regression_edge_cases():
     def extract_api_spec(self, root: str, framework: str | None = None) -> dict[str, Any]:
         """Statically extract API routes and endpoints into OpenAPI 3.0 schema."""
         p_root = Path(root).expanduser().resolve(strict=False)
-        skip_dirs = {".git", ".venv", "venv", "node_modules", "__pycache__"}
+        skip_dirs = {".git", ".venv", "venv", "tool-envs", "node_modules", "__pycache__"}
         endpoints: list[dict[str, Any]] = []
 
         # Check for static openapi.json / swagger.json in root
@@ -8417,14 +8673,106 @@ def test_{sym}_regression_edge_cases():
                 except Exception:
                     pass
 
-        for p in p_root.rglob("*.py"):
-            if any(part in skip_dirs for part in p.parts):
-                continue
+        scan_patterns = ("*.py", "*.js", "*.ts", "*.mjs", "*.php", "*.ctp", "*.html", "*.htm")
+        files_by_pattern: dict[str, list[Path]] = {pattern: [] for pattern in scan_patterns}
+        authoritative_registry = p_root / "src" / "local_ai_hub" / "http_route_registry.py"
+        registry_is_authoritative = False
+        if authoritative_registry.is_file():
+            try:
+                registry_tree = ast.parse(
+                    authoritative_registry.read_text(encoding="utf-8", errors="replace"),
+                    filename=str(authoritative_registry),
+                )
+                registry_is_authoritative = any(
+                    isinstance(node, ast.Assign)
+                    and any(
+                        isinstance(target, ast.Name)
+                        and target.id == "API_ROUTE_REGISTRIES_AUTHORITATIVE"
+                        for target in node.targets
+                    )
+                    and isinstance(node.value, ast.Constant)
+                    and node.value.value is True
+                    for node in registry_tree.body
+                )
+            except (OSError, SyntaxError, UnicodeError):
+                registry_is_authoritative = False
+
+        if registry_is_authoritative:
+            # This repository's canonical route registry is the same table the
+            # HTTP server dispatches. Parse it directly instead of walking and
+            # AST-parsing every test and tool file in the repository.
+            files_by_pattern["*.py"].append(authoritative_registry)
+        else:
+            for current_root, dirnames, filenames in os.walk(p_root, topdown=True, followlinks=False):
+                dirnames[:] = sorted(name for name in dirnames if name not in skip_dirs)
+                for filename in sorted(filenames):
+                    path = Path(current_root) / filename
+                    for pattern in scan_patterns:
+                        if path.match(pattern):
+                            files_by_pattern[pattern].append(path)
+                            break
+
+        for p in files_by_pattern["*.py"]:
             try:
                 content = p.read_text(encoding="utf-8", errors="replace")
                 tree = ast.parse(content, filename=str(p))
             except Exception:
                 continue
+
+            for declaration in tree.body:
+                if isinstance(declaration, ast.Assign):
+                    registry_names = [target.id for target in declaration.targets if isinstance(target, ast.Name)]
+                    registry_value = declaration.value
+                elif isinstance(declaration, ast.AnnAssign) and isinstance(declaration.target, ast.Name):
+                    registry_names = [declaration.target.id]
+                    registry_value = declaration.value
+                else:
+                    continue
+                for registry_name in registry_names:
+                    suffix = "_ROUTE_REGISTRY"
+                    if not registry_name.endswith(suffix):
+                        continue
+                    method = registry_name[:-len(suffix)]
+                    if method not in {"GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS", "HEAD"}:
+                        continue
+                    if not isinstance(registry_value, (ast.Tuple, ast.List)):
+                        continue
+                    for rule in registry_value.elts:
+                        if not (
+                            isinstance(rule, ast.Call)
+                            and isinstance(rule.func, ast.Name)
+                            and rule.func.id == "RouteRule"
+                            and len(rule.args) >= 2
+                            and isinstance(rule.args[0], ast.Constant)
+                            and isinstance(rule.args[0].value, str)
+                        ):
+                            continue
+                        paths_node = rule.args[1]
+                        if (
+                            isinstance(paths_node, ast.Call)
+                            and isinstance(paths_node.func, ast.Name)
+                            and paths_node.func.id == "frozenset"
+                            and len(paths_node.args) == 1
+                        ):
+                            paths_node = paths_node.args[0]
+                        try:
+                            route_paths = ast.literal_eval(paths_node)
+                        except (TypeError, ValueError):
+                            continue
+                        if not isinstance(route_paths, (set, frozenset, tuple, list)):
+                            continue
+                        for route_path in route_paths:
+                            if not isinstance(route_path, str) or not route_path:
+                                continue
+                            endpoints.append({
+                                "method": method,
+                                "path": route_path,
+                                "handler": rule.args[0].value,
+                                "summary": rule.args[0].value,
+                                "description": "",
+                                "file": str(p.relative_to(p_root) if p.is_relative_to(p_root) else p),
+                                "line": rule.lineno,
+                            })
 
             for node in ast.walk(tree):
                 if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -8459,9 +8807,7 @@ def test_{sym}_regression_edge_cases():
 
         express_call_pat = _API_EXPRESS_ROUTER_METHOD
         next_route_pat = _API_NEXT_ROUTE_HANDLER
-        for p in list(p_root.rglob("*.js")) + list(p_root.rglob("*.ts")) + list(p_root.rglob("*.mjs")):
-            if any(part in skip_dirs for part in p.parts):
-                continue
+        for p in files_by_pattern["*.js"] + files_by_pattern["*.ts"] + files_by_pattern["*.mjs"]:
             try:
                 text = p.read_text(encoding="utf-8", errors="replace")
                 scan_source = _mask_non_code(text, "typescript" if p.suffix.lower() == ".ts" else "javascript")
@@ -8505,9 +8851,7 @@ def test_{sym}_regression_edge_cases():
         cake_route_pat = _API_PHP_CONNECT_ROUTE
         cake_resource_pat = _API_PHP_RESOURCE_ROUTE
 
-        for p in list(p_root.rglob("*.php")) + list(p_root.rglob("*.ctp")):
-            if any(part in skip_dirs for part in p.parts):
-                continue
+        for p in files_by_pattern["*.php"] + files_by_pattern["*.ctp"]:
             try:
                 text = p.read_text(encoding="utf-8", errors="replace")
                 php_scan_source = _mask_non_code(text, "php")
@@ -8591,9 +8935,7 @@ def test_{sym}_regression_edge_cases():
                 continue
 
         form_pat = _API_HTML_FORM_ENDPOINT
-        for p in list(p_root.rglob("*.html")) + list(p_root.rglob("*.htm")):
-            if any(part in skip_dirs for part in p.parts):
-                continue
+        for p in files_by_pattern["*.html"] + files_by_pattern["*.htm"]:
             try:
                 text = p.read_text(encoding="utf-8", errors="replace")
                 html_scan_source = re.sub(
@@ -8753,6 +9095,8 @@ def test_{sym}_regression_edge_cases():
                     "status": "database_missing",
                     "message": "No SQLite database found at default paths",
                     "error": "Cannot determine migration drift without a live SQLite database",
+                    "terminal": True,
+                    "retryable": False,
                 }
             return {
                 "success": False,
@@ -8761,6 +9105,8 @@ def test_{sym}_regression_edge_cases():
                 "in_sync": None,
                 "status": "database_missing",
                 "error": f"SQLite database not found at {db_path}",
+                "terminal": True,
+                "retryable": False,
             }
 
         try:
@@ -8774,6 +9120,8 @@ def test_{sym}_regression_edge_cases():
                     "in_sync": None,
                     "status": "database_size_limit_exceeded",
                     "error": f"SQLite database exceeds {_MAX_SCHEMA_DB_BYTES} bytes",
+                    "terminal": True,
+                    "retryable": False,
                 }
         except ValueError:
             return {
@@ -8783,6 +9131,8 @@ def test_{sym}_regression_edge_cases():
                 "in_sync": None,
                 "status": "database_path_outside_root",
                 "error": "SQLite database path must resolve inside the requested root",
+                "terminal": True,
+                "retryable": False,
             }
         except OSError as exc:
             return {
@@ -8797,10 +9147,10 @@ def test_{sym}_regression_edge_cases():
         db_tables: dict[str, set[str]] = {}
         try:
             with closing(
-                sqlite3.connect(
-                    f"{db_file.as_uri()}?mode=ro",
-                    uri=True,
-                    timeout=_SCHEMA_DB_TIMEOUT_SECONDS,
+                connect_sqlite(
+                    db_file,
+                    timeout_seconds=_SCHEMA_DB_TIMEOUT_SECONDS,
+                    read_only=True,
                 )
             ) as con:
                 db_deadline = time.monotonic() + _MAX_SCHEMA_SCAN_SECONDS
@@ -8859,6 +9209,8 @@ def test_{sym}_regression_edge_cases():
                 "in_sync": None,
                 "status": "schema_scan_budget_exceeded",
                 "error": str(exc),
+                "terminal": True,
+                "retryable": False,
             }
         except OSError as exc:
             return {
@@ -8871,7 +9223,7 @@ def test_{sym}_regression_edge_cases():
             }
         if migration_files:
             schema_source = "sql_migrations"
-            migration_db = sqlite3.connect(":memory:")
+            migration_db = connect_sqlite(":memory:", timeout_seconds=5.0)
             migration_db.setlimit(sqlite3.SQLITE_LIMIT_LENGTH, _MAX_SCHEMA_FILE_BYTES)
             migration_db.setlimit(sqlite3.SQLITE_LIMIT_SQL_LENGTH, _MAX_SCHEMA_FILE_BYTES)
 
@@ -8940,6 +9292,8 @@ def test_{sym}_regression_edge_cases():
                             "in_sync": None,
                             "status": "schema_scan_budget_exceeded",
                             "error": "migration scan exceeded its time budget",
+                            "terminal": True,
+                            "retryable": False,
                         }
                     with migration_path.open("rb") as migration_stream:
                         raw_source = migration_stream.read(_MAX_SCHEMA_FILE_BYTES + 1)
@@ -8955,6 +9309,8 @@ def test_{sym}_regression_edge_cases():
                             "in_sync": None,
                             "status": "schema_scan_budget_exceeded",
                             "error": "migration SQL exceeds the bounded scan budget",
+                            "terminal": True,
+                            "retryable": False,
                         }
                     source = raw_source.decode("utf-8", errors="replace")
 
@@ -9019,6 +9375,8 @@ def test_{sym}_regression_edge_cases():
                     "in_sync": None,
                     "status": "schema_scan_budget_exceeded",
                     "error": str(exc),
+                    "terminal": True,
+                    "retryable": False,
                 }
             except OSError as exc:
                 return {
@@ -9039,6 +9397,8 @@ def test_{sym}_regression_edge_cases():
                         "in_sync": None,
                         "status": "schema_scan_budget_exceeded",
                         "error": "Python model scan exceeded its time budget",
+                        "terminal": True,
+                        "retryable": False,
                     }
                 try:
                     with p.open("rb") as source_stream:
@@ -9055,10 +9415,27 @@ def test_{sym}_regression_edge_cases():
                             "in_sync": None,
                             "status": "schema_scan_budget_exceeded",
                             "error": "Python model sources exceed the bounded scan budget",
+                            "terminal": True,
+                            "retryable": False,
                         }
-                    tree = ast.parse(
-                        raw_source.decode("utf-8", errors="replace"), filename=str(p)
-                    )
+                    source_text = raw_source.decode("utf-8", errors="replace")
+                    relative_parts = p.relative_to(p_root).parts
+                    model_source_names = {
+                        "model.py", "models.py", "schema.py", "schemas.py",
+                        "entity.py", "entities.py",
+                    }
+                    model_source_dirs = {
+                        "model", "models", "schema", "schemas", "entity", "entities",
+                    }
+                    if (
+                        re.search(r"(?m)^\s*__tablename__\s*=", source_text) is None
+                        and p.name.lower() not in model_source_names
+                        and not any(
+                            part.lower() in model_source_dirs for part in relative_parts[:-1]
+                        )
+                    ):
+                        continue
+                    tree = ast.parse(source_text, filename=str(p))
                     for node_index, node in enumerate(ast.walk(tree)):
                         if node_index % 256 == 0 and time.monotonic() >= python_scan_deadline:
                             return {
@@ -9068,6 +9445,8 @@ def test_{sym}_regression_edge_cases():
                                 "in_sync": None,
                                 "status": "schema_scan_budget_exceeded",
                                 "error": "Python model scan exceeded its time budget",
+                                "terminal": True,
+                                "retryable": False,
                             }
                         if isinstance(node, ast.ClassDef):
                             tbl_name = None
@@ -9099,6 +9478,8 @@ def test_{sym}_regression_edge_cases():
                         "in_sync": None,
                         "status": "schema_scan_budget_exceeded",
                         "error": "Python model scan exceeded its time budget",
+                        "terminal": True,
+                        "retryable": False,
                     }
 
         if not code_tables:
@@ -9117,6 +9498,8 @@ def test_{sym}_regression_edge_cases():
                 "drift": {},
                 "status": "schema_source_unavailable",
                 "error": "No SQL migration schema or declared Python model tables were found",
+                "terminal": True,
+                "retryable": False,
             }
 
         # SQLite identifier matching folds ASCII only; Unicode casefold would
@@ -9667,22 +10050,26 @@ def test_{sym}_regression_edge_cases():
             dirnames[:] = [d for d in dirnames if not d.startswith((".", "node_modules", "venv", "__pycache__", "build", "dist"))]
             for fn in filenames:
                 p = Path(dirpath) / fn
-                if p.suffix.lower() == ".py" and not _is_test_file(str(p)):
+                relative_path = p.relative_to(root_path)
+                if p.suffix.lower() == ".py" and not _is_test_file(relative_path.as_posix()):
                     all_py_files.append(p)
                     if not entrypoints and fn.lower() in ("main.py", "app.py", "cli.py", "__main__.py", "server.py"):
-                        ep_candidates.append(str(p.relative_to(root_path)).replace("\\", "/"))
+                        ep_candidates.append(relative_path.as_posix())
 
         if not ep_candidates and all_py_files:
             ep_candidates.append(str(all_py_files[0].relative_to(root_path)).replace("\\", "/"))
 
         defs: dict[str, dict[str, Any]] = {}
+        defs_by_name: dict[str, list[str]] = {}
         module_calls: dict[str, set[str]] = {}
+        parse_errors: list[str] = []
 
         for p in all_py_files:
             rel = str(p.relative_to(root_path)).replace("\\", "/")
             try:
                 tree = ast.parse(p.read_text(encoding="utf-8", errors="ignore"))
             except Exception:
+                parse_errors.append(rel)
                 continue
 
             file_calls: set[str] = set()
@@ -9690,7 +10077,9 @@ def test_{sym}_regression_edge_cases():
                 if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
                     name = node.name
                     if not name.startswith("__"):
-                        defs[name] = {"name": name, "file": rel, "line": node.lineno, "kind": type(node).__name__}
+                        symbol_id = f"{rel}:{node.lineno}:{name}"
+                        defs[symbol_id] = {"name": name, "file": rel, "line": node.lineno, "kind": type(node).__name__}
+                        defs_by_name.setdefault(name, []).append(symbol_id)
                 elif isinstance(node, ast.Call):
                     if isinstance(node.func, ast.Name):
                         file_calls.add(node.func.id)
@@ -9700,11 +10089,17 @@ def test_{sym}_regression_edge_cases():
                     file_calls.add(node.id)
             module_calls[rel] = file_calls
 
+        ambiguous_names = {name for name, symbol_ids in defs_by_name.items() if len(symbol_ids) > 1}
         reachable: set[str] = set()
         queue: list[str] = []
 
         for ep in ep_candidates:
-            queue.extend(module_calls.get(ep, set()))
+            queue.extend(
+                symbol_id
+                for name in module_calls.get(ep, set())
+                if name not in ambiguous_names
+                for symbol_id in defs_by_name.get(name, [])
+            )
 
         visited_nodes: set[str] = set()
         while queue:
@@ -9716,19 +10111,32 @@ def test_{sym}_regression_edge_cases():
                 reachable.add(sym)
                 sym_file = defs[sym]["file"]
                 for neighbor in module_calls.get(sym_file, set()):
-                    if neighbor not in visited_nodes and neighbor in defs:
-                        queue.append(neighbor)
+                    if neighbor not in visited_nodes and neighbor not in ambiguous_names:
+                        queue.extend(defs_by_name.get(neighbor, []))
 
-        unreachable = [info for name, info in defs.items() if name not in reachable]
+        ambiguous_symbols = [info for name in sorted(ambiguous_names) for info in (defs[symbol_id] for symbol_id in defs_by_name[name])]
+        unreachable = [info for symbol_id, info in defs.items() if symbol_id not in reachable and info["name"] not in ambiguous_names]
+        warnings = []
+        if ambiguous_names:
+            warnings.append("Duplicate symbol names make reachability ambiguous; affected symbols were excluded from reachable and dead-code counts.")
+        if parse_errors:
+            warnings.append("Some Python files could not be parsed; reachability results may be incomplete.")
+        truncated = len(unreachable) > limit or len(ambiguous_symbols) > limit
 
         return {
             "success": True,
+            "complete": not ambiguous_names and not parse_errors,
             "root": str(root_path),
             "entrypoints": ep_candidates,
             "total_symbols": len(defs),
             "reachable_symbols_count": len(reachable),
+            "ambiguous_symbols_count": len(ambiguous_symbols),
+            "ambiguous_symbols": ambiguous_symbols[:limit],
+            "unreachable_symbols_count": len(unreachable),
             "unreachable_symbols": unreachable[:limit],
             "dead_code_count": len(unreachable),
+            "truncated": truncated,
+            "warnings": warnings,
         }
 
     def ast_mutation_test(
@@ -9959,14 +10367,35 @@ def test_{sym}_regression_edge_cases():
         root: str,
         edits: list[dict[str, Any]],
         dry_run: bool = False,
+        *,
+        owned_paths: list[str] | None = None,
     ) -> dict[str, Any]:
         """Apply multiple surgical string replacements across one or more files atomically with rollback."""
         p_root = Path(self._root(root)).resolve()
         if not edits or not isinstance(edits, list):
             return {"success": False, "error": "edits must be a non-empty list of replacement operations"}
 
-        # 1. Validate edit structures and resolve target files
+        owned_scopes: list[Path] = []
+        for owned_path in owned_paths or []:
+            if not isinstance(owned_path, str) or not owned_path or owned_path != owned_path.strip() or "\x00" in owned_path:
+                return {"success": False, "applied": False, "error": "invalid verified lease path"}
+            scope = (p_root / owned_path).resolve()
+            if not scope.is_relative_to(p_root):
+                return {"success": False, "applied": False, "error": "verified lease path escapes project root"}
+            owned_scopes.append(scope)
+
+        def covered_by_verified_lease(target_path: Path) -> bool:
+            for scope in owned_scopes:
+                try:
+                    target_path.relative_to(scope)
+                    return True
+                except ValueError:
+                    continue
+            return False
+
+        # 1. Validate edit structures, resolve target files, and capture dirty hunks.
         resolved_files: dict[str, Path] = {}
+        dirty_hunks: dict[Path, list[tuple[int, int]] | None] = {}
         for idx, edit in enumerate(edits):
             if not isinstance(edit, dict):
                 return {"success": False, "error": f"edit #{idx} is not an object"}
@@ -9987,15 +10416,42 @@ def test_{sym}_regression_edge_cases():
                     ["git", "-C", str(p_root), "status", "--porcelain", "--", rel_candidate],
                     capture_output=True, check=False, timeout=5, **hidden_run_kwargs(),
                 )
-                if status.returncode == 0 and status.stdout.strip():
-                    return {
-                        "success": False,
-                        "applied": False,
-                        "error": f"refusing dirty target file: {p_str}",
-                        "path": p_str,
-                    }
-            except (OSError, subprocess.SubprocessError):
-                pass
+            except (OSError, subprocess.SubprocessError) as exc:
+                return {"success": False, "applied": False, "error": f"unable to inspect Git status for {p_str}: {exc}", "path": p_str}
+            if status.returncode == 0 and status.stdout.strip():
+                if status.stdout.lstrip().startswith(b"??"):
+                    dirty_hunks[p_candidate] = [(1, 2**31 - 1)]
+                else:
+                    try:
+                        diff = subprocess.run(
+                            ["git", "-C", str(p_root), "diff", "--no-ext-diff", "--unified=0", "HEAD", "--", rel_candidate],
+                            capture_output=True, check=False, timeout=5, **hidden_run_kwargs(),
+                        )
+                    except (OSError, subprocess.SubprocessError) as exc:
+                        return {"success": False, "applied": False, "error": f"unable to inspect Git diff for {p_str}: {exc}", "path": p_str}
+                    if diff.returncode != 0:
+                        return {"success": False, "applied": False, "error": f"Git diff failed for {p_str}: {diff.stderr.decode('utf-8', errors='replace')[:300]}", "path": p_str}
+                    ranges: list[tuple[int, int]] = []
+                    for diff_line in diff.stdout.decode("utf-8", errors="replace").splitlines():
+                        if not diff_line.startswith("@@") or " +" not in diff_line:
+                            continue
+                        new_range = diff_line.split(" +", 1)[1].split(" ", 1)[0]
+                        start_text, separator, count_text = new_range.partition(",")
+                        try:
+                            start_line = int(start_text)
+                            line_count = int(count_text) if separator else 1
+                        except ValueError:
+                            ranges = [(1, 2**31 - 1)]
+                            break
+                        # A deletion has no current-file line; its insertion point is protected.
+                        first = max(1, start_line)
+                        last = max(first, start_line + line_count - 1)
+                        ranges.append((first, last))
+                    dirty_hunks[p_candidate] = ranges or [(1, 2**31 - 1)]
+            elif status.returncode != 0:
+                stderr = status.stderr.decode("utf-8", errors="replace")
+                if "not a git repository" not in stderr.lower():
+                    return {"success": False, "applied": False, "error": f"Git status failed for {p_str}: {stderr[:300]}", "path": p_str}
             resolved_files[p_str] = p_candidate
 
         # 2. Read and backup all target files in memory
@@ -10015,6 +10471,19 @@ def test_{sym}_regression_edge_cases():
             fpath = resolved_files[p_str]
             current_text = file_contents[fpath]
 
+            expected_sha = edit.get("expected_sha256") or edit.get("expected_sha")
+            if expected_sha:
+                cur_sha = hashlib.sha256(current_text.encode("utf-8")).hexdigest()
+                if cur_sha.lower() != str(expected_sha).lower():
+                    return {
+                        "success": False,
+                        "applied": False,
+                        "error": f"CAS conflict for {p_str}: expected sha256 {str(expected_sha)[:12]}, file has {cur_sha[:12]}",
+                        "conflict": True,
+                        "current_sha256": cur_sha,
+                        "path": p_str,
+                    }
+
             count = current_text.count(old_str)
             if count == 0:
                 return {
@@ -10030,6 +10499,19 @@ def test_{sym}_regression_edge_cases():
                     "error": f"edit #{idx}: target text found multiple times ({count}) in {p_str}. Must be unique.",
                     "path": p_str,
                 }
+            hunks = dirty_hunks.get(fpath)
+            if hunks is not None:
+                first_line = current_text.count("\n", 0, current_text.find(old_str)) + 1
+                end_offset = current_text.find(old_str) + len(old_str)
+                last_line = first_line + current_text.count("\n", current_text.find(old_str), end_offset)
+                if any(first_line <= dirty_end and last_line >= dirty_start for dirty_start, dirty_end in hunks):
+                    if not covered_by_verified_lease(fpath):
+                        return {
+                            "success": False,
+                            "applied": False,
+                            "error": f"refusing replacement overlapping unowned dirty hunk: {p_str}",
+                            "path": p_str,
+                        }
             file_contents[fpath] = current_text.replace(old_str, new_str, 1)
 
         # 4. Syntax preflight on modified Python files
@@ -10066,10 +10548,15 @@ def test_{sym}_regression_edge_cases():
                 written.write_text(backups[written], encoding="utf-8")
             return {"success": False, "applied": False, "error": f"Failed during disk write, rolled back: {exc}"}
 
+        new_hashes = {
+            str(p.relative_to(p_root)).replace("\\", "/"): hashlib.sha256(txt.encode("utf-8")).hexdigest()
+            for p, txt in file_contents.items()
+        }
         return {
             "success": True,
             "applied": True,
             "edits_count": len(edits),
             "modified_files": [str(p.relative_to(p_root)).replace("\\", "/") for p in file_contents],
+            "sha256": new_hashes,
         }
 

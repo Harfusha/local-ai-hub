@@ -122,4 +122,6 @@ def test_telemetry_recent_http_history_is_persistent(tmp_path):
 def test_patch_parser_rejects_fuzzed_path_and_hunk(patch):
     result = LocalAIServices.validate_patch(None, {"patch": patch})
 
-    assert result["success"] is False
+    assert result["success"] is True
+    assert result["valid"] is False
+    assert result["syntax_valid"] is False

@@ -203,3 +203,43 @@ def test_endpoint_stats_compaction_options(tmp_path: Path):
     assert "bucket_counts" in stats_with_buckets["items"][0]
     assert len(stats_with_buckets["items"][0]["bucket_counts"]) == 14
 
+
+
+def test_get_registered_surface_catalog_covers_safe_get_and_operation_contracts():
+    from local_ai_hub.endpoint_stats import get_registered_surface_catalog
+    from local_ai_hub.http_route_registry import POST_ROUTE_REGISTRY, TELEMETRY_SAFE_GET_ROUTE_LABELS
+    from local_ai_hub.operation_contracts import OPERATION_CONTRACTS, _ADOPTION_TOOL_NAMES
+
+    catalog = get_registered_surface_catalog()
+    catalog_map = {(it["type"], it["name"]) for it in catalog}
+
+    # Verify every telemetry-safe GET route label is present in catalog
+    for route in TELEMETRY_SAFE_GET_ROUTE_LABELS:
+        assert ("endpoint", route) in catalog_map, f"Missing GET route {route} in catalog"
+    for rule in POST_ROUTE_REGISTRY:
+        for route in rule.paths:
+            assert ("endpoint", route) in catalog_map, f"Missing POST route {route} in catalog"
+
+    # Verify every adoption tool name and its actions are present in catalog
+    for tool in _ADOPTION_TOOL_NAMES:
+        assert ("mcp", tool) in catalog_map, f"Missing tool {tool} in catalog"
+        for action in OPERATION_CONTRACTS[tool]["actions"]:
+            assert ("mcp", f"{tool}:{action}") in catalog_map, f"Missing action {tool}:{action} in catalog"
+
+
+def test_slow_and_failing_endpoint_reports_both_dimensions(tmp_path: Path):
+    store = EndpointStatsStore(tmp_path / "state")
+    store.record_call(
+        item_type="mcp",
+        item_name="local_ai_repo:search",
+        duration_ms=1500.0,
+        success=False,
+    )
+
+    report = store.get_stats(include_unused=False)
+    item = report["items"][0]
+
+    assert item["status"] == "failing"
+    assert item["issues"] == ["failing", "slow"]
+    assert report["failing_count"] == 1
+    assert report["slow_count"] == 1
