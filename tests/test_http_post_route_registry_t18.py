@@ -68,6 +68,7 @@ _CURRENT_ROUTE_PATHS = {
  'post_ingest_diagram_1': ['/api/rag/ingest_diagram'],
 }
 _CURRENT_ADDED_ROUTES = {
+    'post_diagnostics_export_1': {'paths': ['/api/diagnostics/export'], 'before': 'post_benchmark_1'},
     'post_opencode_provider_start_1': {'paths': ['/api/opencode/provider/start'], 'before': 'post_admin_mode_1'},
     'post_opencode_provider_status_1': {'paths': ['/api/opencode/provider/status'], 'before': 'post_admin_mode_1'},
     'post_opencode_provider_stop_1': {'paths': ['/api/opencode/provider/stop'], 'before': 'post_admin_mode_1'},

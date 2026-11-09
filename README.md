@@ -111,7 +111,21 @@ Profiles: `cpu`, `integrated`, `low`, `balanced`, `medium`, `high`, `max`.
 
 The **Preprocessing** activity mode gives registered projects priority over ordinary Hub requests. Select it in the dashboard or run `python tools/hubctl.py mode preprocessing` while the Hub is online; return to Active with `python tools/hubctl.py mode active`. It resumes registered projects and incrementally rechecks completed inventories while retaining existing caches. By default it also enriches eligible unparsed-file stubs with the configured preprocessing model, keeping the original card until a schema-valid replacement is available; set `[preprocessing.exclusive] enrich_stub_cards = false` to retain the ordinary speed shortcut. Project exclusions, phase skips, file-size limits and diagnostic opt-in still apply. The selected profile supplies `[preprocessing.exclusive]` limits for `max_projects`, `cpu_workers`, and `model_parallel`; set those keys in `config.toml` to override them. CPU workers are capped by logical CPUs. Pending jobs are cancelled, tracked inference must drain before entry, and the mode remains selected until changed. `GET /api/mode` reports `preprocessing_ready`; if false, resolve the reported failure and select Preprocessing again. Resource limits are targets, not measured guarantees of throughput or factual quality.
 
-`integrated` is selected for shared-memory iGPUs (for example Intel Arc Graphics on Core Ultra notebooks) instead of sizing the machine from the tiny `AdapterRAM` aperture value reported by Windows. It keeps one LLM/model resident at a time, uses `qwen2.5-coder:1.5b` for preprocessing, 3b for background and quick requests, 7b for heavy/general code tasks, 9b for hard reasoning, and `qwen3-vl:4b` for vision. The balanced profile uses 1.5b preprocessing, 3b fast, 7b heavy/general and 9b reasoning/vision. High uses 1.5b preprocessing, 3b fast, 7b heavy and 9b general/reasoning/vision. Max uses 1.5b preprocessing, 3b fast and 9b heavy/general/reasoning/vision.
+Preprocessing resource limits are doubled in both activity modes. Values are `projects / CPU workers / background model parallelism`; `background_gpu` remains disabled for `cpu` and `integrated`.
+
+| Profile | Active | Preprocessing |
+|---|---:|---:|
+| CPU | 6 / 2 / 2 (off) | 4 / 4 / 2 (off) |
+| Integrated | 2 / 2 / 2 (off) | 4 / 8 / 2 (off) |
+| Low | 6 / 8 / 2 | 4 / 8 / 4 |
+| Balanced | 6 / 8 / 4 | 6 / 16 / 8 |
+| Medium | 6 / 8 / 8 | 8 / 24 / 8 |
+| High | 6 / 8 / 8 | 12 / 32 / 12 |
+| Max | 6 / 8 / 12 | 16 / 48 / 16 |
+
+Profile limits are defaults; explicit `config.toml` values still override them. CPU-worker limits are capped by the machine's logical CPU count. `model_parallel` controls GPU-backed model concurrency; CPU fallback serializes model batches to one at a time, while `cpu_workers` still controls parallel file processing. In the table, `(off)` means the background GPU worker is disabled, not that CPU fallback is necessarily disabled.
+
+`integrated` is selected for shared-memory iGPUs (for example Intel Arc Graphics on Core Ultra notebooks) instead of sizing the machine from the tiny `AdapterRAM` aperture value reported by Windows. It keeps one LLM/model resident at a time, uses `qwen2.5-coder:1.5b` for preprocessing, 3b for background and quick requests, 7b for heavy/general code tasks, 9b for hard reasoning, and `qwen3-vl:4b` for vision. The balanced profile uses 1.5b preprocessing, 3b fast, 7b heavy/general and 9b reasoning/vision. High uses 3b preprocessing, 3b background, 7b fast/heavy and 9b general/reasoning/vision. Max uses 7b preprocessing, 7b background/fast and 32b heavy code.
 
 On Intel integrated systems, embeddings/reranking can use OpenVINO in `NPU -> GPU -> CPU` order. This is optional and failure-safe: missing drivers, unsupported model shapes, export failures or an unavailable OpenVINO runtime fall through to the next device and finally CPU. LLM generation is separate; the integrated profile may use an already-running llama.cpp SYCL endpoint, but does not install Ollama or llama.cpp and does not silently fall back to either.
 

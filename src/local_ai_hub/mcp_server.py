@@ -28,7 +28,7 @@ from local_ai_hub.repository_scope import (
     RepositoryScopeError, canonical_repository_root, reject_retired_tenancy_fields,
 )
 from local_ai_hub.compact import compact_result
-from local_ai_hub.agent_diagnostics import detailed_diagnostics_enabled, project_agent_response, project_pubsub_poll_response
+from local_ai_hub.agent_diagnostics import detailed_diagnostics_enabled, project_agent_response, project_pubsub_poll_response, project_wait_event_response
 from local_ai_hub.agent_surface import diagnostic_mcp_operation, diagnostics_disabled_response
 from local_ai_hub.response_budget import (
     LIFECYCLE_PROTECTED_KEYS,
@@ -1784,6 +1784,13 @@ def _compact(
     if pubsub_messages is not None and isinstance(compacted, dict):
         # Empty/null JSON payloads carry meaning and must survive projection.
         compacted["messages"] = pubsub_messages
+    wait_event = (project_wait_event_response(raw_value, enabled=detailed_diagnostics_enabled(CFG))
+                  if options.get("action") == "wait_for_event" and isinstance(raw_value, dict)
+                  and raw_value.get("success") is True else None)
+    if wait_event is not None and isinstance(compacted, dict):
+        for key in ("message", "event"):
+            if key in wait_event:
+                compacted[key] = copy.deepcopy(wait_event[key])
     if task_kind == "status" and isinstance(projected, dict) and isinstance(compacted, dict):
         for key in ("modified", "staged", "untracked", "deleted", "unmerged", "changed_paths", "files"):
             original, shown = projected.get(key), compacted.get(key)
@@ -1874,6 +1881,7 @@ def _compact(
             *(_CONTEXT_PROTECTED_KEYS if task_kind in {"context", "context_compile"} else ()),
             *(_STATUS_PROTECTED_KEYS if task_kind == "status" else ()),
             *(("messages",) if pubsub_messages is not None else ()),
+            *(("message", "event") if wait_event is not None else ()),
             *(_HARDWARE_BENCHMARK_PROTECTED_KEYS if task_kind == "hardware_benchmark" else ()),
             *(_VERIFY_PROTECTED_KEYS if task_kind == "verify" else ()),
         )))
@@ -1893,6 +1901,14 @@ def _compact(
         ):
             return {"success": False, "status_code": 413, "terminal": True, "retryable": False,
                     "error": "Pubsub messages exceed response budget; reduce limit or increase max_response_tokens"}
+        if wait_event is not None and any(
+            key in wait_event and (not isinstance(compacted, dict) or key not in compacted
+                or json.dumps(compacted[key], sort_keys=True, separators=(",", ":"))
+                != json.dumps(wait_event[key], sort_keys=True, separators=(",", ":")))
+            for key in ("message", "event")
+        ):
+            return {"success": False, "status_code": 413, "terminal": True, "retryable": False,
+                    "error": "Event exceeds response budget; increase max_response_tokens"}
         if expected_context_delta is not None and (
             not isinstance(compacted, dict) or compacted.get("delta") != expected_context_delta
         ):
@@ -2543,8 +2559,9 @@ def _record_tool_accounting(
 
 def _agent_output(value: Any, tool: str, arguments: dict[str, Any]) -> Any:
     """The dashboard toggle is authoritative; request profiles cannot enable detail."""
-    projector = (project_pubsub_poll_response if tool == "local_ai_coord"
-                 and arguments.get("action") == "pubsub_poll" else project_agent_response)
+    projector = (project_pubsub_poll_response if tool == "local_ai_coord" and arguments.get("action") == "pubsub_poll"
+                 else project_wait_event_response if tool == "local_ai_coord" and arguments.get("action") == "wait_for_event"
+                 else project_agent_response)
     result = projector(value, enabled=detailed_diagnostics_enabled(CFG))
     return _reconcile_existing_budget(result) or result
 
@@ -4819,9 +4836,39 @@ def _local_ai_repo_impl(
             "include_tests": bool(include_tests),
         }, timeout=_timeout("quick")), "complexity")
     if action == "api_spec":
-        return _compact(CLIENT.post("/api/repo/api_spec", {
+        if 0 < max_response_tokens < 512:
+            return {
+                "success": False, "status_code": 413, "terminal": True, "retryable": False,
+                "error_code": "request_larger_response_budget",
+                "error": "api_spec requires max_response_tokens of at least 512",
+            }
+        result = CLIENT.post("/api/repo/api_spec", {
             "root": root, "framework": query or None,
-        }, timeout=_timeout("quick")), "architecture")
+        }, timeout=_timeout("quick"))
+        if (isinstance(result, dict) and result.get("success") is True
+                and isinstance(result.get("endpoints"), list)
+                and isinstance(result.get("paths"), dict)
+                and json_tokens(result) > max(0, (max_response_tokens or 8192) // 2 - 256)):
+            # The OpenAPI paths map duplicates the endpoint inventory and can
+            # exhaust the budget before even the count reaches the caller.
+            # Keep one useful representation and explicitly report omission.
+            result = dict(result)
+            result["paths_omitted"] = bool(result.pop("paths"))
+        if (isinstance(result, dict) and result.get("success") is True
+                and isinstance(result.get("endpoints"), list) and len(result["endpoints"]) > 50):
+            result = {**result, "truncated": True}
+        compacted = _compact(result, "architecture")
+        if (isinstance(result, dict) and result.get("success") is True
+                and isinstance(result.get("endpoints"), list)
+                and isinstance(compacted, dict) and compacted.get("success") is True
+                and (compacted.get("total_endpoints") != result.get("total_endpoints")
+                     or (result["endpoints"] and not compacted.get("endpoints")))):
+            return {
+                "success": False, "status_code": 413, "terminal": True, "retryable": False,
+                "error_code": "request_larger_response_budget",
+                "error": "api_spec cannot fit endpoint evidence in the requested response budget",
+            }
+        return compacted
     if action == "dependency_slice":
         return _compact(CLIENT.post("/api/repo/dependency_slice", {
             "root": root, "symbol": query, "path": path or None, "depth": max(1, min(max_tokens or 2, 8)),
@@ -7402,6 +7449,23 @@ if hasattr(mcp, "_tool_manager") and hasattr(mcp, "_mcp_server") and mcp_types i
             if recovery is not None:
                 return recovery
         contents, structured = _build_mcp_budget_payload(name, arguments, value)
+        if (name == "local_ai_coord" and arguments.get("action") == "wait_for_event"
+                and isinstance(value, dict) and value.get("success") is True):
+            try:
+                text_value = json.loads(next(item.text for item in contents if item.type == "text"))
+            except (StopIteration, ValueError, TypeError):
+                text_value = None
+            expected = {key: value[key] for key in ("message", "event") if key in value}
+            def exact_wait_payload(candidate: Any) -> bool:
+                return isinstance(candidate, dict) and all(
+                    key in candidate and json.dumps(candidate[key], sort_keys=True, separators=(",", ":"))
+                    == json.dumps(item, sort_keys=True, separators=(",", ":"))
+                    for key, item in expected.items()
+                )
+            if not exact_wait_payload(structured) or not exact_wait_payload(text_value):
+                rejection = {"success": False, "status_code": 413, "terminal": True, "retryable": False,
+                             "error": "Event exceeds response budget; increase max_response_tokens"}
+                return _build_mcp_budget_payload(name, arguments, rejection)
         if (name == "local_ai_coord" and arguments.get("action") == "pubsub_poll"
                 and isinstance(value, dict) and value.get("success") is True
                 and isinstance(value.get("messages"), list)):
@@ -7453,8 +7517,9 @@ if hasattr(mcp, "_tool_manager") and hasattr(mcp, "_mcp_server") and mcp_types i
                     return bounded if bounded is not None else _build_mcp_budget_payload(name, arguments, rejection)
         if not isinstance(structured, dict):
             return contents, structured
-        projector = (project_pubsub_poll_response if name == "local_ai_coord"
-                     and arguments.get("action") == "pubsub_poll" else project_agent_response)
+        projector = (project_pubsub_poll_response if name == "local_ai_coord" and arguments.get("action") == "pubsub_poll"
+                     else project_wait_event_response if name == "local_ai_coord" and arguments.get("action") == "wait_for_event"
+                     else project_agent_response)
         safe = projector(structured, enabled=detailed_diagnostics_enabled(CFG))
         if safe == structured:
             return contents, structured

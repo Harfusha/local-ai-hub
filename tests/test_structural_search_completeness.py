@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 
 import pytest
@@ -54,14 +55,14 @@ def test_structural_search_marks_syntax_fallback_partial(tmp_path: Path) -> None
 def test_structural_search_marks_file_read_failure_partial(tmp_path: Path, monkeypatch) -> None:
     source = tmp_path / "blocked.ts"
     source.write_text("needle\n", encoding="utf-8")
-    original_read_text = Path.read_text
+    original_open = os.open
 
-    def denied_read(path: Path, *args, **kwargs):
-        if path == source:
+    def denied_open(path, *args, **kwargs):
+        if isinstance(path, (str, os.PathLike)) and Path(path) == source:
             raise PermissionError("private path detail")
-        return original_read_text(path, *args, **kwargs)
+        return original_open(path, *args, **kwargs)
 
-    monkeypatch.setattr(Path, "read_text", denied_read)
+    monkeypatch.setattr("local_ai_hub.deterministic.os.open", denied_open)
     result = DeterministicEngine().structural_search(str(tmp_path), pattern="needle", path="blocked.ts")
 
     assert result["read_errors"] == 1
@@ -78,9 +79,9 @@ def test_structural_search_skips_absolute_path_outside_root(tmp_path: Path) -> N
 
     result = DeterministicEngine().structural_search(str(root), pattern="needle", path=str(outside))
 
-    assert result["success"] is True
-    assert result["matches"] == []
-    assert result["files_scanned"] == 0
+    assert result["success"] is False
+    assert result["status_code"] == 403
+    assert not result.get("matches")
 
 
 def test_structural_search_does_not_swallow_unexpected_parser_failure(tmp_path: Path, monkeypatch) -> None:

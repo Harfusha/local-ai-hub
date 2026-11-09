@@ -1,5 +1,9 @@
 # HTTP API
 
+`POST /api/repo/api_spec` returns the full OpenAPI paths map and endpoint inventory. The MCP `api_spec` projection preserves a small paths map; when the response is large relative to the budget, it omits the map and reports `paths_omitted=true`, retaining bounded endpoint evidence and the total count. Explicit MCP budgets below 512 tokens reject.
+
+`POST /api/diagnostics/export` requires the operator to enable detailed diagnostics in the dashboard. When disabled, it returns HTTP 409 with `error_code=detailed_diagnostics_disabled` before collecting or exporting data.
+
 `POST /api/search` skips exact total counting by default to keep repository
 search responsive. Its response reports `count_exact`; callers that need a
 precise `total_matches` can send `exact_count: true`. `exact_count` must be a
@@ -42,6 +46,8 @@ Trace detail may include the original API request, effective model prompt/payloa
 
 The service defaults to `127.0.0.1:11435`. `/health` is a lightweight liveness endpoint. Runtime/status endpoints include `/api/status`, `/api/capabilities`, `/api/live/status`, metrics/telemetry, hardware status, models, leases and preprocessing.
 
+`POST /api/leases/claim_batch` returns HTTP 200 only when the full requested scope is leased. Active-scope conflicts and lease deadlocks return HTTP 409 with `success: false`, `status_code: 409`, and the conflicting scope details. Invalid claim requests return HTTP 400.
+
 `GET /api/telemetry/report?error_limit=25&error_cursor=` starts a stable error-group snapshot; continue with returned `report.error_fingerprints_page.next_cursor`. Cursor pages order by fingerprint, type, component and operation; cursor carries an event-ID watermark and fixed cutoff, so later writes or rolling-window expiry do not move groups mid-walk. Normal telemetry retention cleanup can still remove expired rows. `error_offset` remains for legacy callers; do not combine it with a cursor. Malformed or mixed cursors return HTTP 400.
 Status cache responses report `snapshot_cached` and `status_age_ms`. A concurrent request during a cold snapshot build returns `success:false`, `degraded:true`, and `snapshot_warming:true`; retry after `retry_after_ms`. A request during refresh can receive a cached snapshot marked `snapshot_stale:true`. Master admin authorization and result audit paths are retained. Successful async-job submissions, idempotent replays, and coalesced submissions report `durability: "sqlite_committed"` only after the SQLite transaction commits. For a lost response, retry with the same caller-supplied `request_id` to recover the persisted job instead of creating a duplicate.
 
@@ -53,8 +59,10 @@ When inference or preprocessing is active, a gaming transition persists the mode
 
 Repository endpoints cover profile/map/code-index/deterministic/search/context, code symbols/diagnostics/AST, import resolution, dependency/security/test/refactor/dead-code/callgraph analysis and git status. Code-intelligence queries use `/api/code-intelligence/query`; session management uses `/api/code-intelligence/control`.
 
-Repository search accepts `lexical`, `rag`, and `hybrid` modes. Lexical mode
-keeps exact query text, exact match counts, and offset pagination. RAG returns
+Repository search accepts `lexical`, `rag`, and `hybrid` modes. An omitted mode
+selects lexical search for explicit code symbols or API paths such as
+`/api/embed`; a single such anchor is extracted from surrounding prose.
+Lexical mode otherwise keeps the query text, exact match counts, and offset pagination. RAG returns
 bounded semantic candidates and never claims an exact corpus count; its current
 implementation combines embedding similarity with full-text candidates.
 Hybrid fuses those RAG candidates with a separate bounded lexical candidate
@@ -86,7 +94,7 @@ Fallback behavior remains useful and explicit:
 
 Memory promotion requires explicit approval. Relevant repository revision changes mark affected memory `stale`; stale/conflicting records remain available as diagnostics, not authoritative context, until revalidated. Evidence IDs and repository revision must be preserved through local-model composition and post-processing.
 
-Operational endpoints cover doctor, DB optimization, cache purge, log tail and service control. Bundles export as ZIP and import only as raw `application/zip` or `application/octet-stream`. Validation commands use the agent host's bounded native command tool and its authorization controls; no public command execution endpoint is exposed.
+Operational endpoints cover doctor, DB optimization, cache purge, log tail and service control. Bundles export as ZIP and import only as raw `application/zip` or `application/octet-stream`. `POST /api/diagnostics/export` streams one installation-wide ZIP64 archive encrypted with AES-256 and compressed with BZIP2 level 9. It includes Hub source, redacted effective configuration, Hub-owned state databases and operational logs across all registered projects. Model weights and unrelated project source are excluded. The response includes the fresh archive password in `X-Local-AI-Export-Password` and uses `Cache-Control: no-store`; the password is not persisted. Detailed request/response content remains subject to the existing opt-in capture setting. State databases, logs and captured traces may still contain private content. Archive and source limits are configurable under `[diagnostics_export]` (defaults: 8 GiB ZIP, 64 GiB input). Validation commands use the agent host's bounded native command tool and its authorization controls; no public command execution endpoint is exposed.
 
 JSON requests require a JSON content type and bounded `Content-Length`; malformed JSON returns 400 and oversized bodies 413. The Hub binds to loopback and requires no API credential; non-loopback bind settings reject at startup. Errors are JSON objects with `success:false` where applicable.
 

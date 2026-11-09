@@ -1913,9 +1913,14 @@ def operation_tool_output_schema(tool: str, features: Any = None) -> dict[str, A
         for action in enabled_actions
         if (delta := _output_payload_delta(operation_output_schema(tool, action)))
     }
+    properties = {key: dict(value) for key, value in _OUTPUT_ENVELOPE_PROPERTIES.items()}
+    if tool == "local_ai_coord" and "wait_for_event" in enabled_actions:
+        # An event message is arbitrary JSON; other actions retain their own
+        # stricter runtime envelope validation below.
+        properties["message"] = {}
     return {
         "type": "object",
-        "properties": {key: dict(value) for key, value in _OUTPUT_ENVELOPE_PROPERTIES.items()},
+        "properties": properties,
         "additionalProperties": True,
         "x-action-output-contracts": action_schemas,
     }
@@ -1963,6 +1968,8 @@ def validate_operation_output(tool: str, action: str, result: Any) -> str | None
     # Validate every published envelope field before FastMCP serializes it.
     # Unknown optional booleans are not silently converted to false.
     for field, schema in _OUTPUT_ENVELOPE_PROPERTIES.items():
+        if field == "message" and tool == "local_ai_coord" and action == "wait_for_event" and result.get("success") is True:
+            continue
         if field in result:
             error = _validate_output_schema(result[field], schema, f"result.{field}")
             if error:

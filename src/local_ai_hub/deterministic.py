@@ -295,6 +295,41 @@ def _pattern_match_lines(text: str, pattern: re.Pattern[str]) -> list[int]:
     return sorted(matched_lines)
 
 
+_YAML_LOAD_START = re.compile(r"\byaml\.load\s*\(")
+_YAML_LOADER_SUFFIX = re.compile(r",\s*Loader\s*=\s*(?:yaml\.)?(?:Unsafe|Full)?Loader\b")
+
+
+def _yaml_load_match_lines(text: str) -> list[int]:
+    """Match the PyYAML audit rule without rescanning an unterminated suffix."""
+    cursor = 0
+    segment_end = -1
+    last_close = -1
+    loader_end = None
+    line_number = 1
+    previous_start = 0
+    matched_lines: set[int] = set()
+    for match in _YAML_LOAD_START.finditer(text):
+        start, content_start = match.start(), match.end()
+        if start < cursor:
+            continue
+        if start >= segment_end:
+            comma = text.find(",", content_start)
+            segment_end = comma if comma >= 0 else len(text) + 1
+            last_close = text.rfind(")", content_start, comma if comma >= 0 else len(text))
+            suffix = _YAML_LOADER_SUFFIX.match(text, comma) if comma >= 0 else None
+            loader_end = suffix.end() if suffix else None
+        if loader_end is not None and segment_end > content_start:
+            cursor = loader_end
+        elif last_close > content_start:
+            cursor = last_close + 1
+        else:
+            continue
+        line_number += text.count("\n", previous_start, start)
+        matched_lines.add(line_number)
+        previous_start = start
+    return sorted(matched_lines)
+
+
 def _python_shell_injection_lines(source: str, *, tree: ast.AST | None = None) -> list[int]:
     if tree is None:
         tree = ast.parse(source)
@@ -4302,7 +4337,9 @@ class DeterministicEngine:
         if ext_files:
             recommendations.append(f"Verify {len(callers)} call site(s) across {len(ext_files)} external file(s)")
         else:
-            recommendations.append("Local changes only; no external dependencies affected.")
+            recommendations.append(
+                "Index freshness is unverified; confirm callers and external dependencies before concluding impact is local."
+            )
 
         return {
             "success": True,
@@ -5753,9 +5790,10 @@ def test_{sym}_regression_edge_cases():
             "changed_files": norm_changed,
             "test_files": matched_tests,
             "excluded_incompatible_tests": incompatible_tests,
+            "requires_multiple_runners": bool(incompatible_tests),
             "suggested_command": cmd,
-            "confidence": 0.95 if matched_tests else 0.5,
-            "selection_complete": graph_complete,
+            "confidence": 0.95 if matched_tests and graph_complete and not incompatible_tests else 0.5,
+            "selection_complete": graph_complete and not incompatible_tests,
         }
 
     def repo_topology(self, root: str) -> dict[str, Any]:
@@ -6469,6 +6507,8 @@ def test_{sym}_regression_edge_cases():
                                     )
                                 }
                             )
+                    elif name == "Unsafe PyYAML":
+                        line_numbers = _yaml_load_match_lines(txt)
                     else:
                         line_numbers = _pattern_match_lines(txt, pat)
                     for line_no in line_numbers:
@@ -6531,6 +6571,12 @@ def test_{sym}_regression_edge_cases():
                     reasons.append("inventory_evidence_missing")
                 elif "workspace_changed" not in reasons:
                     reasons.append("workspace_changed")
+
+        if scanned_files == 0 and scan_complete:
+            # A complete traversal of an empty eligible scope is not a
+            # completed security assessment of any repository file.
+            scan_complete = False
+            stop_reason = "no_files_scanned"
 
         high_count = sum(1 for f in findings if f.get("severity") == "HIGH")
         med_count = sum(1 for f in findings if f.get("severity") == "MEDIUM")
@@ -7086,7 +7132,9 @@ def test_{sym}_regression_edge_cases():
             return {"success": False, "status_code": 400, "error": "symbol must be a non-empty string", "terminal": True, "retryable": False}
 
         sym = symbol.strip()
-        if (direction == "callers" and "." in sym and "::" not in sym) or (direction == "callees" and "." in sym):
+        if (direction == "callers" and "." in sym and "::" not in sym) or (
+            direction == "callees" and "." in sym and ("::" not in sym or "." in sym.split("::", 1)[1])
+        ):
             return {
                 "success": False, "terminal": True, "retryable": False,
                 "error": "deterministic Python relation fallback requires an unqualified symbol or canonical :: qualification",
@@ -7111,9 +7159,10 @@ def test_{sym}_regression_edge_cases():
         directories_seen = 0
         source_files_seen = 0
         unsupported_languages: set[str] = set()
-        matching_definitions: set[str] = set()
+        matching_definitions: list[str] = []
         qualified_caller_symbol = direction == "callers" and "::" in sym
         caller_symbol_name = sym.rsplit("::", 1)[-1] if qualified_caller_symbol else sym
+        callee_identity = sym.replace(".", "::") if direction == "callees" and "::" in sym else sym
         if qualified_caller_symbol:
             incomplete = True
             incomplete_reasons.add("qualified_symbol_scope_not_resolved")
@@ -7224,7 +7273,7 @@ def test_{sym}_regression_edge_cases():
                         self.scope_stack.append(node.name)
                         target_definition_name = sym.rsplit("::", 1)[-1]
                         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == target_definition_name:
-                            matching_definitions.add("::".join([part for part in (module_identity, *self.scope_stack) if part]))
+                            matching_definitions.append("::".join([part for part in (module_identity, *self.scope_stack) if part]))
                         self.generic_visit(node)
                         self.scope_stack.pop()
 
@@ -7250,7 +7299,8 @@ def test_{sym}_regression_edge_cases():
                         else:
                             qualified_scope = "::".join([part for part in (module_identity, *self.scope_stack) if part])
                             if "::" in sym or "." in sym:
-                                scope_matches = sym == qualified_scope
+                                scope_matches = (qualified_scope == callee_identity
+                                                 or qualified_scope.endswith("::" + callee_identity))
                             else:
                                 scope_matches = bool(self.scope_stack and self.scope_stack[-1] == sym)
                             matched = bool(scope_matches and target)
@@ -7291,15 +7341,18 @@ def test_{sym}_regression_edge_cases():
             incomplete_reasons.add("unsupported_languages_present")
         if direction == "callees":
             if "::" in sym:
-                matching = {definition for definition in matching_definitions if definition == sym}
+                matching = [definition for definition in matching_definitions
+                            if definition == callee_identity or definition.endswith("::" + callee_identity)]
             else:
-                matching = {definition for definition in matching_definitions if definition.endswith("::" + sym)}
+                matching = [definition for definition in matching_definitions if definition.endswith("::" + sym)]
             if len(matching) > 1:
                 return {
                     "success": False, "status_code": 422, "terminal": True, "retryable": False,
-                    "error": "deterministic callee fallback requires a uniquely qualified function symbol",
+                    "error": ("qualified function symbol resolves to multiple definitions"
+                              if "::" in sym else "deterministic callee fallback requires a uniquely qualified function symbol"),
                     "symbol": sym, "callees": [], "count": 0, "offset": offset, "limit": limit,
-                    "coverage": {"complete": False, "scan_complete": not incomplete, "scope": "python_ast", "resolution": "ambiguous_unqualified_definition"},
+                    "coverage": {"complete": False, "scan_complete": not incomplete, "scope": "python_ast",
+                                 "resolution": "ambiguous_qualified_definition" if "::" in sym else "ambiguous_unqualified_definition"},
                 }
             elif not matching:
                 if incomplete:
@@ -9718,18 +9771,47 @@ def test_{sym}_regression_edge_cases():
         parse_errors = 0
         ignore_dirs = {".git", "node_modules", "vendor", "__pycache__", ".venv", "venv", "dist", "build"}
 
+        def authorized_path(candidate: Path) -> Path:
+            relative = candidate.relative_to(root_path)
+            if any(part in {"..", ""} for part in relative.parts):
+                raise PermissionError("path must stay within repository root")
+            current = root_path
+            for part in relative.parts:
+                current = current / part
+                if _is_symlink_or_reparse_point(current):
+                    raise PermissionError("path cannot traverse symlinks or reparse points")
+            resolved = candidate.resolve(strict=True)
+            resolved.relative_to(root_path)
+            return resolved
+
         if path:
-            candidate = root_path / path
+            candidate = Path(path.replace("\\", "/"))
+            if not candidate.is_absolute():
+                candidate = root_path / candidate
             try:
-                candidate.relative_to(root_path)
-            except ValueError:
-                files_to_scan = []
+                candidate = authorized_path(candidate)
+            except (ValueError, PermissionError):
+                return {"success": False, "status_code": 403, "terminal": True, "retryable": False,
+                        "error": "path must stay within repository root without symlinks or reparse points"}
+            except OSError:
+                return {"success": False, "status_code": 404, "terminal": True, "retryable": False,
+                        "error": "source path unavailable"}
             else:
                 files_to_scan = [candidate] if candidate.is_file() else []
         else:
             files_to_scan = []
             for cur_root, dirs, filenames in os.walk(root_path):
-                dirs[:] = [d for d in dirs if d not in ignore_dirs and not d.startswith(".")]
+                safe_dirs = []
+                for dirname in dirs:
+                    if dirname in ignore_dirs or dirname.startswith("."):
+                        continue
+                    try:
+                        authorized_path(Path(cur_root) / dirname)
+                    except (OSError, ValueError):
+                        read_errors += 1
+                    else:
+                        safe_dirs.append(dirname)
+                dirs[:] = safe_dirs
                 for f in filenames:
                     if f.endswith((".py", ".ts", ".js", ".go", ".rs", ".cs")):
                         files_to_scan.append(Path(cur_root) / f)
@@ -9749,8 +9831,29 @@ def test_{sym}_regression_edge_cases():
             files_scanned += 1
             try:
                 rel_p = str(fpath.relative_to(root_path)).replace("\\", "/")
-                content = fpath.read_text(encoding="utf-8", errors="replace")
-            except OSError:
+                checked = authorized_path(fpath)
+                before = checked.stat(follow_symlinks=False)
+                flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_NOFOLLOW", 0)
+                descriptor = os.open(checked, flags)
+                with os.fdopen(descriptor, "rb") as stream:
+                    opened = os.fstat(stream.fileno())
+                    if not stat.S_ISREG(opened.st_mode) or (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino):
+                        raise PermissionError("source identity changed")
+                    rechecked = authorized_path(fpath).stat(follow_symlinks=False)
+                    if (opened.st_dev, opened.st_ino) != (rechecked.st_dev, rechecked.st_ino):
+                        raise PermissionError("source path changed before read")
+                    data = stream.read(4 * 1024 * 1024 + 1)
+                    after = os.fstat(stream.fileno())
+                if len(data) > 4 * 1024 * 1024:
+                    raise ValueError("source exceeds read limit")
+                current = authorized_path(fpath).stat(follow_symlinks=False)
+                # Windows may expose different ctime semantics through an open
+                # handle and a fresh path stat; do not reject stable files for it.
+                identity = lambda value: (value.st_dev, value.st_ino, value.st_size, value.st_mtime_ns) + (() if os.name == "nt" else (value.st_ctime_ns,))
+                if identity(opened) != identity(after) or identity(after) != identity(current):
+                    raise PermissionError("source changed during read")
+                content = data.decode("utf-8", errors="replace")
+            except (OSError, ValueError):
                 read_errors += 1
                 continue
 
@@ -9765,7 +9868,20 @@ def test_{sym}_regression_edge_cases():
                         if len(results) >= result_probe_limit:
                             break
 
-                        if target_pattern in {"bare_except", "unhandled_exception", "missing_error_handling"}:
+                        if target_pattern.startswith(("fn:", "function:", "class:")):
+                            prefix, name = target_pattern.split(":", 1)
+                            name = name.strip()
+                            kinds = (ast.ClassDef,) if prefix == "class" else (ast.FunctionDef, ast.AsyncFunctionDef)
+                            if isinstance(node, kinds) and node.name.lower() == name:
+                                label = "class" if prefix == "class" else "function"
+                                results.append({
+                                    "file": rel_p,
+                                    "line": node.lineno,
+                                    "structure": f"{label}:{name}",
+                                    "description": f"{label.capitalize()} declaration matching '{name}'",
+                                    "snippet": lines[node.lineno - 1].strip()[:120],
+                                })
+                        elif target_pattern in {"bare_except", "unhandled_exception", "missing_error_handling"}:
                             if isinstance(node, ast.Try):
                                 for handler in node.handlers:
                                     if len(results) >= result_probe_limit:
@@ -9881,7 +9997,9 @@ def test_{sym}_regression_edge_cases():
                     parse_errors += 1
                     parse_failed = True
 
-            if parse_failed or len(results) == file_result_start or fpath.suffix != ".py":
+            if (parse_failed or len(results) == file_result_start or fpath.suffix != ".py") and not (
+                fpath.suffix == ".py" and target_pattern.startswith(("fn:", "function:", "class:"))
+            ):
                 for idx, line in enumerate(lines, 1):
                     if len(results) >= result_probe_limit:
                         break

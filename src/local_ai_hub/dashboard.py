@@ -885,7 +885,13 @@ button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-vis
 
 <div id="reliability" class="page">
   <header class="page-heading" data-section="08 / Service health"><h1 tabindex="-1" id="page-title-reliability">Service health</h1><p>Check the Hub’s health and investigate past errors.</p></header>
-  <section class="section" id="reliabilitySummary"><h2>Runtime health &amp; recorded history <span class="tiny">Current health checks and recorded history are shown separately.</span></h2><div id="reliabilityHeadline" class="kv"></div><div class="reliability-footer" style="padding:10px 14px;border-top:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap"><div class="tiny muted" id="reliabilityTrend">Historical telemetry loading…</div><button class="btn" id="reliabilityAction">Open request history</button></div></section>
+  <section class="section" id="reliabilitySummary"><h2>Runtime health &amp; recorded history <span class="tiny">Current health checks and recorded history are shown separately.</span></h2><div id="reliabilityHeadline" class="kv"></div><div class="reliability-footer" style="padding:10px 14px;border-top:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap"><div class="tiny muted" id="reliabilityTrend">Historical telemetry loading…</div><div><button class="btn" id="reliabilityAction">Open request history</button> <button class="btn" id="diagnosticsExportBtn">Download full support ZIP</button></div></div><div class="tiny warn-t" style="padding:0 14px 10px">Installation-wide ZIP includes Hub source, redacted config, and operational data across all projects. Logs, traces, paths, tasks, and memories may contain private content. Enable Detailed telemetry before reproducing an issue to capture new request/response bodies. Large exports need free temporary disk space. Password appears after download.</div><p class="tiny muted" id="diagnosticsExportStatus" role="status" aria-live="polite"></p></section>
+  <dialog id="diagnosticsExportDialog" style="max-width:560px;width:calc(100% - 32px);border:1px solid var(--line);border-radius:10px;background:var(--panel);color:var(--text);padding:20px">
+    <h2>Diagnostics archive password</h2>
+    <p class="tiny">Save this password separately. It is not stored by Local AI Hub. Use 7-Zip or another AES/BZIP2 compatible extractor.</p>
+    <input id="diagnosticsExportPassword" aria-label="Diagnostics archive password" type="text" readonly autocomplete="off" spellcheck="false" style="width:100%;font-family:monospace">
+    <div style="display:flex;gap:8px;margin-top:14px"><button class="btn" id="diagnosticsCopyPassword">Copy password</button><button class="btn" id="diagnosticsClosePassword">Close</button></div>
+  </dialog>
   <div class="split">
     <section class="section"><h2>Recent error fingerprints</h2><div class="table-wrap"><table><thead><tr><th>Component</th><th>Operation</th><th>Diagnostic</th><th>Count</th><th>Recovered</th><th>Last seen</th></tr></thead><tbody id="errors"></tbody></table></div></section>
     <section class="section"><h2>Runtime / scheduler counters <span class="tiny">Since restart · independent of metrics period</span></h2><div id="runtimeCounters" class="kv"></div></section>
@@ -4649,7 +4655,7 @@ function switchTab(tabId){
   if(tabId==='performance'){loadRagWorkspaces();loadActiveLeases();loadResidentInventory();}
   if(tabId==='commands')loadWorktrees();
   if(tabId==='reliability')loadLogsTail();
-  if(['work','reliability'].includes(tabId))pollTraces();else tracesPollAbortController?.abort();
+  if(['work','reliability','traceInspector'].includes(tabId))pollTraces();else tracesPollAbortController?.abort();
   if(changed){window.scrollTo({top:0,left:0,behavior:'instant'});$(tabId).querySelector('.page-heading h1')?.focus({preventScroll:true});}
 }
 
@@ -5415,7 +5421,7 @@ function renderTraceList(items){
   $('traceSideSummary').textContent=`${sidebarVisible.length} trace${sidebarVisible.length===1?'':'s'} · click to inspect`;
   $('traceSidebarList').innerHTML=sidebarVisible.length?sidebarVisible.map(x=>{const state=traceStatus(x),label=state==='interrupted'?'Interrupted':state,cls=state==='interrupted'?'interrupted':(state==='failed'||state==='error'?'failed':(x.terminal||state==='completed'||state==='succeeded'?'done':'')),kindLabel=x.kind==='api_request'?'API request':humanLabel(x.kind||'trace'),context=traceContextLabel({...x,kind:'',model:''}),project=traceProjectLabel(x),projectMeta=[project,context].filter(Boolean).join(' · ')||x.agent||'unknown context';return `<button class="trace-side-item ${String(x.trace_id)===activeTraceId?'active':''}" data-trace-page-id="${esc(x.trace_id)}"><span class="trace-side-top"><span class="trace-side-state ${cls}"></span><span class="trace-side-action">${esc(x.action||x.kind||'Trace')}</span><span class="tiny spacer">${esc(label)}</span></span><span class="trace-side-meta">${esc(projectMeta)}</span><span class="trace-side-meta">${esc(kindLabel)} · ${x.updated_at?new Date(x.updated_at*1000).toLocaleTimeString():'—'}</span></button>`}).join(''):'<div class="empty-human">No retained traces</div>';
 }
-function tracePollingNeeded(){return ['work','reliability'].includes(document.querySelector('.page.active')?.id);}
+function tracePollingNeeded(){return ['work','reliability','traceInspector'].includes(document.querySelector('.page.active')?.id);}
 async function pollTraces(isCurrent=()=>document.visibilityState!=='hidden'){
   if(!isCurrent()||tracesPollInFlight)return false;
   if(!tracePollingNeeded())return false;
@@ -5580,6 +5586,42 @@ async function exportBundle(root){
   const blob=await r.blob();const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download='bundle.zip';a.click();URL.revokeObjectURL(url);
   }catch(error){alert('Export failed: '+String(error.message||error))}
 }
+let diagnosticsExportPassword='';
+async function exportDiagnostics(){
+  const button=$('diagnosticsExportBtn'),status=$('diagnosticsExportStatus');if(!button||button.disabled)return;
+  button.disabled=true;if(status)status.textContent='Building large installation-wide support archive…';
+  try{
+    let fileHandle=null;
+    if(typeof window.showSaveFilePicker==='function')fileHandle=await window.showSaveFilePicker({suggestedName:'local-ai-hub-support.zip'});
+    const r=await apiFetch('/api/diagnostics/export',{method:'POST',headers:{'Content-Type':'application/json','Accept':'application/zip'},body:'{}'});
+    if(!r.ok){
+      const failure=await r.json().catch(()=>({}));
+      throw new Error(failure.error_code==='detailed_diagnostics_disabled'
+        ?'Enable detailed diagnostics in the dashboard before exporting.'
+        :(typeof failure.error==='string'&&failure.error?failure.error:`HTTP ${r.status}`));
+    }
+    const password=r.headers.get('X-Local-AI-Export-Password');if(!password)throw new Error('Archive password was not returned; download cancelled.');
+    if(fileHandle&&r.body){
+      const writer=await fileHandle.createWritable(),reader=r.body.getReader(),total=Number(r.headers.get('Content-Length'))||0;let received=0;
+      try{for(;;){const{done,value}=await reader.read();if(done)break;await writer.write(value);received+=value.byteLength;if(status)status.textContent=total?`Saving support archive: ${(received/1048576).toFixed(0)} / ${(total/1048576).toFixed(0)} MiB`:`Saving support archive: ${(received/1048576).toFixed(0)} MiB`; }await writer.close();}
+      catch(error){await writer.abort().catch(()=>{});throw error;}
+    }else{
+      const total=Number(r.headers.get('Content-Length'))||0;if(total>512*1024*1024){await r.body?.cancel();throw new Error('This browser cannot save large archives as a stream. Open the dashboard in Chrome or Edge and retry.');}
+      const blob=await r.blob(),url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download='local-ai-hub-support.zip';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
+    }
+    diagnosticsExportPassword=password;$('diagnosticsExportPassword').value=password;$('diagnosticsExportDialog').showModal();
+    if(status)status.textContent='Encrypted support archive downloaded.';
+  }catch(error){if(status)status.textContent='Export failed: '+String(error.message||error)}finally{button.disabled=false}
+}
+$('diagnosticsExportBtn')?.addEventListener('click',exportDiagnostics);
+$('diagnosticsCopyPassword')?.addEventListener('click',async()=>{
+  try{await navigator.clipboard.writeText(diagnosticsExportPassword);$('diagnosticsCopyPassword').textContent='Copied';}
+  catch{$('diagnosticsExportPassword').focus();$('diagnosticsExportPassword').select();}
+});
+$('diagnosticsExportDialog')?.addEventListener('close',()=>{
+  diagnosticsExportPassword='';$('diagnosticsExportPassword').value='';$('diagnosticsCopyPassword').textContent='Copy password';
+});
+$('diagnosticsClosePassword')?.addEventListener('click',()=>$('diagnosticsExportDialog').close());
 $('bundleImport')?.addEventListener('click',async()=>{
   const file=$('bundleFile')?.files?.[0];const statusEl=$('bundleImportStatus');if(!file){if(statusEl)statusEl.textContent='Select a file first';return;}
   const button=$('bundleImport');if(button.disabled)return;button.disabled=true;

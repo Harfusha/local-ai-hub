@@ -10,7 +10,7 @@ from typing import Any
 
 from .cache import SQLiteCache, SingleFlightGroup, TieredCache, stable_hash
 from .priority_gate import CooperativePriorityGate
-from .accelerators import openvino_cache_dir, openvino_device_candidates
+from .accelerators import automatic_embedding_candidates, openvino_cache_dir, openvino_device_candidates
 from .state_paths import configured_state_dir
 from .model_lifecycle import acquire_locks, load_model, release_model, uses_torch_cuda
 
@@ -53,6 +53,7 @@ class Reranker:
         self._cpu_gate = CooperativePriorityGate(_safe_int(cpu_cfg.get("foreground_priority"), 3))
         self._load_error: str | None = None
         self._load_error_time: float = 0.0
+        self._fallback_reason: str | None = None
         self.flight_group = SingleFlightGroup(shards=16, default_timeout_seconds=60.0)
         self._gpu_reservation_path = configured_state_dir(cfg) / "external-gpu-reservation"
         from .external_gpu_reservation import ExternalGpuReservationStore
@@ -113,6 +114,27 @@ class Reranker:
         })
 
     def _candidate_specs(self) -> list[tuple[str, str]]:
+        if self.backend == "auto":
+            requested = str(self.device).strip()
+            if requested.lower() != "auto":
+                if requested.lower() == "cpu":
+                    return [("torch", "cpu")]
+                if requested.upper().startswith(("NPU", "GPU")):
+                    selected = [("openvino", item) for item in openvino_device_candidates(self.config, requested)]
+                    if requested.upper().startswith("NPU") and not selected:
+                        selected = [candidate for candidate in automatic_embedding_candidates(self.config)
+                                    if candidate[0] == "onnx-vitisai"]
+                    return selected
+                if requested.lower() in {"directml", "dml", "dmlexecutionprovider"}:
+                    return [("onnx-directml", "DmlExecutionProvider")]
+                if requested.lower() in {"vitisai", "vitisai-executionprovider"}:
+                    return [("onnx-vitisai", "VitisAIExecutionProvider")]
+                return [("torch", requested)]
+            routed = automatic_embedding_candidates(self.config)
+            candidates = [("torch" if backend == "sentence-transformers" else backend, device)
+                          for backend, device in routed]
+            candidates.append(("torch", "cpu"))
+            return candidates
         if self.backend == "openvino":
             candidates = [("openvino", device) for device in openvino_device_candidates(self.config, self.device)]
             openvino_cfg = self.config.get("openvino") if isinstance(self.config, dict) else None
@@ -168,6 +190,10 @@ class Reranker:
                 if cache_dir is not None:
                     ov_model_kwargs["ov_config"] = {"CACHE_DIR": str(cache_dir)}
                 kwargs["model_kwargs"] = ov_model_kwargs
+            elif backend.startswith("onnx-"):
+                kwargs["device"] = "cpu"
+                kwargs["backend"] = "onnx"
+                kwargs["model_kwargs"] = {"provider": str(device)}
             def _create_cross_encoder():
                 if uses_torch_cuda(backend, device):
                     from .owned_model import OwnedNLPModel
@@ -236,6 +262,7 @@ class Reranker:
             )
             self.active_backend = backend
             self.active_device = str(device)
+            self._fallback_reason = self._load_error if index > 0 else None
             self._load_error = None
             return True
         except Exception as exc:
@@ -283,6 +310,7 @@ class Reranker:
             self._model = None
             self.active_backend = None
             self.active_device = None
+            self._fallback_reason = None
             self._candidates = None
             self._candidate_index = -1
             del model
@@ -334,12 +362,24 @@ class Reranker:
                     continue
                 return None
 
-    def _needs_cuda_admission(self) -> bool:
-        if uses_torch_cuda(self.active_backend, self.active_device):
+    @staticmethod
+    def _uses_gpu_route(backend: Any, device: Any) -> bool:
+        backend_name = str(backend or "").lower()
+        device_name = str(device or "").upper()
+        return (
+            uses_torch_cuda(backend_name, device)
+            or (backend_name == "openvino" and device_name.startswith("GPU"))
+            or backend_name == "onnx-directml"
+        )
+
+    def _needs_gpu_admission(self) -> bool:
+        if self._uses_gpu_route(self.active_backend, self.active_device):
             return True
         if self.active_backend is not None:
             return False
-        return any(uses_torch_cuda(backend, device) for backend, device in self._candidate_specs())
+        candidates = self._candidate_specs()
+        index = self._candidate_index if self._candidates == candidates else 0
+        return 0 <= index < len(candidates) and self._uses_gpu_route(*candidates[index])
 
     def _claim_gpu_reservation(self) -> tuple[str, str] | bool:
         store = getattr(self, "_gpu_reservation_store", None)
@@ -390,7 +430,7 @@ class Reranker:
                 priority=priority,
                 allow_cpu_fallback=allow_cpu_fallback,
             )
-        reservation = self._claim_gpu_reservation() if self._needs_cuda_admission() else None
+        reservation = self._claim_gpu_reservation() if self._needs_gpu_admission() else None
         if reservation is False:
             return {
                 "success": False,
@@ -499,6 +539,10 @@ class Reranker:
         output = dict(result)
         if isinstance(output.get("results"), list):
             output["results"] = [dict(item) if isinstance(item, dict) else item for item in output["results"]]
+        output.setdefault("reranker_backend", self.active_backend)
+        output.setdefault("reranker_device", self.active_device)
+        if self._fallback_reason:
+            output.setdefault("fallback_reason", self._fallback_reason)
         return output
 
     def _rerank_uncached(

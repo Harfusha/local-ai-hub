@@ -267,6 +267,12 @@ class ModelPreparationNotStarted(TimeoutError):
     operation_not_started = True
 
 
+class OllamaModelNotFoundError(RuntimeError):
+    """Ollama confirmed that the requested model is absent before inference."""
+
+    operation_not_started = True
+
+
 class ModelPreparationAdmissionRejected(RuntimeError):
     """A fresh resource check rejected loading after existing models were unloaded."""
 
@@ -2569,7 +2575,18 @@ class OllamaRuntime:
         if time.monotonic() >= prepare_deadline:
             raise TimeoutError("model preparation deadline expired")
         if "error" in result:
-            raise RuntimeError(str(result.get("error", "model load failed")))
+            error = str(result.get("error", "model load failed"))
+            if error.startswith("HTTP 404:"):
+                try:
+                    payload = json.loads(error.partition(":")[2].strip())
+                except (json.JSONDecodeError, TypeError, UnicodeError):
+                    payload = None
+                detail = payload.get("error") if isinstance(payload, dict) else None
+                if isinstance(detail, str) and re.search(
+                    r"\bmodel\b.*\bnot found\b", detail, re.IGNORECASE | re.DOTALL,
+                ):
+                    raise OllamaModelNotFoundError(error)
+            raise RuntimeError(error)
         self._invalidate_loaded_cache()
         return evicted
 

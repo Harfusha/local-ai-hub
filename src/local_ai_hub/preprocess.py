@@ -546,6 +546,9 @@ class ProjectPreprocessor:
             lock.release()
 
     def _forget_project_runtime(self, root: str) -> None:
+        with self._db_lock:
+            getattr(self, "_rag_batch_limits", {}).pop(root, None)
+            getattr(self, "_rag_batch_successes", {}).pop(root, None)
         with self._dirty_lock:
             self._dirty_paths.pop(root, None)
             self._watch_revisions.pop(root, None)
@@ -2641,6 +2644,10 @@ class ProjectPreprocessor:
                 self._cpu_wakeup.clear()
                 continue
             if not self.cpu_runs_during_foreground and not self._scheduler_background_allowed():
+                # Foreground activity interrupts every project's recovery streak
+                # even when the scheduler defers the step before _step_rag runs.
+                with self._db_lock:
+                    getattr(self, "_rag_batch_successes", {}).clear()
                 self._cpu_wakeup.wait(poll)
                 self._cpu_wakeup.clear()
                 continue
@@ -3388,18 +3395,24 @@ class ProjectPreprocessor:
         return True
 
     def _step_rag(self, row: dict[str, Any]) -> bool:
-        if self._yield():
-            return False
         root = str(row["root"])
+        if self._yield():
+            with self._db_lock:
+                getattr(self, "_rag_batch_successes", {}).pop(root, None)
+            return False
         workspace = str(row["workspace"])
         configured_limit = max(1, int(self.cfg.get("rag_files_per_step", 128)))
         # A preempted RAG step publishes no partial vector batch. Shrink the
         # next step for this root so recurring foreground work cannot repeatedly
-        # discard an entire large batch. Reset once the root is caught up.
+        # discard an entire large batch. Recover after sustained progress and
+        # reset once the root is caught up.
         with self._db_lock:
             batch_limits = getattr(self, "_rag_batch_limits", None)
             if batch_limits is None:
                 batch_limits = self._rag_batch_limits = {}
+            batch_successes = getattr(self, "_rag_batch_successes", None)
+            if batch_successes is None:
+                batch_successes = self._rag_batch_successes = {}
             limit = min(configured_limit, batch_limits.get(root, configured_limit))
         priority_paths = self._learned_priority_paths(root) if limit > 1 else ()
         with self._db_lock, closing(self._connect()) as con:
@@ -3445,6 +3458,7 @@ class ProjectPreprocessor:
         if not pending:
             with self._db_lock:
                 batch_limits.pop(root, None)
+                batch_successes.pop(root, None)
             deleted = self.rag.prune_missing(root, workspace, all_paths)
             if deleted:
                 with self._stats_lock:
@@ -3517,6 +3531,7 @@ class ProjectPreprocessor:
         if result.get("preempted"):
             with self._db_lock:
                 batch_limits[root] = min(batch_limits.get(root, configured_limit), max(1, limit // 2))
+                batch_successes.pop(root, None)
             return False
         if not result.get("success"):
             message = str(result.get("error", "RAG preprocessing failed"))
@@ -3584,6 +3599,16 @@ class ProjectPreprocessor:
                 )
                 con.commit()
             self._record_progress(root, len(processed))
+            # Recover gradually after contention subsides, while keeping each
+            # step preemptible and avoiding oscillation on a single success.
+            with self._db_lock:
+                if root in batch_limits and batch_limits[root] < configured_limit:
+                    successes = batch_successes.get(root, 0) + 1
+                    if successes >= 4:
+                        batch_limits[root] = min(configured_limit, batch_limits[root] * 2)
+                        batch_successes.pop(root, None)
+                    else:
+                        batch_successes[root] = successes
         return True
 
     def _find_lexical_pending(self, root: str, limit: int) -> list[sqlite3.Row]:
@@ -3622,7 +3647,7 @@ class ProjectPreprocessor:
             path.relative_to(base)
             try:
                 if hasattr(self, "ingest_cache") and self.ingest_cache is not None:
-                    ingested = self.ingest_cache.get_or_ingest(base, rel, self.repo_tools)
+                    ingested = self.ingest_cache.get_or_ingest(base, rel, self.repo_tools, parse_ast=False)
                     file_hash, text = ingested.content_hash, ingested.text
                 else:
                     file_hash, lines = self.repo_tools._read_snapshot(path)

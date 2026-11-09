@@ -1467,6 +1467,28 @@ class LocalAIApp:
             max(1, int(cfg.get("max_rows_per_table", 1_000_000))),
         )
 
+    def export_diagnostics(self, *, cancelled: Any = None) -> Any:
+        """Build a large installation-wide support archive without project filtering."""
+        from .diagnostics_export import (
+            DEFAULT_MAX_ARCHIVE_BYTES,
+            DEFAULT_MAX_SOURCE_BYTES,
+            create_diagnostics_archive,
+        )
+
+        limits = self.config.get("diagnostics_export", {})
+        max_archive_bytes = int(limits.get("max_archive_bytes", DEFAULT_MAX_ARCHIVE_BYTES))
+        max_source_bytes = int(limits.get("max_source_bytes", DEFAULT_MAX_SOURCE_BYTES))
+        state_dir = Path(self.config["server"]["state_dir"])
+        flush_complete = self.telemetry.flush(1.0) if getattr(self, "telemetry", None) else False
+        return create_diagnostics_archive(
+            state_dir,
+            max_archive_bytes=max_archive_bytes,
+            max_source_bytes=max_source_bytes,
+            config=self.config,
+            telemetry_flush_complete=flush_complete,
+            cancelled=cancelled,
+        )
+
     def agent_state_cleanup(self, now: float | None = None) -> int:
         """Remove expired terminal records (incidents, receipts, memories) without touching active tasks."""
         if not getattr(self, "agent_state", None) or not self.agent_state.enabled:

@@ -56,47 +56,45 @@ def test_services(tmp_path: Path) -> LocalAIServices:
     return services
 
 
-def test_batch_embed_64_items_uses_bounded_batch_cache(test_services: LocalAIServices):
+def test_batch_embed_64_items_does_not_reuse_mutable_ollama_tag_cache(test_services: LocalAIServices):
     cache = test_services.embedding_cache
     assert isinstance(cache, TieredCache)
 
-    # Spy on get_many and set_many
     original_get_many = cache.get_many
     original_set_many = cache.set_many
     get_many_spy = MagicMock(side_effect=original_get_many)
     set_many_spy = MagicMock(side_effect=original_set_many)
     cache.get_many = get_many_spy
     cache.set_many = set_many_spy
+    first_runtime = MagicMock(wraps=test_services.runtime.request)
+    test_services.runtime.request = first_runtime
 
     texts = [f"Text item number {i} for embedding batch" for i in range(64)]
 
-    # 1. First run: cold cache (all 64 are misses)
     res1 = test_services.embed(texts)
     assert res1["success"] is True
     assert len(res1["embeddings"]) == 64
     assert all(len(v) == 128 for v in res1["embeddings"])
 
-    # Exactly 1 get_many call and 1 set_many call (not 64 individual get/set calls)
-    assert get_many_spy.call_count == 1
-    assert set_many_spy.call_count == 1
-    assert len(get_many_spy.call_args[0][0]) == 64
-    assert len(set_many_spy.call_args[0][0]) == 64
-
-    # 2. Second run: warm cache (all 64 are hits in L1)
-    get_many_spy.reset_mock()
-    set_many_spy.reset_mock()
-
+    retargeted_runtime = MagicMock(side_effect=lambda _path, payload: {
+        "success": True, "embeddings": [[0.123] * 128 for _ in payload["input"]],
+    })
+    test_services.runtime.request = retargeted_runtime
     res2 = test_services.embed(texts)
     assert res2["success"] is True
     assert len(res2["embeddings"]) == 64
-    assert res2["embeddings"] == res1["embeddings"]
+    assert res2["embeddings"] != res1["embeddings"]
+    assert all(vector == [0.123] * 128 for vector in res2["embeddings"])
 
-    # Exactly 1 get_many call, and 0 set_many calls
-    assert get_many_spy.call_count == 1
+    # A tag can be retargeted between requests; no stale cross-request vectors
+    # may be read or published without execution-bound model identity.
+    assert get_many_spy.call_count == 0
     assert set_many_spy.call_count == 0
+    assert first_runtime.call_count == retargeted_runtime.call_count == 2
+    assert all(len(call.args[1]["input"]) == 32 for call in first_runtime.call_args_list + retargeted_runtime.call_args_list)
 
 
-def test_mixed_cache_hits_and_misses_preserves_order(test_services: LocalAIServices):
+def test_existing_mutable_tag_cache_is_ignored_and_order_preserved(test_services: LocalAIServices):
     cache = test_services.embedding_cache
     backend = test_services.config["models"]["embedding_backend"]
     model = test_services.config["models"]["embedding"]
@@ -119,7 +117,9 @@ def test_mixed_cache_hits_and_misses_preserves_order(test_services: LocalAIServi
     for i in range(10):
         idx_known = i * 2
         idx_new = i * 2 + 1
-        assert res["embeddings"][idx_known] == [float(i)] * 128
+        expected = test_services.runtime.request("/api/embed", {"input": [f"item_{i}"]})["embeddings"][0]
+        assert res["embeddings"][idx_known] == expected
+        assert res["embeddings"][idx_known] != [float(i)] * 128
         assert len(res["embeddings"][idx_new]) == 128
         assert res["embeddings"][idx_new] != [float(i)] * 128
 

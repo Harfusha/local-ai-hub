@@ -353,7 +353,8 @@ def _direct_import_candidates_for_seed(
         source: str | None = None
         tree: ast.AST | None = None
         if ingest_cache is not None and hasattr(ingest_cache, "get"):
-            ingested = ingest_cache.get(seed, root=str(base))
+            get_ast = getattr(ingest_cache, "get_with_ast", None) if suffix == ".py" else None
+            ingested = (get_ast if callable(get_ast) else ingest_cache.get)(seed, root=str(base))
             if ingested is not None:
                 source = getattr(ingested, "text", None)
                 tree = getattr(ingested, "ast_tree", None)

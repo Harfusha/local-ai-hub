@@ -166,12 +166,12 @@
         "Tokenless OpenCode workflow uses separate provider nonce credential, including cleanup and uncertainty handling.",
         "Focused tests and static checks pass; live model E2E remains independently gated on healthy scheduler readiness and installed model availability."
       ],
-      "blocker": "The prior provider-start response was hidden by opencode_launcher.py's generic LaunchError; retained traces have no start request. One independent pytest resume runner remains active in the shared checkout; no source edits or duplicate tests until it exits. Relevant affected suites: 97 passed; full suite pre-patch 15,449 passed, 129 skipped, 11 failed; all 11 nodes passed targeted after patches.",
+      "blocker": "The previous provider-start result remains unconfirmed. A separate full-suite pytest PID 51944 is running in the shared checkout, so live model E2E waits to avoid interference; the GPU availability observation is transient, not a reservation.",
       "clarifications": [],
       "depends_on": [],
       "description": "Complete OpenCode runtime validation and remove the Hub API bearer-token system across the single-owner installation, as approved by the operator. Enforce loopback-only access and preserve command, capability, root, approval, lease, rate-limit and audit controls; retain only the separate nonce-scoped OpenCode provider credential.",
       "kind": "code",
-      "next_action": "Wait for active pytest owner to exit. Inspect provider endpoint contract and launcher/tests; change launcher to preserve only sanitized start failure diagnostics, then run focused tests. Retry one fresh nonce-scoped OpenCode session only after diagnostic fix and healthy readiness; verify edit and confirmed shutdown.",
+      "next_action": "After the current full suite finishes, verify fresh GPU readiness and installed-model availability, then perform one authorized nonce-scoped OpenCode E2E in the disposable root, checking an edit and confirmed shutdown. Sanitized launcher diagnostics and regressions are implemented: launcher/provider suite 28 passed, updated launcher suite 11 passed, fake-backend integration suite 20 passed; UPDATE_PROMPT now agrees with INSTALL_PROMPT on tokenless Hub.",
       "title": "P2-1: Dokončit OpenCode E2E integraci",
       "work_phase": "verification",
       "work_status": "in_progress"

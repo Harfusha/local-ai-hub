@@ -95,6 +95,27 @@
     "command": "Public tool/HTTP removed by coordinated command owner; internal run/discover/simulate remain because orchestrator uses them."
   },
   "operations": {
+    "POST /api/diagnostics/export": {
+      "decision": "diagnostic",
+      "role": "operator_diagnostic",
+      "reason": "Installation-wide support archives include state databases, logs and potentially captured request and response detail across projects.",
+      "response_policy": "Require the operator-enabled dashboard diagnostics gate before execution; stream an encrypted archive with its password in a no-store response, or return bounded error metadata.",
+      "source_contract": {
+        "source": "src/local_ai_hub/http_route_registry.py",
+        "handler": "post_diagnostics_export_1",
+        "literal_response_fields": [
+          "error",
+          "error_code",
+          "retryable",
+          "success",
+          "terminal"
+        ],
+        "response_producers": [
+          "bool"
+        ],
+        "action_literals": []
+      }
+    },
     "GET /": {
       "decision": "retain",
       "role": "dashboard",

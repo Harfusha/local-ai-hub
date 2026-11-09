@@ -4,6 +4,7 @@ from __future__ import annotations
 from contextlib import redirect_stdout
 import json
 import math
+import os
 from pathlib import Path
 import queue
 import subprocess
@@ -19,9 +20,30 @@ _INPUT_LIMIT = 1024 * 1024
 _OUTPUT_LIMIT = 32 * 1024 * 1024
 
 
+def _windows_avx512_available():
+    try:
+        import ctypes
+        # Windows feature 41 includes operating-system support for AVX-512F.
+        return bool(ctypes.windll.kernel32.IsProcessorFeaturePresent(41))
+    except (AttributeError, OSError):
+        return True
+
+
+def _cuda_worker_environment(kwargs):
+    device = str(kwargs.get("device", "")).lower()
+    if (sys.platform != "win32" or not (device == "cuda" or device.startswith("cuda:"))
+            or "CUBLASLT_DISABLE_CPU_INSTRUCTIONS_MASK" in os.environ
+            or _windows_avx512_available()):
+        return None
+    # cuBLASLt may otherwise dispatch AVX-512 despite disabled Windows XState.
+    env = os.environ.copy()
+    env["CUBLASLT_DISABLE_CPU_INSTRUCTIONS_MASK"] = "1"
+    return env
+
+
 class _ModelProcess:
-    def __init__(self, argv):
-        self.process = popen_managed(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    def __init__(self, argv, *, env=None):
+        self.process = popen_managed(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
         self._responses = queue.Queue(maxsize=2)
         self._lock = threading.Lock()
         self._close_lock = threading.Lock()
@@ -173,7 +195,7 @@ class OwnedNLPModel:
             raise ValueError("unsupported owned model kind")
         source = str(Path(__file__).resolve().parent.parent)
         code = f"import sys;sys.path.insert(0,{source!r});from local_ai_hub.owned_model import worker_main;worker_main()"
-        self._transport = _ModelProcess([sys.executable, "-u", "-c", code])
+        self._transport = _ModelProcess([sys.executable, "-u", "-c", code], env=_cuda_worker_environment(kwargs))
         self._finalizer = weakref.finalize(self, self._transport.close)
         metadata = self._transport.request({"operation": "load", "kind": kind, "model_name": model_name,
             "kwargs": kwargs, "max_length": max_length, "allow_downloads": allow_downloads is True}, timeout=120)
@@ -233,7 +255,17 @@ def _load(spec):
                 seen.add(b_str)
                 hub_dir = base / f"models--{clean_name}" / "snapshots"
                 if hub_dir.is_dir():
+                    requested_revision = options.get("revision")
                     for snapshot in hub_dir.iterdir():
+                        if requested_revision is not None:
+                            # A local directory ignores the loader's revision
+                            # argument. Only a full immutable snapshot ID can
+                            # prove that this fallback honors the request.
+                            if (not isinstance(requested_revision, str)
+                                    or len(requested_revision) not in {40, 64}
+                                    or any(c not in "0123456789abcdefABCDEF" for c in requested_revision)
+                                    or snapshot.name.casefold() != requested_revision.casefold()):
+                                continue
                         if snapshot.is_dir() and (snapshot / "config.json").exists() and ((snapshot / "model.safetensors").exists() or (snapshot / "pytorch_model.bin").exists()):
                             return constructor(str(snapshot), **options)
             if spec.get("allow_downloads") is not True:
@@ -243,7 +275,7 @@ def _load(spec):
     try:
         model = construct(name, kwargs)
     except Exception:
-        if kind != "embedding" or name == "BAAI/bge-small-en-v1.5":
+        if kind != "embedding" or name == "BAAI/bge-small-en-v1.5" or kwargs.get("revision") is not None:
             raise
         name = "BAAI/bge-small-en-v1.5"
         kwargs["trust_remote_code"] = False

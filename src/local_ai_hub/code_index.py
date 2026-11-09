@@ -3514,6 +3514,8 @@ class CodeIndex:
                 "error": "symbol cannot be empty",
             }
         res = self.find_symbol(root, symbol_name, depth=0, include_body=True, include_info=True, relative_path=path, limit=5)
+        if res.get("success") is not True:
+            return res
         symbols = res.get("symbols", [])
         if not symbols:
             return {
@@ -3522,7 +3524,9 @@ class CodeIndex:
                 "terminal": True,
                 "retryable": False,
                 "error_code": "declaration_not_found",
-                "error": f"Declaration of '{symbol_name}' not found",
+                "error": f"Declaration of '{symbol_name}' not found in indexed symbols; repository coverage is not verified",
+                "coverage": {"complete": False, "scope": "indexed_symbols"},
+                "freshness": {"status": "not_checked"},
             }
         return {"success": True, "declaration": symbols[0]}
 

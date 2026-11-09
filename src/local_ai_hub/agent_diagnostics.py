@@ -108,6 +108,20 @@ def project_agent_response(value: Any, *, enabled: bool, _aggregate: bool = Fals
     return projected
 
 
+def project_wait_event_response(value: Any, *, enabled: bool) -> Any:
+    """Preserve the caller's event payload independently of diagnostic keys."""
+    projected = project_agent_response(value, enabled=enabled)
+    if isinstance(value, dict) and isinstance(projected, dict) and value.get("success") is True:
+        if "message" in value:
+            projected["message"] = copy.deepcopy(value["message"])
+        event, shown = value.get("event"), projected.get("event")
+        if isinstance(event, dict) and isinstance(shown, dict):
+            for field in ("payload", "message"):
+                if field in event:
+                    shown[field] = copy.deepcopy(event[field])
+    return projected
+
+
 def project_pubsub_poll_response(value: Any, *, enabled: bool) -> Any:
     """Keep caller-authored message payloads while filtering envelope diagnostics."""
     projected = project_agent_response(value, enabled=enabled)

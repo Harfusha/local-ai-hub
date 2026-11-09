@@ -413,7 +413,7 @@ def test_dashboard_type_inference_and_dispatcher() -> None:
     assert "else if(type==='memory')renderMemoryModal(obj);" in DASHBOARD_HTML
     assert "else if(type==='incident')renderIncidentModal(obj);" in DASHBOARD_HTML
     assert "else if(type==='doctor')renderDoctorModal(obj);" in DASHBOARD_HTML
-    assert "else if(type==='project')renderProjectModal(obj);" in DASHBOARD_HTML
+    assert "else if(type==='project'){\n    renderProjectModal(obj);\n    loadProjectDetails(obj,inspectorGeneration);\n  }" in DASHBOARD_HTML
     assert "else if(type==='code_intel')renderCodeIntelModal(obj,defaultTitle);" in DASHBOARD_HTML
 
 

@@ -9062,6 +9062,8 @@ class CommandBroker:
         incompatible_detected_tests: list[str] = []
         affected_test_selection_widened = False
         selection_error = ""
+        requires_multiple_runners = False
+        invalid_affected_selection = False
         if test_cmd.lower() == "auto":
             all_modified = list(patch_paths)
             det = None
@@ -9083,6 +9085,14 @@ class CommandBroker:
                     selection_error = "automatic affected-test selection failed"
 
             if isinstance(aff, dict):
+                excluded = aff.get("excluded_incompatible_tests", [])
+                if not isinstance(excluded, list) or any(not isinstance(path, str) for path in excluded):
+                    selection_error = "automatic test selection returned invalid incompatible test paths"
+                    invalid_affected_selection = True
+                    affected_test_selection_widened = True
+                else:
+                    incompatible_detected_tests = list(dict.fromkeys(excluded))
+                requires_multiple_runners = aff.get("requires_multiple_runners") is True
                 try:
                     confidence = float(aff.get("confidence", 0.0))
                 except (TypeError, ValueError):
@@ -9092,6 +9102,9 @@ class CommandBroker:
                     isinstance(aff, dict)
                     and aff.get("success")
                     and aff.get("selection_complete") is True
+                    and not incompatible_detected_tests
+                    and not requires_multiple_runners
+                    and not selection_error
                     and confidence >= 0.95
                     and auto_detected_tests
                 ):
@@ -9123,16 +9136,21 @@ class CommandBroker:
                         if isinstance(item, dict) and item.get("path")
                     ]
                     from .test_selection import compatible_tests
-                    auto_detected_tests, incompatible_detected_tests = compatible_tests(
+                    auto_detected_tests, matrix_incompatible_tests = compatible_tests(
                         auto_detected_tests, str(matrix.get("framework", "unknown")),
                     )
+                    incompatible_detected_tests = list(dict.fromkeys(
+                        [*incompatible_detected_tests, *matrix_incompatible_tests]
+                    ))
                     test_cmd = str(matrix.get("run_all_command") or "").strip()
-                    if test_cmd:
+                    if test_cmd and not invalid_affected_selection:
                         selection_error = ""
                 except Exception:
                     test_cmd = ""
                     selection_error = selection_error or "automatic test selection and full-suite runner detection failed"
 
+            if incompatible_detected_tests or requires_multiple_runners:
+                selection_error = "automatic verification requires multiple test runners; provide an explicit validation command"
             if affected_test_selection_widened and not test_cmd:
                 selection_error = selection_error or "automatic test selection was uncertain and no full-suite runner was detected"
             if selection_error:

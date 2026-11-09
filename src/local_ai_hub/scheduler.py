@@ -1484,11 +1484,14 @@ class AffinityScheduler:
                 self._cond.notify_all()
         return released
 
-    def release_background_gpu(self) -> None:
+    def release_background_gpu(self) -> bool:
         with self._cond:
             self._background_gpu_lease = False
-            self._release_internal_gpu()
+            released = self._release_internal_gpu()
+            if not released:
+                self._mark_internal_gpu_uncertain_locked()
             self._cond.notify_all()
+            return released
 
     def foreground_pending(self) -> bool:
         with self._cond:
@@ -2213,10 +2216,15 @@ class AffinityScheduler:
         if store is None:
             return {"success": False, "error": "GPU reservation store unavailable"}
         if action == "status":
-            store.reap_expired()
-            record = store.read()
+            with self._cond:
+                store.reap_expired()
+                record, present = store.status_snapshot()
+                digest = self._internal_gpu_digest
+                if (record is None and present and digest and not self._internal_gpu_uncertain
+                        and store.owns_internal_fence(digest)):
+                    return {"success": True, "reservation_present": True,
+                            "state": "internal", "manual_intervention_required": False}
             if record is None:
-                present = store.path.exists() or store.path.is_symlink()
                 return {
                     "success": True, "reservation_present": present,
                     "state": "unknown" if present else "free",

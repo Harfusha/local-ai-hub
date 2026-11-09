@@ -670,6 +670,8 @@ def format_doctor_report(rep: dict[str, Any]) -> str:
         lines.append(f"Warnings ({len(warnings_list)}):")
         for w in warnings_list:
             lines.append(f"  [!] {w}")
+    elif any("[ERR]" in line for line in lines):
+        lines.append("Warnings: None; checks have errors listed above")
     else:
         lines.append("Warnings: None (all checks passed)")
     lines.append("=" * 60)

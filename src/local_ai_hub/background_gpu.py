@@ -53,6 +53,8 @@ class IdleGPUWorker:
         self.endpoint = str(self.cfg.get("ollama_url", "http://127.0.0.1:11436")).rstrip("/")
         self._lock = threading.RLock()
         self._setup_lock = threading.RLock()
+        self._idle_release_timer: threading.Timer | None = None
+        self._idle_release_seconds = 30.0
         self._cpu_slot = threading.Lock()
         self._cancel = threading.Event()
         self._closed = False
@@ -386,6 +388,34 @@ class IdleGPUWorker:
                 self._cpu_retry_after = 0.0
             return True
 
+    def _cancel_idle_release_locked(self) -> None:
+        timer = self._idle_release_timer
+        self._idle_release_timer = None
+        if timer is not None:
+            timer.cancel()
+
+    def _schedule_idle_release(self) -> None:
+        with self._setup_lock:
+            with self._lock:
+                if self._closed or not self._lease or self._active:
+                    return
+            self._cancel_idle_release_locked()
+
+            def release_if_idle() -> None:
+                with self._setup_lock:
+                    if self._idle_release_timer is not timer:
+                        return
+                    self._idle_release_timer = None
+                    with self._lock:
+                        if self._closed or not self._lease or self._active:
+                            return
+                    self._stop_and_release_gpu()
+
+            timer = threading.Timer(self._idle_release_seconds, release_if_idle)
+            timer.daemon = True
+            self._idle_release_timer = timer
+            timer.start()
+
     def _stop_and_release_gpu(self) -> bool:
         try:
             stopped = self.runtime.stop_managed_server() is True
@@ -398,7 +428,10 @@ class IdleGPUWorker:
                 return False
             self._lease = False
             self._model_details = []
-        self.scheduler.release_background_gpu()
+        if self.scheduler.release_background_gpu() is False:
+            with self._lock:
+                self._last_error = "background GPU reservation release unconfirmed"
+            return False
         return True
 
     def preempt_foreground(self) -> bool:
@@ -407,6 +440,7 @@ class IdleGPUWorker:
         # started. Do not leave a stale cancellation flag behind: that would keep
         # the worker disabled forever after the foreground request completes.
         with self._setup_lock:
+            self._cancel_idle_release_locked()
             with self._lock:
                 leased = self._lease
                 active = self._active
@@ -566,6 +600,7 @@ class IdleGPUWorker:
                     self.preempt_foreground()
                     all_results.extend([{"success": False, "preempted": True, "error": "foreground work pending"} for _ in work])
                     continue
+                self._cancel_idle_release_locked()
                 with self._lock:
                     self._active += len(work)
                     self._stats["batches"] += 1
@@ -601,6 +636,7 @@ class IdleGPUWorker:
                     self._active = max(0, self._active - len(work))
                 if cpu_slot_acquired:
                     self._cpu_slot.release()
+                self._schedule_idle_release()
             if using_gpu and self._foreground_requested():
                 self.preempt_foreground()
             all_results.extend([r or {"success": False, "error": "background worker returned no result"} for r in results])
@@ -653,6 +689,7 @@ class IdleGPUWorker:
         self._closed = True
         self._cancel.set()
         with self._setup_lock:
+            self._cancel_idle_release_locked()
             self._stop_and_release_gpu()
         try:
             self.cpu_runtime.stop_managed_server()

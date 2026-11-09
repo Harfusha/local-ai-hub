@@ -8,6 +8,7 @@ existing semantic projection and keeps exact detail behind artifact/evidence IDs
 """
 
 from hashlib import sha256
+import copy
 import math
 import re
 import time
@@ -432,6 +433,7 @@ def _with_budget_meta(
     token_metadata: Mapping[str, Any] | None = None,
     evidence_store: Any = None,
     profile: str = "compact",
+    truncated: bool = True,
 ) -> dict[str, Any]:
     if profile == "dense":
         value.pop("token_efficiency", None)
@@ -443,11 +445,13 @@ def _with_budget_meta(
         _fit_to_tokens(value, requested, protected_keys=protected_keys)
         value["response_budget"]["returned_tokens"] = json_tokens(value)
         return value
+    original_payload = copy.deepcopy({key: item for key, item in value.items()
+                                      if key not in {"response_budget", "token_efficiency"}}) if not truncated else None
     value["response_budget"] = {
         "requested_tokens": requested,
         "original_tokens": original,
         "returned_tokens": 0,
-        "truncated": True,
+        "truncated": truncated,
         "reused": reused,
         "unit": "estimated_tokens",
     }
@@ -486,6 +490,10 @@ def _with_budget_meta(
         # context identity fields when an unusually small ceiling is requested.
     _fit_to_tokens(value, requested, protected_keys=effective_protected)
     for _ in range(8):
+        if original_payload is not None and original_payload != {
+            key: item for key, item in value.items() if key not in {"response_budget", "token_efficiency"}
+        }:
+            value["response_budget"]["truncated"] = True
         returned = json_tokens(value)
         value["response_budget"]["returned_tokens"] = returned
         accounting = value.get("token_efficiency")
@@ -1054,6 +1062,8 @@ def budget_response(
             token_metadata=token_metadata,
             evidence_store=evidence_store,
             profile=profile,
+            truncated=(isinstance(value.get("response_budget"), dict)
+                       and value["response_budget"].get("truncated") is True),
         )
         return result if json_tokens(result) <= requested else _bounded_result(
             result, requested=requested, original=original, source=value, protected_keys=protected

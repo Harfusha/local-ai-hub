@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 from local_ai_hub.scheduler import AffinityScheduler
+from local_ai_hub.ollama import OllamaRuntime
 
 
 def _set_embedding_reservation_store(model, reservation_path):
@@ -17,6 +18,59 @@ def _set_embedding_reservation_store(model, reservation_path):
 
     model._gpu_reservation_path = reservation_path
     model._gpu_reservation_store = ExternalGpuReservationStore(reservation_path)
+
+
+def test_status_identifies_owned_internal_gpu_fence(tmp_path):
+    scheduler = AffinityScheduler(
+        SimpleNamespace(loaded_model_details=lambda: []),
+        {"server": {"state_dir": str(tmp_path)}},
+    )
+    try:
+        assert scheduler._claim_internal_gpu()
+        status = scheduler.gpu_reservation_operation(action="status")
+        assert status["state"] == "internal"
+        assert status["reservation_present"] is True
+        assert status["manual_intervention_required"] is False
+        scheduler._internal_gpu_uncertain = True
+        assert scheduler.gpu_reservation_operation(action="status")["state"] == "unknown"
+    finally:
+        scheduler._internal_gpu_uncertain = False
+        with scheduler._cond:
+            scheduler._release_internal_gpu()
+        scheduler.close()
+
+
+def test_background_release_failure_marks_gpu_outcome_unknown(tmp_path, monkeypatch):
+    scheduler = AffinityScheduler(
+        SimpleNamespace(loaded_model_details=lambda: []),
+        {"server": {"state_dir": str(tmp_path)}},
+    )
+    try:
+        scheduler._background_gpu_lease = True
+        monkeypatch.setattr(scheduler, "_release_internal_gpu", lambda: False)
+        assert scheduler.release_background_gpu() is False
+        assert scheduler._internal_gpu_uncertain is True
+    finally:
+        scheduler.close()
+
+
+def test_status_does_not_trust_owned_fence_with_corrupt_metadata(tmp_path):
+    scheduler = AffinityScheduler(
+        SimpleNamespace(loaded_model_details=lambda: []),
+        {"server": {"state_dir": str(tmp_path)}},
+    )
+    try:
+        assert scheduler._claim_internal_gpu()
+        metadata = tmp_path / "external-gpu-reservation.lease.json"
+        metadata.write_text("bad", encoding="utf-8")
+        status = scheduler.gpu_reservation_operation(action="status")
+        assert status["state"] == "unknown"
+        assert status["manual_intervention_required"] is True
+    finally:
+        metadata.unlink(missing_ok=True)
+        with scheduler._cond:
+            scheduler._release_internal_gpu()
+        scheduler.close()
 
 
 def test_owned_external_reservation_expires_in_memory_after_files_disappear(tmp_path, monkeypatch):
@@ -99,6 +153,9 @@ def test_cuda_embedding_encode_excludes_external_session_and_retains_unknown(tmp
     model._execution_local = SimpleNamespace()
     model.backend = "sentence-transformers"
     model.device = "cuda:0"
+    model.active_backend = None
+    model.active_device = None
+    model._fallback_reason = ""
     model._model = None
     model._encode_request_key = lambda *_args: "key"
     called = []
@@ -136,6 +193,9 @@ def test_cuda_auto_embedding_reuses_fence_and_retains_uncertain_ollama(tmp_path,
     model.ollama_url = "http://127.0.0.1:11434"
     model.backend = "auto"
     model.device = "cuda:0"
+    model.active_backend = None
+    model.active_device = None
+    model._fallback_reason = ""
     model._model = None
     model._encode_request_key = lambda *_args: "key"
     model.flight_group = SimpleNamespace(do=lambda _key, fn: (fn(), False))
@@ -478,6 +538,32 @@ def test_preparation_exception_proven_not_started_does_not_quarantine_gpu(tmp_pa
     finally:
         scheduler.close()
         other.close()
+
+
+def test_model_not_found_response_does_not_quarantine_gpu(tmp_path, monkeypatch):
+    config = {
+        "server": {"state_dir": str(tmp_path), "ollama_url": "http://127.0.0.1:11434"},
+        "ollama": {"enabled": True, "request_attempts": 1},
+        "llama_cpp": {"mode": "off", "models": {}},
+    }
+    runtime = OllamaRuntime(config)
+    monkeypatch.setattr(runtime.llama_cpp, "ensure_model", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(runtime, "ensure_running", lambda: True)
+    monkeypatch.setattr(runtime, "loaded_model_details", lambda **_kwargs: [])
+    monkeypatch.setattr(runtime, "_is_embedding_model", lambda _model: True)
+    monkeypatch.setattr(
+        runtime,
+        "request",
+        lambda *_args, **_kwargs: {"error": 'HTTP 404: {"error":"model not found"}'},
+    )
+    scheduler = AffinityScheduler(runtime, config)
+    try:
+        assert scheduler._perform_switch("BAAI/bge-small-en-v1.5") is False
+        with scheduler._cond:
+            assert not scheduler._internal_gpu_uncertain
+            assert scheduler._release_internal_gpu()
+    finally:
+        scheduler.close()
 
 
 def test_offline_prewarm_starts_backend_under_scheduler_gpu_lease(tmp_path):

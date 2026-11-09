@@ -111,6 +111,7 @@ POST_ROUTE_REGISTRY: tuple[RouteRule, ...] = (
     RouteRule('post_cross_project_impact_1', frozenset(('/api/cross_project_impact',))),
     RouteRule('post_repo_call_graph_diff_1', frozenset(('/api/repo/call_graph_diff',))),
     RouteRule('post_bundle_export_1', frozenset(('/api/bundle/export',))),
+    RouteRule('post_diagnostics_export_1', frozenset(('/api/diagnostics/export',))),
     RouteRule('post_benchmark_1', frozenset(('/api/benchmark',))),
     RouteRule('post_evaluation_1', frozenset(('/api/evaluation',))),
     RouteRule('post_repo_profile_1', frozenset(('/api/repo/profile',))),

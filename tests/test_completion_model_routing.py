@@ -3,6 +3,7 @@ from __future__ import annotations
 import unittest
 
 from local_ai_hub.services import LocalAIServices
+from local_ai_hub.trace_context import scoped_observer
 
 
 class CaptureScheduler:
@@ -27,6 +28,18 @@ class CaptureRuntime:
         return self.result
 
 
+class CaptureObserver:
+    def __init__(self):
+        self.model_payload = None
+        self.output = []
+
+    def model_request(self, payload):
+        self.model_payload = payload
+
+    def output_delta(self, text):
+        self.output.append(text)
+
+
 class CompletionModelRoutingTests(unittest.TestCase):
     def test_code_completion_uses_fast_model_not_preprocessing_model(self):
         services = object.__new__(LocalAIServices)
@@ -42,6 +55,21 @@ class CompletionModelRoutingTests(unittest.TestCase):
 
         self.assertEqual(result["model"], "qwen2.5-coder:3b")
         self.assertEqual(services.runtime.model, "qwen2.5-coder:3b")
+
+    def test_code_completion_records_model_request_and_output_in_trace(self):
+        services = object.__new__(LocalAIServices)
+        services.config = {"models": {"fast_code": "qwen2.5-coder:7b"}}
+        services.scheduler = CaptureScheduler()
+        services.runtime = CaptureRuntime({"response": "return 42"})
+        services.generation_cache = ImmediateCache()
+        observer = CaptureObserver()
+
+        with scoped_observer(observer):
+            result = services.complete_code({"prefix": "def answer():"})
+
+        self.assertTrue(result["success"])
+        self.assertEqual(observer.model_payload["model"], "qwen2.5-coder:7b")
+        self.assertEqual("".join(observer.output), "return 42")
 
     def test_code_completion_falls_back_to_fast_default(self):
         services = object.__new__(LocalAIServices)

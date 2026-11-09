@@ -66,11 +66,11 @@ reasoning = "qwen3.5:9b"
 general = "qwen2.5-coder:7b"
 vision = "qwen3-vl:4b"
 embedding = "BAAI/bge-small-en-v1.5"
-embedding_backend = "sentence-transformers"
-embedding_device = "cpu"
+embedding_backend = "auto"
+embedding_device = "auto"
 reranker = "BAAI/bge-reranker-v2-m3"
-reranker_backend = "torch"
-reranker_device = "cpu"
+reranker_backend = "auto"
+reranker_device = "auto"
 
 [vision]
 # Local Qwen3-VL is authoritative. Cloud fallback is opt-in and fails closed
@@ -193,15 +193,15 @@ resident_fast_margin = 0
 reasoning_resident_fallback = false
 
 [background_gpu]
-# Separate opportunistic Ollama server for semantic preprocessing. This is
-# intentionally not the foreground scheduler's server because NUM_PARALLEL is
-# process-global in Ollama. The foreground runner is unloaded before lease.
-enabled = true
+# Separate Ollama server for semantic preprocessing. GPU use is opt-in so
+# background batches do not repeatedly acquire the installation GPU lease.
+# The foreground model keeps its hardware-profile routing.
+enabled = false
 process_priority = "idle"
 ollama_url = "http://127.0.0.1:11438"
 # Optional serial CPU lane used while the GPU worker is not eligible. It is a
 # separate Ollama process, so it cannot alter the foreground GPU profile.
-cpu_fallback_enabled = false
+cpu_fallback_enabled = true
 cpu_ollama_url = "http://127.0.0.1:11439"
 cpu_context_tokens = 32768
 idle_seconds = 60.0
@@ -812,8 +812,8 @@ poll_seconds = 0.75
 watcher_refresh_seconds = 3.0
 auto_recheck_seconds = 1800
 # Background work is globally pausable; only this many projects preprocess simultaneously.
-max_preprocessing_projects = 3
-cpu_workers = 4
+max_preprocessing_projects = 6
+cpu_workers = 8
 cpu_worker_sleep_seconds = 0.20
 touch_debounce_seconds = 15
 sqlite_busy_timeout_seconds = 0.5
@@ -876,9 +876,9 @@ hot_queries = [
 
 [preprocessing.exclusive]
 # Profile overlays supply these limits; explicit config.toml values take precedence.
-max_projects = 3
-cpu_workers = 8
-model_parallel = 4
+max_projects = 6
+cpu_workers = 16
+model_parallel = 8
 # Enrich unparsed-file stubs while retaining the old card until replacement succeeds.
 enrich_stub_cards = true
 
@@ -1035,3 +1035,8 @@ coalesce_snippets = true
 prune_stacktraces = true
 trim_diff_context = true
 flat_symbols = true
+
+[diagnostics_export]
+# Large, installation-wide support ZIP limits. Increase only when free disk space permits.
+max_archive_bytes = 8589934592
+max_source_bytes = 68719476736

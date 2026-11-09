@@ -1,0 +1,10 @@
+{
+  "default_target_ref": "refs/heads/master",
+  "description": "Approved implementation: route embeddings and reranker through available compatible providers in order NPU > dedicated GPU > integrated GPU > CPU. Reuse shared vendor probes and OpenVINO/CUDA/ROCm/ONNX provider candidates; preserve explicit operator choices, route-specific cache identities, CPU fallback, and opt-in provider installs. Keep existing dirty work intact. Detailed implementation checklist remains docs/superpowers/plans/2026-11-09-cross-vendor-embedding-acceleration.md.",
+  "id": "plan_ad8164af4995",
+  "lifecycle": "active",
+  "schema_version": 1,
+  "spec_refs": [],
+  "tasks": {},
+  "title": "Cross-vendor retrieval acceleration"
+}

@@ -27,6 +27,7 @@ DIAGNOSTIC_HTTP_ROUTES = frozenset({
     ("GET", "/api/hardware/gpu"), ("GET", "/api/hardware/system"),
     ("GET", "/api/db/query"), ("POST", "/api/db/query"),
     ("GET", "/api/audit/tail"), ("GET", "/api/logs/tail"),
+    ("POST", "/api/diagnostics/export"),
     ("GET", "/api/benchmark/summary"),
     ("GET", "/api/telemetry/timeline"), ("POST", "/api/telemetry/timeline"),
     ("POST", "/api/benchmark"), ("POST", "/api/benchmark/run"),

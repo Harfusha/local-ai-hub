@@ -300,6 +300,40 @@ def test_doctor_text_report_states_presence_without_claiming_fallbacks():
     assert any(line.startswith("  [ERR] serena") and "missing" in line for line in lines)
     assert not any("codegraph" in line.lower() for line in lines)
 
+
+def test_doctor_does_not_claim_all_checks_passed_when_serena_is_degraded():
+    doctor_path = ROOT / "tools" / "doctor.py"
+    tree = ast.parse(doctor_path.read_text(encoding="utf-8"), filename=str(doctor_path))
+    formatter = next(
+        node for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == "format_doctor_report"
+    )
+    helper = next(
+        node for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == "_optional_component_lines"
+    )
+    namespace = {"Any": Any, "Path": Path, "__version__": "test",
+                 "optional_component_lines": optional_component_lines, "sys": sys}
+    exec(compile(ast.Module(body=[helper, formatter], type_ignores=[]), str(doctor_path), "exec"), namespace)
+    output = namespace["format_doctor_report"]({
+        "runtime": {
+            "code_intelligence": {"serena": {
+                "enabled": True, "state": "degraded", "failure_active": True,
+                "last_failure": "MCP soft timeout: tools/call",
+            }},
+            "optional_components": {"serena": {
+                "enabled": True, "state": "degraded", "failure_active": True,
+                "last_failure": "MCP soft timeout: tools/call",
+            }},
+        },
+        "config": {},
+        "warnings": [],
+    })
+
+    assert "[ERR] serena" in output
+    assert "Warnings: None (all checks passed)" not in output
+    assert "Warnings: None; checks have errors listed above" in output
+
     offline_output = namespace["format_doctor_report"]({
         "runtime": {
             "hub_online": False,

@@ -1465,7 +1465,7 @@ class SwarmPubSub:
                 if filter_payload and isinstance(filter_payload, dict):
                     msg = event.get("payload", {})
                     if isinstance(msg, dict):
-                        match = all(msg.get(k) == v for k, v in filter_payload.items())
+                        match = all(k in msg and msg[k] == v for k, v in filter_payload.items())
                         if not match:
                             continue
                     else:

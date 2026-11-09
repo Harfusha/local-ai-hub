@@ -15,7 +15,7 @@ from typing import Any
 
 from .cache import SQLiteCache, SingleFlightGroup, TieredCache, stable_hash
 from .priority_gate import CooperativePriorityGate
-from .accelerators import openvino_cache_dir, openvino_device_candidates
+from .accelerators import automatic_embedding_candidates, openvino_cache_dir, openvino_device_candidates
 from .state_paths import configured_state_dir
 from .json_utils import dumps as json_dumps
 from .model_lifecycle import acquire_locks, load_model, release_model, uses_torch_cuda
@@ -31,6 +31,16 @@ def _safe_int(val: Any, default: int, min_val: int = 0) -> int:
         return max(min_val, i)
     except (ValueError, TypeError, OverflowError):
         return default
+
+
+def _uses_gpu_route(backend: Any, device: Any) -> bool:
+    backend_name = str(backend or "").lower()
+    device_name = str(device or "").upper()
+    return (
+        uses_torch_cuda(backend_name, device)
+        or (backend_name == "openvino" and device_name.startswith("GPU"))
+        or backend_name == "onnx-directml"
+    )
 
 
 class EmbeddingModel:
@@ -63,6 +73,7 @@ class EmbeddingModel:
         self._cpu_gate = CooperativePriorityGate(_safe_int(cpu_cfg.get("foreground_priority"), 3))
         self._load_error: str | None = None
         self._load_error_time: float = 0.0
+        self._fallback_reason: str | None = None
         self.flight_group = SingleFlightGroup(shards=16, default_timeout_seconds=90.0)
         state_dir = configured_state_dir(cfg)
         raw_state_dir = server_cfg.get("state_dir")
@@ -96,6 +107,7 @@ class EmbeddingModel:
         self._dimensions_by_identity: dict[str, int] = {}
         self._model_provenance_lock = threading.Lock()
         self._model_provenance_by_identity: dict[str, dict[str, str | None]] = {}
+        self._model_instance_epochs: dict[str, str] = {}
         self._loaded_model_revision: str | None = None
         self._loaded_model_digest: str | None = None
         self._encoder_lock_state = threading.RLock()
@@ -176,6 +188,7 @@ class EmbeddingModel:
         }
         with self._model_provenance_lock:
             self._model_provenance_by_identity[identity] = resolved
+            self._model_instance_epochs[identity] = os.urandom(16).hex()
         if identity == getattr(self, "_active_cache_identity", None) or identity.startswith(
             f"{self.active_backend or ''}:{self.active_device or ''}:"
         ):
@@ -200,6 +213,32 @@ class EmbeddingModel:
     def _identity_cacheable(self, identity: str | None) -> bool:
         return bool(identity)
 
+    def _embedding_cache_provenance(self, identity: str) -> tuple[dict[str, Any], str | None]:
+        with self._model_provenance_lock:
+            known = self._model_provenance_by_identity.get(identity)
+            if isinstance(known, dict):
+                provenance = dict(known)
+            else:
+                models = self.config.get("models", {})
+                provenance = {"revision": models.get("embedding_revision") or models.get("model_revision"),
+                              "digest": models.get("embedding_digest") or models.get("model_digest")}
+            for key in ("revision", "digest"):
+                value = known.get(key) if isinstance(known, dict) else None
+                if isinstance(value, str):
+                    normalized = value.removeprefix("sha256:").lower()
+                    lengths = {40, 64} if key == "revision" else {64}
+                    if len(normalized) in lengths and all(c in "0123456789abcdef" for c in normalized):
+                        return provenance, None
+            if identity not in self._model_instance_epochs:
+                self._model_instance_epochs[identity] = os.urandom(16).hex()
+            return provenance, self._model_instance_epochs[identity]
+
+    def _embedding_load_generation(self, identity: str) -> str:
+        with self._model_provenance_lock:
+            if identity not in self._model_instance_epochs:
+                self._model_instance_epochs[identity] = os.urandom(16).hex()
+            return self._model_instance_epochs[identity]
+
     def _configured_embedding_dimension(self) -> int | None:
         models = self.config.get("models", {})
         cpu_cfg = self.config.get("cpu_retrieval", {})
@@ -209,17 +248,20 @@ class EmbeddingModel:
         return None
 
     def _dimension_identity_key(self, identity: str) -> str:
-        provenance = self._model_provenance(identity)
+        provenance, instance_epoch = self._embedding_cache_provenance(identity)
         provider, _, remainder = identity.partition(":")
         model_name = remainder.partition(":")[2] if provider in {"sentence-transformers", "openvino"} else remainder
-        return stable_hash({
+        parts = {
             "identity": identity,
             "model": model_name,
             "digest": provenance.get("digest"),
             "revision": provenance.get("revision"),
             "normalized": self._embedding_normalized(identity),
             "configured_dimension": self._configured_embedding_dimension(),
-        })
+        }
+        if instance_epoch is not None:
+            parts["instance_epoch"] = instance_epoch
+        return stable_hash(parts)
 
     def _dimension_for_identity(self, identity: str) -> int | None:
         identity_key = self._dimension_identity_key(identity)
@@ -302,29 +344,40 @@ class EmbeddingModel:
     ) -> str:
         provider, _, remainder = identity.partition(":")
         model_name = remainder.partition(":")[2] if provider in {"sentence-transformers", "openvino"} else remainder
-        provenance = self._model_provenance(identity)
+        provenance, instance_epoch = self._embedding_cache_provenance(identity)
+        space = {
+            "identity": identity,
+            "provider": identity.split(":", 1)[0],
+            "model": model_name,
+            "digest": provenance.get("digest"),
+            "revision": provenance.get("revision"),
+            "dimension": dimension if dimension is not None else self._dimension_for_identity(identity),
+            "normalized": self._embedding_normalized(identity),
+        }
+        if instance_epoch is not None:
+            space["instance_epoch"] = instance_epoch
         return stable_hash({
-            "space": stable_hash({
-                "identity": identity,
-                "provider": identity.split(":", 1)[0],
-                "model": model_name,
-                "digest": provenance.get("digest"),
-                "revision": provenance.get("revision"),
-                "dimension": dimension if dimension is not None else self._dimension_for_identity(identity),
-                "normalized": self._embedding_normalized(identity),
-            }),
+            "space": stable_hash(space),
             "query": query,
             "text": text,
         })
 
     def embedding_space_id(self, identity: str | None = None, *, dimension: int | None = None) -> str:
-        selected = identity or self._active_cache_identity or f"configured:{self.backend}:{self.device}:{self.model_name}"
-        if dimension is not None:
-            try:
-                return self._embedding_cache_key(selected, False, "", dimension=dimension)
-            except TypeError:
-                pass
-        return self._embedding_cache_key(selected, False, "")
+        for _ in range(2):
+            active_before = self._active_cache_identity
+            selected = identity or active_before or f"configured:{self.backend}:{self.device}:{self.model_name}"
+            generation = self._embedding_load_generation(selected)
+            if dimension is not None:
+                try:
+                    result = self._embedding_cache_key(selected, False, "", dimension=dimension)
+                except TypeError:
+                    result = self._embedding_cache_key(selected, False, "")
+            else:
+                result = self._embedding_cache_key(selected, False, "")
+            if (generation == self._embedding_load_generation(selected)
+                    and (identity is not None or active_before == self._active_cache_identity)):
+                return result
+        raise RuntimeError("embedding identity changed while resolving its space")
 
     def _encode_request_key(self, texts: list[str], query: bool) -> str:
         identity = self._active_cache_identity or f"configured:{self.backend}:{self.device}:{self.model_name}"
@@ -341,6 +394,25 @@ class EmbeddingModel:
     def _candidate_specs(self, *, ollama_fallback: bool = False) -> list[tuple[str, str]]:
         if ollama_fallback:
             return [("sentence-transformers", "cpu")]
+        if self.backend == "auto":
+            requested = str(self.device).strip()
+            if requested.lower() != "auto":
+                if requested.lower() == "cpu":
+                    return [("sentence-transformers", "cpu")]
+                if requested.upper().startswith(("NPU", "GPU")):
+                    selected = [("openvino", item) for item in openvino_device_candidates(self.config, requested)]
+                    if requested.upper().startswith("NPU") and not selected:
+                        selected = [candidate for candidate in automatic_embedding_candidates(self.config)
+                                    if candidate[0] == "onnx-vitisai"]
+                    return selected
+                if requested.lower() in {"directml", "dml", "dmlexecutionprovider"}:
+                    return [("onnx-directml", "DmlExecutionProvider")]
+                if requested.lower() in {"vitisai", "vitisai-executionprovider"}:
+                    return [("onnx-vitisai", "VitisAIExecutionProvider")]
+                return [("sentence-transformers", requested)]
+            candidates = automatic_embedding_candidates(self.config)
+            candidates.append(("sentence-transformers", "cpu"))
+            return candidates
         if self.backend == "openvino":
             candidates = [("openvino", device) for device in openvino_device_candidates(self.config, self.device)]
             openvino_cfg = self.config.get("openvino") if isinstance(self.config, dict) else None
@@ -399,6 +471,13 @@ class EmbeddingModel:
                 if cache_dir is not None:
                     ov_model_kwargs["ov_config"] = {"CACHE_DIR": str(cache_dir)}
                 kwargs["model_kwargs"] = ov_model_kwargs
+            elif backend.startswith("onnx-"):
+                # ONNX Runtime providers are optional and discovered before this
+                # candidate is attempted. SentenceTransformers owns ONNX export;
+                # local_files_only below prevents fetching uncached model weights.
+                kwargs["device"] = "cpu"
+                kwargs["backend"] = "onnx"
+                kwargs["model_kwargs"] = {"provider": str(device)}
             def _load_st(name: str, kw: dict[str, Any]) -> Any:
                 from sentence_transformers import SentenceTransformer
                 try:
@@ -420,7 +499,7 @@ class EmbeddingModel:
                 try:
                     model = _load_st(self.model_name, kwargs)
                 except Exception:
-                    if self.model_name == "BAAI/bge-small-en-v1.5":
+                    if self.model_name == "BAAI/bge-small-en-v1.5" or configured_revision:
                         raise
                     fallback_kwargs = dict(kwargs)
                     fallback_kwargs["trust_remote_code"] = False
@@ -453,6 +532,7 @@ class EmbeddingModel:
             self.active_device = str(device)
             identity = f"{backend}:{device}:{loaded_model_name}"
             self._record_model_provenance(identity, model=model)
+            self._fallback_reason = self._load_error if index > 0 else None
             self._load_error = None
             return True
         except Exception as exc:
@@ -548,6 +628,7 @@ class EmbeddingModel:
                 "model": model_name,
                 "revision": provenance.get("revision"),
                 "digest": provenance.get("digest"),
+                "load_generation": self._embedding_load_generation(identity),
             }
             if (
                 self.active_backend == "openvino"
@@ -753,18 +834,54 @@ class EmbeddingModel:
         self._execution_local.ollama_gpu_fenced = False
         backend = getattr(self, "backend", "")
         device = getattr(self, "device", None)
-        cuda_candidate = (backend in {"auto", "sentence-transformers"} and uses_torch_cuda("sentence-transformers", device))
+        cuda_candidate = (
+            (backend in {"auto", "sentence-transformers"} and uses_torch_cuda("sentence-transformers", device))
+            or (backend == "auto" and any(
+                candidate_backend == "sentence-transformers" and uses_torch_cuda(candidate_backend, candidate_device)
+                for candidate_backend, candidate_device in self._candidate_specs()
+            ))
+        )
         cuda_loaded = uses_torch_cuda(getattr(self, "active_backend", None), getattr(self, "active_device", None))
-        cache_identity = self._active_cache_identity
-        if (texts and (cuda_candidate or cuda_loaded) and self.cache_enabled
+        active_gpu_route = _uses_gpu_route(getattr(self, "active_backend", None), getattr(self, "active_device", None))
+        planned_gpu_route = False
+        if texts:
+            try:
+                planned_candidates = self._candidate_specs()
+                planned_index = self._st_candidate_index if self._st_candidates == planned_candidates else 0
+                if 0 <= planned_index < len(planned_candidates):
+                    planned_gpu_route = _uses_gpu_route(*planned_candidates[planned_index])
+            except Exception:
+                planned_gpu_route = False
+        cache_identity = getattr(self, "_active_cache_identity", None)
+        if (texts and (cuda_candidate or cuda_loaded) and getattr(self, "cache_enabled", False)
                 and self._identity_cacheable(cache_identity)
                 and self._dimension_for_identity(cache_identity) is not None):
+            cache_generation = self._embedding_load_generation(cache_identity)
             cached = self._encode_uncached(texts, query=query, priority=priority, cache_only=True)
             if (self._active_cache_identity == cache_identity and isinstance(cached, dict)
-                    and cached.get("success") is True and cached.get("computed") == 0):
+                    and cached.get("success") is True and cached.get("computed") == 0
+                    and self._embedding_load_generation(cache_identity) == cache_generation):
                 self._memory_hits += int(cached.get("cache_hits", 0))
                 return cached
-        reservation = self._claim_embedding_gpu() if texts and (cuda_candidate or cuda_loaded) else None
+        if (texts and backend == "sentence-transformers" and cuda_candidate
+                and getattr(self, "_model", None) is not None
+                and getattr(self, "active_backend", None) == "sentence-transformers"
+                and str(getattr(self, "active_device", "")).lower() == "cpu"):
+            def compute_cpu():
+                with self._encoder_lock:
+                    if (self._model is None or self.active_backend != "sentence-transformers"
+                            or str(self.active_device).lower() != "cpu"):
+                        return None
+                    return self._encode_uncached(texts, query=query, priority=priority)
+
+            # Do not expose the CPU preflight sentinel to a normal GPU flight.
+            result, _coalesced = self.flight_group.do("cpu-fallback:" + self._encode_request_key(texts, query), compute_cpu)
+            if result is not None:
+                output = dict(result)
+                if isinstance(output.get("embeddings"), list):
+                    output["embeddings"] = [list(v) if isinstance(v, (list, tuple)) else v for v in output["embeddings"]]
+                return output
+        reservation = self._claim_embedding_gpu() if texts and (cuda_candidate or active_gpu_route or planned_gpu_route) else None
         if reservation is False:
             return {"success": False, "error_code": "gpu_reserved", "error": "GPU admission is unavailable", "retryable": True}
         digest = reservation[0] if isinstance(reservation, tuple) else None
@@ -794,6 +911,11 @@ class EmbeddingModel:
                     output = dict(result)
                     if isinstance(output.get("embeddings"), list):
                         output["embeddings"] = [list(vector) if isinstance(vector, (list, tuple)) else vector for vector in output["embeddings"]]
+                    output.setdefault("embedding_backend", self.active_backend)
+                    output.setdefault("embedding_device", self.active_device)
+                    fallback_reason = getattr(self, "_fallback_reason", None)
+                    if fallback_reason:
+                        output.setdefault("fallback_reason", fallback_reason)
                 if lease_lost is not None and lease_lost.is_set():
                     output.update({
                         "success": False,
@@ -852,6 +974,7 @@ class EmbeddingModel:
         used_backend = cache_identity.split(":", 1)[0] if cache_identity else (self.active_backend or self.backend)
         backend_fallback = False
         cache_identity_usable = self.cache_enabled and self._identity_cacheable(cache_identity)
+        cache_generation = self._embedding_load_generation(cache_identity) if cache_identity_usable else None
 
         batch_keys: list[str] = []
         if cache_identity_usable:
@@ -910,8 +1033,10 @@ class EmbeddingModel:
                 return None
             computed_vectors: list[list[float]] | None = None
 
-            # 1. Try Ollama GPU if backend is "auto" or "ollama"
-            if self.backend in ("auto", "ollama"):
+            # Auto uses Ollama for tag-style names; Hugging Face IDs use the
+            # local accelerator candidates directly instead of being fenced by
+            # a predictable Ollama "model not found" response.
+            if self.backend == "ollama" or (self.backend == "auto" and "/" not in self.model_name):
                 all_ollama_vectors: list[list[float]] = []
                 failed = False
                 for start in range(0, len(missing_texts), self.batch_size):
@@ -938,7 +1063,7 @@ class EmbeddingModel:
                 for _restart in range(max_restarts):
                     all_st_vectors: list[list[float]] = []
                     failed = False
-                    execution_identity: tuple[str, str, str, str | None] | None = None
+                    execution_identity: tuple[str, str, str, str | None, str | None] | None = None
                     switched = False
                     for start in range(0, len(missing_texts), self.batch_size):
                         stop = min(len(missing_texts), start + self.batch_size)
@@ -954,6 +1079,7 @@ class EmbeddingModel:
                                 str(snapshot["device"]),
                                 str(snapshot["model"]),
                                 snapshot.get("revision"),
+                                snapshot.get("load_generation"),
                             )
                         else:
                             current_identity = (
@@ -961,6 +1087,7 @@ class EmbeddingModel:
                                 str(self.active_device or self.device),
                                 self._loaded_model_name,
                                 getattr(self, "_loaded_model_revision", None),
+                                self._embedding_load_generation(f"{active}:{self.active_device or self.device}:{self._loaded_model_name}"),
                             )
                         if execution_identity is None:
                             execution_identity = current_identity
@@ -993,8 +1120,6 @@ class EmbeddingModel:
                 else:
                     result_device = str(self.active_device or self.device)
                     result_cache_identity = f"{used_backend}:{result_device}:{model_identity}"
-            with self._encoder_lock:
-                self._active_cache_identity = result_cache_identity
             result_cache_enabled = self.cache_enabled and self._identity_cacheable(result_cache_identity)
             if len(computed_vectors) != len(missing_texts) or any(
                 not isinstance(vector, list) for vector in computed_vectors
@@ -1017,8 +1142,18 @@ class EmbeddingModel:
             if any(not vector or not all(math.isfinite(value) for value in vector) for vector in computed_vectors):
                 return {"success": False, "error": "embedding backend returned an invalid vector", "model": self.model_name}
             result_dimension = dimensions.pop()
-            self._active_embedding_dimension = result_dimension
-            self._remember_dimension(result_cache_identity, result_dimension, persist=result_cache_enabled)
+            if cached_items and self._embedding_load_generation(cache_identity) != cache_generation:
+                return {"success": False, "error_code": "embedding_model_changed",
+                        "error": "embedding model changed during cache lookup", "retryable": True}
+            with self._encoder_lock:
+                if (isinstance(execution_snapshot, dict)
+                        and execution_snapshot.get("identity") == result_cache_identity
+                        and execution_snapshot.get("load_generation") != self._embedding_load_generation(result_cache_identity)):
+                    return {"success": False, "error_code": "embedding_model_changed",
+                            "error": "embedding model changed during inference", "retryable": True}
+                self._active_cache_identity = result_cache_identity
+                self._active_embedding_dimension = result_dimension
+                self._remember_dimension(result_cache_identity, result_dimension, persist=result_cache_enabled)
 
             if result_cache_identity != cache_identity and cached_items:
                 cached_groups: dict[str, list[int]] = {}
@@ -1036,7 +1171,9 @@ class EmbeddingModel:
                         if isinstance(snapshot, dict)
                         else f"{active}:{self.active_device or self.device}:{self._loaded_model_name}"
                     )
-                    if encoded is None or len(encoded) != len(batch) or active_identity != result_cache_identity:
+                    if (encoded is None or len(encoded) != len(batch) or active_identity != result_cache_identity
+                            or (isinstance(execution_snapshot, dict) and isinstance(snapshot, dict)
+                                and snapshot.get("load_generation") != execution_snapshot.get("load_generation"))):
                         return {"success": False, "error": "embedding backend changed while reconciling cached vectors", "model": self.model_name}
                     for vector in encoded:
                         try:
@@ -1087,6 +1224,19 @@ class EmbeddingModel:
         if len(vector_dimensions) != 1:
             return {"success": False, "error": "embedding backend returned inconsistent vector dimensions", "model": self.model_name}
         result_dimension = vector_dimensions.pop()
+        execution_snapshot = getattr(self._execution_local, "snapshot", None)
+        expected_generation = (
+            execution_snapshot.get("load_generation")
+            if isinstance(execution_snapshot, dict) and execution_snapshot.get("identity") == response_cache_identity
+            else cache_generation if cached_items and cache_identity == response_cache_identity else None
+        )
+        if expected_generation is not None and self._embedding_load_generation(response_cache_identity) != expected_generation:
+            return {"success": False, "error_code": "embedding_model_changed",
+                    "error": "embedding model changed before cache publication", "retryable": True}
+        result_space_id = self.embedding_space_id(response_cache_identity, dimension=result_dimension)
+        if expected_generation is not None and self._embedding_load_generation(response_cache_identity) != expected_generation:
+            return {"success": False, "error_code": "embedding_model_changed",
+                    "error": "embedding model changed while resolving output identity", "retryable": True}
         if pending_cache_writes:
             batch_writer = getattr(self.cache, "set_many", None)
             if not callable(batch_writer):
@@ -1096,14 +1246,23 @@ class EmbeddingModel:
                     "model": self.model_name,
                 }
             batch_writer(pending_cache_writes)
+        if expected_generation is not None and self._embedding_load_generation(response_cache_identity) != expected_generation:
+            return {"success": False, "error_code": "embedding_model_changed",
+                    "error": "embedding model changed during cache publication", "retryable": True}
         if response_cache_identity:
-            self._remember_dimension(
-                response_cache_identity,
-                result_dimension,
-                persist=self.cache_enabled and self._identity_cacheable(response_cache_identity),
-            )
+            with self._encoder_lock:
+                if expected_generation is not None and self._embedding_load_generation(response_cache_identity) != expected_generation:
+                    return {"success": False, "error_code": "embedding_model_changed",
+                            "error": "embedding model changed before dimension update", "retryable": True}
+                self._remember_dimension(
+                    response_cache_identity,
+                    result_dimension,
+                    persist=self.cache_enabled and self._identity_cacheable(response_cache_identity),
+                )
 
-        execution_snapshot = getattr(self._execution_local, "snapshot", None)
+        if cached_items and self._embedding_load_generation(cache_identity) != cache_generation:
+            return {"success": False, "error_code": "embedding_model_changed",
+                    "error": "embedding model changed during cache lookup", "retryable": True}
         provenance = self._model_provenance(response_cache_identity)
         if used_backend == "ollama":
             models = self.config.get("models", {})
@@ -1141,7 +1300,7 @@ class EmbeddingModel:
             "model": self.model_name,
             "backend": used_backend,
             "device": result_device,
-            "embedding_space_id": self.embedding_space_id(response_cache_identity, dimension=result_dimension),
+            "embedding_space_id": result_space_id,
             "embedding_dimension": result_dimension,
             "normalized": self._embedding_normalized(response_cache_identity),
             "model_digest": model_digest,

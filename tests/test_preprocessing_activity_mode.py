@@ -17,6 +17,28 @@ def test_preprocessing_mode_persists_blocks_requests_and_can_be_exited(tmp_path)
     assert operational_mode_gate_error(active, "search") is None
 
 
+def test_preprocessing_mode_blocks_mcp_repository_requests_before_dispatch(tmp_path, monkeypatch):
+    import asyncio
+    from local_ai_hub import mcp_server
+
+    selected = set_operational_mode(tmp_path, "preprocessing")
+    monkeypatch.setattr(mcp_server, "load_operational_mode", lambda *_args: selected)
+    calls = []
+    monkeypatch.setattr(mcp_server.CLIENT, "post", lambda *args, **kwargs: calls.append((args, kwargs)))
+    result = asyncio.run(mcp_server._compact_mcp_call_tool(
+        "local_ai_repo", {"action": "search", "root": str(tmp_path), "query": "example"}
+    ))[1]
+    assert result["success"] is False
+    assert result["mode"] == "preprocessing"
+    assert result["retryable"] is True
+    assert calls == []
+
+    monkeypatch.setattr(mcp_server.FEATURES, "status", True)
+    monkeypatch.setattr(mcp_server.CLIENT, "get", lambda *args, **kwargs: {"hub_online": True})
+    status = asyncio.run(mcp_server._compact_mcp_call_tool("local_ai_status", {}))[1]
+    assert status["success"] is True
+
+
 def test_preprocessing_mode_allows_preprocessing_steps(tmp_path):
     from local_ai_hub.preprocess import ProjectPreprocessor
 
@@ -205,6 +227,37 @@ def test_each_hardware_profile_defines_exclusive_preprocessing_limits():
     assert limits[-1]["max_projects"] > limits[0]["max_projects"]
 
 
+def test_each_profile_resolves_and_restores_user_overridden_project_limit(tmp_path, monkeypatch):
+    from local_ai_hub import hardware
+    from local_ai_hub.config import load_config
+    from local_ai_hub.preprocess import ProjectPreprocessor
+
+    for profile in ("cpu", "integrated", "low", "balanced", "medium", "high", "max"):
+        monkeypatch.setattr(hardware, "detect_hardware", lambda _profile: {"profile": profile})
+        state = tmp_path / profile
+        path = tmp_path / f"{profile}.toml"
+        path.write_text(
+            f'[server]\nstate_dir = "{state.as_posix()}"\n'
+            f'[hardware]\nprofile = "{profile}"\n'
+            '[preprocessing.exclusive]\nmax_projects = 7\nmodel_parallel = 3\n',
+            encoding="utf-8",
+        )
+        config = load_config(path)
+        exclusive = config["preprocessing"]["exclusive"]
+        assert exclusive["max_projects"] == 7
+        assert exclusive["model_parallel"] == 3
+        assert exclusive["cpu_workers"] == hardware.profile_overrides(profile)["preprocessing"]["exclusive"]["cpu_workers"]
+        processor = object.__new__(ProjectPreprocessor)
+        processor.state_dir = state
+        processor.max_preprocessing_projects = config["preprocessing"]["max_preprocessing_projects"]
+        processor.exclusive_max_projects = exclusive["max_projects"]
+        assert processor._project_limit() == processor.max_preprocessing_projects
+        set_operational_mode(state, "preprocessing")
+        assert processor._project_limit() == 7
+        set_operational_mode(state, "active")
+        assert processor._project_limit() == processor.max_preprocessing_projects
+
+
 def test_project_limit_tracks_mode_and_restores_normal_value(tmp_path):
     from local_ai_hub.preprocess import ProjectPreprocessor
 
@@ -217,6 +270,31 @@ def test_project_limit_tracks_mode_and_restores_normal_value(tmp_path):
     assert processor._project_limit() == 6
     set_operational_mode(tmp_path, "active")
     assert processor._project_limit() == 2
+
+
+def test_real_worker_pool_uses_mode_limit_and_cpu_capacity(tmp_path, monkeypatch):
+    from local_ai_hub import preprocess
+
+    monkeypatch.setattr(preprocess.os, "cpu_count", lambda: 12)
+    config = {
+        "server": {"state_dir": str(tmp_path)},
+        "preprocessing": {
+            "enabled": False, "cpu_workers": 3, "max_preprocessing_projects": 2,
+            "exclusive": {"cpu_workers": 48, "max_projects": 8},
+        },
+    }
+    worker = preprocess.ProjectPreprocessor(config, None, None, None, None, None)
+    try:
+        assert worker._hash_pool()._max_workers == 3
+        assert worker._project_limit() == 2
+        set_operational_mode(tmp_path, "preprocessing")
+        assert worker._hash_pool()._max_workers == 12
+        assert worker._project_limit() == 8
+        set_operational_mode(tmp_path, "active")
+        assert worker._hash_pool()._max_workers == 3
+        assert worker._project_limit() == 2
+    finally:
+        worker.close()
 
 
 def test_extra_project_workers_only_run_in_preprocessing_mode(tmp_path):
@@ -448,6 +526,8 @@ def test_model_profile_waits_for_real_inflight_batch(tmp_path, monkeypatch):
     monkeypatch.setattr(background_gpu, "OllamaRuntime", lambda cfg, **kwargs: SimpleNamespace(config=cfg))
     monkeypatch.setattr(background_gpu, "ModelExecutionPolicy", lambda cfg: SimpleNamespace(config=cfg))
     worker = object.__new__(background_gpu.IdleGPUWorker)
+    worker._idle_release_timer = None
+    worker._schedule_idle_release = lambda: None
     worker.config = {"server": {"state_dir": str(tmp_path)}}
     worker.cfg = {}
     worker._bg_config = {"server": {}, "scheduler": {}, "ollama": {}, "model_execution": {"background": {}}}
@@ -489,7 +569,29 @@ def test_model_profile_waits_for_real_inflight_batch(tmp_path, monkeypatch):
             return {"success": True}
         worker._generate_one = concurrent_generation
         assert all(result["success"] for result in worker.generate_many([{}, {}, {}], preprocessing=True))
-        set_operational_mode(tmp_path, "active")
+        exit_started, exit_release = threading.Event(), threading.Event()
+        exit_output = []
+        def drain_during_exit(*args, **kwargs):
+            exit_started.set()
+            exit_release.wait(5)
+            return {"success": True}
+        worker._generate_one = drain_during_exit
+        exit_thread = threading.Thread(
+            target=lambda: exit_output.extend(worker.generate_many([{}], preprocessing=True))
+        )
+        try:
+            exit_thread.start()
+            assert exit_started.wait(2)
+            set_operational_mode(tmp_path, "active")
+            pending = worker.generate_many([{}], preprocessing=True)
+            assert pending[0]["idle_wait"] is True
+            assert worker.parallel == 3
+            exit_release.set()
+            exit_thread.join(3)
+            assert not exit_thread.is_alive() and exit_output == [{"success": True}]
+        finally:
+            exit_release.set()
+            exit_thread.join(3)
         worker._generate_one = lambda *args, **kwargs: {"success": True}
         assert worker.generate_many([{}], preprocessing=True)[0]["success"] is True
         assert worker.parallel == 1
@@ -505,6 +607,8 @@ def test_cpu_fallback_serializes_concurrent_project_batches(tmp_path):
     from local_ai_hub.background_gpu import IdleGPUWorker
 
     worker = object.__new__(IdleGPUWorker)
+    worker._idle_release_timer = None
+    worker._schedule_idle_release = lambda: None
     worker.config = {"server": {"state_dir": str(tmp_path)}}
     worker._setup_lock, worker._lock, worker._cpu_slot = threading.RLock(), threading.RLock(), threading.Lock()
     worker._configure_parallel_for_mode = lambda: True

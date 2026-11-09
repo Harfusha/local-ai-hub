@@ -43,6 +43,7 @@ def test_work_and_control_are_not_mistaken_for_internal_diagnostics(tool, argume
     ("GET", "/api/hardware/system", {}),
     ("GET", "/api/db/query", {}),
     ("POST", "/api/evaluation", {}),
+    ("POST", "/api/diagnostics/export", {}),
     ("POST", "/api/async-jobs", {"action": "submit", "job_action": "benchmark"}),
     ("POST", "/api/agent-state/tasks", {"action": "curate_dataset"}),
     ("POST", "/api/agent-state/context", {"include_diagnostics": True}),
@@ -146,6 +147,7 @@ def test_mcp_gate_prevents_diagnostic_work_instead_of_only_hiding_its_output(mon
     ("GET", "/api/doctor", {}),
     ("GET", "/api/hardware/system", {}),
     ("POST", "/api/benchmark", {}),
+    ("POST", "/api/diagnostics/export", {}),
     ("POST", "/api/async-jobs", {"action": "submit", "job_action": "benchmark"}),
 ])
 def test_http_gate_prevents_backend_access(monkeypatch, method, path, payload):
@@ -156,7 +158,8 @@ def test_http_gate_prevents_backend_access(monkeypatch, method, path, payload):
         pytest.fail("disabled operator diagnostics reached a backend")
 
     app = SimpleNamespace(config={}, debug_traces=SimpleNamespace(enabled=False),
-                          doctor=forbidden, async_jobs=SimpleNamespace(submit=forbidden))
+                          doctor=forbidden, export_diagnostics=forbidden,
+                          async_jobs=SimpleNamespace(submit=forbidden))
     monkeypatch.setattr(http_server, "APP", app)
     monkeypatch.setattr(http_server, "_http_mode_gate_error", lambda *_args: None)
     handler = http_server.Handler.__new__(http_server.Handler)

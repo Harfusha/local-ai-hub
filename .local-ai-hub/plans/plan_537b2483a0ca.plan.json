@@ -10,7 +10,8 @@
       "acceptance_criteria": [
         "Režim lze zapnout a vypnout jako activity mode",
         "Ostatní požadavky jsou zastaveny a řídicí rozhraní zůstává dostupné",
-        "Profilové limity řídí souběžné projekty a paralelismus",
+        "Všech 7 profilů má v Active i Preprocessing 2x původní počet projektů, CPU workerů a preprocessing paralelismu",
+        "Přímé config.toml override zůstávají autoritativní; limity respektují CPU/backend caps",
         "Preprocessing všech registrovaných projektů zachová kvalitu a bezpečnost",
         "Regresní testy a dokumentace pokrývají změny"
       ],
@@ -19,7 +20,7 @@
       "depends_on": [],
       "description": "Čtvrtý activity mode vedle Active, Gaming a Maintenance. Specifikace: docs/superpowers/specs/2026-11-09-exclusive-preprocessing-mode.md. Zachovat pracovní změny a ochrany GPU. Řízení požadavků, profilové limity, všechny registrované projekty, testy a dokumentace.",
       "kind": "code",
-      "next_action": "Dokončit ověřovací záznamy a sladit nezávislé chyby sdíleného stromu; integrovaný HTTP test dvou projektů se skutečným 3B CPU modelem a úklidem prošel.",
+      "next_action": "Dokončit focused validation of doubled per-profile limits and reconcile remaining independent runtime blockers.",
       "title": "Čtvrtý activity mode pro výhradní preprocessing",
       "work_phase": "verification",
       "work_status": "in_progress"

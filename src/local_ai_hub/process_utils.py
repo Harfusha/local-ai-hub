@@ -2966,6 +2966,16 @@ def simulate_git_merge(
     try:
         cmd = ["git", "-C", str(repo), "merge-tree", "--write-tree", target_branch, source_branch]
         proc = subprocess.run(cmd, capture_output=True, text=True, check=False, timeout=30, **hidden_run_kwargs())
+        first_line = proc.stdout.splitlines()[0].strip() if proc.stdout else ""
+        has_tree_oid = len(first_line) in (40, 64) and all(
+            char in "0123456789abcdefABCDEF" for char in first_line
+        )
+        if proc.returncode not in (0, 1) or (proc.returncode == 1 and not has_tree_oid):
+            return {
+                "success": False,
+                "exit_code": proc.returncode,
+                "error": (proc.stderr.strip() or "git merge-tree failed")[:500],
+            }
 
         clean = (proc.returncode == 0)
         output = proc.stdout.strip()

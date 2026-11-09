@@ -60,6 +60,9 @@ def _embedding_model(cache, *, provider="ollama", model_name="test-model", dimen
         f"ollama:{model_name}" if provider == "ollama" else f"{provider}:cpu:{model_name}"
     )
     model._active_embedding_dimension = dimension
+    model._model_provenance_lock = threading.Lock()
+    model._model_provenance_by_identity = {}
+    model._model_instance_epochs = {}
     model._ollama_model_name = model_name
     model._loaded_model_name = model_name
     model.cache = cache
@@ -503,6 +506,9 @@ def test_sentence_transformers_cuda_inference_error_retries_on_cpu(monkeypatch):
     model.batch_size = 8
     model._cpu_gate = type("Gate", (), {"slot": lambda *_args: nullcontext()})()
     model._model_provenance = lambda _identity: {"revision": "test", "digest": "test"}
+    model._model_provenance_lock = threading.Lock()
+    model._model_provenance_by_identity = {}
+    model._model_instance_epochs = {}
 
     class BrokenCudaModel:
         prompts = {}

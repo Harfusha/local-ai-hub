@@ -83,11 +83,11 @@ def _status_dependency(callback, fallback, *, key, lock, inflight, slots, timeou
         return fallback, False
     return outcome.get("value", fallback), True
 from .scheduler import ModelUnavailableError, QueueFullError
-from .debug_traces import _normalize_trace_content
-from .agent_diagnostics import detailed_diagnostics_enabled, project_agent_response, project_pubsub_poll_response, project_status_response, project_aggregate_response
+from .debug_traces import DebugTraceObserver, _normalize_trace_content
+from .agent_diagnostics import detailed_diagnostics_enabled, project_agent_response, project_pubsub_poll_response, project_wait_event_response, project_status_response, project_aggregate_response
 from .agent_surface import diagnostic_http_operation, diagnostics_disabled_response
 from .response_budget import _reconcile_existing_budget
-from .trace_context import reset_context, reset_observer, set_context
+from .trace_context import reset_context, reset_observer, set_context, set_observer
 from .http_route_registry import select_get_handler, select_http_routes, select_post_handler
 from .http_post_repository_analysis import handle_post_repository_analysis, handle_post_plan
 from .dashboard import DASHBOARD_HTML
@@ -1958,6 +1958,10 @@ class Handler(BaseHTTPRequestHandler):
                         self._debug_trace_id = trace_store.start(kind="api_request", agent=self._agent(), action=path, source="http", request_id=request_id, initial_event=("request_received", {
                                 "method": self.command, "path": path, "request_id": request_id,
                             }))
+                        if self._debug_trace_id:
+                            self._debug_observer_token = set_observer(
+                                DebugTraceObserver(trace_store, self._debug_trace_id)
+                            )
         except Exception:
             pass
 
@@ -3561,6 +3565,7 @@ class Handler(BaseHTTPRequestHandler):
             project_status_response(data, enabled=detail_enabled)
             if response_path in {"/api/status", "/api/live/status"}
             else project_pubsub_poll_response(data, enabled=detail_enabled) if response_path == "/api/coord/pubsub_poll"
+            else project_wait_event_response(data, enabled=detail_enabled) if response_path == "/api/coord/wait_for_event"
             else project_aggregate_response(data, enabled=detail_enabled) if aggregate_report
             else project_agent_response(data, enabled=detail_enabled)
         )
@@ -5510,9 +5515,17 @@ class Handler(BaseHTTPRequestHandler):
         if "coordination_id" in payload and payload["coordination_id"] != coordination_id:
             self._send(400, {"success": False, "error": "coordination_id conflicts with repository", "terminal": True, "retryable": False})
             return
-        self._send(200, APP.leases.claim_batch(
+        result = APP.leases.claim_batch(
             owner=owner, root=root, paths=paths, ttl_seconds=ttl_seconds, purpose=purpose, coordination_id=coordination_id,
-        ))
+        )
+        status = 200
+        if not isinstance(result, dict) or result.get("success") is not True:
+            status = 409 if isinstance(result, dict) and (
+                result.get("deadlock") is True or bool(result.get("conflicts"))
+            ) else 400
+            if isinstance(result, dict):
+                result.setdefault("status_code", status)
+        self._send(status, result)
 
     def _handle_post_lease_release(self, payload: dict[str, Any]) -> None:
         if not isinstance(payload, dict) or set(payload) != {"owner", "lease_id"}:
@@ -8180,6 +8193,61 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     self._send(200, {"success": False, "error": "deterministic engine disabled"})
                 return
+            if 'post_diagnostics_export_1' in post_route_ids:
+                export = None
+                response_started = False
+
+                def export_cancelled() -> bool:
+                    try:
+                        ready, _, _ = select.select([self.connection], [], [], 0)
+                        return bool(ready and self.connection.recv(1, socket.MSG_PEEK) == b"")
+                    except (BlockingIOError, InterruptedError):
+                        return False
+                    except OSError:
+                        return True
+
+                try:
+                    export = APP.export_diagnostics(cancelled=export_cancelled)
+                    APP.logger.info(
+                        "diagnostic support archive exported",
+                        extra={
+                            "diagnostics_export_bytes": export.size,
+                            "diagnostics_export_files": export.manifest["included_files"],
+                        },
+                    )
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/zip")
+                    self._common_headers()
+                    self.send_header("Cache-Control", "no-store")
+                    self.send_header("Pragma", "no-cache")
+                    self.send_header("X-Content-Type-Options", "nosniff")
+                    self.send_header("X-Local-AI-Export-Password", export.password)
+                    self.send_header("Content-Disposition", 'attachment; filename="local-ai-hub-support.zip"')
+                    self.send_header("Content-Length", str(export.size))
+                    self.end_headers()
+                    response_started = True
+                    with export.path.open("rb") as archive_stream:
+                        while True:
+                            chunk = archive_stream.read(1024 * 1024)
+                            if not chunk:
+                                break
+                            self.wfile.write(chunk)
+                    self.wfile.flush()
+                except Exception as exc:
+                    if not _is_client_disconnect(exc) and not response_started:
+                        self._send(500, {
+                            "success": False,
+                            "error": "diagnostics export unavailable",
+                            "error_code": "diagnostics_export_unavailable",
+                            "terminal": True,
+                            "retryable": False,
+                        })
+                    elif _is_client_disconnect(exc):
+                        self.close_connection = True
+                finally:
+                    if export is not None:
+                        export.close()
+                return
             if 'post_bundle_export_1' in post_route_ids:
                 root = str(payload.get("root", "."))
                 try:
@@ -8898,7 +8966,10 @@ class Handler(BaseHTTPRequestHandler):
                     poll_kwargs["limit"] = int(payload["limit"])
                 self._send(200, APP.services.pubsub_poll(str(payload.get("topic", "default")), **poll_kwargs)); return
             if path == "/api/coord/simulate_merge":
-                self._send(200, APP.services.simulate_merge(str(payload.get("root", ".")), str(payload.get("source_branch", "")), target_branch=str(payload.get("target_branch", "HEAD")))); return
+                bound_root = self._bind_root(payload.get("root"))
+                if bound_root is None:
+                    return
+                self._send(200, APP.services.simulate_merge(bound_root, str(payload.get("source_branch", "")), target_branch=str(payload.get("target_branch", "HEAD")))); return
             if path == "/api/coord/wait_for_event":
                 timeout_val = float(payload.get("timeout", 60.0))
                 self._send(200, APP.services.wait_for_event(

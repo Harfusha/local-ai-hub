@@ -43,6 +43,13 @@ def _is_code_symbol(token: str) -> bool:
     return False
 
 
+def _api_endpoint_token(token: str) -> str | None:
+    candidate = token.strip(".,!?;()[]<>\"'`")
+    if re.fullmatch(r"/(?:api|v1|mcp)(?:/[A-Za-z0-9_.{}-]+)+/?", candidate):
+        return candidate
+    return None
+
+
 def classify_query(query: str) -> str:
     """Classify a search query into exact_symbol, file_path, natural_language, or mixed."""
     if type(query) is not str:
@@ -86,7 +93,7 @@ def classify_query(query: str) -> str:
 
 
 def prefers_lexical_precision(query: str) -> bool:
-    """Recognize symbol-bearing queries where exact hits must lead."""
+    """Recognize symbol and explicit endpoint queries where exact hits must lead."""
     if type(query) is not str:
         return False
     value = query.strip()
@@ -94,13 +101,13 @@ def prefers_lexical_precision(query: str) -> bool:
         return False
     for raw_token in value.split():
         clean = raw_token.strip(".,!?;()[]{}<>\"'`")
-        if _is_code_symbol(clean):
+        if _is_code_symbol(clean) or _api_endpoint_token(raw_token) is not None:
             return True
     return False
 
 
 def lexical_precision_query(query: str) -> str:
-    """Use a single embedded symbol as the exact lexical anchor for prose queries."""
+    """Use a single embedded symbol or endpoint as the exact lexical anchor."""
     if type(query) is not str:
         return ""
     value = query.strip()
@@ -109,14 +116,17 @@ def lexical_precision_query(query: str) -> str:
     anchors: list[str] = []
     for raw_token in value.split():
         token = raw_token.strip(".,!?;()[]{}<>\"'`")
-        if _is_code_symbol(token):
+        endpoint = _api_endpoint_token(raw_token)
+        if endpoint is not None:
+            anchors.append(endpoint)
+        elif _is_code_symbol(token):
             anchors.append(token)
     unique_anchors = list(dict.fromkeys(anchors))
     return unique_anchors[0] if len(unique_anchors) == 1 else value
 
 
 def default_search_mode(query: str) -> str:
-    """Use lexical for symbol-bearing queries and hybrid otherwise."""
+    """Use lexical for explicit symbols or endpoints and hybrid otherwise."""
     return "lexical" if prefers_lexical_precision(query) else "hybrid"
 
 

@@ -66,6 +66,33 @@ class ExternalGpuReservationStore:
         with self._locked():
             return self._read_unlocked()
 
+    def status_snapshot(self) -> tuple[dict[str, Any] | None, bool]:
+        """Observe metadata and fence presence under the same reservation lock."""
+        with self._locked():
+            record = self._read_unlocked()
+            present = record is not None or self.path.exists() or self.path.is_symlink()
+            return record, present
+
+    def owns_internal_fence(self, digest: str) -> bool:
+        """Verify a scheduler-owned digest-only fence without trusting metadata."""
+        _validate_digest(digest)
+        with self._locked():
+            if (self.path.is_symlink() or self.metadata_path.is_symlink()
+                    or self.metadata_path.exists()):
+                return False
+            try:
+                with self.path.open("rb") as stream:
+                    info = os.fstat(stream.fileno())
+                    raw = stream.read(65)
+                    after = os.fstat(stream.fileno())
+                    current = self.path.stat(follow_symlinks=False)
+                return (stat.S_ISREG(info.st_mode) and info.st_size == 64
+                        and not self.path.is_symlink()
+                        and os.path.samestat(info, after) and os.path.samestat(after, current)
+                        and hmac.compare_digest(raw, digest.encode("ascii")))
+            except OSError:
+                return False
+
     def reap_expired(self) -> bool:
         with self._locked():
             record = self._read_unlocked()

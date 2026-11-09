@@ -1,0 +1,30 @@
+{
+  "default_target_ref": "refs/heads/master",
+  "description": "Secure, bounded, maximum-compression diagnostics download for offline analysis; one-time password display. Specification: docs/superpowers/specs/2026-11-09-encrypted-diagnostic-export-design.md",
+  "id": "plan_a169449339bc",
+  "lifecycle": "active",
+  "schema_version": 1,
+  "spec_refs": [],
+  "tasks": {
+    "task_export_diagnostics": {
+      "acceptance_criteria": [
+        "One installation-wide export covers every retained project record without a project selector.",
+        "Archive includes Local AI Hub source, redacted effective configuration, Hub-owned operational databases, retained logs, and captured traces across projects.",
+        "Detailed request/response payloads are included only when capture was enabled and retained.",
+        "ZIP64 streaming uses AES-256 and BZIP2 level 9 with configurable 8 GiB archive and 64 GiB source defaults; cancellation/failure removes temporary files.",
+        "Fresh archive password is delivered after download and is never persisted; UI and docs warn about private operational content.",
+        "Model weights and unrelated project source are excluded.",
+        "Focused export tests pass and diff has no whitespace errors."
+      ],
+      "blocker": "Agent OS task still has no bound session; plan_reconcile_steering could not bind it. Plan task was updated through plan_task_edit.",
+      "clarifications": [],
+      "depends_on": [],
+      "description": "Implement installation-wide support ZIP: Local AI Hub source, redacted effective configuration, all retained Hub operational databases/logs/traces across projects; large ZIP64 stream with configurable caps and download password.",
+      "kind": "code",
+      "next_action": "Complete independent semantic review and verify Agent OS task state.",
+      "title": "Expand encrypted diagnostics export into full support ZIP",
+      "work_status": "completed"
+    }
+  },
+  "title": "Encrypted Local AI Hub diagnostic export"
+}

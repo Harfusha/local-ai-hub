@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sys
 import os
+import re
 import types
 from pathlib import Path
 
@@ -58,7 +59,11 @@ def test_windows_npu_probe_does_not_match_usb_input_device(monkeypatch: pytest.M
     monkeypatch.setattr(hardware.shutil, "which", lambda name: "powershell.exe" if name == "powershell" else None)
 
     def fake_run(cmd: list[str], **_kwargs):
-        assert r"\b(?:NPU|AI Boost|Neural Processing)\b" in cmd[-1]
+        pattern = cmd[-1].split("-match '", 1)[1].split("'", 1)[0]
+        assert re.search(pattern, "Intel(R) AI Boost")
+        assert re.search(pattern, "AMD Ryzen AI")
+        assert re.search(pattern, "Some IPU")
+        assert not re.search(pattern, "USB Input Device")
         return types.SimpleNamespace(
             returncode=0,
             stdout='[{"Name":"Intel(R) AI Boost","Manufacturer":"Intel","Status":"OK"}]',
@@ -94,16 +99,17 @@ def test_integrated_profile_is_conservative_and_accelerates_retrieval() -> None:
     assert cfg["scheduler"]["max_parallel"] == 1
     assert cfg["scheduler"]["max_loaded_models"] == 1
     assert cfg["background_gpu"]["enabled"] is False
-    assert cfg["preprocessing"]["cpu_workers"] == 1
+    assert cfg["preprocessing"]["cpu_workers"] == 2
     assert cfg["model_execution"]["fast"]["context_tokens"] == 32768
     assert cfg["model_execution"]["smart"]["max_context_tokens"] == 32768
     base_cfg = profile_overrides("integrated")
     assert base_cfg["model_execution"]["fast"]["context_tokens"] == 8192
     assert base_cfg["model_execution"]["smart"]["max_context_tokens"] == 12288
     assert cfg["models"]["embedding"] == "BAAI/bge-small-en-v1.5"
-    assert cfg["models"]["embedding_backend"] == "openvino"
+    assert cfg["models"]["embedding_backend"] == "auto"
+    assert cfg["models"]["embedding_device"] == "auto"
     assert cfg["models"]["reranker"] == "cross-encoder/ms-marco-MiniLM-L6-v2"
-    assert cfg["models"]["reranker_backend"] == "openvino"
+    assert cfg["models"]["reranker_backend"] == "auto"
     assert cfg["ollama"]["allow_integrated_gpu"] is False
     assert cfg["ollama"]["enable_vulkan"] is False
     assert cfg["ollama"]["gpu_overhead_bytes"] == 1024 * 1024 * 1024

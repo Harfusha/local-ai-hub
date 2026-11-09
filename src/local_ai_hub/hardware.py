@@ -215,7 +215,7 @@ def _windows_npus() -> list[dict[str, Any]]:
         return []
     script = (
         "Get-CimInstance Win32_PnPEntity | "
-        "Where-Object { $_.Name -match '\\b(?:NPU|AI Boost|Neural Processing)\\b' } | "
+        "Where-Object { $_.Name -match '\\b(?:NPU|AI Boost|Neural Processing|Ryzen AI|IPU)\\b' } | "
         "Select-Object Name,Manufacturer,Status | ConvertTo-Json -Compress"
     )
     cp = _run(["powershell", "-NoProfile", "-Command", script], timeout=4.0)
@@ -231,8 +231,10 @@ def _windows_npus() -> list[dict[str, Any]]:
         if not isinstance(item, dict) or not item.get("Name"):
             continue
         name = str(item.get("Name"))
-        vendor = "intel" if "intel" in (name + " " + str(item.get("Manufacturer", ""))).lower() else "unknown"
-        out.append({"vendor": vendor, "name": name, "backend": "openvino", "device": "NPU", "runtime_available": False, "status": str(item.get("Status", ""))})
+        identity = (name + " " + str(item.get("Manufacturer", ""))).lower()
+        vendor = "intel" if "intel" in identity else ("amd" if any(token in identity for token in ("amd", "ryzen")) else "unknown")
+        backend = "openvino" if vendor == "intel" else "windows-ml"
+        out.append({"vendor": vendor, "name": name, "backend": backend, "device": "NPU", "runtime_available": False, "status": str(item.get("Status", ""))})
     return out
 
 
@@ -350,16 +352,32 @@ def choose_profile(gpus: list[dict[str, Any]], ram_gb: float, requested: str = "
 @lru_cache(maxsize=4)
 def detect_hardware(requested_profile: str = "auto", *, include_openvino: bool = True) -> dict[str, Any]:
     total, available = _memory_bytes()
-    gpus = _nvidia() or _amd() or _intel()
+    # Keep every vendor's adapters in the inventory so routing can rank an NPU,
+    # discrete GPU, and iGPU together instead of losing devices after the first
+    # successful vendor probe.
+    gpus = _nvidia() + _amd() + _intel()
+    generic_gpus = _generic_windows()
+    for generic in generic_gpus:
+        vendor = str(generic.get("vendor", "")).lower()
+        name = " ".join(str(generic.get("name", "")).lower().split())
+        if any(
+            str(item.get("vendor", "")).lower() == vendor
+            and (name == " ".join(str(item.get("name", "")).lower().split())
+                 or name in " ".join(str(item.get("name", "")).lower().split())
+                 or " ".join(str(item.get("name", "")).lower().split()) in name)
+            for item in gpus
+        ):
+            continue
+        gpus.append(generic)
     if not gpus:
-        gpus = _apple(total) or _generic_windows()
+        gpus = _apple(total)
     total_gb = round(total / (1024 ** 3), 1) if total else 0.0
     profile_name = choose_profile(gpus, total_gb, requested_profile)
 
     ov_devices = _openvino_devices() if include_openvino else []
     runtime_npus = [dict(item) for item in ov_devices if item.get("kind") == "npu"]
     physical_npus = _windows_npus()
-    npus = runtime_npus or physical_npus
+    npus = runtime_npus + physical_npus
     if runtime_npus and physical_npus:
         for item in npus:
             item["hardware_detected"] = True
@@ -410,7 +428,7 @@ PROFILE_OVERRIDES: dict[str, dict[str, Any]] = {
             "flash_attention": True,
             "num_threads": max(1, (os.cpu_count() or 4) - 2),
         },
-        "background_gpu": {"enabled": False, "parallel": 1, "cpu_fallback_enabled": True},
+        "background_gpu": {"enabled": False, "parallel": 2, "cpu_fallback_enabled": True},
         "cpu_retrieval": {"embedding_batch_size": 4, "reranker_batch_size": 2, "reranker_max_length": 512, "embedding_trust_remote_code": False},
         "deterministic": {"context_raw_evidence": 3, "context_max_chars": 3600},
         "search": {"context_top_k": 8, "max_snippets_per_file": 2},
@@ -423,7 +441,7 @@ PROFILE_OVERRIDES: dict[str, dict[str, Any]] = {
         },
         "preprocessing": {
             "model": "qwen2.5-coder:0.5b",
-            "cpu_workers": 1,
+            "cpu_workers": 2,
             "cpu_worker_sleep_seconds": 0.20,
             "idle_grace_seconds": 30.0,
         },
@@ -459,7 +477,7 @@ PROFILE_OVERRIDES: dict[str, dict[str, Any]] = {
             "flash_attention": True,
             "num_threads": max(1, (os.cpu_count() or 4) - 2),
         },
-        "background_gpu": {"enabled": False, "parallel": 1, "file_batch_size": 1, "module_batch_size": 1},
+        "background_gpu": {"enabled": False, "parallel": 2, "file_batch_size": 1, "module_batch_size": 1},
         "cpu_retrieval": {"embedding_batch_size": 4, "reranker_batch_size": 2, "reranker_max_length": 512, "embedding_trust_remote_code": False},
         "deterministic": {"context_raw_evidence": 3, "context_max_chars": 3600},
         "search": {"context_top_k": 8, "max_snippets_per_file": 2},
@@ -485,8 +503,8 @@ PROFILE_OVERRIDES: dict[str, dict[str, Any]] = {
         "preprocessing": {
             "model": "qwen2.5-coder:1.5b",
             "idle_grace_seconds": 30.0,
-            "max_preprocessing_projects": 1,
-            "cpu_workers": 1,
+            "max_preprocessing_projects": 2,
+            "cpu_workers": 2,
             "rag_files_per_step": 6,
             "cpu_worker_sleep_seconds": 0.20,
         },
@@ -515,7 +533,7 @@ PROFILE_OVERRIDES: dict[str, dict[str, Any]] = {
         "scheduler": {"max_parallel": 1},
         "ollama": {"num_parallel": 1, "kv_cache_type": "q4_0"},
         "llama_cpp": {"cache_type_k": "q4_0", "cache_type_v": "q4_0"},
-        "background_gpu": {"parallel": 1, "file_batch_size": 1, "module_batch_size": 1},
+        "background_gpu": {"parallel": 2, "file_batch_size": 1, "module_batch_size": 1},
         "cpu_retrieval": {"embedding_batch_size": 6, "reranker_batch_size": 2},
         "model_execution": {
             "background": {"parallel": 1, "context_tokens": 16384, "max_context_tokens": 24576, "max_prompt_tokens": 14000},
@@ -542,7 +560,7 @@ PROFILE_OVERRIDES: dict[str, dict[str, Any]] = {
         "scheduler": {"max_parallel": 2},
         "ollama": {"num_parallel": 2, "kv_cache_type": "q4_0"},
         "llama_cpp": {"cache_type_k": "q4_0", "cache_type_v": "q4_0"},
-        "background_gpu": {"parallel": 2, "file_batch_size": 2, "module_batch_size": 2},
+        "background_gpu": {"parallel": 4, "file_batch_size": 2, "module_batch_size": 2},
         "cpu_retrieval": {"embedding_batch_size": 12, "reranker_batch_size": 4},
         "ollama_subagents": {"profiles": {
             "qwen-explorer": {"model": "qwen2.5-coder:1.5b"},
@@ -574,7 +592,7 @@ PROFILE_OVERRIDES: dict[str, dict[str, Any]] = {
         "scheduler": {"max_parallel": 2},
         "ollama": {"num_parallel": 2, "kv_cache_type": "q4_0"},
         "llama_cpp": {"cache_type_k": "q4_0", "cache_type_v": "q4_0"},
-        "background_gpu": {"parallel": 4, "file_batch_size": 8, "module_batch_size": 6},
+        "background_gpu": {"parallel": 8, "file_batch_size": 8, "module_batch_size": 6},
         "cpu_retrieval": {"embedding_batch_size": 20, "reranker_batch_size": 6},
         "routing": {
             "max_fast_context_chars": 120000,
@@ -632,7 +650,7 @@ PROFILE_OVERRIDES: dict[str, dict[str, Any]] = {
         "scheduler": {"max_parallel": 2},
         "ollama": {"num_parallel": 2, "kv_cache_type": "q4_0"},
         "llama_cpp": {"cache_type_k": "q4_0", "cache_type_v": "q4_0"},
-        "background_gpu": {"parallel": 4, "file_batch_size": 8, "module_batch_size": 6},
+        "background_gpu": {"parallel": 8, "file_batch_size": 8, "module_batch_size": 6},
         "cpu_retrieval": {"embedding_batch_size": 20, "reranker_batch_size": 6},
         "routing": {
             "max_fast_context_chars": 120000,
@@ -692,7 +710,7 @@ PROFILE_OVERRIDES: dict[str, dict[str, Any]] = {
         "scheduler": {"max_parallel": 2},
         "ollama": {"num_parallel": 2, "kv_cache_type": "q8_0"},
         "llama_cpp": {"cache_type_k": "q8_0", "cache_type_v": "q8_0"},
-        "background_gpu": {"parallel": 6, "file_batch_size": 12, "module_batch_size": 8},
+        "background_gpu": {"parallel": 12, "file_batch_size": 12, "module_batch_size": 8},
         "cpu_retrieval": {"embedding_batch_size": 32, "reranker_batch_size": 8},
         "ollama_subagents": {
             "profiles": {
@@ -712,13 +730,13 @@ PROFILE_OVERRIDES: dict[str, dict[str, Any]] = {
 
 
 EXCLUSIVE_PREPROCESSING_LIMITS: dict[str, dict[str, int]] = {
-    "cpu": {"max_projects": 2, "cpu_workers": 2, "model_parallel": 1},
-    "integrated": {"max_projects": 2, "cpu_workers": 4, "model_parallel": 1},
-    "low": {"max_projects": 2, "cpu_workers": 4, "model_parallel": 2},
-    "balanced": {"max_projects": 3, "cpu_workers": 8, "model_parallel": 4},
-    "medium": {"max_projects": 4, "cpu_workers": 12, "model_parallel": 4},
-    "high": {"max_projects": 6, "cpu_workers": 16, "model_parallel": 6},
-    "max": {"max_projects": 8, "cpu_workers": 24, "model_parallel": 8},
+    "cpu": {"max_projects": 4, "cpu_workers": 4, "model_parallel": 2},
+    "integrated": {"max_projects": 4, "cpu_workers": 8, "model_parallel": 2},
+    "low": {"max_projects": 4, "cpu_workers": 8, "model_parallel": 4},
+    "balanced": {"max_projects": 6, "cpu_workers": 16, "model_parallel": 8},
+    "medium": {"max_projects": 8, "cpu_workers": 24, "model_parallel": 8},
+    "high": {"max_projects": 12, "cpu_workers": 32, "model_parallel": 12},
+    "max": {"max_projects": 16, "cpu_workers": 48, "model_parallel": 16},
 }
 
 
@@ -772,20 +790,6 @@ def profile_overrides(profile_name: str, detected: dict[str, Any] | None = None)
     )
     has_npu = bool(detected.get("npus"))
     has_fp4 = any(bool(g.get("has_fp4")) for g in gpus if isinstance(g, dict))
-    has_nvidia = any(
-        "nvidia" in str(gpu.get("vendor", "")).lower()
-        or "nvidia" in str(gpu.get("name", "")).lower()
-        for gpu in gpus
-    )
-    if has_nvidia:
-        result = _deep_merge_dict(result, {
-            "models": {
-                "reranker_device": "cuda",
-            }
-        })
-        if profile_name in {"high", "max"}:
-            result = _deep_merge_dict(result, {"models": {"embedding_device": "cuda"}})
-
     if has_fp4 and profile_name not in ("cpu", "integrated"):
         # Prefer FP4 quantized variants whenever hardware-accelerated (e.g. Blackwell / compute capability >= 12.0)
         fp4_models: dict[str, Any] = {}
@@ -798,26 +802,27 @@ def profile_overrides(profile_name: str, detected: dict[str, Any] | None = None)
         if sub_critic.get("model") == "qwen3.5:9b":
             result = _deep_merge_dict(result, {"ollama_subagents": {"profiles": {"qwen-critic": {"model": "qwen3.5:9b-nvfp4"}}}})
     if has_npu:
-        # NPU takes priority in ANY profile: offload embeddings and reranker to dedicated NPU hardware,
-        # freeing GPU VRAM and CPU cores for LLM inference.
+        # Keep embeddings on auto so a missing/unsupported NPU can fall through
+        # to the next available GPU tier. Reranker follows the same route order.
         result = _deep_merge_dict(result, {
             "models": {
                 "embedding": "BAAI/bge-small-en-v1.5",
-                "embedding_backend": "openvino", "embedding_device": "NPU",
+                "embedding_backend": "auto", "embedding_device": "auto",
+                "reranker_backend": "auto", "reranker_device": "auto",
                 "reranker": "cross-encoder/ms-marco-MiniLM-L6-v2",
-                "reranker_backend": "openvino", "reranker_device": "NPU",
             },
             "features": {"reranker": True},
             "openvino": {"enabled": True},
         })
     elif profile_name in ("integrated", "cpu") and intel_integrated:
-        # Intel iGPU OpenVINO acceleration for integrated systems without discrete NPU
+        # Let embeddings and reranker rank all present devices; keep OpenVINO
+        # available for Intel GPU/NPU candidates.
         result = _deep_merge_dict(result, {
             "models": {
                 "embedding": "BAAI/bge-small-en-v1.5",
-                "embedding_backend": "openvino", "embedding_device": "auto",
+                "embedding_backend": "auto", "embedding_device": "auto",
+                "reranker_backend": "auto", "reranker_device": "auto",
                 "reranker": "cross-encoder/ms-marco-MiniLM-L6-v2",
-                "reranker_backend": "openvino", "reranker_device": "auto",
             },
             "features": {"reranker": True},
             "openvino": {"enabled": True},

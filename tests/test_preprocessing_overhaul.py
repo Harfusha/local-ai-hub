@@ -729,17 +729,19 @@ def test_lexical_index_does_not_store_empty_text_when_source_read_fails(tmp_path
     try:
         with closing(pre._connect()) as con:
             con.execute(
-                "INSERT INTO file_refs(root,path,content_hash,size,generation,updated_at) VALUES(?,?,?,?,?,?)",
+                "INSERT INTO file_refs(root,path,content_hash,size,generation,updated_at,needs_hash) VALUES(?,?,?,?,?,?,0)",
                 (resolved, "missing.py", "content-hash", 10, 0, 1.0),
             )
             con.commit()
 
-        with pytest.raises(FileNotFoundError):
-            pre._step_lexical({"root": resolved})
+        assert pre._step_lexical({"root": resolved}) is True
 
         with closing(pre._connect()) as con:
             assert con.execute(
                 "SELECT 1 FROM source_index WHERE root=? AND path=?", (resolved, "missing.py")
+            ).fetchone() is None
+            assert con.execute(
+                "SELECT 1 FROM file_refs WHERE root=? AND path=?", (resolved, "missing.py")
             ).fetchone() is None
     finally:
         pre.close()

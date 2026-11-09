@@ -3087,7 +3087,7 @@ class LocalAIServices:
             return result
 
         def encode_uncached(batch: list[str]) -> dict[str, Any]:
-            if backend in {"sentence-transformers", "openvino"}:
+            if backend in {"auto", "sentence-transformers", "openvino"}:
                 return reject_uncertain(self.embeddings.encode(batch, query=query, priority=priority))
             batch_size = int(self.config.get("rag", {}).get("embedding_batch_size", 12))
 
@@ -3106,7 +3106,7 @@ class LocalAIServices:
             is_bg = background if background is not None else (priority <= 1)
             return reject_uncertain(self.scheduler.submit(model, source="embed", execute=run, priority=priority, background=is_bg, wait_timeout=wait_timeout))
 
-        if backend in {"sentence-transformers", "openvino"}:
+        if backend in {"auto", "sentence-transformers", "openvino"}:
             # EmbeddingModel owns the provenance-aware cache. The outer cache
             # is keyed only by the configured name and can mix model spaces.
             result = encode_uncached(list(texts))
@@ -3114,51 +3114,20 @@ class LocalAIServices:
                 return {"success": False, "error": "embedding failed"}
             return result
 
-        cache = getattr(self, "embedding_cache", None)
-        cache_enabled = bool(getattr(self, "embedding_cache_enabled", self.config.get("cache", {}).get("embeddings", True)))
-        if not cache_enabled or cache is None:
-            return encode_uncached(list(texts))
-
-        keys = [self._embedding_key(text, backend=backend, model=model, query=query) for text in texts]
-        vectors: list[list[float] | None] = [None] * len(texts)
-        missing: dict[str, list[int]] = {}
-
-        if hasattr(cache, "get_many") and callable(cache.get_many):
-            cached_map = cache.get_many(keys)
-        else:
-            cached_map = {key: cache.get(key) for key in dict.fromkeys(keys)}
-
-        for index, key in enumerate(keys):
-            cached = cached_map.get(key)
-            if isinstance(cached, list):
-                vectors[index] = [float(value) for value in cached]
-            else:
-                missing.setdefault(key, []).append(index)
-
-        if missing:
-            missing_indices = [indices[0] for indices in missing.values()]
-            result = encode_uncached([texts[index] for index in missing_indices])
-            if not isinstance(result, dict) or not result.get("success"):
-                return result if isinstance(result, dict) else {"success": False, "error": "embedding failed"}
-            raw_vectors = result.get("embeddings", [])
-            if len(raw_vectors) != len(missing_indices):
-                return {"success": False, "error": f"embedding count mismatch: {len(raw_vectors)} != {len(missing_indices)}"}
-            to_cache: dict[str, list[float]] = {}
-            for vector, key, indices in zip(raw_vectors, missing, missing.values()):
-                normalized = self._json_embedding(vector)
-                to_cache[key] = normalized
-                for index in indices:
-                    vectors[index] = normalized
-            if hasattr(cache, "set_many") and callable(cache.set_many):
-                cache.set_many(to_cache)
-            else:
-                for key, val in to_cache.items():
-                    cache.set(key, val)
-            result = dict(result)
-            result["embeddings"] = vectors
-            return result
-
-        return {"success": True, "model": model, "backend": backend, "embeddings": vectors}
+        # A mutable Ollama tag does not establish which model produced a
+        # vector. Deduplicate within this request, but do not reuse a vector
+        # across calls without an execution-bound model identity.
+        unique_texts = list(dict.fromkeys(texts))
+        result = encode_uncached(unique_texts)
+        if not isinstance(result, dict) or result.get("success") is not True:
+            return result if isinstance(result, dict) else {"success": False, "error": "embedding failed"}
+        vectors = result.get("embeddings")
+        if not isinstance(vectors, list) or len(vectors) != len(unique_texts):
+            return {"success": False, "error": "embedding count mismatch"}
+        by_text = dict(zip(unique_texts, vectors))
+        result = dict(result)
+        result["embeddings"] = [by_text[text] for text in texts]
+        return result
 
     def _context_evidence_current(self, value: Any) -> bool:
         if not isinstance(value, dict) or value.get("success") is False:
@@ -5638,7 +5607,7 @@ class LocalAIServices:
 
     def simulate_merge(self, root: str, source_branch: str, target_branch: str = "HEAD") -> dict[str, Any]:
         from .process_utils import simulate_git_merge
-        return simulate_git_merge(self._root(root), source_branch, target_branch=target_branch)
+        return simulate_git_merge(root, source_branch, target_branch=target_branch)
 
     def pubsub_publish(self, topic: str, message: dict[str, Any] | str, sender: str = "agent") -> dict[str, Any]:
         from .agent_events import SwarmPubSub
@@ -8731,9 +8700,18 @@ class LocalAIServices:
         cache_key = stable_hash({"complete_code": True, "model": model, "prompt": prompt, "max_tokens": max_tokens})
         def compute() -> dict[str, Any]:
             def execute() -> dict[str, Any]:
+                trace_observer = observer()
+                if trace_observer is not None:
+                    trace_observer.model_request(payload)
                 if cancel_event is not None:
-                    return self.runtime.request_interruptible("/api/generate", payload, should_stop=cancel_event.is_set, timeout=6.0)
-                return self.runtime.request("/api/generate", payload, timeout=6.0)
+                    result = self.runtime.request_interruptible("/api/generate", payload, should_stop=cancel_event.is_set, timeout=6.0)
+                else:
+                    result = self.runtime.request("/api/generate", payload, timeout=6.0)
+                if trace_observer is not None and isinstance(result, dict):
+                    output = result.get("response")
+                    if isinstance(output, str):
+                        trace_observer.output_delta(output)
+                return result
             res = self.scheduler.submit(model, source="complete_code", execute=execute,
                                         **({"cancel_event": cancel_event} if cancel_event is not None else {}))
             if cancel_event is not None and cancel_event.is_set():
@@ -9052,11 +9030,13 @@ class LocalAIServices:
                 try:
                     timeout = 8.0 if self is None else max(1.0, min(30.0, float(self.config.get("commands", {}).get("patch_check_timeout_seconds", 8.0))))
                     checked = subprocess.run(
-                        ["git", "-C", str(root), "apply", "--check", "--"], input=diff_text, capture_output=True,
-                        timeout=timeout, check=False, **hidden_run_kwargs(text=True),
+                        ["git", "-C", str(root), "apply", "--check", "--"], input=diff_text.encode("utf-8"), capture_output=True,
+                        timeout=timeout, check=False, **hidden_run_kwargs(text=False),
                     )
                     if checked.returncode != 0:
-                        check_error = (checked.stderr or checked.stdout or "git apply --check failed").strip()[:500]
+                        check_error = (checked.stderr or checked.stdout or b"git apply --check failed").decode(
+                            "utf-8", errors="replace"
+                        ).strip()[:500]
                         errors.append(check_error)
                         if any(marker in check_error.casefold() for marker in (
                             "corrupt patch", "patch fragment without header", "unrecognized input",
@@ -9075,7 +9055,7 @@ class LocalAIServices:
             "applicability_checked": applicability_checked,
             "files_affected": list(dict.fromkeys(affected_files)),
             "errors": errors,
-            "message": f"Patch syntax {'is valid' if valid else 'is invalid'}; applicability {'was checked' if applicability_checked else 'was not checked'}.",
+            "message": f"Patch syntax {'is valid' if not syntax_errors else 'is invalid'}; applicability {'was checked' if applicability_checked else 'was not checked'}.",
         }
 
     def preprocess(self, args: dict[str, Any]) -> dict[str, Any]:
@@ -10182,7 +10162,7 @@ class LocalAIServices:
         """Track accuracy and regression drift across benchmark runs."""
         reject_retired_tenancy_fields(payload)
         suite_name = str(payload.get("suite_name", "default"))
-        history_file = Path(self.state_dir) / "eval_history.json"
+        history_file = configured_state_dir(self.config) / "eval_history.json"
 
         history: dict[str, Any] = {}
         if history_file.exists():

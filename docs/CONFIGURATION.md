@@ -14,7 +14,11 @@ The HTTP server accepts loopback peers only and binds to `127.0.0.1`. Hub API cr
 
 The `integrated` profile is intentionally conservative. It is designed for iGPUs that borrow system RAM and therefore must not be scheduled from a nominal/dedicated VRAM value. The default integrated profile keeps one foreground LLM/model resident, disables the independent background Ollama runtime, routes preprocessing to 0.5B, quick tasks to 1.5B, complex work to 3B, and the hardest reasoning to 7B; it also reduces context and preprocessing concurrency. For Intel iGPU systems, see [the llama.cpp SYCL setup](LLAMA_CPP_SYCL.md).
 
-For Intel integrated graphics, `[openvino]` controls optional retrieval acceleration. With `embedding_device = "auto"` / `reranker_device = "auto"`, Local AI Hub probes actual OpenVINO devices and uses `device_priority = ["NPU", "GPU", "CPU"]`. The SentenceTransformers wrapper remains on CPU while the underlying Optimum/OpenVINO model is compiled for the selected accelerator, so the path does not require a torch-native NPU device. `cpu_fallback = true` keeps RAG functional if the NPU/GPU driver or a particular model shape is unsupported.
+Embedding and reranker defaults use `*_backend = "auto"` and `*_device = "auto"`. Both probe installed provider runtimes and try supported routes in this order: NPU, dedicated GPU, integrated GPU, CPU. Intel NPU/GPU uses OpenVINO; NVIDIA uses a working PyTorch CUDA runtime; supported AMD ROCm builds use PyTorch's CUDA-compatible device API; and ONNX Runtime DirectML is a Windows fallback for detected DX12 GPUs. AMD Ryzen AI NPU is considered only when its Vitis AI execution provider is installed. Provider packages and drivers are optional and are never installed or model weights downloaded by the router. For ONNX routes, the local model must already be cached; provider/export incompatibility skips to the next route. Active backend/device and route-specific cache identities keep results tied to the selected provider. Set a concrete backend/device to override automatic routing; CPU fallback remains available to `auto`.
+
+Background semantic preprocessing uses CPU fallback by default and does not reserve the GPU. Set `[background_gpu].enabled = true` to opt into its separate GPU worker. Foreground inference remains routed by the selected hardware profile.
+
+For Intel integrated graphics, `[openvino]` controls optional retrieval acceleration. The SentenceTransformers wrapper remains on CPU while the underlying Optimum/OpenVINO model is compiled for the selected accelerator, so this path does not require a torch-native NPU device. `cpu_fallback = true` keeps RAG functional if the NPU/GPU driver or a particular model shape is unsupported.
 
 `[ollama].enabled = false` is the default and prevents setup/service installation, startup, pulls, and health probes. `[ollama].allow_integrated_gpu` and `enable_vulkan` matter only after Ollama is explicitly enabled. With `headless.manage_ollama = true`, the supervisor owns an explicitly enabled Ollama process; otherwise the Hub does not run it. `llama_cpp.mode = "auto"` only probes an existing hardware-appropriate endpoint and never installs a runtime.
 
@@ -25,6 +29,10 @@ For Intel integrated graphics, `[openvino]` controls optional retrieval accelera
 ## Server/security
 
 The Hub is local-only: its HTTP server binds to `127.0.0.1`, and remote binding or remote Hub access is unsupported. The same-machine Browser Bridge remains available. `request_body_timeout_seconds` bounds slow uploads, `max_concurrent_requests` caps live HTTP handlers, and `overload_wait_seconds` controls the tiny admission wait before a retryable 503.
+
+## Diagnostics support archive
+
+`[diagnostics_export].max_archive_bytes` defaults to 8 GiB; `max_source_bytes` defaults to 64 GiB. The Service health export streams a ZIP64 archive through temporary disk space, so allow enough free space for the SQLite snapshots and compressed ZIP. The archive includes Hub source, redacted effective configuration, all Hub-owned state databases and operational logs across projects. Model weights and other project source stay out. Traces, logs, paths, tasks, and memories may contain private content; the archive is password-protected.
 
 ## Foreground repository state
 

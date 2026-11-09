@@ -20,7 +20,7 @@ def test_invalid_evaluation_does_not_replace_history(tmp_path, evaluation):
     history = tmp_path / "eval_history.json"
     original = b'{"demo":{"summary":{"pass_rate":0.75},"cases":[]}}'
     history.write_bytes(original)
-    service = SimpleNamespace(state_dir=tmp_path, eval_suite=Mock(return_value=evaluation))
+    service = SimpleNamespace(config={"server": {"state_dir": str(tmp_path)}}, eval_suite=Mock(return_value=evaluation))
     result = LocalAIServices.eval_drift(service, {"suite_name": "demo"})
     assert result["success"] is False
     assert history.read_bytes() == original
@@ -29,7 +29,7 @@ def test_invalid_evaluation_does_not_replace_history(tmp_path, evaluation):
 def test_corrupt_history_is_not_overwritten(tmp_path):
     history = tmp_path / "eval_history.json"
     history.write_bytes(b"{broken")
-    service = SimpleNamespace(state_dir=tmp_path)
+    service = SimpleNamespace(config={"server": {"state_dir": str(tmp_path)}})
     result = LocalAIServices.eval_drift(service, {"suite_name": "demo", "current": {"summary": {"pass_rate": 0.5}}})
     assert result["success"] is False
     assert history.read_bytes() == b"{broken"
@@ -42,16 +42,30 @@ def test_history_write_failure_is_not_reported_as_success(tmp_path, monkeypatch)
         raise OSError("disk unavailable")
 
     monkeypatch.setattr(process_utils, "atomic_write_file", fail)
-    service = SimpleNamespace(state_dir=tmp_path)
+    service = SimpleNamespace(config={"server": {"state_dir": str(tmp_path)}})
     result = LocalAIServices.eval_drift(service, {"suite_name": "demo", "current": {"summary": {"pass_rate": 0.5}}})
     assert result["success"] is False
     assert not (tmp_path / "eval_history.json").exists()
 
 
 def test_actual_invalid_suite_propagates_without_writing_history(tmp_path):
-    service = SimpleNamespace(state_dir=tmp_path, config={})
+    service = SimpleNamespace(config={"server": {"state_dir": str(tmp_path)}})
     service.eval_suite = lambda payload: LocalAIServices.eval_suite(service, payload)
     result = LocalAIServices.eval_drift(service, {"suite_name": "demo", "cases": []})
     assert result["success"] is False
     assert result["error_code"] == "invalid_eval_suite_cases"
     assert not (tmp_path / "eval_history.json").exists()
+
+
+def test_initialized_service_uses_configured_state_directory(tmp_path):
+    service = LocalAIServices(
+        config={"server": {"state_dir": str(tmp_path)}},
+        runtime=Mock(), scheduler=Mock(), embeddings=Mock(), artifacts=Mock(),
+        telemetry=Mock(), repo_tools=Mock(), repo_state=Mock(),
+    )
+    invalid = service.eval_drift({"current": {"summary": {"pass_rate": -1}}})
+    assert invalid["error_code"] == "invalid_eval_result"
+    assert not (tmp_path / "eval_history.json").exists()
+    valid = service.eval_drift({"suite_name": "test", "current": {"summary": {"pass_rate": 0.5}}})
+    assert valid["success"] is True
+    assert json.loads((tmp_path / "eval_history.json").read_text(encoding="utf-8"))["test"]["summary"]["pass_rate"] == 0.5

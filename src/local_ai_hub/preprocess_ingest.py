@@ -6,7 +6,7 @@ import ast
 import hashlib
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -20,6 +20,8 @@ class IngestedFile:
     lines: tuple[str, ...]
     ast_tree: Any | None
     timestamp: float
+    ast_attempted: bool = True
+    _ast_lock: Any = field(default_factory=threading.Lock, repr=False, compare=False)
 
 
 class SinglePassIngestCache:
@@ -141,31 +143,89 @@ class SinglePassIngestCache:
             evicted = self._cache.pop(oldest_key)
             self._total_bytes = max(0, self._total_bytes - evicted.size_bytes)
 
-    def get_or_ingest(self, base: Path, rel_path: str, repo_tools: Any) -> IngestedFile:
+    def _ensure_ast(self, item: IngestedFile, parse_ast: bool) -> IngestedFile:
+        if not parse_ast or item.ast_attempted:
+            return item
+        acquired = item._ast_lock.acquire(timeout=30.0)
+        try:
+            if item.ast_attempted:
+                return item
+            try:
+                tree = ast.parse(item.text)
+            except Exception:
+                tree = None
+            with self._lock:
+                if not item.ast_attempted:
+                    item.ast_tree = tree
+                    item.ast_attempted = True
+            return item
+        finally:
+            if acquired:
+                item._ast_lock.release()
+
+    def get_with_ast(self, rel_path: str, root: str | None = None) -> IngestedFile | None:
+        item = self.get(rel_path, root=root)
+        if item is None:
+            return None
+        self._ensure_ast(item, True)
+        # An invalidation or replacement during parsing makes this snapshot stale.
+        return item if self.get(rel_path, root=root) is item else None
+
+    def get_or_ingest(self, base: Path, rel_path: str, repo_tools: Any, *, parse_ast: bool = True) -> IngestedFile:
         root_str = str(base)
         normalized = rel_path.replace("\\", "/").lstrip("/")
+
+        def ensure_current(item: IngestedFile | None) -> IngestedFile | None:
+            if not parse_ast:
+                return item
+            for _ in range(3):
+                if item is None:
+                    return None
+                self._ensure_ast(item, True)
+                current = self.get(normalized, root=root_str)
+                if current is item:
+                    return item
+                item = current
+            return None
+
         cached = self.get(normalized, root=root_str)
         if cached is not None:
-            return cached
+            cached = ensure_current(cached)
+            if cached is not None:
+                return cached
 
         event_key = self._key(normalized, root_str)
         with self._lock:
             cached = self.get(normalized, root=root_str)
+            if cached is None:
+                event = self._in_flight.get(event_key)
+                if event is None:
+                    event = threading.Event()
+                    self._in_flight[event_key] = event
+                    is_leader = True
+                else:
+                    is_leader = False
+        if cached is not None:
+            cached = ensure_current(cached)
             if cached is not None:
                 return cached
-            event = self._in_flight.get(event_key)
-            if event is None:
-                event = threading.Event()
-                self._in_flight[event_key] = event
-                is_leader = True
-            else:
-                is_leader = False
+            # The item was invalidated while parsing; join or start a fresh read.
+            with self._lock:
+                event = self._in_flight.get(event_key)
+                if event is None:
+                    event = threading.Event()
+                    self._in_flight[event_key] = event
+                    is_leader = True
+                else:
+                    is_leader = False
 
         if not is_leader:
             event.wait(timeout=30.0)
             cached = self.get(normalized, root=root_str)
             if cached is not None:
-                return cached
+                cached = ensure_current(cached)
+                if cached is not None:
+                    return cached
 
         try:
             target = base / Path(normalized)
@@ -176,7 +236,8 @@ class SinglePassIngestCache:
             size = len(source.encode("utf-8", errors="replace"))
 
             tree = None
-            if PurePosixPath(normalized).suffix.lower() == ".py":
+            is_python = PurePosixPath(normalized).suffix.lower() == ".py"
+            if is_python and parse_ast:
                 try:
                     tree = ast.parse(source)
                 except Exception:
@@ -190,6 +251,7 @@ class SinglePassIngestCache:
                 lines=tuple(lines),
                 ast_tree=tree,
                 timestamp=time.time(),
+                ast_attempted=parse_ast or not is_python,
             )
             self.put(ingested, root=root_str)
             return ingested

@@ -1,5 +1,6 @@
 import time
 import threading
+import hashlib
 from contextlib import closing
 from pathlib import Path
 import subprocess
@@ -46,7 +47,7 @@ def _insert_project(pre: ProjectPreprocessor, root: Path):
         con.commit()
 
 
-def test_hash_phase_reuses_one_git_probe_map_across_batches(tmp_path: Path):
+def test_hash_phase_hashes_each_file_once_across_batches(tmp_path: Path):
     config = _config(tmp_path)
     root = tmp_path / "repo"
     root.mkdir()
@@ -54,24 +55,27 @@ def test_hash_phase_reuses_one_git_probe_map_across_batches(tmp_path: Path):
         (root / f"f{i}.py").write_text(f"value = {i}\n", encoding="utf-8")
     tools = RepositoryTools(config)
     pre = ProjectPreprocessor(config, _Noop(), _Rag(), _Noop(), _Noop(), tools)
-    calls = 0
-
-    def blob_map(_root):
-        nonlocal calls
-        calls += 1
-        return {f"f{i}.py": f"git:f{i}" for i in range(4)}
-
-    tools.git_blob_map = blob_map
+    hashed = []
+    hash_file = tools._hash_file_only
+    def observe(path):
+        hashed.append(path.name)
+        return hash_file(path)
+    tools._hash_file_only = observe
     try:
         _insert_project(pre, root)
         assert pre._step_hash(dict(pre._project_row(str(root))))
         assert pre._step_hash(dict(pre._project_row(str(root))))
-        assert calls == 1
+        assert sorted(hashed) == [f"f{i}.py" for i in range(4)]
+        with closing(pre._connect()) as con:
+            rows = con.execute("SELECT path,content_hash,needs_hash FROM file_refs WHERE root=? ORDER BY path", (str(root),)).fetchall()
+        assert [(row[0], row[1], row[2]) for row in rows] == [
+            (f"f{i}.py", hashlib.sha256((root / f"f{i}.py").read_bytes()).hexdigest(), 0) for i in range(4)
+        ]
     finally:
         pre.close()
 
 
-def test_new_clean_worktree_seeds_git_hash_without_byte_read(tmp_path: Path):
+def test_new_clean_worktree_hashes_actual_bytes(tmp_path: Path):
     config = _config(tmp_path)
     root = tmp_path / "repo"
     root.mkdir()
@@ -80,16 +84,16 @@ def test_new_clean_worktree_seeds_git_hash_without_byte_read(tmp_path: Path):
     subprocess.run(["git", "add", "app.py"], cwd=root, check=True, capture_output=True)
     tools = RepositoryTools(config)
     pre = ProjectPreprocessor(config, _Noop(), _Rag(), _Noop(), _Noop(), tools)
-    tools._hash_file_only = lambda _path: (_ for _ in ()).throw(AssertionError("clean file must not be byte-hashed"))
     try:
         _insert_project_for_inventory(pre, root)
         assert pre._step_inventory(dict(pre._project_row(str(root))))
+        assert pre._step_hash(dict(pre._project_row(str(root))))
         with closing(pre._connect()) as con:
             row = con.execute(
                 "SELECT content_hash,needs_hash FROM file_refs WHERE root=? AND path='app.py'",
                 (str(root),),
             ).fetchone()
-        assert row[0].startswith("git:")
+        assert row[0] == hashlib.sha256((root / "app.py").read_bytes()).hexdigest()
         assert row[1] == 0
     finally:
         pre.close()
@@ -111,15 +115,15 @@ def test_new_worktree_links_existing_content_card_across_app_release(tmp_path: P
             con.execute(
                 "INSERT INTO content_cards(card_key,content_hash,model,analyzer_version,card_json,created_at,accessed_at,hits) VALUES(?,?,?,?,?,?,?,?)",
                 (
-                    "card-existing", "git:blob-app", "test",
+                    "card-existing", hashlib.sha256((root / "app.py").read_bytes()).hexdigest(), "test",
                     preprocess_module.PREPROCESS_ANALYZER_VERSION, "{}", now, now, 0,
                 ),
             )
             con.commit()
         # A normal Hub release must not make semantically unchanged cards miss.
         monkeypatch.setattr(preprocess_module, "__version__", "next-release", raising=False)
-        tools.git_blob_map = lambda _root: {"app.py": "git:blob-app"}
         assert pre._step_inventory(dict(pre._project_row(str(root))))
+        assert pre._step_hash(dict(pre._project_row(str(root))))
         with closing(pre._connect()) as con:
             card = con.execute(
                 "SELECT card_key FROM file_refs WHERE root=? AND path='app.py'",

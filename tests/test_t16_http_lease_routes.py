@@ -6,6 +6,7 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 from types import SimpleNamespace
+from urllib.error import HTTPError
 
 from local_ai_hub import http_server
 from local_ai_hub.commands import CommandBroker
@@ -62,7 +63,14 @@ def test_http_lease_routes_resolve_namespace_and_isolate_linked_worktrees(tmp_pa
     thread.start()
     base = f"http://127.0.0.1:{server.server_address[1]}"
 
-    def request(method: str, path: str, *, owner: str = "task-a", payload: dict | None = None) -> dict:
+    def request(
+        method: str,
+        path: str,
+        *,
+        owner: str = "task-a",
+        payload: dict | None = None,
+        include_status: bool = False,
+    ) -> dict | tuple[int, dict]:
         if payload is not None:
             payload = {"owner": owner, **payload}
         data = json.dumps(payload).encode("utf-8") if payload is not None else None
@@ -75,20 +83,29 @@ def test_http_lease_routes_resolve_namespace_and_isolate_linked_worktrees(tmp_pa
                 **({"Content-Type": "application/json"} if data is not None else {}),
             },
         )
-        with urllib.request.urlopen(req, timeout=5) as response:
-            return json.loads(response.read().decode("utf-8"))
+        try:
+            with urllib.request.urlopen(req, timeout=5) as response:
+                status = response.status
+                raw = response.read()
+        except HTTPError as response:
+            status = response.code
+            raw = response.read()
+        body = json.loads(raw.decode("utf-8"))
+        return (status, body) if include_status else body
 
     try:
         claim_a = request("POST", "/api/leases/claim_batch", payload={
             "root": str(worktree_a), "paths": ["src/shared.py"],
         })
-        claim_b = request("POST", "/api/leases/claim_batch", owner="task-b", payload={
+        claim_b_status, claim_b = request("POST", "/api/leases/claim_batch", owner="task-b", payload={
             "root": str(worktree_b), "paths": ["src/shared.py"],
-        })
+        }, include_status=True)
         claim_c = request("POST", "/api/leases/claim_batch", owner="task-c", payload={
             "root": str(unrelated), "paths": ["src/shared.py"],
         })
         assert claim_a["success"] is True
+        assert claim_b_status == 409
+        assert claim_b["status_code"] == 409
         assert claim_b["success"] is False
         assert claim_b["conflicts"]
         assert claim_c["success"] is True

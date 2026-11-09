@@ -9,6 +9,7 @@ from types import SimpleNamespace
 import pytest
 
 from local_ai_hub import http_server
+from local_ai_hub import trace_context
 from local_ai_hub.debug_traces import DebugTraceStore
 
 
@@ -114,11 +115,16 @@ def test_http_trace_start_uses_one_transaction_for_initial_event(tmp_path, monke
         handler._begin_trace("/api/security_audit")
         assert handler._debug_trace_id
         assert len(connections) == 1
+        debug_observer = trace_context.observer()
+        assert debug_observer is not None
+        debug_observer.output_delta("captured model answer")
     finally:
-        http_server.reset_context(handler._trace_context_token)
+        handler._close_trace_context()
     detail = store.detail(handler._debug_trace_id, full_payload=True)
     assert detail["events"][0]["payload"]["method"] == "POST"
     assert detail["events"][0]["payload"]["path"] == "/api/security_audit"
+    assert detail["session"]["output"] == "captured model answer"
+    assert any(event["event_type"] == "output_delta" for event in detail["events"])
 
 
 def test_trace_defaults_allow_large_retained_payloads(tmp_path):

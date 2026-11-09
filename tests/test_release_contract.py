@@ -61,6 +61,7 @@ def test_release_uses_only_current_local_ai_hub_contracts():
                     ROOT / "tests" / "test_opencode_real_ollama_source.py",
                     ROOT / "tests" / "test_opencode_container_integration.py",
                     ROOT / "tests" / "test_opencode_local_router.py",
+                    ROOT / "tests" / "unit" / "test_search_endpoint_precision.py",
                     ROOT / "tests" / "test_mixed_scheduler_integration.py"}:
             # The OpenAI-compatible upstream protocol is not the retired Hub API.
             text = text.replace('/' + 'v1' + '/', 'EXTERNAL_API_ROUTE/')
