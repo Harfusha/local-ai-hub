@@ -27,6 +27,7 @@ def test_preemption_reduces_batch_until_progress_and_keeps_other_roots_independe
 
     class Rag:
         def __init__(self): self.batches = []
+        def prune_missing(self, root, workspace, all_paths): return 0
         def index_paths_step(self, root, *, workspace, paths, should_yield, content_overrides):
             self.batches.append((root, list(paths)))
             if len(paths) > 2:
@@ -38,6 +39,7 @@ def test_preemption_reduces_batch_until_progress_and_keeps_other_roots_independe
     pre._stats = {'rag_steps': 0}
     pre._connect, pre._yield = connect, lambda: False
     pre._record_progress = lambda *args: None
+    pre._set_project = lambda *args, **kwargs: None
     pre._learned_priority_paths = lambda root: ()
     pre.cfg, pre.deterministic, pre.rag = {'rag_files_per_step': 8}, None, Rag()
     row = {'root': str(roots[0]), 'workspace': 'one'}
@@ -51,3 +53,9 @@ def test_preemption_reduces_batch_until_progress_and_keeps_other_roots_independe
 
     assert pre._step_rag({'root': str(roots[1]), 'workspace': 'two'}) is False
     assert len(pre.rag.batches[-1][1]) == 8
+
+    for _ in range(3):
+        assert pre._step_rag(row) is True
+    assert pre._step_rag(row) is True  # No pending files: reset for the next pass.
+    assert str(roots[0]) not in pre._rag_batch_limits
+    assert pre._rag_batch_limits[str(roots[1])] == 4
