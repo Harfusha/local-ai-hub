@@ -222,7 +222,7 @@ def test_sentence_transformers_gpu_lease_release_requires_terminal_outcome(
     assert model._gpu_reservation_path.exists() is reservation_remains
 
 
-def test_embed_reuses_cached_vectors_and_preserves_batch_order():
+def test_embed_defers_sentence_transformer_caching_to_embedding_model():
     service = LocalAIServices.__new__(LocalAIServices)
     service.config = {
         "models": {"embedding_backend": "sentence-transformers", "embedding": "test-model"},
@@ -236,7 +236,8 @@ def test_embed_reuses_cached_vectors_and_preserves_batch_order():
 
     assert first["embeddings"] == [[5.0, 1.0], [4.0, 1.0]]
     assert second["embeddings"] == [[4.0, 1.0], [5.0, 1.0]]
-    assert service.embeddings.calls == [["alpha", "beta"]]
+    assert service.embeddings.calls == [["alpha", "beta"], ["beta", "alpha"]]
+    assert not service.embedding_cache.values
 
 
 def test_embedding_model_cache_hit_skips_backend_and_reports_latency():

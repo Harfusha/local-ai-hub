@@ -3093,6 +3093,23 @@ class LocalAIServices:
             is_bg = background if background is not None else (priority <= 1)
             return self.scheduler.submit(model, source="embed", execute=run, priority=priority, background=is_bg, wait_timeout=wait_timeout)
 
+        if backend in {"sentence-transformers", "openvino"}:
+            # EmbeddingModel owns the provenance-aware cache. The outer cache
+            # is keyed only by the configured name and can mix model spaces.
+            result = encode_uncached(list(texts))
+            if not isinstance(result, dict):
+                return {"success": False, "error": "embedding failed"}
+            uncertain = any(key in result and result[key] is not False for key in (
+                "outcome_unknown", "timed_out", "cancelled", "preempted",
+                "cleanup_unconfirmed", "_lah_partial_response", "in_progress",
+                "output_truncated", "partial",
+            ))
+            if uncertain:
+                result = dict(result)
+                result["success"] = False
+                result.pop("embeddings", None)
+            return result
+
         cache = getattr(self, "embedding_cache", None)
         cache_enabled = bool(getattr(self, "embedding_cache_enabled", self.config.get("cache", {}).get("embeddings", True)))
         if not cache_enabled or cache is None:
