@@ -436,7 +436,7 @@ class RecoveryJournal:
         response_json = ""
         if response is not None:
             try:
-                encoded = json_dumps(response, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+                encoded = json_dumps(response, ensure_ascii=False, separators=(",", ":"))
                 # Responses should already be compact/artifact-backed. Avoid turning the
                 # recovery journal into a second unbounded artifact store.
                 if len(encoded.encode("utf-8")) <= 2_000_000:
@@ -454,12 +454,21 @@ class RecoveryJournal:
                 return
             pending = self._pending_completions.get(request_id)
             if pending is not None:
+                same_response = False
+                if pending[5] and response_json:
+                    try:
+                        same_response = json_dumps(
+                            json.loads(pending[5]), ensure_ascii=False, separators=(",", ":"), sort_keys=True,
+                        ) == json_dumps(
+                            json.loads(response_json), ensure_ascii=False, separators=(",", ":"), sort_keys=True,
+                        )
+                    except (TypeError, ValueError):
+                        same_response = False
                 same = (
                     pending[1] == ("done" if success else "failed")
                     and pending[3] == detail
                     and pending[4] == int(status_code)
-                    and bool(response_json)
-                    and pending[5] == response_json
+                    and same_response
                 )
                 if same:
                     return

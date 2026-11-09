@@ -304,6 +304,31 @@ def test_completion_batch_keeps_first_terminal_result_across_batches(tmp_path: P
     assert row == ("done", 200, '{"value":"first"}')
 
 
+def test_pending_replay_preserves_json_serialization_for_mixed_mapping_keys(tmp_path: Path, monkeypatch: Any) -> None:
+    journal = RecoveryJournal(tmp_path / "state")
+    _claimed(journal, "request-1")
+    entered = threading.Event()
+    release = threading.Event()
+    original = journal._write_completion_batch
+
+    def blocked(batch: Any) -> None:
+        entered.set()
+        assert release.wait(5)
+        original(batch)
+
+    monkeypatch.setattr(journal, "_write_completion_batch", blocked)
+    try:
+        journal.finish("request-1", True, response={"name": 1, 2: 3})
+        assert entered.wait(5)
+        journal.finish("request-1", True, response={2: 3, "name": 1})
+        pending = journal._pending_completions["request-1"]
+        assert journal._decode_response(pending[5]) == {"name": 1, "2": 3}
+        assert len(journal._completion_reservations) == 1
+    finally:
+        release.set()
+        journal.close()
+
+
 def test_durable_result_wins_over_late_pending_completion(tmp_path: Path, monkeypatch: Any) -> None:
     journal = RecoveryJournal(tmp_path / "state")
     _claimed(journal, "request-1")
