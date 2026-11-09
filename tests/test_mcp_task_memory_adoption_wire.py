@@ -134,7 +134,7 @@ def _round_trip(tmp_path, requests, monkeypatch, *, real_store=False, return_sto
             body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", "0"))))
             request_id = self.headers.get("X-LocalAI-Request-ID", "")
             calls.append({"path": self.path, "body": body, "request_id": request_id})
-            if body.get("checkpoint", {}).get("next_action") == "large error test":
+            if (body.get("checkpoint") or {}).get("next_action") == "large error test":
                 encoded = json.dumps({
                     "success": False, "status_code": 413, "terminal": True, "retryable": False,
                     "error": "checkpoint response budget rejected " * 1200,

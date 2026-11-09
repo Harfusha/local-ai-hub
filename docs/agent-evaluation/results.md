@@ -4314,3 +4314,9 @@ CASE119 now explicitly forbids eval/drift/record/benchmark calls without isolate
 ### CASE119: strengthened isolation guard retest (2026-11-09)
 
 GPT-6 Luna Low chat `01a1c099-df23-7f73-8481-f54faab0149d` received the revised prompt and the same absent fixture inputs. The exported transcript shows one `local_ai_status` call and no task/eval/benchmark/job calls. The chat marked the affected branches NOT_RUN. PASS for this negative guard in this chat only; positive eval, drift, job and benchmark behavior remains NOT_RUN. Status fields are chat-reported, not independently verified.
+
+### CASE119: drift history integrity source regression (2026-11-09)
+
+Current source reproduced seven failures: failed suite, invalid/role-mismatched benchmark, execution failure, absent/nonfinite pass rate, corrupt history and failed persistence were reported as successful drift, potentially overwriting history. After focused changes, invalid suite results are propagated, invalid/incomplete benchmark data or corrupt history reject before history mutation, and persistence failure reports an unknown outcome. A second red test showed an error case with otherwise plausible summary was accepted; the correction rejects it. Focused checks: 11 passed, including actual `eval_suite` input validation, history preservation and the existing baseline/regression/improvement test. No full test suite ran.
+
+An isolated temporary loopback HTTP attempt was rejected with `detailed_diagnostics_disabled` (409) before reaching drift evaluation; the test was removed rather than overriding the diagnostics gate. The source candidate is not installed or live MCP/HTTP verified. The earlier chat’s reported 500 remains unconfirmed as to cause and effects; no claim of cleanup or runtime fix. CASE119 now includes a sandbox-only history preservation scenario; this added branch remains NOT_RUN in a Luna chat.

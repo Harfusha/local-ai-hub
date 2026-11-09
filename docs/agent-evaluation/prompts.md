@@ -963,6 +963,8 @@ Režim: syntetické evaluace; žádný model pull.
 ~~~text
 STOP: Bez dodaného izolovaného rootu, izolovaného stavu Hubu a run ID nevolej eval_drift, evaluation_record, eval_suite ani žádný benchmark: mohou spustit inference nebo zapsat stav. Chybějící baseline znamená eval_drift NOT_RUN; volání bez baseline není bezpečný negativní test. Bez známého job ID nevolej job lifecycle akce. Neúplný vstup testuj jen u akce, pro niž harness předem prokázal odmítnutí před mutací v izolovaném stavu; jinak NOT_RUN.
 
+V předem připravené oddělené instanci a při oprávněné dostupnosti diagnostiky ověř i integritu drift historie: nejprve platný známý baseline, potom neplatnou nebo selhanou evaluaci. Vyžaduj chybový výsledek a nezměněný původní záznam; neúplný výstup ani selhání běhu nesmí vytvořit nulový baseline. Poškozenou historii a chybu uložení ověř jen v samostatné disposable fixture. Diagnostiku sám nezapínej; bez uvedených podmínek jsou větve NOT_RUN.
+
 Otestuj local_ai_task eval/benchmark/job akce z případu 119. Použij harnessem dodaný `{{DISPOSABLE_ROOT}}`, syntetická data, run ID a časový limit. Nejprve ověř neúplný vstup bez mutace. Zachovej stabilní job/root/task/session ID; unknown/in_progress nesmí vést k retry ani falešnému dokončení. Drift vyhodnoť jen se skutečným baseline. Benchmark nejvýše tři krátké vstupy a 60 sekund; rozliš cold/warm. Hardware test vyžaduje přidělený slot. Model nestahuj. Skryté akce = GATED/UNAVAILABLE; chybějící izolace = pouze odpovídající část NOT_RUN.
 ~~~
 
