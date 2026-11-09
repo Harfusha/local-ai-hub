@@ -282,7 +282,22 @@ def test_duplicate_request_completions_keep_separate_reservations_until_commit(
         row = connection.execute(
             "SELECT response_json FROM requests WHERE request_id=?", ("request-1",)
         ).fetchone()
-    assert row is not None and "bbbb" in str(row[0])
+    assert row is not None and "aaaa" in str(row[0])
+
+
+def test_completion_batch_keeps_first_terminal_result_across_batches(tmp_path: Path) -> None:
+    journal = RecoveryJournal(tmp_path / "state")
+    _claimed(journal, "request-1")
+    first = ("request-1", "done", 1.0, "first", 200, '{"value":"first"}', 1)
+    conflicting = ("request-1", "failed", 2.0, "second", 500, '{"value":"second"}', 2)
+    journal._write_completion_batch([first, conflicting])
+    journal._write_completion_batch([conflicting])
+    with closing(sqlite3.connect(journal.path)) as connection:
+        row = connection.execute(
+            "SELECT state,status_code,response_json FROM requests WHERE request_id=?", ("request-1",)
+        ).fetchone()
+    journal.close()
+    assert row == ("done", 200, '{"value":"first"}')
 
 
 def test_saturated_queue_keeps_http_completion_nonblocking_and_fails_closed(
