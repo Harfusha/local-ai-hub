@@ -4643,13 +4643,20 @@ The focused files `tests/unit/test_structural_search_confinement.py`, `tests/tes
 ### CASE130 — `find_symbol` incomplete index (2026-11-09)
 
 - Isolated GPT-6 Luna Low chat `01a1c1b9-4eba-7ac3-8f7f-28b13210d166` made one `local_ai_repo.find_symbol` call with only fixture `root` and `query="load_project"`; marker confirms dispatch/args, request ID reported `req_2481c9e3ddf9`. Agent-reported response: `indexed_files_present=false`, `checked_paths=0`, `freshness=no_candidates`, incomplete coverage, zero results. **NOT_VERIFIED**; no symbol absence inferred. No raw payload/artifact or extra tool call.
-### CASE130 — git_log bounded history (2026-11-09)
 
-- Isolated GPT-6 Luna Low chat 01a1c1ba-f716-7370-83f7-44cef98bd0bf made exactly one local_ai_repo.git_log call with root C:\Users\Adam\.local-ai-hub, query="prompt", limit=1; path omitted. Transcript marker proves dispatch/arguments and no extra tool calls. Request ID and fields below are agent-reported; raw Hub payload/artifact is absent, so result remains NOT_VERIFIED.
-- Agent reports request req_061a1601fbbd, max_commits=1, path=null, complete=false, commit_limit_reached=true, truncated=false, one entry 65fe941de48b2be373b081d8e5689e0090a91f89. Correct classification: PARTIAL, not complete history. No full-session data verified.
-### CASE130 — structural_search path confinement, invalid chat scope (2026-11-09)
+### CASE130 — `git_log` bounded history (2026-11-09)
 
-- Isolated GPT-6 Luna Low chat 01a1c1bd-73de-7ce1-b954-936a28807648 made exactly one local_ai_repo.structural_search call with fixture root C:\Users\Adam\.local-ai-hub\docs\agent-evaluation\fixtures\alpha\src\demo_core, path=../demo_api/routes.py, query=TaskService. Transcript confirms exact dispatch and args, then also contains forbidden cua_repl.js completion_summary. **FAIL / INVALID_CHAT_SCOPE** despite explicit no-CUA prompt. Agent reports status_code=403, terminal=true, retryable=false, request req_d72b24faaa26, no results/content; no raw Hub payload/artifact is present, so refusal fields are **NOT_VERIFIED**. No retry. Symlink/junction/race branches remain NOT_RUN.
-### CASE130 — structural_search AST-positive branch, invalid chat
+- Isolated GPT-6 Luna Low chat `01a1c1ba-f716-7370-83f7-44cef98bd0bf` made one `local_ai_repo.git_log` call: root `C:\Users\Adam\.local-ai-hub`, query `prompt`, limit `1`; path omitted. Transcript confirms dispatch/arguments and no extra tool calls. Raw Hub payload/artifact is absent; response fields remain **NOT_VERIFIED**.
+- Agent-reported request `req_061a1601fbbd`: `max_commits=1`, `path=null`, `complete=false`, `commit_limit_reached=true`, `truncated=false`, one entry `65fe941de48b2be373b081d8e5689e0090a91f89`. Classification: **PARTIAL**, not full history.
 
-- Isolated GPT-6 Luna Low chat 01a1c1be-d923-7573-b0ac-9f5a713b1de1 made one local_ai_repo.structural_search call with exact project root, fixture path docs/agent-evaluation/fixtures/alpha/src/demo_core/consumer.py, and query=call:normalize_path. Transcript confirms dispatch/args and no extra tool call. Transcript contains two final_answer messages despite the one-final instruction; **FAIL / INVALID_CHAT**. Agent claims success=true, count=1, line 5, parse_errors=0, read_errors=0, files_scanned=1, but raw Hub payload/artifact is absent; all response fields remain **NOT_VERIFIED**. AST-positive behavior not accepted.
+### CASE130 — `structural_search` path confinement, invalid chat scope (2026-11-09)
+
+- Isolated GPT-6 Luna Low chat `01a1c1bd-73de-7ce1-b954-936a28807648` made one call with fixture root `C:\Users\Adam\.local-ai-hub\docs\agent-evaluation\fixtures\alpha\src\demo_core`, path `../demo_api/routes.py`, query `TaskService`. Transcript confirms dispatch/arguments, then forbidden `cua_repl.js` `completion_summary`. **FAIL / INVALID_CHAT_SCOPE**, despite explicit no-CUA instruction. Agent-reported refusal (`status_code=403`, `terminal=true`, `retryable=false`, request `req_d72b24faaa26`) is **NOT_VERIFIED**; no raw payload/artifact. No retry. Symlink/junction/race branches remain NOT_RUN.
+
+### CASE130 — `structural_search` AST-positive branch, invalid chat (2026-11-09)
+
+- Isolated GPT-6 Luna Low chat `01a1c1be-d923-7573-b0ac-9f5a713b1de1` made one call with project root, fixture path `docs/agent-evaluation/fixtures/alpha/src/demo_core/consumer.py`, query `call:normalize_path`. Transcript confirms dispatch/arguments and no extra tool call, but contains two `final_answer` messages. **FAIL / INVALID_CHAT**. Agent-reported `success=true`, count `1`, line `5`, zero parse/read errors and one scanned file remain **NOT_VERIFIED**; raw payload/artifact absent.
+
+### CASE130 — `find_references` known caller, missing session tool (2026-11-09)
+
+- Isolated GPT-6 Luna Low chat `01a1c1bf-ab30-71e2-989b-5b763eb957f0` had no `local_ai_repo` tool marker and made no MCP call. One final answer reported the tool missing from that chat. **NOT_RUN / NOT_VERIFIED**, not product UNAVAILABLE. Positive `normalize_path` caller branch remains untested. No CUA or retry.
