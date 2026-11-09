@@ -75,7 +75,7 @@ def test_plan_refuses_provenance_budget_before_target_creation(tmp_path, monkeyp
 def test_json_conversion_removes_retired_keys_by_presence_and_preserves_source(tmp_path: Path) -> None:
     source = tmp_path / "settings.json"
     target = tmp_path / "converted.json"
-    original = {"api_token": "kept", "security": {"api_token_tenant": None},
+    original = {"api_token": "kept", "security": {"api_token": "retired-secret", "api_token_tenant": None},
                 "server": {"tenant": None, "port": 7312}, "task": {"tenant_scope": False}}
     source.write_text(json.dumps(original), encoding="utf-8")
     source_before = source.read_bytes()
@@ -86,7 +86,7 @@ def test_json_conversion_removes_retired_keys_by_presence_and_preserves_source(t
     assert json.loads(target.read_text(encoding="utf-8")) == {
         "api_token": "kept", "security": {}, "server": {"tenant": None, "port": 7312},
         "task": {"tenant_scope": False}}
-    assert result["removed_paths"] == ["$.security.api_token_tenant"]
+    assert result["removed_paths"] == ["$.security.api_token", "$.security.api_token_tenant"]
 
 
 def test_static_sqlite_contracts_load_without_importing_runtime_modules() -> None:
@@ -455,12 +455,14 @@ def test_supported_request_journal_conversion_preserves_source_and_rows(tmp_path
                for item in provenance["removed_retired_fields"])
 
 
-def test_toml_config_converts_exact_retired_paths_and_keeps_scope_and_tokens(tmp_path: Path) -> None:
+def test_toml_config_removes_hub_tokens_and_retired_paths(tmp_path: Path) -> None:
     source = tmp_path / "settings.toml"
     target = tmp_path / "converted.toml"
     source.write_text(
         '[rag]\nscope = "tenant"\nchunk_chars = 4000\n\n'
-        '[security]\napi_token = "keep-token"\napi_token_tenant = "old-tenant"\n'
+        '[security]\napi_token = "keep-token"\nsupervisor_token = "supervisor-secret"\n'
+        'action_tokens = { write = "write-secret" }\napi_token_permissions = ["read"]\n'
+        'api_token_tenant = "old-tenant"\n'
         'api_token_principal = "private-principal"\ntenant_derivation_key = "secret-key"\n'
         'users = [{ name = "operator", token = "keep-in-provenance" }]\n'
         '[scheduler]\nmax_queued_per_tenant = 5\nmax_queued = 20\n\n'
@@ -472,7 +474,10 @@ def test_toml_config_converts_exact_retired_paths_and_keeps_scope_and_tokens(tmp
     result = _converter.convert_toml_config(source, target)
 
     converted = target.read_text(encoding="utf-8")
-    assert 'api_token = "keep-token"' in converted
+    assert "api_token =" not in converted
+    assert "supervisor_token =" not in converted
+    assert "action_tokens =" not in converted
+    assert "api_token_permissions =" not in converted
     assert 'chunk_chars = 4000' in converted
     assert 'max_queued = 20' in converted
     assert 'scope = "worktree"' in converted
@@ -497,7 +502,7 @@ def test_toml_removes_users_table_block_and_preserves_other_sections(tmp_path: P
 
     output = target.read_text(encoding="utf-8")
     assert "# keep this leading comment" in output
-    assert 'api_token = "keep"' in output
+    assert "api_token =" not in output
     assert "[security.users]" not in output
     assert "operator =" not in output
     assert "[scheduler]" in output and "max_queued = 20" in output

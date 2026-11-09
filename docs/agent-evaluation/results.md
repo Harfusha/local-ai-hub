@@ -3178,3 +3178,440 @@ These were advisory `local_ai_task(action="compress")` calls using the authentic
 - Projectless isolated GPT-6 Luna Low chat `01a1bd42-5dfc-7390-b5c6-cb5b02b81dc1` used the explicit repository root. It made exactly one `local_ai_repo(search)` call (`req_4bd85b21bc14`) and two non-overlapping `local_ai_artifact(source)` calls for `src/local_ai_hub/operation_contracts.py:178–182` and `183–183`; each slice is within the inclusive five-line bound. Source SHA-256: `2472b26741bc17ea0e7264f077aa21f3f920a667a2010a74d23bbce11d7c2160`. Artifact request ID was not returned and is recorded as `NOT_RETURNED`.
 - The final table consistently classifies both actions `EXPOSED` and `DECLARED`, with exact raw values: `minimum_profile=high`, `feature_gate=bounded_local_work`, `quality_gate=implementation_case_and_overall_gate`, `unavailable_reason=requires_high_profile_task_qualification_and_explicit_permissions`. Metadata claims are session-bound; source gates do not establish current blocking. No `local_ai_work` action, work order, repo shell, edit, test, install or restart ran.
 - **PASS for CASE134's bounded two-axis classification and evidence capture.** It does not verify submit/continue execution quality or imply removal/availability in other sessions.
+- This pass covered the original two-action scope only. After reviewing action coverage, CASE134 now also includes source/live presence for `local_ai_repo.delegate`, `solve`, and `review_diff`, which CASE132 exercises behaviorally but CASE129's current source comparison did not close. The expanded five-action prompt requires a fresh isolated result; Round 41 is not evidence for the added branches.
+
+### Round 42 — CASE134 five-action source/live retest
+
+- Projectless isolated GPT-6 Luna Low chat `01a1bd53-b9a7-7330-8f98-6740dc0d15fc` correctly kept live exposure NOT_VERIFIED because complete enum metadata was not visible. It performed exactly three bounded source reads at `operation_contracts.py:178–182`, `183–183`, and `235–237` (all `max_chars=1200`); source SHA-256 was `2472b26741bc17ea0e7264f077aa21f3f920a667a2010a74d23bbce11d7c2160`. It declared all five actions from source and preserved work gates; no action was called.
+- Its table put `NOT_VERIFIED` in the binary `enum_contains_action` field instead of `unknown`, making row data inconsistent with the requested schema. Evidence has no returned artifact request IDs; it marked them `NOT_RETURNED`. Status PARTIAL. Prompt now defines exact allowed values and mapping.
+
+### Round 43 — CASE134 unknown-enum classification retest
+
+- Projectless isolated GPT-6 Luna Low chat `01a1bd54-f764-7a12-af6e-a1622efc578c` made exactly three `local_ai_artifact(source)` calls for `operation_contracts.py:178–182`, `183–183`, and `235–237`; each obeyed the inclusive five-line and 1200-character bounds. Source SHA-256: `2472b26741bc17ea0e7264f077aa21f3f920a667a2010a74d23bbce11d7c2160`. No target action call, mutation, test, install, or restart occurred.
+- The chat marked live exposure NOT_VERIFIED because complete enums were not available in its visible metadata; it did not infer unavailability. All five source actions were DECLARED. It preserved the exact four `work.bounded_submission` gate fields and explicitly marked repo gates `NOT_SHOWN_IN_ACTION_LIST`. Returned artifact request IDs were absent and recorded `NOT_RETURNED`; the source digest and limitation were recorded consistently.
+- **PASS for CASE134's five-action source/live classification.** Live MCP exposure remains NOT_VERIFIED for that isolated chat, which the prompt correctly records as such. No execution behavior is established.
+
+### Round 44 — CASE129 `include_code` falsey-vs-missing pair
+
+- Projectless isolated GPT-6 Luna Low chat `01a1bd56-c7e5-7ab1-81b8-90afa015a5f9` made exactly two read-only `local_ai_repo(search)` calls. Both used root `C:\Users\Adam\.local-ai-hub`, query `local_ai_task`, limit 1, compact, max response 2048; first omitted `include_code`, second set `include_code=false`. Request IDs: `req_813aa7cad876`, `req_1f175943d961`.
+- Both returned `README.md` lines 1–10, lexical score 11.5, one result, `candidate_count=1` inexact, `has_more=true`, `coverage_complete=false`, and `total_matches=null`. `truncated=true` due `candidate_file_limit`; response-envelope truncation was false. Only request ID/accounting metadata differed.
+- **PASS for this bounded pair comparison, limited to the returned candidate.** It does not establish full-search equivalence. No edits, shell, tests or mutation occurred.
+
+### Round 45 — CASE129 `query` falsey-vs-missing pair
+
+- Projectless isolated GPT-6 Luna Low chat `01a1bd57-7b11-7423-bbdf-c1b9865b3021` made exactly two read-only `local_ai_repo(search)` calls at the explicit project root, limit 1, compact, max response 2048. Request 1 omitted `query` (`req_627bf02a14ca`); request 2 set `query=""` (`req_8245111c491c`); all other arguments matched.
+- Both returned empty results, zero returned count, `total_matches=null`, and incomplete coverage. Both were `degraded=true`, `index_state=missing`, `degradation_reason=rag_index_missing`, `result_source=lexical_fallback`, with no truncation. Aside from request/accounting metadata, results matched.
+- **PASS only for equivalence on the lexical fallback path.** Missing index means this does not prove hybrid/indexed search equivalence. CASE129 remains PARTIAL due to its incomplete full action/source comparison and other unverified branches. No mutation, shell, test, install or restart ran.
+
+
+### Round 46 — CASE129 retired `tenant` argument probe
+
+- Projectless isolated GPT-6 Luna Low chat `01a1bd58-3be8-7843-9aad-7435b5ea07ba` attempted one read-only `local_ai_repo(search)` call with exact arguments: root `C:\Users\Adam\.local-ai-hub`, query `local_ai_task`, limit 1, `tenant="__retired_scope_probe__"`, compact, max response 2048.
+- The MCP tool layer rejected the unexpected `tenant` argument. No Hub/server `request_id` was returned; server preflight was not reached or proven. Do not treat this as proof that Hub removed tenant validation or any MCP action.
+- **NOT_VERIFIED for Hub behavior; PASS only for detecting this MCP-layer schema rejection.** No retry or follow-up action occurred.
+
+### Round 47 — CASE116 practical audit of repo sub-actions
+
+- Projectless isolated GPT-6 Luna Low chat `01a1bd5b-ecc0-71b1-989f-a371628e9684` invoked all nine requested read-only `local_ai_repo` actions once against the explicit `case-073/root` fixture. The transcript shows server-side tool calls; no client rejection or `request_not_sent`. `advertised_enum` remained `NOT_VERIFIED`, so this run gives no evidence that actions were removed.
+- `security_audit` succeeded but scanned zero files (`req_6369ddefb6f2`); `dead_code` returned zero candidates (`req_044e45aeaac8`); `reachability_dead_code` returned zero symbols (`req_8ae8f490acd9`); `complexity` analyzed zero files/functions because the fixture path was excluded (`req_8c09c4667ad2`); `api_spec` reported OpenAPI 3.0.0 and zero endpoints without coverage (`req_09557678a791`); `test_matrix` reported zero test files and unknown omissions (`req_84d006709bcb`). These are partial, not clean-audit results.
+- `secret_scan` reported one CRITICAL `openai_api_key` finding at `config.env:2` in a 103-byte file (`req_7d5dc3b75a5c`); the value was redacted. The model then incorrectly claimed no path had been returned and skipped the prompt-required stat. A narrowly scoped follow-up performed metadata-only `stat` on `config.env` (`req_325cb0c41f49`): file exists under the fixture root, 103 bytes, 2 lines; no content read.
+- `migration_drift` returned `database_missing` (`req_b89c18e24eb4`). `package_audit` returned `invalid` because the manifest was unavailable or outside its allowed input (`req_f96708ecbaef`). No tests, mutations, network calls, or installs occurred.
+- **FAIL for first-pass prompt adherence; PARTIAL scenario evidence.** The assistant contradicted the `secret_scan` path it had just reported and omitted the required stat. The follow-up proves only path containment. Prompt now requires immediate metadata stat for every returned path and forbids completeness claims without explicit inventory evidence. This read-only fixture probe does not establish runtime coverage.
+
+
+### Round 48 — CASE116 corrected prompt recheck
+
+- Projectless isolated GPT-6 Luna Low chat `01a1bd5f-3e37-7672-a9e0-220dcda74409` ran only CASE116. All nine named read-only actions reached the Hub once; `advertised_enum=NOT_VERIFIED`, so the test makes no removal claim.
+- The recheck reported `config.env:2` from `secret_scan` (`req_e57b9589835b`) and immediately performed metadata-only `stat` before the next action (`req_fe8d56d0e124`). It confirmed 103 bytes and 2 lines without reading content. No path/stat contradiction recurred.
+- The assistant marked coverage `PARTIAL`: `security_audit` visited zero files; inventory completeness was not proven for other actions; `test_matrix` reported unknown omissions. `migration_drift` remained `database_missing`; `package_audit` remained `invalid`. These are fixture/action outcomes, not regressions proven in Hub implementation.
+- **PASS for corrected prompt adherence in this isolated iteration; scenario coverage remains PARTIAL.** No tests, mutations, installs, network calls, or source changes occurred.
+
+
+### Round 49 — CASE132 first-pass sequence stop
+
+- Projectless isolated GPT-6 Luna Low chat `01a1bd6a-db32-7e13-b473-126533658849` performed one `local_ai_status` check and attempted `local_ai_repo.delegate` against the explicit fixture. The tool returned a terminal/non-retryable 400 `invalid action for local`, with no Hub `request_id`.
+- The assistant stopped before the independent `solve` and `review_diff` probes. That was premature: no cancellation, `outcome_unknown`, or shared prerequisite failure was reported. Prompt now explicitly requires continuing other named read-only branches once, without retrying the failed action.
+- **FAIL for prompt sequencing.** The 400 does not prove global action removal; rejection layer and active capability gate were not established.
+
+### Round 50 — CASE132 remaining sub-action probes
+
+- In the same isolated GPT-6 Luna Low chat, after explicit follow-up, `solve` and `review_diff` were each called once with fixture-scoped arguments; `review_diff` carried the exact synthetic `diff`. `solve` was reported terminal/non-retryable 400; `review_diff` returned 400 with an action-list rejection. Neither returned a Hub `request_id`; the assistant reported `invalid action for local` / action absent from the returned action list. No action output quality could be assessed.
+- The single status check reported Hub online, Ollama online, GPU available, `active_model=null`; it did not report the active hardware profile or a specific capability-gate reason. Source snapshot SHA-256 `2472b26741bc17ea0e7264f077aa21f3f920a667a2010a74d23bbce11d7c2160` declares `delegate` read-only with minimum `balanced`, `local_semantic_analysis`, and `task_specific_review`; `solve` read-only with minimum `medium`, `local_semantic_analysis`, and `task_specific_evaluation`; `review_diff` read-only with minimum `balanced`, `local_semantic_analysis`, and `diff_review_evaluation`. Runtime action filtering applies profile and feature gates, but this session did not expose its active profile or exact gate result.
+- **NOT_VERIFIED for Hub/server execution or global availability; session returned 400 for all three calls.** Keep CASE132 and CASE134 scenarios. Do not call these actions removed from the product. No shell, file changes, tests, installs, or restart occurred.
+
+
+### Static reconciliation — `local_ai_repo` source actions vs prompt map (2026-11-09)
+
+- At repository HEAD `030ef2bdec857f4a33a5b7366a7c5cda3fde89c5`, bounded source slice `operation_contracts.py:235–255` (SHA-256 `2472b26741bc17ea0e7264f077aa21f3f920a667a2010a74d23bbce11d7c2160`) contains 93 unique `_REPO_ACTIONS`.
+- Compared that set against the `local_ai_repo` rows in `mcp-action-coverage.md` (SHA-256 `dfe5d3010b7a722ca833cf783c9ed46b6bc24340b598ea58ae34595ac9b52ad7`): all 93 source action names map to a prompt; unmapped count 0. `batch_replace` remains explicitly conditional/source-only in CASE117.
+- **PASS for source-to-prompt name mapping only.** This does not establish live-session enum exposure, per-action branch quality, or runtime success. CASE116 (sparse/empty fixture behavior) and CASE133 (positive populated-source coverage) exercise complementary audit paths. CASE132 tests behavior; CASE134 classifies source/live exposure and gates. Cases 115–117 and 130–134 remain distinct; no scenario was removed or deemed redundant by this set comparison. No prompt chats, tests, installs, or restarts were run in this static reconciliation.
+
+### Round 51 — CASE129 isolated source inventory follow-up
+
+- GPT-6 Luna Low chat `01a1bd79-9054-7be2-9988-c687ec56ecde` initially searched broad phrases, then fetched source line 1 instead of relevant declarations. Source comparison remained NOT_RUN until a follow-up supplied exact anchors.
+- The exact-slice follow-up loaded all requested ranges successfully: `_REPO_ACTIONS` (93 names), `supported_repo_actions` and capability mapping, generated inventory tests, CASE map, and contract snapshot. Chat reported 92 mapped snapshot actions, 0 unmapped, and conditional/source-only `batch_replace`; live enum remained NOT_VERIFIED. Artifact calls returned no `request_id` fields. No files changed.
+- This exposed a prompt-navigation weakness. CASE129 now gives path-specific search anchors and exact five-line source ranges, with first-line/SHA checks and per-slice NOT_RUN handling.
+
+### Round 52 — CASE129 stored-prompt retest
+
+- GPT-6 Luna Low chat `01a1bd80-c1be-7fe0-9a24-f8ba9ff24e4b` ran the then-current stored prompt read-only. It classified `local_ai_repo` live actions as NOT_VERIFIED, performed one status call (`req_3880fd39ca7d`), and completed all six falsey/missing searches: `req_92a8f566dc53`, `req_4da22278dedb`, `req_d0e2aad96459`, `req_295e4b898bdd`, `req_bf9e82c745df`, `req_5eccf1697505`. Retired `tenant` was rejected with terminal 400 and no request ID; this is client/tool-schema evidence only.
+- Source comparison remained PARTIAL/NOT_RUN because the model requested oversized prompt slices and failed to retrieve the relevant declaration/test/map ranges. No mutations, shell, tests, installs, or restart occurred. Prompt SHA during this run was `46a318843daa820f8205011a722909108331cc5ff626f5d1de84f1dd179af3f0`.
+
+### Round 53 — CASE129 corrected source-slice retest
+
+- GPT-6 Luna Low chat `01a1bd85-7b62-7a51-adcc-a5d6d230c22d` first failed to locate the newly added instructions. A follow-up supplied their exact prompt lines and source ranges; all 17 bounded artifact slices completed with `success=true`, `complete=true`, and `truncated=false`. Artifact calls did not return request IDs.
+- The run confirmed 93 source declarations, 92 mapped contract rows, 92 covered actions, 0 uncovered, and one conditional/source-only action (`batch_replace`). This verifies source mapping only; live `local_ai_repo` exposure remains NOT_VERIFIED. No repository tests or mutations ran.
+
+### Round 54 — configured model readiness diagnostic
+
+- One Hub status call (`req_7516138d184a`) reported Hub/Ollama online, VRAM telemetry nominal, no active model, and GPU admission available. The response envelope was truncated at the requested 512-token budget, but protected status fields remained present.
+- `python tools/doctor.py` exited 0. Doctor reported one warning: configured Ollama model `qwen2.5-coder:7b` is missing. `ollama list` confirmed installed tags include `qwen2.5-coder:3b`, `qwen2.5-coder:14b`, and `qwen3.5:9b-nvfp4`, but not the exact 7b tag. `docs/MODEL_CAPABILITIES.md:58–63` maps `fast_code` to 7b on medium/high profiles; high `heavy_code` maps to 14b.
+- Classification: environment/model readiness gap, not a source defect proven by this check. No model pull, config change, install, Hub restart, or full suite ran. Resolve only with an explicit model-install or routing decision.
+
+### Round 55 — dashboard tokenless read
+
+- Bounded anonymous GET to the documented `http://127.0.0.1:11435/dashboard`, with no Authorization header or credentials supplied, returned HTTP 200, 600,649 bytes, HTML title `Local AI Hub`, and dashboard content. This directly confirms the dashboard page does not require an API token in the current runtime.
+- The UI automation surface could not return an accessibility tree or screenshot, so this proves the HTTP page response, not visual rendering or interactive controls. No mutation endpoint was called.
+
+### Hub caller observation — bounded search summary flag
+
+- Three distinct read-only `local_ai_repo(search)` calls with `summarize_results=true` returned terminal 400 `unexpected argument for local_ai_repo: summarize_results`, without a Hub `request_id`; the same error payload's `allowed_arguments` included `summarize_results`.
+- No identical call was retried. Because the active-profile gate is unknown and no request reached the Hub, classify as caller/schema mismatch or gated field, not a confirmed server defect. Follow-up searches omitted the flag.
+
+### Round 56 — CASE133 populated fixture retest
+
+- Isolated GPT-6 Luna Low chat `01a1bd92-25b2-7622-baf5-abe7726f9669` used prompt SHA-256 `b2932a0a0ac43cf38d46577cfe2c0dbfc462ba3529d59a72d1e777e3b0883874` and exact fixture `docs/agent-evaluation/fixtures/alpha`. All six named read-only actions ran once; no schema probe, shell, test, write, install, or restart.
+- Request IDs: `security_audit` `req_735f529341a6`; `dead_code` `req_897ed8ac8c95`; `reachability_dead_code` `req_5082dd5b8c74`; `complexity` `req_144f6f2d1239`; `api_spec` `req_1d4f9d5af84a`; `test_matrix` `req_0f6106fa997b`. All six responses were reported `truncated=false`; stale/index freshness fields were absent.
+- `complexity` covered 11/11 eligible Python files and 14 functions, excluding tests and non-Python files. `security_audit` scanned 12 files, skipped two, with eligible total unknown. `dead_code` returned nine candidates without file-scope completeness. `reachability_dead_code` returned zero symbols and is NOT_VERIFIED. `api_spec` found OpenAPI 3.0.0 but zero endpoints. `test_matrix` inspected one supported test file and found zero cases; omitted inventory is unknown. PHP processing was not established.
+- **PASS for one-shot prompt sequencing and conservative reporting; PARTIAL for coverage.** No result proves a complete audit of the fixture. Follow-up source investigation found the deterministic implementation defaults to a Python entrypoint, but the MCP schema does not expose the previously rejected `entrypoints` argument; no code defect is confirmed from this response alone.
+
+### Round 57 — CASE133 reachability fixture-filter defect and source fix
+
+- Isolated GPT-6 Luna Low chat `01a1bd9c-abc9-7e41-91ce-ac32e0a6f3c2` correctly stopped NOT_VERIFIED because its tool metadata did not expose the full live action enum; it made no MCP call. A second isolated GPT-6 Luna Low chat `01a1bd9e-13f3-7920-9d2d-581f0cd82174` used the README's one-call source-supported read-only mismatch allowance and called `reachability_dead_code` once for `docs/agent-evaluation/fixtures/alpha`; request `req_92a65441115e` returned success with `total_symbols=0`, `reachable_symbols_count=0`, `dead_code_count=0`, no warnings, no completeness field, and no truncation.
+- Confirmed defect: `_is_test_file` treats any path component named `fixtures` as test data. `reachability_dead_code` passed the absolute path, so the fixture's ancestor directory caused every Python file to be skipped. The fixture contains 12 Python files (`req_038db639dad8`), while CASE133 complexity had found 14 functions.
+- Added a regression with root `tmp_path/fixtures/alpha`, three production functions, and one function under `tests/`. It failed before the source fix (`expected total_symbols=3, got 0`). The fix checks each file path relative to the requested root, preserving nested test/fixture exclusions while avoiding unrelated ancestor names.
+- Focused verification: `python -m pytest -q tests/test_deterministic_dead_code_precompute.py` — **2 passed**. Full test suite remains unrun. Source has not yet been installed or runtime-retested after the fix; no Hub restart was performed.
+
+### Round 58 — CASE130 `file_info` callable-surface check
+
+- Isolated GPT-6 Luna Low chat `01a1bda5-0744-70b1-8c3a-9797a6144a56` called `local_ai_repo(file_info)` once with root `C:\Users\Adam\.local-ai-hub` and path `docs/agent-evaluation/fixtures/alpha/src/demo_core/paths.py`. Request `req_0a84fb3bfee2` succeeded: exact relative path, existing regular file, 148 bytes, three lines, no hash, no warnings, `truncated=false`; stale/degraded were not reported.
+- **PASS for this branch only.** It confirms the read-only file metadata route accepts this root-relative fixture path in the current runtime; it does not prove full CASE130 coverage or file-content behavior. No further action ran in the chat.
+
+### Round 59 — CASE130 bounded `read_file` check
+
+- Isolated GPT-6 Luna Low chat `01a1bda9-f56a-7dc2-947d-217c41564557` called `local_ai_repo(read_file)` once with root `C:\Users\Adam\.local-ai-hub`, path `docs/agent-evaluation/fixtures/alpha/src/demo_core/paths.py`, lines 1–3, and `max_chars=500`. The MCP call completed; the response omitted `request_id`, so none is available to record and no retry was made.
+- Returned all three requested lines, `success=true`, `complete=true`, `truncated=false`; degraded/stale metadata was absent. **PASS for this bounded-read branch only.** This does not establish full CASE130 coverage.
+
+### Round 60 — CASE130 corrected `read_file` reporting retest
+
+- After updating the prompt to allow `request_id=NOT_RETURNED`, isolated GPT-6 Luna Low chat `01a1bdac-1cf4-7542-8324-0d67d982ee39` called `read_file` once with the same explicit fixture manifest. It reported `success`, `complete=true`, `truncated=false`, and `request_id: NOT_RETURNED`; no retry or extra action ran.
+- Prompt SHA-256: `1c593e2f8217380e30288028f7991236e237bb43fbed74c561fa099a936d09e3`. **PASS for the corrected reporting branch only.**
+
+### Round 61 — CASE130 `ast_outline` fixture check
+
+- Isolated GPT-6 Luna Low chat `01a1bdad-e18c-73d3-8943-56fdb3a011fb` called `local_ai_repo(ast_outline)` once for `docs/agent-evaluation/fixtures/alpha/src/demo_core/paths.py`. Request `req_85dc8c121979` succeeded and returned `normalize_path(path: str) -> str` with its docstring; no warnings. Completeness, degraded, and stale fields were not returned; response truncation was false.
+- **PASS for this branch only.** Correct fixture path and symbol matched the source slice. Remaining CASE130 actions remain unverified or gated.
+
+### Round 62 — CASE133 duplicate declarations and completeness
+
+- The first isolated post-edit chat `01a1bdb5-530a-77a0-b8df-b6a8a62d0394` ran before the second Hub restart and still returned the previous 13-symbol response (`req_61ff1e51d3cc`): deployment timing exposed the need to restart before runtime verification.
+- After restart, GPT-6 Luna Low chat `01a1bdb6-3505-7221-90f9-ee3dd6291f71` returned 15 declarations, 4 reachable, 7 dead, and four ambiguous declarations (`checkpoint_task` twice and `normalize_path` twice). The prompt initially expected 14 and therefore caught a bad criterion; complexity counts 14 functions while this action also counts a class declaration.
+- Corrected CASE133 to expect 15 function/class declarations, require both relative paths for each duplicate name, require `complete=false`, warnings, aggregate counts, and truncation metadata. Added `test_reachability_dead_code_preserves_duplicate_names`; focused dead-code tests: **4 passed**. The duplicate-name algorithm now retains declaration identities and excludes ambiguous declarations from reachable and dead-code counts.
+- Final isolated GPT-6 Luna Low chat `01a1bdb9-b14d-74f2-b4f4-6f240f82a9d2`, request `req_50b73393059c`, confirmed 15 = 4 reachable + 7 dead + 4 ambiguous; both duplicate pairs and source lines were reported; `complete=false`, warning present, `truncated=false`, response budget not truncated. CASE133 subcase passes. Prompt SHA-256: `0bbc5fc0baa8607a268d0816f66a7e914a6d2962110dd689bf447fb29e014bf1`.
+
+### Round 63 — CASE135 bounded-list behavior and MCP wiring
+
+- Added CASE135 to test a one-item `reachability_dead_code` result cap without running the prompt suite. Its first isolated GPT-6 Luna Low chat `01a1bdbb-53ce-7893-b60e-0afbd3f1b03f` found the MCP action rejected `limit` as unsupported although the deterministic implementation had a `limit` parameter. This identified a real schema/dispatch gap.
+- Added `limit` to the action-scoped MCP schema, forwarded it through MCP and HTTP dispatch with strict integer bounds 1–1000, and preserved the action's 100-item default. Added count and truncation fields to the deterministic result. Added schema-validation coverage and a limit regression. Focused verification: **5 passed** across `test_operation_contracts.py::test_reachability_dead_code_exposes_bounded_result_limit` and `test_deterministic_dead_code_precompute.py`; `compileall` passed for the four touched source modules; `git diff --check` reported no whitespace errors (only existing LF-to-CRLF notices).
+- Restarted Local AI Hub; `hubctl status` confirmed v6.0.0 online, PID 54752. Final isolated GPT-6 Luna Low chat `01a1bdbf-5a71-7562-bdf8-20dba5e1e02b`, request `req_0ec678920a99`, passed: totals 15/4/7/4, both full-count fields correct, both returned lists length 1, `complete=false`, internal `truncated=true`, `response_budget.truncated=false`, and arithmetic reconciled. No retry. CASE135 subcase passes.
+- Full test suite was not run, per instruction. Runtime validation covered only these targeted read-only reachability branches.
+
+### Round 64 — CASE135 schema refinement and catalog sync
+
+- Added action-specific `limit` schema bounds/default (integer 1–1000, default 100), rejected booleans and out-of-range values in focused validation, and synchronized CASE135 through README, evaluation key, coverage map, action-contract snapshot, INSTALL_PROMPT, UPDATE_PROMPT, and results.
+- Focused verification after the schema refinement: **5 passed** across the reachability and operation-contract tests; `compileall` passed for the four changed Python modules; `git diff --check` had no whitespace errors (only LF-to-CRLF notices). Full pytest and the full prompt suite remain unrun.
+- A post-restart isolated GPT-6 Luna Low chat `01a1bdc5-a923-71b1-8798-54fc894deaf9` attempted the exact CASE135 call but the client reported `request_not_sent=true`, `retryable=false`, and no server execution; request ID field reported `req_a411e05caee2`. Per prompt, no retry was made; this retest is NOT_RUN. The prior post-fix runtime chat `01a1bdbf-5a71-7562-bdf8-20dba5e1e02b` did successfully verify the explicit `limit=1` route and output behavior before the schema default refinement. Current schema refinement is supported by focused unit validation but not post-refinement runtime evidence.
+
+### Round 65 — CASE133 default path after limit wiring
+
+- During final contract review, aligned the action-specific limit maximum with the shared MCP schema cap of 200 while retaining its default of 100. The generated per-action tool schema now explicitly advertises the correct default and bounds. Focused tests: **5 passed**; `compileall` passed for the four touched source modules.
+- Restarted Local AI Hub; v6.0.0 online, PID 22508. Isolated GPT-6 Luna Low chat `01a1bdc9-656c-7eb2-9543-9d5befd5fd63`, request `req_fb939ff40b94`, omitted `limit` and confirmed default behavior: 15 total = 4 reachable + 7 dead + 4 ambiguous, both full-count fields present, list lengths 4 and 7, `complete=false`, internal and response truncation false, ambiguity warning present. **PASS for default-limit runtime branch.**
+- CASE135’s latest explicit `limit=1` attempt remains NOT_RUN due the earlier client transport failure before write (`request_not_sent=true`, `retryable=false`); no retry. Its explicit-limit runtime branch had passed once before the schema-only maximum/default refinement (`req_0ec678920a99`); current bounds/default are covered by focused schema validation.
+
+### Round 66 — CASE130 `git_log` limit and omitted-path mapping
+
+- Isolated GPT-6 Luna Low chat `01a1bdca-dfdb-7613-aa9d-bb5d9c44b248` called `local_ai_repo(git_log)` once with `root=C:\Users\Adam\.local-ai-hub`, `query="prompt"`, `limit=1`, and omitted `path`. Request `req_9592b671cc36` succeeded; returned `max_commits=1`, `path=null`, one commit, `truncated=false`; stale/degraded were NOT_RETURNED. **PASS for this input-mapping branch only.** The chat initially stalled after the completed tool call, then reported the existing response on follow-up without another MCP call. No full-history or workspace-cleanliness claim.
+
+### Round 67 — CASE130 `schema_inspect` live-enum gate
+
+- Isolated GPT-6 Luna Low chat `01a1bdd0-989b-7471-8f7c-b2bc04b55da2` saw only partial `local_ai_repo` tool metadata, not a complete action enum. Following CASE130, it made no MCP call and returned NOT_VERIFIED for `schema_inspect`. No invalid-action or schema probe, retry, shell, or test ran.
+- This is a correct fail-closed prompt outcome, not evidence that `schema_inspect` is unavailable in the Hub. The missing complete enum remains a session/harness evidence gap.
+
+
+### Round 68 — CASE130 read-only calls, fixture error, and incomplete enum
+
+- Updated CASE130: with unknown enum completeness, one explicitly named action may be attempted only when its action-contract row proves read_only and exact fixture inputs are supplied. Tool/schema rejection is session-scoped UNAVAILABLE; an operation-level error does not mean the action is unavailable.
+- Isolated GPT-6 Luna Low chat 01a1bdd8-8a82-77e1-8bdc-7ada556b1563 called ast_outline once with root C:\Users\Adam\.local-ai-hub\docs\agent-evaluation\fixtures\alpha and path src/demo_core/task_service.py. Request req_e347a643843d succeeded and returned TaskService with __init__ and create_task. Enum completeness remained unconfirmed; no second action ran.
+- Isolated GPT-6 Luna Low chat 01a1bdd8-8e16-7e23-9c4b-7f68465d779c called schema_inspect once with the same fixture root and no optional DB path. Request req_5fbd72c6b2f0 returned success=false and “no SQLite database found”. This proves the action was callable; schema inspection itself did not run, so the successful-database branch remains NOT_RUN. Enum completeness remains unconfirmed.
+- The first schema chat response mislabeled the fixture error as UNAVAILABLE. A no-tool follow-up corrected it to callable/fixture-level failure without repeating the MCP action. Prompt and evaluation key now state this distinction.
+- Isolated GPT-6 Luna Low chat 01a1bddb-e811-7461-8973-b0b6cf30d8c5 called file_info once for src/demo_api/routes.py under the same fixture root. Request req_31247e78be26 returned success=true, exists=true, file=true, 11 lines, 352 bytes, reused=false, truncated=false. Enum completeness remained unconfirmed.
+- Focused validation: tests/test_bounded_qualification_prompts.py::test_canonical_prompts_preserve_qualified_inspection_contract passed (1 test); git diff --check found no whitespace errors (Git reported LF-to-CRLF normalization notices only).
+- Scope: three named CASE130 branches only. No full prompt suite, full pytest, build, install, or restart ran.
+
+
+### Round 69 — CASE130 read_file path and response traceability
+
+- Isolated GPT-6 Luna Low chat 01a1bddf-230a-78a1-b1b4-61c4e685af0b issued exactly one local_ai_repo read_file call with root C:\Users\Adam\.local-ai-hub\docs\agent-evaluation\fixtures\alpha and path src/demo_api/routes.py; all optional parameters were omitted.
+- The completed call is present in the chat transcript. The assistant reported success and an 11-line complete response, but request_id was not returned and the MCP payload is absent from the readable transcript. Classify as PARTIAL / traceability gap, not full output verification. Do not retry this action in the chat.
+- No other action ran. Prompt already requires NOT_RETURNED when request_id is absent; no prompt change is needed for this branch.
+
+### Round 70 — CASE130 find_symbol input and incomplete-index classification
+
+- First isolated GPT-6 Luna Low chat 01a1bde1-13dd-7661-a386-e50cc6f24aa2 called find_symbol with root, query=normalize_path, and an invalid extra path. The wrapper returned HTTP 400: “code_index accepts its canonical input field; path is not an alias”. request_id was NOT_RETURNED. This is a harness input error, not a product defect.
+- Corrected isolated GPT-6 Luna Low chat 01a1bde1-daf8-7af1-af06-6818a39a7fec called find_symbol with root and query only. Request req_4826844102d4 returned success with zero matches, indexed_files_present=false, freshness=no_candidates, and zero checked paths. Classify NOT_VERIFIED; this does not prove symbol absence.
+- The first corrected-chat answer incorrectly declared CASE130 complete after one branch. A no-tool follow-up corrected the branch to NOT_VERIFIED and stated that one action cannot complete the case.
+- Updated CASE130 instructions and key: find_symbol uses root plus query and no path; absent/incomplete index means NOT_VERIFIED; one-action chats report only that branch; full CASE130 completion requires every listed branch verified or explicitly safety-gated.
+- Focused validation after the prompt/key correction: tests/test_bounded_qualification_prompts.py::test_canonical_prompts_preserve_qualified_inspection_contract passed (1 test); scoped git diff --check had no whitespace errors. Full prompt suite and full pytest remain unrun.
+
+### Round 71 — CASE130 context_budget MCP input mapping
+
+- First isolated GPT-6 Luna Low chat 01a1bdeb-2c10-7061-b532-2042da77c3a9 sent internal source parameter files to the MCP action. The tool rejected it with HTTP 400: unexpected argument for local_ai_repo: files; request_id NOT_RETURNED. Harness error: it used the deterministic function signature instead of the MCP wrapper input.
+- Corrected isolated GPT-6 Luna Low chat 01a1bdec-4e10-7fb0-a52a-f3c7c83f5224 called context_budget once with root and path=src/demo_api/routes.py; max_tokens omitted. Request req_ad2a18cad34f succeeded: one file, 11 lines, 352 characters, estimated 124 tokens, no omitted files, complete=true, truncated=false. No stale/degraded status was reported.
+- Updated CASE130 prompt, evaluation key, and coverage map: MCP accepts root plus path/query and maps that to its internal files list; do not send files. Corrected chat reported only this branch and did not claim whole-case completion.
+- Full prompt suite and full pytest remain unrun.
+
+### Round 72 — CASE130 glob branch and out-of-scope tool call
+
+- Isolated GPT-6 Luna Low chat 01a1bdee-1f94-7e42-9664-283e66f16320 called local_ai_repo.glob once with root=docs/agent-evaluation/fixtures/alpha, pattern=src/demo_api/routes.py, limit=1. Request req_bf25a26343fc succeeded with one match, limit=1, has_more=false, truncated=false.
+- The transcript also contains an unrelated CUA completion_summary tool call, which failed. Target action succeeded, but this chat is FAIL for scope adherence; it used a tool outside the requested MCP action.
+- Tightened CASE130 prompt, evaluation key, and coverage map to forbid CUA/browser/desktop and unrelated tool calls; any such call makes the branch run FAIL.
+
+### Round 73 — CASE130 glob scope retest
+
+- Isolated GPT-6 Luna Low chat 01a1becd-4492-7fb3-a86c-458c7a36a426 repeated the same exact glob branch after the prompt correction. Exactly one local_ai_repo call occurred; no CUA or unrelated tool call.
+- Request req_80344601f05c returned success=true, count=1, total_matches=1, limit=1, offset=0, has_more=false, truncated=false. Match: src/demo_api/routes.py. Stale, degraded, and enum completeness were not reported.
+- Branch PASS for action/runtime and tool scope. CASE130 as a whole remains incomplete. Full prompt suite and full pytest remain unrun.
+
+### Round 74 — CASE130 skeletonize source precondition and tool scope
+
+- Isolated GPT-6 Luna Low chat 01a1bece-a4c2-7490-a4f2-9f622e562b6f tried skeletonize with root and path only. Request req_36e9285d40ca returned success=false, terminal=true, retryable=false, error_code=indexed_skeleton_unavailable: the path must be indexed or source text supplied. Action was callable; no index was created.
+- That chat also used a required Caveman skill preflight through commandExecution, despite the prompt's blanket shell ban. CASE130 now permits only host/project-mandated skill preflight and bans shell for fixture discovery or tests.
+- Retest chat 01a1bed1-6de9-7261-8d44-249cd182f715 supplied the exact 11-line fixture source in query plus the target path. Request req_5311218dc6aa succeeded; the assistant reported imports, signatures, and docstring preserved with function bodies collapsed.
+- The retest also called CUA completion_summary without any preceding CUA operation, despite the CUA ban. Target MCP branch succeeded, but the chat is FAIL for tool-scope adherence. Prompt/key now specify that unrelated tools fail the branch; a further explicit completion_summary condition is needed.
+
+### Round 75 — CASE130 skeletonize exact argument fields and clean scope
+
+- Isolated GPT-6 Luna Low chat 01a1bed5-8dcd-7cc3-b807-164c2017b8e1 translated "path as target" into MCP field `target`. `local_ai_repo` rejected it: `target is not valid for action=skeletonize`; allowed fields were `path`, `query`, `root`; HTTP 400, terminal/non-retryable, no request_id. This exposed ambiguous test wording; the chat also ran only the required skill preflight plus the one requested Hub action.
+- Prompts, key, and coverage now require exact MCP fields `root`, `path`, `query`; `target` is explicitly forbidden. CASE130 also explicitly forbids `cua_repl.completion_summary` because no CUA action occurs.
+- Clean retest chat 01a1bed6-8e4e-7c11-b1a0-94f830a8ab2f used GPT-6 Luna Low. Transcript shows mandatory skill preflight and exactly one MCP action; no CUA or other test tools. Request req_bbdfcdf4f8a0 returned success=true. Skeleton retained import, signatures, docstring; replaced both function bodies with `...`. Freshness/degraded/stale not reported; truncated=false. Branch PASS; CASE130 remains incomplete. Full prompt suite and full pytest not run.
+
+### Round 76 — CASE130 code_index and context_budget
+
+- Isolated GPT-6 Luna Low chat 01a1bed8-3541-7e53-ba46-5df6efdf244a called `local_ai_repo(action=code_index, root=C:\Users\Adam\.local-ai-hub, query=skeletonize)` once. Request req_9b54f7ecca78 succeeded; checked three current paths, returned six matching symbols, stale/degraded/truncated=false. Coverage remained incomplete and limited to returned indexed candidates. Chat used one MCP action; no CUA or extra tools. Branch PASS; absence beyond coverage NOT_VERIFIED.
+- Isolated GPT-6 Luna Low chat 01a1bed9-8340-7140-b4d8-28bd532da260 called `context_budget` once with the manifest root and `path=src/demo_api/routes.py`, no `files` argument. Request req_9479d84fba98 reports `success=false`, terminal/non-retryable, `request_not_sent=true`, `outcome_unknown=false`; transport failed before sending. No fixture or action availability conclusion follows from this latest call. Round 71 records a separate successful context_budget run; this Round 76 no-send result does not invalidate it. No retry. This invocation is NOT_VERIFIED.
+- Prompt, key, and coverage now state that `request_not_sent=true` is NOT_VERIFIED, proves neither availability nor absence/fixture state, and must not be retried in the same chat.
+- Full prompt suite and full pytest remain unrun per user instruction.
+
+### Round 77 — CASE130 file_info and CUA lifecycle scope
+
+- Isolated GPT-6 Luna Low chat 01a1bedb-7a53-7a82-8979-88ee4a36ab4e ran `file_info` once; request req_81830b6232ac succeeded and returned the expected 11-line, 352-byte fixture metadata. The transcript then called a CUA lifecycle hook despite no CUA operation and despite the explicit ban. MCP branch succeeded; chat FAIL for scope adherence.
+- Prompt, key, and coverage were tightened: no CUA lifecycle hooks; after the single MCP response, report and stop. The actual lifecycle tool name was removed from prompt text to avoid priming.
+- Clean isolated GPT-6 Luna Low retest chat 01a1bedc-7dff-7382-aa61-98cc374c0e9f used only the required MCP action. Request req_9130265f5405 succeeded; same fixture metadata; no freshness/degraded/stale flags, not truncated. Branch and tool scope PASS. CASE130 remains incomplete. Full suite not run.
+
+### Round 78 — CASE130 structural, content, and history branches
+
+- Isolated GPT-6 Luna Low chat 01a1bedd-1436-7ae0-bc97-f63f0b9ee7d6 called `ast_outline` once. Request req_0ae5362eeab1 succeeded; returned the import, both function signatures, and docstring; truncated=false. Freshness/degraded/stale were not reported. Transcript had no extra tools. Branch PASS.
+- Isolated chat 01a1bedd-7c84-7de2-91ae-7b382e3ba1a8 called `read_file` once; success, 11 lines, complete. No request_id or freshness timestamp returned. Assistant added an unverified estimate of 940 content tokens and emitted a second, redundant final summary. MCP branch PASS; report quality needs the new exact-metrics/single-final rule. The fixture metadata from file_info says 352 bytes; raw read_file response is not available in the thread transcript, so the token estimate is NOT_VERIFIED.
+- Precision retest chat 01a1bedf-0c1b-7823-815d-b2502d1d1a91 could not access `local_ai_repo` in its active tool set; no MCP request was sent. Branch NOT_RUN/NOT_VERIFIED; no substitution or retry.
+- Isolated chat 01a1bedf-77eb-7b00-adab-c1e7869ae8f3 called `git_log` once with root, query=prompt, limit=1 and omitted path. Request req_7d11173cfd85 succeeded; `max_commits=1`, `path=null`, `commit_limit_reached`, truncated=false. Transcript then called an out-of-scope CUA lifecycle hook despite explicit prohibition. MCP branch PASS; chat FAIL for scope.
+- Prompt, key, and coverage now require one final response and prohibit estimated size/count/token metrics. Full prompt suite and full pytest remain unrun.
+
+### Round 79 — CASE130 implementations argument contract mismatch
+
+- Isolated GPT-6 Luna Low chat 01a1bee2-f3ec-73e3-a325-7520d0d26db0 called `implementations` once with root, `symbol=skeletonize_code`, `limit=1`. The wrapper returned HTTP 400, terminal/non-retryable: `unexpected argument for local_ai_repo: symbol`; no request_id, result fields, or retry.
+- Current `mcp-action-contracts.md` lists `symbol` for `local_ai_repo.implementations`, while the live caller rejected it. This establishes a contract/schema mismatch in this session, not product-wide action removal. Branch NOT_VERIFIED; do not guess another field.
+- The transcript contains two final assistant messages, the second a redundant summary, despite the one-answer instruction. Prompt now tightens schema-mismatch handling; report-quality issue remains a host/chat behavior risk.
+
+### Round 80 — CASE130 briefing action
+
+- Isolated GPT-6 Luna Low chat 01a1bee4-370c-7463-af4a-bcaff5b19ead called `briefing` once with root only. Request req_0c1e97829295 succeeded; response complete, not truncated, and no stale/degraded flags were reported. Transcript contains exactly one MCP action and one final answer. Branch PASS.
+- The returned briefing mentioned branch `master`, 96 dirty files, and an active planned Serena preprocessing task. These are Hub briefing data only; not independently verified current checkout state.
+
+### Round 81 — CASE130 structural_search branch and lifecycle scope
+
+- Isolated GPT-6 Luna Low chat 01a1bee5-7fdb-74c2-8a73-a0278f250efe called `structural_search` once with the exact fixture root/path and `query=post_task`. Request req_3d4acf1429c0 succeeded; one match at line 4, one file scanned, zero parse/read errors, fresh, not degraded/stale/truncated. Branch result PASS; coverage limited to the supplied file.
+- Transcript then invoked an out-of-scope CUA lifecycle hook despite explicit prohibition and no CUA operation. Chat FAIL for scope adherence. Repeated instances indicate isolated chat behavior remains inconsistent after prompt tightening; retain as a stress-test finding.
+
+### Round 82 — CASE130 find_references branch and lifecycle scope
+
+- Isolated GPT-6 Luna Low chat 01a1bee7-fbc8-78f0-ab2a-b2ac8ecd5e20 called `find_references` once with root and the indexed symbol query `skeletonize_code`. Request req_b9bfecd5a283 succeeded; two references returned; indexed-edge coverage complete, freshness not checked, truncated=false. Action branch PASS.
+- Transcript also invoked an out-of-scope CUA lifecycle hook despite no CUA operation and explicit prohibition. Chat FAIL for scope adherence.
+
+### Round 83 — CASE130 schema_inspect expected missing-database branch
+
+- Isolated GPT-6 Luna Low chat 01a1bee8-9ee7-7f03-9bd6-be9fc8466ab4 used the required skill preflight, then called `schema_inspect` once with only the fixture root. Request req_7cdf7ef508dd returned the documented `no SQLite database found in root` error; this is expected fixture-level behavior, not successful schema inspection or action unavailability. Freshness/degraded/stale were not reported; truncated=false. Branch PASS; one MCP action, no unrelated tools.
+
+### Round 84 — CASE130 ast_outline PHP fixture
+
+- Isolated GPT-6 Luna Low chat 01a1bee9-cfab-75b3-903f-acc84bc35dd4 called `ast_outline` once on the exact 4-line PHP fixture. Request req_e1158b3b4346 succeeded; returned `polyglot=true` and a collapsed `invoice_total` function outline; error not returned; truncated=false. Freshness/degraded/stale were not reported. Transcript shows one MCP call and one final answer. Branch PASS for PHP outline behavior; parser completeness is not established.
+
+### Round 85 — CASE130 explain_query expected missing-database branch
+
+- Isolated GPT-6 Luna Low chat 01a1beeb-ecb1-77d3-9f73-a988e60c4bdb called `explain_query` once with fixture root and exact SQL `SELECT 1`, omitting `db_path`. Request req_29826dcc6fab returned `success=false`, `no SQLite database found for query explain`; this is the expected no-database fixture outcome, not successful EXPLAIN evidence or endpoint unavailability. `truncated=false`; freshness/degraded/stale not reported. Transcript shows one MCP call, no unrelated tools.
+- This is the missing-database behavior only; no query plan is established.
+
+### Round 86 — CASE130 repo_state root isolation correction
+
+- First GPT-6 Luna Low chat 01a1beed-cb8a-75c3-85fd-e24dbeb7862a mistakenly used the in-repository `fixtures/alpha` seed as disposable root. Request req_c06024e02c8c returned HEAD `030ef2bdec857f4a33a5b7366a7c5cda3fde89c5`, 98 changed files, and 48 listed paths—main checkout state, not fixture state. Treat this result as ROOT_SCOPE_LEAK / invalid fixture setup; no source-level runtime defect is established. The transcript also made an unrequested CUA lifecycle call, so chat FAIL for scope.
+- Reviewed `fixtures/prepare_alpha.py`: it validates a new absolute target outside every Git root and copies the 14-file alpha seed. Prepared standalone target `C:\Users\Adam\AppData\Local\Temp\local-ai-hub-case130-alpha-9659a2421ed34837872a05bb3a0ad1ed`.
+- Retest chat 01a1beef-e053-7230-ae4d-fc60798804bb called `repo_state` on that exact external target. Request req_70827a35cac1 succeeded; filesystem snapshot saw 14 files and `dirty=true`; no Git HEAD/dirty counts or stale/degraded values returned; not truncated. This is fixture snapshot behavior, not Git cleanliness proof. Transcript then called an unrequested CUA lifecycle hook; chat FAIL for scope although action branch succeeded.
+- Prompts/key/coverage now require the helper-prepared external root, prohibit using in-repo alpha seed for broad actions, define `ROOT_SCOPE_LEAK`, and distinguish filesystem `dirty` from Git metadata. Stop further broad actions if output points at parent project.
+
+### Round 87 — CASE130 topology on isolated external fixture
+
+- Isolated GPT-6 Luna Low chat 01a1bef1-6070-7e22-aa0b-59b8fe557f78 called `topology` once on the prepared external fixture. Request req_0f6b104e10ce succeeded; exact fixture root reported, no root leak; 11 nodes, 3 edges, complete/resolved module graph, zero parse/read errors or unresolved imports, no skipped files or truncation. Freshness was not reported. Architecture label remains heuristic; inventory covers eligible Python files only.
+- Transcript contains one MCP action and one final answer, no CUA lifecycle call or other tools. Branch and scope PASS.
+- `pipeline` remains NOT_RUN until the prompt supplies explicit safe read-only steps; no steps guessed.
+
+### Round 88 — CASE130 read_file exact-metrics retest
+
+- Isolated GPT-6 Luna Low chat 01a1bef2-7537-7932-a597-6582dddb213b called `read_file` once with exact fixture root/path. The transcript contains one MCP call and one final answer, no unrelated tools. Request ID NOT_RETURNED; success; 11 lines; response budget explicitly returned 942 estimated tokens; `truncated=false`; freshness/degraded/stale not returned. Branch PASS; no estimated content metrics or duplicate final recap.
+
+### Round 89 — CASE130 fixture cleanup and focused prompt verification
+
+- The helper-created fixture copy remains at `C:\Users\Adam\AppData\Local\Temp\local-ai-hub-case130-alpha-9659a2421ed34837872a05bb3a0ad1ed`; attempted guarded cleanup with `Remove-Item -Recurse` was rejected by the host policy. No alternate deletion method used. Retain this path as a known temporary artifact; remove through an authorized cleanup route later.
+- After the latest prompt/key/coverage/results edits, focused `tests/test_bounded_qualification_prompts.py::test_canonical_prompts_preserve_qualified_inspection_contract` passed (1 test). Scoped `git diff --check` passed; Git printed only LF-to-CRLF notices. Full prompt suite and full pytest remain unrun per user instruction.
+
+### Round 90 — CASE130 deterministic tool unavailable in isolated chat
+
+- Isolated GPT-6 Luna Low chat 01a1bef6-8521-7193-9e32-8693ee83dffa received exact `deterministic` input grounded in fixture source but had no `local_ai_repo` tool in its active tool set. No MCP request was sent (`request_id=NOT_RETURNED`); no fallback was used. This is session-level NOT_RUN/NOT_VERIFIED, not product-level action unavailability.
+- Prompt, key, and coverage now explicitly require NOT_RUN when the isolated chat lacks the required MCP tool; no substitution and no claim that the endpoint was removed.
+
+### Round 91 — CASE130 deterministic evidence relevance
+
+- Fresh GPT-6 Luna Low chat 01a1bef7-e24e-7293-806a-e941f57ac37b called `deterministic` once on the external fixture with exact query `Where is post_task defined?`. Request req_e586c4d050e4 returned success=true but no symbols/evidence; confidence 0.705, direct_answer=false, complete=true, not truncated. Correct classification: NOT_VERIFIED because the external root had no indexed evidence; tool availability confirmed in this session.
+- Separate isolated chat 01a1bef8-91fa-7b51-a24d-225d5bb9ee74 queried the indexed project root with the fixture path embedded in query. Request req_793d7a1b6354 returned unrelated POST route evidence from two test files, confidence 0.98, `truncated=false`; it did not ground the requested fixture fact. Correct classification: NOT_VERIFIED, not successful answer. Transcript shows one MCP call, no extra tools.
+- Prompt/key/coverage now require direct path/symbol support; empty or unrelated-path results stay NOT_VERIFIED regardless of confidence.
+
+### Round 92 — CASE130 deterministic exact-symbol branch
+
+- Isolated GPT-6 Luna Low chat 01a1befa-28bf-75f1-a79d-b528e96d120f called `deterministic` once with project root and exact query `post_task`. Request req_e0ee0930de73 succeeded but returned unrelated `src/local_ai_hub/` evidence, not the fixture path or symbol; confidence 0.5, complete response, not stale/degraded/truncated. Branch NOT_VERIFIED; no CUA or extra tools.
+- Independent current `code_index(root=project, query=post_task)` request req_e1fb5b696379 also returned only unrelated `HubClient.post` and reported incomplete candidate coverage, freshness not checked. This supports an index-coverage limitation; it does not prove fixture absence or a deterministic runtime defect.
+- The prompt now requires direct support and treats empty/unrelated results as NOT_VERIFIED regardless of confidence.
+
+### Round 93 — CASE130 pipeline nested truncation signal
+
+- Isolated GPT-6 Luna Low chat 01a1befc-e88b-7b02-92d2-0925bdea4242 called `pipeline` once on the external fixture with exactly one `file_info` step. No request_id returned; aggregate success. Step `fixture_file_info` reported the exact relative path and 11 lines/352 bytes. Aggregate response reported not truncated, while the nested step response budget reported `truncated=true`; no stale/degraded flags reported.
+- Branch status PARTIAL/NOT_VERIFIED because nested result is truncated despite aggregate success. Transcript shows one MCP call and one final answer, no extra tools.
+- Prompt/key/coverage now state nested truncation prevents a PASS even when the aggregate is successful and untruncated.
+
+### Round 94 — CASE130 profile_digest fixture availability
+
+- Bounded fixture discovery with `glob` found no `*.pstats` (req_c2e338bd74a0), `*.prof` (req_c1848f30dd5a), `*.trace` (req_df2a3a064d15), or `*trace*.txt` (req_c75379bcf659) under `docs/agent-evaluation/fixtures`. These were coordinator discovery calls, not isolated prompt-test chats. No profile_digest call was made because no supported profile fixture was present; branch NOT_RUN with evidence. No fixture was created.
+
+### Round 95 — CASE130 implementations schema and positive relation branch
+
+- Isolated GPT-6 Luna Low chat `01a1bf02-eff7-7f71-9df7-71438ee30264` called `implementations` once with canonical `query="RepositoryTools.search"`, a `path` filter, `limit=5`, and `offset=0`. Request `req_efd27d3a4514` succeeded with zero indexed edges, `has_more=false`, `coverage.scope="indexed_edges"`, and `freshness.status="not_checked"`. The target was a method, not a known inheritance/implements edge; this was an invalid positive fixture choice, not proof of no implementations. Chat stayed inside MCP scope. Branch NOT_VERIFIED for positive relationship coverage.
+- Source review confirmed `implementations` canonical query dispatch and the separate `path` filter. Isolated GPT-6 Luna Low chat `01a1bf04-4097-7de2-87a8-e820fa5a1180` called once with `query="Exception"`, no `path`, `limit=5`, `offset=0`. Request `req_b2821ca45ccc` returned two `inherits` edges: `TaskStore/_MemoryDeadlineExceeded` (`src/local_ai_hub/agent_tasks.py:667`) and `_SingleflightCancelled` (`src/local_ai_hub/client.py:81`); `total_matches=2`, `has_more=false`, `coverage.complete=true` for indexed edges only, freshness `not_checked`. Source slices independently confirm both classes inherit `Exception`. Positive branch PASS for returned edges; current repository-wide completeness NOT_VERIFIED. Transcript also contains an out-of-scope CUA summary hook; MCP call PASS, chat scope FAIL.
+- Isolated GPT-6 Luna Low chat `01a1bf07-2304-7ac3-a872-3d9e2128df51` attempted the source-declared `symbol="Exception"` alias once. The MCP tool call failed at transport with no returned result, `request_id`, or request fields. This is OUTCOME_UNKNOWN / NOT_VERIFIED, not schema rejection; no retry.
+- Prompt/key/coverage now specify a positive query fixture, canonical `query`, path-filter semantics, and the indexed-edge/freshness limit. The contract map distinguishes the source-declared `symbol` alias from the canonical field. No runtime defect established. Full prompt suite and full pytest remain unrun.
+
+### Round 96 — CASE130 find_symbol stale/incomplete index branch
+
+- Isolated GPT-6 Luna Low chat `01a1bf0c-55b8-7550-8b83-d0f66c52a964` called `local_ai_repo(action="find_symbol", root=<project>, query="TaskStore", response_profile="compact")` once; request `req_8e271b44f4dc`. Agent summary reports `TaskStore` at `src/local_ai_hub/agent_tasks.py:597`, freshness stale with `agent_tasks.py` and `agent_memory.py` unknown, incomplete coverage (521 candidates, 24 returned, more available), and truncated results but untruncated response budget. The raw MCP result is not retained in the thread transcript, so these wire fields remain agent-reported and Hub result NOT_VERIFIED.
+- Chat emitted two final assistant messages despite the single-final instruction; no unrelated MCP or CUA call. Agent/report scope FAIL for duplicate final; symbol discovery remains NOT_VERIFIED until raw evidence/freshness is available. No source/runtime defect established.
+- Evaluation key now says missing raw MCP response cannot be replaced by the agent's summary as wire evidence. Full test suites remain unrun.
+
+### Round 97 — CASE130 deterministic exact source evidence
+
+- Isolated GPT-6 Luna Low chat `01a1bf0d-c484-7081-b83e-a9c26dd27aa8` called `deterministic` once with the exact question for `find_implementations` in `src/local_ai_hub/code_index.py`. MCP call completed with `request_id=req_af9060107d2a`; transcript retains the tool call and assistant summary, not the raw MCP response.
+- Assistant reported direct evidence `E51d6901ea9e53d7e1776`, `CodeIndex.find_implementations`, lines 3529–3594, matching the exact path and symbol. `local_ai_artifact.get` independently retrieved that evidence (`req_84aa8c240de8`), same file SHA `178a06eb31524f7948abfc43276d56571a0a06abc6f7fc8e60bde87ba23f8a12`, `stale=false`; source confirms the named method.
+- Factual branch PASS for the cited exact source. Freshness/index age, `direct_answer`, confidence and response truncation remain agent-reported because raw result is absent; metadata NOT_VERIFIED. Chat used one MCP action, one final, no unrelated tools. Full test suites remain unrun.
+
+### Round 98 — CASE131 paired impact/call-graph branch
+
+- Isolated GPT-6 Luna Low chat `01a1bf11-250d-7102-bdcf-0650029ae403` called `refactor_impact` once (`req_55c4a91942c0`) and `call_graph` once (`req_939a547438cc`) for the same project root, `query="find_implementations"`, and `path="src/local_ai_hub/code_index.py"`. Agent summary reports matching caller `LocalAIServices/code_find_implementations` in `src/local_ai_hub/services.py:5977`; `call_graph` also reports five callees at the target. Reported coverage is incomplete/freshness `not_checked`; no absence inference.
+- Raw MCP responses/evidence IDs were not retained in the transcript. Hub fields and relationship results remain agent-reported, NOT_VERIFIED. Source slice SHA `03357bc2badc6a99be66914a31a8aeac38292b3d33d88ded0213d48c53e29261` confirms `LocalAIServices.code_find_implementations` delegates to `CodeIndex.find_implementations`, consistent with the reported caller but not proof of response metadata.
+- Chat made an out-of-scope CUA lifecycle call after the two Hub actions; chat-scope FAIL. Cross-project branch correctly NOT_RUN because no two isolated indexed roots/identities/test state were supplied. Prompt and key now explicitly prohibit CUA lifecycle calls and require raw MCP evidence or NOT_VERIFIED. Full suites remain unrun.
+
+### Round 99 — CASE131 schema and qualified-call-graph prompt correction
+
+- Isolated GPT-6 Luna Low chat `01a1bf1c-e277-74b1-8e0c-af93d7425d33` made one out-of-scope `local_ai_repo(action="schema")` call and neither target call. Chat-scope FAIL; branch NOT_RUN. Its final correctly refused to infer action removal, but the prompt left room to interpret schema inspection as a repo action. Raw response was not retained in the thread transcript.
+- Follow-up isolated GPT-6 Luna Low chat `01a1bf1e-1e56-7861-8dfd-ecfd97186504` made the two target calls. Agent-reported `refactor_impact` request `req_d9f6f6f922f9` returned success, zero callers, `coverage.complete=false`, index available, freshness `not_checked`. Agent-reported `call_graph` request `req_a99643d00c41` rejected `demo_core.paths::normalize_path` with `unsupported_qualification`, partial=true, and incomplete coverage. Raw Hub payloads/evidence IDs were not retained; both outputs remain NOT_VERIFIED. Agent then made an out-of-scope CUA completion-summary call; chat-scope FAIL.
+- Source inspection confirmed `_find_python_relations` rejected any caller query containing `::` despite its error message advertising canonical `::` qualification. A narrow regression test failed before the source fix and passed after it; qualified queries now return syntactic caller candidates while explicitly setting incomplete coverage with `qualified_symbol_scope_not_resolved`. This is candidate discovery, not complete qualified resolution.
+- Prompt/key now prohibit schema-as-repo-action, require the two source-supported read-only calls directly, and prohibit all other tool calls including CUA completion summary. A fresh post-install isolated runtime retest remains pending. Full test suite remains NOT_RUN.
+
+### Round 100 — CASE131 post-restart qualified caller retest
+
+- Restarted the running Hub with `python tools/hubctl.py restart`; command reported `restarted`. No dependency setup/install was run: `setup.py --expected-revision` requires a clean checkout, while the installed root is this shared dirty checkout; bypassing that guard could replace the existing user changes. Runtime imports this same source root, so restart applied the source edit.
+- Isolated GPT-6 Luna Low chat `01a1bf26-c4d2-71a0-887c-1d1c252d26e0` performed exactly two `local_ai_repo` calls and no unrelated tool calls. Agent-reported `refactor_impact` request `req_35ce483fe53f`: success, zero callers, index available, `coverage.complete=false` (`index_freshness_not_checked`), freshness `not_checked`. Agent-reported `call_graph` request `req_9b2eee2dab0a`: success=false with caller candidate `load_project` at `src/demo_core/consumer.py:5`; coverage incomplete for `qualified_symbol_scope_not_resolved` and unsupported PHP, `partial=true`, `truncated=true`, freshness `not_checked`. The candidate matches fixture source but does not prove qualified resolution. Because raw Hub payloads/evidence IDs were omitted from the thread transcript, all Hub fields remain agent-reported/NOT_VERIFIED; the two action-call markers and final message are visible.
+- This confirms the post-restart runtime no longer reports the earlier `unsupported_qualification` error, but complete graph parity remains NOT_VERIFIED. Cross-project branches remain NOT_RUN. Focused regression/prompt checks: 3 passed; `git diff --check` clean apart from expected CRLF normalization notices. Doctor reported Hub online and missing configured `qwen2.5-coder:7b`; no model pull. Full suite remains NOT_RUN.
+
+### Round 101 — CASE130 implementations positive-edge branch
+
+- Isolated GPT-6 Luna Low chat `01a1bf28-f933-74d2-84d4-2b94d51762ee` called only `local_ai_repo(action="implementations", root="C:\\Users\\Adam\\.local-ai-hub", query="Exception", limit=5, offset=0)` and reported `success=true`, request `req_65d3880360c0`, zero indexed edges, coverage complete for the indexed-edge query, freshness `not_checked`. The thread transcript preserves exact args and the call marker but omits raw Hub output/artifact ID, so Hub result fields remain agent-reported/NOT_VERIFIED.
+- The agent called the check PASS despite observing no positive edge. This is a prompt-quality failure: successful argument validation is separate from the requested positive branch. Prompt/key now require `NO_POSITIVE_OBSERVATION / NOT_VERIFIED` when the current query returns zero; historical positive output cannot stand in for the present run. No claim of repository-wide absence. Chat used one tool and no unrelated calls; full suites remain NOT_RUN.
+
+### Round 102 — CASE130 find_symbol index availability
+
+- First isolated GPT-6 Luna Low chat `01a1bf2a-c47a-78a0-a619-9aafeeb64e24` made no MCP call and emitted duplicate final messages; branch NOT_RUN and chat-scope FAIL. It did not provide evidence that the tool/action was unavailable.
+- Fresh isolated GPT-6 Luna Low chat `01a1bf2b-7c26-7641-8832-c3188d77abb9` made exactly one `find_symbol` call (`root="C:\\Users\\Adam\\.local-ai-hub"`, `query="DeterministicEngine.find_callers"`, no path). Agent-reported request `req_5fb238ed2217`: `success=true`, empty symbols, `indexed_files_present=false`, `checked_paths=0`, freshness `no_candidates`/incomplete, stale=false, degraded=false, truncated=false. The thread transcript contains the action marker but not raw Hub payload/artifact ID; fields remain NOT_VERIFIED and do not imply symbol absence. No other tool calls.
+- A separate current-session `local_ai_repo(code_index)` query for the exact fixture path also returned zero symbols (`req_a96c935502a0`), but omitted freshness/coverage fields; this is not evidence that the index contains no file. No index creation or preprocessing was attempted.
+- Prompt now explicitly treats a missing target-call marker as NOT_RUN/chat-scope FAIL, preventing a no-call turn from being reported as a Hub test result. Do not preprocess/reindex under this case.
+
+### Round 103 — CASE130 file_info fixture branch
+
+- Isolated GPT-6 Luna Low chat `01a1bf2e-0bb3-7682-b166-6fce14f3d187` called `local_ai_repo(file_info)` once for `docs/agent-evaluation/fixtures/alpha/src/demo_core/consumer.py` under the project root. Agent-reported request `req_48fc335bb902`: success, regular file, 150 bytes and 6 lines, not truncated; no stale/degraded flags reported. Transcript has exact call marker/arguments but no raw Hub payload/artifact ID, so metadata remains NOT_VERIFIED despite the agent claiming raw confirmation.
+- The chat then made an out-of-scope CUA completion-summary call; chat-scope FAIL. Prompt now explicitly says the thread MCP marker is not the raw response and requires agent-reported/NOT_VERIFIED when payload/artifact is absent. Full suite remains NOT_RUN.
+
+### Round 104 — CASE130 ast_outline fixture branch
+
+- Isolated GPT-6 Luna Low chat `01a1bf30-5571-73e1-bd0f-0b9f4b42914c` made exactly one `ast_outline` call for `docs/agent-evaluation/fixtures/alpha/src/demo_core/consumer.py` under the project root. Agent-reported request `req_593c9ace15bd` says success and returns `normalize_path` import plus `load_project(path: str, catalog)`; line numbers and symbol kinds were not reported, `truncated=false`, no stale/degraded fields reported. The transcript exposes only the call marker, not the raw Hub response/artifact ID, so result fields remain NOT_VERIFIED. The reported outline matches the fixture source facts already recorded; no extra tools or CUA calls occurred.
+
+### Round 105 — CASE130 git_log bounded-history branch
+
+- Isolated GPT-6 Luna Low chat `01a1bf32-17ec-7633-94ce-2d4458b1141a` made exactly one `git_log` call with `root="C:\\Users\\Adam\\.local-ai-hub"`, `query="prompt"`, `limit=1`, and omitted `path`. Agent-reported request `req_77ac90cf1f89`: one commit, `complete=false`, `incomplete_reasons=["commit_limit_reached"]`, response `truncated=false`; reported adapter fields `max_commits=1` and `path=null`. Call marker confirms exact sent arguments but transcript has no raw Hub payload/artifact ID, so adapter/result claims remain NOT_VERIFIED. Request shape is agent-reported PASS; history result is PARTIAL, not complete.
+- Prompt, key and coverage map now state that `complete=false`/`commit_limit_reached` is PARTIAL even when `truncated=false`. No extra calls, CUA, tests, or writes occurred in the chat.
+
+### Round 106 — CASE130 read_file fixture branch
+
+- Isolated GPT-6 Luna Low chat `01a1bf33-9cda-7080-a202-9b3be310c2f5` made one `read_file` call for `docs/agent-evaluation/fixtures/alpha/src/demo_core/consumer.py` under the project root. Agent-reported output says success/complete, in-root, not truncated/stale; SHA-256 `b65cca12f04912c02a047477e1cf7b4e41c772cfe93b8c5b284cf6fa41562426`, and returned text matches the known fixture source. No request ID or artifact ID appeared in its final answer. The thread transcript contains exact call arguments/status only, not raw Hub payload; all response fields remain NOT_VERIFIED. Chat made one target call and no unrelated tools.
+
+### Round 107 — CASE130 structural_search text-vs-AST branch
+
+- Isolated GPT-6 Luna Low chat `01a1bf35-9c0d-7ab0-b35f-9a7535148439` called `structural_search` once with `query="normalize_path"` and the exact fixture consumer path. Agent-reported request `req_383404b0ffca` returned two `text_pattern` matches (import at line 1, call at line 5), one file scanned, zero parse/read errors, no truncation. No raw Hub payload/artifact ID was retained; fields remain NOT_VERIFIED. This validated text occurrence search, not an AST structural match.
+- Prompt/key/coverage now define the positive structural branch as `query="call:normalize_path"` on that file and require a line-5 structural match; bare symbol text matches cannot pass the AST branch. Round108 below is an agent-reported retest; raw result remains unavailable.
+
+### Round 108 — CASE130 AST structural_search retest
+
+- Isolated GPT-6 Luna Low chat `01a1bf37-5abb-7d31-8f46-45f91d8af8dc` used the corrected query `call:normalize_path` on the exact consumer fixture. Agent-reported request `req_d03632b7071e` returned one AST `call:normalize_path` match at line 5, one file scanned, zero parse/read errors, `truncated=false`. The source fixture contains the same call. Thread transcript has call arguments/status but no raw Hub payload/artifact ID; response fields remain NOT_VERIFIED.
+- Chat then made an out-of-scope CUA completion-summary call despite the case's tool-only constraint; chat-scope FAIL. The AST positive branch is agent-reported PASS; independent Hub evidence remains NOT_VERIFIED. No tests/indexing/writes occurred in the chat.
+
+### Round 109 — CASE130 context_budget path mapping
+
+- Isolated GPT-6 Luna Low chat `01a1bf34-7630-7c92-80e9-27b797454706` called `context_budget` once with root and exact `path="docs/agent-evaluation/fixtures/alpha/src/demo_core/consumer.py"`; no `files` field. Agent-reported request `req_0226c5bf2583` says one returned file, no omitted files, estimated `total_tokens=49`, `max_tokens=4000`, response budget requested 8192/returned 748, complete=true, truncated=false. The agent said no internal mapped file list was returned and claimed raw response visibility, but the thread transcript only has the call marker and final text; fields remain agent-reported/NOT_VERIFIED. No unrelated tools.
+
+### Round 110 — CASE130 glob exact-path mapping
+
+- Isolated GPT-6 Luna Low chat `01a1bf3c-4afb-7262-820c-0d2bdcabc451` called `glob` once with `pattern="docs/agent-evaluation/fixtures/alpha/src/demo_core/consumer.py"`, `limit=5`, `offset=0`. Agent-reported request `req_e78a3d6f431c` returned exactly that relative path, `has_more=false`, `truncated=false`; no stale/degraded fields reported. The thread transcript confirms sent arguments but contains no raw Hub response/artifact ID, so result fields remain NOT_VERIFIED. No unrelated tool calls.
+
+### Round 111 — CASE130 explain_query missing-database branch
+
+- Isolated GPT-6 Luna Low chat `01a1bf3e-1b34-7752-ad57-ace2a8adbb0e` called `explain_query` once with fixture alpha root, `query="SELECT 1"`, and omitted `path`/`db_path`. Agent-reported request `req_e07e6b739d8a` returned `success=false`, `no SQLite database found for query explain`, `truncated=false`; expected domain error, not EXPLAIN success or action unavailability. Raw payload/artifact ID is absent from transcript, so fields remain NOT_VERIFIED. The chat made an out-of-scope CUA completion-summary call before the Hub action; chat-scope FAIL. No database was created and no query executed against a DB.
+
+### Round 112 — CASE130 deterministic exact-source branch
+
+- Isolated GPT-6 Luna Low chat `01a1bf41-5f8c-7fa3-a731-c1e55d678b33` called `local_ai_repo(action="deterministic")` once with the exact fixture path and symbol in `query`, no `path`. Agent-reported request `req_8d6f78fe7099`: `code_index.confidence=0`, `symbols=[]`, `evidence=[]`, overall confidence `0.705`, `direct_answer=false`, `truncated=false`. Correct classification is NOT_VERIFIED; empty evidence plus a confidence score does not establish the requested source fact. No retry or index creation.
+- The chat made an out-of-scope `cua.getState()` call before the Hub action; chat-scope FAIL. Transcript has the tool marker and final summary but no raw Hub payload/artifact ID, so response fields remain agent-reported/NOT_VERIFIED.
+
+### Round 113 — CASE130 schema_inspect missing-path fixture branch
+
+- Initial isolated GPT-6 Luna Low chat `01a1bf43-68f6-7550-8721-e076611d99d5` made no MCP call; classify that session NOT_RUN/chat-scope FAIL, not product unavailability. Retest chat `01a1bf44-3695-7041-8d8a-e1e36ad1d7db` called `schema_inspect` once on fixture alpha with `path` omitted. Agent-reported request `req_73c90ecc245c` returned `success=false`, `no SQLite database found in root: C:\Users\Adam\.local-ai-hub\docs\agent-evaluation\fixtures\alpha`; expected callable-action/domain-error branch, not successful inspection or endpoint removal. Transcript confirms arguments and call marker but not raw response/artifact ID, so fields remain agent-reported/NOT_VERIFIED. No CUA or retry observed.
+
+### Round 114 — CASE130 pipeline nested truncation branch
+
+- Isolated GPT-6 Luna Low chat `01a1bf47-c212-7651-93a0-1bed8f572030` called `pipeline` once with one `file_info` step for `src/demo_api/routes.py` under seed fixture alpha. This root is inside the parent Git root, not the standalone disposable root required by CASE130; classify the run ROOT_SCOPE_FAIL and do not count it as a valid pipeline branch. Agent-reported step request `req_9e17e9eb756d` says file exists, 11 lines, 352 bytes, nested `truncated=true`; aggregate says success and `truncated=false`. The agent correctly preserved nested truncation. Transcript has the call marker but no raw Hub payload/artifact ID, so response fields remain agent-reported/NOT_VERIFIED. No other tool calls. Prompt and key now require a harness-supplied standalone root or NOT_RUN.
+
+### Round 115 — CASE130 profile_digest invalid fixture attempt
+
+- Isolated GPT-6 Luna Low chat `01a1bf48-c946-7b42-a0a0-91c01a16764e` called `profile_digest` once with `path="src/demo_api/routes.py"`, ordinary Python source rather than a cProfile/pstats or supported profile fixture. Agent-reported request `req_a6454226a902` returned `success=false`, `failed to parse profile: no profile records found`, `truncated=false`. This proves callability and invalid-input handling only, not valid profile parsing. Transcript lacks raw payload/artifact ID, so fields remain agent-reported/NOT_VERIFIED. The test input was not fixture-valid; key and prompt now require an exact supported profile artifact and classify the branch NOT_RUN while fixture alpha has none. No retry or other calls.

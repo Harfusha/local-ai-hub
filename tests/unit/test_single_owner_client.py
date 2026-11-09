@@ -11,7 +11,7 @@ def client(monkeypatch, tmp_path):
     monkeypatch.delenv("LOCAL_AI_TENANT", raising=False)
     monkeypatch.setattr(client_module, "load_config", lambda *_args, **_kwargs: {
         "server": {"port": 11435},
-        "security": {"api_token": "owner-secret", "allowed_roots": [str(tmp_path)]},
+        "security": {"allowed_roots": [str(tmp_path)]},
     })
     instance = HubClient(auto_start=False)
     yield instance
@@ -47,7 +47,7 @@ def test_query_tenant_rejects_even_when_empty(client):
 
 
 @pytest.mark.parametrize("method", ["request", "post", "get"])
-def test_requests_retain_api_token_without_tenant_header(client, monkeypatch, method):
+def test_requests_are_tokenless_and_have_no_tenant_header(client, monkeypatch, method):
     sent = []
 
     def open_request(verb, path, body, headers, timeout, **options):
@@ -58,7 +58,7 @@ def test_requests_retain_api_token_without_tenant_header(client, monkeypatch, me
     result = getattr(client, method)("/api/status")
     assert result["success"] is True
     assert len(sent) == 1
-    assert sent[0][1]["X-LocalAI-Token"] == "owner-secret"
+    assert not any(name.lower() in {"authorization", "x-localai-token"} for name in sent[0][1])
     assert "X-LocalAI-Tenant" not in sent[0][1]
     assert "X-Tenant-ID" not in sent[0][1]
     assert not hasattr(client, "tenant")

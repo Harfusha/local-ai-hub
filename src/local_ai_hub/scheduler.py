@@ -1111,7 +1111,7 @@ class AffinityScheduler:
                 )
                 since = getattr(self, "_internal_gpu_uncertain_since", None)
                 ttl = float(getattr(store, "ttl_seconds", 60.0)) if store is not None else 60.0
-                uncertainty_expired = reaped or (
+                uncertainty_expired = (
                     since is not None and time.monotonic() - since >= max(0.0, ttl)
                 )
                 reservation_absent = (
@@ -1988,9 +1988,10 @@ class AffinityScheduler:
                 success = False
             else:
                 success = self._perform_switch(model)
-        except Exception:
+        except Exception as exc:
             with self._cond:
-                self._mark_internal_gpu_uncertain_locked()
+                if not bool(getattr(exc, "operation_not_started", False)):
+                    self._mark_internal_gpu_uncertain_locked()
                 self._gpu_prepare_in_progress = False
                 self._cond.notify_all()
             raise

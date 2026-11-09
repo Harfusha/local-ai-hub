@@ -193,7 +193,11 @@ async function runBackground({timeout = null, hubTimeout = null, stageTimeout = 
           });
         });
       }
-      if (token) assert.equal(options.headers["X-LocalAI-Token"], token);
+      if (token) {
+        assert.equal(options.headers["X-LocalAI-Token"], undefined);
+        assert.equal(options.headers.Authorization, undefined);
+        assert.equal(options.headers["X-LocalAI-Tenant"], undefined);
+      }
       posts.push(body);
       let value;
       if (path.endsWith("/stage")) {

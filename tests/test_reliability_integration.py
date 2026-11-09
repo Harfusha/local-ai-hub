@@ -727,16 +727,15 @@ def test_agent_policy_has_actionable_adoption_triggers_and_recipes():
     policy = setup.build_global_policy(cfg)
     expected = (
         "Trigger map:",
-        "repository facts/files/symbols: `local_ai_repo`",
+        "every non-trivial repository task: start with indexed `local_ai_repo` evidence",
         "native command tool",
-        "exact source/evidence text: `local_ai_artifact`",
-        "shared findings or overlapping edits: `local_ai_coord`",
-        "semantic retrieval after indexed paths are insufficient: `local_ai_rag`",
-        'tier-available semantic actions only: `local_ai_task(action="delegate"|"explore"|"reason"|"review"|"second_opinion"|"compress")`; deterministic/indexed evidence remains authoritative',
+        "exact located source or stored evidence: bounded `local_ai_artifact` slice/get",
+        "durable task state, shared findings, memory, or overlapping edits: `local_ai_coord`",
+        "`local_ai_rag` only after indexed repository evidence is insufficient",
+        "`local_ai_task`: after evidence, default to exposed semantic QA",
         "Recipe — Explore:",
         "Recipe — Change:",
         "Recipe — Validate:",
-        "guidance, not gates",
     )
     for phrase in expected:
         assert phrase in policy
@@ -788,7 +787,7 @@ def test_agent_policy_has_default_delegation_triggers():
     }
     expected = (
         "Direct ownership is the default.",
-        "Semantic delegation is on-demand and optional after deterministic/indexed evidence.",
+        "Semantic delegation is on-demand under the active schema and quality gates",
         "Use native Codex subagents only for independent bounded implementation or an explicit user request.",
         "Do not duplicate tasks or chats.",
     )

@@ -86,6 +86,7 @@ class ModelPolicySamplingFloorTests(unittest.TestCase):
             role="review",
             input_tokens=40000,
             output_tokens=1800,
+            vram_free_mb=8192,
         )
 
         self.assertEqual(payload["options"]["num_ctx"], 32768)

@@ -121,5 +121,13 @@ def test_search_reads_candidate_files_concurrently_and_keeps_results(
     monkeypatch.setattr(Path, "read_bytes", tracked_read_bytes)
     actual = tools.search(str(tmp_path), "needle", limit=10)
 
-    assert actual == expected
+    timing_key = "search_phase_timings_ms"
+    actual_timings = actual.get(timing_key)
+    expected_timings = expected.get(timing_key)
+    assert isinstance(actual_timings, dict)
+    assert actual_timings.keys() == expected_timings.keys()
+    assert all(isinstance(value, (int, float)) and value >= 0 for value in actual_timings.values())
+    assert {key: value for key, value in actual.items() if key != timing_key} == {
+        key: value for key, value in expected.items() if key != timing_key
+    }
     assert max_active >= 2

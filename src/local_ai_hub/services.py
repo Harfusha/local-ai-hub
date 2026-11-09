@@ -3171,6 +3171,7 @@ class LocalAIServices:
     def _repo_cached(
         self, operation: str, root: str, params: dict[str, Any], compute: Any,
         *, state_override: dict[str, Any] | None = None,
+        cache_results: bool = True,
     ) -> dict[str, Any]:
         # Worktrees/temp repositories can disappear between an agent request and a
         # coalesced background computation. Treat that as a stale input, not a hub 500.
@@ -3178,7 +3179,9 @@ class LocalAIServices:
             self._touch_project(root)
             tracker = getattr(self, "repo_state", None)
 
-            if operation == "search" and tracker is not None:
+            if not cache_results:
+                state = state_override if isinstance(state_override, dict) else self._repo_cache_state(root) or {}
+            elif operation == "search" and tracker is not None:
                 # Exact counts cover the whole repository, including files not
                 # present in the previous page. A TTL-cached fingerprint cannot
                 # prove that no new match appeared since the previous request.
@@ -3196,7 +3199,12 @@ class LocalAIServices:
                 or (isinstance(changed_files, int) and not isinstance(changed_files, bool)
                     and changed_files > getattr(tracker, "max_changed_paths", changed_files))
             )
-            if not isinstance(fingerprint, str) or not fingerprint.strip() or search_state_incomplete:
+            if not cache_results:
+                raw = compute()
+                hit = coalesced = False
+                cache_degraded = bool(state.get("degraded", False))
+                cache_reason = "live_source_search"
+            elif not isinstance(fingerprint, str) or not fingerprint.strip() or search_state_incomplete:
                 raw = compute()
                 hit = coalesced = False
                 cache_degraded = True
@@ -3742,6 +3750,27 @@ class LocalAIServices:
                         "reranker": {"requested": reranker_requested, "used": False,
                                      "degraded": reranker_requested}}
 
+    @staticmethod
+    def _hint_directory_candidates(file_inventory, hint_root: Path, target: Path):
+        """Filter tracked paths lexically; path policy validates before reading."""
+        for raw_candidate in file_inventory:
+            try:
+                candidate = Path(raw_candidate)
+                if candidate.is_absolute():
+                    relative = candidate.relative_to(hint_root)
+                else:
+                    if candidate.drive:
+                        continue
+                    relative = candidate
+                if any(part in {".."} for part in relative.parts):
+                    continue
+                candidate = hint_root / relative
+                candidate.relative_to(hint_root)
+            except (TypeError, ValueError):
+                continue
+            if candidate == target or target in candidate.parents:
+                yield candidate
+
     def _repo_search_lexical(
         self,
         root: str,
@@ -3759,6 +3788,16 @@ class LocalAIServices:
         candidate_query: str | None = None,
         installation_intent_priority: bool = False,
     ) -> dict[str, Any]:
+        search_started = time.perf_counter()
+        phase_timings_ms: dict[str, float] = {
+            "search_hint_state_ms": 0.0,
+            "search_saved_hints_ms": 0.0,
+            "search_hint_digest_ms": 0.0,
+            "search_learning_record_ms": 0.0,
+            "search_hint_inventory_ms": 0.0,
+            "search_hint_path_validation_ms": 0.0,
+            "search_priority_setup_ms": 0.0,
+        }
         page_limit = max(1, int(top_k)) if limit is None else limit
         bounds_error = pagination_bounds_error(page_limit, offset)
         if bounds_error:
@@ -3796,6 +3835,7 @@ class LocalAIServices:
             validate_path_hint,
         )
 
+        project_config_started = time.perf_counter()
         try:
             project_context = resolve_project_context(
                 root,
@@ -3809,6 +3849,10 @@ class LocalAIServices:
                 "terminal": True,
                 "retryable": False,
             }
+        finally:
+            phase_timings_ms["project_config_ms"] = round(
+                (time.perf_counter() - project_config_started) * 1000.0, 1,
+            )
         if project_context.resolution.error_codes:
             return {
                 "success": False,
@@ -3863,6 +3907,7 @@ class LocalAIServices:
                     )
                 ):
                     request_hints.append(hint)
+        fingerprint_started = time.perf_counter()
         try:
             tracker = getattr(self, "repo_state", None)
             fingerprint = getattr(tracker, "fingerprint", None)
@@ -3873,16 +3918,27 @@ class LocalAIServices:
             )
         except Exception:
             workspace_state = {}
+        finally:
+            phase_timings_ms["workspace_fingerprint_ms"] = round(
+                (time.perf_counter() - fingerprint_started) * 1000.0, 1,
+            )
         repository_revision = (
             str(workspace_state.get("fingerprint") or "")
             if not workspace_state.get("stale") and not workspace_state.get("degraded")
             else ""
         )
+        search_preparation_started = time.perf_counter()
+        search_hint_state_started = time.perf_counter()
+        saved_hints_started = time.perf_counter()
         saved_hints = project_context.path_hints(
             purpose="repository_search",
             scope=search_scope,
             repository_revision=repository_revision,
         )
+        phase_timings_ms["search_saved_hints_ms"] = round(
+            (time.perf_counter() - saved_hints_started) * 1000.0, 1,
+        )
+        hint_digest_started = time.perf_counter()
         effective_hints = [*saved_hints, *request_hints]
         request_hint_digest = stable_hash([
             {
@@ -3897,9 +3953,21 @@ class LocalAIServices:
             }
             for hint in effective_hints
         ])
+        phase_timings_ms["search_hint_digest_ms"] = round(
+            (time.perf_counter() - hint_digest_started) * 1000.0, 1,
+        )
+        learning_record_started = time.perf_counter()
         if self.learner is not None:
-            try: self.learner.record(root, query)
-            except Exception: pass
+            try:
+                self.learner.record(root, query)
+            except Exception:
+                pass
+        phase_timings_ms["search_learning_record_ms"] = round(
+            (time.perf_counter() - learning_record_started) * 1000.0, 1,
+        )
+        phase_timings_ms["search_hint_state_ms"] = round(
+            (time.perf_counter() - search_hint_state_started) * 1000.0, 1,
+        )
         # Partial-index hints help exact symbol lookup, but they do not add
         # completeness. Natural-language and hybrid search already have bounded
         # source/RAG candidates, so avoid blocking them on broad index scans.
@@ -3962,6 +4030,7 @@ class LocalAIServices:
             for pattern, action in project_context.settings.path_overrides.items()
             if action == "include"
         )
+        hint_path_validation_started = time.perf_counter()
         try:
             extension_is_searchable = getattr(
                 self.repo_tools, "_path_extension_is_searchable", None
@@ -3986,18 +4055,18 @@ class LocalAIServices:
                     if file_inventory is None:
                         inventory_loader = getattr(self.repo_tools, "_git_files", None)
                         if hint_root is not None and callable(inventory_loader):
-                            file_inventory = inventory_loader(hint_root)
+                            hint_inventory_started = time.perf_counter()
+                            try:
+                                file_inventory = inventory_loader(hint_root, force=exact_count)
+                            except TypeError:
+                                file_inventory = inventory_loader(hint_root)
+                            phase_timings_ms["search_hint_inventory_ms"] += round(
+                                (time.perf_counter() - hint_inventory_started) * 1000.0, 1,
+                            )
                     if file_inventory is not None:
-                        def under_hint_directory():
-                            for raw_candidate in file_inventory:
-                                try:
-                                    candidate = Path(raw_candidate).resolve(strict=False)
-                                    candidate.relative_to(hint_root)
-                                except (OSError, RuntimeError, ValueError):
-                                    continue
-                                if candidate == target or target in candidate.parents:
-                                    yield candidate
-                        candidates = under_hint_directory()
+                        candidates = self._hint_directory_candidates(
+                            file_inventory, hint_root, target,
+                        )
                     else:
                         def walk_hint_directory():
                             count = 0
@@ -4043,6 +4112,10 @@ class LocalAIServices:
             # Hints enrich bounded targeted search; invalid policy never blocks normal search.
             hinted_search_paths = []
             hinted_force_include = False
+        phase_timings_ms["search_hint_path_validation_ms"] = round(
+            (time.perf_counter() - hint_path_validation_started) * 1000.0, 1,
+        )
+        search_priority_setup_started = time.perf_counter()
         if candidate_paths and hinted_search_paths:
             candidate_paths = tuple(dict.fromkeys((*candidate_paths, *hinted_search_paths)))[:64]
         paths = list(dict.fromkeys([*hinted_search_paths, *paths]))
@@ -4123,9 +4196,30 @@ class LocalAIServices:
                 search_options["candidate_query"] = normalize_query(
                     candidate_query, strip_punctuation=False,
                 ).casefold()
-            full_result = self.repo_tools.search(
-                root, query, **search_options,
+            phase_timings_ms["search_priority_setup_ms"] = round(
+                (time.perf_counter() - search_priority_setup_started) * 1000.0, 1,
             )
+            phase_timings_ms["search_preparation_ms"] = round(
+                (time.perf_counter() - search_preparation_started) * 1000.0, 1,
+            )
+            repo_search_started = time.perf_counter()
+            try:
+                full_result = self.repo_tools.search(
+                    root, query, **search_options,
+                )
+            finally:
+                phase_timings_ms["repo_tools_search_ms"] = round(
+                    (time.perf_counter() - repo_search_started) * 1000.0, 1,
+                )
+            if isinstance(full_result, dict):
+                repo_search_phases = full_result.pop("search_phase_timings_ms", None)
+                if isinstance(repo_search_phases, dict):
+                    phase_timings_ms.update({
+                        f"repo_tools_{name}": duration_ms
+                        for name, duration_ms in repo_search_phases.items()
+                        if isinstance(name, str)
+                    })
+            result_materialization_started = time.perf_counter()
             if not isinstance(full_result, dict) or not full_result.get("success", True):
                 result = dict(full_result) if isinstance(full_result, dict) else {
                     "success": False, "error": "repository search failed"
@@ -4151,6 +4245,7 @@ class LocalAIServices:
                         combined.append(dict(item))
                         seen_hits.add(key)
 
+            result_path_validation_started = time.perf_counter()
             base = Path(root).expanduser().resolve(strict=True)
             allowed_results: list[dict[str, Any]] = []
             extension_is_searchable = getattr(
@@ -4182,7 +4277,11 @@ class LocalAIServices:
                     continue
                 item["path"] = target.relative_to(base).as_posix()
                 allowed_results.append(item)
+            phase_timings_ms["search_result_path_validation_ms"] = round(
+                (time.perf_counter() - result_path_validation_started) * 1000.0, 1,
+            )
 
+            result_prioritization_started = time.perf_counter()
             override_patterns = tuple(
                 pattern
                 for pattern, action in project_context.settings.path_overrides.items()
@@ -4211,6 +4310,9 @@ class LocalAIServices:
                 scope=search_scope,
                 repository_revision=repository_revision,
                 config_digest=project_context.config_digest,
+            )
+            phase_timings_ms["search_result_prioritization_ms"] = round(
+                (time.perf_counter() - result_prioritization_started) * 1000.0, 1,
             )
             hint_used = configured_usage.hint_used or request_usage.hint_used
             hint_fallback_used = (
@@ -4249,6 +4351,9 @@ class LocalAIServices:
                         "fallback_used": hint_fallback_used,
                         "hint_helped": None,
                     }
+                    phase_timings_ms["result_materialization_ms"] = round(
+                        (time.perf_counter() - result_materialization_started) * 1000.0, 1,
+                    )
                     return result
                 return {
                     "success": False,
@@ -4305,9 +4410,13 @@ class LocalAIServices:
                                 hit["enclosing_symbol"] = symbol
                     except (OSError, ValueError):
                         continue
+            phase_timings_ms["result_materialization_ms"] = round(
+                (time.perf_counter() - result_materialization_started) * 1000.0, 1,
+            )
             # Exact search snippets become immutable evidence so agent projections can
             # send coordinates first and raw source only for the top few hits.
             if self.evidence_store is not None and isinstance(result.get("results"), list):
+                evidence_store_started = time.perf_counter()
                 try:
                     result = dict(result)
                     stored_results = self.evidence_store.put_many(
@@ -4330,8 +4439,12 @@ class LocalAIServices:
                     )
                     result = dict(result)
                     result["progressive_disclosure"] = False
+                finally:
+                    phase_timings_ms["evidence_store_ms"] = round(
+                        (time.perf_counter() - evidence_store_started) * 1000.0, 1,
+                    )
             return result
-        return self._repo_cached(
+        result = self._repo_cached(
             "search",
             root,
             {
@@ -4351,7 +4464,15 @@ class LocalAIServices:
             },
             compute,
             state_override=workspace_state,
+            cache_results=False,
         )
+        if isinstance(result, dict):
+            result = dict(result)
+            phase_timings_ms["total_ms"] = round(
+                (time.perf_counter() - search_started) * 1000.0, 1,
+            )
+            result["phase_timings_ms"] = phase_timings_ms
+        return result
 
     def _refresh_changed_intelligence(self, root: str) -> None:
         """Synchronize only Git-changed files before serving a cache-miss intelligence query.
@@ -6581,6 +6702,7 @@ class LocalAIServices:
         if isinstance(packed, dict):
             packed["context_source"] = "deterministic-fast"
             packed["degraded"] = True
+            packed["degraded_reason"] = "deterministic_only"
             packed["continuation"] = {
                 "available": True, "mode": "adaptive",
                 "hint": "Retry the adaptive context pack when deterministic-only context is insufficient.",

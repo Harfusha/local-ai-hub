@@ -13,12 +13,12 @@
         "Focused checks pass and diff check is clean.",
         "Live process has loaded the current source and representative endpoint/trace behavior is verified after separately authorized restart."
       ],
-      "blocker": "Live verification awaits separate restart authorization; the user authorized GPU reservation release only.",
+      "blocker": "Detailed request/response traces remain unclassified because enabling diagnostics stores unredacted payloads and paths; explicit approval remains pending. Current post-restart search used lexical fallback because rag_index_missing, and the first cold request spent 1102ms in search_hint_state.",
       "clarifications": [],
       "depends_on": [],
-      "description": "Audit current Hub logs and latency/failure data; classify expected caller failures versus server defects; fix confirmed performance and request/response projection issues; verify focused regression tests and, after separately authorized restart, live endpoints and trace rendering.",
+      "description": "Audit current Hub logs and latency/failure data; classify expected caller failures versus server defects; fix confirmed performance and request/response projection issues; verify focused regression tests and live endpoints and traces after authorized restart.",
       "kind": "analysis",
-      "next_action": "Continue bounded inspection of current inference and endpoint telemetry; then live-verify after restart approval.",
+      "next_action": "Investigate the cold search_hint_state delay and remaining high-p95/failing endpoints with sanitized telemetry. Classify generic request failures only after separate approval for unredacted detailed traces.",
       "title": "Review logs, fix confirmed endpoint defects, verify live changes",
       "work_phase": "verification",
       "work_status": "in_progress"

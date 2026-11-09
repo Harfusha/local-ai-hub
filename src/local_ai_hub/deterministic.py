@@ -182,7 +182,10 @@ def _bounded_schema_files(
     migrations_only: bool = False,
 ) -> list[Path]:
     """Collect schema candidates without materializing unbounded directory listings."""
-    skip_dirs = {".git", ".venv", "venv", "node_modules", "__pycache__", "state", "artifacts"}
+    skip_dirs = {
+        ".git", ".venv", "venv", "node_modules", "__pycache__", "state", "artifacts",
+        "test", "tests", "__tests__", "fixture", "fixtures", "tool-envs",
+    }
     canonical_root = root.resolve(strict=True)
     pending = [canonical_root]
     candidates: list[Path] = []
@@ -6999,7 +7002,7 @@ def test_{sym}_regression_edge_cases():
             return {"success": False, "status_code": 400, "error": "symbol must be a non-empty string", "terminal": True, "retryable": False}
 
         sym = symbol.strip()
-        if (direction == "callers" and ("::" in sym or "." in sym)) or (direction == "callees" and "." in sym):
+        if (direction == "callers" and "." in sym and "::" not in sym) or (direction == "callees" and "." in sym):
             return {
                 "success": False, "terminal": True, "retryable": False,
                 "error": "deterministic Python relation fallback requires an unqualified symbol or canonical :: qualification",
@@ -7025,6 +7028,11 @@ def test_{sym}_regression_edge_cases():
         source_files_seen = 0
         unsupported_languages: set[str] = set()
         matching_definitions: set[str] = set()
+        qualified_caller_symbol = direction == "callers" and "::" in sym
+        caller_symbol_name = sym.rsplit("::", 1)[-1] if qualified_caller_symbol else sym
+        if qualified_caller_symbol:
+            incomplete = True
+            incomplete_reasons.add("qualified_symbol_scope_not_resolved")
 
         def walk_error(_error: OSError) -> None:
             nonlocal incomplete
@@ -7154,7 +7162,7 @@ def test_{sym}_regression_edge_cases():
                         target = call_name(node.func)
                         scope = ".".join(self.scope_stack) if self.scope_stack else "<module>"
                         if direction == "callers":
-                            matched = target == sym
+                            matched = target == caller_symbol_name
                         else:
                             qualified_scope = "::".join([part for part in (module_identity, *self.scope_stack) if part])
                             if "::" in sym or "." in sym:
@@ -9087,6 +9095,8 @@ def test_{sym}_regression_edge_cases():
                     "status": "database_missing",
                     "message": "No SQLite database found at default paths",
                     "error": "Cannot determine migration drift without a live SQLite database",
+                    "terminal": True,
+                    "retryable": False,
                 }
             return {
                 "success": False,
@@ -9095,6 +9105,8 @@ def test_{sym}_regression_edge_cases():
                 "in_sync": None,
                 "status": "database_missing",
                 "error": f"SQLite database not found at {db_path}",
+                "terminal": True,
+                "retryable": False,
             }
 
         try:
@@ -9108,6 +9120,8 @@ def test_{sym}_regression_edge_cases():
                     "in_sync": None,
                     "status": "database_size_limit_exceeded",
                     "error": f"SQLite database exceeds {_MAX_SCHEMA_DB_BYTES} bytes",
+                    "terminal": True,
+                    "retryable": False,
                 }
         except ValueError:
             return {
@@ -9117,6 +9131,8 @@ def test_{sym}_regression_edge_cases():
                 "in_sync": None,
                 "status": "database_path_outside_root",
                 "error": "SQLite database path must resolve inside the requested root",
+                "terminal": True,
+                "retryable": False,
             }
         except OSError as exc:
             return {
@@ -9193,6 +9209,8 @@ def test_{sym}_regression_edge_cases():
                 "in_sync": None,
                 "status": "schema_scan_budget_exceeded",
                 "error": str(exc),
+                "terminal": True,
+                "retryable": False,
             }
         except OSError as exc:
             return {
@@ -9274,6 +9292,8 @@ def test_{sym}_regression_edge_cases():
                             "in_sync": None,
                             "status": "schema_scan_budget_exceeded",
                             "error": "migration scan exceeded its time budget",
+                            "terminal": True,
+                            "retryable": False,
                         }
                     with migration_path.open("rb") as migration_stream:
                         raw_source = migration_stream.read(_MAX_SCHEMA_FILE_BYTES + 1)
@@ -9289,6 +9309,8 @@ def test_{sym}_regression_edge_cases():
                             "in_sync": None,
                             "status": "schema_scan_budget_exceeded",
                             "error": "migration SQL exceeds the bounded scan budget",
+                            "terminal": True,
+                            "retryable": False,
                         }
                     source = raw_source.decode("utf-8", errors="replace")
 
@@ -9353,6 +9375,8 @@ def test_{sym}_regression_edge_cases():
                     "in_sync": None,
                     "status": "schema_scan_budget_exceeded",
                     "error": str(exc),
+                    "terminal": True,
+                    "retryable": False,
                 }
             except OSError as exc:
                 return {
@@ -9373,6 +9397,8 @@ def test_{sym}_regression_edge_cases():
                         "in_sync": None,
                         "status": "schema_scan_budget_exceeded",
                         "error": "Python model scan exceeded its time budget",
+                        "terminal": True,
+                        "retryable": False,
                     }
                 try:
                     with p.open("rb") as source_stream:
@@ -9389,10 +9415,27 @@ def test_{sym}_regression_edge_cases():
                             "in_sync": None,
                             "status": "schema_scan_budget_exceeded",
                             "error": "Python model sources exceed the bounded scan budget",
+                            "terminal": True,
+                            "retryable": False,
                         }
-                    tree = ast.parse(
-                        raw_source.decode("utf-8", errors="replace"), filename=str(p)
-                    )
+                    source_text = raw_source.decode("utf-8", errors="replace")
+                    relative_parts = p.relative_to(p_root).parts
+                    model_source_names = {
+                        "model.py", "models.py", "schema.py", "schemas.py",
+                        "entity.py", "entities.py",
+                    }
+                    model_source_dirs = {
+                        "model", "models", "schema", "schemas", "entity", "entities",
+                    }
+                    if (
+                        re.search(r"(?m)^\s*__tablename__\s*=", source_text) is None
+                        and p.name.lower() not in model_source_names
+                        and not any(
+                            part.lower() in model_source_dirs for part in relative_parts[:-1]
+                        )
+                    ):
+                        continue
+                    tree = ast.parse(source_text, filename=str(p))
                     for node_index, node in enumerate(ast.walk(tree)):
                         if node_index % 256 == 0 and time.monotonic() >= python_scan_deadline:
                             return {
@@ -9402,6 +9445,8 @@ def test_{sym}_regression_edge_cases():
                                 "in_sync": None,
                                 "status": "schema_scan_budget_exceeded",
                                 "error": "Python model scan exceeded its time budget",
+                                "terminal": True,
+                                "retryable": False,
                             }
                         if isinstance(node, ast.ClassDef):
                             tbl_name = None
@@ -9433,6 +9478,8 @@ def test_{sym}_regression_edge_cases():
                         "in_sync": None,
                         "status": "schema_scan_budget_exceeded",
                         "error": "Python model scan exceeded its time budget",
+                        "terminal": True,
+                        "retryable": False,
                     }
 
         if not code_tables:
@@ -9451,6 +9498,8 @@ def test_{sym}_regression_edge_cases():
                 "drift": {},
                 "status": "schema_source_unavailable",
                 "error": "No SQL migration schema or declared Python model tables were found",
+                "terminal": True,
+                "retryable": False,
             }
 
         # SQLite identifier matching folds ASCII only; Unicode casefold would
@@ -10001,22 +10050,26 @@ def test_{sym}_regression_edge_cases():
             dirnames[:] = [d for d in dirnames if not d.startswith((".", "node_modules", "venv", "__pycache__", "build", "dist"))]
             for fn in filenames:
                 p = Path(dirpath) / fn
-                if p.suffix.lower() == ".py" and not _is_test_file(str(p)):
+                relative_path = p.relative_to(root_path)
+                if p.suffix.lower() == ".py" and not _is_test_file(relative_path.as_posix()):
                     all_py_files.append(p)
                     if not entrypoints and fn.lower() in ("main.py", "app.py", "cli.py", "__main__.py", "server.py"):
-                        ep_candidates.append(str(p.relative_to(root_path)).replace("\\", "/"))
+                        ep_candidates.append(relative_path.as_posix())
 
         if not ep_candidates and all_py_files:
             ep_candidates.append(str(all_py_files[0].relative_to(root_path)).replace("\\", "/"))
 
         defs: dict[str, dict[str, Any]] = {}
+        defs_by_name: dict[str, list[str]] = {}
         module_calls: dict[str, set[str]] = {}
+        parse_errors: list[str] = []
 
         for p in all_py_files:
             rel = str(p.relative_to(root_path)).replace("\\", "/")
             try:
                 tree = ast.parse(p.read_text(encoding="utf-8", errors="ignore"))
             except Exception:
+                parse_errors.append(rel)
                 continue
 
             file_calls: set[str] = set()
@@ -10024,7 +10077,9 @@ def test_{sym}_regression_edge_cases():
                 if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
                     name = node.name
                     if not name.startswith("__"):
-                        defs[name] = {"name": name, "file": rel, "line": node.lineno, "kind": type(node).__name__}
+                        symbol_id = f"{rel}:{node.lineno}:{name}"
+                        defs[symbol_id] = {"name": name, "file": rel, "line": node.lineno, "kind": type(node).__name__}
+                        defs_by_name.setdefault(name, []).append(symbol_id)
                 elif isinstance(node, ast.Call):
                     if isinstance(node.func, ast.Name):
                         file_calls.add(node.func.id)
@@ -10034,11 +10089,17 @@ def test_{sym}_regression_edge_cases():
                     file_calls.add(node.id)
             module_calls[rel] = file_calls
 
+        ambiguous_names = {name for name, symbol_ids in defs_by_name.items() if len(symbol_ids) > 1}
         reachable: set[str] = set()
         queue: list[str] = []
 
         for ep in ep_candidates:
-            queue.extend(module_calls.get(ep, set()))
+            queue.extend(
+                symbol_id
+                for name in module_calls.get(ep, set())
+                if name not in ambiguous_names
+                for symbol_id in defs_by_name.get(name, [])
+            )
 
         visited_nodes: set[str] = set()
         while queue:
@@ -10050,19 +10111,32 @@ def test_{sym}_regression_edge_cases():
                 reachable.add(sym)
                 sym_file = defs[sym]["file"]
                 for neighbor in module_calls.get(sym_file, set()):
-                    if neighbor not in visited_nodes and neighbor in defs:
-                        queue.append(neighbor)
+                    if neighbor not in visited_nodes and neighbor not in ambiguous_names:
+                        queue.extend(defs_by_name.get(neighbor, []))
 
-        unreachable = [info for name, info in defs.items() if name not in reachable]
+        ambiguous_symbols = [info for name in sorted(ambiguous_names) for info in (defs[symbol_id] for symbol_id in defs_by_name[name])]
+        unreachable = [info for symbol_id, info in defs.items() if symbol_id not in reachable and info["name"] not in ambiguous_names]
+        warnings = []
+        if ambiguous_names:
+            warnings.append("Duplicate symbol names make reachability ambiguous; affected symbols were excluded from reachable and dead-code counts.")
+        if parse_errors:
+            warnings.append("Some Python files could not be parsed; reachability results may be incomplete.")
+        truncated = len(unreachable) > limit or len(ambiguous_symbols) > limit
 
         return {
             "success": True,
+            "complete": not ambiguous_names and not parse_errors,
             "root": str(root_path),
             "entrypoints": ep_candidates,
             "total_symbols": len(defs),
             "reachable_symbols_count": len(reachable),
+            "ambiguous_symbols_count": len(ambiguous_symbols),
+            "ambiguous_symbols": ambiguous_symbols[:limit],
+            "unreachable_symbols_count": len(unreachable),
             "unreachable_symbols": unreachable[:limit],
             "dead_code_count": len(unreachable),
+            "truncated": truncated,
+            "warnings": warnings,
         }
 
     def ast_mutation_test(

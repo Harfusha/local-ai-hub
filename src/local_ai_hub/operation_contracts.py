@@ -404,7 +404,7 @@ _ACTION_SCOPED_FIELDS = {
         "parent_root": frozenset({"preprocess"}),
         "path_hints": frozenset({"search", "context"}),
         "search_mode": frozenset({"search"}),
-        "limit": frozenset({"search", "code_index", "callers", "callees", "implementations", "hotspots", "call_graph", "find_files", "glob", "git_log"}),
+        "limit": frozenset({"search", "code_index", "callers", "callees", "implementations", "hotspots", "call_graph", "find_files", "glob", "git_log", "reachability_dead_code"}),
         "offset": frozenset({"search", "code_index", "callers", "callees", "implementations", "find_files", "glob"}),
         "directory_hints": frozenset({"context"}),
         "exclude_paths": frozenset({"context"}),
@@ -948,7 +948,7 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
             "task_update": ("root", "task_id", "checkpoint", "contract", "goal", "acceptance_criteria", "criteria"),
             "memory_list": ("root", "scope", "query", "limit", "kind"),
             "memory_find": ("root", "scope", "query", "limit", "kind", "key", "status", "session_id"),
-            "memory_record": ("root", "scope", "key", "value", "kind", "status", "confidence", "ttl_seconds", "session_id"),
+            "memory_record": ("root", "scope", "key", "value", "kind", "status", "confidence", "ttl_seconds", "session_id", "contradicts_record_id", "supersedes_record_id"),
             "memory_delete": ("root", "scope", "record_id", "scope_id", "task_id", "session_id", "clone_id", "worktree_id", "branch"),
             "memory_promote": ("root", "scope", "record_id", "target_scope", "scope_id", "task_id", "session_id", "clone_id", "worktree_id", "branch"),
             "task_fail": ("root", "task_id", "reason", "error", "message"),
@@ -1182,6 +1182,8 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
                 }},
             },
             "record": {"type": "object"},
+            "contradicts_record_id": {"type": ["string", "null"]},
+            "supersedes_record_id": {"type": ["string", "null"]},
             "fingerprint": {
                 "type": "object",
                 "properties": {
@@ -1426,6 +1428,10 @@ def operation_input_schema(tool: str, action: str) -> dict[str, Any]:
         schema["properties"]["max_tokens"] = {
             "type": "integer", "minimum": 0, "maximum": 100000, "default": 4000,
         }
+    if tool == "local_ai_repo" and action == "reachability_dead_code":
+        schema["properties"]["limit"] = {
+            "type": "integer", "minimum": 1, "maximum": 200, "default": 100,
+        }
     action_contract = contract["actions"][action]
     required = [
         selector,
@@ -1515,6 +1521,10 @@ def operation_tool_input_schema(tool: str, features: Any = None) -> dict[str, An
         if tool == "local_ai_work" and action == "submit":
             then.setdefault("required", []).append("mode")
             then.setdefault("properties", {})["mode"] = {"type": "string", "enum": ["bounded"]}
+        if tool == "local_ai_repo" and action == "reachability_dead_code":
+            then.setdefault("properties", {})["limit"] = {
+                "type": "integer", "minimum": 1, "maximum": 200, "default": 100,
+            }
         if disallowed:
             then["not"] = {"anyOf": [{"required": [field]} for field in sorted(disallowed)]}
         if not then:

@@ -5,6 +5,7 @@ from types import SimpleNamespace
 import pytest
 
 from local_ai_hub import repo_tools
+from local_ai_hub.project_config import ProjectSettings
 from local_ai_hub.repo_tools import RepositoryTools
 
 
@@ -27,6 +28,34 @@ def _search(tmp_path, monkeypatch, payload):
     monkeypatch.setattr(repo_tools, "popen_managed", lambda *args, **kwargs: _Process(payload))
     tools = RepositoryTools({"rag": {"extensions": [".py"]}, "search": {"use_ripgrep_if_available": False}})
     return tools.search(str(tmp_path), "audit_needle", exact_count=True, limit=10)
+
+
+def test_project_search_candidates_reuse_project_path_policy_root(tmp_path, monkeypatch):
+    targets = [tmp_path / f"match_{index}.py" for index in range(3)]
+    for target in targets:
+        target.write_text("needle = True\n", encoding="utf-8")
+    tools = RepositoryTools({"rag": {"extensions": [".py"]}})
+    project_settings = ProjectSettings(text_extensions=(".py",))
+    original_resolve = repo_tools.Path.resolve
+    target_resolves = {target: 0 for target in targets}
+    base_resolves = 0
+
+    def count_target_resolves(path, *args, **kwargs):
+        nonlocal base_resolves
+        if path == tmp_path:
+            base_resolves += 1
+        elif path in target_resolves:
+            target_resolves[path] += 1
+        return original_resolve(path, *args, **kwargs)
+
+    monkeypatch.setattr(repo_tools.Path, "resolve", count_target_resolves)
+    candidates = list(tools._iter_project_search_files(
+        tmp_path, project_settings, 25, git_inventory=targets, candidate_limit=3,
+    ))
+
+    assert candidates == targets
+    assert target_resolves == {target: 1 for target in targets}
+    assert base_resolves == len(targets) + 1
 
 
 def test_combined_git_groups_are_sorted_and_deduplicated(tmp_path, monkeypatch):
@@ -404,18 +433,21 @@ def test_exact_search_keeps_multi_character_unicode_folds_on_git_scan(tmp_path, 
     assert [item["path"] for item in result["results"]] == ["match.py"]
 
 
-def test_exact_ascii_query_matching_unicode_lower_expansion_uses_git_scan(tmp_path, monkeypatch):
+def test_exact_ascii_query_matching_unicode_lower_expansion_adds_ripgrep_candidate(tmp_path, monkeypatch):
     (tmp_path / ".git").mkdir()
     (tmp_path / "match.py").write_text("word = 'İstanbul'\n", encoding="utf-8")
     monkeypatch.setattr(repo_tools, "popen_managed", lambda *_args, **_kwargs: _Process(b"match.py\0"))
     rg_calls = []
 
-    def simple_fold_ripgrep(*_args, **_kwargs):
-        rg_calls.append(True)
-        # Unicode simple folding does not match Python's dotted-I lowercase expansion.
-        return SimpleNamespace(returncode=1, stdout="", stderr="")
+    def expansion_aware_ripgrep(args, **_kwargs):
+        if args[0] != "rg":
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        rg_calls.append(args)
+        # The extra source-character pattern makes ripgrep's candidate set complete.
+        assert "İ" in args
+        return SimpleNamespace(returncode=0, stdout="match.py\n", stderr="")
 
-    monkeypatch.setattr(repo_tools.subprocess, "run", simple_fold_ripgrep)
+    monkeypatch.setattr(repo_tools.subprocess, "run", expansion_aware_ripgrep)
     tools = RepositoryTools({
         "rag": {"extensions": [".py"]},
         "search": {"use_ripgrep_if_available": True},
@@ -424,7 +456,7 @@ def test_exact_ascii_query_matching_unicode_lower_expansion_uses_git_scan(tmp_pa
 
     result = tools.search(str(tmp_path), "i", limit=10, exact_count=True)
 
-    assert rg_calls == []
+    assert len(rg_calls) == 1
     assert result["success"] is True, result
     assert result["count_exact"] is True
     assert result["total_matches"] == 1

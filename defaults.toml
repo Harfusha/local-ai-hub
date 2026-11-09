@@ -50,7 +50,7 @@ max_elements = 256
 # auto detects OS/architecture, RAM and NVIDIA/AMD/Intel/Apple graphics.
 # Shared-memory iGPU systems use the conservative integrated profile instead of
 # being sized from misleading Windows AdapterRAM values.
-# Explicit values: cpu, integrated, low, balanced, medium, high, max. User overrides always win.
+# Explicit values: cpu, integrated, low, balanced, high, max. User overrides always win.
 profile = "auto"
 auto_tune = true
 

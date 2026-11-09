@@ -352,7 +352,8 @@ class FeatureSet:
             lines.append(f"- `local_ai_task` specialized work ({', '.join(specialties)}): matching requests and exposed actions only.")
         async_jobs = [action for action in ("status", "wait", "result", "cancel", "continue") if action in task]
         if async_jobs:
-            lines.append(f"- `local_ai_task` async jobs ({'/'.join(async_jobs)}): require a known job ID; readiness uses `local_ai_status`.")
+            readiness = "; readiness uses `local_ai_status`" if self.status else ""
+            lines.append(f"- `local_ai_task` async jobs ({'/'.join(async_jobs)}): require a known job ID{readiness}.")
 
         coord = set(self.supported_coord_actions())
         if coord:

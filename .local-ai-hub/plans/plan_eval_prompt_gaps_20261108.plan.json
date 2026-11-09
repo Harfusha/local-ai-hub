@@ -23,7 +23,7 @@
       "depends_on": [],
       "description": "Audit the full prompt catalog for genuine redundancy and quality defects; preserve source-supported actions omitted from a session as GATED/UNAVAILABLE, not removed. Run each retained prompt in its own GPT-6 Luna low/medium chat, record evidence and limits, and fix confirmed runtime defects found by those practical tests with focused regression tests. Do not run full pytest.",
       "kind": "documentation",
-      "next_action": "Reconcile source-supported local_ai_repo actions against cases 001-117 without overclaiming coverage; then audit case 129 source/action inventory and investigate doctor warning for configured qwen2.5-coder:7b without pulling models. Do not run the full suite.",
+      "next_action": "Continue targeted practical audit of CASE130 deterministic/structural action coverage and the next unverified retained prompt. Keep isolated GPT-6 Luna Low/Medium sessions, record per-case evidence, and do not run the full prompt suite or full pytest.",
       "order": 1,
       "title": "Audit and stress-test prompt catalog",
       "work_phase": "verification",

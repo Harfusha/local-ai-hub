@@ -65,7 +65,7 @@ def write_state_version(
     }
     tmp = target.with_name(f"{STATE_VERSION_FILE}.tmp.{os.getpid()}")
     try:
-        tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        tmp.write_text(json.dumps(payload, separators=(",", ":")), encoding="utf-8")
         os.replace(tmp, target)
     finally:
         if tmp.exists():

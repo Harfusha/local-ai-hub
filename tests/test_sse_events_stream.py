@@ -122,7 +122,6 @@ def test_sse_http_route_rejects_disabled_agent_state_before_stream(monkeypatch, 
     task = SimpleNamespace(context=SimpleNamespace(repository_id=str(root.resolve()), session_id="session:sse-test"))
     app.config = {
         "security": {
-            "api_token": "t18-test-api-token",
             "allowed_roots": [str(root.resolve())],
         }
     }
@@ -146,7 +145,7 @@ def test_sse_http_route_rejects_disabled_agent_state_before_stream(monkeypatch, 
         "root": str(root.resolve()),
     })
     handler.command = "GET"
-    handler.headers = {"Authorization": "Bearer t18-test-api-token"}
+    handler.headers = {}
     handler.client_address = ("127.0.0.1", 12345)
     handler.server = SimpleNamespace()
 

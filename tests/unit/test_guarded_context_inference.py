@@ -50,6 +50,8 @@ def context_http_hub(tmp_path, monkeypatch):
             f'state_dir = "{state_dir.as_posix()}"',
             "[security]",
             f'allowed_roots = ["{tmp_path.as_posix()}"]',
+            "[debug_traces]",
+            "enabled = true",
         )),
         encoding="utf-8",
     )
@@ -141,6 +143,9 @@ def test_http_context_session_id_explicitly_activates_guarded_request(context_ht
 
     assert status == 200, response
     assert response["success"] is True
+    assert response["phase_timings_ms"]["request_preparation_ms"] >= 0
+    assert response["phase_timings_ms"]["context_retrieval_ms"] >= 0
+    assert response["phase_timings_ms"]["total_ms"] >= 0
     assert calls
 
 
@@ -168,3 +173,6 @@ def test_http_context_accepts_unscoped_request_without_guard_fields(context_http
 
     assert status == 200, response
     assert response["success"] is True
+    assert response["phase_timings_ms"]["request_preparation_ms"] >= 0
+    assert response["phase_timings_ms"]["context_retrieval_ms"] >= 0
+    assert response["phase_timings_ms"]["total_ms"] >= 0

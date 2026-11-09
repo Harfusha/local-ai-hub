@@ -402,13 +402,14 @@
       "decision": "retain",
       "role": "agent",
       "reason": "Repository source/navigation/analysis/change evidence backing agent work. Code diagnostics describe user code errors, not Hub diagnostic logging.",
-      "response_policy": "Preserve work result, errors/retry/cancellation, identities, evidence and pagination; project_agent_response removes internal observations outside dashboard detail; caller documents remain opaque.",
+      "response_policy": "Preserve service result, status_code mapping, errors/retry/cancellation, identities, evidence and pagination; no bearer token or tenant envelope.",
       "source_contract": {
         "source": "src/local_ai_hub/http_server.py",
         "handler": "do_GET",
         "literal_response_fields": [],
         "response_producers": [
-          "APP.services.code_find_declaration"
+          "APP.services.code_find_declaration",
+          "local:result"
         ],
         "action_literals": []
       }
@@ -7068,13 +7069,14 @@
       "decision": "retain",
       "role": "agent",
       "reason": "Repository source/navigation/analysis/change evidence backing agent work. Code diagnostics describe user code errors, not Hub diagnostic logging.",
-      "response_policy": "Preserve work result, errors/retry/cancellation, identities, evidence and pagination; project_agent_response removes internal observations outside dashboard detail; caller documents remain opaque.",
+      "response_policy": "Preserve service result fields, errors/retry/cancellation, identities, evidence and pagination; POST status remains 200 by route contract.",
       "source_contract": {
         "source": "src/local_ai_hub/http_route_registry.py",
         "handler": "post_declaration_1",
         "literal_response_fields": [],
         "response_producers": [
-          "APP.services.code_find_declaration"
+          "APP.services.code_find_declaration",
+          "local:result"
         ],
         "action_literals": []
       }
@@ -8174,13 +8176,14 @@
       "decision": "retain",
       "role": "agent",
       "reason": "Repository source/navigation/analysis/change evidence backing agent work. Code diagnostics describe user code errors, not Hub diagnostic logging.",
-      "response_policy": "Preserve work result, errors/retry/cancellation, identities, evidence and pagination; project_agent_response removes internal observations outside dashboard detail; caller documents remain opaque.",
+      "response_policy": "Preserve validation result fields and diagnostics; project_agent_response removes internal observations outside dashboard detail.",
       "source_contract": {
         "source": "src/local_ai_hub/http_route_registry.py",
         "handler": "post_patch_validate_1",
         "literal_response_fields": [],
         "response_producers": [
-          "APP.services.validate_patch"
+          "APP.services.validate_patch",
+          "local:result"
         ],
         "action_literals": []
       }
@@ -9293,13 +9296,14 @@
       "decision": "retain",
       "role": "agent",
       "reason": "Retrieval/context/ingestion task evidence with authorized root/workspace/docset boundaries; explicit context diagnostics remains gated.",
-      "response_policy": "Preserve work result, errors/retry/cancellation, identities, evidence and pagination; project_agent_response removes internal observations outside dashboard detail; caller documents remain opaque.",
+      "response_policy": "Preserve work result, errors/retry/cancellation, identities, evidence, pagination and status_code; project_agent_response removes internal observations outside dashboard detail.",
       "source_contract": {
         "source": "src/local_ai_hub/http_route_registry.py",
         "handler": "post_search_1",
         "literal_response_fields": [
           "error",
           "retryable",
+          "status_code",
           "success",
           "terminal"
         ],
@@ -9676,23 +9680,20 @@
       "decision": "retain",
       "role": "agent",
       "reason": "Existing durable work/session lifecycle and cancellation/result delivery. Diagnostic submissions and retained results are gated independently.",
-      "response_policy": "Preserve work result, errors/retry/cancellation, identities, evidence and pagination; project_agent_response removes internal observations outside dashboard detail; caller documents remain opaque.",
+      "response_policy": "Preserve work result, errors/retry/cancellation, work_id and outcome flags. Submit and lifecycle actions retain their distinct producer behavior; not-found lifecycle responses map to HTTP 404.",
       "source_contract": {
         "source": "src/local_ai_hub/http_route_registry.py",
         "handler": "post_work_orders_1",
         "literal_response_fields": [
           "error",
+          "retryable",
           "success",
           "terminal",
           "unsupported"
         ],
         "response_producers": [
-          "APP.work_orchestrator.cancel",
-          "APP.work_orchestrator.continue_work",
-          "APP.work_orchestrator.get",
-          "APP.work_orchestrator.status",
           "APP.work_orchestrator.submit",
-          "APP.work_orchestrator.wait"
+          "local:result"
         ],
         "action_literals": [
           "cancel",

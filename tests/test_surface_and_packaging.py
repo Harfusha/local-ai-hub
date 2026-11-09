@@ -110,7 +110,7 @@ def test_telemetry_summary_cache_is_reachable(tmp_path: Path):
         second = store.summary(1)
         assert first["enabled"] is True
         assert second == first
-        assert 1 in store._summary_cache
+        assert (1, False) in store._summary_cache
     finally:
         store.close()
 

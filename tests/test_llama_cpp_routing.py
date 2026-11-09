@@ -323,7 +323,7 @@ class LlamaCppRoutingTests(unittest.TestCase):
         router = LlamaCppRouter(self._config())
         lines = [b'data: {"choices":[{"delta":{"content":"too late"}}]}\n']
         clock = Mock(wraps=time)
-        clock.monotonic.side_effect = [100.0, 100.0, 101.0]
+        clock.monotonic.side_effect = [100.0, 100.0, 100.0, 101.0]
         with patch.object(router, "ensure_model", return_value=True) as ensure_model, \
              patch("local_ai_hub.llama_cpp.time", clock), \
              patch("local_ai_hub.llama_cpp._open_interruptible_response", return_value=_Response(lines=lines)) as open_request:
@@ -339,7 +339,7 @@ class LlamaCppRoutingTests(unittest.TestCase):
         router = LlamaCppRouter(self._config())
         shared_monotonic = time.monotonic
         clock = Mock(wraps=time)
-        clock.monotonic.side_effect = [100.0, 100.0, 100.1, 100.2]
+        clock.monotonic.return_value = 100.0
         with patch.object(router, "ensure_model", return_value=False) as ensure_model, \
              patch("local_ai_hub.llama_cpp.time", clock):
             # Other Hub workers must retain their real shared deadline clock.
@@ -1133,15 +1133,15 @@ class LlamaCppRoutingTests(unittest.TestCase):
             "low": "qwen2.5-coder:3b",
             "balanced": "qwen2.5-coder:3b",
             "high": "qwen2.5-coder:3b",
-            "max": "qwen2.5-coder:3b",
+            "max": "qwen2.5-coder:7b",
         }
         expected_fast = {
             "cpu": "qwen2.5-coder:3b",
             "integrated": "qwen2.5-coder:3b",
             "low": "qwen2.5-coder:3b",
             "balanced": "qwen2.5-coder:3b",
-            "high": "qwen2.5-coder:3b",
-            "max": "qwen2.5-coder:3b",
+            "high": "qwen2.5-coder:7b",
+            "max": "qwen2.5-coder:7b",
         }
         expected_reasoning = {
             "cpu": "qwen3.5:9b",
@@ -1156,16 +1156,16 @@ class LlamaCppRoutingTests(unittest.TestCase):
             "integrated": "qwen2.5-coder:7b",
             "low": "qwen2.5-coder:7b",
             "balanced": "qwen2.5-coder:7b",
-            "high": "qwen2.5-coder:7b",
-            "max": "qwen3.5:9b",
+            "high": "qwen2.5-coder:14b",
+            "max": "qwen2.5-coder:32b",
         }
         expected_vision = {
             "cpu": "qwen3-vl:4b",
             "integrated": "qwen3-vl:4b",
             "low": "qwen3-vl:4b",
-            "balanced": "qwen3.5:9b",
-            "high": "qwen3.5:9b",
-            "max": "qwen3.5:9b",
+            "balanced": "minicpm-v:8b",
+            "high": "minicpm-v:8b",
+            "max": "minicpm-v:8b",
         }
         expected_general = {
             "cpu": "qwen2.5-coder:7b",

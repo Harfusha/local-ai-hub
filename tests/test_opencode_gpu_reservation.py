@@ -455,6 +455,31 @@ def test_failed_prewarm_retains_gpu_fence(tmp_path, raises):
         other.close()
 
 
+def test_preparation_exception_proven_not_started_does_not_quarantine_gpu(tmp_path):
+    class PreparationNotStarted(RuntimeError):
+        operation_not_started = True
+
+    config = {"server": {"state_dir": str(tmp_path)}}
+    scheduler = AffinityScheduler(SimpleNamespace(loaded_model_details=lambda: []), config)
+    other = AffinityScheduler(SimpleNamespace(loaded_model_details=lambda: []), config)
+
+    def switch(_model):
+        raise PreparationNotStarted("backend call never started")
+
+    scheduler._perform_switch = switch
+    try:
+        with pytest.raises(PreparationNotStarted):
+            scheduler.prewarm("model")
+        with scheduler._cond:
+            assert not scheduler._internal_gpu_uncertain
+            assert scheduler._release_internal_gpu()
+        token = other.reserve_external_gpu()
+        assert token and other.release_external_gpu(token)
+    finally:
+        scheduler.close()
+        other.close()
+
+
 def test_offline_prewarm_starts_backend_under_scheduler_gpu_lease(tmp_path):
     class _StartableRuntime:
         scheduler = None

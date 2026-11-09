@@ -37,6 +37,8 @@ def test_mixed_backend_requires_admission_for_initial_or_same_name_switch(active
     scheduler._last_switch = 0.0
     scheduler._switch_sequence = 0
     scheduler._stats = Counter()
+    scheduler._internal_gpu_uncertain = False
+    scheduler._internal_gpu_uncertain_since = None
     scheduler._model_blocked_until = {}
     scheduler._model_last_error = {}
     scheduler.switch_failure_cooldown = 1.0
@@ -65,6 +67,8 @@ def test_required_mixed_admission_fails_closed_without_telemetry():
     scheduler._last_switch = 0.0
     scheduler._switch_sequence = 0
     scheduler._stats = Counter()
+    scheduler._internal_gpu_uncertain = False
+    scheduler._internal_gpu_uncertain_since = None
     scheduler._model_blocked_until = {}
     scheduler._model_last_error = {}
     scheduler.switch_failure_cooldown = 1.0

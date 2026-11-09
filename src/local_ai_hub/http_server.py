@@ -8198,6 +8198,23 @@ class Handler(BaseHTTPRequestHandler):
                 status = int(result.pop("status_code", 200))
                 self._send(status, result); return
             if path == "/api/context/pack":
+                context_request_started = time.perf_counter()
+
+                def attach_context_phase_timings(
+                    result: Any, preparation_ms: float, retrieval_ms: float,
+                ) -> Any:
+                    if not isinstance(result, dict):
+                        return result
+                    timings = result.get("phase_timings_ms")
+                    timings = dict(timings) if isinstance(timings, dict) else {}
+                    timings.update({
+                        "request_preparation_ms": preparation_ms,
+                        "context_retrieval_ms": retrieval_ms,
+                        "total_ms": round((time.perf_counter() - context_request_started) * 1000.0, 1),
+                    })
+                    result["phase_timings_ms"] = timings
+                    return result
+
                 root = str(payload.get("root", ".")); query_text = str(payload.get("query", ""))
                 configured_tokens = APP.config.get("token_saving", {}).get("default_repo_context_tokens", 8000)
                 raw_max_tokens = payload.get("max_tokens", payload.get("token_budget", configured_tokens))
@@ -8363,6 +8380,10 @@ class Handler(BaseHTTPRequestHandler):
 
                     request = ConsistencyRequest(root=root, task_id=str(payload.get("task_id", "")), session_id=str(payload.get("session_id", "")), query=guarded_query, phase=phase, focus=focus_values, workspace=str(payload.get("workspace", "")), preload_profile=str(payload.get("preload_profile", "")), token_budget=max_tokens, changed_paths=tuple(str(item) for item in (payload.get("changed_paths") or [])), base=str(payload.get("base", "HEAD")), staged=bool(payload.get("staged", False)), override_reason=str(payload.get("override_reason", "")), approval=approval, path_hints=path_controls.path_hints if path_controls else (), directory_hints=path_controls.directory_hints if path_controls else (), exclude_paths=path_controls.exclude_paths if path_controls else (), force_include_paths=path_controls.force_include_paths if path_controls else (), project_config_digest=project_config_digest)
                     has_task_id = bool(str(payload.get("task_id", "")).strip())
+                    context_preparation_ms = round(
+                        (time.perf_counter() - context_request_started) * 1000.0, 1,
+                    )
+                    context_retrieval_started = time.perf_counter()
                     try:
                         result = APP.services.adaptive_context_pack(
                             request,
@@ -8378,6 +8399,9 @@ class Handler(BaseHTTPRequestHandler):
                             "degraded_reason": "repository_context_unavailable",
                             "error": f"repository context unavailable: {type(exc).__name__}",
                         }
+                    context_retrieval_ms = round(
+                        (time.perf_counter() - context_retrieval_started) * 1000.0, 1,
+                    )
                     repository_failed = isinstance(result, dict) and result.get("success") is False
                     if repository_failed and (not (guarded_requested and has_task_id) or auto_injected_task):
                         status_code = 503 if result.get("retryable") is True else 500
@@ -8469,12 +8493,29 @@ class Handler(BaseHTTPRequestHandler):
                                         result["task_id"] = payload.get("task_id", "")
                     if isinstance(result, dict) and "query" not in result:
                         result["query"] = guarded_query
+                    attach_context_phase_timings(
+                        result, context_preparation_ms, context_retrieval_ms,
+                    )
                     self._send(200, result); return
                 if mode == "fast":
+                    context_preparation_ms = round(
+                        (time.perf_counter() - context_request_started) * 1000.0, 1,
+                    )
+                    context_retrieval_started = time.perf_counter()
                     result = APP.services.fast_context(root, query_text, max_tokens)
+                    context_retrieval_ms = round(
+                        (time.perf_counter() - context_retrieval_started) * 1000.0, 1,
+                    )
                     if isinstance(result, dict):
                         result["delivery_mode"] = mode
+                    attach_context_phase_timings(
+                        result, context_preparation_ms, context_retrieval_ms,
+                    )
                     self._send(200, result); return
+                context_preparation_ms = round(
+                    (time.perf_counter() - context_request_started) * 1000.0, 1,
+                )
+                context_retrieval_started = time.perf_counter()
                 result = APP.services._hybrid_context(
                     root, query_text,
                     workspace=payload.get("workspace"), max_tokens=max_tokens,
@@ -8493,8 +8534,14 @@ class Handler(BaseHTTPRequestHandler):
                     force_include_paths=path_controls.force_include_paths if path_controls else (),
                     retrieval_weights=project_retrieval_weights,
                 )
+                context_retrieval_ms = round(
+                    (time.perf_counter() - context_retrieval_started) * 1000.0, 1,
+                )
                 if isinstance(result, dict):
                     result["delivery_mode"] = mode
+                attach_context_phase_timings(
+                    result, context_preparation_ms, context_retrieval_ms,
+                )
                 self._send(200, result); return
             if 'post_artifact_get_1' in post_route_ids:
                 self._handle_post_artifact_get(payload)
@@ -8568,8 +8615,11 @@ class Handler(BaseHTTPRequestHandler):
             if 'post_reachability_dead_code_1' in post_route_ids:
                 root = str(payload.get("root", "."))
                 eps = payload.get("entrypoints")
+                limit = payload.get("limit", 100)
+                if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 200:
+                    self._send(400, {"success": False, "error": "limit must be an integer from 1 to 200"}); return
                 if APP.deterministic is not None:
-                    self._send(200, APP.deterministic.reachability_dead_code(root, entrypoints=eps)); return
+                    self._send(200, APP.deterministic.reachability_dead_code(root, entrypoints=eps, limit=limit)); return
                 else:
                     self._send(200, {"success": False, "error": "deterministic engine disabled"}); return
             if 'post_mutation_test_1' in post_route_ids:

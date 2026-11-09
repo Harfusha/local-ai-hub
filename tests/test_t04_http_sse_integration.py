@@ -6,19 +6,15 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from http.server import ThreadingHTTPServer
 from types import SimpleNamespace
-from urllib.error import HTTPError
-
-import pytest
-
 from local_ai_hub import http_server
 from local_ai_hub.client import HubClient
 
 
-def _fixture(tmp_path, monkeypatch, *, token: str = "expected-local-token"):
+def _fixture(tmp_path, monkeypatch):
     monkeypatch.setattr(
         http_server,
         "APP",
-        SimpleNamespace(config={"security": {"api_token": "expected-local-token"}}),
+        SimpleNamespace(config={}),
     )
     authorized: list[tuple[str, str, bool]] = []
     first_event = threading.Event()
@@ -64,10 +60,9 @@ def _fixture(tmp_path, monkeypatch, *, token: str = "expected-local-token"):
     server_thread = threading.Thread(target=server.serve_forever, daemon=True)
     server_thread.start()
     config = tmp_path / "client.toml"
-    security = f"[security]\napi_token='{token}'\n" if token else ""
     config.write_text(
         f"[server]\nport={server.server_port}\nstate_dir='{(tmp_path / 'state').as_posix()}'\n"
-        "[client]\nmax_request_timeout_seconds=5\n" + security,
+        "[client]\nmax_request_timeout_seconds=5\n",
         encoding="utf-8",
     )
     client = HubClient(config_path=str(config), auto_start=False)
@@ -83,19 +78,14 @@ def _stop(server, server_thread, client, release, handler_done) -> None:
     server_thread.join(timeout=2)
 
 
-def test_sse_http_fixture_rejects_missing_configured_auth_token(tmp_path, monkeypatch) -> None:
-    server, server_thread, client, authorized, _first, release, done = _fixture(
-        tmp_path, monkeypatch, token=""
-    )
+def test_sse_http_fixture_streams_without_hub_api_token(tmp_path, monkeypatch) -> None:
+    server, server_thread, client, authorized, first, release, done = _fixture(tmp_path, monkeypatch)
     events = client.stream_events(timeout=1)
     try:
-        with pytest.raises(HTTPError) as error:
-            next(events)
-        assert error.value.code == 401
-        assert authorized == [("", "", False)]
+        assert next(events) == ("update", {"value": 1})
+        assert first.wait(1)
+        assert authorized == [("", "", True)]
     finally:
-        if "error" in locals():
-            error.value.close()
         events.close()
         _stop(server, server_thread, client, release, done)
     assert done.is_set()
@@ -123,7 +113,7 @@ def test_sse_http_fixture_cancel_stops_real_client_stream_after_keepalive(tmp_pa
             release.set()
             assert pending.result(timeout=1) is None
         assert time.monotonic() - started_at < 0.75
-        assert authorized == [("expected-local-token", "Bearer expected-local-token", True)]
+        assert authorized == [("", "", True)]
         assert done.wait(1)
     finally:
         events.close()

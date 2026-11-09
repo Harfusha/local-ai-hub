@@ -47,10 +47,10 @@ def test_exact_evidence_contains_complete_function_and_deduplicates_ranges(tmp_p
     assert evidence[0]['symbol_complete'] is True
     assert evidence[0]['end_line'] == 42
     exact = engine.evidence.get(evidence[0]['evidence_id'], verify=True)
-    assert '42:     return value_39' in exact['text']
+    assert '    return value_39' in exact['text']
     engine.query = lambda *a, **kw: {'evidence': evidence}
     full = engine.context_pack(str(tmp_path), 'calculate', max_chars=5000)
-    assert '42:     return value_39' in full['context']
+    assert '    return value_39' in full['context']
     small = engine.context_pack(str(tmp_path), 'calculate', max_chars=128)
     assert len(small['context']) <= 128
     assert 'def calculate' not in small['context']

@@ -90,7 +90,9 @@ def test_background_cpu_fallback_uses_its_own_serial_cpu_profile(tmp_path):
     )
     try:
         assert worker.cpu_runtime._configured_environment()["OLLAMA_LLM_LIBRARY"] == "cpu"
-        assert worker.cpu_policy.profile("small", background=True).num_ctx == 32768
+        # The CPU-specific context request still follows the shared unknown-
+        # telemetry safety cap until memory capacity is measured.
+        assert worker.cpu_policy.profile("small", background=True).num_ctx == 16384
         assert worker.cpu_policy.profile("small", background=True).parallel_limit == 1
     finally:
         worker.close()

@@ -25,9 +25,13 @@ def explicit_catalog_environment(
         "[server]\n"
         "state_dir = " + json.dumps((tmp_path / "stdio-catalog-state").as_posix()) + "\n"
         "auto_start_ollama = true\n"
+        "[hardware]\nprofile = \"high\"\n"
         "[features]\n"
         "status = true\nrepo = true\ncommands = true\ncoord = true\n"
         "artifacts = true\nrag = true\ntasks = true\nlocal_models = true\n"
+        "local_semantic_analysis = true\nlocal_code_generation = true\n"
+        "local_automation = true\nlocal_vision = true\n"
+        "search_summaries = true\n"
         "vision = true\nwork_orchestrator = true\n",
         encoding="utf-8",
     )

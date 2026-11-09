@@ -130,7 +130,7 @@ def test_review_transport_timeout_reports_unknown_without_duplicate_dispatch(tmp
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     config = tmp_path / "client.toml"
-    config.write_text(f'[server]\nport = {server.server_port}\n[security]\napi_token = ""\n', encoding="utf-8")
+    config.write_text(f'[server]\nport = {server.server_port}\n', encoding="utf-8")
     client = HubClient(config_path=str(config), auto_start=False)
     try:
         result = client.post("/api/review/diff", {"root": str(root), "task": "test"}, timeout=0.25)
@@ -202,7 +202,7 @@ def test_mcp_review_timeout_preserves_unknown_without_duplicate_dispatch(tmp_pat
     config.write_text(
         f'[server]\nport = {server.server_port}\nauto_start_ollama = false\n'
         '[hardware]\nprofile = "balanced"\n[features]\nlocal_semantic_analysis = true\n'
-        '[security]\napi_token = ""\n[mcp]\nlong_timeout_seconds = 1\n', encoding="utf-8"
+        '[mcp]\nlong_timeout_seconds = 1\n', encoding="utf-8"
     )
     env.update(LOCAL_AI_CONFIG=str(config), PYTHONPATH=str(Path(__file__).resolve().parents[1] / "src"),
                PYTHONDONTWRITEBYTECODE="1")

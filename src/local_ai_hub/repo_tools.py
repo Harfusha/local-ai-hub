@@ -410,7 +410,7 @@ class RepositoryTools:
             raise ValueError(f"root directory does not exist: {path}")
         return path
 
-    def _git_files(self, root: Path, *, max_files: int | None = None) -> GitFileInventory | None:
+    def _git_files(self, root: Path, *, max_files: int | None = None, force: bool = False) -> GitFileInventory | None:
         """Stream a bounded tracked + untracked Git inventory.
 
         At most ``max_files`` paths are retained (the default hard bound is
@@ -425,7 +425,7 @@ class RepositoryTools:
         root_resolved = root.resolve(strict=False)
         with self._git_files_lock:
             cached = self._git_files_cache.get(key)
-            if cached and (self.git_files_cache_ttl <= 0 or now - cached[0] <= self.git_files_cache_ttl):
+            if not force and cached and (self.git_files_cache_ttl <= 0 or now - cached[0] <= self.git_files_cache_ttl):
                 self._git_stats["file_list_hits"] += 1
                 return GitFileInventory(
                     [(root_resolved / rel) for rel in cached[1][:limit]],
@@ -446,7 +446,7 @@ class RepositoryTools:
             now = time.monotonic()
             with self._git_files_lock:
                 cached = self._git_files_cache.get(key)
-                if cached and (self.git_files_cache_ttl <= 0 or now - cached[0] <= self.git_files_cache_ttl):
+                if not force and cached and (self.git_files_cache_ttl <= 0 or now - cached[0] <= self.git_files_cache_ttl):
                     self._git_stats["file_list_hits"] += 1
                     self._git_stats["file_list_coalesced"] += 1
                     return GitFileInventory(
@@ -606,8 +606,8 @@ class RepositoryTools:
         )
 
     @staticmethod
-    def _inventory_path_safe(base: Path, path: Path) -> bool:
-        """Reject links and Windows reparse points before traversal or stat."""
+    def _resolve_inventory_path_safe(base: Path, path: Path) -> tuple[Path, Path] | None:
+        """Resolve an inventory path after rejecting links and reparse points."""
         try:
             relative = path.relative_to(base)
             current = base
@@ -615,11 +615,18 @@ class RepositoryTools:
                 current = current / part
                 info = current.lstat()
                 if stat.S_ISLNK(info.st_mode) or getattr(info, "st_file_attributes", 0) & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0):
-                    return False
-            path.resolve(strict=True).relative_to(base.resolve(strict=True))
-            return True
+                    return None
+            resolved_base = base.resolve(strict=True)
+            resolved_path = path.resolve(strict=True)
+            resolved_path.relative_to(resolved_base)
+            return resolved_base, resolved_path
         except (OSError, RuntimeError, ValueError):
-            return False
+            return None
+
+    @staticmethod
+    def _inventory_path_safe(base: Path, path: Path) -> bool:
+        """Reject links and Windows reparse points before traversal or stat."""
+        return RepositoryTools._resolve_inventory_path_safe(base, path) is not None
 
     def _iter_files_with_stat(
         self, root: str, max_depth: int = 25, *, project_settings: Any | None = None,
@@ -1564,11 +1571,11 @@ class RepositoryTools:
         project_path_policy: Any | None = None,
     ) -> bool:
         try:
-            if not self._inventory_path_safe(base, path):
+            resolved_paths = self._resolve_inventory_path_safe(base, path)
+            if resolved_paths is None:
                 return False
-            resolved = path.resolve(strict=True)
-            resolved.relative_to(base)
-            relative_path = resolved.relative_to(base)
+            resolved_base, resolved = resolved_paths
+            relative_path = resolved.relative_to(resolved_base)
             relative = relative_path.as_posix()
             if any(part.casefold() in _HARD_SEARCH_DIRS for part in relative_path.parts[:-1]):
                 return False
@@ -1595,6 +1602,7 @@ class RepositoryTools:
                 allowed = project_path_policy.allows(
                     resolved, phase="search",
                     soft_ignored=soft_ignored and not force_include, size_bytes=size_bytes,
+                    _resolved_candidate=resolved,
                 )
             if not allowed:
                 return False
@@ -1670,17 +1678,27 @@ class RepositoryTools:
         *, git_inventory: Any = _UNSET_GIT_INVENTORY,
         candidate_limit: int | None = None,
         candidate_priority_terms: Iterable[str] = (),
+        phase_timings_ms: dict[str, float] | None = None,
     ) -> Iterable[Path]:
         limit = max(1, min(int(self.max_files), 100_000))
         if candidate_limit is not None:
             limit = min(limit, max(1, int(candidate_limit)))
         _text, _binary, _forced, maximum = self._project_settings_values(project_settings)
+        from .project_config import ProjectPathPolicy
+
+        project_path_policy = ProjectPathPolicy(base, project_settings)
         forced_paths = self._expand_project_force_paths(base, project_settings, limit)
         seen: set[str] = set()
         yielded = 0
         for path in forced_paths:
-            key = str(path.resolve(strict=False))
-            if key in seen or not self._project_file_allowed(base, path, project_settings, force_include=True):
+            try:
+                key = os.path.normcase(path.relative_to(base).as_posix())
+            except ValueError:
+                continue
+            if key in seen or not self._project_file_allowed(
+                base, path, project_settings, force_include=True,
+                project_path_policy=project_path_policy,
+            ):
                 continue
             seen.add(key)
             yielded += 1
@@ -1699,11 +1717,12 @@ class RepositoryTools:
                 ):
                     continue
                 path = base / relative_path
-                key = str(path.resolve(strict=False))
+                key = os.path.normcase(relative_path.as_posix())
                 # Pinned context improves candidate order, but does not bypass
                 # project access policy, extension checks, or symlink guards.
                 if key in seen or not self._project_file_allowed(
                     base, path, project_settings,
+                    project_path_policy=project_path_policy,
                 ):
                     continue
                 seen.add(key)
@@ -1744,6 +1763,7 @@ class RepositoryTools:
             except (OSError, RuntimeError, ValueError):
                 pass
 
+        candidate_priority_started = time.perf_counter()
         entry_points = getattr(project_settings, "entry_points", ())
         entry_point_parts: list[tuple[str, ...]] = []
         if isinstance(entry_points, (list, tuple)):
@@ -1801,27 +1821,42 @@ class RepositoryTools:
 
             candidates = [path for _position, path in sorted(indexed, key=path_term_rank)]
 
+        if phase_timings_ms is not None:
+            phase_timings_ms["candidate_priority_sort_ms"] = round(
+                (time.perf_counter() - candidate_priority_started) * 1000.0, 1,
+            )
+
         if candidate_limit is not None:
             candidates = candidates[:max(0, limit - yielded)]
 
-        for path in candidates:
-            if yielded >= limit:
-                break
-            try:
-                relative_path = path.relative_to(base)
-                _ = relative_path.as_posix()
-            except ValueError:
-                continue
-            key = str(path.resolve(strict=False))
-            if key in seen or any(part.casefold() in _HARD_SEARCH_DIRS for part in relative_path.parts[:-1]):
-                continue
-            if any(part.casefold() in self.ignore_dirs for part in relative_path.parts[:-1]):
-                continue
-            if not self._project_file_allowed(base, path, project_settings):
-                continue
-            seen.add(key)
-            yielded += 1
-            yield path
+        candidate_path_validation_started = time.perf_counter()
+        try:
+            for path in candidates:
+                if yielded >= limit:
+                    break
+                try:
+                    relative_path = path.relative_to(base)
+                    _ = relative_path.as_posix()
+                except ValueError:
+                    continue
+                key = os.path.normcase(relative_path.as_posix())
+                if key in seen or any(part.casefold() in _HARD_SEARCH_DIRS for part in relative_path.parts[:-1]):
+                    continue
+                if any(part.casefold() in self.ignore_dirs for part in relative_path.parts[:-1]):
+                    continue
+                if not self._project_file_allowed(
+                    base, path, project_settings,
+                    project_path_policy=project_path_policy,
+                ):
+                    continue
+                seen.add(key)
+                yielded += 1
+                yield path
+        finally:
+            if phase_timings_ms is not None:
+                phase_timings_ms["candidate_path_validation_ms"] = round(
+                    (time.perf_counter() - candidate_path_validation_started) * 1000.0, 1,
+                )
 
     def _read_search_snapshots(
         self, jobs: list[tuple[Any, Path]],
@@ -1954,12 +1989,18 @@ class RepositoryTools:
             for char in term
         )
         # Python verifies text with .lower(), while ripgrep uses Unicode simple
-        # folding. Queries containing characters emitted by lowercase expansions
-        # cannot use ripgrep as an authoritative candidate filter; scan the
-        # bounded Git inventory and verify source text with Python instead.
+        # folding. Add source characters whose lowercase expansion contains a
+        # query character so ripgrep remains a complete candidate filter; Python
+        # still verifies every candidate and produces exact counts.
         lower_expansion_characters = _lower_expansion_characters()
-        lower_complete_query = case_sensitive_symbol_query or not any(
-            char in lower_expansion_characters for char in phrase
+        expansion_candidate_sources = tuple(
+            source for source in _unicode_lower_expansions()[0]
+            if any(char in phrase for char in source.lower())
+        ) if any(char in lower_expansion_characters for char in phrase) else ()
+        lower_complete_query = (
+            case_sensitive_symbol_query
+            or not any(char in lower_expansion_characters for char in phrase)
+            or bool(expansion_candidate_sources)
         )
         ripgrep_candidates_complete = (
             bool(terms)
@@ -1984,6 +2025,9 @@ class RepositoryTools:
             candidate_terms = [raw_phrase] if case_sensitive_symbol_query else terms[:16]
             for term in candidate_terms:
                 git_grep_cmd.extend(["-e", term])
+            if not case_sensitive_symbol_query:
+                for source in expansion_candidate_sources:
+                    git_grep_cmd.extend(["-e", source])
             if (
                 not case_sensitive_symbol_query
                 and phrase and len(phrase) <= 120 and phrase not in terms
@@ -2082,6 +2126,9 @@ class RepositoryTools:
             candidate_terms = [raw_phrase] if case_sensitive_symbol_query else terms[:16]
             for term in candidate_terms:
                 rg_cmd.extend(["-e", term])
+            if not case_sensitive_symbol_query:
+                for source in expansion_candidate_sources:
+                    rg_cmd.extend(["-e", source])
             if (
                 not case_sensitive_symbol_query
                 and phrase and len(phrase) <= 120 and phrase not in terms
@@ -2673,6 +2720,11 @@ class RepositoryTools:
         candidate_engine = "python"
         project_candidates = None
         priority_relpaths: set[str] = set()
+        search_phase_timings_ms: dict[str, float] = {
+            "git_inventory_ms": 0.0,
+            "project_file_iteration_ms": 0.0,
+        }
+        candidate_discovery_started = time.perf_counter()
         if project_settings is not None:
             # Bounded non-exact search can use the cached Git path inventory.
             # Falling back to a fresh os.walk here repeatedly enumerates large
@@ -2683,13 +2735,22 @@ class RepositoryTools:
             # Select query-name matches before the bounded inventory prefix.
             # The iterator validates path policy and symlink safety on every
             # selected path before ripgrep can read its contents.
+            git_inventory_started = time.perf_counter()
             if candidate_inventory is _UNSET_GIT_INVENTORY:
                 candidate_inventory = self._git_files(base)
+            search_phase_timings_ms["git_inventory_ms"] = round(
+                (time.perf_counter() - git_inventory_started) * 1000.0, 1,
+            )
+            project_file_iteration_started = time.perf_counter()
             project_candidates = list(self._iter_project_search_files(
                 base, project_settings, 25, git_inventory=candidate_inventory,
                 candidate_limit=candidate_path_budget + 16,
                 candidate_priority_terms=terms,
+                phase_timings_ms=search_phase_timings_ms,
             ))
+            search_phase_timings_ms["project_file_iteration_ms"] = round(
+                (time.perf_counter() - project_file_iteration_started) * 1000.0, 1,
+            )
             if (
                 isinstance(candidate_inventory, list)
                 and len(candidate_inventory) > candidate_path_budget
@@ -2699,6 +2760,10 @@ class RepositoryTools:
             # This is an explicitly incomplete candidate set for hybrid search,
             # never a source of exact lexical counts or complete-coverage claims.
             project_candidates = [base / Path(item.replace("\\", "/")) for item in candidate_paths]
+        search_phase_timings_ms["candidate_discovery_ms"] = round(
+            (time.perf_counter() - candidate_discovery_started) * 1000.0, 1,
+        )
+        accelerator_search_started = time.perf_counter()
         if project_candidates is None:
             candidates, accelerator_failed = self._ripgrep_candidates(
                 base, terms, candidate_limit + 1,
@@ -2792,6 +2857,10 @@ class RepositoryTools:
         if candidates is not None and len(candidates) > candidate_limit:
             truncation_reasons.append("result_limit")
             candidates = candidates[:candidate_limit]
+        search_phase_timings_ms["accelerator_search_ms"] = round(
+            (time.perf_counter() - accelerator_search_started) * 1000.0, 1,
+        )
+        candidate_scan_started = time.perf_counter()
         if candidates:
             per_path_lines: dict[str, list[int]] = {}
             for rel, line_no in candidates:
@@ -2842,6 +2911,9 @@ class RepositoryTools:
                     start = max(0, idx - effective_snippet_lines); end = min(len(lines), idx + effective_snippet_lines + 1)
                     snippet = self._format_search_snippet(lines, start, end)
                     hits.append({"path": rel, "start_line": start + 1, "end_line": end, "score": round(score, 3), "text": snippet, "file_sha256": file_hash})
+        search_phase_timings_ms["candidate_scan_ms"] = round(
+            (time.perf_counter() - candidate_scan_started) * 1000.0, 1,
+        )
         # A timeout/error from both bounded accelerators must not trigger an
         # unbounded O(repository) Python scan. A valid accelerated zero result is
         # still final; Python remains the fallback only when no accelerator exists.
@@ -2943,6 +3015,7 @@ class RepositoryTools:
             "truncated": bool(truncation_reasons or read_errors or has_more),
             "truncation_reasons": truncation_reasons,
             "read_errors": read_errors,
+            "search_phase_timings_ms": search_phase_timings_ms,
         }
         if python_fallback_scanned is not None:
             result["python_fallback_files_scanned"] = python_fallback_scanned
@@ -3749,7 +3822,7 @@ class RepositoryTools:
             }
         if git_inventory is _UNSET_GIT_INVENTORY:
             try:
-                git_inventory = self._git_files(base, max_files=MAX_EXACT_GIT_PATHS)
+                git_inventory = self._git_files(base, max_files=MAX_EXACT_GIT_PATHS, force=True)
             except TypeError:
                 git_inventory = self._git_files(base)
         git_metadata = base / ".git"

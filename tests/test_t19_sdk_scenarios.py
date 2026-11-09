@@ -166,7 +166,7 @@ def test_seven_sdk_workflows_have_measured_production_route_outcomes(
                 (workspace / "sample.py").read_bytes()
             ).hexdigest(),
             "start_line": 1,
-            "end_line": 1,
+            "end_line": len(source_text.splitlines()),
         },
     )
     assert evidence_id

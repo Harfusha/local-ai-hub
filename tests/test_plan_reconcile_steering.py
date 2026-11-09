@@ -345,8 +345,6 @@ state_dir = "{state.as_posix()}"
 [agent_state]
 enabled = true
 [security]
-api_token = "test-api-token-long-enough"
-api_token_permissions = ["read", "write"]
 allowed_roots = ["{root.as_posix()}"]
 ''', encoding="utf-8")
     app = LocalAIApp(str(config))
@@ -364,7 +362,7 @@ allowed_roots = ["{root.as_posix()}"]
     request = urllib.request.Request(
         f"http://127.0.0.1:{server.server_address[1]}/api/coord/plan_reconcile_steering",
         data=json.dumps(arguments).encode(), method="POST",
-        headers={"Content-Type": "application/json", "X-LocalAI-Token": "test-api-token-long-enough"},
+        headers={"Content-Type": "application/json"},
     )
     try:
         config.write_text(config.read_text(encoding="utf-8").replace(

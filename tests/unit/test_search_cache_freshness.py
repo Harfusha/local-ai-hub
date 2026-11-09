@@ -3,11 +3,12 @@ from local_ai_hub.repo_state import RepoStateTracker
 from local_ai_hub.repo_tools import RepositoryTools
 from local_ai_hub.services import LocalAIServices
 from types import SimpleNamespace
+import subprocess
 
 import pytest
 
 
-def test_cached_search_observes_file_change_before_fingerprint_ttl(tmp_path):
+def test_live_search_observes_file_change_before_fingerprint_ttl(tmp_path):
     root = tmp_path / "repo"
     root.mkdir()
     path = root / "source.py"
@@ -23,7 +24,8 @@ def test_cached_search_observes_file_change_before_fingerprint_ttl(tmp_path):
     first = service.repo_search(str(root), "needle", limit=10, search_mode="lexical")
     assert first["total_matches"] == 1
     unchanged = service.repo_search(str(root), "needle", limit=10, search_mode="lexical")
-    assert unchanged["cache_hit"] is True
+    assert first["cache_hit"] is False
+    assert unchanged["cache_hit"] is False
     path.write_text("unrelated = 42\n", encoding="utf-8")
     second = service.repo_search(str(root), "needle", limit=10, search_mode="lexical")
 
@@ -36,7 +38,32 @@ def test_cached_search_observes_file_change_before_fingerprint_ttl(tmp_path):
     assert [hit["path"] for hit in third["results"]] == ["new.py"]
 
 
-def test_lexical_search_reuses_one_fresh_workspace_fingerprint(tmp_path):
+def test_live_exact_search_refreshes_git_inventory_before_fingerprint_ttl(tmp_path):
+    root = tmp_path / "repo"
+    root.mkdir()
+    subprocess.run(["git", "-C", str(root), "init"], check=True, capture_output=True)
+    path = root / "source.py"
+    path.write_text("needle = 1\n", encoding="utf-8")
+    service = LocalAIServices.__new__(LocalAIServices)
+    service.config = {"server": {"state_dir": str(tmp_path / "state")},
+                      "workspace_cache": {"fingerprint_ttl_seconds": 60}}
+    service.repo_state = RepoStateTracker(service.config)
+    service.repo_tools = RepositoryTools({"rag": {"extensions": [".py"]}})
+    service.repo_flight = SingleFlightCache(MemoryLRUCache())
+    service.learner = service.deterministic = service.code_index = service.preprocessor = service.evidence_store = None
+
+    assert service.repo_search(str(root), "needle", limit=10, search_mode="lexical")["total_matches"] == 1
+    path.write_text("unrelated = 42\n", encoding="utf-8")
+    assert service.repo_search(str(root), "needle", limit=10, search_mode="lexical")["total_matches"] == 0
+    added = root / "new.py"
+    added.write_text("needle = 3\n", encoding="utf-8")
+    result = service.repo_search(str(root), "needle", limit=10, search_mode="lexical")
+
+    assert result["total_matches"] == 1
+    assert [hit["path"] for hit in result["results"]] == ["new.py"]
+
+
+def test_lexical_search_uses_one_non_forced_workspace_fingerprint(tmp_path):
     root = tmp_path / "repo"
     root.mkdir()
     (root / "source.py").write_text("needle = 1\n", encoding="utf-8")
@@ -66,7 +93,7 @@ def test_lexical_search_reuses_one_fresh_workspace_fingerprint(tmp_path):
 
     assert result["success"] is True
     assert result["total_matches"] == 1
-    assert calls == [True]
+    assert calls == [False]
 
 
 @pytest.mark.parametrize("state", [

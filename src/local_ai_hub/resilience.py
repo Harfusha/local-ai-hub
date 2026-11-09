@@ -495,13 +495,21 @@ class RecoveryJournal:
         batch: list[tuple[str, str, float, str, int, str, int]],
     ) -> None:
         def write() -> None:
+            # Multiple completions may be reserved for the same request while
+            # an earlier write is in flight. SQLite's state='running' guard
+            # lets only the first update through, so persist the newest row in
+            # the batch while retaining every reservation until commit below.
+            latest_by_request: dict[str, tuple[str, str, float, str, int, str, int]] = {}
+            for completion in batch:
+                latest_by_request[completion[0]] = completion
             with closing(self._connect()) as con:
                 con.execute("BEGIN IMMEDIATE")
                 con.executemany(
-                    "UPDATE requests SET state=?, updated_at=?, detail=?, status_code=?, response_json=? WHERE request_id=? AND state = 'running'",
+                    "UPDATE requests SET state=?, updated_at=?, detail=?, status_code=?, response_json=? WHERE request_id=? AND state='running'",
                     [
                         (state, updated_at, detail, status_code, response_json, request_id)
-                        for request_id, state, updated_at, detail, status_code, response_json, _sequence in batch
+                        for request_id, state, updated_at, detail, status_code, response_json, _sequence
+                        in latest_by_request.values()
                     ],
                 )
                 con.commit()

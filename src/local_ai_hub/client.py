@@ -1452,6 +1452,13 @@ class HubClient:
             reject_retired_tenancy_fields(kwargs)
         except RepositoryScopeError as exc:
             return self._identity_preflight(str(exc), exc.code)
+        if act.startswith("memory_"):
+            # Memory identity is resolved from the authorized root by the Hub.
+            # Drop client-supplied repository selectors before action validation.
+            kwargs.pop("repository_id", None)
+            kwargs.pop("coordination_id", None)
+            if kwargs.get("scope") == "repository":
+                kwargs.pop("scope_id", None)
         if act in {"incident_decision", "negative_knowledge_record", "negative_knowledge_find"}:
             try:
                 reject_retired_tenancy_fields(kwargs)

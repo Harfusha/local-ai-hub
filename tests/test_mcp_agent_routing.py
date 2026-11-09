@@ -644,7 +644,7 @@ def test_coord_description_and_prompts_expose_plan_workflow() -> None:
 
 def test_public_action_parameters_are_explicit_literals() -> None:
     expected = {
-        "local_ai_task": {"delegate", "explore", "reason", "continue", "review", "second_opinion", "compress", "route", "batch", "submit", "status", "wait", "result", "cancel", "vision", "transcribe", "complete_code", "scaffold"},
+        "local_ai_task": {"delegate", "explore", "reason", "continue", "review", "second_opinion", "compress", "route", "batch", "submit", "status", "wait", "result", "cancel", "vision", "transcribe", "complete_code", "scaffold", "benchmark", "hardware_benchmark", "evaluation_record", "evaluation_report", "candidate_create", "candidate_promote", "speculative_draft", "eval_suite", "prompt_eval", "eval_drift"},
         "local_ai_rag": {"index", "search", "list", "docset_index", "docset_search", "ingest_document", "ingest_diagram"},
         "local_ai_coord": {"claim", "renew", "release", "leases", "gpu_reservation_status", "gpu_reservation_release", "gpu_reservation_release_authorized", "task_create", "task_get", "task_checkpoint", "task_rollback", "task_transition", "task_resume", "task_list", "task_budget_increase", "task_complete", "task_fail", "ask", "answer", "memory_record", "memory_get", "memory_find", "memory_delete", "memory_promote", "context_compile", "verify_receipt", "verify_completion", "verify_export", "negative_knowledge_record", "negative_knowledge_find", "incident_decision", "blackboard_update", "blackboard_get", "blackboard_list", "blackboard_delete", "blackboard_merge", "swarm_dispatch", "swarm_step", "swarm_status", "swarm_list", "swarm_cancel", "worktree_lease", "worktree_release", "pubsub_publish", "pubsub_poll", "simulate_merge", "task_sync", "wait_for_event", "semaphore_acquire", "semaphore_release", "semaphore_status", "board_item_create", "board_item_update", "board_item_get", "board_item_delete", "board_item_list", "board_summary", "milestone_create", "milestone_status", "session_briefing"},
     }
@@ -654,6 +654,8 @@ def test_public_action_parameters_are_explicit_literals() -> None:
         "plan_task_edit", "plan_task_delete", "plan_validate", "plan_archive",
         "plan_board_view", "plan_adopt_legacy_board", "plan_bind_task",
         "plan_reconcile_steering", "task_claim", "record_native_receipt",
+        "task_heartbeat", "task_cleanup_worktree", "task_repair_session",
+        "task_zombie_reap", "curate_dataset",
     })
     if not getattr(local_ai_mcp.FEATURES, "vision", False):
         expected["local_ai_task"].discard("vision")
@@ -1358,10 +1360,18 @@ def test_invalid_task_action_excludes_orchestration() -> None:
     assert "peer subagents" in result["error"]
 
 
-def test_eval_suite_rejected_from_mcp() -> None:
+def test_eval_suite_is_routed_from_mcp(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    def post(path, payload, **kwargs):
+        captured["path"] = path
+        captured["payload"] = payload
+        return {"success": True}
+
+    monkeypatch.setattr(local_ai_mcp.CLIENT, "post", post)
     result = local_ai_mcp.local_ai_task(action="eval_suite", task="synthetic_quality")
-    assert result["success"] is False
-    assert "Unknown local_ai_task action 'eval_suite'" in result.get("error", "")
+    assert result["success"] is True
+    assert captured == {"path": "/api/task/eval_suite", "payload": {"suite_name": "synthetic_quality"}}
 
 
 def test_local_ai_task_exposes_named_profile_fields() -> None:

@@ -179,6 +179,9 @@ def test_hardware_benchmark_projection_keeps_measurements_inside_response_budget
                 "generation_duration_ms": 8.0,
                 "load_duration_ms": 1.2,
                 "requested_context_tokens": 16384,
+                "loaded_model_context_tokens": 16384,
+                "context_qualified": True,
+                "context_qualification_status": "verified",
                 "prompt_eval_count": 8192,
                 "prompt_eval_count_method": "backend_prompt_eval_count",
                 "prompt_eval_duration_ms": 250.0,
@@ -203,6 +206,9 @@ def test_hardware_benchmark_projection_keeps_measurements_inside_response_budget
     assert result["success"] is True
     assert result["tokens_per_second"] == 100.2
     assert result["requested_context_tokens"] == 16384
+    assert result["loaded_model_context_tokens"] == 16384
+    assert result["context_qualified"] is True
+    assert result["context_qualification_status"] == "verified"
     assert result["prompt_eval_count"] == 8192
     assert result["prompt_eval_count_method"] == "backend_prompt_eval_count"
     assert result["prompt_eval_duration_ms"] == 250.0

@@ -76,7 +76,6 @@ def test_registered_mcp_context_hints_reach_root_http_route(tmp_path, monkeypatc
     cfg_path = tmp_path / "config.toml"
     cfg_path.write_text(
         f'[server]\nbind = "127.0.0.1"\nport = 11497\nstate_dir = "{(tmp_path / "state").as_posix()}"\nauto_start_ollama = false\n'
-        '\n[security]\napi_token = "overlay-test-token"\n'
         '\n[hardware]\nprofile = "cpu"\nauto_tune = false\n'
         '\n[prewarm]\nenabled = false\n'
         '\n[preprocessing]\nenabled = false\n'
@@ -145,7 +144,7 @@ def test_registered_mcp_context_hints_reach_root_http_route(tmp_path, monkeypatc
         request = urllib.request.Request(
             f"http://127.0.0.1:{server.server_address[1]}{path}",
             data=json.dumps(payload).encode("utf-8"),
-            headers={"Content-Type": "application/json", "X-LocalAI-Token": "overlay-test-token"},
+            headers={"Content-Type": "application/json"},
             method="POST",
         )
         try:
@@ -317,7 +316,6 @@ def test_slow_serena_deadline_keeps_adaptive_http_content_and_coalesces_backend(
     cfg_path = tmp_path / "config.toml"
     cfg_path.write_text(
         f'[server]\nbind = "127.0.0.1"\nport = 11497\nstate_dir = "{(tmp_path / "state").as_posix()}"\nauto_start_ollama = false\n'
-        '\n[security]\napi_token = "slow-backend-test-token"\n'
         '\n[hardware]\nprofile = "cpu"\nauto_tune = false\n'
         '\n[features]\nrag = false\nreranker = false\ncode_intelligence = false\npreprocessing = false\n'
         'install_local_nlp_dependencies = false\ninstall_openvino_dependencies = false\npull_models_during_setup = false\n'
@@ -368,7 +366,7 @@ def test_slow_serena_deadline_keeps_adaptive_http_content_and_coalesces_backend(
                 "root": str(repo), "query": query, "mode": "adaptive", "max_tokens": 256,
                 "guarded": True, "phase": "edit", "focus": ["SlowBackendMarker"],
             }).encode("utf-8"),
-            headers={"Content-Type": "application/json", "X-LocalAI-Token": "slow-backend-test-token"},
+            headers={"Content-Type": "application/json"},
             method="POST",
         )
         with urllib.request.urlopen(request, timeout=15) as response:

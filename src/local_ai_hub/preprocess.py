@@ -18,7 +18,9 @@ from contextlib import closing, nullcontext
 from pathlib import Path, PureWindowsPath
 from typing import Any
 
-from . import __version__
+# Stable identity for semantic preprocessing output. Bump only when the card
+# contract, prompts, or deterministic card derivation makes cached cards stale.
+PREPROCESS_ANALYZER_VERSION = "6.0.0"
 from .cache import stable_hash
 from .project_config import (
     ProjectPathPolicy,
@@ -2908,11 +2910,9 @@ class ProjectPreprocessor:
                        card_key=excluded.card_key,updated_at=excluded.updated_at""",
                     (root, rel, stored_hash, size, mtime_ns, needs_hash, stored_rag_hash, generation, stored_card, now),
                 )
-            if major:
-                con.execute("DELETE FROM module_cards WHERE root=?", (root,))
-                con.execute("DELETE FROM project_cards WHERE root=?", (root,))
-                con.execute("DELETE FROM hot_query_state WHERE root=?", (root,))
-                con.execute("DELETE FROM task_capsules WHERE root=?", (root,))
+            # Keep project-wide derived caches intact. Per-path source rows above
+            # are invalidated precisely; a broad change must never clear every
+            # module/project cache in one operation.
         self._write_retry(_apply)
 
         structural_hash = row.get("structural_hash")
@@ -2922,7 +2922,7 @@ class ProjectPreprocessor:
             structural_hash = stable_hash({
                 "structure": [(path, Path(path).suffix.lower()) for path in all_paths],
                 "models": {k: self.config.get("models", {}).get(k) for k in ("fast_code", "heavy_code", "reasoning")},
-                "analyzer": __version__,
+                "analyzer": PREPROCESS_ANALYZER_VERSION,
                 "project_config": getattr(self._project_config_context(root)[1], "config_digest", ""),
             })
         inventory_hash = stable_hash({"previous": row.get("inventory_hash"), "dirty": sorted(content_changed)})
@@ -3011,20 +3011,30 @@ class ProjectPreprocessor:
         deleted = set(old) - set(new_files)
         changed.update(deleted)
         changed_ratio = len(changed) / max(1, max(len(old), len(new_files)))
+        # Timestamp-only changes still need a content hash, but are not evidence
+        # of a broad content change. Keep them out of the project-wide invalidation
+        # threshold; _step_hash decides whether each candidate's content changed.
+        major_changed = {
+            path for path, item in new_files.items()
+            if path not in old
+            or int(old[path]["size"] or 0) != int(item.get("size", 0))
+        }
+        major_changed.update(deleted)
+        major_changed_ratio = len(major_changed) / max(1, max(len(old), len(new_files)))
         manifest_names = {
             "package.json", "deno.json", "deno.jsonc", "pyproject.toml", "composer.json", "composer.lock", "package-lock.json", "pnpm-lock.yaml",
             "yarn.lock", "Cargo.toml", "Cargo.lock", "go.mod", "go.sum", "go.work", "pom.xml", "build.gradle", "build.gradle.kts",
             "requirements.txt", "Pipfile", "poetry.lock", "uv.lock", "Gemfile", "Gemfile.lock", "packages.lock.json", "global.json",
             "Directory.Build.props", "Directory.Build.targets", "Directory.Packages.props", "libs.versions.toml",
         }
-        manifest_changed = any(Path(path).name in manifest_names for path in changed)
+        manifest_changed = any(Path(path).name in manifest_names for path in major_changed)
         # Structural identity is intentionally deterministic/cheap and independent
         # of local LLM output. Content-sensitive manifests are re-hashed next.
         structure = [(p, Path(p).suffix.lower()) for p, x in sorted(new_files.items())]
         structural_hash = stable_hash({
             "structure": structure,
             "models": {k: self.config.get("models", {}).get(k) for k in ("fast_code", "heavy_code", "reasoning")},
-            "analyzer": __version__,
+            "analyzer": PREPROCESS_ANALYZER_VERSION,
             "project_config": config_digest,
             "project_type": getattr(settings, "project_type", None),
             "solution_path": getattr(settings, "solution_path", None),
@@ -3051,8 +3061,8 @@ class ProjectPreprocessor:
 
         ratio_min_files = max(2, int(self.cfg.get("major_change_ratio_min_files", 12)))
         major = force or row.get("structural_hash") not in {None, structural_hash} or manifest_changed \
-            or len(changed) >= int(self.cfg.get("major_change_files", 60)) \
-            or (len(changed) >= ratio_min_files and changed_ratio >= float(self.cfg.get("major_change_ratio", 0.15)))
+            or len(major_changed) >= int(self.cfg.get("major_change_files", 60)) \
+            or (len(major_changed) >= ratio_min_files and major_changed_ratio >= float(self.cfg.get("major_change_ratio", 0.15)))
         generation = int(row.get("generation", 0)) + (1 if major else 0)
         try:
             git_hashes = self.repo_tools.git_blob_map(root)
@@ -3083,11 +3093,9 @@ class ProjectPreprocessor:
                         old_rag_hash, generation, old_card, now,
                     ),
                 )
-            if major:
-                con.execute("DELETE FROM module_cards WHERE root=?", (root,))
-                con.execute("DELETE FROM project_cards WHERE root=?", (root,))
-                con.execute("DELETE FROM hot_query_state WHERE root=?", (root,))
-                con.execute("DELETE FROM task_capsules WHERE root=?", (root,))
+            # Keep project-wide derived caches intact. Per-path content changes
+            # are handled by the hash/index phases; never clear every project
+            # cache because an inventory crosses the major-change threshold.
             con.commit()
         self._link_content_reuse(root)
         if major:
@@ -3115,7 +3123,7 @@ class ProjectPreprocessor:
                    )
                    WHERE root=? AND card_key IS NULL AND content_hash<>''
                      AND EXISTS (SELECT 1 FROM content_cards WHERE content_cards.content_hash = file_refs.content_hash AND analyzer_version=?)""",
-                (__version__, root, __version__),
+                (PREPROCESS_ANALYZER_VERSION, root, PREPROCESS_ANALYZER_VERSION),
             )
             con.execute(
                 """INSERT OR IGNORE INTO source_index(root, path, content_hash, text, updated_at)
@@ -3195,7 +3203,7 @@ class ProjectPreprocessor:
                            )
                            WHERE root=? AND path IN ({placeholders}) AND card_key IS NULL AND content_hash<>''
                              AND EXISTS (SELECT 1 FROM content_cards WHERE content_cards.content_hash = file_refs.content_hash AND analyzer_version=?)""",
-                        (__version__, root, *batch, __version__),
+                        (PREPROCESS_ANALYZER_VERSION, root, *batch, PREPROCESS_ANALYZER_VERSION),
                     )
                     # Instantly link matching lexical source index across branches/worktrees
                     con.execute(
@@ -4042,7 +4050,7 @@ class ProjectPreprocessor:
     def _content_card_key(self, content_hash: str) -> str:
         bg_model = str(self.config.get("preprocessing", {}).get("model") or self.config.get("models", {}).get("background_code", "qwen2.5-coder:0.5b"))
         return stable_hash({
-            "app_version": __version__, "sha": content_hash,
+            "app_version": PREPROCESS_ANALYZER_VERSION, "sha": content_hash,
             "model": bg_model,
         })
 
@@ -4181,7 +4189,7 @@ class ProjectPreprocessor:
         with self._db_lock, closing(self._connect()) as con:
             con.execute(
                 "INSERT OR REPLACE INTO content_cards(card_key,content_hash,model,analyzer_version,card_json,created_at,accessed_at,hits) VALUES(?,?,?,?,?,?,?,COALESCE((SELECT hits FROM content_cards WHERE card_key=?),0))",
-                (card_key, str(item["content_hash"]), model, __version__, json_dumps(data, ensure_ascii=False), now, now, card_key),
+                (card_key, str(item["content_hash"]), model, PREPROCESS_ANALYZER_VERSION, json_dumps(data, ensure_ascii=False), now, now, card_key),
             )
             con.execute("UPDATE file_refs SET card_key=?,updated_at=? WHERE root=? AND path=?", (card_key, now, root, item["path"]))
             con.commit()
@@ -4286,11 +4294,11 @@ class ProjectPreprocessor:
                 oversized = con.execute("SELECT * FROM file_refs WHERE root=? AND card_key IS NULL", (root,)).fetchall()
                 for item in oversized:
                     content_hash = str(item["content_hash"])
-                    card_key = stable_hash({"app_version": __version__, "sha": content_hash, "source": "deterministic-oversized"})
+                    card_key = stable_hash({"app_version": PREPROCESS_ANALYZER_VERSION, "sha": content_hash, "source": "deterministic-oversized"})
                     data = {"purpose": "oversized source file", "symbols": [], "dependencies": [], "side_effects": [], "risks": [], "tests": [], "keywords": []}
                     con.execute(
                         "INSERT OR REPLACE INTO content_cards(card_key,content_hash,model,analyzer_version,card_json,created_at,accessed_at,hits) VALUES(?,?,?,?,?,?,?,0)",
-                        (card_key, content_hash, "deterministic-oversized", __version__, json_dumps(data), time.time(), time.time()),
+                        (card_key, content_hash, "deterministic-oversized", PREPROCESS_ANALYZER_VERSION, json_dumps(data), time.time(), time.time()),
                     )
                     con.execute("UPDATE file_refs SET card_key=?,updated_at=? WHERE root=? AND path=?", (card_key, time.time(), root, item["path"]))
                 con.commit()
@@ -4310,7 +4318,7 @@ class ProjectPreprocessor:
             with self._db_lock, closing(self._connect()) as con:
                 cached = con.execute(
                     "SELECT card_key, card_json FROM content_cards WHERE content_hash=? AND analyzer_version=? ORDER BY hits DESC LIMIT 1",
-                    (content_hash, __version__),
+                    (content_hash, PREPROCESS_ANALYZER_VERSION),
                 ).fetchone()
                 if cached and not bool(row.get("force_refresh")):
                     cached_key = str(cached["card_key"])
@@ -4329,7 +4337,7 @@ class ProjectPreprocessor:
                 except Exception:
                     det = {"success": False}
                 if det.get("success"):
-                    card_key = stable_hash({"app_version": __version__, "sha": content_hash, "source": "deterministic"})
+                    card_key = stable_hash({"app_version": PREPROCESS_ANALYZER_VERSION, "sha": content_hash, "source": "deterministic"})
                     self._store_file_card(root, item, card_key, det.get("card", {}), "deterministic")
                     with self._stats_lock:
                         self._stats["deterministic_card_hits"] = self._stats.get("deterministic_card_hits", 0) + 1
@@ -4339,7 +4347,7 @@ class ProjectPreprocessor:
             if bool(self.cfg.get("disable_llm_card_synthesis", True)):
                 # Skip slow local LLM card synthesis on unparsed files; store compact deterministic metadata
                 data = {"purpose": f"source file ({Path(str(item['path'])).suffix})", "symbols": [], "dependencies": [], "side_effects": [], "risks": [], "tests": [], "keywords": [Path(str(item["path"])).stem]}
-                card_key = stable_hash({"app_version": __version__, "sha": content_hash, "source": "deterministic-stub"})
+                card_key = stable_hash({"app_version": PREPROCESS_ANALYZER_VERSION, "sha": content_hash, "source": "deterministic-stub"})
                 self._store_file_card(root, item, card_key, data, "deterministic-stub")
                 progressed = True
                 continue
@@ -4378,7 +4386,7 @@ class ProjectPreprocessor:
                     "tests": [],
                     "keywords": [Path(str(item["path"])).stem],
                 }
-                barrel_key = stable_hash({"app_version": __version__, "sha": content_hash, "source": "deterministic-barrel"})
+                barrel_key = stable_hash({"app_version": PREPROCESS_ANALYZER_VERSION, "sha": content_hash, "source": "deterministic-barrel"})
                 self._store_file_card(root, item, barrel_key, data, "deterministic-barrel")
                 progressed = True
                 continue
@@ -4391,7 +4399,7 @@ class ProjectPreprocessor:
                 prev = con.execute(
                     "SELECT card_key, card_json FROM content_cards WHERE content_hash<>? AND analyzer_version=? AND card_key IN "
                     "(SELECT card_key FROM file_refs WHERE root=? AND path=?)",
-                    (content_hash, __version__, root, str(item["path"])),
+                    (content_hash, PREPROCESS_ANALYZER_VERSION, root, str(item["path"])),
                 ).fetchone()
                 if prev:
                     old_card_text = str(prev[1])

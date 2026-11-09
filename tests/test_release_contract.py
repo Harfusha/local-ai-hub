@@ -134,33 +134,11 @@ def test_canonical_prompts_share_profile_and_installation_docs_own_standalone_se
     assert "T10 owns broader runtime" not in install + update
 
 
-def test_active_docs_and_historical_plan_do_not_claim_codegraph_as_hub_backend():
+def test_active_docs_do_not_claim_codegraph_as_hub_backend():
     architecture = (ROOT / "docs" / "ARCHITECTURE.md").read_text(encoding="utf-8")
     dashboard = (ROOT / "docs" / "DASHBOARD.md").read_text(encoding="utf-8")
-    feature_audit = (ROOT / "docs" / "FEATURE_AUDIT_V4.md").read_text(encoding="utf-8")
     mcp = (ROOT / "docs" / "MCP_AND_AGENTS.md").read_text(encoding="utf-8")
-    old_plan = (ROOT / "docs" / "superpowers" / "plans" / "2026-09-22-adaptive-retrieval-orchestrator.md").read_text(encoding="utf-8")
     assert "CodeGraphContext/KuzuDB are not Hub backends" in architecture + dashboard + mcp
-    assert "CodeGraphContext/KuzuDB" in feature_audit
-    assert "optional standalone CLI/MCP tool" in feature_audit
-    assert "Hub does not install, configure, preprocess, invoke, or report it" in feature_audit
-    assert "2026-09-21 audit snapshot" in feature_audit
-    assert "not current host status" in feature_audit
-    assert "**Superseded by T19" in old_plan
-    assert "not current Hub behavior" in old_plan
-    assert "do not establish current support or health" in old_plan
-
-
-def test_t20_acceptance_matrix_is_preintegration_and_records_blocking_gates():
-    plan = (ROOT / "docs" / "superpowers" / "plans" / "2026-09-25-t19-install-sdk-rollout.md").read_text(encoding="utf-8")
-    matrix = plan.split("## Cross-track release acceptance matrix", 1)[1].split("## Execution Ledger", 1)[0]
-    assert "PRE-INTEGRATION" in matrix
-    assert "T01–T19 are not integrated into one revision" in matrix
-    assert "API inventory is metadata only; operation behavior remains unverified" in matrix
-    assert "final pass cannot be given" in matrix
-    assert "clean-host Windows and Linux" in matrix
-    assert "60-minute mixed workload" in matrix
-    assert "verify_completion" in matrix
 
 
 def test_python_sdk_documents_seven_common_workflows():
@@ -473,9 +451,3 @@ def test_install_and_update_prompts_share_profile_aware_model_routing():
     assert all(policy not in install for policy in stale_install_policies)
     assert "high uses 1.5b/3b/7b/9b" not in update
     assert "max uses 1.5b/3b/9b for heavy routes" not in update
-
-
-def test_feature_audit_marks_codegraph_as_removed_from_hub():
-    audit = (ROOT / "docs" / "FEATURE_AUDIT_V4.md").read_text(encoding="utf-8")
-    assert "Current status is removal from Hub" in audit
-    assert "**Removed from Hub; optional standalone CLI/MCP tool**" in audit

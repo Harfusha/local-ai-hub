@@ -18,15 +18,13 @@ def test_http_verification_route_rejects_passed_receipt_without_evidence(tmp_pat
 
     from local_ai_hub import http_server, mcp_server
 
-    api_token = "t08-test-token"
     root = str(tmp_path.resolve())
     session_id = "session-t08-route"
     cfg_path = tmp_path / "config.toml"
     cfg_path.write_text(
         f'[server]\nbind = "127.0.0.1"\nport = 11502\nstate_dir = "{(tmp_path / "state").as_posix()}"\n'
         "\n[agent_state]\nenabled = true\n"
-        f'\n[security]\napi_token = "{api_token}"\n'
-        f'allowed_roots = ["{Path(root).as_posix()}"]\n',
+        f'\n[security]\nallowed_roots = ["{Path(root).as_posix()}"]\n',
         encoding="utf-8",
     )
     app = LocalAIApp(str(cfg_path))
@@ -67,7 +65,6 @@ def test_http_verification_route_rejects_passed_receipt_without_evidence(tmp_pat
                 "Content-Type": "application/json",
                 "Connection": "close",
                 "X-LocalAI-Agent": "route-agent",
-                "X-LocalAI-Token": api_token,
             },
             method="POST",
         )
@@ -97,14 +94,12 @@ def test_http_memory_delete_requires_verified_worktree_scope(tmp_path: Path):
     from local_ai_hub import http_server
 
     principal = "route-agent"
-    api_token = "t08-test-token"
     root = str(tmp_path.resolve())
     cfg_path = tmp_path / "config.toml"
     cfg_path.write_text(
         f'[server]\nbind = "127.0.0.1"\nport = 11497\nstate_dir = "{(tmp_path / "state").as_posix()}"\n'
         "\n[agent_state]\nenabled = true\n"
-        f'\n[security]\napi_token = "{api_token}"\n'
-        f'allowed_roots = ["{Path(root).as_posix()}"]\n',
+        f'\n[security]\nallowed_roots = ["{Path(root).as_posix()}"]\n',
         encoding="utf-8",
     )
     app = LocalAIApp(str(cfg_path))
@@ -139,7 +134,6 @@ def test_http_memory_delete_requires_verified_worktree_scope(tmp_path: Path):
                 "Content-Type": "application/json",
                 "Connection": "close",
                 "X-LocalAI-Agent": principal,
-                "X-LocalAI-Token": api_token,
             },
             method="POST",
         )

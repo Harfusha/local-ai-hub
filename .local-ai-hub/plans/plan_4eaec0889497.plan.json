@@ -1,0 +1,30 @@
+{
+  "default_target_ref": "refs/heads/master",
+  "description": "Audit and optimize Local AI Hub preprocessing. Preserve incremental watcher behavior; never clear every project's cache as a side effect of a major-change heuristic; hash changed candidates and reuse content-addressed file, module, project, and RAG caches; invalidate only stale dependent results.",
+  "id": "plan_4eaec0889497",
+  "lifecycle": "draft",
+  "schema_version": 1,
+  "spec_refs": [],
+  "tasks": {
+    "task_preprocessing_audit": {
+      "acceptance_criteria": [
+        "Trace current preprocessing phase triggers and state transitions; distinguish watcher availability from incremental run-mode flags.",
+        "Preserve incremental watcher behavior, project path confinement, cancellation/preemption and scheduler fairness.",
+        "No major-change heuristic clears all project caches; matching identities reuse cached file/module/project/RAG work and only stale dependents regenerate.",
+        "Measure or attribute significant costs in inventory, hashing, lexical/code indexing, cards, RAG, SQLite and background model scheduling before optimizing.",
+        "Implement evidence-backed high-value improvements without changing preprocessing provider or pulling models; add focused regression coverage.",
+        "Run affected targeted validation and record runtime evidence plus explicit unverified limits."
+      ],
+      "blocker": null,
+      "clarifications": [],
+      "depends_on": [],
+      "description": "Broadened user request: audit and improve the full preprocessing pipeline. Preserve no-global-invalidation and content-addressed reuse; inspect phase transitions, watcher delivery, inventory, hashing, indexing, cards, RAG, SQLite batching, scheduler/resource use, cancellation, and latency. Keep provider unchanged and preserve unrelated dirty work. Reconcile-steering/spec action is unavailable for the prior execution task because it has no bound session; use this existing plan task and current-revision edits.",
+      "kind": "analysis",
+      "next_action": "Audit current pipeline phases, counters, tests and live-state constraints against this broader acceptance.",
+      "title": "End-to-end preprocessing optimization",
+      "work_phase": "discovery",
+      "work_status": "in_progress"
+    }
+  },
+  "title": "Preprocessing correctness and cache reuse audit"
+}

@@ -52,7 +52,7 @@ def test_routes_to_fixed_local_services_and_preserves_response(endpoints):
         connection.request("POST", "/v1/chat/completions", body=b"{}", headers={"Authorization": "Bearer restricted"})
         response = connection.getresponse()
         assert response.status == 200 and response.read() == b"data: first\n\ndata: second\n\n"
-    assert calls == [("hub", "/health", "restricted"), ("provider", "/v1/chat/completions", "Bearer restricted", b"{}")]
+    assert calls == [("hub", "/health", None), ("provider", "/v1/chat/completions", "Bearer restricted", b"{}")]
 
 
 def test_restricted_status_route_is_exact(endpoints):
@@ -67,7 +67,7 @@ def test_restricted_status_route_is_exact(endpoints):
             response = connection.getresponse()
             assert response.status == expected
             response.read()
-    assert calls == [("hub", "/api/live/status?light=1", "restricted")]
+    assert calls == [("hub", "/api/live/status?light=1", None)]
 
 
 @pytest.mark.parametrize("method,path", [("GET", "http://example.com/"), ("CONNECT", "example.com:443"),

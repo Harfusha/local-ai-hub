@@ -3,6 +3,7 @@ from __future__ import annotations
 import threading
 
 from local_ai_hub.app import (
+    _prewarm_admission_state,
     _prewarm_route_is_eligible,
     _prewarm_should_retry,
     _runtime_is_available,
@@ -110,6 +111,24 @@ def test_prewarm_stops_when_admission_state_is_not_a_string() -> None:
             return {"gpu_admission_state": []}
 
     assert _prewarm_should_retry(_MalformedScheduler()) is False
+
+
+def test_prewarm_admission_diagnostic_preserves_unknown_and_unavailable_reasons() -> None:
+    class _UnknownScheduler:
+        def status(self) -> dict[str, str]:
+            return {"gpu_admission_state": "outcome_unknown"}
+
+    class _UnavailableScheduler:
+        def status(self) -> dict[str, str]:
+            raise RuntimeError("status unavailable")
+
+    class _MalformedScheduler:
+        def status(self):
+            return {"gpu_admission_state": []}
+
+    assert _prewarm_admission_state(_UnknownScheduler()) == "outcome_unknown"
+    assert _prewarm_admission_state(_UnavailableScheduler()) == "status_unavailable"
+    assert _prewarm_admission_state(_MalformedScheduler()) == "unknown"
 
 
 def test_prewarm_failure_is_not_reported_as_recovered(monkeypatch, tmp_path) -> None:

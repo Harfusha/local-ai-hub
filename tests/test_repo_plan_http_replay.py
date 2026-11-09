@@ -29,7 +29,7 @@ def test_plan_update_retry_through_real_http_and_mcp(tmp_path, monkeypatch, acti
     config = tmp_path / "config.toml"
     config.write_text(
         f'[server]\nbind = "127.0.0.1"\nport = 11498\nstate_dir = "{state.as_posix()}"\n'
-        f'\n[security]\napi_token = "test-token"\nallowed_roots = ["{root.as_posix()}"]\n',
+        f'\n[security]\nallowed_roots = ["{root.as_posix()}"]\n',
         encoding="utf-8",
     )
     workspace = RepoPlanWorkspace(root)

@@ -62,6 +62,7 @@ from local_ai_hub.search_pagination import MAX_PAGE_SIZE, pagination_bounds_erro
 from local_ai_hub.search_modes import default_agent_search_mode
 from local_ai_hub.adoption_metrics import AdoptionMetricsStore
 from local_ai_hub.endpoint_stats import EndpointStatsStore
+from local_ai_hub.state_lifecycle import ensure_state_version
 from local_ai_hub.task_memory_wire import (
     mcp_wire_tokens as _task_memory_mcp_wire_tokens,
     normalize_task_memory_response as _normalize_task_memory_response,
@@ -313,8 +314,10 @@ try:
         default_limit=int(CFG.get("workflow", {}).get("root_family_token_budget", 0) or 0),
         max_active_scopes=int(CFG.get("workflow", {}).get("root_family_max_active_scopes", 1) or 1),
     )
-    ADOPTION_METRICS = AdoptionMetricsStore(configured_state_dir(CFG))
-    ENDPOINT_STATS = EndpointStatsStore(configured_state_dir(CFG))
+    _mcp_state_dir = configured_state_dir(CFG)
+    ensure_state_version(_mcp_state_dir)
+    ADOPTION_METRICS = AdoptionMetricsStore(_mcp_state_dir)
+    ENDPOINT_STATS = EndpointStatsStore(_mcp_state_dir)
 except Exception as _init_exc:  # pragma: no cover
     import logging, sys
     logging.getLogger("local_ai_hub.mcp_server").critical("MCP server init failed: %s", _init_exc, exc_info=True)
@@ -1062,6 +1065,7 @@ _HARDWARE_BENCHMARK_PROTECTED_KEYS = (
     "ttft_ms", "call_latency_ms", "latency_basis", "tokens_per_second",
     "hardware_score", "generation_duration_ms", "load_duration_ms",
     "requested_context_tokens",
+    "loaded_model_context_tokens", "context_qualified", "context_qualification_status",
     "prompt_eval_count", "prompt_eval_count_method", "prompt_eval_duration_ms",
     "prefill_tokens_per_second",
     "queue_wait_ms", "peak_vram_bytes", "peak_vram_scope",
@@ -4019,7 +4023,8 @@ def _local_ai_repo_impl(
     until = "" if until is None else until
     days = 30 if days is None else days
     explicit_limit = limit is not None
-    limit = (20 if action == "hotspots" else 24) if limit is None else limit
+    default_limit = 100 if action == "reachability_dead_code" else 20 if action == "hotspots" else 24
+    limit = default_limit if limit is None else limit
     for numeric_name, numeric_value in (
         ("max_tokens", max_tokens),
         ("max_response_tokens", max_response_tokens),
@@ -4850,8 +4855,10 @@ def _local_ai_repo_impl(
             "backend_root": root, "frontend_root": path,
         }, timeout=_timeout("quick")), "architecture")
     if action == "reachability_dead_code":
+        if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 200:
+            return contract_error("limit must be an integer from 1 to 200 for action='reachability_dead_code'")
         return _compact(CLIENT.post("/api/repo/reachability_dead_code", {
-            "root": root, "entrypoints": [path] if path else None,
+            "root": root, "entrypoints": [path] if path else None, "limit": limit,
         }, timeout=_timeout("context")), "architecture")
     if action == "mutation_test":
         return _compact(CLIENT.post("/api/repo/mutation_test", {
@@ -5286,6 +5293,8 @@ def local_ai_coord(
     audit_reason: str = "",
     record: dict[str, Any] | None = None,
     record_id: str = "",
+    contradicts_record_id: str | None = None,
+    supersedes_record_id: str | None = None,
     criterion: str = "",
     board_id: str = "",
     section: str = "",
@@ -6108,6 +6117,10 @@ def local_ai_coord(
             supplied["key"] = key
             if value is not None:
                 supplied["value"] = value
+            if contradicts_record_id is not None:
+                supplied["contradicts_record_id"] = contradicts_record_id
+            if supersedes_record_id is not None:
+                supplied["supersedes_record_id"] = supersedes_record_id
         if action in {"memory_delete", "memory_promote"}:
             supplied["record_id"] = record_id
         if action == "memory_promote":
@@ -6145,6 +6158,10 @@ def local_ai_coord(
                 memory_kwargs[field] = field_value
         if action == "memory_record":
             memory_kwargs.update(key=key, value=value)
+            if contradicts_record_id is not None:
+                memory_kwargs["contradicts_record_id"] = contradicts_record_id
+            if supersedes_record_id is not None:
+                memory_kwargs["supersedes_record_id"] = supersedes_record_id
         elif action == "memory_find":
             memory_kwargs["query"] = query
         elif action in {"memory_get", "memory_delete", "memory_promote"}:

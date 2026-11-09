@@ -344,7 +344,7 @@ def test_operator_surfaces_report_all_transition_failures() -> None:
 
     assert unauthorized["returned"] is False
     assert unauthorized["badgeMode"] == "active"
-    assert unauthorized["status"] == "Unauthorized (HTTP 401); check the API token."
+    assert unauthorized["status"] == "Request rejected (HTTP 401)."
     assert unauthorized["buttonsEnabled"] is True
 
 

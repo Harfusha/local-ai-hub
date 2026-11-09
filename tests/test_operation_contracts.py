@@ -21,12 +21,41 @@ from local_ai_hub.operation_contracts import (
     operation_metadata,
     operation_output_schema,
     operation_parameters_schema,
+    operation_tool_input_schema,
     validate_operation_arguments,
     validate_operation_output,
 )
 
 
 TOOL = "local_ai_artifact"
+
+
+def test_reachability_dead_code_exposes_bounded_result_limit():
+    schema = operation_input_schema("local_ai_repo", "reachability_dead_code")
+    assert "limit" in schema["properties"]
+    assert schema["properties"]["limit"] == {
+        "type": "integer", "minimum": 1, "maximum": 200, "default": 100,
+    }
+    tool_schema = operation_tool_input_schema("local_ai_repo")
+    action_rule = next(
+        rule["then"] for rule in tool_schema["allOf"]
+        if rule["if"].get("properties", {}).get("action", {}).get("const") == "reachability_dead_code"
+    )
+    assert action_rule["properties"]["limit"] == {
+        "type": "integer", "minimum": 1, "maximum": 200, "default": 100,
+    }
+    assert validate_operation_arguments(
+        "local_ai_repo",
+        "reachability_dead_code",
+        {"action": "reachability_dead_code", "root": "C:/fixture", "limit": 1},
+    ) is None
+    for invalid_limit in (0, 201, True):
+        assert validate_operation_arguments(
+            "local_ai_repo",
+            "reachability_dead_code",
+            {"action": "reachability_dead_code", "root": "C:/fixture", "limit": invalid_limit},
+        ) is not None
+    assert "limit" not in operation_input_schema("local_ai_repo", "read_file")["properties"]
 
 
 @pytest.mark.parametrize("profile", ["compact", "standard"])

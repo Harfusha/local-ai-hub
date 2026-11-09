@@ -123,7 +123,6 @@ def test_task_completion_http_receipt_and_memory_matrix(
     expected_success: bool,
     request: pytest.FixtureRequest,
 ) -> None:
-    api_token = "t09-isolated-http-matrix-token-long"
     task_id = f"task-t09-{case}"
     project_root = tmp_path / "repo"
     project_root.mkdir()
@@ -156,8 +155,7 @@ def test_task_completion_http_receipt_and_memory_matrix(
         "[prewarm]\nenabled = false\n"
         "[preprocessing]\nenabled = false\n"
         "[commands]\nenabled = true\nallow_validation = true\nallow_read = true\n"
-        f'[security]\napi_token = "{api_token}"\n'
-        f'allowed_roots = [{json.dumps(project_root.as_posix())}]\n',
+        f'[security]\nallowed_roots = [{json.dumps(project_root.as_posix())}]\n',
         encoding="utf-8",
     )
     project_context = resolve_project_context(project_root, state_dir)
@@ -459,7 +457,6 @@ def test_task_completion_http_receipt_and_memory_matrix(
             ).encode("utf-8"),
             headers={
                 "Content-Type": "application/json",
-                "X-LocalAI-Token": api_token,
                 "X-LocalAI-Agent": "agent-t09",
             },
             method="POST",

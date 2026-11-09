@@ -496,6 +496,7 @@ def test_checkpoint_and_incident_canonical_inputs(tmp_path: Path):
         assert mock_client.post.called
         post_kwargs = mock_client.post.call_args[0]
         payload = post_kwargs[1]
+        assert payload["root"] == str(tmp_path)
         assert payload["message"] == "bug in regex"
         assert payload["operation_class"] == "ValueError"
         assert payload["affected_paths"] == ["src/re.py"]

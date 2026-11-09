@@ -1920,7 +1920,13 @@ class TaskStore:
             document = con.execute(
                 "SELECT fields FROM agent_task_search_documents WHERE task_id = ?", (task_id,)
             ).fetchone()
-            if document and document[0] == target_fields_json:
+            expected_grams = cls._search_grams(fields)
+            stored_grams = {
+                str(row[0]) for row in con.execute(
+                    "SELECT gram FROM agent_task_search_grams WHERE task_id = ?", (task_id,)
+                ).fetchall()
+            }
+            if document and document[0] == target_fields_json and stored_grams == expected_grams:
                 continue
             cls._write_task_search_index(con, task_id, fields)
         con.execute(

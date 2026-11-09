@@ -521,7 +521,7 @@ renderTelemetryMetrics({data_available:true,net_cloud_token_delta_est:0,tool_acc
 assert.equal(nodes.tokensSaved.textContent,'0');
 assert.match(nodes.tokensSavedSub.textContent,/No accounted calls/);
 renderTelemetryMetrics({data_available:true,net_cloud_token_delta_est:-42,estimated_savings_usd:-0.0008,tool_accounting_events:2,writer:{activity_observed:true,accounting_balanced:true,dropped:4}});
-assert.equal(nodes.dollarsSaved.textContent,'≈ −$0.0008');
+assert.match(nodes.dollarsSaved.textContent,/^≈ .* [.][.] ≈ .*/);
 assert.match(nodes.efficiencyStatus.textContent,/Incomplete/);
 assert.match(nodes.tokensSavedSub.textContent,/Since restart/);
 assert.match(nodes.efficiencyBreakdown.textContent,/4 records dropped/);

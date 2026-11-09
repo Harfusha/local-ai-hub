@@ -18,7 +18,7 @@ def test_shared_model_uses_explicit_role_context():
     assert policy.profile("shared", role="reasoning").num_ctx == 16384
     assert policy.profile("shared", role="review").tier == "smart"
     assert policy.profile("shared", role="second-opinion").tier == "smart"
-    assert policy.profile("shared", role="vision").num_ctx == 32768
+    assert policy.profile("shared", role="vision", vram_free_mb=8192).num_ctx == 32768
 
 
 def test_background_role_takes_precedence_over_shared_model():
@@ -44,8 +44,8 @@ def test_configured_context_adapts_to_input_and_respects_ceiling_and_vram():
                                        "max_context_tokens": 65536, "context_reserve_tokens": 2048}},
     })
     short = policy.profile("qwen3.5:9b", role="reasoning", input_tokens=1000, output_tokens=500)
-    long = policy.profile("qwen3.5:9b", role="reasoning", input_tokens=15000, output_tokens=2000)
-    expanded = policy.profile("qwen3.5:9b", role="reasoning", requested_ctx=131072)
+    long = policy.profile("qwen3.5:9b", role="reasoning", input_tokens=15000, output_tokens=2000, vram_free_mb=8192)
+    expanded = policy.profile("qwen3.5:9b", role="reasoning", requested_ctx=131072, vram_free_mb=16384)
     constrained = policy.profile("qwen3.5:9b", role="reasoning", requested_ctx=65536, vram_free_mb=4096)
     assert (short.num_ctx, long.num_ctx, expanded.num_ctx, constrained.num_ctx) == (16384, 32768, 65536, 8192)
     assert constrained.prompt_budget_tokens < constrained.num_ctx
@@ -55,7 +55,7 @@ def test_context_expands_to_fit_input_output_and_reserve_when_possible():
     policy = ModelExecutionPolicy({"models": {"reasoning": "model"}, "model_execution": {
         "smart": {"context_tokens": 8192, "large_context_tokens": 16384,
                   "max_context_tokens": 32768, "context_reserve_tokens": 2048}}})
-    profile = policy.profile("model", role="reasoning", input_tokens=15000, output_tokens=4000)
+    profile = policy.profile("model", role="reasoning", input_tokens=15000, output_tokens=4000, vram_free_mb=8192)
     assert profile.num_ctx == 32768
     assert profile.prompt_budget_tokens + 4000 + 2048 <= profile.num_ctx
 

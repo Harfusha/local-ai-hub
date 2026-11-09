@@ -135,6 +135,7 @@ class EvidenceStore:
                 return None
         start = _safe_positive_int(item.get("start_line", 1), 1, minimum=1)
         end = _safe_positive_int(item.get("end_line", start), start, minimum=start)
+        text = self._strip_display_line_numbers(text, start, end)
         eid = self._id(clean_root, path, file_hash, start, end, text)
         now = time.time()
         try:

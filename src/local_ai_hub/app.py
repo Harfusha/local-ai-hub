@@ -324,23 +324,30 @@ def _prewarm_route_is_eligible(runtime: Any, model: str) -> bool:
     return True
 
 
-def _prewarm_should_retry(scheduler: Any) -> bool:
-    """Retry prewarm only when scheduler admission reports a recoverable state."""
-    retryable_states = {
-        "available",
-        "external_reservation",
-        "background_lease",
-        "preparing_model",
-        "inference_active",
-    }
+_PREWARM_RETRYABLE_GPU_STATES = frozenset({
+    "available",
+    "external_reservation",
+    "background_lease",
+    "preparing_model",
+    "inference_active",
+})
+
+
+def _prewarm_admission_state(scheduler: Any) -> str:
+    """Return the admission reason used to decide whether startup prewarm can retry."""
     try:
         status = scheduler.status()
     except Exception:
-        return False
+        return "status_unavailable"
     if not isinstance(status, dict):
-        return False
+        return "status_unavailable"
     state = status.get("gpu_admission_state")
-    return isinstance(state, str) and state in retryable_states
+    return state if isinstance(state, str) and state else "unknown"
+
+
+def _prewarm_should_retry(scheduler: Any) -> bool:
+    """Retry prewarm only when scheduler admission reports a recoverable state."""
+    return _prewarm_admission_state(scheduler) in _PREWARM_RETRYABLE_GPU_STATES
 
 
 def _wait_for_prewarm_backend(runtime: Any, shutdown: threading.Event, max_wait_seconds: float) -> bool:
@@ -639,9 +646,15 @@ class LocalAIApp:
                         self.telemetry.record_error("prewarm", "startup_model", exc, recovered=False)
                         _record_startup_prewarm_failure(self.debug_traces, str(model), exc)
                         self.logger.warning("prewarm attempt failed: %s", type(exc).__name__)
-                    if not _prewarm_should_retry(self.scheduler):
-                        self.logger.warning("prewarm stopped: GPU admission is unavailable or outcome is unknown")
-                        self.telemetry.record_system("prewarm_stopped_gpu_admission_unavailable", model=str(model))
+                    admission_state = _prewarm_admission_state(self.scheduler)
+                    if admission_state not in _PREWARM_RETRYABLE_GPU_STATES:
+                        self.logger.warning(
+                            "prewarm stopped: gpu_admission_state=%s", admission_state,
+                        )
+                        self.telemetry.record_system(
+                            "prewarm_stopped_gpu_admission_unavailable",
+                            model=str(model), gpu_admission_state=admission_state,
+                        )
                         return
                     self._shutdown.wait(min(15.0, 1.5 + attempts * 0.5))
             self._prewarm_thread = threading.Thread(target=warm, name="local-ai-prewarm", daemon=True)
@@ -963,9 +976,9 @@ class LocalAIApp:
             return cached_snapshot(cached, now)
         cache_lock = ExitStack()
         if cached:
-            # Wait within the bounded status-probe budget for the in-flight
-            # refresh before falling back to a stale copy.
-            if not self._live_status_lock.acquire(timeout=1.0):
+            # Stale snapshots are cheap and safe; never make dashboard polls
+            # wait behind a slow refresh already owned by another request.
+            if not self._live_status_lock.acquire(blocking=False):
                 return cached_snapshot(cached, now, stale=True)
             cache_lock.callback(self._live_status_lock.release)
         else:

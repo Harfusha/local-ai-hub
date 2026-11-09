@@ -20,7 +20,6 @@ from contextlib import closing
 from pathlib import Path
 from typing import Any, Iterable
 
-from . import __version__
 from .cache import SQLiteCache, TieredCache, SingleFlightCache, stable_hash
 from .normalizer import normalize_query
 from .scheduler import QueueFullError
@@ -41,6 +40,10 @@ from collections import OrderedDict
 
 _MAX_RERANK_CANDIDATES = 512
 _INDEX_EMBED_BATCH_SIZE = 64
+# Stable compatibility identity for the current RAG index contract. Keep this
+# independent of Hub releases; embedding and chunk parameters are fingerprinted
+# below. Bump only when index semantics change without a corresponding parameter.
+RAG_INDEX_COMPAT_VERSION = "6.0.0"
 _INSTALL_INTENT_RE = re.compile(
     r"(?<!\w)(?:install(?:ation|ing)?|setup|set\s+up|bootstrap|getting\s+started|"
     r"instal\w*|nainstal\w*|zprovozn\w*)(?!\w)",
@@ -585,7 +588,7 @@ class RAGStore:
         cpu_cfg = config.get("cpu_retrieval", {})
         model_cfg = config.get("models", {})
         self.index_fingerprint = stable_hash({
-            "app_version": __version__,
+            "app_version": RAG_INDEX_COMPAT_VERSION,
             "embedding": model_cfg.get("embedding"),
             "backend": model_cfg.get("embedding_backend"),
             "device": model_cfg.get("embedding_device"),

@@ -395,7 +395,7 @@ enabled=false
     result = client.get("/api/status", timeout=0.2)
     assert result.get("success") is False
 
-def test_http_auth_json_limits_security_headers_and_binary_bundle(tmp_path: Path):
+def test_http_tokenless_json_limits_security_headers_and_binary_bundle(tmp_path: Path):
     port = _free_port(); state = tmp_path / "state"; repo = tmp_path / "repo"; repo.mkdir()
     cfg = tmp_path / "server.toml"
     cfg.write_text(f'''[server]
@@ -405,7 +405,6 @@ state_dir="{state.as_posix()}"
 auto_start_ollama=false
 max_request_body_bytes=1024
 [security]
-api_token="0123456789abcdef"
 allowed_roots=["{repo.as_posix()}"]
 [hardware]
 profile="cpu"
@@ -432,7 +431,7 @@ enabled=true
     (state / "supervisor.owner.json").write_text(json.dumps(owner), encoding="utf-8")
     env=os.environ.copy(); env["PYTHONPATH"]=str(ROOT/"src")+(os.pathsep+env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
     proc=subprocess.Popen([sys.executable,"-m","local_ai_hub","--config",str(cfg)],cwd=ROOT,env=env,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
-    base=f"http://127.0.0.1:{port}"; auth={"X-LocalAI-Token":"0123456789abcdef"}
+    base=f"http://127.0.0.1:{port}"; auth={}
     try:
         deadline=time.time()+12
         while time.time()<deadline:
@@ -443,8 +442,7 @@ enabled=true
         status,headers,html=_request(base+"/dashboard")
         assert status==200 and b"Local AI Hub" in html
         assert headers.get("X-Content-Type-Options") == "nosniff"
-        assert _request(base+"/api/status")[0] == 401
-        assert _request(base+"/api/status", headers=auth)[0] == 200
+        assert _request(base+"/api/status")[0] == 200
         # The HTML listener can be ready while the first bounded telemetry
         # snapshot is still warming. Wait for the asserted API contract itself.
         deadline = time.monotonic() + 12

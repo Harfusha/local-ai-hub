@@ -798,7 +798,7 @@ def test_behavioral_links_only_reference_inventoried_operations():
             "/api/agent-state/swarm/",
             "test_http_get_agent_state_swarm_detail_forwards_swarm_id",
         ),
-        ("/api/config", "test_http_get_config_redacts_configured_token"),
+        ("/api/config", "test_http_get_config_contains_no_retired_token_setting"),
         ("/api/capabilities", "test_http_get_capabilities_returns_surface_and_features"),
         ("/api/audit/tail", "test_http_get_audit_tail_forwards_limit"),
         ("/api/audit_dependencies", "test_http_get_audit_dependencies_forwards_root"),

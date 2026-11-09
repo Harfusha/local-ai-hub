@@ -324,7 +324,7 @@ def test_reason_and_review_use_project_profile_through_delegate(tmp_path: Path) 
     )
 
     assert reason["route"]["model"] == "qwen3.5:9b"
-    assert review["route"]["model"] == "qwen3.5:9b"
+    assert review["route"]["model"] == "qwen2.5-coder:32b"
     assert batch["success"] is True, batch
     assert batch["results"][0]["route"]["model"] == "qwen3.5:9b"
     assert len(service.runtime.payloads) == 3

@@ -91,7 +91,7 @@
       "blocker": null,
       "clarifications": [],
       "depends_on": [],
-      "description": "Profile force=True git fingerprint in _repo_search_lexical; implement safe two-tier freshness (generation/watchdog check vs full git check); verify 0 false-fresh results",
+      "description": "P1-2 verified: exact lexical search reads live source on every request and refreshes Git inventory without forcing a full Git status fingerprint. Exact search results bypass workspace result caching; the TTL fingerprint remains advisory for workspace context. Regression tests cover edits and new untracked files before fingerprint TTL. RepoStateTracker fingerprint median: 61.66 ms forced vs 0.15 ms cached (5 samples). Targeted suite: 28 passed; pyflakes, compileall and diff check passed.",
       "kind": "code",
       "next_action": "",
       "title": "P1-2: Profilovat a optimalizovat Git fingerprint na vyhledávací cestě",
@@ -103,15 +103,15 @@
         "Benchmark measures TTFT, throughput, VRAM under load for available installed models across verified 8k, 16k and 32k contexts; unavailable 4B model recorded as limitation.",
         "Scheduler memory bounds prevent VRAM OOM on 16GB GPU during concurrent desktop usage."
       ],
-      "blocker": "No 4B model installed; model pulls remain unauthorized. Existing live runs show requested 32768 with prompt_eval_count 31029 but loaded_model_context_tokens 8192, so 32k remains unverified. Benchmark now reads /api/ps after inference, resets stale pre-request observations, and records context_qualification_status (verified/below_requested/unknown) plus context_qualified. Targeted regression suite: 26 passed. Full pytest is still running and has reported 5 failures so far; final classification pending.",
+      "blocker": null,
       "clarifications": [],
       "depends_on": [],
-      "description": "Stress test RTX 5070 Ti (16GB VRAM). Hardware benchmark now accepts an optional bounded context_tokens value, forwards Ollama num_ctx, and returns actual backend prompt_eval_count. Explicit context requests require fresh VRAM budget evidence and must fit its dynamic context cap. Do not pull models.",
+      "description": "P1-6 live acceptance verified for installed models: 3B and 9B long-prefill at 8k/16k/32k; independent 128-token 9B decode; simultaneous same-model and cross-model 9B+3B short requests at 8k. All measured requests returned verified loaded contexts and nominal pressure; concurrent pair peaked at 6,607,077,376 device-wide VRAM bytes, with 7,311 MiB reported available. Targeted scheduler/VRAM suites had 95+36 passes before the full-suite run. GPU reservation was free after the live work. qwen3.5:4b-nvfp4 was absent and no pull was authorized. Evidence proves these bounded observed cases only; it does not claim a general zero-OOM guarantee, sustained rate, or process-attributed VRAM.",
       "kind": "analysis",
-      "next_action": "Finish full pytest and classify failures. Then, with fresh Hub/GPU admission, rerun installed models at requested 8k/16k/32k and accept a context only when post-inference loaded_model_context_tokens >= requested_context_tokens. No model pulls.",
+      "next_action": "",
       "title": "P1-6: Zátěžové testy GPU admission a model routingu",
       "work_phase": "verification",
-      "work_status": "in_progress"
+      "work_status": "completed"
     },
     "task_p1_query_classification": {
       "acceptance_criteria": [

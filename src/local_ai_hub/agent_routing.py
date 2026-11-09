@@ -308,6 +308,7 @@ class RoutingEngine:
             is_existing_test = (
                 ((path_key.startswith("tests/") or "/tests/" in path_key) and (
                     (test_file.startswith("test_") and test_file.endswith(".py"))
+                    or (test_file.startswith("test_") and test_file.endswith((".ts", ".tsx", ".js", ".jsx")))
                     or test_file.endswith(".test.ts") or test_file.endswith(".spec.ts")
                     or test_file.endswith(".test.js") or test_file.endswith(".spec.js")
                     or test_file.endswith("_test.rs")
