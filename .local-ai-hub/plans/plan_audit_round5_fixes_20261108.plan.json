@@ -118,14 +118,15 @@
     },
     "task_b13_recovery_journal_cas": {
       "acceptance_criteria": [],
-      "blocker": null,
+      "blocker": "The durable write now retains the first terminal result, but finish() can still replace the in-memory pending completion before commit; conflicting duplicate diagnosis and identical-replay behavior remain unverified.",
       "clarifications": [],
       "depends_on": [],
       "description": "B13: RecoveryJournal.finish() a dávkový zápis musí používat CAS s kontrolou AND state = 'running'. Replay identického výsledku vrátí původní receipt; pokus o přepis na protichůdný stav selže.",
       "kind": "code",
-      "next_action": "",
+      "next_action": "After earlier audit rounds, make pending completion identity immutable at reservation and enforce explicit duplicate/conflict handling across commit and processes. Do not mark B13 complete. Durable first-result regression test and write-behind suite passed 8 tests.",
       "title": "B13 — Recovery journal terminal CAS: ochrana neměnnosti dokončených výsledků",
-      "work_status": "planned"
+      "work_phase": "implementation",
+      "work_status": "in_progress"
     },
     "task_b14_retrieval_evaluation_contract": {
       "acceptance_criteria": [],

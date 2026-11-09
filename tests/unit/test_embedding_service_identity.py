@@ -43,6 +43,28 @@ def test_embedding_service_does_not_reuse_vectors_across_embedding_spaces():
     assert second['embeddings'] == [[2.0, 1.0]] and service.embeddings.calls == 2
 
 
+def test_service_uses_model_cache_without_reserving_gpu(tmp_path, monkeypatch):
+    from local_ai_hub.embeddings import EmbeddingModel
+
+    service = _service()
+    service.config['server'] = {'state_dir': str(tmp_path)}
+    service.config['models']['embedding_device'] = 'cuda'
+    model = EmbeddingModel(service.config)
+    model._active_cache_identity = 'sentence-transformers:cuda:same-name'
+    model.active_backend = 'sentence-transformers'
+    model.active_device = 'cuda'
+    model._loaded_model_name = 'same-name'
+    model._remember_dimension(model._active_cache_identity, 2, persist=False)
+    key = model._embedding_cache_key(model._active_cache_identity, False, 'cached')
+    model.cache.set(key, {'identity': model._active_cache_identity, 'dimension': 2, 'vector': [1.0, 2.0]})
+    monkeypatch.setattr(model, '_claim_embedding_gpu', lambda: pytest.fail('cached input requested GPU'))
+    service.embeddings = model
+
+    result = service.embed(['cached'])
+    assert result['success'] is True and result['embeddings'] == [[1.0, 2.0]]
+    assert result['cache_hits'] == 1 and result['embedding_space_id'] == model.embedding_space_id()
+
+
 @pytest.mark.parametrize('backend', ['sentence-transformers', 'openvino'])
 @pytest.mark.parametrize('flag', [
     'outcome_unknown', 'timed_out', 'cancelled', 'preempted',
@@ -60,3 +82,39 @@ def test_embedding_service_never_caches_unknown_outcome(backend, flag):
     assert result.get(flag) is True and result['success'] is False, result
     assert 'embeddings' not in result
     assert service.embedding_cache.values == {}
+
+
+@pytest.mark.parametrize('cache_enabled', [True, False])
+def test_ollama_scheduler_unknown_outcome_is_not_cached(cache_enabled):
+    service = _service()
+    service.config['models']['embedding_backend'] = 'ollama'
+    service.embedding_cache_enabled = cache_enabled
+
+    class Scheduler:
+        def submit(self, *_args, **_kwargs):
+            return {'success': True, 'outcome_unknown': True, 'embeddings': [[1.0, 1.0]]}
+
+    service.scheduler = Scheduler()
+    result = service.embed(['input'])
+    assert result['outcome_unknown'] is True and result['success'] is False
+    assert 'embeddings' not in result
+    assert service.embedding_cache.values == {}
+
+
+def test_ollama_partial_backend_response_is_not_cached():
+    service = _service()
+    service.config['models']['embedding_backend'] = 'ollama'
+
+    class Runtime:
+        def request(self, *_args):
+            return {'partial': True, 'embeddings': [[1.0, 1.0]]}
+
+    class Scheduler:
+        def submit(self, *_args, execute, **_kwargs):
+            return execute()
+
+    service.runtime = Runtime()
+    service.scheduler = Scheduler()
+    result = service.embed(['input'])
+    assert result['partial'] is True and result['success'] is False
+    assert 'embeddings' not in result and service.embedding_cache.values == {}

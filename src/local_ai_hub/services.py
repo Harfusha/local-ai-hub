@@ -3076,22 +3076,35 @@ class LocalAIServices:
         if not texts:
             return {"success": True, "model": model, "backend": "ollama", "embeddings": []}
 
+        def reject_uncertain(result: Any) -> Any:
+            flags = ("outcome_unknown", "timed_out", "cancelled", "preempted",
+                     "cleanup_unconfirmed", "_lah_partial_response", "in_progress",
+                     "output_truncated", "partial")
+            if isinstance(result, dict) and any(key in result and result[key] is not False for key in flags):
+                result = dict(result)
+                result["success"] = False
+                result.pop("embeddings", None)
+            return result
+
         def encode_uncached(batch: list[str]) -> dict[str, Any]:
             if backend in {"sentence-transformers", "openvino"}:
-                return self.embeddings.encode(batch, query=query, priority=priority)
+                return reject_uncertain(self.embeddings.encode(batch, query=query, priority=priority))
             batch_size = int(self.config.get("rag", {}).get("embedding_batch_size", 12))
 
             def run() -> dict[str, Any]:
                 all_vectors: list[list[float]] = []
                 for start in range(0, len(batch), batch_size):
                     response = self.runtime.request("/api/embed", {"model": model, "input": batch[start:start + batch_size]})
+                    response = reject_uncertain(response)
+                    if isinstance(response, dict) and response.get("success") is False:
+                        return response
                     if "error" in response:
                         return {"success": False, "error": response["error"], "model": model}
                     all_vectors.extend(response.get("embeddings", []))
                 return {"success": True, "model": model, "backend": "ollama", "embeddings": all_vectors}
 
             is_bg = background if background is not None else (priority <= 1)
-            return self.scheduler.submit(model, source="embed", execute=run, priority=priority, background=is_bg, wait_timeout=wait_timeout)
+            return reject_uncertain(self.scheduler.submit(model, source="embed", execute=run, priority=priority, background=is_bg, wait_timeout=wait_timeout))
 
         if backend in {"sentence-transformers", "openvino"}:
             # EmbeddingModel owns the provenance-aware cache. The outer cache
@@ -3099,15 +3112,6 @@ class LocalAIServices:
             result = encode_uncached(list(texts))
             if not isinstance(result, dict):
                 return {"success": False, "error": "embedding failed"}
-            uncertain = any(key in result and result[key] is not False for key in (
-                "outcome_unknown", "timed_out", "cancelled", "preempted",
-                "cleanup_unconfirmed", "_lah_partial_response", "in_progress",
-                "output_truncated", "partial",
-            ))
-            if uncertain:
-                result = dict(result)
-                result["success"] = False
-                result.pop("embeddings", None)
             return result
 
         cache = getattr(self, "embedding_cache", None)

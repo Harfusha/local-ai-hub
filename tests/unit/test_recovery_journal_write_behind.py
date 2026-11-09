@@ -216,13 +216,14 @@ def test_byte_budget_covers_inflight_batch_and_refilled_queue(tmp_path: Path, mo
         reopened.close()
 
 
-def test_duplicate_request_completions_keep_separate_reservations_until_commit(
+def test_conflicting_pending_completion_is_rejected_and_reservations_remain_bounded(
     tmp_path: Path,
     monkeypatch: Any,
 ) -> None:
     journal = RecoveryJournal(tmp_path / "state")
     journal._max_retained_completion_bytes = 10_000
     _claimed(journal, "request-1")
+    _claimed(journal, "request-2")
     write_entered = threading.Event()
     release_write = threading.Event()
     durable_commit = threading.Event()
@@ -255,17 +256,20 @@ def test_duplicate_request_completions_keep_separate_reservations_until_commit(
             return getattr(self.connection, name)
 
     monkeypatch.setattr(journal, "_connect", lambda: BlockedConnection(original_connect()))
-    journal.finish("request-1", True, "first detail", response={"blob": "a" * 700})
+    journal.finish("request-1", True, "first detail", response={"blob": "a" * 700, "extra": 1})
     assert write_entered.wait(2)
     first_reservation = journal._retained_completion_bytes
-    journal.finish("request-1", True, "second detail", response={"blob": "b" * 900})
+    journal.finish("request-1", True, "first detail", response={"extra": 1, "blob": "a" * 700})
+    with pytest.raises(ValueError, match="conflicting completion"):
+        journal.finish("request-1", False, "second detail", status_code=500, response={"blob": "b" * 900})
+    journal.finish("request-2", True, "second detail", response={"blob": "b" * 900})
     try:
         assert len(journal._completion_reservations) == 2
         assert len(journal._in_flight_writes) == 1
         assert len(journal._pending_writes) == 1
         assert journal._retained_completion_bytes > first_reservation
         assert journal._retained_completion_bytes == sum(journal._completion_reservations.values())
-        assert journal._pending_completions["request-1"][5].find("bbbb") >= 0
+        assert journal._pending_completions["request-1"][5].find("aaaa") >= 0
         release_write.set()
         assert durable_commit.wait(3)
         with journal._changed:
@@ -298,6 +302,41 @@ def test_completion_batch_keeps_first_terminal_result_across_batches(tmp_path: P
         ).fetchone()
     journal.close()
     assert row == ("done", 200, '{"value":"first"}')
+
+
+def test_durable_result_wins_over_late_pending_completion(tmp_path: Path, monkeypatch: Any) -> None:
+    journal = RecoveryJournal(tmp_path / "state")
+    _claimed(journal, "request-1")
+    journal.finish("request-1", True, response={"value": "first"})
+    with journal._changed:
+        assert journal._changed.wait_for(lambda: not journal._writer_running, timeout=5)
+
+    entered = threading.Event()
+    release = threading.Event()
+    original = journal._write_completion_batch
+
+    def blocked(batch: Any) -> None:
+        entered.set()
+        assert release.wait(5)
+        original(batch)
+
+    monkeypatch.setattr(journal, "_write_completion_batch", blocked)
+    try:
+        journal.finish("request-1", False, status_code=500, response={"value": "second"})
+        assert entered.wait(5)
+        result = journal.lookup(
+            "request-1", action="/api/mutate",
+            payload_fingerprint=journal.fingerprint_payload({"value": "request-1"}),
+        )
+        assert result is not None and result["state"] == "done"
+        assert result["response"] == {"value": "first"}
+        replay = journal.begin("request-1", action="/api/mutate", payload={"value": "request-1"})
+        assert replay["state"] == "done" and replay["response"] == {"value": "first"}
+        metadata = journal.lookup_metadata("request-1", action="/api/mutate")
+        assert metadata is not None and metadata["state"] == "done" and metadata["status_code"] == 200
+    finally:
+        release.set()
+        journal.close()
 
 
 def test_saturated_queue_keeps_http_completion_nonblocking_and_fails_closed(
