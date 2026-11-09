@@ -3392,7 +3392,15 @@ class ProjectPreprocessor:
             return False
         root = str(row["root"])
         workspace = str(row["workspace"])
-        limit = max(1, int(self.cfg.get("rag_files_per_step", 128)))
+        configured_limit = max(1, int(self.cfg.get("rag_files_per_step", 128)))
+        # A preempted RAG step publishes no partial vector batch. Shrink the
+        # next step for this root so recurring foreground work cannot repeatedly
+        # discard an entire large batch. Reset once the root is caught up.
+        with self._db_lock:
+            batch_limits = getattr(self, "_rag_batch_limits", None)
+            if batch_limits is None:
+                batch_limits = self._rag_batch_limits = {}
+            limit = min(configured_limit, batch_limits.get(root, configured_limit))
         priority_paths = self._learned_priority_paths(root) if limit > 1 else ()
         with self._db_lock, closing(self._connect()) as con:
             f_cols = {str(row[1]) for row in con.execute("PRAGMA table_info(file_refs)").fetchall()}
@@ -3435,6 +3443,8 @@ class ProjectPreprocessor:
             if not pending:
                 all_paths = [str(r[0]) for r in con.execute("SELECT path FROM file_refs WHERE root=? ORDER BY path", (root,)).fetchall()]
         if not pending:
+            with self._db_lock:
+                batch_limits.pop(root, None)
             deleted = self.rag.prune_missing(root, workspace, all_paths)
             if deleted:
                 with self._stats_lock:
@@ -3505,6 +3515,8 @@ class ProjectPreprocessor:
         with self._stats_lock:
             self._stats["rag_steps"] += 1
         if result.get("preempted"):
+            with self._db_lock:
+                batch_limits[root] = min(batch_limits.get(root, configured_limit), max(1, limit // 2))
             return False
         if not result.get("success"):
             message = str(result.get("error", "RAG preprocessing failed"))
