@@ -718,6 +718,8 @@ class RepositoryTools:
                     return None
             if resolved_base is None:
                 resolved_base = base.resolve(strict=True)
+            elif not resolved_base.is_absolute():
+                return None
             resolved_path = path.resolve(strict=True)
             resolved_path.relative_to(resolved_base)
             return resolved_base, resolved_path
@@ -1737,9 +1739,11 @@ class RepositoryTools:
         project_path_policy: Any | None = None,
     ) -> bool:
         try:
-            resolved_base = getattr(project_path_policy, "project_root", None)
+            cached_root = getattr(project_path_policy, "project_root", None)
             resolved_paths = self._resolve_inventory_path_safe(
-                base, path, resolved_base=resolved_base,
+                base,
+                path,
+                resolved_base=cached_root if isinstance(cached_root, Path) else None,
             )
             if resolved_paths is None:
                 return False

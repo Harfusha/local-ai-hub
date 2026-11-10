@@ -1083,9 +1083,7 @@ class AffinityScheduler:
         record = None
         if store is not None:
             try:
-                reaped = store.reap_expired()
-                record = store.read()
-                release_marker = store.operator_release_marker()
+                reaped, record, release_marker = store.scheduler_snapshot()
             except OSError:
                 return True
             if (record is not None

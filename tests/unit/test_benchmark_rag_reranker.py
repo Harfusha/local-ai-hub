@@ -59,6 +59,24 @@ def test_offline_cpu_metrics_do_not_report_cuda_fallback() -> None:
     assert report["candidates_per_second"] == 40.0
 
 
+def test_offline_metrics_do_not_count_empty_candidate_noop_as_device_success() -> None:
+    report = offline_device_metrics(
+        "cuda",
+        {"success": True, "device": "cuda", "backend": "torch"},
+        [{"latency_ms": 0.001, "phase": "cold", "success": True}],
+        candidate_count=0,
+    )
+
+    assert report["actual_device"] is None
+    assert report["backend"] is None
+    assert report["fallback_observed"] is None
+    assert report["latency"] == {"median_ms": None, "p95_ms": None}
+    assert report["cold_latency_ms"] is None
+    assert report["warm_latency"] == {"median_ms": None, "p95_ms": None}
+    assert report["candidates_per_second"] is None
+    assert report["successful_repeats"] == 0
+
+
 def test_cpu_benchmark_keeps_isolated_state_without_reading_hub_config(tmp_path) -> None:
     assert benchmark_state_dir(tmp_path / "missing.toml", "cpu", "isolated") == "isolated"
 
@@ -150,4 +168,23 @@ def test_embedding_benchmark_discards_rank_if_admission_fails() -> None:
     assert samples[0]["success"] is False
     assert metrics["actual_device"] is None
     assert metrics["fallback_observed"] is None
+    assert cold_recorded is False
+
+
+def test_embedding_benchmark_rejects_empty_candidate_set_without_inference() -> None:
+    class UnexpectedEmbeddingModel:
+        def encode(self, texts, query=False):
+            raise AssertionError("empty-candidate benchmark must not run inference")
+
+    ranked, samples, metrics, cold_recorded = _benchmark_embeddings(
+        UnexpectedEmbeddingModel(), "query", [], repeats=2, requested_device="cuda",
+    )
+
+    assert ranked == []
+    assert len(samples) == 1
+    assert samples[0]["success"] is False
+    assert samples[0]["error"] == "no_candidates"
+    assert metrics["actual_device"] is None
+    assert metrics["embeddings_per_second"] is None
+    assert metrics["successful_repeats"] == 0
     assert cold_recorded is False
