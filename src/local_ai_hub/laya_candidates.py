@@ -20,7 +20,15 @@ from typing import Any, Mapping
 from .agent_tasks import _canonical_repository_root, _task_matches_scope
 from .evidence import is_evidence_id
 from .json_utils import dumps as json_dumps
-from .laya_decisions import ContextSourceEvidence, DecisionCategory, DecisionRequest, DecisionResult, _CATEGORY_OPTIONS
+from .laya_decisions import (
+    ContextSourceEvidence,
+    DecisionCategory,
+    DecisionInput,
+    DecisionRequest,
+    DecisionResult,
+    _CATEGORY_INSTRUCTIONS,
+    _CATEGORY_OPTIONS,
+)
 from .sqlite_support import connect_sqlite
 
 _SCHEMA_VERSION = 1
@@ -38,16 +46,6 @@ _NEAR_DUPLICATE_JACCARD = 0.80
 _IDENT = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}\Z")
 _LANG = re.compile(r"[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})*\Z")
 _STATES = {"captured", "pending", "reviewed", "verified", "rejected", "ambiguous", "exported"}
-_INSTRUCTIONS = {
-    DecisionCategory.CONTEXT_SOURCE: "Choose the next authorized context source or evidence action.",
-    DecisionCategory.CONTEXT_BUDGET: "Choose the bounded response context budget profile.",
-    DecisionCategory.MODEL_ROUTE: "Choose an available model tier for the described task class.",
-    DecisionCategory.REDUNDANT_STEP: "Choose whether the proposed step may be duplicate while preserving required validation.",
-    DecisionCategory.NEXT_STEP: "Choose the next evidence or recovery step.",
-    DecisionCategory.DELEGATION: "Choose a review or bounded-delegation recommendation; do not execute it.",
-    DecisionCategory.COMPLETION_GAP: "Choose the missing verification or review recommendation.",
-    DecisionCategory.WATCHDOG: "Choose a watchdog recommendation; do not stop or continue the task.",
-}
 
 
 def _canonical_json(value: Any) -> str:
@@ -399,7 +397,7 @@ class LayaCandidateStore:
         question = {
             "id": category.value,
             "type": "choice",
-            "instructions": _INSTRUCTIONS[category],
+            "instructions": _CATEGORY_INSTRUCTIONS[category],
             "criteria": {option: option.replace("_", " ") for option in options},
         }
         candidate = {
@@ -430,16 +428,18 @@ class LayaCandidateStore:
         evidence_store: Any,
         canonical_root: str,
     ) -> None:
-        if candidate.get("category") != DecisionCategory.CONTEXT_SOURCE.value:
+        evidence_ids = candidate["evidence_ids"]
+        if not evidence_ids:
+            return
+        if candidate.get("category") != DecisionCategory.CONTEXT_SOURCE.value and evidence_store is None:
             return
         get_many = getattr(evidence_store, "get_many", None)
-        evidence_ids = candidate["evidence_ids"]
         if not callable(get_many):
-            raise ValueError("context_source evidence is not authorized and current")
+            raise ValueError("Laya evidence is not authorized and current")
         try:
             rows = get_many(evidence_ids, verify=True, root=canonical_root)
         except Exception as exc:
-            raise ValueError("context_source evidence is not authorized and current") from exc
+            raise ValueError("Laya evidence is not authorized and current") from exc
         if type(rows) is not list or len(rows) != len(evidence_ids) or any(
             type(row) is not dict
             or row.get("success") is not True
@@ -448,7 +448,9 @@ class LayaCandidateStore:
             or row.get("stale") is not False
             for row, evidence_id in zip(rows, evidence_ids, strict=True)
         ):
-            raise ValueError("context_source evidence is not authorized and current")
+            raise ValueError("Laya evidence is not authorized and current")
+        if candidate.get("category") != DecisionCategory.CONTEXT_SOURCE.value:
+            return
         validate_provenance = getattr(evidence_store, "validate_source_provenance", None)
         if not callable(validate_provenance):
             raise ValueError("context_source evidence source provenance is unavailable")
@@ -734,7 +736,7 @@ class LayaCandidateStore:
     def capture_runtime_outcome(
         self,
         request: DecisionRequest,
-        evidence: ContextSourceEvidence,
+        evidence: ContextSourceEvidence | DecisionInput,
         outcome: Any,
         *,
         root: str,
@@ -742,17 +744,22 @@ class LayaCandidateStore:
         evidence_store: Any,
     ) -> dict[str, Any]:
         """Persist a real runtime result through the normal scoped candidate lifecycle."""
-        if not isinstance(request, DecisionRequest) or not isinstance(evidence, ContextSourceEvidence):
-            raise ValueError("validated Laya request and evidence are required")
+        if not isinstance(request, DecisionRequest):
+            raise ValueError("validated Laya request is required")
+        if request.category is DecisionCategory.CONTEXT_SOURCE:
+            if not isinstance(evidence, ContextSourceEvidence):
+                raise ValueError("validated context-source evidence is required")
+        elif not isinstance(evidence, DecisionInput):
+            raise ValueError("validated typed decision input is required")
         decision = getattr(outcome, "decision", None)
         runtime = getattr(outcome, "runtime", None)
         if not isinstance(decision, DecisionResult) or decision.request != request or runtime is None:
             raise ValueError("only an executed Laya runtime outcome can be captured")
-        if request.category is not DecisionCategory.CONTEXT_SOURCE:
-            raise ValueError("runtime capture only supports context_source")
         if request.task_id is None or request.session_id is None:
             raise ValueError("runtime capture requires server-bound task and session identity")
-        if request.evidence_ids != evidence.evidence_ids or request.options != evidence.decision_options:
+        if isinstance(evidence, ContextSourceEvidence) and (
+            request.evidence_ids != evidence.evidence_ids or request.options != evidence.decision_options
+        ):
             raise ValueError("runtime request does not match its validated evidence")
         canonical_root = _canonical_repository_root(root)
         task_id = _identity(request.task_id, "task_id")
@@ -760,8 +767,11 @@ class LayaCandidateStore:
         task = self._find_task(task_store, canonical_root, task_id)
         if self._session_for_task(task) != session_id:
             raise ValueError("runtime session identity does not match its scoped task")
-        evidence_mapping = evidence.model_input()
-        state = {key: value for key, value in evidence_mapping.items() if key != "evidence_ids"}
+        if isinstance(evidence, ContextSourceEvidence):
+            evidence_mapping = evidence.model_input()
+            state = {key: value for key, value in evidence_mapping.items() if key != "evidence_ids"}
+        else:
+            state = evidence.model_state()
         runtime_version = _identity(str(getattr(runtime, "runtime_version", "")), "runtime_version")
         candidate = {
             "decision_schema_version": "laya-decision-v1",

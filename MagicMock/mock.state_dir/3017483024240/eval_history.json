@@ -1,0 +1,12 @@
+{
+  "test_suite":{
+    "timestamp":1794346842.3775275,
+    "summary":{
+      "pass_rate":0.9,
+      "total":10,
+      "passed":9,
+      "failed":1
+    },
+    "cases":[]
+  }
+}

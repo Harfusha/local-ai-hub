@@ -1143,7 +1143,7 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
             "output_path": {"type": "string", "default": "training_dataset.jsonl"},
             "min_receipts": {"type": "integer", "default": 1},
             "laya_operation": {"type": ["object", "null"], "default": None,
-                               "description": "Explicit, root-scoped Laya candidate lifecycle action. Capture requires canonical task/session identity, authorized evidence provenance, and a closed typed candidate; per-example consent receipts are not required. Each capture_batch validates all rows before one atomic write. Export revalidates source/hash provenance, verified labels, snapshot, and repository scope; only verified train rows export."},
+                               "description": "Explicit root-scoped Laya action through MCP/HTTP: typed shadow evaluation or candidate label, review, split, export, and delete lifecycle. The server derives repository/session identity, validates current evidence, and owns mode. Capture stores actual runtime outcomes only; per-example consent receipts are not required. Export revalidates evidence, labels, snapshot, and repository scope; only verified group-safe train rows export."},
             "session_id": {"type": "string", "default": "", "maxLength": 256},
             "question_id": {"type": "string", "default": "", "maxLength": 80},
             "question": {"type": "string", "default": "", "maxLength": 16_384},

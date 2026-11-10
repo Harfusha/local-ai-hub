@@ -25,10 +25,12 @@ from typing import Any, Callable, Mapping, Sequence
 from .laya_decisions import (
     ContextSourceEvidence,
     DecisionCategory,
+    DecisionInput,
     DecisionMode,
     DecisionRequest,
     DecisionResult,
     DecisionStatus,
+    _CATEGORY_INSTRUCTIONS,
 )
 
 _SOURCE_DESCRIPTIONS = {
@@ -463,6 +465,26 @@ class LayaRuntimeAdapter:
         return state, {"source": question}
 
     @staticmethod
+    def _decision_input(
+        request: DecisionRequest,
+        decision_input: ContextSourceEvidence | DecisionInput,
+    ) -> tuple[dict[str, str], dict[str, dict[str, Any]]]:
+        if isinstance(decision_input, ContextSourceEvidence):
+            return LayaRuntimeAdapter._input(decision_input)
+        state = {
+            "category": request.category.value,
+            "state": decision_input.model_state(),
+            "evidence_ids": list(request.evidence_ids),
+        }
+        serialized = json.dumps(state, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+        question = {
+            "type": "choice",
+            "instructions": _CATEGORY_INSTRUCTIONS[request.category],
+            "criteria": {option: option.replace("_", " ") for option in request.options},
+        }
+        return {"body": serialized}, {"source": question}
+
+    @staticmethod
     def _tokens(result: Mapping[str, Any], field: str) -> int | None:
         usage = result.get("usage")
         if not isinstance(usage, Mapping):
@@ -472,25 +494,28 @@ class LayaRuntimeAdapter:
             return None
         return value
 
-    def evaluate_context_source(
+    def evaluate_decision(
         self,
         request: DecisionRequest,
-        evidence: ContextSourceEvidence,
+        decision_input: ContextSourceEvidence | DecisionInput,
         *,
         session_lifecycle: Any,
-        outcome_recorder: Callable[[DecisionRequest, ContextSourceEvidence, LayaRuntimeOutcome], Any] | None = None,
+        outcome_recorder: Callable[[DecisionRequest, Any, LayaRuntimeOutcome], Any] | None = None,
     ) -> LayaRuntimeOutcome:
-        """Evaluate one approved pilot request; callers own auth and identity checks."""
-        if not isinstance(request, DecisionRequest) or request.category is not DecisionCategory.CONTEXT_SOURCE:
-            raise ValueError("only the approved context_source pilot is supported")
+        """Evaluate one typed shadow request; callers own auth and identity checks."""
+        if not isinstance(request, DecisionRequest):
+            raise ValueError("validated Laya decision request is required")
         if request.mode is not DecisionMode.SHADOW:
             raise ValueError("only explicit shadow evaluation mode is supported")
-        if not isinstance(evidence, ContextSourceEvidence):
-            raise ValueError("validated context-source evidence is required")
+        if request.category is DecisionCategory.CONTEXT_SOURCE:
+            if not isinstance(decision_input, ContextSourceEvidence):
+                raise ValueError("validated context-source evidence is required")
+            if request.evidence_ids != decision_input.evidence_ids or request.options != decision_input.decision_options:
+                raise ValueError("request does not match its validated context-source evidence")
+        elif not isinstance(decision_input, DecisionInput):
+            raise ValueError("validated typed decision input is required")
         if outcome_recorder is not None and not callable(outcome_recorder):
             raise TypeError("outcome_recorder must be callable")
-        if request.evidence_ids != evidence.evidence_ids or request.options != evidence.decision_options:
-            raise ValueError("request does not match its validated context-source evidence")
         if not callable(getattr(session_lifecycle, "inference_session", None)):
             raise TypeError("shared Laya session lifecycle is required")
         if not self.evaluation_mode:
@@ -526,7 +551,7 @@ class LayaRuntimeAdapter:
                     raise RuntimeError("provider close callback unavailable")
                 bind_close_session(self._close)
             with session_lifecycle.inference_session(self._load) as model:
-                state, questions = self._input(evidence)
+                state, questions = self._decision_input(request, decision_input)
                 result = model.predict(state, questions)
             elapsed = max(0.0, (self._clock() - started) * 1000.0)
             if not math.isfinite(elapsed):
@@ -576,6 +601,24 @@ class LayaRuntimeAdapter:
             return LayaRuntimeOutcome(decision=failed, runtime=None)
         finally:
             self._call_lock.release()
+
+    def evaluate_context_source(
+        self,
+        request: DecisionRequest,
+        evidence: ContextSourceEvidence,
+        *,
+        session_lifecycle: Any,
+        outcome_recorder: Callable[[DecisionRequest, ContextSourceEvidence, LayaRuntimeOutcome], Any] | None = None,
+    ) -> LayaRuntimeOutcome:
+        """Compatibility entry point for the ordinary context-source pilot."""
+        if not isinstance(request, DecisionRequest) or request.category is not DecisionCategory.CONTEXT_SOURCE:
+            raise ValueError("only the approved context_source pilot is supported")
+        return self.evaluate_decision(
+            request,
+            evidence,
+            session_lifecycle=session_lifecycle,
+            outcome_recorder=outcome_recorder,
+        )
 
     @staticmethod
     def _decode(request: DecisionRequest, result: Any) -> DecisionResult:

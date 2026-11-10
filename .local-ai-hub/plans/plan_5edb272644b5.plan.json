@@ -132,7 +132,7 @@
         "Capture stays local, scoped, redacted, revalidatable, deletable; verified labels and group-safe exports keep validation/test out of training.",
         "MCP/API, category gates, privacy, lifecycle, failure isolation, and datasets have current evidence; live model/provider claims remain separate."
       ],
-      "blocker": null,
+      "blocker": "Stability owner reports active inference and internal GPU reservation; wait for their explicit safe-window confirmation before tests or runtime-source changes.",
       "clarifications": [
         {
           "adoption": "adopted",
@@ -150,22 +150,13 @@
           "supersedes": []
         }
       ],
-      "depends_on": [
-        {
-          "plan_id": "plan_5edb272644b5",
-          "task_id": "task_laya_evaluation"
-        },
-        {
-          "plan_id": "plan_5edb272644b5",
-          "task_id": "task_laya_export"
-        }
-      ],
-      "description": "Implement the operator-corrected Laya scope: expose a shared typed decision service through MCP and root-authorized HTTP API; integrate decision categories across Hub only where measurements show improved reliability, quality, speed, or useful behavior; collect all useful future-training evidence including minimum necessary raw content, baseline and Laya outputs, downstream outcomes, labels, provenance, runtime metadata and failures. Keep data local, scoped, redacted, revalidatable and deletable; preserve deterministic authority and group-safe train/eval/test separation.",
+      "depends_on": [],
+      "description": "Single-owner integration task. Merge inherited Agent 1 telemetry, Agent 2 consent-gate changes, and Agent 4 retrieval/lifecycle/docs into this plan item. Expand Laya through typed MCP and root-authorized HTTP operations; integrate decision points only where measured value supports it; collect useful local future-training examples including minimum necessary raw content where materially useful, typed baseline/Laya/outcome signals, labels, provenance and runtime data. Preserve explicit authorized scope, redaction/deletion, human-label separation, group-safe splits, deterministic authority and shadow-only behavior pending approval. No per-example consent/receipt gates. Require versioned rubric, two independent annotators, adjudication, and test/group separation. No training, benchmark, cards, synthetic inference, model download/install, or rollout in this work.",
       "kind": "code",
-      "next_action": "Map supported MCP/API dispatch, decision baselines, and training capture before implementation.",
+      "next_action": "Wait for stability owner to report inference drained and approve read/reload window. Then review shared app.py/http_server.py diff, rerun bounded tests, finish baseline/outcome capture and dataset lifecycle; resolve archived training-file ownership before editing laya_dataset_merge.py or laya_backend.py.",
       "title": "Rozšířit Laya: MCP/API, relevantní rozhodovací body a tréninková data",
       "work_phase": "implementation",
-      "work_status": "planned"
+      "work_status": "in_progress"
     }
   },
   "title": "Laya decision service: safe staged integration"

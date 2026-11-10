@@ -2595,6 +2595,121 @@ class LocalAIApp:
             "candidate": {key: captured[key] for key in ("candidate_id", "duplicate", "status", "runtime_output_recorded") if key in captured},
         }
 
+    def evaluate_laya_decision(self, operation: Any, *, root: str) -> dict[str, Any]:
+        """Run a caller-requested typed shadow decision without changing Hub behavior."""
+        if type(operation) is not dict or set(operation) != {"action", "task_id", "decision"}:
+            raise ValueError("Laya decision fields invalid")
+        if operation["action"] != "evaluate_decision":
+            raise ValueError("unsupported Laya decision action")
+        decision_data = operation["decision"]
+        if type(decision_data) is not dict or set(decision_data) != {
+            "category", "evidence_ids", "options", "state", "training_content",
+        }:
+            raise ValueError("Laya decision input fields invalid")
+
+        from .laya_decisions import DecisionCategory, DecisionInput, DecisionMode, DecisionRequest
+        from .laya_runtime import LayaRuntimeAdapter, discover_torch_devices
+        from .project_config import resolve_project_context
+
+        laya_cfg = self.config.get("laya", {})
+        runtime_cfg = laya_cfg.get("runtime", {}) if isinstance(laya_cfg, dict) else {}
+        if not isinstance(runtime_cfg, dict) or runtime_cfg.get("enabled") is not True:
+            raise RuntimeError("Laya shadow runtime is disabled")
+        checkpoint_path = runtime_cfg.get("checkpoint_path")
+        revision = runtime_cfg.get("revision")
+        expected_sha256 = runtime_cfg.get("expected_sha256")
+        if not isinstance(checkpoint_path, str) or not checkpoint_path:
+            raise RuntimeError("Laya shadow checkpoint is not configured")
+        if not isinstance(revision, str) or not revision:
+            raise RuntimeError("Laya shadow revision is not configured")
+        if not isinstance(expected_sha256, dict) or not expected_sha256:
+            raise RuntimeError("Laya shadow checkpoint hashes are not configured")
+
+        canonical_root = str(Path(root).resolve(strict=True))
+        project = resolve_project_context(canonical_root, Path(self.config["server"]["state_dir"]))
+        repository_id = getattr(project, "coordination_id", None)
+        if not isinstance(repository_id, str) or not repository_id:
+            raise ValueError("Laya decision requires resolved repository identity")
+        task_id = operation["task_id"]
+        task = self.laya_candidates._find_task(self.agent_tasks, canonical_root, task_id)
+        session_id = self.laya_candidates._session_for_task(task)
+        request = DecisionRequest.from_mapping(
+            {key: decision_data[key] for key in ("category", "evidence_ids", "options")},
+            decision_id="laya_" + uuid.uuid4().hex,
+            mode=DecisionMode.SHADOW,
+            repository_id=repository_id,
+            task_id=task_id,
+            session_id=session_id,
+        )
+        if request.category is DecisionCategory.CONTEXT_SOURCE:
+            raise ValueError("context_source must use the ordinary context-source evaluation contract")
+        if not request.evidence_ids:
+            raise ValueError("standalone Laya decisions require verified evidence IDs")
+        decision_input = DecisionInput.from_mapping(
+            {"state": decision_data["state"], "training_content": decision_data["training_content"]}
+        )
+        candidate = self.laya_candidates._candidate_input({
+            "decision_schema_version": "laya-decision-v1",
+            "category": request.category.value,
+            "state": decision_input.model_state(),
+            "options": list(request.options),
+            "language": "und",
+            "preprocessing": {"name": "laya-runtime", "version": revision},
+            "evidence_ids": list(request.evidence_ids),
+        })
+        self.laya_candidates._validate_context_source_evidence(
+            candidate, evidence_store=self.evidence, canonical_root=canonical_root
+        )
+
+        adapter = getattr(self, "_laya_runtime_adapter", None)
+        if adapter is None:
+            devices = discover_torch_devices()
+            if runtime_cfg.get("allow_cpu", False) is not True:
+                devices = tuple(device for device in devices if device.device_class != "cpu")
+            adapter = LayaRuntimeAdapter(
+                checkpoint_path=checkpoint_path,
+                revision=revision,
+                expected_sha256=expected_sha256,
+                device_candidates=devices,
+                evaluation_mode=True,
+            )
+            self._laya_runtime_adapter = adapter
+
+        captured: dict[str, Any] = {}
+
+        def record_outcome(actual_request: Any, actual_input: Any, outcome: Any) -> None:
+            captured.update(self.laya_candidates.capture_runtime_outcome(
+                actual_request,
+                actual_input,
+                outcome,
+                root=canonical_root,
+                task_store=self.agent_tasks,
+                evidence_store=self.evidence,
+            ))
+
+        outcome = adapter.evaluate_decision(
+            request,
+            decision_input,
+            session_lifecycle=self.laya_lifecycle,
+            outcome_recorder=record_outcome,
+        )
+        decision = outcome.decision
+        self._record_laya_runtime_decision(request, decision)
+        return {
+            "success": decision.success,
+            "decision": {
+                "decision_id": request.decision_id,
+                "category": request.category.value,
+                "mode": request.mode.value,
+                "status": decision.status.value,
+                "suggestion": decision.suggestion,
+                "reason_codes": list(decision.reason_codes),
+                "redacted_training_fields": list(decision_input.redacted_fields),
+            },
+            "runtime": vars(outcome.runtime) if outcome.runtime is not None else None,
+            "candidate": {key: captured[key] for key in ("candidate_id", "duplicate", "status", "runtime_output_recorded") if key in captured},
+        }
+
     def _record_laya_runtime_decision(self, request: Any, decision: Any) -> bool:
         """Store the typed decision projection through existing metadata telemetry."""
         try:

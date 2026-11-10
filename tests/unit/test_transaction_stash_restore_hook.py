@@ -100,6 +100,26 @@ def test_stash_hook_drop_drops_stash_on_success(tmp_path: Path) -> None:
     assert stashes == ""
 
 
+@pytest.mark.parametrize("operation", ["restore", "drop"])
+def test_stash_hook_refuses_to_mutate_foreign_stash_without_own_sha(
+    tmp_path: Path, operation: str
+) -> None:
+    repo = _init_repo(tmp_path / "repo")
+    (repo / "file1.txt").write_text("foreign dirty\n", encoding="utf-8")
+    _git(repo, "stash", "push", "--include-untracked", "-m", "foreign stash")
+    foreign_stash = _git(repo, "stash", "list")
+
+    hook = TransactionStashHook(repo)
+    hook._stashed = True
+    hook._stash_sha = None
+
+    with pytest.raises(OSError, match="identify"):
+        getattr(hook, operation)()
+
+    assert _git(repo, "stash", "list") == foreign_stash
+    assert _git(repo, "status", "--porcelain") == ""
+
+
 def test_stash_transaction_guard_auto_restores_on_exception(tmp_path: Path) -> None:
     repo = _init_repo(tmp_path / "repo")
     (repo / "file1.txt").write_text("dirty before transaction\n", encoding="utf-8")

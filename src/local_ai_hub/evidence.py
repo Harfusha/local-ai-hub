@@ -32,6 +32,27 @@ def _safe_positive_int(value: Any, default: int, *, minimum: int = 1) -> int:
     return max(minimum, parsed)
 
 
+def _evidence_path_under_root(root: str, relative_path: str, *, strict: bool) -> Path | None:
+    """Resolve a repository-relative evidence path without crossing links or roots."""
+    if not root or root != root.strip() or not relative_path:
+        return None
+    try:
+        root_path = Path(root).resolve(strict=True)
+        relative = Path(relative_path)
+        if relative.is_absolute() or any(part == ".." for part in relative.parts):
+            return None
+        candidate = root_path
+        for part in relative.parts:
+            candidate = candidate / part
+            if candidate.is_symlink() or getattr(candidate, "is_junction", lambda: False)():
+                return None
+        resolved = candidate.resolve(strict=strict)
+        resolved.relative_to(root_path)
+        return resolved
+    except (OSError, RuntimeError, ValueError):
+        return None
+
+
 def is_evidence_id(value: Any) -> bool:
     """Check the syntactic shape of a content-addressed evidence reference."""
     if isinstance(value, bool) or value is None:
@@ -212,12 +233,8 @@ class EvidenceStore:
         file_hash = _clean_text(item.get("file_sha256") or item.get("content_hash") or "")
         if not path or not text or not file_hash:
             return None
-        if clean_root:
-            try:
-                cand = (Path(clean_root) / path).resolve()
-                cand.relative_to(Path(clean_root).resolve())
-            except Exception:
-                return None
+        if _evidence_path_under_root(clean_root, path, strict=True) is None:
+            return None
         start = _safe_positive_int(item.get("start_line", 1), 1, minimum=1)
         end = _safe_positive_int(item.get("end_line", start), start, minimum=start)
         text = self._strip_display_line_numbers(text, start, end)
@@ -282,11 +299,15 @@ class EvidenceStore:
             if not path or not text or not file_hash:
                 out.append(clone)
                 continue
+            if _evidence_path_under_root(clean_root, path, strict=True) is None:
+                out.append(clone)
+                continue
             start = _safe_positive_int(item.get("start_line", 1), 1, minimum=1)
             end = _safe_positive_int(item.get("end_line", start), start, minimum=start)
             text = self._strip_display_line_numbers(text, start, end)
             eid = self._id(clean_root, path, file_hash, start, end, text)
             clone["evidence_id"] = eid
+            clone["source_verified"] = False
             inserts.append((eid, clean_root, path, file_hash, start, end, text, now, now))
             updates.append((now, eid))
             out.append(clone)
@@ -359,8 +380,12 @@ class EvidenceStore:
         stale = False
         if verify:
             try:
-                path = (Path(str(row["root"])) / str(row["path"])).resolve(strict=False)
-                if path.is_file():
+                path = _evidence_path_under_root(
+                    str(row["root"]), str(row["path"]), strict=False
+                )
+                if path is None or not path.is_file():
+                    stale = True
+                else:
                     h = hashlib.sha256()
                     with path.open("rb") as f:
                         while chunk := f.read(65536):
@@ -388,11 +413,9 @@ class EvidenceStore:
                                     stale = True
                         except Exception:
                             stale = True
-                else:
-                    stale = True
             except Exception:
                 stale = True
-        return {"success": True, "evidence_id": eid, "root": row["root"], "path": row["path"], "file_sha256": row["file_hash"], "start_line": row["start_line"], "end_line": row["end_line"], "text": row["text"], "stale": stale}
+        return {"success": True, "evidence_id": eid, "root": row["root"], "path": row["path"], "file_sha256": row["file_hash"], "start_line": row["start_line"], "end_line": row["end_line"], "text": row["text"], "stale": stale, "source_verified": bool(verify and not stale)}
 
     def get_many(self, evidence_ids: list[str], *, verify: bool = True, root: str | None = None) -> list[dict[str, Any]]:
         """Fetch bounded evidence batches, sharing database and source verification work."""
@@ -431,12 +454,13 @@ class EvidenceStore:
         if verify:
             rows_by_path: dict[str, list[sqlite3.Row]] = {}
             for row in rows_by_id.values():
-                try:
-                    path = str((Path(str(row["root"])) / str(row["path"])).resolve(strict=False))
-                except Exception:
+                path = _evidence_path_under_root(
+                    str(row["root"]), str(row["path"]), strict=False
+                )
+                if path is None:
                     stale_by_id[str(row["id"])] = True
                     continue
-                rows_by_path.setdefault(path, []).append(row)
+                rows_by_path.setdefault(str(path), []).append(row)
             for raw_path, rows in rows_by_path.items():
                 path = Path(raw_path)
                 stale_ids = {str(row["id"]) for row in rows}
@@ -490,7 +514,8 @@ class EvidenceStore:
             results.append({"success": True, "evidence_id": eid, "root": row["root"], "path": row["path"],
                             "file_sha256": row["file_hash"], "start_line": row["start_line"],
                             "end_line": row["end_line"], "text": row["text"],
-                            "stale": stale_by_id.get(eid, False)})
+                            "stale": stale_by_id.get(eid, False),
+                            "source_verified": bool(verify and not stale_by_id.get(eid, False))})
         return results
 
     def validate_current(self, evidence_id: str) -> bool:
@@ -502,6 +527,7 @@ class EvidenceStore:
             if (
                 not item.get("success")
                 or item.get("stale") is not False
+                or item.get("source_verified") is not True
                 or item.get("evidence_id") != evidence_id
             ):
                 return False
@@ -550,7 +576,11 @@ class EvidenceStore:
                 if expected != evidence_id:
                     return False
 
-                path = (Path(str(row["root"])) / str(row["path"])).resolve(strict=False)
+                path = _evidence_path_under_root(
+                    str(row["root"]), str(row["path"]), strict=False
+                )
+                if path is None:
+                    return False
                 actual_hash = file_hashes.get(path)
                 if actual_hash is None:
                     if not path.is_file():

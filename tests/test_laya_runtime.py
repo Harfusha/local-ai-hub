@@ -8,6 +8,7 @@ from local_ai_hub.laya_decisions import (
     ContextSourceEvidence,
     ContextSourceFreshness,
     DecisionCategory,
+    DecisionInput,
     DecisionMode,
     DecisionRequest,
     DecisionStatus,
@@ -159,6 +160,48 @@ def adapter(tmp_path, loader, *, devices=None, evaluation_mode=True):
 
 def lifecycle():
     return LayaSessionLifecycle(0, close_session=lambda _session: True)
+
+
+def test_runtime_adapter_evaluates_standalone_typed_decision_with_redacted_training_input(tmp_path):
+    holder = {}
+
+    def load(_path, *, device, expected_sha256):
+        holder["agent"] = FakeAgent(
+            device,
+            output={"answers": {"source": {"choice": "run_test"}}, "usage": {}},
+        )
+        return holder["agent"]
+
+    request = DecisionRequest(
+        decision_id="decision-standalone",
+        mode=DecisionMode.SHADOW,
+        category=DecisionCategory.NEXT_STEP,
+        repository_id="repo-1",
+        task_id="task-1",
+        session_id="session-1",
+        evidence_ids=(),
+        options=("inspect_source", "run_test"),
+    )
+    decision_input = DecisionInput.from_mapping(
+        {
+            "state": {"gap_code": "missing_verification"},
+            "training_content": {"task_input": "Check token=secret-value and run focused test."},
+        }
+    )
+    model = adapter(tmp_path, load)
+
+    result = model.evaluate_decision(
+        request,
+        decision_input,
+        session_lifecycle=lifecycle(),
+    )
+
+    assert result.decision.suggestion == "run_test"
+    assert result.runtime is not None
+    body = holder["agent"].model.seen[0]["body"]
+    assert "raw_task_input" in body
+    assert "[REDACTED]" in body
+    assert "secret-value" not in body
 
 
 def test_runtime_adapter_binds_provider_close_before_shared_session_use(tmp_path):

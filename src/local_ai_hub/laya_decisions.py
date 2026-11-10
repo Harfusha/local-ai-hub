@@ -5,6 +5,7 @@ through an authorized Hub path before constructing a request. This module does
 not load Laya, emit telemetry, execute tools, or change Hub decisions.
 """
 
+import json
 import re
 from dataclasses import dataclass
 from enum import StrEnum
@@ -51,6 +52,16 @@ _REQUEST_KEYS = frozenset({"category", "evidence_ids", "options"})
 _RESULT_KEYS = frozenset({"success", "status", "suggestion", "reason_codes"})
 _IDENTIFIER = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}\Z")
 _OPTION = re.compile(r"[a-z][a-z0-9_]{0,63}\Z")
+_STATE_FIELD = re.compile(r"[a-z][a-z0-9_]{0,63}\Z")
+_STATE_VALUE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}\Z")
+_RAW_CONTENT_FIELDS = frozenset({"task_input", "context_excerpt"})
+_SECRET_PATTERNS = (
+    re.compile(r"(?i)\b(api[_-]?key|access[_-]?token|refresh[_-]?token|token|password|passwd|secret|authorization)(\s*[:=]\s*)([^\s,;]+)"),
+    re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]+"),
+    re.compile(r"\b(?:sk-[A-Za-z0-9_-]{16,}|gh[pousr]_[A-Za-z0-9]{20,}|AKIA[0-9A-Z]{16})\b"),
+)
+_MAX_STATE_BYTES = 16 * 1024
+_MAX_RAW_FIELD_BYTES = 8 * 1024
 _CONTEXT_SOURCE_TYPES = frozenset({"indexed", "artifact", "memory", "rag"})
 _CATEGORY_OPTIONS = {
     DecisionCategory.CONTEXT_SOURCE: frozenset(
@@ -67,6 +78,16 @@ _CATEGORY_OPTIONS = {
     DecisionCategory.WATCHDOG: frozenset(
         {"recommend_continue", "recommend_stop", "recommend_human_review"}
     ),
+}
+_CATEGORY_INSTRUCTIONS = {
+    DecisionCategory.CONTEXT_SOURCE: "Choose the next authorized context source or evidence action.",
+    DecisionCategory.CONTEXT_BUDGET: "Choose the bounded response context budget profile.",
+    DecisionCategory.MODEL_ROUTE: "Choose an available model tier for the described task class.",
+    DecisionCategory.REDUNDANT_STEP: "Choose whether the proposed step may be duplicate while preserving required validation.",
+    DecisionCategory.NEXT_STEP: "Choose the next evidence or recovery step.",
+    DecisionCategory.DELEGATION: "Choose a review or bounded-delegation recommendation; do not execute it.",
+    DecisionCategory.COMPLETION_GAP: "Choose the missing verification or review recommendation.",
+    DecisionCategory.WATCHDOG: "Choose a watchdog recommendation; do not stop or continue the task.",
 }
 _REASON_CODES = frozenset(
     {
@@ -278,6 +299,62 @@ class DecisionRequest:
             evidence_ids=evidence_ids,
             options=options,
         )
+
+
+@dataclass(frozen=True)
+class DecisionInput:
+    """Bounded typed signals plus separately declared, redacted training text."""
+
+    state: Mapping[str, str]
+    training_content: Mapping[str, str]
+    redacted_fields: tuple[str, ...]
+
+    @classmethod
+    def from_mapping(cls, value: Mapping[str, Any]) -> "DecisionInput":
+        if not isinstance(value, Mapping) or set(value) != {"state", "training_content"}:
+            raise ValueError("invalid decision input fields")
+        state = value["state"]
+        if type(state) is not dict or not 1 <= len(state) <= 32:
+            raise ValueError("decision state must be a non-empty flat object")
+        if any(
+            type(key) is not str or not _STATE_FIELD.fullmatch(key)
+            or key.startswith("raw_")
+            or type(item) is not str or not _STATE_VALUE.fullmatch(item)
+            for key, item in state.items()
+        ):
+            raise ValueError("decision state must contain typed string codes")
+        if len(json.dumps(state, sort_keys=True, separators=(",", ":")).encode("utf-8")) > _MAX_STATE_BYTES:
+            raise ValueError("decision state is too large")
+
+        training_content = value["training_content"]
+        if type(training_content) is not dict or set(training_content) - _RAW_CONTENT_FIELDS:
+            raise ValueError("training_content fields invalid")
+        sanitized: dict[str, str] = {}
+        redacted: list[str] = []
+        for key, text in training_content.items():
+            if type(key) is not str or type(text) is not str or not text.strip() or "\x00" in text:
+                raise ValueError("training_content must contain non-empty text fields")
+            if len(text.encode("utf-8")) > _MAX_RAW_FIELD_BYTES:
+                raise ValueError("training_content field is too large")
+            cleaned = text
+            for pattern in _SECRET_PATTERNS:
+                if pattern.groups == 3:
+                    cleaned, count = pattern.subn(lambda match: f"{match.group(1)}{match.group(2)}[REDACTED]", cleaned)
+                else:
+                    cleaned, count = pattern.subn("[REDACTED]", cleaned)
+                if count:
+                    if key not in redacted:
+                        redacted.append(key)
+            sanitized[key] = cleaned
+        if sum(len(text.encode("utf-8")) for text in sanitized.values()) > _MAX_STATE_BYTES:
+            raise ValueError("training_content is too large")
+        return cls(state=dict(state), training_content=sanitized, redacted_fields=tuple(redacted))
+
+    def model_state(self) -> dict[str, str]:
+        return {
+            **self.state,
+            **{f"raw_{key}": value for key, value in self.training_content.items()},
+        }
 
 
 @dataclass(frozen=True)

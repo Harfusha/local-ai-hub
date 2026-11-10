@@ -6478,6 +6478,8 @@ class Handler(BaseHTTPRequestHandler):
                         try:
                             if laya_operation.get("action") == "evaluate_context_source":
                                 result = APP.evaluate_laya_context_source(laya_operation, root=repo_root)
+                            elif laya_operation.get("action") == "evaluate_decision":
+                                result = APP.evaluate_laya_decision(laya_operation, root=repo_root)
                             else:
                                 result = APP.laya_candidates.handle(
                                     laya_operation,

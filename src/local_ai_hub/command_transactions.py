@@ -564,12 +564,13 @@ class TransactionStashHook:
     def restore(self) -> bool:
         if not self._stashed:
             return False
+        if not self._stash_sha:
+            raise OSError("cannot identify own stash without its recorded SHA")
         target = self._find_stash_ref()
-        if not target and self._stash_sha:
+        if not target:
             raise OSError(f"cannot find own stash with sha {self._stash_sha}")
         cmd = ["git", "-C", str(self.root), "stash", "pop"]
-        if target:
-            cmd.append(target)
+        cmd.append(target)
         proc = subprocess.run(
             cmd,
             capture_output=True,
@@ -591,12 +592,13 @@ class TransactionStashHook:
     def drop(self) -> bool:
         if not self._stashed:
             return False
+        if not self._stash_sha:
+            raise OSError("cannot identify own stash without its recorded SHA")
         target = self._find_stash_ref()
-        if not target and self._stash_sha:
+        if not target:
             raise OSError(f"cannot find own stash with sha {self._stash_sha}")
         cmd = ["git", "-C", str(self.root), "stash", "drop"]
-        if target:
-            cmd.append(target)
+        cmd.append(target)
         proc = subprocess.run(
             cmd,
             capture_output=True,

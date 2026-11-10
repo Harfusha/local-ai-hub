@@ -18,7 +18,7 @@
         "After active GPU work ends, install current source, configure MCP/instructions/skills, restart Hub, and verify current runtime and representative endpoints.",
         "Remaining unresolved hotspots and operational blockers are recorded."
       ],
-      "blocker": "GPU reservation active under embedding:51676:1528; do not restart or release while work remains active.",
+      "blocker": "Current check 2026-11-10: Hub 6.0.0 online; qwen2.5-coder:3b and GPU admission inference_active; reservation is internal. Do not restart or run runtime/GPU tests until foreground work drains. Laya-owned changes now include app.py, http_server.py, Laya modules and tests; preserve them and await the owner's safe-window confirmation. Historical RAG job 987d4d622e6e4d6185687141abd21c01 remains terminal outcome_unknown; current RAG list exposes five workspace IDs, with absolute-root mapping unresolved. GET /api/live/status reports scheduler dependency probe_timeout only when work misses its 1.0s deadline; likely causes remain unproven.",
       "clarifications": [],
       "depends_on": [],
       "description": "Reconcile both performance worktree contributions; preserve user changes, durable job lifecycle, request identity rules, fast-path contracts, RAG progress and six-root recovery; install and live-verify current Hub. Fix confirmed endpoint/runtime errors with evidence.",

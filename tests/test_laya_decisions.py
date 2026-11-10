@@ -3,11 +3,46 @@ import pytest
 from local_ai_hub.laya_decisions import (
     ContextSourceEvidence,
     DecisionCategory,
+    DecisionInput,
     DecisionMode,
     DecisionRequest,
     DecisionResult,
     DecisionStatus,
 )
+
+
+def test_decision_input_separates_typed_state_and_redacted_training_content():
+    decision_input = DecisionInput.from_mapping(
+        {
+            "state": {"gap_code": "missing_verification"},
+            "training_content": {
+                "task_input": "Check this token=secret-value and missing receipt.",
+                "context_excerpt": "No tool ran.",
+            },
+        }
+    )
+
+    assert decision_input.state == {"gap_code": "missing_verification"}
+    assert decision_input.model_state() == {
+        "gap_code": "missing_verification",
+        "raw_task_input": "Check this token=[REDACTED] and missing receipt.",
+        "raw_context_excerpt": "No tool ran.",
+    }
+    assert decision_input.redacted_fields == ("task_input",)
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"state": {"nested": {"text": "x"}}, "training_content": {}},
+        {"state": {}, "training_content": {"conversation": "not allowed"}},
+        {"state": {"raw_text": "not typed"}, "training_content": {}},
+        {"state": {"raw_task_input": "spoofed"}, "training_content": {}},
+    ],
+)
+def test_decision_input_rejects_unbounded_or_aliased_content(payload):
+    with pytest.raises(ValueError):
+        DecisionInput.from_mapping(payload)
 
 
 def test_context_source_evidence_accepts_only_minimal_code_only_state():

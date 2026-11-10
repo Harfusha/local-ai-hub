@@ -3,6 +3,8 @@ from __future__ import annotations
 import hashlib
 from types import SimpleNamespace
 
+import pytest
+
 from local_ai_hub.deterministic import DeterministicEngine
 from local_ai_hub.evidence import EvidenceStore
 from local_ai_hub.repo_tools import RepositoryTools
@@ -32,12 +34,93 @@ def test_get_many_shares_source_verification_and_preserves_order(tmp_path, monke
 
     assert [row.get("evidence_id") for row in results[:3]] == [ids[1], ids[0], ids[1]]
     assert all(row["success"] is True and row["stale"] is False for row in results[:3])
+    assert all(row["source_verified"] is True for row in results[:3])
     assert results[3] == {"success": False, "error": "evidence not found"}
     assert len(hash_calls) == 1
 
     source.write_text("changed = True\n", encoding="utf-8")
     stale = store.get_many(ids, verify=True)
     assert all(row["success"] is True and row["stale"] is True for row in stale)
+
+
+def test_put_many_rejects_paths_outside_root(tmp_path):
+    root = tmp_path / "repo"
+    root.mkdir()
+    outside = tmp_path / "outside.py"
+    outside.write_text("secret = 1\n", encoding="utf-8")
+    digest = hashlib.sha256(outside.read_bytes()).hexdigest()
+    store = EvidenceStore(tmp_path / "state")
+
+    stored = store.put_many(str(root), [{
+        "path": "../outside.py",
+        "file_sha256": digest,
+        "start_line": 1,
+        "end_line": 1,
+        "text": "secret = 1",
+    }])
+
+    assert stored == [{"path": "../outside.py", "file_sha256": digest,
+                       "start_line": 1, "end_line": 1, "text": "secret = 1"}]
+    assert store.count() == 0
+
+
+def test_stored_text_is_not_marked_verified_until_source_matches(tmp_path):
+    root = tmp_path / "repo"
+    root.mkdir()
+    source = root / "module.py"
+    source.write_text("actual = 1\n", encoding="utf-8")
+    digest = hashlib.sha256(source.read_bytes()).hexdigest()
+    store = EvidenceStore(tmp_path / "state")
+
+    stored = store.put_many(str(root), [{
+        "path": "module.py",
+        "file_sha256": digest,
+        "start_line": 1,
+        "end_line": 1,
+        "text": "claimed = 1",
+    }])
+    evidence_id = stored[0]["evidence_id"]
+
+    assert stored[0]["source_verified"] is False
+    current = store.get(evidence_id, verify=True)
+    assert current["success"] is True and current["stale"] is True
+    assert current["source_verified"] is False
+    assert store.validate_current(evidence_id) is False
+    assert store.validate_current_many([evidence_id]) is False
+
+
+def test_get_and_get_many_reject_symlink_retarget_outside_root(tmp_path):
+    root = tmp_path / "repo"
+    root.mkdir()
+    source = root / "module.py"
+    outside = tmp_path / "outside.py"
+    text = "secret = 1\n"
+    source.write_text(text, encoding="utf-8")
+    outside.write_text(text, encoding="utf-8")
+    digest = hashlib.sha256(source.read_bytes()).hexdigest()
+    store = EvidenceStore(tmp_path / "state")
+    stored = store.put_many(str(root), [{
+        "path": "module.py",
+        "file_sha256": digest,
+        "start_line": 1,
+        "end_line": 1,
+        "text": "secret = 1",
+    }])
+    evidence_id = stored[0]["evidence_id"]
+
+    source.unlink()
+    try:
+        source.symlink_to(outside)
+    except (OSError, NotImplementedError):
+        pytest.skip("file symlinks unavailable on this host")
+
+    single = store.get(evidence_id, verify=True)
+    batch = store.get_many([evidence_id], verify=True)[0]
+    assert single["success"] is True and single["stale"] is True
+    assert batch["success"] is True and batch["stale"] is True
+    assert single["source_verified"] is False
+    assert batch["source_verified"] is False
+    assert store.validate_current_many([evidence_id]) is False
 
 
 def test_context_pack_uses_batched_evidence_fetch(tmp_path, monkeypatch):
