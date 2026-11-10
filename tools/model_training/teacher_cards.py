@@ -136,11 +136,12 @@ def _deterministic_hint(relative_path: str) -> dict[str, Any]:
 
 
 def build_messages(relative_path: str, source: str) -> list[dict[str, str]]:
+    system = SYSTEM_PROMPT + " Return only one JSON object matching this schema:\n" + json.dumps(CARD_SCHEMA, separators=(",", ":"))
     prompt = (
         f"FILE: {relative_path}\n\nDETERMINISTIC CARD (untrusted hint; verify or discard every claim):\n"
         f"{json.dumps(_deterministic_hint(relative_path), ensure_ascii=False)}\n\nCURRENT SOURCE (authority):\n{source}"
     )
-    return [{"role": "system", "content": SYSTEM_PROMPT}, {"role": "user", "content": prompt}]
+    return [{"role": "system", "content": system}, {"role": "user", "content": prompt}]
 
 
 def generate_card(

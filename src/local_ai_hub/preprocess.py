@@ -2597,22 +2597,42 @@ class ProjectPreprocessor:
                     return row
         return None
 
+    @staticmethod
+    def _scheduler_order(now: float) -> tuple[str, tuple[float, ...]]:
+        """Share bounded age, activity, and phase ordering across workers."""
+        return (
+            """CASE WHEN updated_at<=? THEN 0 ELSE 1 END,
+               force_refresh DESC,
+               CASE WHEN last_requested_at>=? THEN 0 ELSE 1 END,
+               CASE phase
+                   WHEN 'inventory' THEN 0 WHEN 'hash' THEN 1
+                   WHEN 'code_index' THEN 2 WHEN 'deterministic' THEN 3
+                   WHEN 'serena' THEN 4 WHEN 'lexical' THEN 5
+                   WHEN 'rag' THEN 6 WHEN 'files' THEN 7
+                   WHEN 'modules' THEN 8 WHEN 'project' THEN 9
+                   WHEN 'hot_queries' THEN 10 WHEN 'file_card_enrichment' THEN 11
+                   WHEN 'diagnostics' THEN 12 ELSE 13 END,
+               CASE WHEN last_requested_at>=? THEN 0 ELSE 1 END,
+               updated_at-CASE WHEN last_requested_at>=? THEN 60 ELSE 0 END ASC,
+               CASE status WHEN 'queued' THEN 0 WHEN 'running' THEN 1 ELSE 2 END,
+               root ASC""",
+            (now - 300.0, now - 86_400.0, now - 60.0, now - 300.0),
+        )
+
     def _next_cpu_project(self) -> sqlite3.Row | None:
         now = time.time()
+        order_sql, order_params = self._scheduler_order(now)
         with self._db_lock, closing(self._connect()) as con:
-            # CPU/read-only phases. Serena indexing runs only while foreground is idle.
+            # Keep one durable queue order across CPU and GPU selectors.
             self._rebalance_processing_slots(con)
             con.commit()
             rows = con.execute(
                 """SELECT * FROM projects
                    WHERE paused=0 AND retry_after<=?
                      AND status IN ('queued','running','error')
-                     AND phase IN ('inventory', 'hash', 'code_index', 'deterministic', 'serena', 'lexical', 'rag', 'files', 'modules', 'project', 'hot_queries', 'diagnostics')
-                   ORDER BY CASE WHEN updated_at<=? THEN 0 ELSE 1 END,
-                            force_refresh DESC,
-                            updated_at - CASE WHEN last_requested_at>=? THEN 60 ELSE 0 END ASC,
-                            CASE status WHEN 'queued' THEN 0 WHEN 'running' THEN 1 ELSE 2 END LIMIT ?""",
-                (now, now - 300.0, now - 300.0, self._project_limit()),
+                     AND phase IN ('inventory', 'hash', 'code_index', 'deterministic', 'serena', 'lexical', 'rag', 'files', 'file_card_enrichment', 'modules', 'project', 'hot_queries', 'diagnostics')
+                   ORDER BY """ + order_sql + " LIMIT ?",
+                (now, *order_params, self._project_limit()),
             ).fetchall()
             if rows:
                 return self._first_unowned_project(rows)
@@ -2639,6 +2659,7 @@ class ProjectPreprocessor:
 
     def _next_gpu_project(self) -> sqlite3.Row | None:
         now = time.time()
+        order_sql, order_params = self._scheduler_order(now)
         with self._db_lock, closing(self._connect()) as con:
             # GPU-bound phases: files, modules, project, hot_queries
             self._rebalance_processing_slots(con)
@@ -2646,15 +2667,15 @@ class ProjectPreprocessor:
             rows = con.execute(
                 """SELECT * FROM projects
                    WHERE paused=0 AND retry_after<=? AND status IN ('queued','running','error')
-                     AND phase IN ('files', 'file_card_enrichment', 'modules', 'project', 'hot_queries')
-                   ORDER BY CASE WHEN updated_at<=? THEN 0 ELSE 1 END,
-                            force_refresh DESC,
-                            updated_at - CASE WHEN last_requested_at>=? THEN 60 ELSE 0 END ASC,
-                            CASE status WHEN 'queued' THEN 0 WHEN 'running' THEN 1 ELSE 2 END LIMIT ?""",
-                (now, now - 300.0, now - 300.0, self._project_limit()),
+                     AND phase IN ('inventory', 'hash', 'code_index', 'deterministic', 'serena', 'lexical', 'rag', 'files', 'file_card_enrichment', 'modules', 'project', 'hot_queries', 'diagnostics')
+                   ORDER BY """ + order_sql + " LIMIT ?",
+                (now, *order_params, self._project_limit()),
             ).fetchall()
             if rows:
-                return self._first_unowned_project(rows)
+                if str(rows[0]["phase"]) not in {"files", "file_card_enrichment", "modules", "project", "hot_queries"}:
+                    return None
+                # Do not let the GPU worker pass the globally preferred project.
+                return self._first_unowned_project(rows[:1])
 
             # Completed projects can predate model enrichment. Schedule only roots
             # with eligible provisional cards, through the ordinary bounded GPU

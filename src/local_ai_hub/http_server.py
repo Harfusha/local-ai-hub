@@ -8752,12 +8752,17 @@ class Handler(BaseHTTPRequestHandler):
                 docs = payload.get("documents", [])
                 self._send(200, APP.reranker.rerank(str(payload.get("query", "")), [str(x) for x in docs], payload.get("top_k"))); return
             if 'post_rag_index_1' in post_route_ids:
-                self._send(200, APP.rag.index(str(payload.get("root", ".")), workspace=payload.get("workspace"))); return
+                root = str(payload.get("root", "."))
+                result = APP.rag.index(root, workspace=payload.get("workspace"))
+                if isinstance(result, dict) and result.get("success") is True:
+                    APP.services._touch_project(root)
+                self._send(200, result); return
             if 'post_rag_search_1' in post_route_ids:
                 workspace = str(payload.get("workspace", ""))
                 if not workspace:
                     self._send(400, {"success": False, "error": "workspace is required"}); return
                 APP.rag.require_workspace_root(workspace=workspace, root=payload["root"])
+                APP.services._touch_project(str(payload["root"]))
                 try:
                     reranking_available = FeatureSet(APP.config).capability_status().get("reranking", {}).get("available") is True
                 except Exception:
