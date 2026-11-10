@@ -12,6 +12,7 @@ from .sqlite_support import connect_sqlite, initialize_wal, is_busy_error, quick
 
 _HOT_QUERY_CACHE_TTL_SECONDS = 15.0
 _HOT_QUERY_CACHE_MAX_ENTRIES = 128
+_RECORD_BUSY_TIMEOUT_SECONDS = 0.05
 
 
 def _clean_text(value: Any) -> str:
@@ -70,8 +71,10 @@ class UsageLearner:
         self._hot_query_cache: dict[tuple[str, int], tuple[float, tuple[str, ...]]] = {}
         self._init_db()
 
-    def _connect(self) -> sqlite3.Connection:
-        return connect_sqlite(self.db_path, timeout_seconds=5.0, row_factory=sqlite3.Row)
+    def _connect(self, *, timeout_seconds: float = 5.0) -> sqlite3.Connection:
+        return connect_sqlite(
+            self.db_path, timeout_seconds=timeout_seconds, row_factory=sqlite3.Row,
+        )
 
     def _create_schema(self) -> None:
         with self._lock, closing(self._connect()) as con:
@@ -121,8 +124,12 @@ class UsageLearner:
         if len(clean) < 6:
             return
         intent = self.intent(clean)
+        if not self._lock.acquire(timeout=_RECORD_BUSY_TIMEOUT_SECONDS):
+            return
         try:
-            with self._lock, closing(self._connect()) as con:
+            with closing(
+                self._connect(timeout_seconds=_RECORD_BUSY_TIMEOUT_SECONDS),
+            ) as con:
                 con.execute(
                     """INSERT INTO intents(root,intent,query,hits,last_seen) VALUES(?,?,?,?,?)
                        ON CONFLICT(root,intent,query) DO UPDATE SET hits=hits+1,last_seen=excluded.last_seen""",
@@ -143,6 +150,8 @@ class UsageLearner:
         except sqlite3.DatabaseError:
             # Learning must never block foreground retrieval.
             return
+        finally:
+            self._lock.release()
 
     def hot_queries(self, root: str, limit: int = 12) -> list[str]:
         resolved = _resolve_root(root)

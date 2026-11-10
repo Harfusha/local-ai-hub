@@ -48,7 +48,7 @@ class AsyncJobManager:
     DIRECT_INFERENCE_ACTIONS = frozenset({
         "embed", "rerank", "transcribe", "vision", "benchmark", "complete_code",
         "scaffold", "speculative_draft", "generate_tests", "solve", "eval_suite",
-            "prompt_eval", "eval_drift", "rag_index",
+        "prompt_eval", "eval_drift", "rag_index",
     })
     INFERENCE_ADMISSION_ACTIONS = INFERENCE_ACTIONS | DIRECT_INFERENCE_ACTIONS
     TERMINAL_STATES = frozenset({"done", "failed", "cancelled", "expired", "outcome_unknown"})

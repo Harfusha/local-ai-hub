@@ -570,9 +570,24 @@ class Reranker:
             missing_keys: list[str] = []
             local_cache_hits = 0
 
+            cache_keys = [
+                stable_hash({"identity": cache_identity, "q": query, "d": doc}) if use_cache else ""
+                for doc in documents
+            ]
+            cached_scores: dict[str, Any] = {}
+            if use_cache:
+                get_many = getattr(self.cache, "get_many", None)
+                if callable(get_many):
+                    cached_scores = get_many(cache_keys)
+                else:
+                    for key in dict.fromkeys(cache_keys):
+                        cached = self.cache.get(key)
+                        if cached is not None:
+                            cached_scores[key] = cached
+
             for i, doc in enumerate(documents):
-                key = stable_hash({"identity": cache_identity, "q": query, "d": doc}) if use_cache else ""
-                cached = self.cache.get(key) if use_cache else None
+                key = cache_keys[i]
+                cached = cached_scores.get(key) if use_cache else None
                 try:
                     cached_score = float(cached)
                 except (TypeError, ValueError, OverflowError):
@@ -626,8 +641,13 @@ class Reranker:
                 return {"success": False, "error": "reranker returned incomplete scores", "results": []}
 
             if use_cache:
-                for key, value in pending_writes:
-                    self.cache.set(key, value)
+                if pending_writes:
+                    set_many = getattr(self.cache, "set_many", None)
+                    if callable(set_many):
+                        set_many(dict(pending_writes))
+                    else:
+                        for key, value in pending_writes:
+                            self.cache.set(key, value)
             self._cache_hits += local_cache_hits
             self._computed += len(pending_writes)
 

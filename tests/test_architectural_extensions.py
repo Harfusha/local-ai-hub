@@ -419,7 +419,7 @@ def test_eval_drift(tmp_path: Path):
     from unittest.mock import MagicMock
 
     mock_self = MagicMock()
-    mock_self.state_dir = tmp_path
+    mock_self.config = {"server": {"state_dir": str(tmp_path)}}
 
     payload1 = {
         "suite_name": "test_suite",

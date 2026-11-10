@@ -3496,8 +3496,8 @@ class Handler(BaseHTTPRequestHandler):
             elif job_action == "rag_index" and delivery.strip().lower() == "auto" and budget_ms > 0 and samples < 10:
                 decision = {"mode": "async", "reason": "cold_start_rag_index"}
             elif job_action == "review_diff" and delivery.strip().lower() == "auto" and budget_ms > 0 and samples < 5:
-                # A cold-start review has no trustworthy p95 yet. Do not let a
-                # large diff run synchronously while telemetry learns the cost.
+                # Cold-start long work has no trustworthy p95 yet. Keep RAG
+                # indexing and large-diff review off the synchronous request.
                 decision = {"mode": "async", "reason": "cold_start_review_diff"}
             else:
                 decision = decide_delivery(

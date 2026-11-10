@@ -51,7 +51,7 @@ def test_inventory_path_safety_reuses_resolved_project_root(tmp_path: Path, monk
     root = tmp_path / "repo"
     root.mkdir()
     target = root / "module.py"
-    target.write_text("safe\n", encoding="utf-8")
+    target.write_bytes(b"safe\n")
     resolved_root = root.resolve(strict=True)
     original_resolve = Path.resolve
     root_resolve_calls = 0
@@ -162,10 +162,43 @@ def test_project_file_allowed_keeps_safety_resolution_for_forced_files(
         calls.append(path)
         return None
 
-    monkeypatch.setattr(tools, "_resolve_inventory_path_safe", reject_resolution)
+    monkeypatch.setattr(tools, "_resolve_inventory_path_safe_with_stat", reject_resolution)
 
     assert tools._project_file_allowed(root, forced, None, force_include=True) is False
     assert calls == [forced]
+
+
+def test_project_file_allowed_reuses_lstat_metadata_for_size(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+):
+    root = tmp_path / "repo"
+    target = root / "src" / "module.py"
+    target.parent.mkdir(parents=True)
+    target.write_bytes(b"safe\n")
+    resolved_root = root.resolve(strict=True)
+    tools = RepositoryTools(_cfg(tmp_path))
+
+    class Policy:
+        project_root = resolved_root
+
+        @staticmethod
+        def allows(path: Path, **kwargs) -> bool:
+            assert kwargs["size_bytes"] == len(b"safe\n")
+            assert kwargs["_resolved_candidate"] == path
+            return True
+
+    original_stat = Path.stat
+
+    def reject_final_stat(path: Path, *args, **kwargs):
+        if path == target and kwargs.get("follow_symlinks") is not False:
+            raise AssertionError("candidate size should reuse the safety lstat result")
+        return original_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", reject_final_stat)
+
+    assert tools._project_file_allowed(
+        root, target, None, project_path_policy=Policy(),
+    ) is True
 
 
 def test_inventory_path_safety_with_cached_root_still_rejects_symlink(tmp_path: Path):

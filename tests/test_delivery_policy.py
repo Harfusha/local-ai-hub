@@ -21,6 +21,7 @@ def test_async_delivery_docs_match_supported_actions_and_cold_start_rules():
     assert "sparse history stays inline" in docs
     assert "fewer than 5 telemetry samples" in docs
     assert "`cold_start_review_diff`" in docs
+    assert "`cold_start_rag_index`" in docs
 
 
 def test_install_and_update_prompts_cover_async_and_conversation_contracts():
@@ -42,6 +43,7 @@ def test_install_and_update_prompts_cover_async_and_conversation_contracts():
             "/api/compress",
             "/api/route",
             "/api/delegate/batch",
+            "/api/rag/index",
         ):
             assert f"`{path}`" in docs
         for phrase in (
@@ -54,6 +56,7 @@ def test_install_and_update_prompts_cover_async_and_conversation_contracts():
             "`timeout_seconds`",
             "`HubClient.submit_async_job`",
             "`cold_start_review_diff`",
+            "`cold_start_rag_index`",
             "fewer than five telemetry samples",
             "at least ten",
             "sparse history stays inline",
@@ -95,6 +98,7 @@ def test_mcp_task_description_exposes_async_and_conversation_contracts():
         "`delivery=auto`",
         "`review.max_queue_age_ms`",
         "`cold_start_review_diff`",
+        "`cold_start_rag_index`",
         "`speculative_lint`",
         "`X-LocalAI-Request-ID`",
         "12 turns",

@@ -1729,16 +1729,16 @@ class RAGStore:
                 (workspace,),
             ).fetchall()
             old_chunk_rows = con.execute(
-                "SELECT path,chunk_no,content_hash,embedding,embedding_space FROM chunks WHERE workspace=?",
+                "SELECT path,chunk_no,content_hash,embedding_space FROM chunks WHERE workspace=?",
                 (workspace,),
             ).fetchall()
             stored_chunker_version = self._stored_workspace_chunker_version(con, workspace)
         chunker_version_changed = stored_chunker_version != RAG_CHUNKER_VERSION
         old_files = {r[0]: {"mtime_ns": int(r[1]), "size": int(r[2]), "content_hash": r[3]} for r in old_files_rows}
         persisted_spaces = {
-            str(r[4]).strip()
+            str(r[3]).strip()
             for r in old_chunk_rows
-            if r[4] and str(r[4]).strip()
+            if r[3] and str(r[3]).strip()
         }
         if _space_override is None and len(persisted_spaces) == 1 and (
             not getattr(self.services, "space_id", None)
@@ -1746,13 +1746,8 @@ class RAGStore:
             and not self.config.get("models", {}).get("embedding_revision")
         ):
             embedding_space = next(iter(persisted_spaces))
-        old_chunks = {
-            (r[0], int(r[1]), r[2]): r[3]
-            for r in old_chunk_rows
-            if embedding_space and str(r[4] or "").strip() == embedding_space
-        }
         embedding_space_changed = any(
-            str(row[4] or "") != embedding_space for row in old_chunk_rows
+            str(row[3] or "") != embedding_space for row in old_chunk_rows
         )
 
         current_meta: dict[str, tuple[Path, int, int]] = {}
@@ -1836,6 +1831,24 @@ class RAGStore:
         elif chunker_version_changed:
             unchanged_paths = []
             changed_paths = sorted(current_meta)
+
+        # Preserve vectors only for changed files whose chunk hashes may be
+        # reused. Reading every embedding blob for an unchanged workspace made
+        # a no-op index scale with the full vector table size.
+        old_chunks: dict[tuple[str, int, str], Any] = {}
+        if changed_paths and embedding_space:
+            with closing(self._connect()) as con:
+                for offset in range(0, len(changed_paths), 400):
+                    batch_paths = changed_paths[offset:offset + 400]
+                    placeholders = ",".join("?" for _ in batch_paths)
+                    rows = con.execute(
+                        "SELECT path,chunk_no,content_hash,embedding FROM chunks "
+                        f"WHERE workspace=? AND embedding_space=? AND path IN ({placeholders})",
+                        (workspace, embedding_space, *batch_paths),
+                    ).fetchall()
+                    for row in rows:
+                        if row[3] is not None:
+                            old_chunks[(str(row[0]), int(row[1]), str(row[2]))] = row[3]
 
         changed_records: list[dict[str, Any]] = []
         file_rows: list[tuple[str, int, int, str]] = []
@@ -2883,6 +2896,7 @@ class RAGStore:
             else:
                 raw = self._search_uncached(
                     clean_query, workspace, top_k, use_reranker, priority, scope_path,
+                    deadline=deadline, cancel_event=cancel_event,
                     allow_cpu_fallback=False, **semantic_search_options,
                 )
             hit, coalesced = False, False

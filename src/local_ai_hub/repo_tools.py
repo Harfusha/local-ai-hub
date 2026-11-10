@@ -705,26 +705,47 @@ class RepositoryTools:
 
     @staticmethod
     def _resolve_inventory_path_safe(
-        base: Path, path: Path, *, resolved_base: Path | None = None,
+        base: Path,
+        path: Path,
+        *,
+        resolved_base: Path | None = None,
     ) -> tuple[Path, Path] | None:
         """Resolve an inventory path after rejecting links and reparse points."""
+        resolved = RepositoryTools._resolve_inventory_path_safe_with_stat(
+            base, path, resolved_base=resolved_base,
+        )
+        if resolved is None:
+            return None
+        return resolved[0], resolved[1]
+
+    @staticmethod
+    def _resolve_inventory_path_safe_with_stat(
+        base: Path,
+        path: Path,
+        *,
+        resolved_base: Path | None = None,
+    ) -> tuple[Path, Path, os.stat_result] | None:
+        """Return the safe resolved path and final lstat metadata."""
         try:
             relative = path.relative_to(base)
             if any(part in {".", ".."} for part in relative.parts):
                 return None
             current = base
+            info: os.stat_result | None = None
             for part in relative.parts:
                 current = current / part
                 info = current.lstat()
                 if stat.S_ISLNK(info.st_mode) or getattr(info, "st_file_attributes", 0) & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0):
                     return None
+            if info is None:
+                return None
             if resolved_base is None:
                 resolved_base = base.resolve(strict=True)
             elif not resolved_base.is_absolute() or not base.samefile(resolved_base):
                 return None
             resolved_path = resolved_base / relative
             resolved_path.relative_to(resolved_base)
-            return resolved_base, resolved_path
+            return resolved_base, resolved_path, info
         except (OSError, RuntimeError, ValueError):
             return None
 
@@ -1758,17 +1779,16 @@ class RepositoryTools:
                 return False
 
             cached_root = getattr(project_path_policy, "project_root", None)
-            resolved_paths = self._resolve_inventory_path_safe(
+            resolved_paths = self._resolve_inventory_path_safe_with_stat(
                 base,
                 path,
                 resolved_base=cached_root if isinstance(cached_root, Path) else None,
             )
             if resolved_paths is None:
                 return False
-            resolved_base, resolved = resolved_paths
-            relative_path = resolved.relative_to(resolved_base)
-            relative = relative_path.as_posix()
-            size_bytes = resolved.stat().st_size
+            resolved_base, resolved, inventory_stat = resolved_paths
+            lexical_relative = relative
+            size_bytes = inventory_stat.st_size
             if size_bytes > self.max_file_bytes:
                 return False
             if project_path_policy is None:
@@ -1783,6 +1803,7 @@ class RepositoryTools:
                     resolved, phase="search",
                     soft_ignored=soft_ignored and not force_include, size_bytes=size_bytes,
                     _resolved_candidate=resolved,
+                    _lexical_relative=lexical_relative,
                 )
             if not allowed:
                 return False
