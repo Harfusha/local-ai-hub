@@ -1,6 +1,6 @@
 {
   "default_target_ref": "refs/heads/master",
-  "description": "Integrate Laya into eligible ordinary Local AI Hub context decisions using existing bounded Hub services. Collect only genuine runtime outcomes, scoped to repository/task/session, without per-example consent receipts. Inputs contain typed gap/source/freshness/coverage codes and verified evidence IDs; deterministic retrieval remains authoritative. Review and human-label samples after practical use. This installation has a cached pinned checkpoint with verified file hashes and runtime enabled, CPU fallback disabled. Do not generate cards, train, benchmark, install runtime/drivers, or download model weights in this task.",
+  "description": "Integrate Laya into eligible ordinary Local AI Hub context decisions using existing bounded Hub services. Collect only genuine runtime outcomes scoped to repository/task/session. No consent, per-example receipt, or separate approval is a prerequisite for runtime capture, candidate storage, review, labeling, or export. Inputs contain typed gap/source/freshness/coverage codes and verified evidence IDs; deterministic retrieval remains authoritative. Review and human-label samples after practical use. This installation has a cached pinned checkpoint with verified file hashes and runtime enabled, CPU fallback disabled. Do not generate cards, train, benchmark, install runtime/drivers, or download model weights in this task.",
   "id": "plan_5edb272644b5",
   "lifecycle": "active",
   "schema_version": 1,
@@ -8,7 +8,7 @@
     {
       "path": "docs/superpowers/specs/2026-11-10-laya-candidate-capture-per-example-consent.md",
       "revision": {
-        "content_sha256": "3fc2b3806539d07a2c56273dd4858a358e36006dcdcb9a79e639c752c8855e2b",
+        "content_sha256": "a62b71d6a95c9fe1bca3e64f5c65b2421e1f9590a4df959831f7df5c0aab1565",
         "kind": "working"
       }
     }
@@ -18,7 +18,7 @@
       "acceptance_criteria": [
         "Category meets the approved quality gate with no necessary-fact loss and one fewer retrieval roundtrip.",
         "Two independent annotators and adjudicator validate reference labels.",
-        "No insufficient-data result or unresolved provenance/consent blocker.",
+        "No insufficient-data result or unresolved provenance blocker.",
         "Advisory remains opt-in and cannot trigger tools, task transitions, permissions, routing, or global automation.",
         "Promotion to advisory requires separate explicit user approval."
       ],
@@ -68,18 +68,20 @@
     },
     "task_laya_evidence": {
       "acceptance_criteria": [
-        "Identify eligible context_source triggers: successful ordinary context response, unresolved evidence gap and at least two authorized verified sources.",
-        "Typed input contains trusted gap/source/freshness/coverage codes and verified evidence IDs; excludes task/source text.",
-        "Only actual runtime outcomes can be captured; candidate store uses canonical repository/task/session scope and no per-example consent receipt.",
-        "This installation config enables the pinned checkpoint with expected SHA-256 files; all configured checkpoint hashes match cached files.",
-        "Keep CPU fallback disabled; do not download model weights or install runtime/driver."
+        "Eligible trigger remains successful ordinary context retrieval, unresolved evidence gap and at least two authorized verified sources.",
+        "Typed Laya input contains trusted gap/source/freshness/coverage codes and verified evidence IDs only; excludes task/source text.",
+        "Only actual runtime outcomes become candidates; capture lifecycle emits status and typed skip/failure reason through existing telemetry without request content.",
+        "Candidate storage uses canonical repository/task/session scope; no per-example consent receipt or parallel database.",
+        "This installation config enables the pinned cached checkpoint with expected SHA-256 files; CPU fallback remains disabled.",
+        "Laya output remains shadow-only and never changes retrieval, routing, permissions, task state, receipts, or tool execution.",
+        "No model download, runtime/driver install, cloud inference, training, benchmark, advisory activation, or card generation."
       ],
-      "blocker": "No genuine ordinary-use candidate has been captured yet.",
+      "blocker": "Pre-fix live telemetry showed 126 successful /api/context/pack requests, 0 Laya decisions, 0 candidates, and no Laya errors. Source-level capture/telemetry fixes and targeted tests pass; runtime activation and one natural eligible capture remain unverified.",
       "clarifications": [],
       "depends_on": [],
-      "description": "Verify the ordinary Hub Laya context_source path and this installation's cached checkpoint/config. Capture candidates only from genuine eligible runtime outcomes, scoped to repository/task/session; no per-example consent receipt or source/task text. This installation explicitly enables lazy shadow inference with CPU fallback disabled. No model download or runtime install.",
+      "description": "Verify ordinary Local AI Hub Laya context_source capture on this installation. Persist only genuine runtime outcomes and metadata-only capture lifecycle stage/reason through existing storage; preserve repository/task/session identity, typed evidence codes and verified evidence IDs. No request/source text or per-example consent receipts.",
       "kind": "code",
-      "next_action": "Let eligible ordinary Hub use collect candidates; inspect resulting runtime evidence later.",
+      "next_action": "Activate the fixed source in the running Hub without interrupting active work; inspect metadata-only capture stages and candidate rows after the next natural eligible ordinary request.",
       "title": "Inspect Hub decision surfaces and verify model provenance",
       "work_status": "in_progress"
     },
@@ -123,16 +125,31 @@
     },
     "task_laya_shadow": {
       "acceptance_criteria": [
-        "Capture reachable only from successful ordinary context retrieval with an unresolved gap and at least two verified sources.",
-        "Only genuine runtime outcomes can be stored; callers cannot submit synthetic captures.",
-        "Typed inputs contain only gap/source/freshness/coverage codes and verified evidence IDs; no task/source text.",
-        "Capture is scoped to canonical repository/task/session; per-example consent receipt is not required.",
-        "Model output is never a gold label; timeout, overload, invalid output, or storage failure leaves ordinary Hub results unchanged.",
-        "Later human labeling uses two independent annotators plus adjudication; deterministic retrieval remains the baseline.",
-        "Do not train, benchmark, expose advisory, or generate cards in this task."
+        "The active Laya plan/specification reflect corrected operator scope and remove superseded narrow exclusions.",
+        "One typed Laya decision service is callable through MCP and root-authorized HTTP with server-bound identity/mode and evidence validation.",
+        "Relevant decision points have deterministic baselines and proposals; only categories with measured benefit become opt-in advisory.",
+        "Useful actual examples collect minimum raw input when needed, baseline and Laya outputs, downstream outcomes, labels, provenance, runtime metrics, and failures.",
+        "Capture stays local, scoped, redacted, revalidatable, deletable; verified labels and group-safe exports keep validation/test out of training.",
+        "MCP/API, category gates, privacy, lifecycle, failure isolation, and datasets have current evidence; live model/provider claims remain separate."
       ],
-      "blocker": "No genuine ordinary-use runtime example has been captured yet.",
-      "clarifications": [],
+      "blocker": null,
+      "clarifications": [
+        {
+          "adoption": "adopted",
+          "id": "change_0c5445e1754ea32aba21_e7454cf78ad5b59d5be79ee979b9d157_r2",
+          "spec_refs": [
+            {
+              "path": "docs/superpowers/specs/2026-11-10-laya-candidate-capture-per-example-consent.md",
+              "revision": {
+                "content_sha256": "c1d791ecfbc6fa1b86b575d8838381b440164e384f1e47550471a6a47b5f55e0",
+                "kind": "working"
+              }
+            }
+          ],
+          "summary": "Operator clarified prior plan underscoped Laya. Expand beyond context_source metadata shadow: expose typed decisions through MCP and HTTP, integrate decision points where measured gains support reliability/quality/speed/useful behavior, and collect future-training examples including raw content when materially useful. Exclude secrets and unrelated private material; keep capture local, scoped, deletable, provenance-rich, and group-safe. Collect now; fine-tuning remains deferred.",
+          "supersedes": []
+        }
+      ],
       "depends_on": [
         {
           "plan_id": "plan_5edb272644b5",
@@ -143,11 +160,12 @@
           "task_id": "task_laya_export"
         }
       ],
-      "description": "Capture only actual Laya context_source shadow outcomes from eligible successful ordinary Hub context requests: unresolved evidence gap, at least two verified authorized sources, typed codes and evidence IDs only. Deterministic retrieval stays authoritative. No per-example consent receipt. No training, benchmark, advisory activation, or card generation in this task.",
+      "description": "Implement the operator-corrected Laya scope: expose a shared typed decision service through MCP and root-authorized HTTP API; integrate decision categories across Hub only where measurements show improved reliability, quality, speed, or useful behavior; collect all useful future-training evidence including minimum necessary raw content, baseline and Laya outputs, downstream outcomes, labels, provenance, runtime metadata and failures. Keep data local, scoped, redacted, revalidatable and deletable; preserve deterministic authority and group-safe train/eval/test separation.",
       "kind": "code",
-      "next_action": "Allow ordinary eligible requests to produce natural samples; review them after a practical-use period.",
-      "title": "Add one evaluated metadata-only shadow category",
-      "work_status": "in_progress"
+      "next_action": "Map supported MCP/API dispatch, decision baselines, and training capture before implementation.",
+      "title": "Rozšířit Laya: MCP/API, relevantní rozhodovací body a tréninková data",
+      "work_phase": "implementation",
+      "work_status": "planned"
     }
   },
   "title": "Laya decision service: safe staged integration"
