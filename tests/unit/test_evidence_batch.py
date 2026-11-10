@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+from contextlib import closing
 from types import SimpleNamespace
 
 import pytest
@@ -85,6 +86,38 @@ def test_stored_text_is_not_marked_verified_until_source_matches(tmp_path):
     current = store.get(evidence_id, verify=True)
     assert current["success"] is True and current["stale"] is True
     assert current["source_verified"] is False
+    assert store.validate_current(evidence_id) is False
+    assert store.validate_current_many([evidence_id]) is False
+
+
+def test_get_and_validation_reject_corrupted_path_outside_root(tmp_path):
+    root = tmp_path / "repo"
+    root.mkdir()
+    source = root / "module.py"
+    outside = tmp_path / "outside.py"
+    text = "secret = 1\n"
+    source.write_text(text, encoding="utf-8")
+    outside.write_text(text, encoding="utf-8")
+    digest = hashlib.sha256(source.read_bytes()).hexdigest()
+    store = EvidenceStore(tmp_path / "state")
+    stored = store.put_many(str(root), [{
+        "path": "module.py",
+        "file_sha256": digest,
+        "start_line": 1,
+        "end_line": 1,
+        "text": "secret = 1",
+    }])
+    evidence_id = stored[0]["evidence_id"]
+    with store._lock, closing(store._connect()) as con:
+        con.execute("UPDATE evidence SET path=? WHERE id=?", ("../outside.py", evidence_id))
+        con.commit()
+
+    single = store.get(evidence_id, verify=True)
+    batch = store.get_many([evidence_id], verify=True)[0]
+    assert single["success"] is True and single["stale"] is True
+    assert batch["success"] is True and batch["stale"] is True
+    assert single["source_verified"] is False
+    assert batch["source_verified"] is False
     assert store.validate_current(evidence_id) is False
     assert store.validate_current_many([evidence_id]) is False
 
