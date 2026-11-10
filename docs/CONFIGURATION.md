@@ -16,11 +16,19 @@ The `integrated` profile is intentionally conservative. It is designed for iGPUs
 
 Embedding and reranker defaults use `*_backend = "auto"` and `*_device = "auto"`. Both probe installed provider runtimes and try supported routes in this order: NPU, dedicated GPU, integrated GPU, CPU. Intel NPU/GPU uses OpenVINO; NVIDIA uses a working PyTorch CUDA runtime; supported AMD ROCm builds use PyTorch's CUDA-compatible device API; and ONNX Runtime DirectML is a Windows fallback for detected DX12 GPUs. AMD Ryzen AI NPU is considered only when its Vitis AI execution provider is installed. Provider packages and drivers are optional and are never installed or model weights downloaded by the router. For ONNX routes, the local model must already be cached; provider/export incompatibility skips to the next route. Active backend/device and route-specific cache identities keep results tied to the selected provider. Set a concrete backend/device to override automatic routing; CPU fallback remains available to `auto`.
 
-Background semantic preprocessing uses CPU fallback by default and does not reserve the GPU. Set `[background_gpu].enabled = true` to opt into its separate GPU worker. Foreground inference remains routed by the selected hardware profile.
+File-card enrichment uses the separate background GPU worker by default after foreground idle grace and scheduler admission; its existing limits, preemption and game-mode gates remain active. Set `[background_gpu].enabled = false` to disable that worker. The configured preprocessing model and foreground hardware-profile routing remain authoritative.
 
 For Intel integrated graphics, `[openvino]` controls optional retrieval acceleration. The SentenceTransformers wrapper remains on CPU while the underlying Optimum/OpenVINO model is compiled for the selected accelerator, so this path does not require a torch-native NPU device. `cpu_fallback = true` keeps RAG functional if the NPU/GPU driver or a particular model shape is unsupported.
 
 `[ollama].enabled = false` is the default and prevents setup/service installation, startup, pulls, and health probes. `[ollama].allow_integrated_gpu` and `enable_vulkan` matter only after Ollama is explicitly enabled. With `headless.manage_ollama = true`, the supervisor owns an explicitly enabled Ollama process; otherwise the Hub does not run it. `llama_cpp.mode = "auto"` only probes an existing hardware-appropriate endpoint and never installs a runtime.
+
+## Laya session lifecycle
+
+`[laya].idle_unload_seconds` defaults to `600`. It accepts finite numeric seconds in the inclusive range `0` through `86400`; fractional seconds are allowed. `0` disables idle-triggered unloading. Booleans, strings, non-finite values (`nan`/`inf`), and out-of-range numbers fail configuration validation with `ConfigError`.
+
+Idle time starts when an inference finishes. The shared session manager refuses to unload during active inference, serializes reload against closing, and closes the provider session only when its adapter confirms success. A future adapter can bind its close callback once with `LayaSessionLifecycle.bind_close_session` before loading the first session; rebinding a different callback or changing it after load is rejected. Shutdown also waits for in-flight calls and closes the session. The existing scheduler dispatcher polls this lifecycle; no separate timer thread or model service is created. The Laya inference/provider adapter is not currently connected, so no session is loaded and no NPU/GPU/CPU memory release is currently performed or verified. Any future adapter must implement and verify provider-specific release. Model weights in disk cache are not deleted.
+
+The normal Hub status response includes `laya_runtime` lifecycle metadata, and the existing diagnostics ZIP includes the same metadata at `laya/report.json.runtime`. These fields report session availability, whether provider close is configured, in-flight calls, timeout and close errors. `runtime_verification` remains `NOT_VERIFIED` until a connected provider independently verifies placement and release; these status fields do not claim device support or reclaimed memory.
 
 ## Code intelligence
 
@@ -33,6 +41,10 @@ The Hub is local-only: its HTTP server binds to `127.0.0.1`, and remote binding 
 ## Diagnostics support archive
 
 `[diagnostics_export].max_archive_bytes` defaults to 8 GiB; `max_source_bytes` defaults to 64 GiB. The Service health export streams a ZIP64 archive through temporary disk space, so allow enough free space for the SQLite snapshots and compressed ZIP. The archive includes Hub source, redacted effective configuration, all Hub-owned state databases and operational logs across projects. Model weights and other project source stay out. Traces, logs, paths, tasks, and memories may contain private content; the archive is password-protected.
+
+The existing `POST /api/diagnostics/export` request may be empty for a regular export. Candidate text stays out of that export: Laya candidate tables are removed from disposable database snapshots, and candidate-capture debug traces with linked content are removed. The archive includes `laya/report.json` with aggregate candidate counts and metadata-only Laya telemetry. To opt in to text export, send exactly `root` and `laya_candidate_export: { consent: true, snapshot_id: "..." }`; the repository task/session scope, snapshot, hashes, and verified labels are rechecked, and only the train split is added as `laya/candidates.train.jsonl`. The normal archive manifest reports omitted or included candidate rows. The source database and disk model cache are not modified.
+
+For lower request overhead while curating examples, the existing `curate_dataset` route accepts `laya_operation.action="capture_batch"` with one scoped `task_id`/`session_id` and 1–100 examples. Every example must carry its own `consent: true`; all examples are validated before one atomic insert, exact duplicates are collapsed, and the response contains only candidate IDs/status. Capture stays explicit and pending until independently labeled and verified.
 
 ## Foreground repository state
 

@@ -59,6 +59,45 @@ const success=id=>({ok:true,status:200,payload:{success:true,terminal:false,stat
     assert result.returncode == 0, result.stderr or result.stdout
 
 
+def test_request_history_refreshes_when_retained_trace_arrives():
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("Node.js is required to exercise dashboard trace correlation")
+    start = DASHBOARD_HTML.index("function requestTrace(request)")
+    end = DASHBOARD_HTML.index("function render(s){", start)
+    source = DASHBOARD_HTML[start:end]
+    harness = r"""
+const assert=require('node:assert/strict');
+let lastTraces=[],last={observability:{recent_http:[{request_id:'req-1',action:'/api/search',success:true}]}};
+const $=id=>id==='recentReq'?{}:null;
+const document={querySelector:()=>({id:'work'})};
+const rowsOut=[];
+function rows(id,items,renderRow){rowsOut.push(items.map(renderRow).join(''))}
+function workVisible(items){return items||[]}
+function filterRecentRequests(items){return items}
+function renderTraceList(){}
+function requestRow(request,html){return `<tr>${html}</tr>`}
+function esc(value){return String(value??'')}
+function ms(value){return String(value??'—')}
+function age(value){return String(value??'')}
+function n(value){return String(value??0)}
+function traceProjectLabel(value){return value||''}
+function humanLabel(value){return String(value||'')}
+"""
+    script = harness + source + r"""
+renderRecentRequestHistory(last);
+assert.match(rowsOut.at(-1),/Request-only record/);
+updateTraceSummaries([{request_id:'req-1',trace_id:'trace-1',kind:'api_request',action:'/api/search'}]);
+assert.match(rowsOut.at(-1),/Trace linked/);
+assert.match(rowsOut.at(-1),/Trace available/);
+"""
+    result = subprocess.run(
+        [node, "-e", script], capture_output=True, text=True, timeout=8,
+        **hidden_run_kwargs(),
+    )
+    assert result.returncode == 0, result.stderr or result.stdout
+
+
 def test_selected_trace_replaces_initial_or_previous_content_while_loading():
     _trace_scenario("""
 await openTrace('selected');

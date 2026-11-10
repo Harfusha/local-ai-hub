@@ -1,0 +1,30 @@
+{
+  "default_target_ref": "refs/heads/master",
+  "description": "User authorized downloading Qwen/Qwen2.5-Coder-1.5B-Instruct and preparing one isolated LoRA adapter on separate synthetic training data. Evaluate only the existing preprocess:file-card path. Preserve production provider, config, routing, and model profile. Keep adapter experimental and unpromoted. Spec: docs/superpowers/specs/2026-11-10-preprocessing-card-model-evaluation.md. Held-out benchmark: docs/agent-evaluation/preprocessing-card-benchmark-v1.json.",
+  "id": "plan_eed2783af553",
+  "lifecycle": "draft",
+  "schema_version": 1,
+  "spec_refs": [],
+  "tasks": {
+    "task_preprocessing_card_pilot": {
+      "acceptance_criteria": [
+        "Use Qwen/Qwen2.5-Coder-1.5B-Instruct as the base and train an isolated LoRA adapter on separate synthetic data.",
+        "Keep all four eval-fixtures-v7 cases and their source files out of training.",
+        "Run matched base-versus-adapter evaluations and report quality, hallucinations, latency, token counts, errors, and exact model/runtime identities.",
+        "Do not modify production provider, config, routing, or model profile; do not merge, publish, or promote the adapter.",
+        "Do not train while another owner has an active GPU reservation or foreground use.",
+        "Treat the four-case, one-project result as a pilot signal, not production qualification."
+      ],
+      "blocker": "The latest Hub readiness check reports qwen2.5-coder:7b active. GPU reservation is free, but the loaded foreground model remains in use; do not compete with it.",
+      "clarifications": [],
+      "depends_on": [],
+      "description": "Build a synthetic training set separate from the held-out benchmark, download the authorized base model, prepare an isolated PEFT/LoRA environment, train one experimental adapter when GPU use is safe, and compare base versus adapter without production routing changes.",
+      "kind": "analysis",
+      "next_action": "Wait until qwen2.5-coder:7b is no longer active, then train the isolated LoRA adapter and run paired evaluation.",
+      "title": "Build and run held-out file-card pilot",
+      "work_phase": "implementation",
+      "work_status": "in_progress"
+    }
+  },
+  "title": "Preprocessing file-card fine-tuning pilot"
+}

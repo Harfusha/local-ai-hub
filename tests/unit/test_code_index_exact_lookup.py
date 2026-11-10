@@ -109,7 +109,9 @@ def test_missing_declaration_has_terminal_not_found_contract(tmp_path: Path) -> 
         "terminal": True,
         "retryable": False,
         "error_code": "declaration_not_found",
-        "error": "Declaration of 'missing_symbol' not found",
+        "error": "Declaration of 'missing_symbol' not found in indexed symbols; repository coverage is not verified",
+        "coverage": {"complete": False, "scope": "indexed_symbols"},
+        "freshness": {"status": "not_checked"},
     }
 
 

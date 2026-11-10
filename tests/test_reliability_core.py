@@ -295,8 +295,8 @@ def test_dashboard_has_unique_ids_and_valid_javascript(tmp_path: Path):
     assert "trace-timeline" in DASHBOARD_HTML
     assert "toggleTraceStep" in DASHBOARD_HTML
     assert "Request trace" in DASHBOARD_HTML
-    assert "trace-tabs" in DASHBOARD_HTML
-    assert "data-trace-view" in DASHBOARD_HTML
+    assert "trace-view-picker" in DASHBOARD_HTML
+    assert "data-trace-view-select" in DASHBOARD_HTML
     assert "Tool result" in DASHBOARD_HTML
     assert "traceInspector" in DASHBOARD_HTML
     assert "traceSidebarList" in DASHBOARD_HTML

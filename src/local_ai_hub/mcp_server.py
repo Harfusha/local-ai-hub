@@ -125,8 +125,6 @@ class _MissingMCP:
 # time, so HubClient, config and projectors must be created here. Any failure
 # produces a clear SystemExit instead of a confusing AttributeError later.
 AGENT_NAME = os.environ.get("LOCAL_AI_AGENT", "agent")
-CLIENT_PROFILE = os.environ.get("LOCAL_AI_AGENT_PROFILE") or AGENT_NAME
-_PROFILE_HIDDEN_TOOLS = frozenset({"local_ai_task", "local_ai_work"}) if CLIENT_PROFILE == "opencode-local" else frozenset()
 _workspace = canonical_root(Path.cwd())
 if "LOCAL_AI_TENANT" in os.environ:
     raise SystemExit("LOCAL_AI_TENANT is retired; this installation has one local owner")
@@ -2520,7 +2518,7 @@ def _tool_catalog_schema_tokens() -> int:
     """
     try:
         desc_map = globals().get("_all_desc_map", {})
-        names = [name for name in desc_map if name not in set(getattr(FEATURES, "disabled_tools", []) or []) and name not in _PROFILE_HIDDEN_TOOLS]
+        names = [name for name in desc_map if name not in set(getattr(FEATURES, "disabled_tools", []) or [])]
         return json_tokens({"tools": [_schema_descriptor(name) for name in names]})
     except Exception:
         return 0
@@ -5448,6 +5446,7 @@ def local_ai_coord(
     delete_branch: bool = True,
     output_path: str = "training_dataset.jsonl",
     min_receipts: int = 1,
+    laya_operation: dict[str, Any] | None = None,
     name: str = "",
     item_id: str = "",
     title: str = "",
@@ -5962,6 +5961,8 @@ def local_ai_coord(
         return contract_error("format is only valid for action='verify_export' or 'curate_dataset'", status_code=400)
     if action == "curate_dataset" and type(min_receipts) is not int:
         return contract_error("min_receipts must be an integer for action='curate_dataset'", status_code=400)
+    if action == "curate_dataset" and laya_operation is not None and type(laya_operation) is not dict:
+        return contract_error("laya_operation must be an object", status_code=400)
     coord_canonical_inputs: dict[str, dict[str, Any]] = {
         "task_checkpoint": {
             "root": root, "task_id": task_id, "checkpoint": checkpoint,
@@ -6007,6 +6008,7 @@ def local_ai_coord(
             "output_path": output_path,
             "min_receipts": min_receipts,
             "format": "jsonl" if format is None else format,
+            "laya_operation": laya_operation,
         },
         "negative_knowledge_record": {"root": root, "record": record},
         "negative_knowledge_find": {
@@ -6452,13 +6454,18 @@ def local_ai_coord(
             extra_fields=["mergeable", "conflicts", "exit_code"],
         )
     if action == "curate_dataset":
-        return _compact(CLIENT.post("/api/agent-state/tasks", {
+        payload = {
             "action": "curate_dataset",
             "root": root,
             "output_path": output_path,
             "min_receipts": min_receipts,
             "format": "jsonl" if format is None else format,
-        }, timeout=_timeout("quick")), "status")
+        }
+        if laya_operation is not None:
+            payload["laya_operation"] = laya_operation
+        return _compact(CLIENT.post(
+            "/api/agent-state/tasks", payload, timeout=_timeout("quick"),
+        ), "status")
     if action in {
         "wait_for_event", "semaphore_acquire", "semaphore_release", "semaphore_status",
         "board_item_create", "board_item_update", "board_item_get", "board_item_delete",
@@ -6660,7 +6667,7 @@ _ALL_REGISTERED_TOOLS: dict[str, Any] = (
     if hasattr(mcp, "_tool_manager") and hasattr(mcp._tool_manager, "_tools")
     else {}
 )
-for _disabled in set(FEATURES.disabled_tools) | _PROFILE_HIDDEN_TOOLS:
+for _disabled in set(FEATURES.disabled_tools):
     if hasattr(mcp, "_tool_manager") and hasattr(mcp._tool_manager, "_tools"):
         mcp._tool_manager._tools.pop(_disabled, None)
     if hasattr(mcp, "tools") and isinstance(mcp.tools, list):
@@ -7626,13 +7633,6 @@ if hasattr(mcp, "_tool_manager") and hasattr(mcp, "_mcp_server") and mcp_types i
             return result
 
         try:
-            if name in _PROFILE_HIDDEN_TOOLS:
-                payload = {
-                    "success": False, "status_code": 403, "unsupported": True,
-                    "error_code": "profile_tool_disabled", "terminal": True, "retryable": False,
-                    "error": "tool is disabled for the opencode-local profile",
-                }
-                return finalize(_mcp_budget_payload(name, arguments, payload), account_unwrapped_error=True)
             selector = "detail" if name == "local_ai_status" else "action"
             validation_arguments = dict(arguments)
             validation = validate_operation_call(name, validation_arguments, features=FEATURES)

@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?><testsuites name="pytest tests"><testsuite name="pytest" errors="1" failures="0" skipped="0" tests="1" time="23.497" timestamp="2026-11-10T06:42:03.781545+01:00" hostname="AdamPC"><testcase classname="" name="tests.unit.test_services_empty_response_completion" time="0.000"><error message="collection failure">ImportError while importing test module 'C:\Users\Adam\.local-ai-hub\tests\unit\test_services_empty_response_completion.py'.
+Hint: make sure your test modules/packages have valid Python names.
+Traceback:
+C:\Python313\Lib\importlib\__init__.py:88: in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+tests\unit\test_services_empty_response_completion.py:3: in &lt;module&gt;
+    from local_ai_hub.services import _backend_completion_metadata
+E   ImportError: cannot import name '_backend_completion_metadata' from 'local_ai_hub.services' (C:\Users\Adam\.local-ai-hub\src\local_ai_hub\services.py)</error></testcase></testsuite></testsuites>

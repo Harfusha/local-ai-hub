@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import ipaddress
+import math
 import os
 import tempfile
 import tomllib
@@ -86,7 +87,10 @@ def _number(
     setting = label or key
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise ConfigError(f"{setting} must be numeric")
-    numeric = float(value)
+    try:
+        numeric = float(value)
+    except OverflowError as exc:
+        raise ConfigError(f"{setting} is outside the supported numeric range") from exc
     if minimum is not None and numeric < minimum:
         raise ConfigError(f"{setting} must be >= {minimum:g}")
     if maximum is not None and numeric > maximum:
@@ -102,7 +106,7 @@ def validate_config(data: dict[str, Any]) -> None:
     if not isinstance(data, dict):
         raise ConfigError("configuration root must be a TOML table")
 
-    for name in ("server", "security", "hardware", "openvino", "scheduler", "commands", "client", "mcp", "code_intelligence", "code_index", "bundles", "resilience", "ollama", "llama_cpp", "ollama_subagents", "agent_state", "work_orchestrator", "browser_bridge", "headless", "features", "rag"):
+    for name in ("server", "security", "hardware", "openvino", "scheduler", "laya", "commands", "client", "mcp", "code_intelligence", "code_index", "bundles", "resilience", "ollama", "llama_cpp", "ollama_subagents", "agent_state", "work_orchestrator", "browser_bridge", "headless", "features", "rag"):
         if name in data and not isinstance(data[name], dict):
             raise ConfigError(f"[{name}] must be a TOML table")
 
@@ -211,6 +215,12 @@ def validate_config(data: dict[str, Any]) -> None:
     _number(scheduler, "model_switch_failure_cooldown_seconds", minimum=1, maximum=3600)
     _number(scheduler, "idle_timeout_seconds", minimum=0, maximum=86400)
     _number(scheduler, "max_caller_wait_timeout_seconds", minimum=1, maximum=86400)
+
+    laya = data.get("laya", {})
+    _number(laya, "idle_unload_seconds", minimum=0, maximum=86400, label="laya.idle_unload_seconds")
+    idle_unload_seconds = laya.get("idle_unload_seconds") if isinstance(laya, dict) else None
+    if isinstance(idle_unload_seconds, (int, float)) and not isinstance(idle_unload_seconds, bool) and not math.isfinite(float(idle_unload_seconds)):
+        raise ConfigError("laya.idle_unload_seconds must be finite")
 
     resilience = data.get("resilience", {})
     _number(resilience, "singleflight_wait_timeout_seconds", minimum=0.1, maximum=3600)

@@ -117,19 +117,15 @@ def test_steering_lock_serializes_capture_and_fails_closed(tmp_path):
     assert lock.exists()
 
 
-def test_host_event_idempotency_and_not_authentic_capability_evidence(tmp_path):
+def test_unverified_host_event_is_noop_and_does_not_persist_prompt(tmp_path):
     from local_ai_hub.repo_plan.host_hooks import handle_host_event
     payload = {"hook_event_name": "UserPromptSubmit", "session_id": "session-1",
                "turn_id": "turn-1", "cwd": str(tmp_path), "prompt": "Change XML to JSON"}
     first = handle_host_event(tmp_path, "codex", payload)
     second = handle_host_event(tmp_path, "codex", payload)
-    assert first == second
-    pending = SteeringManager(tmp_path).list_pending_steering(session_id="session-1")
-    assert len(pending) == 1
-    assert "Change XML" in pending[0]["message"]
-    assert first["hookSpecificOutput"]["hookEventName"] == "UserPromptSubmit"
+    assert first == second == {}
     assert probe_host_capabilities("codex", tmp_path).support_level != "enforced"
-    assert SteeringManager(tmp_path).list_pending_steering(session_id="other-session") == []
+    assert not (tmp_path / ".local-ai-hub").exists()
 
 
 def test_payloads_do_not_cross_root_or_accept_invalid_shapes(tmp_path):
@@ -140,8 +136,7 @@ def test_payloads_do_not_cross_root_or_accept_invalid_shapes(tmp_path):
         handle_host_event(tmp_path, "codex", payload)
     payload["cwd"] = str(tmp_path)
     payload["prompt"] = "x" * 17000
-    with pytest.raises(ValueError, match="message"):
-        handle_host_event(tmp_path, "codex", payload)
+    assert handle_host_event(tmp_path, "codex", payload) == {}
     with pytest.raises(ValueError):
         handle_host_event(tmp_path, "codex", [])
     assert not (tmp_path / ".local-ai-hub").exists()
@@ -163,8 +158,8 @@ def test_steering_bounds_and_reconciliation_path(tmp_path):
 def test_hook_cli_limits_input_and_emits_only_json(tmp_path, monkeypatch, capsys):
     from local_ai_hub.repo_plan import host_hooks
     monkeypatch.setattr(sys, "stdin", io.StringIO("x" * 65537))
-    assert host_hooks.main(["--root", str(tmp_path), "--host", "codex"]) == 1
-    assert json.loads(capsys.readouterr().out)["systemMessage"]
+    assert host_hooks.main(["--root", str(tmp_path), "--host", "codex"]) == 0
+    assert json.loads(capsys.readouterr().out) == {}
 
 
 def test_no_symlink_config_or_steering_escape(tmp_path):

@@ -69,10 +69,6 @@ _CURRENT_ROUTE_PATHS = {
 }
 _CURRENT_ADDED_ROUTES = {
     'post_diagnostics_export_1': {'paths': ['/api/diagnostics/export'], 'before': 'post_benchmark_1'},
-    'post_opencode_provider_start_1': {'paths': ['/api/opencode/provider/start'], 'before': 'post_admin_mode_1'},
-    'post_opencode_provider_status_1': {'paths': ['/api/opencode/provider/status'], 'before': 'post_admin_mode_1'},
-    'post_opencode_provider_stop_1': {'paths': ['/api/opencode/provider/stop'], 'before': 'post_admin_mode_1'},
-    'post_opencode_provider_wait_1': {'paths': ['/api/opencode/provider/wait'], 'before': 'post_admin_mode_1'},
     'post_task_browser_1': {'paths': ['/api/task/browser'], 'before': 'post_repo_split_changes_1'},
  'post_task_automation_1': {'paths': ['/api/task/automation'], 'before': 'post_repo_split_changes_1'},
  'post_callees_1': {'paths': ['/api/code/callees'], 'before': 'post_repo_secret_scan_1'},

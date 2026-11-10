@@ -232,6 +232,7 @@ def test_gemini_clean_install_and_repeat_install_real_skills(tmp_path, monkeypat
     install = tmp_path / "install"
     shutil.copytree(ROOT / "skills", install / "skills")
     setup.write_all_generated({}, install)
+    assert not (install / "generated" / "opencode-mcp.json").exists()
     gemini = tmp_path / ".gemini"
     gemini.mkdir()
     (gemini / "GEMINI.md").write_bytes(b"User rule one.\r\nUser rule two.\n")
@@ -270,7 +271,10 @@ def test_skip_companion_does_not_download_superpowers(tmp_path, monkeypatch):
 def test_sync_antigravity_hooks_json_preserves_custom_and_is_idempotent(tmp_path):
     import json
     hooks_file = tmp_path / "hooks.json"
-    hooks_file.write_text(json.dumps({"custom-hook": {"enabled": True, "PreInvocation": []}}), encoding="utf-8")
+    hooks_file.write_text(json.dumps({
+        "custom-hook": {"enabled": True, "PreInvocation": []},
+        "local-ai-hub": {"enabled": True, "PreInvocation": [{"command": "legacy-hook"}]},
+    }), encoding="utf-8")
 
     fake_python = tmp_path / "bin" / "python.exe"
     fake_python.parent.mkdir(parents=True)
@@ -286,8 +290,7 @@ def test_sync_antigravity_hooks_json_preserves_custom_and_is_idempotent(tmp_path
     assert (tmp_path / ("local-ai-hook.cmd" if os.name == "nt" else "local-ai-hook.sh")).is_file()
     hub_hook = data["local-ai-hub"]
     assert hub_hook["enabled"] is True
-    assert len(hub_hook["PreInvocation"]) == 1
-    assert "local-ai-hook" in hub_hook["PreInvocation"][0]["command"]
+    assert "PreInvocation" not in hub_hook
     assert len(hub_hook["PreToolUse"]) == 1
     assert hub_hook["PreToolUse"][0]["matcher"] == "read_file|run_command"
     assert "local-ai-hook" in hub_hook["PreToolUse"][0]["hooks"][0]["command"]
@@ -298,16 +301,15 @@ def test_sync_antigravity_hooks_json_preserves_custom_and_is_idempotent(tmp_path
     assert hooks_file.read_text(encoding="utf-8") == first_text
 
 
-def test_antigravity_hook_pre_invocation():
+def test_antigravity_hook_pre_invocation_is_noop(monkeypatch):
     from local_ai_hub import antigravity_hook
+    monkeypatch.setattr(
+        antigravity_hook,
+        "_check_and_autostart_hub",
+        lambda: pytest.fail("PreInvocation must not start the Hub"),
+    )
     res = antigravity_hook.handle_pre_invocation({})
-    assert "injectSteps" in res
-    assert len(res["injectSteps"]) == 1
-    msg = res["injectSteps"][0]["ephemeralMessage"]
-    assert "LOCAL AI HUB POLICY" in msg
-    assert "call_mcp_tool" in msg
-    assert "local_ai_repo" in msg
-    assert "local_ai_coord" in msg
+    assert res == {}
 
 
 def test_antigravity_hook_pre_tool_use_read_file(tmp_path):

@@ -106,13 +106,25 @@ def test_integrated_profile_is_conservative_and_accelerates_retrieval() -> None:
     assert base_cfg["model_execution"]["fast"]["context_tokens"] == 8192
     assert base_cfg["model_execution"]["smart"]["max_context_tokens"] == 12288
     assert cfg["models"]["embedding"] == "BAAI/bge-small-en-v1.5"
-    assert cfg["models"]["embedding_backend"] == "auto"
-    assert cfg["models"]["embedding_device"] == "auto"
+    assert cfg["models"]["embedding_backend"] == "openvino"
+    assert cfg["models"]["embedding_device"] == "NPU"
     assert cfg["models"]["reranker"] == "cross-encoder/ms-marco-MiniLM-L6-v2"
-    assert cfg["models"]["reranker_backend"] == "auto"
+    assert cfg["models"]["reranker_backend"] == "openvino"
+    assert cfg["models"]["reranker_device"] == "NPU"
     assert cfg["ollama"]["allow_integrated_gpu"] is False
     assert cfg["ollama"]["enable_vulkan"] is False
     assert cfg["ollama"]["gpu_overhead_bytes"] == 1024 * 1024 * 1024
+
+
+def test_high_nvidia_profile_keeps_embedding_and_reranker_on_auto_routes() -> None:
+    detected = {
+        "gpus": [{"vendor": "nvidia", "name": "RTX", "vram_mb": 16_384, "integrated": False}],
+        "npus": [],
+    }
+    cfg = profile_overrides("high", detected)
+    models = cfg.get("models", {})
+    assert models.get("embedding_device", "auto") == "auto"
+    assert models.get("reranker_device", "auto") == "auto"
 
 
 def test_balanced_profile_uses_1_5b_background_and_3b_fast_tiers() -> None:

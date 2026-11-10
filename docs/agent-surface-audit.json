@@ -8013,6 +8013,7 @@
         ],
         "response_producers": [
           "APP.leases.claim_batch",
+          "local:result",
           "self._handle_post_lease_claim"
         ],
         "action_literals": []
@@ -8704,9 +8705,7 @@
         "source": "src/local_ai_hub/http_route_registry.py",
         "handler": "post_dependency_slice_1",
         "literal_response_fields": [],
-        "response_producers": [
-          "APP.services.slice_dependency_graph"
-        ],
+        "response_producers": [],
         "action_literals": []
       }
     },
@@ -8764,9 +8763,7 @@
         "source": "src/local_ai_hub/http_route_registry.py",
         "handler": "post_explain_query_1",
         "literal_response_fields": [],
-        "response_producers": [
-          "APP.services.explain_query"
-        ],
+        "response_producers": [],
         "action_literals": []
       }
     },
@@ -9075,9 +9072,7 @@
         "source": "src/local_ai_hub/http_route_registry.py",
         "handler": "post_repo_schema_inspect_1",
         "literal_response_fields": [],
-        "response_producers": [
-          "APP.services.schema_inspect"
-        ],
+        "response_producers": [],
         "action_literals": []
       }
     },

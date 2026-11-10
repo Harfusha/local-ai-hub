@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import importlib.util
 import json
 import os
 import re
@@ -25,7 +24,6 @@ from local_ai_hub.doctor_support import (
 )
 from local_ai_hub.http_server import validate_network_security
 from local_ai_hub.llama_cpp_runtime import llama_cpp_backend_selection
-from local_ai_hub.opencode_diagnostics import inspect_components as inspect_opencode_components
 
 
 def project_python() -> Path:
@@ -34,21 +32,6 @@ def project_python() -> Path:
         root / ".venv" / "bin" / "python",
     )
     return next((path for path in candidates if path.exists()), Path(sys.executable))
-
-
-def opencode_component_status(cfg: dict[str, Any], installed: set[str]) -> dict[str, Any]:
-    try:
-        spec = importlib.util.spec_from_file_location("_doctor_opencode_install", root / "tools" / "opencode_install.py")
-        if spec is None or spec.loader is None:
-            raise ImportError("OpenCode installer unavailable")
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-        local_appdata = os.environ.get("LOCALAPPDATA")
-        executable = Path(local_appdata) / "Programs" / "OpenCode-LocalAIHub" / module.VERSION / "opencode.exe" if local_appdata else None
-        return inspect_opencode_components(cfg, cfg.get("_hardware", {}), root, executable,
-                                           module.WINDOWS_X64_EXECUTABLE_SHA256, installed)
-    except (OSError, ImportError, AttributeError, ValueError):
-        return {"ready": False, "runtime_verified": False, "reason": "OpenCode component inspection unavailable"}
 
 
 def runtime_module_available(module: str) -> bool:
@@ -475,7 +458,6 @@ report = {
             sentence_transformers_installed, torch_installed,
         ),
         "hardware": cfg.get("_hardware", {}),
-        "opencode": opencode_component_status(cfg, installed),
         "code_intelligence": _supported_code_intelligence(status),
         "preprocessing": status.get("preprocessing") if isinstance(status, dict) else None,
         "tool_agent": status.get("tool_agent") if isinstance(status, dict) else None,
@@ -529,10 +511,6 @@ def format_doctor_report(rep: dict[str, Any]) -> str:
     py_ver = rep.get("python", sys.version.split()[0])
     hub_sym = "[OK]" if hub_ok else "[ERR]"
     lines.append(f"{hub_sym} Hub Server:        {'Online' if hub_ok else 'Offline'} (v{ver}, Python {py_ver})")
-    opencode = rt.get("opencode", {})
-    if isinstance(opencode, dict) and opencode:
-        lines.append(f"[--] OpenCode:          {opencode.get('hardware_profile', 'unknown')} profile; runtime not verified")
-
     ollama_ok = rt.get("ollama_online", False)
     active_m = rt.get("active_model") or "None"
     provider = str(cfg_info.get("inference_backend", "ollama"))

@@ -12,14 +12,14 @@ from local_ai_hub.client import HubClient
 def test_client_uses_tokenless_loopback_http_transport(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(http_server, "APP", SimpleNamespace(config={"security": {}}))
 
-    observed: list[tuple[str, str, bool]] = []
+    observed: list[tuple[str, str, str, bool]] = []
 
     class AuthHandler(http_server.Handler):
         def do_POST(self):
             token_header = self.headers.get("X-LocalAI-Token", "")
             authorization = self.headers.get("Authorization", "")
             allowed = self._authorized()
-            observed.append((token_header, authorization, allowed))
+            observed.append((self.path, token_header, authorization, allowed))
             body = json.dumps({"authorized": allowed}).encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
@@ -45,10 +45,10 @@ def test_client_uses_tokenless_loopback_http_transport(tmp_path, monkeypatch) ->
             client = HubClient(config_path=str(config), auto_start=False)
             clients.append(client)
             assert client.post("/api/memory/get", {"key": "item"}) == {"authorized": True}
-        assert observed == [
-            ("", "", True),
-            ("", "", True),
-        ]
+        memory_reads = [row for row in observed if row[0] == "/api/memory/get"]
+        assert len(memory_reads) == 2
+        assert all(token == authorization == "" and allowed is True
+                   for _path, token, authorization, allowed in observed)
     finally:
         for client in clients:
             client.close()

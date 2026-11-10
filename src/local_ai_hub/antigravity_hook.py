@@ -1,10 +1,8 @@
-"""Antigravity lifecycle hook handler for Local AI Hub.
+"""Antigravity hook handler for existing Local AI Hub tool-use policy.
 
-Enforces Local AI Hub tool prioritization and Token Economy policy in Google Antigravity:
-1. PreInvocation: Injects ephemeral instruction to prioritize local-ai MCP tools.
-2. PreToolUse: Intercepts read_file (prohibiting full-file dumps > 80 lines) and
-   run_command (prohibiting unconstrained broad repo searches), guiding the model
-   to use local_ai_repo / local_ai_coord.
+PreInvocation is intentionally a no-op: shadow integrations must not inject
+messages or alter host turns. PreToolUse retains the existing bounded read/search
+policy for installations that explicitly register that hook.
 """
 from __future__ import annotations
 
@@ -173,27 +171,8 @@ def _check_and_autostart_hub() -> bool:
 
 
 def handle_pre_invocation(_payload: dict[str, Any]) -> dict[str, Any]:
-    """Provide high-priority guidance to prioritize Local AI Hub MCP tools."""
-    started = _check_and_autostart_hub()
-    startup_note = "[Local AI Hub offline; auto-starting in background...]\n" if started else ""
-    reminder = (
-        startup_note +
-        "[LOCAL AI HUB POLICY] For applicable repository work, directly call Local AI Hub MCP endpoints; using native subagents does not replace these calls. Invoke through "
-        'call_mcp_tool(ServerName="local-ai", ToolName="<tool>", Arguments={...}).\n'
-        '- Non-trivial repository work: start with local_ai_repo(action="context"|"search"|"code_index", root="..."); use local_ai_artifact for exact source slices.\n'
-        '- Multi-step work, memory, shared findings or leases: use the matching local_ai_coord action.\n'
-        '- Semantic retrieval: use local_ai_rag only after indexed paths are insufficient.\n'
-        '- Bounded semantic review/reasoning: use an exposed local_ai_task action when it fits; never send raw logs or open-ended edits.\n'
-        '- Run bounded tests with the host-native command tool. Skip only endpoints irrelevant to the task or unavailable in the active schema.\n'
-        '- Token economy: Never read full files >80 lines; use local_ai_repo or targeted line slices (StartLine/EndLine).'
-    )
-    return {
-        "injectSteps": [
-            {
-                "ephemeralMessage": reminder
-            }
-        ]
-    }
+    """Leave the Antigravity invocation unchanged; do not inject advice or start Hub."""
+    return {}
 
 
 def _is_path_whitelisted(path_str: str) -> bool:

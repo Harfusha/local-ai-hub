@@ -9,6 +9,7 @@ from local_ai_hub import http_server
 from local_ai_hub import mcp_server
 import local_ai_hub.app as app_module
 from local_ai_hub.app import LocalAIApp
+from local_ai_hub.laya_lifecycle import DEFAULT_IDLE_UNLOAD_SECONDS, LayaSessionLifecycle
 from local_ai_hub.telemetry import TelemetryStore
 
 
@@ -85,6 +86,7 @@ def make_app(*, scheduler=None, runtime=None):
     app.config = {"models": {}, "features": {}, "_hardware": {}}
     app.started_at = time.time()
     app.runtime = runtime or RuntimeProbe()
+    app.laya_lifecycle = LayaSessionLifecycle(DEFAULT_IDLE_UNLOAD_SECONDS)
     app.telemetry = Probe(summary={"events": 1})
     app.services = SimpleNamespace(
         model_policy=Probe(summary={"policy": "test"}),
@@ -121,6 +123,25 @@ def make_app(*, scheduler=None, runtime=None):
     app._status_dependency_slots = threading.BoundedSemaphore(app_module._STATUS_MAX_INFLIGHT_DEPENDENCIES)
     app._status_dependency_executor = _STATUS_EXECUTOR
     return app
+
+
+def test_status_reports_laya_runtime_lifecycle_without_claiming_hardware_release():
+    app = make_app()
+
+    status = app.status()
+
+    assert status["laya_runtime"] == {
+        "available": False,
+        "provider_close_configured": False,
+        "idle_unload_seconds": DEFAULT_IDLE_UNLOAD_SECONDS,
+        "inflight": 0,
+        "loading": False,
+        "closing": False,
+        "shutdown": False,
+        "unload_count": 0,
+        "last_close_error": None,
+        "runtime_verification": "NOT_VERIFIED",
+    }
 
 
 def make_realtime_app():

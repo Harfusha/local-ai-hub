@@ -55,7 +55,7 @@ def test_project_search_candidates_reuse_project_path_policy_root(tmp_path, monk
 
     assert candidates == targets
     assert target_resolves == {target: 1 for target in targets}
-    assert base_resolves == len(targets) + 1
+    assert base_resolves == 1
 
 
 def test_combined_git_groups_are_sorted_and_deduplicated(tmp_path, monkeypatch):

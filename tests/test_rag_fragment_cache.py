@@ -587,6 +587,33 @@ def test_search_cache_tracks_incremental_reindex_generation(tmp_path):
     assert len(rebuilt_search["results"]) == 3
 
 
+def test_cached_search_reuses_revision_connection(tmp_path, monkeypatch):
+    root = tmp_path / "project"
+    root.mkdir()
+    (root / "one.py").write_text("def cache_probe(): return 1\n", encoding="utf-8")
+    store = _store(tmp_path, _Services(space_id="runtime-space-a"))
+    indexed = store.index(str(root))
+    workspace = indexed["workspace"]
+
+    store.search("cache probe", workspace=workspace, use_reranker=False)
+    warm = store.search("cache probe", workspace=workspace, use_reranker=False)
+    assert warm["search_cache"]["hit"] is True
+
+    connection_count = 0
+    original_connect = store._connect
+
+    def counted_connect():
+        nonlocal connection_count
+        connection_count += 1
+        return original_connect()
+
+    monkeypatch.setattr(store, "_connect", counted_connect)
+    result = store.search("cache probe", workspace=workspace, use_reranker=False)
+
+    assert result["search_cache"]["hit"] is True
+    assert connection_count == 2
+
+
 def test_search_rechecks_generation_after_cache_lookup(tmp_path, monkeypatch):
     root = tmp_path / "project"
     root.mkdir()

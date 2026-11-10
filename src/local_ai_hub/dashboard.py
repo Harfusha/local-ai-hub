@@ -955,6 +955,7 @@ let lastChartSnapshot=null,lastChartScope=null;
 
 const traceStyles=document.createElement('style');
 document.head.append(traceStyles);
+traceStyles.textContent+='.trace-view-picker{display:flex;align-items:center;gap:8px;margin:8px 0;color:var(--muted);font-size:11px}.trace-view-picker select{max-width:100%;border:1px solid #414b37;border-radius:6px;background:#171b14;color:var(--fg);padding:7px 9px;font:inherit}.trace-view-picker select:focus-visible{outline:2px solid var(--accent);outline-offset:2px}';
 traceStyles.textContent+='.trace-main-head #tracePageTitle,.trace-main-head #tracePageLive{display:none}.trace-inspector-head{align-items:center}.trace-header-title{display:flex;align-items:center;gap:10px;flex-wrap:wrap}.trace-header-title h1{margin:0;font-size:16px;overflow-wrap:anywhere}.trace-header-meta{display:flex;align-items:center;gap:8px;flex-wrap:wrap;color:var(--muted);font-size:11px}.trace-header-time{font-variant-numeric:tabular-nums}.trace-primary{margin:10px 0 14px}.trace-primary-grid{display:grid;grid-template-columns:1fr;gap:10px}.trace-primary-card{min-width:0;border:1px solid #526144;border-radius:8px;background:#171b14;overflow:hidden}.trace-primary-card.input{border-color:#9b8756}.trace-primary-card.output{border-color:#397658}.trace-primary-card-head{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:9px 11px;background:#20251c}.trace-primary-card-head h2{margin:0;font-size:12px}.trace-primary-card pre{white-space:pre-wrap;overflow-wrap:anywhere;margin:0;padding:12px;max-height:60vh;overflow:auto;font:12px/1.5 ui-monospace,SFMono-Regular,Consolas,monospace}.trace-primary-empty{padding:12px;color:var(--muted);font-size:12px}.trace-metrics{display:flex;align-items:center;gap:6px;flex-wrap:wrap;padding:8px 0;color:var(--muted);font-size:11px}.trace-metrics span{border:1px solid #434f37;border-radius:999px;padding:4px 8px}.trace-optional-details{margin-top:12px}@media(max-width:700px){.trace-inspector-head{align-items:flex-start;flex-direction:column}.trace-primary-card pre{max-height:50vh}}';
 document.head.insertAdjacentHTML('beforeend','<style>.vision-review-modal{width:min(980px,96vw)}.vision-review-modal .modal-body-wrap{padding:12px;overflow-y:auto}.vision-review-modal .modal-card-body{display:grid;gap:10px}.vision-review-modal textarea{width:100%;box-sizing:border-box;background:#171b14;color:var(--fg);border:1px solid #566349;border-radius:6px;padding:8px;font:inherit;resize:vertical}.vision-review-modal input[type=file]{color:var(--fg)}.vision-review-modal .modal-actions-bar{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.trace-vision-provenance{display:flex;gap:6px;flex-wrap:wrap;margin:7px 0}.trace-vision-provenance span{border:1px solid #434f37;border-radius:999px;padding:3px 7px;color:var(--muted);font-size:10px}.trace-vision-summary{border-color:#9b8756}.trace-vision-findings{display:grid;gap:8px}.trace-vision-finding{border:1px solid #526144;border-left:3px solid var(--accent);border-radius:7px;background:#171b14;padding:10px}.trace-vision-finding.blocker,.trace-vision-finding.high{border-left-color:var(--bad)}.trace-vision-finding-head{display:flex;align-items:center;gap:7px;flex-wrap:wrap}.trace-vision-finding-head strong{overflow-wrap:anywhere}.trace-vision-finding .trace-chip{margin:0}.trace-vision-finding-actions{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}.trace-vision-evidence{margin-top:8px}.trace-vision-evidence img{max-width:100%;height:auto;border:1px solid #526144;border-radius:5px}.trace-vision-error{border-color:#784747;color:#ffb1b1}.trace-vision-empty{color:var(--muted);padding:8px 0}</style>');
  document.head.insertAdjacentHTML('beforeend','<style>.trace-inspector-context{display:flex;align-items:flex-end;gap:8px;flex-direction:column}.trace-project-label{border:1px solid #9b8756;border-radius:999px;padding:4px 8px;color:#c7dcff;font-size:10px;max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.trace-search-presentation,.trace-model-presentation{border:1px solid #526144;border-radius:8px;background:#161a13;padding:12px}.trace-search-query{border:1px solid #2d4965;border-left:3px solid #5b8def;border-radius:6px;background:#111b26;padding:9px 10px;overflow-wrap:anywhere}.trace-search-query strong,.trace-search-answer strong{display:block;color:var(--muted);font-size:10px;text-transform:uppercase;letter-spacing:.06em;margin-bottom:4px}.trace-search-spec{display:flex;gap:6px;flex-wrap:wrap;margin:8px 0;color:var(--muted);font-size:10px}.trace-search-spec span{border:1px solid #434f37;border-radius:999px;padding:3px 7px}.trace-search-results{margin-top:12px}.trace-search-results h3{margin:0 0 5px;font-size:11px}.trace-search-result-row{display:grid;grid-template-columns:24px minmax(0,1fr) auto;gap:9px;align-items:start;border-top:1px solid #414c35;padding:8px 0;min-width:0}.trace-search-rank{display:grid;place-items:center;width:20px;height:20px;border-radius:50%;background:#343e29;color:#c7dcff;font-size:10px}.trace-search-result-main{min-width:0;overflow-wrap:anywhere}.trace-search-result-main strong{display:block;overflow-wrap:anywhere}.trace-search-result-main>.tiny{display:block;margin-top:2px}.trace-search-snippet{color:#c9d5e2;font-size:11px;line-height:1.35;margin-top:4px;overflow-wrap:anywhere}.trace-search-score{color:var(--muted);font-size:10px;padding-top:3px}.trace-search-answer{border-top:1px solid #414c35;margin-top:8px;padding-top:9px;overflow-wrap:anywhere}.trace-model-presentation .trace-primary-card{min-height:0}.trace-model-presentation .trace-chat-message{border-top:0;padding:0}.trace-model-presentation .trace-chat-role{display:none}.trace-model-presentation .prompt-pre{max-height:260px}.trace-summary-card,.trace-code-card,.trace-list-card{border:1px solid #414c35;border-radius:6px;background:#171b14;padding:10px;margin-bottom:8px}.trace-summary-card h3,.trace-code-card h3,.trace-list-card h3{margin:0 0 6px;font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em}.trace-summary-value{overflow-wrap:anywhere}.trace-chip{display:inline-block;padding:2px 6px;border-radius:4px;background:#172535;border:1px solid #2d4965;font-size:11px;margin:2px}.trace-obj-field{margin-bottom:4px;overflow-wrap:anywhere}.trace-obj-key{color:var(--muted);font-size:11px;font-weight:600}.trace-obj-val{font-size:11px}.trace-primary-groups{display:grid;gap:8px;margin-top:10px}.trace-primary-group{border:1px solid #414c35;border-radius:6px;background:#171b14}.trace-primary-group>summary{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:9px 10px;cursor:pointer;color:var(--fg);font-size:11px;font-weight:700;list-style:none}.trace-primary-group>summary::-webkit-details-marker{display:none}.trace-primary-group>summary::after{content:\"+\";color:var(--muted);font-size:15px;line-height:1}.trace-primary-group[open]>summary::after{content:\"−\"}.trace-primary-group-body{padding:0 10px 10px}.trace-primary-group .trace-primary-card{border:0;background:transparent;padding:0;margin:0}.trace-primary-group .trace-primary-card h3{display:none}.trace-primary-group .trace-primary-value{padding-top:2px}@media(max-width:700px){.trace-inspector-context{align-items:flex-end}.trace-project-label{max-width:150px}}</style>');
@@ -1962,13 +1963,14 @@ const traceInputFields=new Set(['input','input_text','input_data','user_input','
 const traceOutputFields=new Set(['output','output_text','output_data','generated_text','response_text','response_body','result','result_data','response','content','text','answer','completion','stdout','stderr','return_value','items']);
 const traceProcessFields=new Set(['state','status','stage','phase','progress','progress_percent','percent','step','step_index','current_step','total_steps','completed_steps','attempt','attempts','attempt_number','max_attempts','retry_count','retry_delay_ms','duration','duration_ms','duration_ns','elapsed','elapsed_ms','queue_time_ms','queue_wait_ms','started_at','finished_at','error','error_type','error_message','exception','failure','retry_after','delivery','background','chunks','truncated','status_code']);
 function traceEventTitle(type){
- const titles={model_request:'Model input',thinking:'Thinking / reasoning',output_stream:'Model output',output_delta:'Model output chunk',tool_call:'Tool call',tool_result:'Tool result',request_received:'Request received',handler_started:'Handler started',async_job_submitted:'Async job submitted',scheduled:'Scheduled',running:'Running',retry:'Retry',trace_truncated:'Trace truncated',completed:'Completed',complete:'Completed',done:'Completed',success:'Completed',succeeded:'Completed',failed:'Failed',error:'Error',cancelled:'Cancelled',canceled:'Cancelled',interrupted:'Interrupted',request_completed:'Request completed',request_failed:'Request failed'};
+ const titles={model_request:'Model input',thinking:'Thinking / reasoning',output_stream:'Model output',output_delta:'Model output chunk',tool_call:'Tool call',tool_result:'Tool result',cache_decision:'Cache decision',request_received:'Request received',handler_started:'Handler started',async_job_submitted:'Async job submitted',scheduled:'Scheduled',running:'Running',retry:'Retry',trace_truncated:'Trace truncated',completed:'Completed',complete:'Completed',done:'Completed',success:'Completed',succeeded:'Completed',failed:'Failed',error:'Error',cancelled:'Cancelled',canceled:'Cancelled',interrupted:'Interrupted',request_completed:'Request completed',request_failed:'Request failed'};
   return Object.prototype.hasOwnProperty.call(titles,type)?titles[type]:humanLabel(type||'Event');
 }
 function traceEventSummary(type,p){
   if(type==='model_request')return `Request to ${traceInlineText(p.model??p.provider??'model')}`;
   if(type==='tool_call')return `Calling ${traceInlineText(p.name??p.tool??'tool')}`;
   if(type==='tool_result')return p.isError||p.is_error||p.success===false||p.error?'Tool returned an error':'Tool returned a result';
+  if(type==='cache_decision')return `${p.cache_hit?'Cache hit':'Cache miss'} · ${traceInlineText(p.cache_layer||'unknown layer')} · ${traceInlineText(p.semantic_miss_reason||p.decision||'reason unavailable')}`;
   if(type==='output_stream')return `${n(p.chunks||0)} output chunks${p.truncated?' · truncated':''}`;
   if(type==='output_delta')return 'Output content received';
   if(type==='thinking')return 'Thinking content received';
@@ -2095,7 +2097,6 @@ function renderHumanModal(obj){
   const scalarGrid=scalar.length?`<section class="human-section"><h3>Summary</h3><div class="human-grid">${scalar.map(([k,v])=>`<div>${esc(humanLabel(k))}</div><div>${renderAny(v)}</div>`).join('')}</div></section>`:'';
   $('modalBody').innerHTML=`<div class="human-shell">${summary}${scalarGrid}${complex.map(([k,v])=>humanSection(humanLabel(k),v)).join('')}${rawFallback(obj)}</div>`;
 }
-function traceTab(label,id){const selected=traceView===id;return `<button class="trace-tab ${selected?'active':''}" id="trace-tab-${esc(id)}" role="tab" data-trace-view="${esc(id)}" aria-selected="${selected}" aria-controls="trace-panel-${esc(id)}" tabindex="${selected?'0':'-1'}">${esc(label)}</button>`}
 function traceStatus(item){const state=String(item?.state||'queued');return state==='failed'&&/hub restarted|service stopped|shutdown/i.test(String(item?.error||''))?'interrupted':state}
 function traceDisplayState(item){const state=traceStatus(item);return state==='interrupted'?'Interrupted':humanLabel(state)}
 function traceBoundedKey(key,budget){return String(key);}
@@ -2123,6 +2124,7 @@ function tracePanel(id,label,render,available=true){return {id,label,render,avai
 function traceUnavailable(label){return `${label} unavailable for this request type`;}
 function tracePresentationKind(model){
   const action=String(model.identity?.action||model.session?.action||'').toLowerCase(),kind=String(model.presentation?.kind||model.session?.kind||'').toLowerCase(),events=model.events||[];
+  if(kind==='api_request'||kind==='request_response')return 'request_response';
   if(kind==='async_job')return 'async_job';
   const directOutput=model.output&&typeof model.output==='object'&&!Array.isArray(model.output)?model.output:{};
   if(action.includes('/vision')||directOutput.review&&typeof directOutput.review==='object')return 'vision_review';
@@ -2480,7 +2482,7 @@ function renderAsyncJobPresentation(model){
 }
 function renderRequestResponsePresentation(model){
   const budget=traceRenderBudget(),safeModel=traceSanitizeValue(model||{}),timing=safeModel.timing||{};
-  const request=safeModel.session?.request&&typeof safeModel.session.request==='object'?safeModel.session.request:{},method=request.method??safeModel.identity?.method??safeModel.session?.method,path=request.path??safeModel.identity?.path??safeModel.session?.path,action=safeModel.identity?.action??safeModel.session?.action,reqVal=traceRecorded(method)||traceRecorded(path)||traceRecorded(action)?{method,path,action}:undefined,statusVal=safeModel.lifecycle?.status_code??safeModel.session?.status_code??safeModel.session?.state??safeModel.lifecycle?.state,duration=safeModel.timing?.duration_ms??safeModel.timing?.elapsed_ms??safeModel.session?.duration_ms??safeModel.session?.elapsed_ms,requestBody=safeModel.input??request.body??request.payload??request.data,responseBody=safeModel.response??safeModel.output,outputBody=safeModel.response&&traceRecorded(safeModel.output)?safeModel.output:undefined,error=safeModel.errors,hasCore=traceRecorded(reqVal)||traceRecorded(requestBody)||traceRecorded(responseBody)||traceRecorded(error)||traceRecorded(safeModel.lifecycle?.status_code)||traceRecorded(safeModel.session?.state)||traceRecorded(duration);
+  const request=safeModel.session?.request&&typeof safeModel.session.request==='object'?safeModel.session.request:{},method=request.method??safeModel.identity?.method??safeModel.session?.method,path=request.path??safeModel.identity?.path??safeModel.session?.path,action=safeModel.identity?.action??safeModel.session?.action,reqVal=traceRecorded(method)||traceRecorded(path)||traceRecorded(action)?{method,path,action}:undefined,statusVal=safeModel.lifecycle?.status_code??safeModel.session?.status_code??safeModel.session?.state??safeModel.lifecycle?.state,duration=safeModel.timing?.duration_ms??safeModel.timing?.elapsed_ms??safeModel.session?.duration_ms??safeModel.session?.elapsed_ms,requestBody=safeModel.input??request.body??request.payload??request.data,responseBody=safeModel.response??safeModel.output??safeModel.session?.response??safeModel.session?.output,outputBody=safeModel.response&&traceRecorded(safeModel.output)?safeModel.output:undefined,error=safeModel.errors,hasCore=traceRecorded(reqVal)||traceRecorded(requestBody)||traceRecorded(responseBody)||traceRecorded(error)||traceRecorded(safeModel.lifecycle?.status_code)||traceRecorded(safeModel.session?.state)||traceRecorded(duration);
   if(!hasCore)return '';
   const technical=[request.headers?traceSecondaryDetails('Headers',tracePresentationField('headers',request.headers,'',traceRenderBudget(),{mode:'technical'})):'',safeModel.actor&&traceMeaningfulValue({agent:safeModel.actor.agent,owner:safeModel.actor.owner})?traceSecondaryDetails('Actor',tracePresentationField('actor',{agent:safeModel.actor.agent,owner:safeModel.actor.owner},'',traceRenderBudget(),{mode:'technical'})):'',safeModel.correlations&&typeof safeModel.correlations==='object'&&Object.keys(safeModel.correlations).length?traceSecondaryDetails('Correlations',tracePresentationField('correlations',safeModel.correlations,'',traceRenderBudget(),{mode:'technical'})):'',traceRecorded(safeModel.retainedBytes)?traceSecondaryDetails('Retained bytes',tracePresentationField('bytes',safeModel.retainedBytes,'',traceRenderBudget(),{mode:'technical'})):'',traceMeaningfulValue(timing)?traceSecondaryDetails('Lifecycle timing',tracePresentationField('timing',timing,'',traceRenderBudget(),{mode:'technical'})):''].join('');
   const left=[
@@ -2635,18 +2637,23 @@ function traceMetricRow(metrics){
   const collapsibleState={...captureTraceCollapsibleDetails(body),technical:traceOptionalDetailsOpen};
   const scrollPositions=captureTraceScrollPositions(body),thinkingDetailsOpen=captureTraceThinkingDetails(body),traceMain=body?.closest('.trace-main'),mainScrollTop=traceMain?.scrollTop||0,mainScrollLeft=traceMain?.scrollLeft||0;
   activeTraceData=d;const model=traceDisplayModel(d),s=model.session,panels=model.panels.filter(panel=>panel.available),technicalPanels=panels.filter(panel=>!['input','output','response'].includes(panel.id));
+  if(!technicalPanels.some(panel=>panel.id===traceView))traceView=technicalPanels[0]?.id||'';
   const titleEl=$('tracePageTitle'),liveEl=$('tracePageLive');if(titleEl)titleEl.textContent=traceHumanTitle(model);
   if(liveEl){liveEl.textContent=d?.terminal?'finished':'● live · updating';liveEl.className='tiny '+(d?.terminal?'ok':'trace-running');}
   const state=traceStatus(s),stateClass=(state==='failed'||state==='error')?'bad':(state==='interrupted'?'warn':(d?.terminal?'ok':'warn'));
   const command=s.action||traceHumanTitle(model),project=model.project?` · ${model.project}`:'',timestamp=Number(s.created_at)>0?new Date(Number(s.created_at)*1000).toLocaleString():'nezaznamenané';
   const header=`<div class="trace-inspector-head"><div class="trace-header-title"><h1>${esc(command+project)}</h1><span class="badge ${stateClass}">${esc(state)}</span></div><div class="trace-header-meta"><span class="trace-header-time">${esc(timestamp)}</span>${d?.payload_truncated?'<span>Obsah zkrácen limitem trace úložiště</span>':''}</div></div>`;
-  const primaryMarkup=`<section class="trace-primary"><div class="trace-primary-grid">${traceMainContent('Input','input',tracePrimaryInput(model.input))}${traceMainContent('Output','output',model.output)}</div></section>`;
+  const requestResponseMarkup=model.presentation?.kind==='request_response'?renderTracePresentation(model):'';
+  const primaryMarkup=`<section class="trace-primary"><div class="trace-primary-grid">${traceMainContent('Input','input',tracePrimaryInput(model.input))}${traceMainContent('Output','output',model.output)}</div></section>${requestResponseMarkup}`;
   const historyControls=d?.has_older_events||d?.has_newer_events?`<div class="trace-header-meta">${d?.has_older_events?'<button type="button" class="btn" data-trace-event-page="older">Load older events</button>':''}${d?.has_newer_events?'<button type="button" class="btn" data-trace-event-page="newer">Load newer events</button>':''}</div>`:'';
-  const panelMarkup=technicalPanels.map(panel=>{const selected=panel.id===traceView,content=selected?panel.render():'';return `<div id="trace-panel-${esc(panel.id)}" class="trace-view" role="tabpanel" aria-labelledby="trace-tab-${esc(panel.id)}"${selected?'':' hidden'}>${content}</div>`}).join('');
+  const panelMarkup=technicalPanels.map(panel=>{const selected=panel.id===traceView,content=selected?panel.render():'';return `<div id="trace-panel-${esc(panel.id)}" class="trace-view" role="tabpanel" aria-label="${esc(panel.label)}"${selected?'':' hidden'}>${content}</div>`}).join('');
+  const technicalGroups=[['Kontext',['thinking','agent_context']],['Průběh',['timeline','model','tools','events']],['Chyby',['errors']],['Pokročilé',['raw']]];
+  const technicalOptions=technicalGroups.map(([label,ids])=>{const options=technicalPanels.filter(panel=>ids.includes(panel.id));return options.length?`<optgroup label="${esc(label)}">${options.map(panel=>`<option value="${esc(panel.id)}"${panel.id===traceView?' selected':''}>${esc(panel.label)}</option>`).join('')}</optgroup>`:''}).join('');
   const requestSettingsValue={...traceTechnicalSettings(model.input),...traceTechnicalSettings(s.request)};
   const requestSettings=Object.keys(requestSettingsValue).length?`<details class="trace-optional-details" data-trace-collapsible data-trace-key="request-settings"><summary>Command / project settings</summary><div class="trace-optional-body">${humanSection('Settings',traceSanitizeValue(requestSettingsValue))}</div></details>`:'';
   const detailPolicy='Tajné klíče a přístupové tokeny jsou redigované; běžný obsah zůstává viditelný.';
-  const technical=`<details class="trace-optional-details" id="traceTechnicalDetails" data-trace-collapsible data-trace-key="technical"${traceOptionalDetailsOpen?' open':''}><summary>Nastavení a technické údaje · ${technicalPanels.length}</summary><div class="trace-optional-body"><p class="tiny muted">${detailPolicy}</p>${traceSummary(model,{})}${requestSettings}${historyControls}<nav class="trace-tabs" role="tablist" aria-label="Trace technical details">${technicalPanels.map(panel=>traceTab(panel.label,panel.id)).join('')}</nav>${panelMarkup}</div></details>`;
+  const summaryDetails=`<details class="trace-optional-details" data-trace-collapsible data-trace-key="technical-summary"><summary>Souhrn požadavku a dostupnost dat</summary>${traceSummary(model,{})}</details>`;
+  const technical=`<details class="trace-optional-details" id="traceTechnicalDetails" data-trace-collapsible data-trace-key="technical"${traceOptionalDetailsOpen?' open':''}><summary>Nastavení a technické údaje</summary><div class="trace-optional-body"><p class="tiny muted">${detailPolicy}</p><label class="trace-view-picker"><span>Zobrazit</span><select data-trace-view-select aria-label="Technické údaje">${technicalOptions}</select></label>${panelMarkup}${summaryDetails}${requestSettings}${historyControls}</div></details>`;
   if(body){body.className='trace-page-body';body.innerHTML=`<div class="human-shell">${header}${traceMetricRow(d?.metrics)}${primaryMarkup}${technical}</div>`;}
   const restore=()=>{restoreTraceCollapsibleDetails($('tracePageBody'),collapsibleState);restoreTraceThinkingDetails($('tracePageBody'),thinkingDetailsOpen);restoreTraceScrollPositions($('tracePageBody'),scrollPositions);const next=$('tracePageBody')?.closest('.trace-main');if(next){next.scrollTop=mainScrollTop;next.scrollLeft=mainScrollLeft}};
   if(window.requestAnimationFrame)window.requestAnimationFrame(restore);else restore();
@@ -2702,18 +2709,6 @@ async function loadTraceEventPage(direction){
 function setTraceDetailsOpen(open){const body=$('tracePageBody');if(!body)return;body.querySelectorAll('details[data-trace-collapsible],#traceTechnicalDetails').forEach(detail=>{detail.open=Boolean(open)});}
 function copyTraceFinalResponse(btn){if(!activeTraceData)return;const model=traceDisplayModel(activeTraceData);if(!traceRecorded(model.output)){if(btn){btn.textContent='No final response';setTimeout(()=>{btn.textContent='Copy final response'},1500)}return;}copyText(promptText(model.output),btn);}
 function copyTraceContent(field,btn){if(!activeTraceData)return;const model=traceDisplayModel(activeTraceData),value=field==='input'?tracePrimaryInput(model.input):model.output;if(!traceRecorded(value))return;copyText(traceContentText(value),btn);}
-function moveTraceTab(tab,key){
-  const tabs=Array.from(document.querySelectorAll('#tracePageBody [role="tab"]'));
-  const index=tabs.indexOf(tab);if(index<0)return;
-  let nextIndex=index;
-  if(key==='ArrowLeft')nextIndex=(index-1+tabs.length)%tabs.length;
-  else if(key==='ArrowRight')nextIndex=(index+1)%tabs.length;
-  else if(key==='Home')nextIndex=0;
-  else if(key==='End')nextIndex=tabs.length-1;
-  else return;
-  const view=tabs[nextIndex]?.dataset.traceView;if(!view)return;
-  setTraceView(view);requestAnimationFrame(()=>document.getElementById('trace-tab-'+view)?.focus());
-}
 function renderTraceLoadState(state,message){
   const body=$('tracePageBody');if(!body)return;
   const heading=state==='loading'?'Loading trace':state==='paused'?'Trace loading paused':'Trace unavailable';
@@ -4585,6 +4580,7 @@ function renderHttpRequestModal(r){
 if($('modalClose'))$('modalClose').onclick=()=>{if($('modalBg'))$('modalBg').classList.remove('open');activeTraceId='';activeTraceData=null;traceDetailPoller?.stop();traceDetailPoller=null;tracePollAbortController?.abort();tracePollAbortController=null};
 if($('modalBg'))$('modalBg').onclick=e=>{if(e.target===$('modalBg'))$('modalClose')?.click()};
 
+document.addEventListener('change',e=>{const select=e.target.closest?.('[data-trace-view-select]');if(select)setTraceView(select.value)});
 document.addEventListener('click',e=>{
   const closeBtn=e.target.closest?.('button');
   if(closeBtn && (closeBtn.getAttribute('onclick')?.includes('modalClose') || closeBtn.dataset.modalClose!==undefined || (closeBtn.textContent?.trim()==='Cancel' && closeBtn.closest('#modalBody')))){
@@ -4655,6 +4651,7 @@ function switchTab(tabId){
   if(tabId==='performance'){loadRagWorkspaces();loadActiveLeases();loadResidentInventory();}
   if(tabId==='commands')loadWorktrees();
   if(tabId==='reliability')loadLogsTail();
+  if(tabId==='work')renderRecentRequestHistory();
   if(['work','reliability','traceInspector'].includes(tabId))pollTraces();else tracesPollAbortController?.abort();
   if(changed){window.scrollTo({top:0,left:0,behavior:'instant'});$(tabId).querySelector('.page-heading h1')?.focus({preventScroll:true});}
 }
@@ -5094,6 +5091,23 @@ function requestOutcome(request={},trace=null){
 }
 function workRecentRequestRow(request){const trace=requestTrace(request),availability=requestTraceAvailability(request),outcome=requestOutcome(request,trace),context=trace?traceContextLabel(trace):(request.error_type||''),requestId=String(request.request_id||'—'),project=traceProjectLabel(request.project||request.workspace||request.root||trace?.project)||'—',inner=`<td>${request.created_at?new Date(request.created_at*1000).toLocaleString():'—'}</td><td><strong>${esc(requestId.slice(-12))}</strong><div class="tiny">${trace?'Trace linked · '+esc(String(trace.trace_id||'').slice(-8)):'Request-only record'}</div></td><td><strong>${esc(project)}</strong></td><td>${esc(request.agent||'—')}</td><td><strong>${esc(request.action||'—')}</strong><div class="tiny">${esc(context)}</div></td><td><span class="${outcome.className}">${esc(outcome.label)}</span>${request.error_type?`<div class="tiny">${esc(request.error_type)}</div>`:''}</td><td><span class="${availability.className}">${esc(availability.label)}</span></td><td>${ms(request.duration_ms)}</td>`;return requestRow(request,inner,8)}
 
+function renderRecentRequestHistory(snapshot=last){
+  if(!snapshot)return;
+  const recentRequests=snapshot.observability?.recent_http||[],visibleRecent=filterRecentRequests(workVisible(recentRequests),recentRequests);
+  rows('recentReq',visibleRecent,x=>workRecentRequestRow(x),8,'No requests match the current filters.');
+}
+function updateTraceSummaries(items){
+  const changed=JSON.stringify(items)!==JSON.stringify(lastTraces),recentRequests=last?.observability?.recent_http||[];
+  if(!changed)return {changed:false};
+  const requestIds=new Set(recentRequests.map(request=>String(request.request_id||'')).filter(Boolean));
+  const priorLinks=new Map(lastTraces.filter(trace=>requestIds.has(String(trace.request_id||''))).map(trace=>[String(trace.request_id),String(trace.trace_id||'')]));
+  const nextLinks=new Map(items.filter(trace=>requestIds.has(String(trace.request_id||''))).map(trace=>[String(trace.request_id),String(trace.trace_id||'')]));
+  const linksChanged=[...requestIds].some(id=>priorLinks.get(id)!==nextLinks.get(id));
+  lastTraces=items;renderTraceList(lastTraces);
+  if(linksChanged&&document.querySelector('.page.active')?.id==='work')renderRecentRequestHistory(last);
+  return {changed:true};
+}
+
 function render(s){
   last=s;
   syncDetailedTelemetryToggle(Boolean(s.debug_traces?.enabled));
@@ -5217,7 +5231,7 @@ function render(s){
   $('fgQueue').textContent=n(q.foreground_queued)+' queued / '+n(q.foreground_inflight)+' running';
   $('bgQueue').textContent='background '+n(q.background_queued)+' queued / '+n(q.inflight_background)+' running · '+(q.background_allowed?'idle work allowed':'yielding');
 
-  const http=o.http||{},cohorts=o.cohorts||{},agentHttp=cohorts.agent_http||{},inference=cohorts.inference||{},policy=cohorts.policy_rejection||{},compatibility=cohorts.compatibility||{},domains=o.cache_domains||{},generation=domains.generation||{},repository=domains.repository||{},commandCache=domains.command||{},netDelta=Number(o.net_cloud_token_delta_est??0),savedTokens=Math.max(0,netDelta),tokenOverhead=Math.max(0,Number(o.cloud_token_overhead_est||0)),grossSaved=Math.max(0,Number(o.gross_cloud_tokens_avoided_est||0)),protocolTokens=Math.max(0,Number(o.agent_protocol_tokens_est||0)),toolCallTokens=Math.max(0,Number(o.agent_tool_request_tokens_est||0)),toolReadTokens=Math.max(0,Number(o.agent_tool_response_tokens_est||0)),schemaTokens=Math.max(0,Number(o.tool_schema_tokens_exposure_est||0)),schemaDelta=Number(o.net_after_schema_token_delta_est??0),localComputeSaved=Math.max(0,Number(o.local_compute_tokens_avoided_est||0)),savedUsd=o.estimated_savings_usd,inputSavedUsd=o.estimated_input_savings_usd,outputSavedUsd=o.estimated_output_savings_usd,inputRate=o.cloud_input_token_cost_usd_per_million,outputRate=o.cloud_output_token_cost_usd_per_million;
+  const http=o.http||{},cohorts=o.cohorts||{},agentHttp=cohorts.agent_http||{},inference=cohorts.inference||{},policy=cohorts.policy_rejection||{},compatibility=cohorts.compatibility||{},domains=o.cache_domains||{},generation=domains.generation||{},repository=domains.repository||{},commandCache=domains.command||{},cacheDecisions=o.cache_decisions||{},generationHits=Number(generation.hits||0),generationEvents=Number(generation.events||0),netDelta=Number(o.net_cloud_token_delta_est??0),savedTokens=Math.max(0,netDelta),tokenOverhead=Math.max(0,Number(o.cloud_token_overhead_est||0)),grossSaved=Math.max(0,Number(o.gross_cloud_tokens_avoided_est||0)),protocolTokens=Math.max(0,Number(o.agent_protocol_tokens_est||0)),toolCallTokens=Math.max(0,Number(o.agent_tool_request_tokens_est||0)),toolReadTokens=Math.max(0,Number(o.agent_tool_response_tokens_est||0)),schemaTokens=Math.max(0,Number(o.tool_schema_tokens_exposure_est||0)),schemaDelta=Number(o.net_after_schema_token_delta_est??0),localComputeSaved=Math.max(0,Number(o.local_compute_tokens_avoided_est||0)),savedUsd=o.estimated_savings_usd,inputSavedUsd=o.estimated_input_savings_usd,outputSavedUsd=o.estimated_output_savings_usd,inputRate=o.cloud_input_token_cost_usd_per_million,outputRate=o.cloud_output_token_cost_usd_per_million;
   $('handledRequests').textContent=n(agentHttp.events);
   $('handledRequestsSub').textContent=n(agentHttp.failures)+' operational failures · '+n(policy.events)+' policy rejections · '+n(compatibility.events)+' compatibility 404s';
   $('tokensSaved').textContent=n(netDelta);
@@ -5225,10 +5239,14 @@ function render(s){
   $('dollarsSaved').textContent=o.estimated_savings_pricing_mode==='incomplete'||savedUsd==null?'Unknown':'≈ $'+Number(savedUsd).toFixed(2);
   $('dollarsSavedSub').textContent=o.estimated_savings_pricing_mode==='incomplete'?'Known channel subtotals: input '+formatChannelSavings(inputSavedUsd,inputRate)+' · output '+formatChannelSavings(outputSavedUsd,outputRate)+' · historical channel costs unknown':o.estimated_savings_pricing_mode==='input_output'?'input '+formatChannelSavings(inputSavedUsd,inputRate)+' · output '+formatChannelSavings(outputSavedUsd,outputRate):'Cost unavailable';
   const qHitRate=(Number(o.preprocessed_query_hit_rate??0)*100).toFixed(1),ingReuse=(Number(p.ingestion_reuse_rate??0)*100).toFixed(1);
-  $('cache').textContent=Number(generation.events??inference.events??o.events)>0?((o.generation_cache_hit_rate ?? o.cache_hit_rate ?? 0)*100).toFixed(1)+'%':'No samples';
+  $('cache').textContent=generationEvents>0?((generationHits/generationEvents)*100).toFixed(1)+'%':'No samples';
   const reuse=o.cache_reuse_breakdown||{};
-  const reuseDetail=Number.isFinite(reuse.semantic_hits)&&Number.isFinite(reuse.single_flight_waiters)?n(reuse.semantic_hits)+' semantic hits, '+n(reuse.single_flight_waiters)+' single-flight waiters':'reuse detail unavailable';
-  $('cacheSub').textContent=n(generation.hits)+' generation hits · generation requests: '+reuseDetail+' · '+n(repository.hits)+' repository ('+qHitRate+'% index hit) · '+n(commandCache.hits)+' command hits · '+n(localComputeSaved)+' local tokens avoided';
+  const reuseDetail=n(reuse.semantic_hits)+' semantic · '+n(reuse.single_flight_waiters)+' single-flight';
+  const semanticMissLabels={semantic_cache_disabled:'semantic cache disabled',query_too_short:'query too short',numpy_unavailable:'NumPy unavailable',query_embedding_unavailable:'query embedding unavailable',no_candidates:'no candidates in scope',invalid_query_vector:'invalid query vector',below_threshold:'below similarity threshold',invalid_candidates:'invalid candidate vectors',invalid_candidate_value:'invalid cached value',invalid_scope:'invalid semantic scope',context_ineligible:'context not eligible',cache_disabled:'cache disabled',reason_unavailable:'reason unavailable'};
+  const semanticMissDetails=Object.entries(cacheDecisions).filter(([key])=>key.startsWith('semantic_miss_')).map(([key,count])=>{const reason=key.slice('semantic_miss_'.length);return Number(count)>0?n(count)+' '+(semanticMissLabels[reason]||reason.replaceAll('_',' ')):''}).filter(Boolean);
+  const missDetail=[['new_exact_key','exact misses'],['semantic_not_reused','semantic misses'],['cache_disabled','cache disabled']].map(([key,label])=>Number(cacheDecisions[key]||0)>0?n(cacheDecisions[key])+' '+label:'').filter(Boolean).concat(semanticMissDetails).join(', ')||'no misses recorded';
+  const generationDetail=generationEvents>0?n(generationHits)+'/'+n(generationEvents)+' generation hits · '+reuseDetail+' · '+missDetail:'No generation calls · '+missDetail;
+  $('cacheSub').textContent=generationDetail+' · '+n(repository.hits)+' repository ('+qHitRate+'% index hit) · '+n(commandCache.hits)+' command hits · '+n(localComputeSaved)+' local tokens avoided';
   $('latency').textContent=ms(agentHttp.p50_duration_ms)+' / '+ms(agentHttp.p95_duration_ms)+' / '+ms(agentHttp.p99_duration_ms);
   $('queueWait').textContent='local inference p95 '+ms(inference.p95_duration_ms)+' · avg queue wait '+ms(o.avg_queue_wait_ms);
   $('reliabilityValue').innerHTML=`<span class="${agentHttp.failures?'warn-t':'ok'}">${n(agentHttp.failures)} failures</span>`;
@@ -5309,7 +5327,7 @@ function render(s){
 
   rows('jobs',visibleJobs,j=>workSchedulerRow(j),5);
   rows('activeReq',visibleActive,x=>workActiveRequestRow(x),4);
-  rows('recentReq',visibleRecent,x=>workRecentRequestRow(x),8,'No requests match the current filters.');
+  renderRecentRequestHistory(s);
   renderTraceList(lastTraces);
 
   const diagBar=$('prepDiagnosticBar');
@@ -5432,9 +5450,8 @@ async function pollTraces(isCurrent=()=>document.visibilityState!=='hidden'){
     const kind=$('traceKind')?.value||'',suffix=kind?'&kind='+encodeURIComponent(kind):'',opts={cache:'no-store'};if(controller)opts.signal=controller.signal;
     const r=await apiFetch('/api/debug-traces?limit=200'+suffix,opts);if(!isCurrent()||!tracePollingNeeded())return false;
     const d=await r.json();if(!isCurrent()||!tracePollingNeeded()||!d.success)return false;
-    const items=Array.isArray(d.items)?d.items:[],changed=JSON.stringify(items)!==JSON.stringify(lastTraces);
-    if(changed){lastTraces=items;renderTraceList(lastTraces)}
-    return {changed};
+    const items=Array.isArray(d.items)?d.items:[];
+    return updateTraceSummaries(items);
   }catch(e){if(isCurrent()&&!controller?.signal.aborted)console.warn('trace refresh failed',e);return false}
   finally{tracesPollInFlight=false;if(tracesPollAbortController===controller)tracesPollAbortController=null}
 }

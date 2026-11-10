@@ -2956,10 +2956,7 @@ class CodeIndex:
         result["confidence"] = min(confidence, 0.90 if current else 0.50) if status != "verified_current_candidates" else confidence
         callback = getattr(self, "_reindex_callback", None)
         queued = 0
-        # Notifications can queue a generative preprocessing worker after this
-        # request ends; do not enqueue or consume the dedupe key for this profile.
-        from .opencode_boundary import generation_denial
-        if callable(callback) and generation_denial() is None:
+        if callable(callback):
             for path in freshness.get("stale_paths", []):
                 key = stable_hash({"root": root, "path": path})
                 if self._reindex_notifications.get(key) is not None:

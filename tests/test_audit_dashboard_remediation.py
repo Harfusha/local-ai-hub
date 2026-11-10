@@ -217,6 +217,7 @@ const document={visibilityState:'visible',querySelector:()=>({id:active})};
 const $=id=>id==='traceRefresh'?{addEventListener:(_event,cb)=>{refresh=cb}}:null;
 const apiFetch=async()=>{requests++;return {json:async()=>({success:true,items:[{trace_id:'real-fixture'}]})}};
 const renderTraceList=()=>{renders++};
+const updateTraceSummaries=items=>{if(JSON.stringify(items)===JSON.stringify(lastTraces))return {changed:false};lastTraces=items;renderTraceList(lastTraces);return {changed:true}};
 """
     script = harness + source + """
 (async()=>{

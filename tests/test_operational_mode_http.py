@@ -159,15 +159,32 @@ def test_get_mode_is_available_to_loopback_dashboard_without_token(monkeypatch, 
 
 def test_admin_mode_control_remains_available_in_maintenance(monkeypatch, tmp_path):
     operational_mode.set_operational_mode(tmp_path, "maintenance")
-    handler, _app, responses = _handler(
+    handler, app, responses = _handler(
         monkeypatch, tmp_path, method="POST", path="/api/admin/mode", payload={"mode": "active"}
     )
+    calls = []
+    app.preprocessor = SimpleNamespace(resume=lambda: calls.append("resume"))
 
     http_server.Handler.do_POST(handler)
 
     assert responses[-1][0] == 200
     assert responses[-1][1]["mode_changed"] is True
     assert operational_mode.load_operational_mode(tmp_path).mode == "active"
+    assert calls == ["resume"]
+
+
+def test_idempotent_active_mode_update_preserves_manual_preprocessing_pause(monkeypatch, tmp_path):
+    calls = []
+    handler, app, responses = _handler(
+        monkeypatch, tmp_path, method="POST", path="/api/admin/mode", payload={"mode": "active"}
+    )
+    app.preprocessor = SimpleNamespace(resume=lambda: calls.append("resume"))
+
+    http_server.Handler.do_POST(handler)
+
+    assert responses[-1][0] == 200
+    assert responses[-1][1]["mode_changed"] is False
+    assert calls == []
 
 
 def test_preprocessing_mode_resumes_preprocessor_and_keeps_admission_closed(monkeypatch, tmp_path):

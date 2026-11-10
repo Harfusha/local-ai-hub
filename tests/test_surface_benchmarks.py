@@ -470,7 +470,8 @@ def test_synthetic_repository_declares_pytest_for_affected_test_selection(tmp_pa
     assert result["success"] is True
     assert result["framework"] == "pytest"
     assert result["test_files"] == [test_path.relative_to(root).as_posix()]
-    assert result["confidence"] >= 0.95
+    assert result["confidence"] == 0.5
+    assert result["selection_complete"] is False
 
 
 def test_graph_unpaired_fallback_does_not_claim_paired_cases(tmp_path: Path) -> None:

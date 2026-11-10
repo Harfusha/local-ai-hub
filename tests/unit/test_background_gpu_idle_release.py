@@ -83,7 +83,6 @@ def test_idle_fence_release_failure_is_reported(monkeypatch):
 
 def test_completed_batch_arms_idle_release(monkeypatch):
     import local_ai_hub.operational_mode as mode
-    import local_ai_hub.opencode_boundary as boundary
 
     worker, released = make_worker(monkeypatch)
     worker.config = {"server": {"state_dir": "unused"}}
@@ -99,7 +98,6 @@ def test_completed_batch_arms_idle_release(monkeypatch):
     worker._foreground_requested = lambda: False
     worker._generate_one = lambda *args, **kwargs: {"success": True}
     worker._stats = {"batches": 0, "submitted": 0, "completed": 0, "failed": 0}
-    monkeypatch.setattr(boundary, "generation_denial", lambda: None)
     monkeypatch.setattr(mode, "load_operational_mode", lambda _: SimpleNamespace(mode="active", degraded=False))
     with ThreadPoolExecutor(max_workers=1) as executor:
         worker._executor = executor

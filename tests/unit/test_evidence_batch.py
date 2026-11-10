@@ -1,0 +1,121 @@
+from __future__ import annotations
+
+import hashlib
+from types import SimpleNamespace
+
+from local_ai_hub.deterministic import DeterministicEngine
+from local_ai_hub.evidence import EvidenceStore
+from local_ai_hub.repo_tools import RepositoryTools
+
+
+def test_get_many_shares_source_verification_and_preserves_order(tmp_path, monkeypatch):
+    root = tmp_path / "repo"
+    root.mkdir()
+    source = root / "module.py"
+    source.write_text("one = 1\ntwo = 2\nthree = 3\nfour = 4\n", encoding="utf-8")
+    digest = hashlib.sha256(source.read_bytes()).hexdigest()
+    store = EvidenceStore(tmp_path / "state")
+    items = store.put_many(str(root), [
+        {"path": "module.py", "file_sha256": digest, "start_line": 1, "end_line": 2, "text": "one = 1\ntwo = 2"},
+        {"path": "module.py", "file_sha256": digest, "start_line": 3, "end_line": 4, "text": "three = 3\nfour = 4"},
+    ])
+    ids = [str(item["evidence_id"]) for item in items]
+    hash_calls = []
+    original_hash = EvidenceStore._hash_source_file
+
+    def counted_hash(path):
+        hash_calls.append(path)
+        return original_hash(path)
+
+    monkeypatch.setattr(EvidenceStore, "_hash_source_file", staticmethod(counted_hash))
+    results = store.get_many([ids[1], ids[0], ids[1], "missing"], verify=True, root=str(root))
+
+    assert [row.get("evidence_id") for row in results[:3]] == [ids[1], ids[0], ids[1]]
+    assert all(row["success"] is True and row["stale"] is False for row in results[:3])
+    assert results[3] == {"success": False, "error": "evidence not found"}
+    assert len(hash_calls) == 1
+
+    source.write_text("changed = True\n", encoding="utf-8")
+    stale = store.get_many(ids, verify=True)
+    assert all(row["success"] is True and row["stale"] is True for row in stale)
+
+
+def test_context_pack_uses_batched_evidence_fetch(tmp_path, monkeypatch):
+    root = tmp_path / "repo"
+    root.mkdir()
+    source = root / "module.py"
+    source.write_text("first = 1\nsecond = 2\n", encoding="utf-8")
+    digest = hashlib.sha256(source.read_bytes()).hexdigest()
+    store = EvidenceStore(tmp_path / "state")
+    items = store.put_many(str(root), [
+        {"path": "module.py", "file_sha256": digest, "start_line": 1, "end_line": 1, "text": "first = 1"},
+        {"path": "module.py", "file_sha256": digest, "start_line": 2, "end_line": 2, "text": "second = 2"},
+    ])
+    ids = [str(item["evidence_id"]) for item in items]
+    fetch_batches = []
+    original_get_many = store.get_many
+
+    def tracked_get_many(evidence_ids, **kwargs):
+        fetch_batches.append(list(evidence_ids))
+        return original_get_many(evidence_ids, **kwargs)
+
+    monkeypatch.setattr(store, "get_many", tracked_get_many)
+    engine = SimpleNamespace(
+        query=lambda *_args, **_kwargs: {"evidence": [{"evidence_id": eid} for eid in ids]},
+        render_answer=lambda *_args, **_kwargs: "facts",
+        evidence=store,
+        code_index=None,
+        _root=lambda value: value,
+    )
+
+    packed = DeterministicEngine.context_pack(engine, str(root), "probe", max_chars=1000, max_raw_evidence=1)
+
+    assert packed["success"] is True
+    assert "first = 1" in packed["context"]
+    assert "second = 2" not in packed["context"]
+    assert fetch_batches == [[ids[0]]]
+
+
+def test_exact_evidence_batches_persistence_and_keeps_exact_items(tmp_path, monkeypatch):
+    root = tmp_path / "repo"
+    root.mkdir()
+    first = root / "first.py"
+    second = root / "second.py"
+    first.write_text("first = 1\n", encoding="utf-8")
+    second.write_text("second = 2\n", encoding="utf-8")
+    store = EvidenceStore(tmp_path / "state")
+    batch_calls = []
+    original_put_many = store.put_many
+
+    def tracked_put_many(batch_root, items):
+        batch_calls.append([item["path"] for item in items])
+        return original_put_many(batch_root, items)
+
+    def unexpected_put(*_args, **_kwargs):
+        raise AssertionError("exact evidence should use the batch writer")
+
+    monkeypatch.setattr(store, "put_many", tracked_put_many)
+    monkeypatch.setattr(store, "put", unexpected_put)
+    engine = SimpleNamespace(
+        evidence=store,
+        max_evidence=8,
+        repo_tools=RepositoryTools({}),
+        code_index=None,
+    )
+    engine.merge_overlapping_slices = lambda batch_root, slices: (
+        DeterministicEngine.merge_overlapping_slices(engine, batch_root, slices)
+    )
+
+    items = DeterministicEngine._exact_evidence(
+        engine,
+        str(root),
+        [{"path": "first.py", "line": 1}, {"path": "second.py", "line": 1}],
+    )
+
+    assert batch_calls == [["first.py", "second.py"]]
+    assert len(items) == 2
+    assert all("text" not in item and item.get("evidence_id") for item in items)
+    stored = store.get_many(
+        [str(item["evidence_id"]) for item in items], verify=False, root=str(root)
+    )
+    assert [item["text"] for item in stored] == ["first = 1", "second = 2"]

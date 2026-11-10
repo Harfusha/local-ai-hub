@@ -291,6 +291,105 @@ class EvidenceStore:
                 stale = True
         return {"success": True, "evidence_id": eid, "root": row["root"], "path": row["path"], "file_sha256": row["file_hash"], "start_line": row["start_line"], "end_line": row["end_line"], "text": row["text"], "stale": stale}
 
+    def get_many(self, evidence_ids: list[str], *, verify: bool = True, root: str | None = None) -> list[dict[str, Any]]:
+        """Fetch bounded evidence batches, sharing database and source verification work."""
+        if not isinstance(evidence_ids, (list, tuple)) or not evidence_ids:
+            return []
+        if root is not None and (not isinstance(root, str) or not root):
+            return [{"success": False, "error": "evidence not found"} for _ in evidence_ids]
+        ids = [_clean_text(value).strip() for value in evidence_ids]
+        unique_ids = list(dict.fromkeys(value for value in ids if value))
+        rows_by_id: dict[str, sqlite3.Row] = {}
+        try:
+            with self._lock, closing(self._connect()) as con:
+                for offset in range(0, len(unique_ids), 400):
+                    batch = unique_ids[offset:offset + 400]
+                    placeholders = ",".join("?" for _ in batch)
+                    sql = f"SELECT * FROM evidence WHERE id IN ({placeholders})"
+                    params: tuple[Any, ...] = tuple(batch)
+                    if root is not None:
+                        sql = f"SELECT * FROM evidence WHERE root=? AND id IN ({placeholders})"
+                        params = (root, *batch)
+                    rows_by_id.update({str(row["id"]): row for row in con.execute(sql, params).fetchall()})
+                now = time.time()
+                untouched = [eid for eid in unique_ids if eid in rows_by_id and eid not in self._touched_ids]
+                if untouched:
+                    con.executemany("UPDATE evidence SET accessed_at=?,hits=hits+1 WHERE id=?", [(now, eid) for eid in untouched])
+                    con.commit()
+                    for eid in untouched:
+                        self._touched_ids.add(eid)
+                        if len(self._touched_ids) > 8192:
+                            self._touched_ids.clear()
+                            self._touched_ids.add(eid)
+        except sqlite3.DatabaseError:
+            return [{"success": False, "error": "evidence store unavailable"} for _ in ids]
+
+        stale_by_id: dict[str, bool] = {}
+        if verify:
+            rows_by_path: dict[str, list[sqlite3.Row]] = {}
+            for row in rows_by_id.values():
+                try:
+                    path = str((Path(str(row["root"])) / str(row["path"])).resolve(strict=False))
+                except Exception:
+                    stale_by_id[str(row["id"])] = True
+                    continue
+                rows_by_path.setdefault(path, []).append(row)
+            for raw_path, rows in rows_by_path.items():
+                path = Path(raw_path)
+                stale_ids = {str(row["id"]) for row in rows}
+                try:
+                    if not path.is_file():
+                        stale_by_id.update({eid: True for eid in stale_ids})
+                        continue
+                    actual_hash = self._hash_source_file(path)
+                    hash_matches = {str(row["id"]): actual_hash == str(row["file_hash"]) for row in rows}
+                    readable = [row for row in rows if hash_matches[str(row["id"])] ]
+                    if readable:
+                        starts: dict[int, list[sqlite3.Row]] = {}
+                        ends: dict[int, list[sqlite3.Row]] = {}
+                        for row in readable:
+                            starts.setdefault(int(row["start_line"]), []).append(row)
+                            ends.setdefault(int(row["end_line"]), []).append(row)
+                        selected: dict[str, list[str]] = {str(row["id"]): [] for row in readable}
+                        active: dict[str, sqlite3.Row] = {}
+                        line_count = 0
+                        with path.open("r", encoding="utf-8", errors="replace") as source:
+                            for line_count, line in enumerate(source, start=1):
+                                for row in starts.get(line_count, ()):
+                                    active[str(row["id"])] = row
+                                for eid in active:
+                                    selected[eid].append(line)
+                                for row in ends.get(line_count, ()):
+                                    active.pop(str(row["id"]), None)
+                                if line_count >= max(ends):
+                                    break
+                        for row in readable:
+                            eid = str(row["id"])
+                            start_line = int(row["start_line"])
+                            end_line = int(row["end_line"])
+                            actual_lines = selected[eid]
+                            expected = "".join(actual_lines).rstrip("\r\n")
+                            recorded = str(row["text"]).rstrip("\r\n")
+                            stale_by_id[eid] = (start_line < 1 or line_count < end_line
+                                                or len(actual_lines) != end_line - start_line + 1
+                                                or expected != recorded)
+                    for eid, matches in hash_matches.items():
+                        stale_by_id.setdefault(eid, not matches)
+                except Exception:
+                    stale_by_id.update({eid: True for eid in stale_ids})
+
+        results: list[dict[str, Any]] = []
+        for eid in ids:
+            row = rows_by_id.get(eid)
+            if not eid or row is None:
+                results.append({"success": False, "error": "evidence not found"})
+                continue
+            results.append({"success": True, "evidence_id": eid, "root": row["root"], "path": row["path"],
+                            "file_sha256": row["file_hash"], "start_line": row["start_line"],
+                            "end_line": row["end_line"], "text": row["text"],
+                            "stale": stale_by_id.get(eid, False)})
+        return results
+
     def validate_current(self, evidence_id: str) -> bool:
         """Prove an evidence ID still matches its stored row and current source."""
         if not is_evidence_id(evidence_id):

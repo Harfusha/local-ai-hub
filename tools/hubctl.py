@@ -245,7 +245,7 @@ def status_inventory_lines(st: dict) -> tuple[str, str]:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Control the Local AI Hub singleton")
-    parser.add_argument("action", choices=["status", "start", "stop", "restart", "watch", "dashboard", "service-status", "agent-state", "cleanup", "clean", "generate", "tasks", "plans", "memory", "doctor", "logs", "pause", "resume", "mode", "opencode"])
+    parser.add_argument("action", choices=["status", "start", "stop", "restart", "watch", "dashboard", "service-status", "agent-state", "cleanup", "clean", "generate", "tasks", "plans", "memory", "doctor", "logs", "pause", "resume", "mode"])
     parser.add_argument("mode_value", nargs="?", choices=ACTIVITY_MODES, metavar="MODE")
     parser.add_argument("--config", type=Path, default=None, help="Path to config.toml")
     parser.add_argument("--install", action="store_true", help="Also deploy generated skill/instructions to configured agents")
@@ -255,7 +255,6 @@ def main() -> int:
     parser.add_argument("--fail", action="store_true", help="Mark task as failed")
     parser.add_argument("--reason", type=str, default="", help="Reason for completing or failing task")
     parser.add_argument("--root", type=Path, default=None, help="Repository root path (defaults to current working directory)")
-    parser.add_argument("--opencode-model", help="Explicit installed model for the experimental opencode action")
     parser.add_argument("--scope", type=str, default="", help="Memory scope filter (task, session, branch, project, user, global)")
     parser.add_argument("--key", type=str, default="", help="Memory key filter")
     parser.add_argument("--query", type=str, default="", help="Memory search query")
@@ -268,16 +267,6 @@ def main() -> int:
     args = parser.parse_args()
     if args.action != "mode" and args.mode_value is not None:
         parser.error("MODE is only valid with the mode action")
-    if args.action == "opencode":
-        if not args.opencode_model:
-            parser.error("opencode requires --opencode-model")
-        from tools.opencode_local import main as opencode_main
-        launch_args = ["--model", args.opencode_model, "--project", str(args.root or Path.cwd())]
-        if args.config is not None:
-            launch_args.extend(["--config", str(args.config)])
-        return opencode_main(launch_args)
-    if args.opencode_model is not None:
-        parser.error("--opencode-model is only valid with the opencode action")
     if args.action in {"pause", "resume", "mode"}:
         requested_mode = args.mode_value
         if args.action == "pause":

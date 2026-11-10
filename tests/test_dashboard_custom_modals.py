@@ -1034,7 +1034,8 @@ def test_trace_detail_runtime_keeps_primary_first_and_technical_details_closed()
     assert first.index("trace-primary") < first.index('id="traceTechnicalDetails"')
     for marker in [
         "Universal request summary",
-        'class="trace-tabs"',
+         'class="trace-view-picker"',
+         'data-trace-view-select',
         "Timeline",
         "Vstupní tokeny",
         "nezaznamenané",
@@ -1052,7 +1053,7 @@ def test_trace_inspector_keeps_tabs_and_raw_fallback_inside_optional_details() -
     optional_start = source.index("const technical=`")
     optional_end = source.index("</details>", optional_start)
     optional_source = source[optional_start:optional_end]
-    assert '<nav class="trace-tabs" role="tablist" aria-label="Trace technical details">' in optional_source
+    assert '<select data-trace-view-select aria-label="Technické údaje">' in optional_source
     assert "panelMarkup" in optional_source
     assert "tracePanel('raw'" not in source[optional_start:]
 
@@ -1125,11 +1126,12 @@ def test_trace_presentation_kind_prioritizes_explicit_specialized_requests() -> 
         + "console.log(JSON.stringify(["
         + "tracePresentationKind({...base,identity:{action:'/api/command'}}),"
         + "tracePresentationKind({...base,identity:{action:'/api/review'}}),"
-        + "tracePresentationKind({...base,session:{kind:'async_job'}})"
+        + "tracePresentationKind({...base,session:{kind:'async_job'}}),"
+        + "tracePresentationKind({...base,session:{kind:'api_request'}})"
         + "]));"
     )
     result = subprocess.run(["node", "-e", script], check=True, capture_output=True, text=True)
-    assert json.loads(result.stdout) == ["command", "review", "async_job"]
+    assert json.loads(result.stdout) == ["command", "review", "async_job", "request_response"]
 
 
 def test_trace_thinking_details_have_stable_keys_and_restore_across_renders() -> None:
@@ -1174,7 +1176,7 @@ def test_trace_inspector_keeps_optional_details_open_and_summary_visible() -> No
     assert "if(existing)traceOptionalDetailsOpen=existing.open" in detail_source
     assert "traceOptionalDetailsOpen?' open':''" in detail_source
     assert "${header}${traceMetricRow(d?.metrics)}${primaryMarkup}${technical}" in detail_source
-    assert "${traceSummary(model,{})}${requestSettings}${historyControls}<nav" in detail_source
+    assert "${panelMarkup}${summaryDetails}${requestSettings}${historyControls}" in detail_source
     assert "tracePanel('summary'" not in model_source
 
 
@@ -1757,9 +1759,9 @@ def test_trace_request_response_primary_fields_and_technical_metadata() -> None:
                 "headers": {"authorization": "HEADER_MARKER"},
             },
             "state": "complete",
+            "response": {"message": "world"},
         },
         "input": {"prompt": "hello"},
-        "response": {"message": "world"},
         "errors": ["none"],
         "timing": {"duration_ms": 42, "created_at": "internal timestamp"},
         "actor": {"agent": "fixture-agent", "tenant": "fixture-tenant"},
@@ -2207,14 +2209,7 @@ def test_trace_inspector_prefers_full_model_payload_over_api_request_wrapper() -
     assert "traceRecorded(effectivePayload)?effectivePayload" in source
 
 
-def test_trace_inspector_uses_accessible_conditional_tabs_and_safe_trace_values() -> None:
-    tab_source = DASHBOARD_HTML[
-        DASHBOARD_HTML.index("function traceTab(") : DASHBOARD_HTML.index(
-            "function traceStatus("
-        )
-    ]
-    assert 'role="tab"' in tab_source
-    assert "aria-controls" in tab_source
+def test_trace_inspector_uses_accessible_conditional_picker_and_safe_trace_values() -> None:
     detail_source = DASHBOARD_HTML[
         DASHBOARD_HTML.index("function renderTraceDetail(d)") : DASHBOARD_HTML.index(
             "function setTraceView(view)"
@@ -2226,6 +2221,9 @@ def test_trace_inspector_uses_accessible_conditional_tabs_and_safe_trace_values(
     assert "panelMarkup" in detail_source
     assert "hidden" in detail_source
     assert "panel.id===traceView" in detail_source
+    assert '<select data-trace-view-select aria-label="Technické údaje">' in detail_source
+    assert 'document.addEventListener(\'change\'' in DASHBOARD_HTML
+    assert "setTraceView(select.value)" in DASHBOARD_HTML
     model_source = DASHBOARD_HTML[
         DASHBOARD_HTML.index("function traceDisplayModel(detail)") : DASHBOARD_HTML.index(
             "function traceAvailability("
@@ -3633,16 +3631,10 @@ def test_trace_display_model_derives_http_identity_and_keeps_effective_payload()
     assert "effectivePayload" in source
 
 
-def test_trace_inspector_has_keyboard_tabs_and_copyable_content_without_reveal_control() -> None:
-    assert "function moveTraceTab(" in DASHBOARD_HTML
-    keyboard_source = DASHBOARD_HTML[
-        DASHBOARD_HTML.index("function moveTraceTab(") : DASHBOARD_HTML.index(
-            "async function openTrace("
-        )
-    ]
-    for key in ["ArrowLeft", "ArrowRight", "Home", "End"]:
-        assert key in keyboard_source
-    assert "requestAnimationFrame" in keyboard_source
+def test_trace_inspector_has_accessible_picker_and_copyable_content_without_reveal_control() -> None:
+    assert "function moveTraceTab(" not in DASHBOARD_HTML
+    assert 'data-trace-view-select aria-label="Technické údaje"' in DASHBOARD_HTML
+    assert "setTraceView(select.value)" in DASHBOARD_HTML
     assert "traceRevealRedactedDetails" not in DASHBOARD_HTML
     assert 'data-trace-copy="${field}"' in DASHBOARD_HTML
     assert "copyTraceContent" in DASHBOARD_HTML

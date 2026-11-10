@@ -584,10 +584,6 @@ class OllamaRuntime:
         single_attempt: bool = False,
         force_ollama: bool = False,
     ) -> dict[str, Any]:
-        from .opencode_boundary import generation_denial
-        denied = generation_denial()
-        if denied is not None:
-            return denied
         emitted = False
 
         if callable(on_chunk):

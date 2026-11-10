@@ -1504,6 +1504,21 @@ def test_local_ai_coord_curate_dataset_forwards_policy(monkeypatch, tmp_path, mc
     )]
 
 
+def test_local_ai_coord_curate_dataset_forwards_laya_operation(monkeypatch, tmp_path, mcp_diagnostics_enabled):
+    backend = _prepare_coord_api(monkeypatch)
+    operation = {"action": "list", "status": "pending"}
+    result = mcp_server.local_ai_coord(
+        action="curate_dataset", root=str(tmp_path), laya_operation=operation,
+    )
+    assert result["success"] is True
+    assert backend.calls == [(
+        "/api/agent-state/tasks",
+        {"action": "curate_dataset", "root": str(tmp_path), "output_path": "training_dataset.jsonl",
+         "min_receipts": 1, "format": "jsonl", "laya_operation": operation},
+        {"timeout": mcp_server._timeout("quick")},
+    )]
+
+
 def test_local_ai_coord_renew_forwards_lease_and_ttl(monkeypatch):
     backend = _prepare_coord_api(monkeypatch)
     result = mcp_server.local_ai_coord(

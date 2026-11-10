@@ -7,6 +7,7 @@ import logging
 import json
 import math
 import numbers
+import re
 import sqlite3
 import threading
 import time
@@ -279,6 +280,7 @@ class Budget:
     def remaining_external_calls(self) -> int:
         return max(0, self.max_external_calls - self.used_external_calls)
 
+
     def token_utilization(self) -> float:
         if self.max_tokens <= 0:
             return 1.0
@@ -302,6 +304,16 @@ class Budget:
             "used_external_calls": self.used_external_calls,
             "exhausted": self.is_exhausted(),
         }
+
+
+@dataclass(frozen=True)
+class ExternalCallReservation:
+    task_id: str
+    invocation_id: str
+    reserved: bool
+    duplicate: bool
+    exhausted: bool
+    budget: Budget
 
 
 @dataclass(frozen=True)
@@ -427,6 +439,19 @@ class PolicyEngine:
                         )
                         con.execute(
                             "CREATE INDEX IF NOT EXISTS idx_agent_budgets_task ON agent_budgets(task_id)"
+                        )
+                        con.execute(
+                            """
+                            CREATE TABLE IF NOT EXISTS agent_external_call_reservations (
+                                invocation_id TEXT PRIMARY KEY,
+                                task_id TEXT NOT NULL,
+                                reserved_at REAL NOT NULL
+                            )
+                            """
+                        )
+                        con.execute(
+                            "CREATE INDEX IF NOT EXISTS idx_agent_external_reservations_task "
+                            "ON agent_external_call_reservations(task_id)"
                         )
             try:
                 retry_busy(_setup, retries=5, base_delay_seconds=0.02)
@@ -794,6 +819,96 @@ class PolicyEngine:
 
     def consume(self, task_id: str, cost: BudgetCost) -> Budget:
         return self._mutate_budget(task_id, cost=cost)
+
+    def reserve_external_call(
+        self, task_id: str, invocation_id: str
+    ) -> ExternalCallReservation:
+        """Durably reserve one external call exactly once before launching it.
+
+        Reservations use a unique caller-generated invocation ID and a single
+        SQLite write transaction for deduplication, budget checking, and charge.
+        A reserved invocation is never refunded: after a crash the caller must
+        not replay it, because the external process may already have started.
+        """
+        if (
+            type(task_id) is not str
+            or not task_id
+            or task_id != task_id.strip()
+            or "\x00" in task_id
+        ):
+            raise ValueError("task_id must be a canonical nonempty string")
+        if (
+            type(invocation_id) is not str
+            or not re.fullmatch(r"[a-f0-9]{32}", invocation_id)
+        ):
+            raise ValueError("invocation_id must be a 32-character lowercase hex ID")
+        if (
+            self.state_store is None
+            or not getattr(self.state_store, "enabled", False)
+            or not getattr(self.state_store, "db_path", None)
+        ):
+            raise BudgetUnavailableError("durable external-call budget unavailable")
+
+        self._init_table()
+
+        def reserve() -> ExternalCallReservation:
+            with closing(connect_sqlite(self.state_store.db_path)) as con:
+                con.execute("BEGIN IMMEDIATE")
+                existing = con.execute(
+                    "SELECT task_id FROM agent_external_call_reservations WHERE invocation_id=?",
+                    (invocation_id,),
+                ).fetchone()
+                if existing is not None:
+                    if str(existing[0]) != task_id:
+                        raise ValueError("invocation_id is already bound to another task")
+                    row = con.execute(
+                        "SELECT task_id,max_tokens,used_tokens,max_compute_seconds,used_compute_seconds,max_external_calls,used_external_calls "
+                        "FROM agent_budgets WHERE task_id=?",
+                        (task_id,),
+                    ).fetchone()
+                    budget = Budget(*row) if row is not None else None
+                    if budget is None:
+                        raise BudgetUnavailableError("reserved task budget is missing")
+                    con.commit()
+                    return ExternalCallReservation(
+                        task_id, invocation_id, reserved=False, duplicate=True,
+                        exhausted=False, budget=budget,
+                    )
+
+                row = con.execute(
+                    "SELECT task_id,max_tokens,used_tokens,max_compute_seconds,used_compute_seconds,max_external_calls,used_external_calls "
+                    "FROM agent_budgets WHERE task_id=?",
+                    (task_id,),
+                ).fetchone()
+                current = Budget(*row) if row is not None else Budget(task_id=task_id)
+                if current.remaining_external_calls() <= 0:
+                    con.rollback()
+                    self._budgets[task_id] = current
+                    return ExternalCallReservation(
+                        task_id, invocation_id, reserved=False, duplicate=False,
+                        exhausted=True, budget=current,
+                    )
+
+                updated = replace(current, used_external_calls=current.used_external_calls + 1)
+                con.execute(
+                    "INSERT INTO agent_external_call_reservations(invocation_id,task_id,reserved_at) VALUES(?,?,?)",
+                    (invocation_id, task_id, time.time()),
+                )
+                self._write_budget(con, updated)
+                con.commit()
+                self._budgets[task_id] = updated
+                return ExternalCallReservation(
+                    task_id, invocation_id, reserved=True, duplicate=False,
+                    exhausted=False, budget=updated,
+                )
+
+        try:
+            return retry_busy(reserve, retries=5, base_delay_seconds=0.01)
+        except (ValueError, BudgetUnavailableError):
+            raise
+        except sqlite3.Error as exc:
+            LOGGER.warning("external-call reservation failed (%s)", type(exc).__name__)
+            raise BudgetUnavailableError("external-call reservation unavailable") from None
 
     def _mutate_budget(
         self, task_id: str, *, cost: BudgetCost | None = None,

@@ -1,15 +1,18 @@
 from __future__ import annotations
 
 import sqlite3
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
 import local_ai_hub.agent_policy as agent_policy
 from local_ai_hub.agent_identity import AgentScope, ScopeContext
+from local_ai_hub.agent_events import AgentStateStore
 from local_ai_hub.agent_policy import (
     ActionRequest,
     Budget,
     BudgetCost,
+    BudgetUnavailableError,
     CapabilityGrant,
     PolicyDecision,
     PolicyEngine,
@@ -88,6 +91,59 @@ def test_local_model_inference_requires_explicit_grant(engine: PolicyEngine, act
     granted = engine.authorize(request, active_task(), grant=grant)
     assert granted.allowed is True
     assert granted.requires_approval is False
+
+
+def test_external_call_reservation_is_durable_and_idempotent(tmp_path):
+    store = AgentStateStore(tmp_path / "policy.sqlite", enabled=True)
+    first_engine = PolicyEngine(store)
+    second_engine = PolicyEngine(store)
+    first_engine.set_budget("task-1", max_external_calls=1)
+
+    reserved = first_engine.reserve_external_call("task-1", "a" * 32)
+    duplicate = second_engine.reserve_external_call("task-1", "a" * 32)
+    exhausted = second_engine.reserve_external_call("task-1", "b" * 32)
+
+    assert reserved.reserved is True
+    assert reserved.duplicate is False
+    assert reserved.budget.used_external_calls == 1
+    assert duplicate.reserved is False
+    assert duplicate.duplicate is True
+    assert duplicate.budget.used_external_calls == 1
+    assert exhausted.exhausted is True
+    assert exhausted.budget.used_external_calls == 1
+    assert second_engine.get_budget("task-1").used_external_calls == 1
+
+
+def test_external_call_reservation_rejects_cross_task_replay_and_bad_ids(tmp_path):
+    engine = PolicyEngine(AgentStateStore(tmp_path / "policy.sqlite", enabled=True))
+    engine.reserve_external_call("task-1", "c" * 32)
+
+    with pytest.raises(ValueError, match="another task"):
+        engine.reserve_external_call("task-2", "c" * 32)
+    with pytest.raises(ValueError, match="32-character lowercase hex"):
+        engine.reserve_external_call("task-1", "not-an-invocation-id")
+    assert engine.get_budget("task-2").used_external_calls == 0
+
+
+def test_external_call_reservation_requires_durable_budget_store():
+    with pytest.raises(BudgetUnavailableError, match="durable external-call budget"):
+        PolicyEngine().reserve_external_call("task-1", "d" * 32)
+
+
+def test_external_call_reservation_serializes_concurrent_budget_admission(tmp_path):
+    store = AgentStateStore(tmp_path / "policy.sqlite", enabled=True)
+    engines = [PolicyEngine(store), PolicyEngine(store)]
+    engines[0].set_budget("task-1", max_external_calls=1)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(
+            lambda pair: pair[0].reserve_external_call("task-1", pair[1]),
+            [(engines[0], "e" * 32), (engines[1], "f" * 32)],
+        ))
+
+    assert sum(result.reserved for result in results) == 1
+    assert sum(result.exhausted for result in results) == 1
+    assert engines[0].get_budget("task-1").used_external_calls == 1
 
 
 def test_budget_consumption(engine: PolicyEngine):

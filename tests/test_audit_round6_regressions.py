@@ -23,7 +23,6 @@ from local_ai_hub.artifacts import ArtifactStore
 from local_ai_hub.automation import AutomationBroker
 from local_ai_hub.background_gpu import IdleGPUWorker
 from local_ai_hub.benchmark import HardwareBenchmarkRunner
-from local_ai_hub.opencode_inference_session import ExternalInferenceSession
 from local_ai_hub.pipeline import LocalAgentPipeline
 from local_ai_hub.preprocess import ProjectPreprocessor
 from local_ai_hub.repo_tools import RepositoryTools
@@ -196,29 +195,6 @@ def test_t6_03_explorer_high_confidence_without_evidence_cannot_skip_worker(tmp_
     assert res.get("success") is True
     assert pipeline.worker_runs == 1
     assert "worker" in res["pipeline"]["stages"]
-
-
-# ==============================================================================
-# T6-04: GPU Lease Lifecycle Heartbeat Timing Aligned with TTL
-# ==============================================================================
-def test_t6_04_gpu_lease_heartbeat_aligned_with_ttl():
-    """C04: ExternalInferenceSession lease keepalive interval must be <= TTL / 3
-    (<= 20s for 60s TTL), preventing premature lease expiration under 900s idle."""
-    scheduler = SimpleNamespace(
-        external_gpu_ttl_seconds=60.0,
-        keepalive_external_gpu=MagicMock(return_value=True),
-        release_external_gpu=MagicMock(return_value=True),
-    )
-    session = ExternalInferenceSession(
-        scheduler,
-        "test-model",
-        "test-token",
-        idle_timeout_seconds=900.0,
-    )
-    delay = session._heartbeat_delay()
-    assert delay <= 20.0
-    assert delay >= 1.0
-    session.close()
 
 
 # ==============================================================================

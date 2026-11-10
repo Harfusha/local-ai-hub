@@ -964,7 +964,7 @@ class AsyncJobManager:
         with self._mode_transition_lock, self._lock, closing(self._connect()) as con:
             if caller_request_id:
                 identified = con.execute(
-                    "SELECT job_id,action,request_hash,state,trace_id,task_id,expires_at,created_at,error,artifact_id FROM async_jobs WHERE json_valid(payload_json) AND json_extract(payload_json,'$.request_id')=? ORDER BY created_at LIMIT 1",
+                    "SELECT job_id,action,request_hash,state,trace_id,task_id,expires_at,created_at,error,artifact_id FROM async_jobs WHERE json_valid(payload_json) AND json_type(payload_json,'$.request_id')='text' AND json_extract(payload_json,'$.request_id')<>'' AND json_extract(payload_json,'$.request_id')=? ORDER BY created_at LIMIT 1",
                     (caller_request_id,),
                 ).fetchone()
                 if identified:
@@ -997,7 +997,10 @@ class AsyncJobManager:
                 admission = self._resource_admission()
                 if admission["state"] == "rejected":
                     return {"success": False, "state": "rejected", "error": "async job admission rejected by resource pressure", "admission": admission, "admission_state": admission["state"], "terminal": False, "retryable": True, "coalesced": False}
-                pending = int(con.execute("SELECT COUNT(*) FROM async_jobs WHERE state IN ('queued','running')").fetchone()[0])
+                pending = int(con.execute(
+                    "SELECT COUNT(*) FROM (SELECT 1 FROM async_jobs WHERE state IN ('queued','running') LIMIT ?)",
+                    (self.max_pending,),
+                ).fetchone()[0])
                 if pending >= self.max_pending:
                     admission = self._admission("rejected", "queue_limit", retryable=True)
                     return {"success": False, "state": "rejected", "error": "async job queue limit reached", "admission": admission, "admission_state": admission["state"], "terminal": False, "retryable": True, "coalesced": False}

@@ -21,6 +21,7 @@ from typing import Any
 # Stable identity for semantic preprocessing output. Bump only when the card
 # contract, prompts, or deterministic card derivation makes cached cards stale.
 PREPROCESS_ANALYZER_VERSION = "6.0.0"
+FILE_CARD_PROMPT_VERSION = "file-card-v2"
 from .cache import stable_hash
 from .project_config import (
     ProjectPathPolicy,
@@ -274,7 +275,7 @@ class ProjectPreprocessor:
     # Local AI keeps deterministic parsing first, then performs CPU-only semantic
     # indexing before any idle-GPU card generation. This lets embeddings run even
     # while foreground model work is active instead of waiting behind GPU-idle work.
-    PHASES = ("inventory", "hash", "code_index", "deterministic", "serena", "lexical", "rag", "files", "modules", "project", "hot_queries", "diagnostics", "complete")
+    PHASES = ("inventory", "hash", "code_index", "deterministic", "serena", "lexical", "rag", "files", "file_card_enrichment", "modules", "project", "hot_queries", "diagnostics", "complete")
     PHASE_WEIGHTS = {
         "inventory": 2.0, "hash": 3.0, "code_index": 10.0, "deterministic": 5.0,
         "serena": 5.0, "lexical": 5.0, "rag": 40.0, "files": 20.0,
@@ -648,6 +649,18 @@ class ProjectPreprocessor:
                     hits INTEGER NOT NULL DEFAULT 0
                 );
                 CREATE INDEX IF NOT EXISTS idx_content_cards_hash ON content_cards(content_hash,model,analyzer_version);
+                CREATE TABLE IF NOT EXISTS file_card_enrichment (
+                    content_hash TEXT NOT NULL,
+                    model TEXT NOT NULL,
+                    pipeline_version TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    attempts INTEGER NOT NULL DEFAULT 0,
+                    retry_after REAL NOT NULL DEFAULT 0,
+                    lease_until REAL NOT NULL DEFAULT 0,
+                    last_error TEXT,
+                    updated_at REAL NOT NULL,
+                    PRIMARY KEY(content_hash,model,pipeline_version)
+                );
                 CREATE TABLE IF NOT EXISTS module_cards (
                     root TEXT NOT NULL,
                     module TEXT NOT NULL,
@@ -839,19 +852,40 @@ class ProjectPreprocessor:
             return getattr(self, "_exclusive_cpu_pool", self._cpu_pool)
         return self._cpu_pool
 
-    def _exclusive_stub_enrichment(self) -> bool:
+    def _configured_preprocessing_model(self) -> str:
+        config = getattr(self, "config", {})
+        if not isinstance(config, dict):
+            return ""
+        prep_cfg = config.get("preprocessing", {})
+        models = config.get("models", {})
+        configured = (prep_cfg.get("model") if isinstance(prep_cfg, dict) else None)
+        configured = configured or (models.get("background_code") if isinstance(models, dict) else None)
+        return str(configured or "").strip()
+
+    def _file_card_enrichment_enabled(self) -> bool:
+        if bool(self.cfg.get("disable_llm_card_synthesis", False)):
+            return False
+        if not self._configured_preprocessing_model():
+            return False
         exclusive = self.cfg.get("exclusive", {})
-        return (isinstance(exclusive, dict) and exclusive.get("enrich_stub_cards", True) is True
-                and self._exclusive_mode_active() and self._background_work_allowed())
+        if (self._exclusive_mode_active() and isinstance(exclusive, dict)
+                and exclusive.get("enrich_stub_cards", True) is False):
+            return False
+        return self._background_work_allowed()
 
     def _pending_stub_cards(self, root: str) -> int:
-        if not self._exclusive_stub_enrichment():
+        if not self._file_card_enrichment_enabled():
             return 0
+        background_model = self._configured_preprocessing_model()
         with self._db_lock, closing(self._connect()) as con:
             return int(con.execute(
                 "SELECT COUNT(*) FROM file_refs f JOIN content_cards c ON c.card_key=f.card_key "
-                "WHERE f.root=? AND c.model='deterministic-stub' AND f.size<=?",
-                (root, int(self.cfg.get("file_card_max_bytes", 180000))),
+                "WHERE f.root=? AND c.model IN ('deterministic','deterministic-stub','deterministic-barrel') "
+                "AND f.size<=? AND NOT EXISTS (SELECT 1 FROM file_card_enrichment e "
+                "WHERE e.content_hash=f.content_hash AND e.model=? AND e.pipeline_version=? "
+                "AND e.status='failed' AND e.attempts>=3)",
+                (root, int(self.cfg.get("file_card_max_bytes", 180000)), background_model,
+                 self._file_card_pipeline_version()),
             ).fetchone()[0])
 
     @staticmethod
@@ -2123,7 +2157,10 @@ class ProjectPreprocessor:
             code_index_counts: dict[str, int] = {}
             deterministic_counts: dict[str, int] = {}
             pending_stub_counts: dict[str, int] = {}
-            enrich_stubs = self._exclusive_stub_enrichment()
+            failed_enrichment_counts: dict[str, int] = {}
+            enrich_stubs = self._file_card_enrichment_enabled()
+            enrichment_model = self._configured_preprocessing_model()
+            enrichment_pipeline = self._file_card_pipeline_version()
 
             for batch in root_batches(roots):
                 placeholders = ",".join("?" for _ in batch)
@@ -2143,11 +2180,29 @@ class ProjectPreprocessor:
                     stub_rows = con.execute(
                         f"""SELECT f.root, COUNT(*) FROM file_refs f
                             JOIN content_cards c ON c.card_key=f.card_key
-                            WHERE f.root IN ({placeholders}) AND c.model='deterministic-stub'
-                              AND f.size<=? GROUP BY f.root""",
-                        (*batch, int(self.cfg.get("file_card_max_bytes", 180000))),
+                            WHERE f.root IN ({placeholders})
+                              AND c.model IN ('deterministic','deterministic-stub','deterministic-barrel')
+                              AND f.size<=? AND NOT EXISTS (
+                                  SELECT 1 FROM file_card_enrichment e
+                                  WHERE e.content_hash=f.content_hash AND e.model=? AND e.pipeline_version=?
+                                    AND e.status='failed' AND e.attempts>=3
+                              ) GROUP BY f.root""",
+                        (*batch, int(self.cfg.get("file_card_max_bytes", 180000)),
+                         enrichment_model, enrichment_pipeline),
                     ).fetchall()
                     pending_stub_counts.update({str(item[0]): int(item[1]) for item in stub_rows})
+                    failed_rows = con.execute(
+                        f"""SELECT f.root, COUNT(DISTINCT f.content_hash) FROM file_refs f
+                            JOIN content_cards c ON c.card_key=f.card_key
+                            JOIN file_card_enrichment e ON e.content_hash=f.content_hash
+                              AND e.model=? AND e.pipeline_version=? AND e.status='failed'
+                            WHERE f.root IN ({placeholders})
+                              AND c.model IN ('deterministic','deterministic-stub','deterministic-barrel')
+                              AND f.size<=? GROUP BY f.root""",
+                        (enrichment_model, enrichment_pipeline, *batch,
+                         int(self.cfg.get("file_card_max_bytes", 180000))),
+                    ).fetchall()
+                    failed_enrichment_counts.update({str(item[0]): int(item[1]) for item in failed_rows})
                 external_rows = con.execute(
                     f"SELECT root,backend,status,error,updated_at FROM external_index_state WHERE root IN ({placeholders})",
                     batch,
@@ -2440,6 +2495,8 @@ class ProjectPreprocessor:
                     "deterministic_files": det_count if status_str != "complete" else None,
                     "module_cards": module_count, "project_cards": project_card_count,
                     "pending_stub_cards": pending_stub_cards,
+                    "pending_file_card_enrichment": pending_stub_cards,
+                    "failed_file_card_enrichment": failed_enrichment_counts.get(str(row["root"]), 0),
                     "code_index_files": ci_count,
                     "code_index_coverage": {
                         "complete": False, "scope": "demand_indexed_files",
@@ -2589,14 +2646,59 @@ class ProjectPreprocessor:
             rows = con.execute(
                 """SELECT * FROM projects
                    WHERE paused=0 AND retry_after<=? AND status IN ('queued','running','error')
-                     AND phase IN ('files', 'modules', 'project', 'hot_queries')
+                     AND phase IN ('files', 'file_card_enrichment', 'modules', 'project', 'hot_queries')
                    ORDER BY CASE WHEN updated_at<=? THEN 0 ELSE 1 END,
                             force_refresh DESC,
                             updated_at - CASE WHEN last_requested_at>=? THEN 60 ELSE 0 END ASC,
                             CASE status WHEN 'queued' THEN 0 WHEN 'running' THEN 1 ELSE 2 END LIMIT ?""",
                 (now, now - 300.0, now - 300.0, self._project_limit()),
             ).fetchall()
-            return self._first_unowned_project(rows)
+            if rows:
+                return self._first_unowned_project(rows)
+
+            # Completed projects can predate model enrichment. Schedule only roots
+            # with eligible provisional cards, through the ordinary bounded GPU
+            # worker path, without replaying inventory or unrelated phases.
+            if not self._file_card_enrichment_enabled():
+                return None
+            active = int(con.execute(
+                """SELECT COUNT(*) FROM projects WHERE paused=0
+                   AND status IN ('queued','running','error') AND phase<>?""",
+                (self.PHASES[-1],),
+            ).fetchone()[0] or 0)
+            if active >= self._project_limit():
+                return None
+            model = self._configured_preprocessing_model()
+            pipeline = self._file_card_pipeline_version()
+            max_bytes = int(self.cfg.get("file_card_max_bytes", 180000))
+            legacy = con.execute(
+                """SELECT p.root FROM projects p
+                   WHERE p.paused=0 AND p.retry_after<=? AND p.status='complete' AND p.phase='complete'
+                     AND EXISTS (
+                       SELECT 1 FROM file_refs f JOIN content_cards c ON c.card_key=f.card_key
+                       WHERE f.root=p.root AND f.size<=?
+                         AND c.model IN ('deterministic','deterministic-stub','deterministic-barrel')
+                         AND NOT EXISTS (
+                           SELECT 1 FROM file_card_enrichment e
+                           WHERE e.content_hash=f.content_hash AND e.model=? AND e.pipeline_version=?
+                             AND ((e.status='running' AND e.lease_until>?)
+                                  OR (e.status='failed' AND (e.attempts>=3 OR e.retry_after>?)))
+                         )
+                     )
+                   ORDER BY p.next_check_at ASC,p.updated_at ASC LIMIT 1""",
+                (now, max_bytes, model, pipeline, now, now),
+            ).fetchone()
+            if legacy is None:
+                return None
+            root = str(legacy[0])
+            con.execute(
+                """UPDATE projects SET status='queued',phase='file_card_enrichment',
+                   next_check_at=0,updated_at=? WHERE root=? AND status='complete' AND phase='complete'""",
+                (now, root),
+            )
+            self._rebalance_processing_slots(con, preferred_root=root)
+            con.commit()
+            return con.execute("SELECT * FROM projects WHERE root=?", (root,)).fetchone()
 
     def _record_failure_telemetry(self, current: sqlite3.Row | dict[str, Any] | None, error: Exception) -> None:
         """Keep telemetry callback failures separate from project recovery."""
@@ -2942,6 +3044,14 @@ class ProjectPreprocessor:
         if phase == "serena":
             return self._step_external_index(row, "serena", "lexical")
         if phase == "files":
+            return self._step_file_card(row)
+        if phase == "file_card_enrichment":
+            if not self._file_card_enrichment_enabled():
+                interval = max(30, int(self.cfg.get("auto_recheck_seconds", 1800)))
+                completed_at = time.time()
+                self._set_project(root, phase="complete", status="complete", force_refresh=0,
+                                  last_complete_at=completed_at, next_check_at=completed_at + interval)
+                return True
             return self._step_file_card(row)
         if phase == "modules":
             return self._step_module(row)
@@ -4252,11 +4362,57 @@ class ProjectPreprocessor:
         return self.candidate_paths(root, query, limit, include_semantic=False)
 
     def _content_card_key(self, content_hash: str) -> str:
-        bg_model = str(self.config.get("preprocessing", {}).get("model") or self.config.get("models", {}).get("background_code", "qwen2.5-coder:0.5b"))
+        bg_model = self._configured_preprocessing_model()
         return stable_hash({
-            "app_version": PREPROCESS_ANALYZER_VERSION, "sha": content_hash,
+            "analyzer": PREPROCESS_ANALYZER_VERSION,
+            "sha": content_hash,
             "model": bg_model,
+            "prompt_version": FILE_CARD_PROMPT_VERSION,
+            "schema": CARD_SCHEMA,
         })
+
+    @staticmethod
+    def _file_card_pipeline_version() -> str:
+        return stable_hash({
+            "analyzer": PREPROCESS_ANALYZER_VERSION,
+            "prompt_version": FILE_CARD_PROMPT_VERSION,
+            "schema": CARD_SCHEMA,
+        })
+
+    def _claim_file_card_enrichment(self, content_hash: str, model: str) -> bool:
+        now = time.time()
+        with self._db_lock, closing(self._connect()) as con:
+            cur = con.execute(
+                """INSERT INTO file_card_enrichment(
+                       content_hash,model,pipeline_version,status,attempts,retry_after,lease_until,last_error,updated_at
+                   ) VALUES(?,?,?,'running',1,0,?,?,?)
+                   ON CONFLICT(content_hash,model,pipeline_version) DO UPDATE SET
+                       status='running',attempts=file_card_enrichment.attempts+1,
+                       lease_until=excluded.lease_until,last_error=NULL,updated_at=excluded.updated_at
+                   WHERE file_card_enrichment.status!='complete'
+                     AND file_card_enrichment.attempts<3
+                     AND file_card_enrichment.retry_after<=?
+                     AND (file_card_enrichment.status!='running' OR file_card_enrichment.lease_until<=?)""",
+                (content_hash, model, self._file_card_pipeline_version(), now + 900.0, None, now, now, now),
+            )
+            con.commit()
+            return cur.rowcount == 1
+
+    def _finish_file_card_enrichment(self, content_hash: str, model: str, *, success: bool,
+                                     error: str | None = None, preempted: bool = False) -> None:
+        now = time.time()
+        status = "complete" if success else ("pending" if preempted else "failed")
+        retry_after = now if preempted else (now + 60.0 if not success else 0.0)
+        with self._db_lock, closing(self._connect()) as con:
+            con.execute(
+                """UPDATE file_card_enrichment SET status=?,
+                   attempts=CASE WHEN ? THEN MAX(0,attempts-1) ELSE attempts END,
+                   retry_after=?,lease_until=0,last_error=?,updated_at=?
+                   WHERE content_hash=? AND model=? AND pipeline_version=?""",
+                (status, int(preempted), retry_after, (str(error)[:240] if error else None), now,
+                 content_hash, model, self._file_card_pipeline_version()),
+            )
+            con.commit()
 
     def _learned_priority_paths(self, root: str) -> tuple[str, ...]:
         """Use bounded learned queries as advisory background scheduling hints."""
@@ -4326,12 +4482,29 @@ class ProjectPreprocessor:
         max_bytes = int(self.cfg.get("file_card_max_bytes", 180000))
         limit = max(1, int(limit))
         priority_paths = self._learned_priority_paths(root) if limit > 1 else ()
+        enrich_cards = self._file_card_enrichment_enabled()
+        background_model = self._configured_preprocessing_model()
+        now = time.time()
         with self._db_lock, closing(self._connect()) as con:
             f_cols = {str(row[1]) for row in con.execute("PRAGMA table_info(file_refs)").fetchall()}
             last_accessed_clause = "(COALESCE(last_accessed_at, 0) > 0) DESC," if "last_accessed_at" in f_cols else ""
             centrality_clause = "COALESCE(centrality_score, 0.0) DESC," if "centrality_score" in f_cols else ""
-            card_filter = ("(card_key IS NULL OR card_key IN (SELECT card_key FROM content_cards WHERE model='deterministic-stub'))"
-                           if self._exclusive_stub_enrichment() else "card_key IS NULL")
+            if enrich_cards:
+                card_filter = """(card_key IS NULL OR (card_key IN (
+                    SELECT card_key FROM content_cards
+                    WHERE model IN ('deterministic','deterministic-stub','deterministic-barrel')
+                ) AND NOT EXISTS (
+                    SELECT 1 FROM file_card_enrichment e
+                    WHERE e.content_hash=file_refs.content_hash AND e.model=? AND e.pipeline_version=?
+                      AND ((e.status='running' AND e.lease_until>?)
+                           OR (e.status='failed' AND (e.attempts>=3 OR e.retry_after>?)))
+                )))"""
+                selection_params: tuple[Any, ...] = (
+                    root, background_model, self._file_card_pipeline_version(), now, now, max_bytes,
+                )
+            else:
+                card_filter = "card_key IS NULL"
+                selection_params = (root, max_bytes)
             selection = f"SELECT * FROM file_refs WHERE root=? AND {card_filter} AND size<=?"
             order = f""" ORDER BY
                      {last_accessed_clause}
@@ -4352,14 +4525,14 @@ class ProjectPreprocessor:
                      END ASC,
                      size ASC, path ASC
                    LIMIT ?"""
-            regular = con.execute(selection + order, (root, max_bytes, limit)).fetchall()
+            regular = con.execute(selection + order, (*selection_params, limit)).fetchall()
             if not priority_paths:
                 return regular
             placeholders = ",".join("?" for _ in priority_paths)
             quota = min(limit - 1, max(1, limit // 4))
             preferred = con.execute(
                 selection + f" AND path IN ({placeholders})" + order,
-                (root, max_bytes, *priority_paths, quota),
+                (*selection_params, *priority_paths, quota),
             ).fetchall()
             selected = list(preferred)
             seen = {str(row["path"]) for row in selected}
@@ -4390,15 +4563,25 @@ class ProjectPreprocessor:
             "original_estimated_tokens": budget["original_estimated_tokens"],
         }}
 
-    def _store_file_card(self, root: str, item: sqlite3.Row, card_key: str, data: dict[str, Any], model: str) -> None:
+    def _store_file_card(self, root: str, item: sqlite3.Row, card_key: str, data: dict[str, Any], model: str,
+                         expected_hash: str | None = None) -> bool:
         now = time.time()
         with self._db_lock, closing(self._connect()) as con:
+            source_hash = expected_hash or str(item["content_hash"])
+            current = con.execute(
+                "SELECT content_hash FROM file_refs WHERE root=? AND path=?",
+                (root, str(item["path"])),
+            ).fetchone()
+            if current is None or str(current[0]) != source_hash:
+                return False
             con.execute(
                 "INSERT OR REPLACE INTO content_cards(card_key,content_hash,model,analyzer_version,card_json,created_at,accessed_at,hits) VALUES(?,?,?,?,?,?,?,COALESCE((SELECT hits FROM content_cards WHERE card_key=?),0))",
-                (card_key, str(item["content_hash"]), model, PREPROCESS_ANALYZER_VERSION, json_dumps(data, ensure_ascii=False), now, now, card_key),
+                (card_key, source_hash, model, PREPROCESS_ANALYZER_VERSION, json_dumps(data, ensure_ascii=False), now, now, card_key),
             )
-            con.execute("UPDATE file_refs SET card_key=?,updated_at=? WHERE root=? AND path=?", (card_key, now, root, item["path"]))
+            con.execute("UPDATE file_refs SET card_key=?,updated_at=? WHERE root=? AND path=? AND content_hash=?",
+                         (card_key, now, root, item["path"], source_hash))
             con.commit()
+            return True
 
     def _run_background_generate(self, model: str, prompt: str, system: str, schema: dict[str, Any], max_tokens: int, source: str) -> dict[str, Any]:
         from .operational_mode import load_operational_mode, operational_mode_gate_error, preprocessing_mode_ready
@@ -4494,7 +4677,7 @@ class ProjectPreprocessor:
 
     def _step_file_card(self, row: dict[str, Any]) -> bool:
         root = str(row["root"])
-        enrich_stubs = self._exclusive_stub_enrichment()
+        enrich_cards = self._file_card_enrichment_enabled()
         bg_cfg = self.config.get("background_gpu", {})
         batch_size = max(1, int(bg_cfg.get("file_batch_size", 64)))
         items = self._find_next_files(root, batch_size)
@@ -4511,11 +4694,16 @@ class ProjectPreprocessor:
                     )
                     con.execute("UPDATE file_refs SET card_key=?,updated_at=? WHERE root=? AND path=?", (card_key, time.time(), root, item["path"]))
                 con.commit()
-            if str(row.get("phase")) == "files":
+            if str(row.get("phase")) == "file_card_enrichment":
+                completed_at = time.time()
+                interval = max(30, int(self.cfg.get("auto_recheck_seconds", 1800)))
+                self._set_project(root, phase="complete", status="complete", force_refresh=0,
+                                  last_complete_at=completed_at, next_check_at=completed_at + interval)
+            elif str(row.get("phase")) == "files":
                 self._set_project(root, phase="modules", force_refresh=0)
             return True
 
-        background_model = str(self.config.get("preprocessing", {}).get("model") or self.config.get("models", {}).get("background_code", "qwen2.5-coder:0.5b"))
+        background_model = self._configured_preprocessing_model()
         pending_tasks: list[dict[str, Any]] = []
         pending_meta: list[tuple[sqlite3.Row, str]] = []
         progressed = False
@@ -4533,18 +4721,29 @@ class ProjectPreprocessor:
                     cached_rows = con.execute(
                         f"""SELECT content_hash,card_key,card_json FROM content_cards
                             WHERE analyzer_version=? AND content_hash IN ({placeholders})
-                              AND (?=0 OR model NOT IN ('deterministic-stub','deterministic-unreadable','deterministic-oversized'))
+                              AND (?=0 OR model=?)
                             ORDER BY content_hash,hits DESC""",
-                        (PREPROCESS_ANALYZER_VERSION, *batch, int(enrich_stubs)),
+                        (PREPROCESS_ANALYZER_VERSION, *batch, int(enrich_cards), background_model),
                     ).fetchall()
                     for cached_row in cached_rows:
-                        if enrich_stubs:
+                        if enrich_cards:
+                            if str(cached_row["card_key"]) != self._content_card_key(str(cached_row["content_hash"])):
+                                continue
                             try:
                                 cached_data = json.loads(str(cached_row["card_json"]))
                             except (TypeError, ValueError):
                                 continue
                             if not self._valid_enriched_file_card(cached_data):
                                 continue
+                            con.execute(
+                                """INSERT INTO file_card_enrichment(
+                                       content_hash,model,pipeline_version,status,attempts,retry_after,lease_until,last_error,updated_at
+                                   ) VALUES(?,?,?,'complete',0,0,0,NULL,?)
+                                   ON CONFLICT(content_hash,model,pipeline_version) DO UPDATE SET
+                                       status='complete',lease_until=0,last_error=NULL,updated_at=excluded.updated_at""",
+                                (str(cached_row["content_hash"]), background_model,
+                                 self._file_card_pipeline_version(), now),
+                            )
                         cached_cards.setdefault(str(cached_row["content_hash"]), str(cached_row["card_key"]))
                 for item in items:
                     cached_key = cached_cards.get(str(item["content_hash"] or ""))
@@ -4567,10 +4766,26 @@ class ProjectPreprocessor:
 
         for item in items:
             content_hash = str(item["content_hash"])
+            provisional_data: dict[str, Any] | None = None
 
             # 1. Instant global content-addressed cache hit across all branches & worktrees
             if cached_cards.get(content_hash):
                 continue
+
+            if enrich_cards and item["card_key"] is not None:
+                with self._db_lock, closing(self._connect()) as con:
+                    prior = con.execute(
+                        "SELECT model,card_json FROM content_cards WHERE card_key=?",
+                        (str(item["card_key"]),),
+                    ).fetchone()
+                if prior and str(prior["model"]) in {
+                    "deterministic", "deterministic-stub", "deterministic-barrel",
+                }:
+                    try:
+                        parsed_prior = json.loads(str(prior["card_json"]))
+                        provisional_data = parsed_prior if isinstance(parsed_prior, dict) else None
+                    except (TypeError, ValueError):
+                        provisional_data = None
 
             # 2. Deterministic AST/facts fallback
             if self.deterministic is not None and bool(self.cfg.get("prefer_deterministic_cards", True)):
@@ -4580,19 +4795,16 @@ class ProjectPreprocessor:
                     det = {"success": False}
                 if det.get("success"):
                     card_key = stable_hash({"app_version": PREPROCESS_ANALYZER_VERSION, "sha": content_hash, "source": "deterministic"})
-                    self._store_file_card(root, item, card_key, det.get("card", {}), "deterministic")
+                    det_card = det.get("card", {})
+                    if not self._store_file_card(root, item, card_key, det_card, "deterministic", content_hash):
+                        deferred_enrichment = True
+                        continue
                     with self._stats_lock:
                         self._stats["deterministic_card_hits"] = self._stats.get("deterministic_card_hits", 0) + 1
                     progressed = True
-                    continue
-
-            if bool(self.cfg.get("disable_llm_card_synthesis", True)) and not enrich_stubs:
-                # Skip slow local LLM card synthesis on unparsed files; store compact deterministic metadata
-                data = {"purpose": f"source file ({Path(str(item['path'])).suffix})", "symbols": [], "dependencies": [], "side_effects": [], "risks": [], "tests": [], "keywords": [Path(str(item["path"])).stem]}
-                card_key = stable_hash({"app_version": PREPROCESS_ANALYZER_VERSION, "sha": content_hash, "source": "deterministic-stub"})
-                self._store_file_card(root, item, card_key, data, "deterministic-stub")
-                progressed = True
-                continue
+                    provisional_data = det_card if isinstance(det_card, dict) else None
+                    if not enrich_cards:
+                        continue
 
             card_key = self._content_card_key(content_hash)
 
@@ -4601,15 +4813,19 @@ class ProjectPreprocessor:
                 int(self.cfg.get("file_card_max_chars", 18000)),
             )
             if not slice_result.get("success"):
-                if enrich_stubs and item["card_key"] is not None:
+                if enrich_cards and item["card_key"] is not None:
                     deferred_enrichment = True
                     continue
                 data = {"purpose": "unreadable/skipped", "symbols": [], "dependencies": [], "side_effects": [], "risks": [], "tests": [], "keywords": []}
-                self._store_file_card(root, item, card_key, data, "deterministic-unreadable")
+                self._store_file_card(root, item, card_key, data, "deterministic-unreadable", content_hash)
                 progressed = True
                 continue
 
             file_text = slice_result.get("text", "")
+            source_hash = str(slice_result.get("file_sha256") or content_hash)
+            if source_hash != content_hash:
+                deferred_enrichment = True
+                continue
             rel_name = Path(str(item["path"])).name.lower()
             is_trivial = False
             if int(item["size"] or 0) < 1500:
@@ -4632,9 +4848,21 @@ class ProjectPreprocessor:
                     "keywords": [Path(str(item["path"])).stem],
                 }
                 barrel_key = stable_hash({"app_version": PREPROCESS_ANALYZER_VERSION, "sha": content_hash, "source": "deterministic-barrel"})
-                self._store_file_card(root, item, barrel_key, data, "deterministic-barrel")
+                self._store_file_card(root, item, barrel_key, data, "deterministic-barrel", content_hash)
                 progressed = True
-                continue
+                provisional_data = data
+                if not enrich_cards:
+                    continue
+
+            if provisional_data is None:
+                # Persist deterministic metadata before any model attempt.
+                data = {"purpose": f"source file ({Path(str(item['path'])).suffix})", "symbols": [], "dependencies": [], "side_effects": [], "risks": [], "tests": [], "keywords": [Path(str(item["path"])).stem]}
+                card_key = stable_hash({"app_version": PREPROCESS_ANALYZER_VERSION, "sha": content_hash, "source": "deterministic-stub"})
+                self._store_file_card(root, item, card_key, data, "deterministic-stub", content_hash)
+                progressed = True
+                provisional_data = data
+                if not enrich_cards:
+                    continue
 
             item_model = background_model
 
@@ -4651,21 +4879,19 @@ class ProjectPreprocessor:
 
             file_text = slice_result.get("text", "")
             if old_card_text:
-                prompt_text = (
-                    f"FILE: {item['path']}\n\nPREVIOUS SUMMARY:\n{old_card_text[:800]}\n\nCURRENT SOURCE:\n{file_text}"
-                )
+                prompt_text = f"FILE: {item['path']}\n\nPREVIOUS SUMMARY (untrusted hint):\n{old_card_text[:800]}\n\nCURRENT SOURCE (authority):\n{file_text}"
             else:
-                prompt_text = f"FILE: {item['path']}\n\nSOURCE:\n{file_text}"
+                prompt_text = f"FILE: {item['path']}\n\nDETERMINISTIC CARD (untrusted hint; verify or discard every claim):\n{json_dumps(provisional_data, ensure_ascii=False)[:1800] if provisional_data else 'none'}\n\nCURRENT SOURCE (authority):\n{file_text}"
 
             pending_tasks.append({
                 "prompt": prompt_text,
                 "model": item_model,
-                "system": "Build a dense reusable semantic card for this source file. Extract facts only. Do not explain or restate source. Keep strings short and useful for later repository search/reasoning.",
+                "system": "Build a reusable semantic card using the current source as the sole authority. The deterministic card is an untrusted hint: verify each claim against source and omit or correct unsupported claims. Extract only source-grounded facts. Keep strings short and useful for repository search.",
                 "schema": CARD_SCHEMA,
                 "max_tokens": int(self.cfg.get("file_card_output_tokens", 320)),
                 "source": "preprocess:file-card",
             })
-            pending_meta.append((item, card_key))
+            pending_meta.append((item, card_key, source_hash))
 
         if not pending_tasks:
             return progressed or not deferred_enrichment
@@ -4675,26 +4901,57 @@ class ProjectPreprocessor:
         if self.background_gpu is not None:
             if not self.background_gpu.ready():
                 return progressed
-            results = self.background_gpu.generate_many(pending_tasks, preprocessing=True)
+        claimed_tasks: list[dict[str, Any]] = []
+        claimed_meta: list[tuple[sqlite3.Row, str, str]] = []
+        for task, meta in zip(pending_tasks, pending_meta):
+            item, card_key, source_hash = meta
+            if self._claim_file_card_enrichment(source_hash, background_model):
+                claimed_tasks.append(task)
+                claimed_meta.append((item, card_key, source_hash))
+        if not claimed_tasks:
+            return progressed
+
+        if self.background_gpu is not None:
+            results = self.background_gpu.generate_many(claimed_tasks, preprocessing=True)
         else:
             results = [
                 self._run_background_generate(background_model, t["prompt"], t["system"], t["schema"], int(t["max_tokens"]), str(t["source"]))
-                for t in pending_tasks
+                for t in claimed_tasks
             ]
 
-        for (item, card_key), generated in zip(pending_meta, results):
+        for (item, card_key, source_hash), generated in zip(claimed_meta, results):
             if generated.get("preempted"):
+                self._finish_file_card_enrichment(source_hash, background_model, success=False, preempted=True)
                 continue
             if not generated.get("success"):
+                self._finish_file_card_enrichment(
+                    source_hash, background_model, success=False,
+                    error=str(generated.get("error") or generated.get("error_code") or "model generation failed"),
+                )
                 with self._stats_lock:
                     self._stats["file_card_failures"] = self._stats.get("file_card_failures", 0) + 1
                 continue
-            if enrich_stubs and (generated.get("model") != background_model
-                                 or not self._valid_enriched_file_card(generated.get("data"))):
+            if (generated.get("model") != background_model
+                    or not self._valid_enriched_file_card(generated.get("data"))):
+                self._finish_file_card_enrichment(source_hash, background_model, success=False,
+                                                  error="model card failed schema or model validation")
                 with self._stats_lock:
                     self._stats["file_card_failures"] = self._stats.get("file_card_failures", 0) + 1
                 continue
-            self._store_file_card(root, item, card_key, self._generated_card_data(generated), background_model)
+            latest = self.repo_tools.file_slice(
+                root, str(item["path"]), 1, int(self.cfg.get("file_card_max_lines", 900)),
+                int(self.cfg.get("file_card_max_chars", 18000)),
+            )
+            if not latest.get("success") or str(latest.get("file_sha256") or "") != source_hash:
+                self._finish_file_card_enrichment(source_hash, background_model, success=False,
+                                                  error="source changed during enrichment")
+                continue
+            if not self._store_file_card(root, item, card_key, self._generated_card_data(generated),
+                                         background_model, source_hash):
+                self._finish_file_card_enrichment(source_hash, background_model, success=False,
+                                                  error="source hash changed before card commit")
+                continue
+            self._finish_file_card_enrichment(source_hash, background_model, success=True)
             progressed = True
             with self._stats_lock:
                 self._stats["file_card_generations"] = self._stats.get("file_card_generations", 0) + 1

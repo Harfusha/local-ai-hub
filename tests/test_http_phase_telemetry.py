@@ -43,3 +43,49 @@ def test_tool_accounting_accepts_current_signed_event_shape():
 def test_code_requests_reject_empty_required_inputs(path, payload, field):
     with pytest.raises(RequestBodyError, match=field):
         Handler._validate_payload(path, payload)
+
+
+def test_html_response_records_live_http_completion(monkeypatch):
+    from types import SimpleNamespace
+    import time
+
+    import local_ai_hub.http_server as http_server
+
+    events = []
+
+    class Telemetry:
+        def record_http(self, **event):
+            event["event_type"] = "http"
+            events.append(event)
+
+    app = SimpleNamespace(
+        telemetry=Telemetry(),
+        config={"observability": {"exclude_http_paths": []}},
+        debug_traces=None,
+    )
+    monkeypatch.setattr(http_server, "APP", app)
+
+    handler = object.__new__(Handler)
+    handler.headers = {}
+    handler.command = "GET"
+    handler.path = "/"
+    handler._trace_request_id = "request-123"
+    handler._trace_id = "trace-123"
+    handler._request_path = "/"
+    handler._request_started = time.perf_counter()
+    handler._telemetry_finished = False
+    handler._debug_trace_id = ""
+    handler.close_connection = False
+    handler.wfile = SimpleNamespace(write=lambda body: len(body))
+    handler.send_response = lambda _status: None
+    handler.send_header = lambda _name, _value: None
+    handler.end_headers = lambda: None
+    handler._common_headers = lambda **_kwargs: None
+
+    handler._send_html(200, "<html><body>ok</body></html>")
+
+    assert len(events) == 1
+    assert events[0]["event_type"] == "http"
+    assert events[0]["request_id"] == "request-123"
+    assert events[0]["status_code"] == 200
+    assert events[0]["response_bytes"] > 0

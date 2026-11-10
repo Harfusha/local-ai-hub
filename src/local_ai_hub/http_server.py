@@ -33,7 +33,6 @@ from . import __version__
 from .app import LocalAIApp
 from .features import FeatureSet
 from .http_transport import RequestHeadReader
-from .opencode_boundary import path_allowed as _opencode_path_allowed, payload_allowed as _opencode_payload_allowed, scoped_http_request as _opencode_scoped_http_request
 from .operation_contracts import capability_feature_gate, capability_minimum_profile, capability_profile_available
 
 _STATUS_DEPENDENCY_TIMEOUT_SECONDS = 0.25
@@ -530,7 +529,7 @@ HTTP_MODE_GAMING_READ_GET_PATHS = frozenset({
     "/api/agent-state/tasks", "/api/db/query", "/api/rag/workspaces",
     "/api/repo/files", "/api/repo/topology",
 })
-HTTP_MODE_OPERATOR_POST_PATHS = frozenset({"/api/admin/mode", "/api/opencode/provider/status", "/api/opencode/provider/stop", "/api/opencode/provider/wait"})
+HTTP_MODE_OPERATOR_POST_PATHS = frozenset({"/api/admin/mode"})
 HTTP_MODE_ACTION_POST_PATHS = frozenset({
     "/api/async-jobs",
     "/api/work-orders",
@@ -572,10 +571,6 @@ def _http_admin_action(method: str, path: str) -> str | None:
             "/api/config/update": "config.write",
             "/api/db/query": "db.query",
             "/api/models/manage": "model.manage",
-            "/api/opencode/provider/start": "model.manage",
-            "/api/opencode/provider/status": "model.manage",
-            "/api/opencode/provider/stop": "model.manage",
-            "/api/opencode/provider/wait": "model.manage",
         }.get(path)
     return None
 
@@ -1604,10 +1599,6 @@ def _safe_agent(handler: Any) -> str:
     return "generic"
 
 
-def _opencode_provider_start_mode_error(path: str, payload: Mapping[str, Any] | None) -> dict[str, Any] | None:
-    return _http_mode_gate_error("POST", path, payload)
-
-
 class Handler(BaseHTTPRequestHandler):
     _ADMIN_ACTIONS = {
         "db.query": ({"GET", "POST"}, "/api/db/query", None),
@@ -1717,9 +1708,53 @@ class Handler(BaseHTTPRequestHandler):
             script_source = f"'nonce-{nonce}'" if nonce else "'none'"
             self.send_header("Content-Security-Policy", f"default-src 'none'; connect-src 'self'; img-src 'self' data:; style-src 'unsafe-inline'; script-src {script_source}; script-src-attr 'unsafe-inline'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'")
 
+    def _finish_static_response(
+        self,
+        status: int,
+        response_bytes: int,
+        response_type: str,
+        *,
+        success: bool | None = None,
+    ) -> None:
+        outcome = 200 <= status < 400 if success is None else bool(success)
+        self._finish_debug_trace(
+            status,
+            {"success": outcome, "response_type": response_type},
+        )
+        if getattr(self, "_telemetry_finished", False):
+            return
+        app = APP
+        if app is None:
+            self._telemetry_finished = True
+            return
+        try:
+            path = str(getattr(self, "_request_path", urlparse(self.path).path))
+            excluded = set(app.config.get("observability", {}).get("exclude_http_paths", []))
+            if path not in MONITOR_PATHS and not path.startswith("/api/debug-traces/") and path not in excluded:
+                elapsed_ms = max(
+                    0.0,
+                    (time.perf_counter() - float(getattr(self, "_request_started", time.perf_counter()))) * 1000,
+                )
+                app.telemetry.record_http(
+                    agent=self._agent(),
+                    request_id=str(getattr(self, "_trace_request_id", "")),
+                    trace_id=str(getattr(self, "_trace_id", "")),
+                    action=path,
+                    duration_ms=elapsed_ms,
+                    success=outcome,
+                    status_code=status,
+                    response_bytes=max(0, int(response_bytes)),
+                    route=response_type,
+                )
+        except Exception:
+            pass
+        finally:
+            self._telemetry_finished = True
+
     def _send_html(self, status: int, html: str) -> None:
         nonce = uuid.uuid4().hex
         body = html.replace("<script>", f'<script nonce="{nonce}">', 1).encode("utf-8")
+        sent = False
         try:
             self.send_response(status)
             self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -1728,10 +1763,14 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
+            sent = True
         except OSError as exc:
             if not _is_client_disconnect(exc):
                 raise
         finally:
+            self._finish_static_response(
+                status, len(body), "static_html", success=sent and 200 <= status < 400,
+            )
             self.close_connection = True
 
     server_version = f"LocalAIHub/{__version__}"
@@ -4171,15 +4210,10 @@ class Handler(BaseHTTPRequestHandler):
             if not _is_client_disconnect(exc):
                 raise
 
-    @_opencode_scoped_http_request
     def do_GET(self) -> None:
         self._handler_execution_started = time.perf_counter()
         parsed = urlparse(self.path)
         path = parsed.path
-        admission_path = self.path if path == "/api/live/status" else path
-        if not _opencode_path_allowed(_safe_agent(self), "GET", admission_path):
-            self._send(403, {"success": False, "error_code": "opencode_local_route_denied", "error": "route unavailable for opencode-local", "terminal": True, "retryable": False})
-            return
         if not self._reject_identity_fields(query_params := parse_qs(parsed.query, keep_blank_values=True)):
             return
         if "root" in query_params and query_params["root"]:
@@ -4315,11 +4349,15 @@ class Handler(BaseHTTPRequestHandler):
             if path in {"/", "/dashboard"}:
                 if not bool(APP.config.get("monitoring", {}).get("dashboard_enabled", True)) or not bool(APP.config.get("features", {}).get("dashboard", True)):
                     self._send(404, {"error": "dashboard disabled"}); return
-                self._telemetry_finished = True
                 self._send_html(200, _dashboard_html_with_trace_notice()); return
             if path == "/favicon.ico":
-                self._telemetry_finished = True
-                self.send_response(204); self.end_headers(); return
+                sent = False
+                try:
+                    self.send_response(204); self.end_headers()
+                    sent = True
+                finally:
+                    self._finish_static_response(204, 0, "static", success=sent)
+                return
             if path == "/api/mode":
                 try:
                     mode_api = _operational_mode_api()
@@ -5564,7 +5602,10 @@ class Handler(BaseHTTPRequestHandler):
         raw_mode = payload.get("mode", "adaptive")
         return raw_mode if isinstance(raw_mode, str) and raw_mode in {"adaptive", "full", "fast"} else None
 
-    @_opencode_scoped_http_request
+    def _send_service_result(self, result: Any) -> None:
+        status = result.get("status_code", 200) if isinstance(result, dict) else 200
+        self._send(status if status in {400, 404, 409, 422, 500, 503} else 200, result)
+
     def do_POST(self) -> None:
         path = urlparse(self.path).path
         post_route_ids = select_http_routes("POST", path)
@@ -5584,10 +5625,6 @@ class Handler(BaseHTTPRequestHandler):
             self._send(503, {"success": False, "error": "hub starting up; please retry", "status_code": 503, "retryable": True})
             return
         if not self._require_authorized():
-            return
-        if not _opencode_path_allowed(_safe_agent(self), "POST", path):
-            self.close_connection = True
-            self._send(403, {"success": False, "error_code": "opencode_local_route_denied", "error": "route unavailable for opencode-local", "terminal": True, "retryable": False})
             return
         early_mode_rejection = None
         if path != "/api/context/pack":
@@ -5650,17 +5687,6 @@ class Handler(BaseHTTPRequestHandler):
                     if requested_mode == "preprocessing" and current_mode.mode == "preprocessing":
                         from .operational_mode import preprocessing_mode_ready
                         preprocessing_was_ready = preprocessing_mode_ready(state_dir, current_mode)
-                    provider = getattr(APP, "opencode_provider", None)
-                    if requested_mode in {"gaming", "maintenance", "preprocessing"} and provider is not None:
-                        provider_state = provider.status()
-                        if provider_state.get("state") != "stopped":
-                            if provider_state.get("state") == "running":
-                                provider.request_stop()
-                            self._send(409, {
-                                "success": False, "error": "OpenCode provider must stop before changing mode",
-                                "error_code": "opencode_provider_not_stopped", "mode_changed": False,
-                                "terminal": False, "retryable": True,
-                            }); return
                     release_active = getattr(async_jobs, "resource_release_active", None)
                     release_in_progress = bool(release_active()) if callable(release_active) else False
                     if requested_mode == "preprocessing":
@@ -5716,7 +5742,7 @@ class Handler(BaseHTTPRequestHandler):
                                 APP.preprocessor.pause()
                             except Exception:
                                 pass
-                    elif snapshot.mode == "active":
+                    elif snapshot.mode == "active" and mode_changed_value:
                         _ACTIVE_TRANSCRIPTIONS.enter_active()
                         _ACTIVE_CONVERSATIONS.enter_active()
                         if hasattr(APP, "preprocessor") and APP.preprocessor is not None:
@@ -6061,9 +6087,6 @@ class Handler(BaseHTTPRequestHandler):
                 self._request_root = str(payload["root"])
         except RequestBodyError as exc:
             self._send(exc.status, {"success": False, "error": str(exc), "terminal": True, "retryable": False}); return
-        if not _opencode_payload_allowed(_safe_agent(self), path, payload):
-            self._send(403, {"success": False, "error_code": "opencode_local_action_denied", "error": "action unavailable for opencode-local", "terminal": True, "retryable": False})
-            return
         if (
             not detailed_diagnostics_enabled(getattr(APP, "config", {}), store=getattr(APP, "debug_traces", None))
             and diagnostic_http_operation("POST", path, payload)
@@ -6285,49 +6308,6 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     post_handler(payload)
                 return
-            if any(name in post_route_ids for name in ('post_opencode_provider_start_1', 'post_opencode_provider_status_1', 'post_opencode_provider_stop_1', 'post_opencode_provider_wait_1')):
-                service = getattr(APP, "opencode_provider", None)
-                if service is None or not isinstance(payload, dict):
-                    self._send(503, {"success": False, "error": "provider service unavailable"}); return
-                if 'post_opencode_provider_start_1' in post_route_ids:
-                    if set(payload) != {"model"} or not isinstance(payload["model"], str):
-                        self._send(400, {"success": False, "error": "model is required"}); return
-                    try:
-                        async_jobs = getattr(APP, "async_jobs", None)
-                        guard_factory = getattr(async_jobs, "operational_mode_change_guard", None)
-                        if not callable(guard_factory):
-                            self._send(503, {"success": False, "error": "mode admission guard unavailable", "terminal": True, "retryable": False}); return
-                        with guard_factory():
-                            rejection = _opencode_provider_start_mode_error(path, payload)
-                            if rejection is not None:
-                                self._send(423, rejection); return
-                            self._send(200, service.start(payload["model"])); return
-                    except ValueError as exc:
-                        self._send(400, {"success": False, "error": str(exc), "terminal": True, "retryable": False}); return
-                    except RuntimeError:
-                        self._send(409, {"success": False, "error": "provider or GPU reservation unavailable", "terminal": True, "retryable": False}); return
-                if 'post_opencode_provider_wait_1' in post_route_ids:
-                    if set(payload) != {"timeout_seconds"}:
-                        self._send(400, {"success": False, "error": "timeout_seconds is required"}); return
-                    try:
-                        self._send(200, service.wait(payload["timeout_seconds"])); return
-                    except ValueError as exc:
-                        self._send(400, {"success": False, "error": str(exc)}); return
-                if 'post_opencode_provider_stop_1' in post_route_ids:
-                    if set(payload) != {"nonce"} or not isinstance(payload["nonce"], str):
-                        self._send(400, {"success": False, "error": "provider session nonce is required"}); return
-                    try:
-                        service.request_stop(expected_nonce=payload["nonce"])
-                    except ValueError:
-                        self._send(409, {"success": False, "error": "provider session does not match", "terminal": True, "retryable": False}); return
-                    current = service.status()
-                    if current.get("state") == "blocked":
-                        self._send(200, current); return
-                    self._send(202, {"success": True, "state": "stopping"}); return
-                if payload:
-                    self._send(400, {"success": False, "error": "request body must be empty"}); return
-                if 'post_opencode_provider_status_1' in post_route_ids:
-                    self._send(200, service.status()); return
             if 'post_config_update_1' in post_route_ids:
                 action = str(payload.get("action", "update")).strip().lower()
                 config_path = str(APP.config.get("_config_path", ""))
@@ -6458,10 +6438,37 @@ class Handler(BaseHTTPRequestHandler):
                 if action in scoped_task_actions and not repo_root:
                     self._send(403, {"success": False, "error": "task root scope is required", "terminal": True, "retryable": False}); return
                 if action == "curate_dataset":
+                    laya_operation = payload.get("laya_operation")
+                    if laya_operation is not None:
+                        if type(laya_operation) is not dict:
+                            self._send(400, {"success": False, "error": "laya_operation must be an object", "terminal": True, "retryable": False}); return
+                        try:
+                            result = APP.laya_candidates.handle(
+                                laya_operation,
+                                root=repo_root,
+                                task_store=APP.agent_tasks,
+                            )
+                            self._send(200, result); return
+                        except Exception as exc:
+                            self._send(400, {"success": False, "error": str(exc), "terminal": True, "retryable": False}); return
+                    if "include_laya_candidates" in payload or "candidate_file_path" in payload:
+                        self._send(400, {"success": False, "error": "repo-root Laya JSONL import is retired; use laya_operation", "terminal": True, "retryable": False}); return
                     task_id = str(payload.get("task_id", "")).strip() or None
                     output_path = str(payload.get("output_path", payload.get("path", "training_dataset.jsonl")))
                     min_receipts = int(payload.get("min_receipts", 1))
                     dataset_format = str(payload.get("format", "jsonl"))
+                    include_laya_candidates = payload.get("include_laya_candidates", False)
+                    if type(include_laya_candidates) is not bool:
+                        self._send(400, {"success": False, "error": "include_laya_candidates must be a boolean", "terminal": True, "retryable": False}); return
+                    candidate_file_path = payload.get("candidate_file_path")
+                    if candidate_file_path is not None and not isinstance(candidate_file_path, str):
+                        self._send(400, {"success": False, "error": "candidate_file_path must be a string", "terminal": True, "retryable": False}); return
+                    if candidate_file_path is not None and not include_laya_candidates:
+                        self._send(400, {"success": False, "error": "candidate_file_path requires explicit opt-in", "terminal": True, "retryable": False}); return
+                    candidate_options = (
+                        {"include_laya_candidates": True, "candidate_file_path": candidate_file_path}
+                        if include_laya_candidates else {}
+                    )
                     try:
                         result = APP.agent_tasks.curate_training_dataset(
                             output_path,
@@ -6469,6 +6476,7 @@ class Handler(BaseHTTPRequestHandler):
                             format=dataset_format,
                             repo_root=repo_root,
                             task_id=task_id,
+                            **candidate_options,
                         )
                         self._send(200, result); return
                     except Exception as exc:
@@ -6602,10 +6610,7 @@ class Handler(BaseHTTPRequestHandler):
                     # A prediction is optional and must never fail task persistence.
                     try:
                         warm = getattr(APP.services, "schedule_task_context_warmup", None)
-                        # OpenCode's local profile owns GPU generation itself.
-                        # Adaptive warmup can traverse model-backed retrieval, so
-                        # task creation must not schedule it for this profile.
-                        if callable(warm) and actor != "opencode-local":
+                        if callable(warm):
                             paths = payload.get("changed_paths")
                             if paths is not None and (not isinstance(paths, list) or any(not isinstance(p, str) for p in paths)):
                                 paths = None
@@ -7452,14 +7457,6 @@ class Handler(BaseHTTPRequestHandler):
                 if not getattr(APP, "agent_verification", None) or not APP.agent_verification.state_store.enabled:
                     self._send(403, {"success": False, "error": "agent_state is disabled", "terminal": True, "retryable": False}); return
                 action = payload.get("action", "")
-                if action == "project_command":
-                    from .opencode_verification import run_goal_project_verification
-
-                    result = run_goal_project_verification(
-                        APP.agent_tasks, APP.commands, root=payload["root"], task_id=payload["task_id"],
-                        session_id=payload["session_id"], alias=payload["alias"],
-                    )
-                    self._send(200, result); return
                 if action == "receipt":
                     rcpt_data = payload.get("receipt")
                     if not isinstance(rcpt_data, dict):
@@ -8207,7 +8204,19 @@ class Handler(BaseHTTPRequestHandler):
                         return True
 
                 try:
-                    export = APP.export_diagnostics(cancelled=export_cancelled)
+                    candidate_export = None
+                    if payload:
+                        if set(payload) != {"root", "laya_candidate_export"}:
+                            raise RequestBodyError("diagnostics export accepts only root and laya_candidate_export")
+                        if type(payload["root"]) is not str or not payload["root"]:
+                            raise RequestBodyError("candidate export root must be an absolute repository path")
+                        operation = payload["laya_candidate_export"]
+                        if type(operation) is not dict or set(operation) != {"consent", "snapshot_id"}:
+                            raise RequestBodyError("laya_candidate_export requires exactly consent and snapshot_id")
+                        if operation["consent"] is not True:
+                            raise RequestBodyError("candidate ZIP export requires explicit consent=true")
+                        candidate_export = payload
+                    export = APP.export_diagnostics(cancelled=export_cancelled, candidate_export=candidate_export)
                     APP.logger.info(
                         "diagnostic support archive exported",
                         extra={
@@ -8233,6 +8242,24 @@ class Handler(BaseHTTPRequestHandler):
                                 break
                             self.wfile.write(chunk)
                     self.wfile.flush()
+                except RequestBodyError as exc:
+                    if not response_started:
+                        self._send(exc.status, {
+                            "success": False,
+                            "error": str(exc),
+                            "error_code": "diagnostics_export_request_invalid",
+                            "terminal": True,
+                            "retryable": False,
+                        })
+                except ValueError as exc:
+                    if not response_started:
+                        self._send(400, {
+                            "success": False,
+                            "error": str(exc),
+                            "error_code": "diagnostics_export_scope_invalid",
+                            "terminal": True,
+                            "retryable": False,
+                        })
                 except Exception as exc:
                     if not _is_client_disconnect(exc) and not response_started:
                         self._send(500, {
@@ -8949,9 +8976,9 @@ class Handler(BaseHTTPRequestHandler):
                 status = result.get("status_code", 200) if isinstance(result, dict) else 200
                 self._send(status if status in {400, 409, 422, 500, 503} else 200, result); return
             if 'post_repo_schema_inspect_1' in post_route_ids:
-                self._send(200, APP.services.schema_inspect(str(payload.get("root", ".")), payload.get("db_path"))); return
+                self._send_service_result(APP.services.schema_inspect(str(payload.get("root", ".")), payload.get("db_path"))); return
             if 'post_explain_query_1' in post_route_ids:
-                self._send(200, APP.services.explain_query(str(payload.get("root", ".")), str(payload.get("query", "")), payload.get("db_path"))); return
+                self._send_service_result(APP.services.explain_query(str(payload.get("root", ".")), str(payload.get("query", "")), payload.get("db_path"))); return
             if 'post_env_compat_1' in post_route_ids:
                 self._send(200, APP.services.env_compat(str(payload.get("root", ".")))); return
             if 'post_coord_pubsub_publish_1' in post_route_ids:
@@ -9092,7 +9119,7 @@ class Handler(BaseHTTPRequestHandler):
             if 'post_api_spec_1' in post_route_ids:
                 self._send(200, APP.services.extract_api_spec(str(payload.get("root", ".")), framework=payload.get("framework"))); return
             if 'post_dependency_slice_1' in post_route_ids:
-                self._send(200, APP.services.slice_dependency_graph(str(payload.get("root", ".")), str(payload.get("symbol", "")), path=payload.get("path"), depth=int(payload.get("depth", 2)))); return
+                self._send_service_result(APP.services.slice_dependency_graph(str(payload.get("root", ".")), str(payload.get("symbol", "")), path=payload.get("path"), depth=int(payload.get("depth", 2)))); return
             if 'post_migration_drift_1' in post_route_ids:
                 self._send(200, APP.services.migration_drift(str(payload.get("root", ".")), db_path=payload.get("db_path"))); return
             if 'post_package_audit_1' in post_route_ids:

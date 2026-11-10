@@ -1114,7 +1114,8 @@ def test_affected_test_selection_covers_transitive_dependency_graph(tmp_path) ->
     result = engine.affected_tests(str(tmp_path), changed_paths=["src/shared.py"])
 
     assert result["success"] is True
-    assert float(result.get("confidence", 0.0)) >= 0.95
+    assert float(result.get("confidence", 0.0)) == 0.5
+    assert result["selection_complete"] is False
     assert {
         "tests/test_shared.py",
         "tests/test_core.py",

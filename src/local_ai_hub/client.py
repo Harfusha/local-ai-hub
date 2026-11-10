@@ -190,9 +190,7 @@ class HubClient:
         self._http_host = str(endpoint.hostname or "127.0.0.1")
         self._http_port = int(endpoint.port or 80)
         self.agent = os.environ.get("LOCAL_AI_AGENT_PROFILE") or os.environ.get("LOCAL_AI_AGENT") or "generic"
-        # An isolated OpenCode client may connect only to its existing Hub.
-        # It must never start an unsandboxed replacement on connection failure.
-        self.auto_start = bool(auto_start) and self.agent != "opencode-local"
+        self.auto_start = bool(auto_start)
         self._inprocess_transport = inprocess_transport
         client_cfg = self.config.get("client", {})
         self.health_timeout = max(0.2, float(client_cfg.get("health_timeout_seconds", 0.75)))
@@ -1570,6 +1568,14 @@ class HubClient:
                 "root": kwargs.get("root", "."),
                 "format": kwargs.get("format", "markdown"),
             })
+        if act == "curate_dataset":
+            return self.curate_training_dataset(
+                output_path=kwargs.get("output_path", "training_dataset.jsonl"),
+                min_receipts=kwargs.get("min_receipts", 1),
+                format=kwargs.get("format", "jsonl"),
+                root=kwargs.get("root", "."),
+                laya_operation=kwargs.get("laya_operation"),
+            )
         if act == "negative_knowledge_record":
             record = kwargs.get("record")
             if not isinstance(record, dict):
@@ -2324,14 +2330,15 @@ class HubClient:
         format: str = "jsonl",
         *,
         root: str,
+        laya_operation: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        return self.post(
-            "/api/agent-state/tasks",
-            {
-                "action": "curate_dataset",
-                "root": root,
-                "output_path": output_path,
-                "min_receipts": min_receipts,
-                "format": format,
-            },
-        )
+        payload = {
+            "action": "curate_dataset",
+            "root": root,
+            "output_path": output_path,
+            "min_receipts": min_receipts,
+            "format": format,
+        }
+        if laya_operation is not None:
+            payload["laya_operation"] = laya_operation
+        return self.post("/api/agent-state/tasks", payload)

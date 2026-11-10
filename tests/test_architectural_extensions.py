@@ -13,6 +13,7 @@ from local_ai_hub.agent_events import SwarmPubSub
 from local_ai_hub.commands import CommandBroker, _BoundedStreamBuffer, _redact_secrets
 from local_ai_hub.code_index import CodeIndex
 from local_ai_hub.deterministic import DeterministicEngine
+from local_ai_hub.services import LocalAIServices
 from local_ai_hub.process_utils import (
     atomic_write_file,
     create_job_object_kill_on_close,
@@ -325,6 +326,44 @@ def test_deterministic_slice_dependency_graph(tmp_path: Path):
     assert "main_process" in res["sliced_code"]
     assert "helper" in res["sliced_code"]
     assert "unrelated" not in res["sliced_code"]
+
+
+def test_deterministic_slice_dependency_graph_rejects_invalid_symbol_before_scanning(tmp_path: Path, monkeypatch):
+    def unexpected_scan(_self, *_args, **_kwargs):
+        raise AssertionError("invalid symbols must not trigger a repository walk")
+
+    monkeypatch.setattr(Path, "rglob", unexpected_scan)
+    engine = DeterministicEngine({"server": {"state_dir": str(tmp_path)}})
+
+    result = engine.slice_dependency_graph(
+        str(tmp_path),
+        "Open3D, Trimesh, SciPy, and geometry dependencies declared in project config",
+    )
+
+    assert result == {
+        "success": False,
+        "status_code": 400,
+        "error": "symbol must be a valid Python identifier",
+    }
+
+
+def test_dependency_slice_service_rejects_invalid_symbol_before_repository_fingerprinting(tmp_path: Path):
+    service = LocalAIServices.__new__(LocalAIServices)
+
+    def unexpected_fingerprint(*_args, **_kwargs):
+        raise AssertionError("invalid symbols must not trigger repository fingerprinting")
+
+    service.deterministic_operation = unexpected_fingerprint
+    result = service.slice_dependency_graph(
+        str(tmp_path),
+        "Open3D, Trimesh, SciPy, and geometry dependencies declared in project config",
+    )
+
+    assert result == {
+        "success": False,
+        "status_code": 400,
+        "error": "symbol must be a valid Python identifier",
+    }
 
 
 def test_deterministic_migration_drift(tmp_path: Path):

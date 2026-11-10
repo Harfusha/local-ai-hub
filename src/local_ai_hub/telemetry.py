@@ -35,6 +35,9 @@ logger = logging.getLogger(__name__)
 
 _PATH_RE = re.compile(r"(?:(?:[A-Za-z]:\\\\|/)(?:[^\s:'\"<>|]+[/\\\\])+[^\s:'\"<>|]*)")
 _LONG_TOKEN_RE = re.compile(r"\b(?:[A-Fa-f0-9]{24,}|[A-Za-z0-9_\-]{48,})\b")
+_SAFE_REQUEST_ID_RE = re.compile(
+    r"(?:[A-Fa-f0-9]{32}|[A-Fa-f0-9]{8}-(?:[A-Fa-f0-9]{4}-){3}[A-Fa-f0-9]{12}|req_[A-Fa-f0-9]{12})"
+)
 _WINDOWS_PATH_RE = re.compile(r"\b[A-Za-z]:[\\/][^\s<>|\"']+")
 _UNC_PATH_RE = re.compile(r"\\\\[^\\/\s]+\\[^\\/\s]+(?:\\[^\s<>|\"']*)?")
 _POSIX_PATH_RE = re.compile(r"(?<![\w:])/(?:[^/\s]+/)+[^/\s]*")
@@ -495,6 +498,14 @@ def _safe_metadata(value: Any, limit: int = _MAX_METADATA_LENGTH, *, preserve_ro
     return " ".join(text.split())[:limit]
 
 
+def _safe_request_id(value: Any, limit: int = 96) -> str:
+    """Preserve canonical correlation IDs while redacting other long metadata."""
+    raw = str(value or "")
+    if _SAFE_REQUEST_ID_RE.fullmatch(raw):
+        return raw[:limit]
+    return _safe_metadata(raw, limit)
+
+
 _RETIRED_TENANT_FIELDS = frozenset({"tenant", "tenant_id", "tenant_key", "tenant_scope"})
 _TELEMETRY_METADATA_CONTAINERS = frozenset({"context", "metadata", "metrics", "provenance", "scope"})
 
@@ -640,6 +651,113 @@ _LIVE_OMIT_EMPTY = frozenset({
     "stage", "task_type", "complexity", "route", "cache_layer", "coalesced",
     "retry_count", "fallback_used", "degraded", "load_duration_ms", "trace_id",
 })
+
+_LAYA_DECISION_OPTIONS = {
+    "context_source": {"indexed", "artifact", "memory", "rag", "more_evidence"},
+    "context_budget": {"compact", "standard", "expanded"},
+    "model_route": {"fast", "smart", "background", "vision", "generic"},
+    "redundant_step": {"possible_duplicate", "validation_still_required"},
+    "next_step": {"inspect_source", "run_test", "retrieve_evidence", "ask_human"},
+    "delegation": {"review_only", "delegate_bounded", "no_delegation"},
+    "completion_gap": {"missing_verification", "resolve_blocker", "request_human_review"},
+    "watchdog": {"recommend_continue", "recommend_stop", "recommend_human_review"},
+}
+_LAYA_DECISION_STATUSES = {"success", "abstain", "skipped", "error"}
+_LAYA_REASON_CODES = {
+    "EVIDENCE_SUFFICIENT", "INSUFFICIENT_EVIDENCE", "OPTION_UNSUPPORTED", "LOW_SIGNAL",
+    "MODEL_UNAVAILABLE", "INVALID_OUTPUT", "TIMEOUT", "OVERLOADED", "DISABLED",
+    "DUPLICATE", "CACHE_HIT", "STALE_EVIDENCE",
+}
+_LAYA_IDENTIFIER = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}\Z")
+_LAYA_DECISION_FIELDS = frozenset({
+    "decision_id", "success", "mode", "status", "category", "repository_id", "task_id",
+    "session_id", "suggestion", "reason_codes", "evidence_ids", "model_estimate",
+    "uncertainty", "execution_verification",
+})
+
+
+def _laya_decision_report(rows: list[tuple[Any, ...]], *, scope: str) -> dict[str, Any]:
+    if scope != "window":
+        return {
+            "available": False,
+            "scope": scope,
+            "reason": "process_identity_not_recorded",
+        }
+    mode_counts: dict[str, int] = {}
+    category_counts: dict[str, int] = {}
+    status_counts: dict[str, int] = {}
+    by_mode = {
+        mode: {
+            "records": 0,
+            "counts_by_category": {},
+            "counts_by_status": {},
+            "counts_by_reason_code": {},
+            "abstentions": 0,
+            "errors": 0,
+            "skips": 0,
+            "coverage": {"available": False, "reason": "eligible_decision_count_not_recorded"},
+            "latency_ms": {"available": False, "reason": "runtime_latency_not_recorded"},
+            "backend": {"available": False, "reason": "runtime_backend_not_recorded"},
+            "fallbacks": {"available": False, "reason": "fallback_outcome_not_recorded"},
+        }
+        for mode in ("shadow", "advisory")
+    }
+    invalid_records = 0
+    truncated = len(rows) > 1000
+    for (metrics_json,) in rows[:1000]:
+        try:
+            metadata = json.loads(metrics_json)
+            if not isinstance(metadata, dict) or set(metadata) != _LAYA_DECISION_FIELDS:
+                raise ValueError("invalid stored Laya metadata")
+            mode = metadata["mode"]
+            category = metadata["category"]
+            status = metadata["status"]
+            reason_codes = metadata["reason_codes"]
+            if isinstance(reason_codes, str):
+                reason_codes = json.loads(reason_codes)
+            if mode not in {"shadow", "advisory"}:
+                raise ValueError("invalid stored Laya mode")
+            if category not in _LAYA_DECISION_OPTIONS or status not in _LAYA_DECISION_STATUSES:
+                raise ValueError("invalid stored Laya category or status")
+            if (
+                not isinstance(reason_codes, list)
+                or len(reason_codes) > 8
+                or any(not isinstance(code, str) or code not in _LAYA_REASON_CODES for code in reason_codes)
+                or len(set(reason_codes)) != len(reason_codes)
+            ):
+                raise ValueError("invalid stored Laya reason codes")
+        except (TypeError, ValueError, json.JSONDecodeError):
+            invalid_records += 1
+            continue
+        mode_counts[mode] = mode_counts.get(mode, 0) + 1
+        category_counts[category] = category_counts.get(category, 0) + 1
+        status_counts[status] = status_counts.get(status, 0) + 1
+        mode_summary = by_mode[mode]
+        mode_summary["records"] += 1
+        mode_categories = mode_summary["counts_by_category"]
+        mode_categories[category] = mode_categories.get(category, 0) + 1
+        mode_statuses = mode_summary["counts_by_status"]
+        mode_statuses[status] = mode_statuses.get(status, 0) + 1
+        mode_summary["abstentions"] += status == "abstain"
+        mode_summary["errors"] += status == "error"
+        mode_summary["skips"] += status == "skipped"
+        mode_reasons = mode_summary["counts_by_reason_code"]
+        for reason_code in reason_codes:
+            mode_reasons[reason_code] = mode_reasons.get(reason_code, 0) + 1
+    for mode_summary in by_mode.values():
+        for field in ("counts_by_category", "counts_by_status", "counts_by_reason_code"):
+            mode_summary[field] = dict(sorted(mode_summary[field].items()))
+    return {
+        "available": True,
+        "scope": "window",
+        "records": sum(status_counts.values()),
+        "counts_by_mode": dict(sorted(mode_counts.items())),
+        "counts_by_category": dict(sorted(category_counts.items())),
+        "counts_by_status": dict(sorted(status_counts.items())),
+        "by_mode": by_mode,
+        "invalid_records": invalid_records,
+        "truncated": truncated,
+    }
 
 
 class TelemetryStore:
@@ -1037,7 +1155,7 @@ class TelemetryStore:
             "created_at": created,
             "event_type": event_type,
             "agent": _safe_metadata(event.get("agent", ""), 80),
-            "request_id": _safe_metadata(event.get("request_id", ""), 96),
+            "request_id": _safe_request_id(event.get("request_id", ""), 96),
             "trace_id": _safe_metadata(event.get("trace_id", ""), 96),
             "action": _safe_metadata(event.get("action", "unknown"), preserve_route=preserve_action_route),
             "stage": _safe_metadata(event.get("stage", ""), 80),
@@ -1617,6 +1735,108 @@ class TelemetryStore:
             elif isinstance(value, str) and len(value) <= 160:
                 safe[str(key)[:80]] = value
         self._enqueue("snapshot", {"created_at": time.time(), "name": str(name)[:80], "metrics_json": json_dumps(safe, separators=(",", ":"))[:8000]})
+
+    def record_laya_decision(
+        self,
+        metadata: dict[str, Any],
+        *,
+        repository_id: str,
+        task_id: str | None,
+        session_id: str,
+    ) -> bool:
+        """Persist one validated Laya decision projection in existing snapshots.
+
+        This accepts only the side-effect-free decision contract's metadata. It is
+        intentionally not an inference or candidate-text API. Identity arguments
+        must come from the server-bound request context, never from caller payload.
+        """
+        if not isinstance(metadata, dict) or set(metadata) != _LAYA_DECISION_FIELDS:
+            raise ValueError("invalid Laya decision metadata fields")
+        server_task_id = task_id
+        for field, value in (
+            ("repository_id", repository_id),
+            ("session_id", session_id),
+        ):
+            if not isinstance(value, str) or not _LAYA_IDENTIFIER.fullmatch(value):
+                raise ValueError(f"invalid server-bound Laya {field}")
+        if server_task_id is not None and (
+            not isinstance(server_task_id, str) or not _LAYA_IDENTIFIER.fullmatch(server_task_id)
+        ):
+            raise ValueError("invalid server-bound Laya task_id")
+        for field in ("decision_id", "repository_id", "session_id"):
+            value = metadata[field]
+            if not isinstance(value, str) or not _LAYA_IDENTIFIER.fullmatch(value):
+                raise ValueError(f"invalid Laya {field}")
+        task_id = metadata["task_id"]
+        if task_id is not None and (
+            not isinstance(task_id, str) or not _LAYA_IDENTIFIER.fullmatch(task_id)
+        ):
+            raise ValueError("invalid Laya task_id")
+        if (
+            metadata["repository_id"] != repository_id
+            or metadata["task_id"] != server_task_id
+            or metadata["session_id"] != session_id
+        ):
+            raise ValueError("Laya metadata identity does not match server-bound context")
+        mode = metadata["mode"]
+        status = metadata["status"]
+        category = metadata["category"]
+        if not isinstance(mode, str) or mode not in {"shadow", "advisory"}:
+            raise ValueError("invalid Laya mode")
+        if not isinstance(status, str) or status not in _LAYA_DECISION_STATUSES:
+            raise ValueError("invalid Laya status")
+        if not isinstance(category, str) or category not in _LAYA_DECISION_OPTIONS:
+            raise ValueError("invalid Laya category")
+        if type(metadata["success"]) is not bool:
+            raise ValueError("invalid Laya success flag")
+        if metadata["success"] is not (status in {"success", "abstain"}):
+            raise ValueError("inconsistent Laya success status")
+        if type(metadata["model_estimate"]) is not bool:
+            raise ValueError("invalid Laya model_estimate flag")
+        if metadata["model_estimate"] is not (status in {"success", "abstain"}):
+            raise ValueError("inconsistent Laya model_estimate status")
+        expected_uncertainty = "UNCALIBRATED" if metadata["model_estimate"] else "NOT_APPLICABLE"
+        if metadata["uncertainty"] != expected_uncertainty:
+            raise ValueError("invalid Laya uncertainty")
+        if metadata["execution_verification"] != "NOT_VERIFIED":
+            raise ValueError("Laya execution provenance is not verified")
+
+        suggestion = metadata["suggestion"]
+        if status == "success":
+            if not isinstance(suggestion, str) or suggestion not in _LAYA_DECISION_OPTIONS[category]:
+                raise ValueError("invalid Laya suggestion")
+        elif suggestion is not None:
+            raise ValueError("non-success Laya decision cannot include a suggestion")
+
+        reason_codes = metadata["reason_codes"]
+        evidence_ids = metadata["evidence_ids"]
+        if not isinstance(reason_codes, list) or len(reason_codes) > 8:
+            raise ValueError("invalid Laya reason_codes")
+        if not isinstance(evidence_ids, list) or len(evidence_ids) > 64:
+            raise ValueError("invalid Laya evidence_ids")
+        if any(not isinstance(code, str) or code not in _LAYA_REASON_CODES for code in reason_codes):
+            raise ValueError("invalid Laya reason_codes")
+        if len(set(reason_codes)) != len(reason_codes):
+            raise ValueError("invalid Laya reason_codes")
+        if status != "success" and not reason_codes:
+            raise ValueError("non-success Laya decision requires a reason code")
+        if any(not isinstance(item, str) or not _LAYA_IDENTIFIER.fullmatch(item) for item in evidence_ids):
+            raise ValueError("invalid Laya evidence_ids")
+        if len(set(evidence_ids)) != len(evidence_ids):
+            raise ValueError("invalid Laya evidence_ids")
+
+        safe = dict(metadata)
+        safe["reason_codes"] = json_dumps(reason_codes, separators=(",", ":"))
+        safe["evidence_ids"] = json_dumps(evidence_ids, separators=(",", ":"))
+        encoded = json_dumps(safe, separators=(",", ":"), sort_keys=True)
+        if len(encoded) > 8000:
+            raise ValueError("Laya decision metadata exceeds snapshot limit")
+        if not self.enabled:
+            return False
+        return self._enqueue(
+            "snapshot",
+            {"created_at": time.time(), "name": "laya_decision", "metrics_json": encoded},
+        )
 
     def record_evaluation(
         self,
@@ -2273,6 +2493,12 @@ class TelemetryStore:
                    GROUP BY domain ORDER BY domain""",
                 (cutoff,),
             ).fetchall()
+            cache_decision_rows = con.execute(
+                """SELECT error_type,COUNT(*) FROM events
+                   WHERE created_at>=? AND event_type='stage' AND stage='cache_decision'
+                   GROUP BY error_type ORDER BY COUNT(*) DESC, error_type LIMIT ?""",
+                (cutoff, _REPORT_GROUP_LIMIT),
+            ).fetchall()
             http_outcome_rows = con.execute(
                 """SELECT CASE WHEN error_type='' THEN 'success' ELSE error_type END,
                           COUNT(*),COALESCE(SUM(CASE WHEN success=0 THEN 1 ELSE 0 END),0)
@@ -2489,6 +2715,7 @@ class TelemetryStore:
                 "coalesced": int(coalesced),
                 "hit_rate": round(int(hits) / count, 4) if count else 0.0,
             }
+        cache_decisions = {str(reason): int(count) for reason, count in cache_decision_rows}
         http_outcomes = {
             str(category): {"events": int(events), "failures": int(failures)}
             for category, events, failures in http_outcome_rows
@@ -2630,6 +2857,7 @@ class TelemetryStore:
             "preprocessed_query_hit_rate": prep_hit_rate,
             "sessions": self.sessions(days=int(days), limit=max(1, min(int(session_limit), 20))),
             "cache_domains": cache_domains,
+            "cache_decisions": cache_decisions,
             "cache_reuse_breakdown": {
                 "semantic_hits": semantic_hits,
                 "single_flight_waiters": cache_domains.get("generation", {}).get("coalesced", 0),
@@ -2863,6 +3091,15 @@ class TelemetryStore:
             snapshots = con.execute(
                 "SELECT created_at,name,metrics_json FROM snapshots WHERE created_at>=? ORDER BY created_at DESC LIMIT 20", (cutoff,)
             ).fetchall()
+            laya_snapshot_rows = (
+                con.execute(
+                    "SELECT metrics_json FROM snapshots WHERE created_at>=? AND name='laya_decision' "
+                    "ORDER BY id DESC LIMIT 1001",
+                    (cutoff,),
+                ).fetchall()
+                if scope == "window"
+                else []
+            )
             evaluations = con.execute(
                 "SELECT created_at,metrics_json FROM snapshots WHERE created_at>=? AND name='agent_evaluation' ORDER BY created_at",
                 (cutoff,),
@@ -2878,6 +3115,7 @@ class TelemetryStore:
             if selected is not None:
                 daily_selected.append(selected)
         evaluation = self._evaluation_summary(evaluations)
+        laya_decisions = _laya_decision_report(laya_snapshot_rows, scope=scope)
         hotspots: list[dict[str, Any]] = []
         if summary.get("failure_rate", 0) >= 0.02:
             hotspots.append({"type": "reliability", "signal": "inference_failure_rate", "value": summary["failure_rate"]})
@@ -2992,6 +3230,7 @@ class TelemetryStore:
             "runtime_snapshots": [
                 {"created_at": float(r[0]), "name": r[1], "metrics": json.loads(r[2]) if r[2] else {}} for r in snapshots
             ],
+            "laya_decisions": laya_decisions,
             "evaluation": evaluation,
             "hotspots": hotspots,
             "window": summary.get("window", {"days": days, "scope": scope}),

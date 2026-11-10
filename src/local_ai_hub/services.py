@@ -7,6 +7,7 @@ import fnmatch
 import hashlib
 import itertools
 import json
+import keyword
 import logging
 import math
 import os
@@ -191,7 +192,7 @@ def normalize_generation_cache_prompt(prompt: str) -> str:
     return str(prompt).replace("\r\n", "\n").replace("\r", "\n")
 
 
-def cache_decision_reason(cache_layer: str, *, semantic_query: str) -> str:
+def cache_decision_reason(cache_layer: str, *, semantic_query: str, semantic_miss_reason: str = "") -> str:
     layer = str(cache_layer or "").strip().lower()
     query = str(semantic_query or "").strip()
     if layer == "semantic":
@@ -201,6 +202,9 @@ def cache_decision_reason(cache_layer: str, *, semantic_query: str) -> str:
     if layer == "stale-on-error":
         return "stale_on_error"
     if layer == "ollama" and query:
+        reason = str(semantic_miss_reason or "").strip().lower()
+        if reason and all(char.isalnum() or char == "_" for char in reason):
+            return f"semantic_miss_{reason}"
         return "semantic_not_reused"
     if layer == "ollama":
         return "new_exact_key"
@@ -719,6 +723,11 @@ def _context_path_priority(
     return 2
 
 
+def _backend_completion_metadata(response: Mapping[str, Any]) -> dict[str, bool]:
+    """Mark backend completion only when Ollama supplied its terminal flag."""
+    return {"_lah_backend_completed": True} if response.get("done") is True else {}
+
+
 class LocalAIServices:
     commands: Any = None
     task_store: Any = None
@@ -1095,8 +1104,7 @@ class LocalAIServices:
 
     def _touch_project(self, root: str) -> None:
         # Local AI: repository reads refresh only explicitly registered projects.
-        from .opencode_boundary import generation_denial
-        if self.preprocessor is not None and generation_denial() is None:
+        if self.preprocessor is not None:
             self.preprocessor.touch_if_registered(root)
 
     def _repo_cache_state(self, root: str) -> dict[str, Any]:
@@ -1377,17 +1385,30 @@ class LocalAIServices:
         started = time.perf_counter()
         cache_layer = "miss"
         semantic_score = 0.0
+        semantic_miss_reason = ""
         requested_model = model
 
         def compute_inner() -> dict[str, Any]:
-            nonlocal semantic_score
+            nonlocal semantic_score, semantic_miss_reason
             if allow_semantic_cache and semantic_query:
-                semantic, semantic_score = self.semantic_cache.get(semantic_scope, semantic_query)
+                detailed_get = getattr(self.semantic_cache, "get_with_reason", None)
+                if callable(detailed_get):
+                    detailed = detailed_get(semantic_scope, semantic_query)
+                    if isinstance(detailed, tuple) and len(detailed) == 3:
+                        semantic, semantic_score, semantic_miss_reason = detailed
+                    else:
+                        semantic, semantic_score = self.semantic_cache.get(semantic_scope, semantic_query)
+                        semantic_miss_reason = "reason_unavailable"
+                else:
+                    semantic, semantic_score = self.semantic_cache.get(semantic_scope, semantic_query)
+                    semantic_miss_reason = "reason_unavailable"
                 if isinstance(semantic, dict):
                     reused = copy.deepcopy(semantic)
                     reused["_lah_cache_origin"] = "semantic"
                     reused["_lah_semantic_similarity"] = semantic_score
                     return reused
+            elif semantic_query:
+                semantic_miss_reason = "cache_disabled" if not use_cache else "context_ineligible"
 
             availability = getattr(self.runtime, "is_online", None)
             if callable(availability):
@@ -1627,6 +1648,7 @@ class LocalAIServices:
                             "final_response_produced": False, "final_response_status": "empty",
                             "terminal": False, "retryable": True, "_cacheable": False,
                             "_lah_retry_count": int(response.get("_lah_retry_count", 0) or 0),
+                            **_backend_completion_metadata(response),
                         }
                     return {
                         "success": True, "model": candidate_model, "requested_model": requested_model,
@@ -1847,12 +1869,30 @@ class LocalAIServices:
         for internal_key in ["_lah_cache_origin", "_lah_semantic_similarity", "_lah_scheduler_queue_wait_ms", "_lah_scheduler_service_ms", "_lah_scheduler_background", "_lah_retry_count"]:
             result.pop(internal_key, None)
         effective_cache_hit = cache_hit or cache_layer in {"semantic", "single-flight", "stale-on-error"}
+        decision_reason = "cache_disabled" if not use_cache else cache_decision_reason(
+            cache_layer, semantic_query=semantic_query, semantic_miss_reason=semantic_miss_reason,
+        )
         self.telemetry.record_stage(
             action=source,
             stage="cache_decision",
             success=True,
-            error_type="cache_disabled" if not use_cache else cache_decision_reason(cache_layer, semantic_query=semantic_query),
+            error_type=decision_reason,
         )
+        trace_observer = observer()
+        trace_event = getattr(trace_observer, "event", None)
+        if callable(trace_event):
+            semantic_hit_reasons = {"exact_l1_hit", "exact_l2_hit", "semantic_hit"}
+            try:
+                trace_event("cache_decision", {
+                    "cache_hit": bool(effective_cache_hit),
+                    "cache_layer": cache_layer,
+                    "decision": decision_reason,
+                    "coalesced": bool(coalesced),
+                    "semantic_miss_reason": semantic_miss_reason if semantic_miss_reason not in semantic_hit_reasons else None,
+                    "semantic_similarity": round(float(semantic_score), 5) if semantic_miss_reason == "below_threshold" else None,
+                })
+            except Exception:
+                logger.debug("Cache decision trace write failed", exc_info=True)
         result["cache_hit"] = effective_cache_hit
         result["cache_layer"] = cache_layer
         result["semantic_similarity"] = round(float(semantic_score), 5) if cache_layer == "semantic" else None
@@ -3202,15 +3242,12 @@ class LocalAIServices:
             else:
                 # Physical-root identity isolates clean clones with otherwise
                 # identical fingerprints while collapsing lexical aliases.
-                from .opencode_boundary import generation_denial
                 cache_identity = {
                     "op": operation,
                     "root": canonical_root(root),
                     "state": fingerprint,
                     "params": params,
                 }
-                if generation_denial() is not None:
-                    cache_identity["restricted_background_notifications"] = True
                 key = stable_hash(cache_identity)
                 raw, hit, coalesced = self.repo_flight.get_or_compute(key, compute)
                 cache_degraded = bool(state.get("degraded", False))
@@ -5164,6 +5201,10 @@ class LocalAIServices:
         result["excluded_incompatible_tests"] = list(dict.fromkeys(
             [*result.get("excluded_incompatible_tests", []), *incompatible_tests]
         ))
+        result["requires_multiple_runners"] = bool(result["excluded_incompatible_tests"])
+        if result["excluded_incompatible_tests"]:
+            result["selection_complete"] = False
+            result["confidence"] = min(float(result.get("confidence", 0.0)), 0.5)
         suggested_command = affected_test_command(allowed_tests, framework)
         result["suggested_command"] = suggested_command
         result["project_config_digest"] = context.config_digest
@@ -5533,6 +5574,8 @@ class LocalAIServices:
         return self.deterministic_operation("extract-api-spec", root, {"framework": framework}, lambda: self.deterministic.extract_api_spec(root, framework))
 
     def slice_dependency_graph(self, root: str, symbol: str, path: str | None = None, depth: int = 2) -> dict[str, Any]:
+        if not isinstance(symbol, str) or not symbol.isidentifier() or keyword.iskeyword(symbol):
+            return {"success": False, "status_code": 400, "error": "symbol must be a valid Python identifier"}
         return self.deterministic_operation("slice-dependency-graph", root, {"symbol": symbol, "path": path, "depth": depth}, lambda: self.deterministic.slice_dependency_graph(root, symbol, path, depth))
 
     def migration_drift(self, root: str, db_path: str | None = None) -> dict[str, Any]:
@@ -6908,6 +6951,41 @@ class LocalAIServices:
                 },
                 compute,
             )
+        retrieval = result.get("retrieval") if isinstance(result, dict) else None
+        backend_selection = retrieval.get("backend_selection") if isinstance(retrieval, dict) else None
+        empty_adaptive_result = (
+            isinstance(result, dict)
+            and result.get("success") is True
+            and not str(result.get("context") or "").strip()
+            and not result.get("evidence")
+            and isinstance(backend_selection, dict)
+            and backend_selection.get("decision") in {"deadline_exhausted", "optional_backends_selected"}
+        )
+        stale_hybrid = (
+            isinstance(result, dict)
+            and result.get("success") is False
+            and result.get("stale") is True
+        )
+        if quality_first and (stale_hybrid or empty_adaptive_result):
+            fallback = self.fast_context(root, query, max_tokens)
+            if (
+                isinstance(fallback, dict)
+                and fallback.get("success") is True
+                and (str(fallback.get("context") or "").strip() or fallback.get("evidence"))
+            ):
+                if stale_hybrid:
+                    fallback_reason = "adaptive_stale_evidence"
+                elif isinstance(backend_selection, dict) and backend_selection.get("decision") == "deadline_exhausted":
+                    fallback_reason = "adaptive_deadline_empty"
+                else:
+                    fallback_reason = "adaptive_optional_empty"
+                result = {
+                    **fallback,
+                    "context_source": "deterministic-fast-fallback",
+                    "degraded": True,
+                    "degraded_reason": fallback_reason,
+                    "fallback_from": "adaptive-hybrid",
+                }
         if isinstance(result, dict): result.setdefault("context_source", "adaptive-hybrid" if quality_first else "hybrid")
         return result
 
@@ -10162,7 +10240,11 @@ class LocalAIServices:
         """Track accuracy and regression drift across benchmark runs."""
         reject_retired_tenancy_fields(payload)
         suite_name = str(payload.get("suite_name", "default"))
-        history_file = configured_state_dir(self.config) / "eval_history.json"
+        state_dir = getattr(self, "state_dir", None)
+        if not isinstance(state_dir, (str, os.PathLike)) or not str(state_dir).strip():
+            config = getattr(self, "config", {})
+            state_dir = configured_state_dir(config if isinstance(config, dict) else {})
+        history_file = Path(state_dir) / "eval_history.json"
 
         history: dict[str, Any] = {}
         if history_file.exists():

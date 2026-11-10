@@ -37,6 +37,7 @@ def test_release_uses_only_current_local_ai_hub_contracts():
                 if relative.parts[:2] == ("docs", "superpowers") or relative in {
                     Path("docs/agent-evaluation/results.md"),
                     Path("docs/agent-evaluation/evaluation-key.md"),
+                    Path("docs/agent-evaluation/preprocessing-card-benchmark-v1.json"),
                 }:
                     continue
                 files.append(path)
@@ -54,14 +55,7 @@ def test_release_uses_only_current_local_ai_hub_contracts():
         if path == ROOT / "tools" / "release_inventory.py":
             # OSV versions its external API independently of the Hub contract.
             text = text.replace("https://api.osv.dev/" + "v1" + "/querybatch", "OSV_QUERYBATCH")
-        if path in {ROOT / "src" / "local_ai_hub" / "opencode_provider_bridge.py",
-                    ROOT / "src" / "local_ai_hub" / "opencode_local_router.py",
-                    ROOT / "tests" / "test_opencode_provider_bridge.py",
-                    ROOT / "tests" / "test_opencode_provider_service.py",
-                    ROOT / "tests" / "test_opencode_real_ollama_source.py",
-                    ROOT / "tests" / "test_opencode_container_integration.py",
-                    ROOT / "tests" / "test_opencode_local_router.py",
-                    ROOT / "tests" / "unit" / "test_search_endpoint_precision.py",
+        if path in {ROOT / "tests" / "unit" / "test_search_endpoint_precision.py",
                     ROOT / "tests" / "test_mixed_scheduler_integration.py"}:
             # The OpenAI-compatible upstream protocol is not the retired Hub API.
             text = text.replace('/' + 'v1' + '/', 'EXTERNAL_API_ROUTE/')
@@ -84,6 +78,8 @@ def test_release_uses_only_current_local_ai_hub_contracts():
             and re.match(r"(?:integration-|SYNC_|STASH_|T\d+.*(?:SYNC|HANDOFF|FILES)|WORKTREE_|PRIORITY_STASH)", path.name, re.IGNORECASE)
         ):
             continue  # internal integration ledgers are excluded from the source distribution
+        if relative.parent == Path("docs/agent-evaluation") and path.name.startswith("preprocessing-card-"):
+            continue  # audit evidence is not a release contract document
         if path.is_file() and not any(part in {
             ".git", "__pycache__", ".pytest_cache", ".venv", "tool-envs", "state", "data", ".handoff", "artifacts",
             "generated", "backups", "migration-backups", "dist", "build", "handoff", "T18-review-artifacts-20260928",

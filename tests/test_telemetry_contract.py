@@ -101,6 +101,29 @@ def test_telemetry_metadata_redacts_absolute_paths_and_payload_like_fields(tmp_p
     assert "model_output" not in rendered
 
 
+def test_recent_http_preserves_generated_request_id_for_trace_correlation(tmp_path):
+    store = TelemetryStore(tmp_path / "telemetry", enabled=True, flush_interval_seconds=0.01)
+    request_id = "0123456789abcdef0123456789abcdef"
+    unrelated_long_value = "z" * 48
+    try:
+        store.record_http(
+            request_id=request_id,
+            action="/api/search",
+            success=True,
+        )
+        store.record_http(
+            request_id=unrelated_long_value,
+            action="/api/search",
+            success=True,
+        )
+        store.flush(1)
+        recent = store.recent_http()
+    finally:
+        store.close()
+
+    assert {item["request_id"] for item in recent} == {request_id, "<token>"}
+
+
 def test_telemetry_metadata_preserves_registered_route_without_query_or_fragment():
     assert _safe_metadata(
         "/api/telemetry/report?days=7&token=query-secret#fragment",

@@ -270,6 +270,7 @@ class AffinityScheduler:
         self._idle_owned_model: str | None = None
         self._last_model_activity = time.monotonic()
         self._idle_unload_state = "not_requested"
+        self._idle_maintenance_callbacks: list[Callable[[], Any]] = []
         self._model_blocked_until: dict[str, float] = {}
         self._model_last_error: dict[str, str] = {}
         self._model_vram_bytes: dict[str, int] = {}
@@ -795,12 +796,6 @@ class AffinityScheduler:
         background: bool = False,
         cancel_event: threading.Event | None = None,
     ) -> dict[str, Any]:
-        # Reject before queueing: the worker thread does not inherit request context.
-        from .opencode_boundary import generation_denial
-
-        denial = generation_denial()
-        if denial is not None:
-            return denial
         if not isinstance(model, str) or not model or "\x00" in model:
             raise ValueError("invalid_model")
         if not isinstance(source, str) or not source.strip() or "\x00" in source:
@@ -1014,11 +1009,6 @@ class AffinityScheduler:
         background: bool = True,
     ) -> Job:
         """Queue work without binding its lifecycle to a caller timeout."""
-        from .opencode_boundary import generation_denial
-
-        denial = generation_denial()
-        if denial is not None:
-            raise QueueFullError(denial["error"], reason=denial["error_code"], retryable=False)
         priority = max(0, min(int(priority), 9))
         if background:
             priority = min(priority, 1)
@@ -1064,6 +1054,23 @@ class AffinityScheduler:
     def set_foreground_preempt_hook(self, hook: Callable[[], bool | None] | None) -> None:
         with self._cond:
             self._foreground_preempt_hook = hook
+
+    def add_idle_maintenance_callback(self, callback: Callable[[], Any]) -> None:
+        """Register a short nonblocking idle lifecycle poll on the existing dispatcher."""
+        if not callable(callback):
+            raise TypeError("idle maintenance callback must be callable")
+        with self._cond:
+            if callback not in self._idle_maintenance_callbacks:
+                self._idle_maintenance_callbacks.append(callback)
+
+    def _run_idle_maintenance_callbacks(self) -> None:
+        with self._cond:
+            callbacks = tuple(self._idle_maintenance_callbacks)
+        for callback in callbacks:
+            try:
+                callback()
+            except Exception:
+                logging.getLogger(__name__).exception("idle maintenance callback failed")
 
     def foreground_idle_seconds(self) -> float:
         with self._cond:
@@ -1283,10 +1290,6 @@ class AffinityScheduler:
         the lease is granted so the secondary Ollama server never intentionally shares
         constrained accelerator memory with the foreground runner.
         """
-        from .opencode_boundary import generation_denial
-
-        if generation_denial() is not None:
-            return False
         with self._cond:
             now = time.monotonic()
             if self._external_gpu_reserved():
@@ -1574,6 +1577,7 @@ class AffinityScheduler:
 
     def _dispatch_loop(self) -> None:
         while self._running:
+            self._run_idle_maintenance_callbacks()
             target_switch: str | None = None
             idle_unload: str | None = None
             selected: Job | None = None
@@ -1985,10 +1989,6 @@ class AffinityScheduler:
 
     def prewarm(self, model: str) -> bool:
         """Warm one model only while completely idle; never delays queued user work."""
-        from .opencode_boundary import generation_denial
-
-        if generation_denial() is not None:
-            return False
         with self._cond:
             if self._pending or self._inflight or self._switching or self._background_gpu_lease or self._external_gpu_reserved():
                 return False
@@ -2294,6 +2294,25 @@ class AffinityScheduler:
             for job in self._inflight_jobs.values():
                 if job.cancel_event is not None:
                     job.cancel_event.set()
+            # A clean shutdown must not leave this process's idle internal GPU
+            # fence behind for the lease TTL. Keep it when any GPU operation may
+            # still be active or its outcome is uncertain; those cases stay
+            # fail-closed and recover through the normal expiry path.
+            safe_to_release_internal_gpu = not (
+                self._inflight
+                or self._inflight_jobs
+                or self._switching
+                or self._gpu_prepare_in_progress
+                or self._background_gpu_lease
+                or self._internal_gpu_uncertain
+            )
+            if safe_to_release_internal_gpu:
+                try:
+                    self._release_internal_gpu()
+                except Exception:
+                    # Shutdown continues; an unreleased fence remains fail-closed
+                    # and will be reaped only after its lease expires.
+                    pass
             self._cond.notify_all()
         self._executor.shutdown(wait=False, cancel_futures=True)
         if self._dispatcher.is_alive() and threading.current_thread() is not self._dispatcher:

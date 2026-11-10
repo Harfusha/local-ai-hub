@@ -37,6 +37,7 @@ def policy() -> PolicyEngine:
         ("bundle", "artifact_write"),
         ("config", "system_configuration"),
         ("model", "model_execution"),
+        ("model_inference", "model_execution"),
     ],
 )
 def test_auxiliary_actions_share_policy_metadata_and_require_grant(

@@ -125,3 +125,26 @@ def test_openvino_npu_reranker_without_transformer_uses_cpu_fallback() -> None:
     assert rr.active_backend == "torch"
     assert rr.active_device == "cpu"
     assert cross_encoder_factory.call_count == 2
+
+
+def test_embedding_encode_discovers_accelerator_candidates_once_per_request() -> None:
+    embedding = EmbeddingModel({
+        "models": {"embedding_backend": "auto", "embedding_device": "auto"},
+        "cache": {"embeddings": False},
+    })
+    candidates = [("sentence-transformers", "cuda:0"), ("sentence-transformers", "cpu")]
+    embedding._candidate_specs = MagicMock(return_value=candidates)
+    embedding._claim_embedding_gpu = MagicMock(return_value=None)
+    embedding._encode_uncached = MagicMock(return_value={
+        "success": True, "embeddings": [[1.0]], "computed": 1,
+    })
+    embedding.flight_group.do = lambda _key, work: (work(), False)
+
+    def uses_cuda(_backend, device):
+        return str(device).lower().startswith("cuda")
+
+    with patch("local_ai_hub.embeddings.uses_torch_cuda", side_effect=uses_cuda):
+        result = embedding.encode(["candidate probe test"])
+
+    assert result["success"] is True
+    assert embedding._candidate_specs.call_count == 1

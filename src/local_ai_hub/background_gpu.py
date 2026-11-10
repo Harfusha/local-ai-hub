@@ -215,10 +215,6 @@ class IdleGPUWorker:
         return True
 
     def _acquire_session(self) -> bool:
-        from .opencode_boundary import generation_denial
-
-        if generation_denial() is not None:
-            return False
         if self._closed or not self.enabled or not self.model or self._startup_circuit_open or self._stop_unconfirmed:
             return False
         with self._lock:
@@ -343,10 +339,6 @@ class IdleGPUWorker:
 
     def _acquire_cpu_session(self) -> bool:
         """Start the serial CPU fallback without reserving the foreground GPU."""
-        from .opencode_boundary import generation_denial
-
-        if generation_denial() is not None:
-            return False
         if self._closed or not self.cpu_fallback_enabled or not self.model:
             return False
         with self._setup_lock:
@@ -550,11 +542,6 @@ class IdleGPUWorker:
     def generate_many(self, tasks: list[dict[str, Any]], *, preprocessing: bool = False) -> list[dict[str, Any]]:
         if not tasks:
             return []
-        from .opencode_boundary import generation_denial
-
-        denial = generation_denial()
-        if denial is not None:
-            return [dict(denial) for _ in tasks]
         all_results: list[dict[str, Any]] = []
         batch_start = 0
         while batch_start < len(tasks):

@@ -2630,12 +2630,22 @@ class DeterministicEngine:
                 break
 
         items: list[dict[str, Any]] = []
-        for item in self.merge_overlapping_slices(str(base), candidates):
-            eid = self.evidence.put(str(base), item)
-            if eid:
-                item["evidence_id"] = eid
-            item.pop("text", None)  # progressive disclosure at the API boundary
-            items.append(item)
+        merged_items = self.merge_overlapping_slices(str(base), candidates)
+        put_many = getattr(self.evidence, "put_many", None)
+        if callable(put_many):
+            stored_items = put_many(str(base), merged_items)
+            for item, stored in zip(merged_items, stored_items):
+                if isinstance(stored, dict) and stored.get("evidence_id"):
+                    item["evidence_id"] = stored["evidence_id"]
+                item.pop("text", None)  # progressive disclosure at the API boundary
+                items.append(item)
+        else:
+            for item in merged_items:
+                eid = self.evidence.put(str(base), item)
+                if eid:
+                    item["evidence_id"] = eid
+                item.pop("text", None)  # progressive disclosure at the API boundary
+                items.append(item)
         return items
 
     def query(self, root: str, query: str, limit: int | None = None) -> dict[str, Any]:
@@ -3582,22 +3592,34 @@ class DeterministicEngine:
         omitted_evidence: list[dict[str, Any]] = []
         raw_count = 0
         if self.evidence is not None:
-            for ev in result.get("evidence", []):
-                eid = str(ev.get("evidence_id", ""))
-                if not eid or raw_count >= max_raw_evidence:
-                    continue
-                exact = self.evidence.get(eid, verify=True)
-                if not exact.get("success", True) or exact.get("stale"):
-                    continue
-                text = str(exact.get("text", ""))
-                block = f"\n--- {eid} {exact.get('path')}:{exact.get('start_line')}-{exact.get('end_line')} ---\n{text}"
-                if used + 1 + len(block) > max_chars:
-                    truncated = True
-                    omitted_evidence.append({"evidence_id": eid, "path": exact.get("path"),
-                                             "start_line": exact.get("start_line"), "end_line": exact.get("end_line"),
-                                             "reason": "complete_source_exceeds_context_budget"})
-                    continue
-                pieces.append(block); used += 1 + len(block); raw_count += 1
+            evidence_items = [
+                (ev, str(ev.get("evidence_id", "")))
+                for ev in result.get("evidence", [])
+                if isinstance(ev, dict) and str(ev.get("evidence_id", ""))
+            ] if max_raw_evidence > 0 else []
+            get_many = getattr(self.evidence, "get_many", None)
+            for offset in range(0, len(evidence_items), max(1, max_raw_evidence)):
+                evidence_batch = evidence_items[offset:offset + max(1, max_raw_evidence)]
+                if callable(get_many):
+                    exact_items = get_many([eid for _ev, eid in evidence_batch], verify=True)
+                else:
+                    exact_items = [self.evidence.get(eid, verify=True) for _ev, eid in evidence_batch]
+                for (_ev, eid), exact in zip(evidence_batch, exact_items):
+                    if raw_count >= max_raw_evidence:
+                        break
+                    if not exact.get("success", True) or exact.get("stale"):
+                        continue
+                    text = str(exact.get("text", ""))
+                    block = f"\n--- {eid} {exact.get('path')}:{exact.get('start_line')}-{exact.get('end_line')} ---\n{text}"
+                    if used + 1 + len(block) > max_chars:
+                        truncated = True
+                        omitted_evidence.append({"evidence_id": eid, "path": exact.get("path"),
+                                                 "start_line": exact.get("start_line"), "end_line": exact.get("end_line"),
+                                                 "reason": "complete_source_exceeds_context_budget"})
+                        continue
+                    pieces.append(block); used += 1 + len(block); raw_count += 1
+                if raw_count >= max_raw_evidence:
+                    break
 
         if self.code_index is not None and used < max_chars:
             try:
@@ -6572,9 +6594,7 @@ def test_{sym}_regression_edge_cases():
                 elif "workspace_changed" not in reasons:
                     reasons.append("workspace_changed")
 
-        if scanned_files == 0 and scan_complete:
-            # A complete traversal of an empty eligible scope is not a
-            # completed security assessment of any repository file.
+        if scanned_files == 0 and scan_complete and not inventory.get("excluded_link_paths", 0):
             scan_complete = False
             stop_reason = "no_files_scanned"
 
@@ -8066,13 +8086,13 @@ def test_{sym}_regression_edge_cases():
             target_db = self._find_sqlite_database(p_root)
 
         if not target_db or not target_db.is_file():
-            return {"success": False, "error": f"no SQLite database found in root: {root}"}
+            return {"success": False, "status_code": 404, "error": f"no SQLite database found in root: {root}"}
 
         try:
             resolved_db = target_db.resolve(strict=True)
             relative_db = resolved_db.relative_to(p_root)
         except (OSError, ValueError) as exc:
-            return {"success": False, "error": f"database path is outside root or unavailable: {exc}"}
+            return {"success": False, "status_code": 400, "error": f"database path is outside root or unavailable: {exc}"}
 
         tables: dict[str, Any] = {}
         try:
@@ -8096,7 +8116,7 @@ def test_{sym}_regression_edge_cases():
                 "tables": tables,
             }
         except Exception as exc:
-            return {"success": False, "error": f"database inspection failed: {exc}"}
+            return {"success": False, "status_code": 500, "error": f"database inspection failed: {exc}"}
 
     def explain_query(self, root: str, query: str, db_path: str | None = None) -> dict[str, Any]:
         """Run EXPLAIN QUERY PLAN on an SQLite query to inspect execution strategy and indexes."""
@@ -8109,16 +8129,16 @@ def test_{sym}_regression_edge_cases():
             target_db = self._find_sqlite_database(p_root)
 
         if not target_db or not target_db.is_file():
-            return {"success": False, "error": "no SQLite database found for query explain"}
+            return {"success": False, "status_code": 404, "error": "no SQLite database found for query explain"}
 
         if not query or not query.strip():
-            return {"success": False, "error": "query cannot be empty"}
+            return {"success": False, "status_code": 400, "error": "query cannot be empty"}
 
         clean_query = query.strip()
         if not clean_query.lower().startswith("select"):
-            return {"success": False, "error": "only SELECT queries are allowed for explain_query"}
+            return {"success": False, "status_code": 400, "error": "only SELECT queries are allowed for explain_query"}
         if ";" in clean_query.rstrip(";"):
-            return {"success": False, "error": "multiple statements are not permitted"}
+            return {"success": False, "status_code": 400, "error": "multiple statements are not permitted"}
 
         try:
             resolved_db = target_db.resolve(strict=True)
@@ -8138,7 +8158,7 @@ def test_{sym}_regression_edge_cases():
                 "plan": plan_items,
             }
         except Exception as exc:
-            return {"success": False, "error": f"explain query failed: {exc}"}
+            return {"success": False, "status_code": 500, "error": f"explain query failed: {exc}"}
 
     def env_compat(self, root: str) -> dict[str, Any]:
         """Analyze project manifests for OS, runtime, and build-tool dependencies."""
@@ -9119,6 +9139,8 @@ def test_{sym}_regression_edge_cases():
 
     def slice_dependency_graph(self, root: str, symbol: str, path: str | None = None, depth: int = 2) -> dict[str, Any]:
         """Extract a minimal AST dependency slice for a target symbol, saving context tokens."""
+        if not isinstance(symbol, str) or not symbol.isidentifier() or keyword.iskeyword(symbol):
+            return {"success": False, "status_code": 400, "error": "symbol must be a valid Python identifier"}
         p_root = Path(root).expanduser().resolve(strict=False)
         skip_dirs = {".git", ".venv", "venv", "node_modules", "__pycache__"}
 
@@ -9134,9 +9156,13 @@ def test_{sym}_regression_edge_cases():
             if p.is_file():
                 files_to_check.append(p)
         else:
-            for p in p_root.rglob("*.py"):
-                if not any(part in skip_dirs for part in p.parts):
-                    files_to_check.append(p)
+            for current_root, directories, filenames in os.walk(p_root):
+                directories[:] = sorted(directory for directory in directories if directory not in skip_dirs)
+                files_to_check.extend(
+                    Path(current_root) / filename
+                    for filename in sorted(filenames)
+                    if filename.lower().endswith(".py")
+                )
 
         for p in files_to_check:
             try:

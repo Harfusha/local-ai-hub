@@ -32,6 +32,34 @@ def test_endpoint_stats_read_failure_is_not_reported_as_zero(tmp_path, monkeypat
     assert report["error"] == "endpoint stats unavailable"
 
 
+def test_record_call_reuses_writer_connection_and_close_reopens(tmp_path, monkeypatch):
+    store = EndpointStatsStore(tmp_path / "state")
+    connect = store._connect
+    connections = []
+
+    def count_connect(*args, **kwargs):
+        connection = connect(*args, **kwargs)
+        if kwargs.get("check_same_thread") is False:
+            connections.append(connection)
+        return connection
+
+    monkeypatch.setattr(store, "_connect", count_connect)
+    store.record_call(item_type="mcp", item_name="tool", duration_ms=2)
+    store.record_call(item_type="mcp", item_name="tool", duration_ms=3)
+    assert len(connections) == 1
+    assert store.get_stats(include_unused=False)["items"][0]["calls"] == 2
+
+    store.close()
+    import sqlite3
+    with pytest.raises(sqlite3.ProgrammingError):
+        connections[0].execute("SELECT 1")
+
+    store.record_call(item_type="mcp", item_name="tool", duration_ms=4)
+    assert len(connections) == 2
+    assert store.get_stats(include_unused=False)["items"][0]["calls"] == 3
+    store.close()
+
+
 def test_exact_scopes_preserve_legacy_counts_and_event_dedup_after_restart(tmp_path):
     import time
     from contextlib import closing

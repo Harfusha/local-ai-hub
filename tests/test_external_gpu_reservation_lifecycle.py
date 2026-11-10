@@ -22,12 +22,12 @@ def _digest(token: str) -> str:
 def test_default_reservation_ttl_is_bounded_and_idle_state(tmp_path):
     store = ExternalGpuReservationStore(tmp_path / "external-gpu-reservation", clock=lambda: 100.0)
 
-    lease = store.reserve(_digest("owner-token"), owner="opencode-session")
+    lease = store.reserve(_digest("owner-token"), owner="external-session")
 
     assert lease is not None
     assert lease["schema_version"] == 1
     assert lease["generation"]
-    assert lease["owner"] == "opencode-session"
+    assert lease["owner"] == "external-session"
     assert lease["state"] == "idle"
     assert lease["expires_at"] == 160.0
 

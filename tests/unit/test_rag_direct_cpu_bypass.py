@@ -222,7 +222,7 @@ def test_direct_rag_route_preserves_candidates_when_gpu_reservation_is_denied(tm
         tmp_path / "reranker", monkeypatch, fail_gpu_load=False, fail_gpu_predict=False
     )
     reranker.active_device = "cuda:0"
-    monkeypatch.setattr(reranker, "_needs_cuda_admission", lambda: True)
+    monkeypatch.setattr(reranker, "_needs_gpu_admission", lambda: True)
     monkeypatch.setattr(reranker, "_claim_gpu_reservation", lambda: False)
     store.reranker = reranker
 

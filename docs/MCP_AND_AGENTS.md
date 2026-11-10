@@ -107,7 +107,7 @@ Named profiles are available through existing `local_ai_task` and `local_ai_repo
 
 ## Synthesis scope
 
-`disable_llm_card_synthesis = true` skips LLM synthesis for unparsed file cards and stores deterministic stubs. It does not disable module/project cards: `prefer_deterministic_modules` and `prefer_deterministic_project` are separate preferences, and either path can use background LLM synthesis when deterministic output is unavailable or below its confidence threshold. Check active configuration and backend state before claiming synthesis is disabled.
+`disable_llm_card_synthesis = true` disables model enrichment of file cards; the deterministic or stub card remains provisional. The default is false. Module and project cards use separate `prefer_deterministic_modules` and `prefer_deterministic_project` settings. Check active configuration and backend state before claiming synthesis is disabled.
 
 ## Local model conversations
 
@@ -144,4 +144,4 @@ The installed user hook at `.cursor/hooks.json` blocks broad native `cat`/`type`
 
 ## LLM card synthesis scope
 
-`disable_llm_card_synthesis` applies to fallback synthesis for unparsed file cards only. Module and project cards use separate `prefer_deterministic_modules` and `prefer_deterministic_project` settings; background LLM synthesis may still run when deterministic card generation does not satisfy its acceptance conditions.
+`disable_llm_card_synthesis` controls file-card model enrichment after deterministic card creation. Module and project cards use separate `prefer_deterministic_modules` and `prefer_deterministic_project` settings; background synthesis may still run when deterministic card generation does not satisfy their acceptance conditions.

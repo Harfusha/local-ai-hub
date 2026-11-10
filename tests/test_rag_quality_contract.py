@@ -364,6 +364,7 @@ def test_fallback_embedding_reports_identity_of_backend_that_produced_vectors():
     model._dimensions_by_identity = {}
     model._model_provenance_lock = threading.Lock()
     model._model_provenance_by_identity = {}
+    model._model_instance_epochs = {}
     model.cache = _Cache()
     model.cache_enabled = True
     model.batch_size = 32

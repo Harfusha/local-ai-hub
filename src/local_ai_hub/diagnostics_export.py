@@ -220,6 +220,170 @@ def _snapshot_database(path: Path, destination: Path, *, cancelled: Callable[[],
         source.close()
 
 
+_LAYA_PRIVATE_TABLES = {
+    "laya_candidates", "laya_candidate_events", "laya_dataset_snapshots", "laya_dataset_assignments",
+}
+
+
+def _contains_laya_capture(value: Any) -> bool:
+    if isinstance(value, dict):
+        operation = value.get("laya_operation")
+        if isinstance(operation, dict) and operation.get("action") in {"capture", "capture_batch"}:
+            return True
+        return any(_contains_laya_capture(item) for item in value.values())
+    if isinstance(value, list):
+        return any(_contains_laya_capture(item) for item in value)
+    if isinstance(value, str):
+        value = value.lstrip()
+        if value[:1] not in "[{\"":
+            return False
+        try:
+            return _contains_laya_capture(json.loads(value))
+        except (TypeError, ValueError):
+            # Trace previews may cut through a JSON payload. If both markers
+            # survive the truncation, remove the trace rather than risk export.
+            return '"laya_operation"' in value and (
+                '"capture"' in value or '"capture_batch"' in value
+            )
+    return False
+
+
+def _sanitize_laya_snapshot(
+    database: Path, *, redact_candidates: bool, redact_traces: bool
+) -> dict[str, int]:
+    """Remove candidate payloads from a disposable support-archive DB snapshot."""
+    connection = sqlite3.connect(database, timeout=2.0)
+    connection.row_factory = sqlite3.Row
+    removed = {"candidate_rows": 0, "candidate_tables": 0, "trace_records": 0}
+    try:
+        connection.execute("PRAGMA secure_delete=ON")
+        tables = {
+            row["name"] for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+            )
+        }
+        if redact_candidates:
+            for table in sorted(_LAYA_PRIVATE_TABLES & tables):
+                if table == "laya_candidates":
+                    removed["candidate_rows"] = int(connection.execute(
+                        "SELECT COUNT(*) FROM laya_candidates"
+                    ).fetchone()[0])
+                connection.execute(f'DROP TABLE "{table}"')
+                removed["candidate_tables"] += 1
+        if redact_traces and "traces" in tables:
+            columns = [row["name"] for row in connection.execute('PRAGMA table_info("traces")')]
+            if "trace_id" in columns:
+                json_columns = [name for name in columns if name.endswith("_json") or name.endswith("_text")]
+                matching: set[str] = set()
+                for row in connection.execute('SELECT * FROM "traces"'):
+                    if any(_contains_laya_capture(row[name]) for name in json_columns if row[name] is not None):
+                        matching.add(str(row["trace_id"]))
+                if "trace_events" in tables:
+                    event_columns = {
+                        row["name"] for row in connection.execute('PRAGMA table_info("trace_events")')
+                    }
+                    if {"trace_id", "payload_json"} <= event_columns:
+                        for row in connection.execute(
+                            'SELECT trace_id,payload_json FROM "trace_events"'
+                        ):
+                            if _contains_laya_capture(row["payload_json"]):
+                                matching.add(str(row["trace_id"]))
+                if "trace_content_chunks" in tables:
+                    chunk_columns = {
+                        row["name"] for row in connection.execute(
+                            'PRAGMA table_info("trace_content_chunks")'
+                        )
+                    }
+                    if {"trace_id", "chunk_text"} <= chunk_columns:
+                        if {"content_field", "event_seq", "chunk_index"} <= chunk_columns:
+                            query = (
+                                'SELECT trace_id,content_field,event_seq,chunk_index,chunk_text '
+                                'FROM "trace_content_chunks" '
+                                'ORDER BY trace_id,content_field,event_seq,chunk_index'
+                            )
+                            current_key: tuple[str, str, int] | None = None
+                            current_chunks: list[str] = []
+                            for row in connection.execute(query):
+                                key = (str(row["trace_id"]), str(row["content_field"]), int(row["event_seq"]))
+                                if current_key is not None and key != current_key:
+                                    if _contains_laya_capture("".join(current_chunks)):
+                                        matching.add(current_key[0])
+                                    current_chunks = []
+                                current_key = key
+                                current_chunks.append(str(row["chunk_text"] or ""))
+                            if current_key is not None and _contains_laya_capture("".join(current_chunks)):
+                                matching.add(current_key[0])
+                        else:
+                            for row in connection.execute(
+                                'SELECT trace_id,chunk_text FROM "trace_content_chunks"'
+                            ):
+                                if _contains_laya_capture(row["chunk_text"]):
+                                    matching.add(str(row["trace_id"]))
+                if matching:
+                    trace_ids = sorted(matching)
+                    placeholders = ",".join("?" for _ in trace_ids)
+                    for child_table in ("trace_events", "trace_content_meta", "trace_content_chunks"):
+                        if child_table not in tables:
+                            continue
+                        child_columns = [row["name"] for row in connection.execute(f'PRAGMA table_info("{child_table}")')]
+                        if "trace_id" in child_columns:
+                            connection.execute(
+                                f'DELETE FROM "{child_table}" WHERE trace_id IN ({placeholders})', trace_ids
+                            )
+                    connection.execute(f'DELETE FROM "traces" WHERE trace_id IN ({placeholders})', trace_ids)
+                    removed["trace_records"] = len(matching)
+        connection.commit()
+        if any(removed.values()):
+            connection.execute("VACUUM")
+        return removed
+    finally:
+        connection.close()
+
+
+def _laya_candidate_metadata(database: Path) -> dict[str, Any]:
+    """Return aggregate-only candidate status/category/language counts."""
+    connection = sqlite3.connect(f"{database.as_uri()}?mode=ro", uri=True, timeout=1.0)
+    result: dict[str, Any] = {
+        "schema_version": 1,
+        "candidate_status_counts": {},
+        "category_counts": {},
+        "language_counts": {},
+        "evaluation_status": "INSUFFICIENT DATA",
+    }
+    try:
+        exists = connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='laya_candidates'"
+        ).fetchone()
+        if not exists:
+            result["candidate_data_status"] = "unavailable"
+            return result
+        result["candidate_data_status"] = "available"
+        result["candidate_total_count"] = int(connection.execute(
+            "SELECT COUNT(*) FROM laya_candidates"
+        ).fetchone()[0])
+        columns = {row[1] for row in connection.execute('PRAGMA table_info("laya_candidates")')}
+        if "status" in columns:
+            for status, count in connection.execute(
+                "SELECT status,COUNT(*) FROM laya_candidates GROUP BY status"
+            ):
+                result["candidate_status_counts"][str(status)] = int(count)
+        if "candidate_json" not in columns:
+            return result
+        for (payload,) in connection.execute("SELECT candidate_json FROM laya_candidates"):
+            try:
+                candidate = json.loads(payload)
+            except (TypeError, ValueError):
+                continue
+            for key, field in (("category_counts", "category"), ("language_counts", "language")):
+                value = candidate.get(field)
+                if isinstance(value, str):
+                    counts = result[key]
+                    counts[value] = counts.get(value, 0) + 1
+        return result
+    finally:
+        connection.close()
+
+
 def _write_member(archive: Any, archive_path: Path, name: str, source_path: Path | None, data: bytes | None,
                   *, max_archive_bytes: int, cancelled: Callable[[], bool] | None) -> int:
     written = 0
@@ -251,6 +415,9 @@ def create_diagnostics_archive(
     max_archive_bytes: int = DEFAULT_MAX_ARCHIVE_BYTES,
     max_source_bytes: int = DEFAULT_MAX_SOURCE_BYTES,
     telemetry_flush_complete: bool = True,
+    laya_metadata: dict[str, Any] | None = None,
+    laya_candidate_payload: bytes | None = None,
+    laya_telemetry: dict[str, Any] | None = None,
     temp_dir: Path | str | None = None,
     cancelled: Callable[[], bool] | None = None,
 ) -> DiagnosticArchive:
@@ -295,6 +462,31 @@ def create_diagnostics_archive(
 
         password = __import__("secrets").token_urlsafe(32)
         entries: list[dict[str, Any]] = []
+        candidate_status_counts: dict[str, int] = {}
+        candidate_total_count = 0
+        laya_aggregate: dict[str, Any] = {
+            "schema_version": 1,
+            "exported_at": time.time(),
+            "period": {
+                "scope": "window",
+                "generated_at": (laya_telemetry or {}).get("generated_at"),
+                "window_days": (laya_telemetry or {}).get("window_days"),
+            },
+            "candidate_data_status": "unavailable",
+            "candidate_status_counts": candidate_status_counts,
+            "category_counts": {},
+            "language_counts": {},
+            "runtime": (laya_telemetry or {}).get("runtime", {"status": "unavailable"}),
+            "shadow_telemetry": laya_telemetry or {"status": "unavailable"},
+            "evaluation_status": "INSUFFICIENT DATA",
+            "missing_data": {
+                "candidate_database": 1,
+                "shadow_telemetry": 1 if not (laya_telemetry or {}).get("decisions", {}).get("available", False) else 0,
+                "evaluation_report": 1,
+                "backend_provenance": 1,
+            },
+        }
+        export_candidate_count = 0 if laya_candidate_payload is None else len([line for line in laya_candidate_payload.splitlines() if line])
         source_total = 0
         with pyzipper.AESZipFile(
             archive_path,
@@ -312,6 +504,31 @@ def create_diagnostics_archive(
                 relative = path.relative_to(root).as_posix()
                 snapshot = temp_root / f"snapshot-{index}.sqlite3"
                 _snapshot_database(path, snapshot, cancelled=cancelled)
+                if path.name == "agent_state.sqlite":
+                    aggregate = _laya_candidate_metadata(snapshot)
+                    laya_aggregate["candidate_data_status"] = aggregate["candidate_data_status"]
+                    laya_aggregate["missing_data"]["candidate_database"] = int(
+                        aggregate["candidate_data_status"] == "unavailable"
+                    )
+                    for key in ("category_counts", "language_counts"):
+                        target = laya_aggregate[key]
+                        for label, count in aggregate[key].items():
+                            target[label] = target.get(label, 0) + count
+                    for status, count in aggregate["candidate_status_counts"].items():
+                        candidate_status_counts[status] = candidate_status_counts.get(status, 0) + count
+                sanitization = _sanitize_laya_snapshot(
+                    snapshot,
+                    redact_candidates=True,
+                    redact_traces=path.name == "debug_traces.sqlite3",
+                )
+                candidate_total_count += sanitization["candidate_rows"]
+                if any(sanitization.values()):
+                    entries.append({
+                        "name": "state/" + relative,
+                        "category": "laya_private_data_redaction",
+                        "status": "redacted",
+                        "counts": sanitization,
+                    })
                 size = snapshot.stat().st_size
                 source_total += size
                 _check_limits(source_total, max_source_bytes=max_source_bytes, category="source data")
@@ -326,6 +543,42 @@ def create_diagnostics_archive(
                     seen_core.add(path.name)
             for filename in sorted(_CORE_DATABASES - seen_core):
                 entries.append({"name": "state/" + filename, "category": "state_database", "status": "unavailable"})
+
+            laya_aggregate["candidate_text_export"] = {
+                "status": "included" if laya_candidate_payload is not None else "omitted",
+                "included_rows": export_candidate_count,
+                "skipped_rows": max(0, candidate_total_count - export_candidate_count),
+                "skipped_by_status": {
+                    "pending": candidate_status_counts.get("pending", 0),
+                    "rejected": candidate_status_counts.get("rejected", 0),
+                    "ambiguous": candidate_status_counts.get("ambiguous", 0),
+                },
+                "reason": "explicit_opt_in_required" if laya_candidate_payload is None else None,
+            }
+            laya_report = laya_metadata if laya_metadata is not None else laya_aggregate
+            if type(laya_report) is not dict:
+                raise ValueError("Laya metadata report must be an object")
+            # The archive contents are authoritative; caller metadata must not
+            # claim candidate rows were included when the private member was omitted.
+            laya_report = dict(laya_report)
+            laya_report["candidate_text_export"] = laya_aggregate["candidate_text_export"]
+            laya_report_bytes = json.dumps(laya_report, ensure_ascii=False, indent=2, sort_keys=True).encode("utf-8")
+            source_total += len(laya_report_bytes)
+            _check_limits(source_total, max_source_bytes=max_source_bytes, category="source data")
+            laya_report_name = "laya/report.json"
+            _write_member(archive, archive_path, laya_report_name, None, laya_report_bytes,
+                          max_archive_bytes=max_archive_bytes, cancelled=cancelled)
+            entries.append({"name": laya_report_name, "category": "laya_metadata_report", "status": "included", "bytes": len(laya_report_bytes)})
+            if laya_candidate_payload is not None:
+                candidate_bytes = laya_candidate_payload
+                if not candidate_bytes or len(candidate_bytes) > 16 * 1024 * 1024:
+                    raise ValueError("explicit Laya training export is empty or exceeds byte limit")
+                source_total += len(candidate_bytes)
+                _check_limits(source_total, max_source_bytes=max_source_bytes, category="source data")
+                candidate_name = "laya/candidates.train.jsonl"
+                _write_member(archive, archive_path, candidate_name, None, candidate_bytes,
+                              max_archive_bytes=max_archive_bytes, cancelled=cancelled)
+                entries.append({"name": candidate_name, "category": "explicit_laya_training_candidates", "status": "included", "bytes": len(candidate_bytes)})
 
             for path in state_files:
                 _cancelled(cancelled)
@@ -382,6 +635,14 @@ def create_diagnostics_archive(
                 "files": entries,
                 "excluded_categories": ["environment secrets", "model weights", "other project source"],
                 "debug_trace_note": "Request and response content is present only when detailed trace capture was enabled and retained; traces may contain private content.",
+                "laya": {
+                    "candidate_text": {
+                        **laya_aggregate["candidate_text_export"],
+                        **((laya_report.get("candidate_text_export") or {}) if isinstance(laya_report, dict) else {}),
+                    },
+                    "candidate_status_counts": candidate_status_counts,
+                    "missing_data": laya_aggregate["missing_data"],
+                },
             }
             readme = (
                 "Sensitive Local AI Hub support archive.\n"

@@ -174,15 +174,24 @@ class SemanticGenerationCache:
             return None
 
     def get(self, scope: str, query_text: str) -> tuple[dict[str, Any] | None, float]:
+        value, score, _reason = self.get_with_reason(scope, query_text)
+        # Keep the public two-value result stable for existing callers.
+        if value is None:
+            return None, 0.0
+        return value, score
+
+    def get_with_reason(self, scope: str, query_text: str) -> tuple[dict[str, Any] | None, float, str]:
         if not isinstance(scope, str) or "\x00" in scope:
-            return None, 0.0
+            return None, 0.0, "invalid_scope"
         query_text = normalize_query(query_text)
-        if not self.enabled or len(query_text) < self.min_query_chars:
-            return None, 0.0
+        if not self.enabled:
+            return None, 0.0, "semantic_cache_disabled"
+        if len(query_text) < self.min_query_chars:
+            return None, 0.0, "query_too_short"
         exact_recent = self._recent.get(stable_hash({"s": self._scoped_key(scope), "q": query_text}))
         if isinstance(exact_recent, dict):
             self.hits += 1
-            return exact_recent, 1.0
+            return exact_recent, 1.0, "exact_l1_hit"
         cutoff = time.time() - self.ttl_seconds if self.ttl_seconds else 0
         query_hash = stable_hash(query_text)
         with self._lock, closing(self._connect()) as con:
@@ -215,16 +224,16 @@ class SemanticGenerationCache:
                                 pass
                     self._recent.set(stable_hash({"s": self._scoped_key(scope), "q": query_text}), value_dict)
                     self.hits += 1
-                    return value_dict, 1.0
+                    return value_dict, 1.0, "exact_l2_hit"
 
         numpy = _load_numpy()
         if numpy is None:
             self.misses += 1
-            return None, 0.0
+            return None, 0.0, "numpy_unavailable"
         vector = self._vector(query_text)
         if vector is None:
             self.misses += 1
-            return None, 0.0
+            return None, 0.0, "query_embedding_unavailable"
         with self._lock, closing(self._connect()) as con:
             rows = con.execute(
                 "SELECT id,vector_blob,value_json,created_at FROM semantic_entries WHERE scope_key=? AND created_at>=? ORDER BY accessed_at DESC LIMIT ?",
@@ -232,14 +241,14 @@ class SemanticGenerationCache:
             ).fetchall()
             if not rows:
                 self.misses += 1
-                return None, 0.0
+                return None, 0.0, "no_candidates"
 
             best: tuple[int, dict[str, Any], float] | None = None
             query_vector = numpy.asarray(vector, dtype=numpy.float32)
             query_norm = float(numpy.linalg.norm(query_vector))
             if not math.isfinite(query_norm) or query_norm <= 1e-9:
                 self.misses += 1
-                return None, 0.0
+                return None, 0.0, "invalid_query_vector"
             query_vector = query_vector / query_norm
 
             vector_rows: list[Any] = []
@@ -273,7 +282,11 @@ class SemanticGenerationCache:
 
             if best is None:
                 self.misses += 1
-                return None, 0.0
+                if not math.isfinite(best_score):
+                    return None, 0.0, "invalid_candidates"
+                if best_score < self.threshold:
+                    return None, best_score, "below_threshold"
+                return None, best_score, "invalid_candidate_value"
             # Persistent hit telemetry is intentionally sampled once per entry/process.
             # Semantic hits are promoted to L1, so writing SQLite on every hit only adds
             # lock contention without improving reuse quality.
@@ -295,7 +308,7 @@ class SemanticGenerationCache:
                         pass
             self._recent.set(stable_hash({"s": scope, "q": query_text}), best[1])
             self.hits += 1
-            return best[1], best[2]
+            return best[1], best[2], "semantic_hit"
 
     def set(self, scope: str, query_text: str, value: dict[str, Any]) -> None:
         if not isinstance(scope, str) or "\x00" in scope or not isinstance(value, dict):

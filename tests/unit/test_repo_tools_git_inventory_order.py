@@ -79,6 +79,29 @@ def test_git_inventory_sorts_unicode_paths(tmp_path):
     assert inventory.complete is True
 
 
+def test_search_candidate_limit_bounds_parallel_path_validation(tmp_path, monkeypatch):
+    root = tmp_path / "repository"
+    root.mkdir()
+    for index in range(100):
+        (root / f"file-{index:03}.py").write_text("needle\n", encoding="utf-8")
+
+    tools = RepositoryTools({"search": {"prefer_git_files": False, "max_files": 1000}})
+    validated = []
+
+    def allow(_base, path, _settings, **_kwargs):
+        validated.append(path)
+        return True
+
+    monkeypatch.setattr(tools, "_project_file_allowed", allow)
+
+    result = list(tools._iter_project_search_files(
+        root, None, max_depth=8, candidate_limit=8,
+    ))
+
+    assert len(result) == 8
+    assert len(validated) == 8
+
+
 @pytest.mark.parametrize(
     ("cap_name", "cap_value"),
     [("MAX_EXACT_GIT_PATHS", 1), ("MAX_EXACT_GIT_PATH_BYTES", 1)],

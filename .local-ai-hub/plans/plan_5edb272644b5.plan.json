@@ -1,0 +1,147 @@
+{
+  "default_target_ref": "refs/heads/master",
+  "description": "Evidence-led staged evaluation and implementation of Laya Multilingual. Design: docs/superpowers/specs/2026-11-09-laya-decision-service.md. Preserve current authority, dirty work, and independent hardware acceleration plan.",
+  "id": "plan_5edb272644b5",
+  "lifecycle": "active",
+  "schema_version": 1,
+  "spec_refs": [],
+  "tasks": {
+    "task_laya_advisory": {
+      "acceptance_criteria": [
+        "Reuses an existing task/API surface and canonical authorization/identity.",
+        "Typed category options are server-owned; no arbitrary prompt/transcript/source input.",
+        "Response includes success, decision ID, mode/status, category, suggestion/reason codes, evidence IDs, uncertainty, and only verified runtime metadata.",
+        "No tool execution, permission/task-state changes, receipt creation, or deterministic override."
+      ],
+      "blocker": "No candidate category has passed independent Hub evaluation.",
+      "clarifications": [],
+      "depends_on": [
+        {
+          "plan_id": "plan_5edb272644b5",
+          "task_id": "task_laya_evaluation"
+        },
+        {
+          "plan_id": "plan_5edb272644b5",
+          "task_id": "task_laya_foundation"
+        }
+      ],
+      "description": "Stage dependency: expose explicit typed advisory through an existing API/tool only after the category passes evaluation. Caller cannot set mode, identity, permissions, or global automation. Result is a proposal; errors/abstention remain explicit.",
+      "kind": "code",
+      "next_action": "Keep unregistered until a category passes the evaluation gate.",
+      "title": "Expose explicit typed advisory call after validation",
+      "work_status": "blocked"
+    },
+    "task_laya_evaluation": {
+      "acceptance_criteria": [
+        "Non-private fixtures have independent labels and group-safe splits.",
+        "Compare current deterministic baseline and Laya on identical cases.",
+        "Report quality and abstention by category and language.",
+        "Count schema/protocol tokens, tool roundtrips, local compute, and latency separately.",
+        "No quality claim without sufficient held-out cases."
+      ],
+      "blocker": "No approved category/minimal input/privacy scope, independent production labels, paired deterministic baseline, fixed thresholds, or sealed group-safe holdout. Exact compatibility between the pinned checkpoint and current training package is untested. Device-specific ONNX/provider support is unproven; no runtime adapter is connected.",
+      "clarifications": [],
+      "depends_on": [
+        {
+          "plan_id": "plan_5edb272644b5",
+          "task_id": "task_laya_evidence"
+        },
+        {
+          "plan_id": "plan_5edb272644b5",
+          "task_id": "task_laya_foundation"
+        }
+      ],
+      "description": "Current official upstream docs now provide `laya-train` and `laya.train.finetune` for a local checkpoint directory, on CUDA/MPS/CPU. Accepted JSONL shapes are `{state, questions, expected}` or `{state, questions, gold}`; the existing train export matches the hard-label shape, but merged output lacks global group/label provenance and remains training-only. The pinned multilingual model is 322M mmBERT-base; its model card reports weak typed-decision zero-shot results and uncalibrated/overconfident probabilities, so specialize one copy for a single approved workflow and calibrate against held-out labels. Provider lists and upstream ONNX export do not prove this graph runs on each vendor device; upstream ONNXAgent is documented for CPU. No package/checkpoint compatibility, Hub data fit, hardware provider, or runtime measurements are verified.",
+      "kind": "code",
+      "next_action": "Keep production capture, inference, training, shadow, and advisory stopped. After category/input/privacy, labels, baseline, thresholds, and provider authorization are established, validate the pinned checkpoint/package pair and candidate JSONL with the documented dry-run, fine-tune one multilingual copy for that workflow, then compare against the paired baseline on a sealed holdout and measure tokens, latency, quality, and actual provider/device separately.",
+      "title": "Build paired fixtures and evaluate quality, cost, and latency",
+      "work_status": "blocked"
+    },
+    "task_laya_evidence": {
+      "acceptance_criteria": [
+        "Current plan and repository state reviewed; no duplicate plan.",
+        "Laya model suitability and concrete decision tasks evidenced or precise blockers documented.",
+        "Implement safe bounded infrastructure or integration without automatic authority or side effects.",
+        "Make session lifecycle state observable without asserting hardware release.",
+        "Batch training-candidate intake is scoped, per-example consented, atomic, bounded, and deduplicated.",
+        "Targeted verification recorded; remaining stages and blockers documented."
+      ],
+      "blocker": null,
+      "clarifications": [],
+      "depends_on": [],
+      "description": "Safe Laya groundwork is implemented: strict typed decision contracts, metadata-only telemetry, one shared 600-second idle lifecycle polled by the existing scheduler, consented candidate storage in the existing Agent State database, deterministic group-safe snapshots and train-only export, diagnostics redaction/export, normal status and ZIP lifecycle metadata, bounded capture_batch, and encrypted train-only ZIP pooling. Dashboard-enabled diagnostics consent export now passes after fixing the test's forwarded-scope expectation and close race; request-body HTTP 408 preservation has an isolated regression. Focused current suite: 126 passed. No connected provider/inference adapter; no inference, training, extra install/download, hardware release claim, or measured token/quality/latency gain.",
+      "kind": "code",
+      "next_action": "Evidence and safe infrastructure stage complete. Keep production capture, shadow, and advisory disabled pending approved category/input/privacy scope, independent labels, paired deterministic baseline, fixed thresholds, and qualified provider.",
+      "title": "Inspect Hub decision surfaces and verify model provenance",
+      "work_status": "done"
+    },
+    "task_laya_export": {
+      "acceptance_criteria": [
+        "Reuse existing telemetry, report, and ZIP paths; no second store or exporter.",
+        "Report shadow separately from explicit advisory with coverage, status, latency, backend, abstention, errors, fallback, and skips.",
+        "Expose shared lifecycle status through existing Hub status and laya/report.json.runtime without claiming hardware placement or release.",
+        "Normal ZIP contains metadata only, schema/time/manifest, provenance, evaluation summaries, and included/skipped/missing counts.",
+        "Training candidate text is excluded unless separately opted in through an authorized existing export route.",
+        "Merge multiple existing encrypted ZIP train members without extracting unrelated files or persisting passwords.",
+        "Validate rows against the upstream training JSONL shape; deduplicate exact rows and reject conflicting labels for identical state/questions.",
+        "Write merged output atomically with provenance counts only; mark train-only and evaluation_eligible=false because source exports omit global group identities."
+      ],
+      "blocker": "No connected runtime adapter/provider or evaluated decision category. Runtime backend/latency provenance cannot be reported; merged training rows omit global task/session/group provenance and cannot form pooled evaluation data. Independent labels, paired deterministic baseline, fixed thresholds, and approved input/privacy scope are absent.",
+      "clarifications": [],
+      "depends_on": [
+        {
+          "plan_id": "plan_5edb272644b5",
+          "task_id": "task_laya_foundation"
+        }
+      ],
+      "description": "Existing encrypted diagnostics ZIP retains metadata-only Laya report and lifecycle data; candidate tables, assignments and linked capture traces are removed from disposable snapshots. Candidate JSONL requires explicit consent, authorized repository scope, a valid snapshot, and verified train rows. `laya-dataset-merge` reads only encrypted train members, validates shape/size, deduplicates exact rows, rejects conflicting labels, writes atomically, and marks output training-only/evaluation-ineligible because group provenance is absent. Telemetry now summarizes shadow and advisory separately with category/status/reason counts plus abstentions, errors, and skips. Coverage, latency, backend, and fallback metrics are explicitly unavailable because denominator/runtime provenance is not recorded. Focused checks: 47 tests passed across Laya telemetry, decision contracts, and diagnostics export. No runtime provider is connected; actual backend/latency and paired evaluation remain unavailable.",
+      "kind": "code",
+      "next_action": "Keep candidate pooling training-only and production capture stopped. Once approved category/input/privacy scope, independent labels, paired baseline, fixed thresholds, and a qualified provider are available, add authentic runtime denominator/backend/latency/fallback evidence and complete the paired evaluation. Preserve explicit unavailable states until then.",
+      "title": "Extend existing reports and authorized ZIP",
+      "work_status": "blocked"
+    },
+    "task_laya_foundation": {
+      "acceptance_criteria": [
+        "Closed categories and category-specific option enums",
+        "Server-bound mode and canonical identity on mapping and direct construction",
+        "Only whitelisted choices; no completion attestation, actual watchdog command, or skipped validation",
+        "Metadata projection excludes raw payload",
+        "Targeted tests and compile pass"
+      ],
+      "blocker": null,
+      "clarifications": [],
+      "depends_on": [],
+      "description": "Strict side-effect-free request/result contract. Request mapping rejects mode/identity spoofing; direct construction enforces same server-bound identity and category option allowlists. No `abstain`, `verified`, executable watchdog commands or repeated-work skips appear as suggestions. Hub route suggestions use existing ModelExecutionPolicy tiers; watchdog values use recommendation labels. Result reason codes are finite and required for non-success. No model or Hub route registration; 22 targeted tests pass, compileall passes.",
+      "kind": "code",
+      "next_action": "Keep unregistered until independent category labels, deterministic baseline and runtime gates pass.",
+      "title": "Implement only independently useful contract infrastructure",
+      "work_status": "done"
+    },
+    "task_laya_shadow": {
+      "acceptance_criteria": [
+        "Shadow off leaves the current path unchanged.",
+        "Inference failures, timeout, overload, and invalid output cannot block or alter Hub behavior.",
+        "Telemetry stores only allowlisted metadata and excludes raw text/model output.",
+        "One category passes a predeclared held-out quality and utility gate."
+      ],
+      "blocker": "Blocked by missing independent labels, baseline, and evaluated export path.",
+      "clarifications": [],
+      "depends_on": [
+        {
+          "plan_id": "plan_5edb272644b5",
+          "task_id": "task_laya_evaluation"
+        },
+        {
+          "plan_id": "plan_5edb272644b5",
+          "task_id": "task_laya_export"
+        }
+      ],
+      "description": "Stage dependency: requires evaluation and metadata-only report/export support. Add one disabled-by-default, nonblocking category only after independent labels, paired baseline, and fixed thresholds pass.",
+      "kind": "code",
+      "next_action": "Do not invoke Laya before prerequisites pass.",
+      "title": "Add one evaluated metadata-only shadow category",
+      "work_status": "blocked"
+    }
+  },
+  "title": "Laya decision service: safe staged integration"
+}

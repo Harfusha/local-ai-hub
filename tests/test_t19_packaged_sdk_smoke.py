@@ -247,7 +247,7 @@ for name, schema in schemas.items():
     assert set(schema["parameters"].get("required", [])) <= properties.keys()
 repo = schemas["local_ai_repo"]["parameters"]
 assert "action" in repo["required"]
-assert {"preprocess", "context", "solve"} <= set(repo["properties"]["action"]["enum"])
+assert {"preprocess", "context"} <= set(repo["properties"]["action"]["enum"])
 # All assertions above inspect the actual JSON wire payload. Python-only tuple
 # metadata is valid JSON array data, not a container-identity contract.
 sdk.close()

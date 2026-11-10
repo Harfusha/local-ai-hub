@@ -128,8 +128,10 @@ def test_windows_command_cache_lock_timeout_uses_bounded_nonblocking_attempts(
 
     monkeypatch.setattr(cache_module, "os", FakeWindowsOS())
     monkeypatch.setattr(cache_module, "_COMMAND_CACHE_LOCK_TIMEOUT_SECONDS", 0.025)
-    monkeypatch.setattr(cache_module.time, "monotonic", lambda: clock[0])
-    monkeypatch.setattr(cache_module.time, "sleep", lambda duration: clock.__setitem__(0, clock[0] + duration))
+    monkeypatch.setattr(cache_module, "time", SimpleNamespace(
+        monotonic=lambda: clock[0],
+        sleep=lambda duration: clock.__setitem__(0, clock[0] + duration),
+    ))
 
     with pytest.raises(TimeoutError, match="coordination lock timed out"):
         with coordinator.locked():

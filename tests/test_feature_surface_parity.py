@@ -7,6 +7,7 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from local_ai_hub.features import FeatureSet
 from local_ai_hub.generator import (
+    generate_antigravity_instructions,
     generate_global_policy,
     generate_mcp_tool_schemas,
     generate_skill_markdown,
@@ -113,6 +114,24 @@ def test_disabled_agent_os_actions_are_omitted_from_generated_surfaces():
     assert not features.agent_os
     assert "task_create" not in features.supported_coord_actions()
     assert "task_create" not in _actions(schemas["local_ai_coord"])
+
+
+def test_codex_and_antigravity_surfaces_follow_profile_gated_semantic_actions():
+    cfg = _config()
+    cfg["hardware"] = {"profile": "low"}
+    features = FeatureSet.from_config(cfg)
+    disabled_actions = {"review", "reason", "second_opinion"} - set(features.supported_task_actions())
+    outputs = (
+        generate_antigravity_instructions(cfg),
+        generate_global_policy(cfg),
+        generate_skill_markdown(cfg),
+    )
+
+    assert "compress" in features.supported_task_actions()
+    for output in outputs:
+        assert "compress" in output
+        for action in disabled_actions:
+            assert f'local_ai_task(action="{action}")' not in output
 
 
 def test_whole_task_tool_obeys_its_feature_gate():

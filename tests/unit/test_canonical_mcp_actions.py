@@ -4,6 +4,7 @@ from local_ai_hub.features import FeatureSet
 from local_ai_hub import mcp_server
 from local_ai_hub.operation_contracts import (
     operation_actions,
+    operation_parameters_schema,
     operation_tool_input_schema,
     validate_operation_call,
 )
@@ -76,3 +77,19 @@ def test_status_selector_is_detail_only_and_rejects_action_backdoor():
     assert rejection is not None
     assert rejection[0] == 400
     assert "unexpected argument" in rejection[1]
+
+
+def test_operation_validation_reuses_cached_schema_without_exposing_mutable_cache():
+    from local_ai_hub.operation_contracts import _cached_operation_parameters_schema
+
+    _cached_operation_parameters_schema.cache_clear()
+    arguments = {"action": "git_status", "root": r"C:\repo"}
+
+    assert validate_operation_call("local_ai_repo", arguments) is None
+    assert validate_operation_call("local_ai_repo", arguments) is None
+    assert _cached_operation_parameters_schema.cache_info().hits >= 1
+
+    schema = operation_parameters_schema("local_ai_repo")
+    schema["properties"]["root"]["type"] = "integer"
+    fresh_schema = operation_parameters_schema("local_ai_repo")
+    assert fresh_schema["properties"]["root"]["type"] == "string"

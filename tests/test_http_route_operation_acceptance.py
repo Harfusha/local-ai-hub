@@ -744,3 +744,201 @@ def test_http_post_affected_tests_forwards_json_paths(running_http_hub, monkeypa
     assert calls == [(str(tmp_path), ["src/agent_state.py"])]
     assert result["success"] is True
     assert result["affected"] == ["tests/test_agent_state.py"]
+
+
+def test_http_post_agent_state_tasks_captures_laya_candidate_without_echoing_state(
+    running_http_hub, tmp_path
+):
+    base_url, app = running_http_hub
+    candidate_state = "synthetic model-route state for HTTP contract verification"
+    url = f"{base_url}/api/agent-state/tasks"
+
+    def post(operation):
+        body = json.dumps(
+            {
+                "action": "curate_dataset",
+                "root": str(tmp_path),
+                "laya_operation": operation,
+            }
+        ).encode("utf-8")
+        request = urllib_request.Request(
+            url,
+            data=body,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with _urlopen_with_error_body(request) as response:
+            assert response.status == 200
+            return json.loads(response.read().decode("utf-8"))
+
+    capture_operation = {
+        "action": "capture",
+        "consent": True,
+        "task_id": "task-31",
+        "session_id": "session:http-route-acceptance",
+        "candidate": {
+            "decision_schema_version": "laya-hub-v1",
+            "category": "model_route",
+            "state": candidate_state,
+            "options": ["fast", "smart", "background"],
+            "language": "en",
+            "preprocessing": {"name": "none", "version": "1"},
+            "evidence_ids": ["ev-http-test"],
+        },
+    }
+    denied_request = urllib_request.Request(
+        url,
+        data=json.dumps(
+            {
+                "action": "curate_dataset",
+                "root": str(tmp_path),
+                "laya_operation": capture_operation,
+            }
+        ).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with pytest.raises(HTTPError) as denied:
+        urllib_request.urlopen(denied_request)
+    assert denied.value.code == 409
+    denied_body = json.loads(denied.value.read().decode("utf-8"))
+    assert denied_body["error_code"] == "detailed_diagnostics_disabled"
+    assert app.laya_candidates.handle(
+        {"action": "list", "task_id": "task-31"},
+        root=str(tmp_path),
+        task_store=app.agent_tasks,
+    )["count"] == 0
+
+    toggle_request = urllib_request.Request(
+        f"{base_url}/api/config/update",
+        data=json.dumps({"settings": {"debug_traces.enabled": True}}).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with _urlopen_with_error_body(toggle_request) as response:
+        assert response.status == 200
+        toggled = json.loads(response.read().decode("utf-8"))
+    assert toggled["success"] is True
+
+    captured = post(capture_operation)
+
+    assert captured["success"] is True
+    assert captured["status"] == "pending"
+    assert captured["candidate_id"].startswith("laya_")
+    assert candidate_state not in json.dumps(captured)
+
+    listed = post({"action": "list", "task_id": "task-31"})
+    assert listed["success"] is True
+    assert listed["count"] == 1
+    assert listed["candidates"][0]["candidate_id"] == captured["candidate_id"]
+    assert candidate_state not in json.dumps(listed)
+
+
+def test_http_diagnostics_export_requires_laya_consent_and_forwards_snapshot_scope(
+    running_http_hub, tmp_path, monkeypatch
+):
+    base_url, app = running_http_hub
+    url = f"{base_url}/api/diagnostics/export"
+    toggle_request = urllib_request.Request(
+        f"{base_url}/api/config/update",
+        data=json.dumps({"settings": {"debug_traces.enabled": True}}).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with _urlopen_with_error_body(toggle_request) as response:
+        assert response.status == 200
+        assert json.loads(response.read().decode("utf-8"))["success"] is True
+
+    archive_path = tmp_path / "synthetic-diagnostics.zip"
+    archive_bytes = b"synthetic encrypted zip bytes"
+    archive_path.write_bytes(archive_bytes)
+    closed = threading.Event()
+    export = SimpleNamespace(
+        path=archive_path,
+        size=len(archive_bytes),
+        manifest={"included_files": 1},
+        password="synthetic-export-password",
+        close=closed.set,
+    )
+    calls = []
+
+    def export_diagnostics(*, cancelled, candidate_export):
+        calls.append((cancelled, candidate_export))
+        return export
+
+    monkeypatch.setattr(app, "export_diagnostics", export_diagnostics)
+
+    denied_request = urllib_request.Request(
+        url,
+        data=json.dumps(
+            {
+                "root": str(tmp_path),
+                "laya_candidate_export": {
+                    "consent": False,
+                    "snapshot_id": "snapshot-test",
+                },
+            }
+        ).encode("utf-8"),
+        headers={"Content-Type": "application/json", "Connection": "close"},
+        method="POST",
+    )
+    with pytest.raises(HTTPError) as denied:
+        urllib_request.urlopen(denied_request)
+    assert denied.value.code == 400
+    denied_body = json.loads(denied.value.read().decode("utf-8"))
+    assert denied_body["error_code"] == "diagnostics_export_request_invalid"
+    assert calls == []
+
+    request = urllib_request.Request(
+        url,
+        data=json.dumps(
+            {
+                "root": str(tmp_path),
+                "laya_candidate_export": {
+                    "consent": True,
+                    "snapshot_id": "snapshot-test",
+                },
+            }
+        ).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with urllib_request.urlopen(request) as response:
+        assert response.status == 200
+        assert response.read() == archive_bytes
+
+    assert len(calls) == 1
+    assert callable(calls[0][0])
+    assert calls[0][1] == {
+        "root": str(tmp_path),
+        "laya_candidate_export": {
+            "consent": True,
+            "snapshot_id": "snapshot-test",
+        },
+    }
+    assert closed.wait(timeout=1.0)
+
+
+def test_http_diagnostics_export_preserves_request_body_timeout_status(
+    running_http_hub, monkeypatch
+):
+    base_url, _app = running_http_hub
+
+    def timeout_body(_handler):
+        raise http_server.RequestBodyError("request body timed out", 408)
+
+    monkeypatch.setattr(http_server.Handler, "_read_json", timeout_body)
+    request = urllib_request.Request(
+        f"{base_url}/api/diagnostics/export",
+        data=b"{}",
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+
+    with pytest.raises(HTTPError) as timeout:
+        urllib_request.urlopen(request)
+
+    assert timeout.value.code == 408
+    body = json.loads(timeout.value.read().decode("utf-8"))
+    assert body["success"] is False
+    assert body["error"] == "request body timed out"

@@ -40,6 +40,37 @@ def test_trace_inspector_has_single_header_copyable_input_output_and_collapsed_d
     assert 'id="traceTechnicalDetails"' in render
 
 
+def test_request_response_trace_renders_captured_http_response_in_primary_content():
+    render_start = DASHBOARD_HTML.index("function renderTraceDetail(d)")
+    render_end = DASHBOARD_HTML.index("function setTraceView(view)", render_start)
+    render = DASHBOARD_HTML[render_start:render_end]
+    assert "model.presentation?.kind==='request_response'?renderTracePresentation(model):''" in render
+    assert "${requestResponseMarkup}" in render
+
+    assert which("node"), "Dashboard JavaScript tests require Node.js"
+    renderer_start = DASHBOARD_HTML.index("function renderRequestResponsePresentation(model){")
+    renderer_end = DASHBOARD_HTML.index("function traceUnmappedPresentation(model,kind){", renderer_start)
+    renderer = DASHBOARD_HTML[renderer_start:renderer_end]
+    script = (
+        "const traceRenderBudget=()=>({});"
+        "const traceSanitizeValue=value=>value;"
+        "const traceRecorded=value=>value!==undefined&&value!==null&&value!=='';"
+        "const traceMeaningfulValue=value=>traceRecorded(value);"
+        "const traceSummaryCard=(label,value)=>'['+label+':'+JSON.stringify(value)+']';"
+        "const traceCodeBlock=(label,value)=>'['+label+':'+JSON.stringify(value)+']';"
+        "const tracePresentationColumns=(title,left,right)=>title+' '+left.filter(Boolean).join(' ')+' '+right.filter(Boolean).join(' ');"
+        "const traceSecondaryDetails=()=>'';"
+        "const tracePresentationField=()=>'';"
+        + renderer
+        + "console.log(renderRequestResponsePresentation({response:{success:true,answer:'captured HTTP response'},identity:{method:'POST',path:'/api/example'},lifecycle:{status_code:200},session:{}}));"
+    )
+    result = subprocess.run(
+        ["node"], input=script, check=True, capture_output=True, text=True, encoding="utf-8"
+    )
+    assert "captured HTTP response" in result.stdout
+    assert "response:" in result.stdout
+
+
 def test_direct_trace_inspector_tab_loads_and_keeps_trace_history_polling():
     assert which("node"), "Dashboard JavaScript tests require Node.js"
     start = DASHBOARD_HTML.index("function switchTab(tabId){")

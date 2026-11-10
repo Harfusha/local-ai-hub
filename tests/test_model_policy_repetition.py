@@ -184,7 +184,7 @@ def test_profile_overrides_cpu_and_integrated_defaults():
 
     assert cpu["ollama"]["kv_cache_type"] == "q4_0"
     assert cpu["ollama"]["keep_alive"] == "5m"
-    assert cpu["preprocessing"]["cpu_workers"] == 1
+    assert cpu["preprocessing"]["cpu_workers"] == 2
     assert cpu["local_pipeline"]["same_model_worker_passes"] == 1
     assert cpu["deterministic"]["context_raw_evidence"] == 3
     assert cpu["search"]["context_top_k"] == 8
@@ -194,7 +194,7 @@ def test_profile_overrides_cpu_and_integrated_defaults():
     assert integ["ollama"]["kv_cache_type"] == "q4_0"
     assert integ["ollama"]["keep_alive"] == "5m"
     assert integ["ollama"]["num_threads"] > 0
-    assert integ["preprocessing"]["cpu_workers"] == 1
+    assert integ["preprocessing"]["cpu_workers"] == 2
     assert integ["local_pipeline"]["same_model_worker_passes"] == 1
     assert integ["deterministic"]["context_raw_evidence"] == 3
     assert integ["search"]["context_top_k"] == 8

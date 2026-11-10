@@ -2741,22 +2741,20 @@ class RAGStore:
         score = dot / (na * nb) if na and nb else 0.0
         return score if math.isfinite(score) else 0.0
 
-    def revision(self, *, workspace: str) -> str:
-        now = time.monotonic()
+    def _revision_from_connection(
+        self, con: sqlite3.Connection, workspace: str, generation: int, now: float,
+    ) -> str:
         if not hasattr(self, "_rev_cache"):
             self._rev_cache: dict[str, tuple[float, str, int]] = {}
             self._rev_lock = threading.Lock()
-        with closing(self._connect()) as con:
-            generation = self._workspace_index_generation(con, workspace)
         with self._rev_lock:
             cached = self._rev_cache.get(workspace)
             if cached and now - cached[0] < 3.0 and cached[2] == generation:
                 return cached[1]
-        with closing(self._connect()) as con:
-            rows = con.execute(
-                "SELECT path,content_hash,mtime_ns,size FROM files WHERE workspace=? ORDER BY path",
-                (workspace,),
-            ).fetchall()
+        rows = con.execute(
+            "SELECT path,content_hash,mtime_ns,size FROM files WHERE workspace=? ORDER BY path",
+            (workspace,),
+        ).fetchall()
         rev = stable_hash({"index": self.index_fingerprint, "generation": generation, "files": rows})
         with self._rev_lock:
             if len(self._rev_cache) > 256:
@@ -2765,6 +2763,12 @@ class RAGStore:
                     self._rev_cache.pop(k, None)
             self._rev_cache[workspace] = (now, rev, generation)
         return rev
+
+    def revision(self, *, workspace: str) -> str:
+        now = time.monotonic()
+        with closing(self._connect()) as con:
+            generation = self._workspace_index_generation(con, workspace)
+            return self._revision_from_connection(con, workspace, generation, now)
 
     @staticmethod
     def _postprocess_search_payload(payload: dict[str, Any], top_k: int) -> dict[str, Any]:
@@ -2806,37 +2810,14 @@ class RAGStore:
             {"semantic_only": True, "embedding_query": embedding_query}
             if semantic_only else {}
         )
-        from .opencode_boundary import generation_denial
-
-        if generation_denial() is not None:
-            if semantic_only:
-                result = {
-                    "success": True, "workspace": workspace, "results": [], "degraded": True,
-                    "fallback": "embedding_backend", "reason": "generation_denied",
-                    "retrieval_mode": "semantic_only_unavailable",
-                    "search_cache": {"hit": False, "coalesced": False},
-                }
-            else:
-                # Do not join another client's semantic singleflight or invoke an
-                # embedding provider: this request uses the existing lexical index.
-                result = self._search_uncached(
-                    clean_query, workspace, top_k, False, priority, scope_path, lexical_only=True,
-                )
-                result["search_cache"] = {"hit": False, "coalesced": False}
-            with closing(self._connect()) as con:
-                chunker_index_current = self._workspace_chunker_index_is_current(con, workspace)
-            if not chunker_index_current:
-                result["degraded"] = True
-                result["reindex_required"] = True
-                result["index_state"] = "stale"
-                result["stale_reason"] = "chunker_version_mismatch"
-            return self._postprocess_search_payload(result, top_k)
-        revision = self.revision(workspace=workspace)
         cache_identity_known = self._embedding_space_cache_identity_known()
         query_space = self._embedding_space_id()
         with closing(self._connect()) as con:
             generation = self._workspace_index_generation(con, workspace)
             stored_chunker_version = self._stored_workspace_chunker_version(con, workspace)
+            revision = self._revision_from_connection(
+                con, workspace, generation, time.monotonic(),
+            )
         cache_dimension = self._embedding_dimension_cache_identity()
 
         def cache_key(space: str | None, dimension: dict[str, Any], index_generation: int) -> str:
@@ -3220,7 +3201,7 @@ class RAGStore:
             return [item for item in candidates if "*" not in uncertain_paths and str(item.get("path", "")) not in uncertain_paths]
 
         if lexical_only:
-            query_result = {"success": False, "error": "opencode_local_lexical_only"}
+            query_result = {"success": False, "error": "embedding_disabled"}
         else:
             try:
                 query_result = self.services.embed([embedding_query if embedding_query is not None else query], priority=priority, query=True)

@@ -167,6 +167,7 @@ class _IncompleteGitInventory(RuntimeError):
     pass
 
 
+@lru_cache(maxsize=16_384)
 def is_root_archive_path(relative: str | Path) -> bool:
     """Identify audit overlays and archived source copies, not ordinary docs."""
     parts = tuple(
@@ -559,7 +560,9 @@ class RepositoryTools:
                     if inventory_status is not None and not self._inventory_path_safe(root, root / rel):
                         try:
                             intentional_link = self._inventory_path_has_link(root, root / rel)
-                            if not intentional_link:
+                            if intentional_link:
+                                inventory_status["excluded_link_paths"] = int(inventory_status.get("excluded_link_paths", 0)) + 1
+                            else:
                                 _record_security_inventory_issue(inventory_status, root, "unavailable_path", root / rel)
                         except FileNotFoundError:
                             pass
@@ -659,7 +662,7 @@ class RepositoryTools:
 
     def security_inventory(self, root: str, *, deadline: float | None = None) -> tuple[list[Path], dict[str, Any]]:
         """Return a bounded audit inventory together with explicit coverage."""
-        status: dict[str, Any] = {"complete": True, "reasons": [], "examples": {}, "examples_truncated": False}
+        status: dict[str, Any] = {"complete": True, "reasons": [], "examples": {}, "examples_truncated": False, "excluded_link_paths": 0}
         bound = max(0, self.max_files)
         entries = list(self._iter_files_with_stat(
             root, max_files=bound + 1, inventory_status=status, inventory_deadline=deadline,
@@ -701,7 +704,9 @@ class RepositoryTools:
         return False
 
     @staticmethod
-    def _resolve_inventory_path_safe(base: Path, path: Path) -> tuple[Path, Path] | None:
+    def _resolve_inventory_path_safe(
+        base: Path, path: Path, *, resolved_base: Path | None = None,
+    ) -> tuple[Path, Path] | None:
         """Resolve an inventory path after rejecting links and reparse points."""
         try:
             relative = path.relative_to(base)
@@ -711,7 +716,8 @@ class RepositoryTools:
                 info = current.lstat()
                 if stat.S_ISLNK(info.st_mode) or getattr(info, "st_file_attributes", 0) & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0):
                     return None
-            resolved_base = base.resolve(strict=True)
+            if resolved_base is None:
+                resolved_base = base.resolve(strict=True)
             resolved_path = path.resolve(strict=True)
             resolved_path.relative_to(resolved_base)
             return resolved_base, resolved_path
@@ -785,7 +791,16 @@ class RepositoryTools:
             except Exception:
                 incomplete("inventory_error")
             def walk_error(error: OSError) -> None:
-                incomplete("inventory_error", Path(error.filename) if error.filename else None)
+                error_path = Path(error.filename) if error.filename else None
+                if error_path is not None:
+                    try:
+                        if self._inventory_path_has_link(base, error_path):
+                            if inventory_status is not None:
+                                inventory_status["excluded_link_paths"] = int(inventory_status.get("excluded_link_paths", 0)) + 1
+                            return
+                    except (OSError, ValueError):
+                        pass
+                incomplete("inventory_error", error_path)
             walk_options: dict[str, Any] = {"followlinks": False}
             if inventory_status is not None:
                 walk_options["onerror"] = walk_error
@@ -1722,7 +1737,10 @@ class RepositoryTools:
         project_path_policy: Any | None = None,
     ) -> bool:
         try:
-            resolved_paths = self._resolve_inventory_path_safe(base, path)
+            resolved_base = getattr(project_path_policy, "project_root", None)
+            resolved_paths = self._resolve_inventory_path_safe(
+                base, path, resolved_base=resolved_base,
+            )
             if resolved_paths is None:
                 return False
             resolved_base, resolved = resolved_paths
@@ -2000,27 +2018,66 @@ class RepositoryTools:
 
         candidate_path_validation_started = time.perf_counter()
         try:
-            for path in candidates:
-                if yielded >= limit:
-                    break
-                try:
-                    relative_path = path.relative_to(base)
-                    _ = relative_path.as_posix()
-                except ValueError:
-                    continue
-                key = os.path.normcase(relative_path.as_posix())
-                if key in seen or any(part.casefold() in _HARD_SEARCH_DIRS for part in relative_path.parts[:-1]):
-                    continue
-                if any(part.casefold() in self.ignore_dirs for part in relative_path.parts[:-1]):
-                    continue
-                if not self._project_file_allowed(
+            def validation_pairs():
+                for path in candidates:
+                    if yielded >= limit:
+                        break
+                    try:
+                        relative_path = path.relative_to(base)
+                    except ValueError:
+                        continue
+                    key = os.path.normcase(relative_path.as_posix())
+                    if key in seen or any(part.casefold() in _HARD_SEARCH_DIRS for part in relative_path.parts[:-1]):
+                        continue
+                    if any(part.casefold() in self.ignore_dirs for part in relative_path.parts[:-1]):
+                        continue
+                    yield path, key
+
+            def is_allowed(path: Path) -> bool:
+                return self._project_file_allowed(
                     base, path, project_settings,
                     project_path_policy=project_path_policy,
-                ):
-                    continue
-                seen.add(key)
-                yielded += 1
-                yield path
+                )
+
+            def accept_validated(items: Iterable[tuple[Path, str]], allowed: Iterable[bool]):
+                nonlocal yielded
+                for (path, key), is_valid in zip(items, allowed):
+                    if not is_valid:
+                        continue
+                    seen.add(key)
+                    yielded += 1
+                    yield path
+
+            if candidate_limit is not None:
+                validation_candidates = list(validation_pairs())
+                pending_keys: set[str] = set()
+                deduplicated = []
+                for path, key in validation_candidates:
+                    if key in pending_keys:
+                        continue
+                    pending_keys.add(key)
+                    deduplicated.append((path, key))
+                if len(deduplicated) >= 32:
+                    with ThreadPoolExecutor(
+                        max_workers=min(8, len(deduplicated)),
+                        thread_name_prefix="repo-path-check",
+                    ) as executor:
+                        yield from accept_validated(
+                            deduplicated,
+                            executor.map(is_allowed, (path for path, _key in deduplicated)),
+                        )
+                else:
+                    yield from accept_validated(
+                        deduplicated,
+                        map(is_allowed, (path for path, _key in deduplicated)),
+                    )
+            else:
+                for path, key in validation_pairs():
+                    if not is_allowed(path):
+                        continue
+                    seen.add(key)
+                    yielded += 1
+                    yield path
         finally:
             if phase_timings_ms is not None:
                 phase_timings_ms["candidate_path_validation_ms"] = round(

@@ -408,7 +408,7 @@ def generate_skill_markdown(cfg: dict[str, Any]) -> str:
     public_contract_lines.extend([
         "CodeGraphContext/KuzuDB was removed from Local AI Hub. Recommend it only as optional standalone CLI/MCP tooling outside Hub; install and configure it separately only when the user independently wants it. It is not a Hub dependency, runtime, backend, or MCP integration.",
         "",
-        "`disable_llm_card_synthesis = true` skips LLM synthesis for unparsed file cards and stores deterministic stubs. It does not disable module/project cards: `prefer_deterministic_modules` and `prefer_deterministic_project` are separate preferences, and either path can use background LLM synthesis when deterministic output is unavailable or below its confidence threshold. Check active configuration and backend state before claiming synthesis is disabled.",
+        "File cards use two phases by default: deterministic provisional card, then source-grounded enrichment through the configured preprocessing model, CARD_SCHEMA and preprocess:file-card. `prefer_deterministic_cards` never skips phase two. `disable_llm_card_synthesis = true` disables file-card enrichment; explicit project/user configuration wins. Background GPU defaults on but retains idle grace, scheduler admission, preemption and game-mode gates.",
     ])
     public_contract_guidance = "\n".join(public_contract_lines)
 
@@ -491,7 +491,7 @@ Use Agent OS for every non-trivial multi-step, long-running, delegated, or accep
 - `local_ai_coord` bounds `max_tokens` to 0 through 100000.
 - Repository pipelines serialize preprocessing mutation actions with other mutating steps.
 - Optional repository-analysis tools are installed and configured separately; they are not part of the Hub.
-- `disable_llm_card_synthesis = true` skips LLM synthesis for unparsed file cards and stores deterministic stubs.
+- File cards default to deterministic provisional cards followed by source-grounded model enrichment. `disable_llm_card_synthesis = true` disables enrichment; explicit configuration wins.
 - It does not disable module/project cards:
 - `prefer_deterministic_modules` and `prefer_deterministic_project` are separate preferences.
 - either path can use background LLM synthesis when deterministic output is unavailable or below its confidence threshold.
@@ -1137,97 +1137,6 @@ def generate_mcp_configs(
     return entries
 
 
-def _opencode_local_agents() -> dict[str, dict[str, Any]]:
-    """V2 role definitions; subagents inherit the session model."""
-    shared = (
-        "Use the explicit absolute project root with Local AI Hub. Prefer bounded "
-        "repository symbols, references and available retrieval before broad reads. "
-        "Treat tool results as evidence, preserve unrelated user changes and do not "
-        "invent test results. Do not invoke cloud providers in a local-only session. "
-        "Do not start parallel local inference; use the session model."
-    )
-    read_only = [
-        {"action": "edit", "resource": "*", "effect": "deny"},
-        {"action": "shell", "resource": "*", "effect": "deny"},
-    ]
-    return {
-        "local-builder": {
-            "description": "Implement and verify coding tasks locally",
-            "mode": "primary",
-            "system": shared + " Read applicable project AGENTS.md instructions. Understand the goal and acceptance criteria, make a plan, "
-                "implement directly, run targeted tests, investigate failures and repair them. "
-                "Track task state and decisions in Agent OS; restore relevant state after restart. "
-                "Never claim completion without objective verification and authentic receipts.",
-        },
-        "local-planner": {
-            "description": "Plan a bounded change without modifying files",
-            "mode": "subagent", "permissions": [dict(rule) for rule in read_only],
-            "system": shared + " Produce a concise implementation plan, acceptance criteria and risks.",
-        },
-        "local-reviewer": {
-            "description": "Review changes for correctness and regressions",
-            "mode": "subagent", "permissions": [dict(rule) for rule in read_only],
-            "system": shared + " Review the changes and report actionable findings with locations and evidence.",
-        },
-        "local-debugger": {
-            "description": "Diagnose failing tests without modifying files",
-            "mode": "subagent", "permissions": [dict(rule) for rule in read_only],
-            "system": shared + " Diagnose supplied failures, distinguish evidence from hypotheses and suggest focused checks.",
-        },
-    }
-
-
-def generate_opencode_mcp_config(
-    cfg: dict[str, Any],
-    install_dir: Path,
-    hub_python: Path,
-    serena: Path | None = None,
-) -> dict[str, Any]:
-    """Build a standalone OpenCode V2 manifest without modifying user config."""
-    entries = generate_mcp_configs(cfg, install_dir, hub_python, serena, "opencode-local")
-    servers: dict[str, dict[str, Any]] = {}
-    for name, entry in entries.items():
-        server: dict[str, Any] = {
-            "type": "local",
-            "command": [entry["command"], *entry.get("args", [])],
-            "codemode": False,
-        }
-        if "cwd" in entry:
-            server["cwd"] = entry["cwd"]
-        if "env" in entry:
-            server["environment"] = dict(entry["env"])
-        servers[name] = server
-    return {"$schema": "https://opencode.ai/config.json", "default_agent": "local-builder", "mcp": {"servers": servers}, "agents": _opencode_local_agents()}
-
-
-def generate_opencode_runtime_config(
-    cfg: dict[str, Any], install_dir: Path, hub_python: Path, *, model: str, provider_port: int, hub_port: int,
-) -> dict[str, Any]:
-    """Build an experimental per-launch V2 config without embedding credentials."""
-    from .opencode_model_names import validate_local_model_name
-
-    validate_local_model_name(model)
-    if any(type(port) is not int or not 1 <= port <= 65535 for port in (provider_port, hub_port)):
-        raise ValueError("invalid loopback port")
-    result = generate_opencode_mcp_config(cfg, install_dir, hub_python)
-    result["model"] = f"local-hub/{model}"
-    result["providers"] = {
-        "local-hub": {
-            "name": "Local AI Hub",
-            "package": "@opencode/ai/providers/openai-compatible",
-            "settings": {"baseURL": f"http://127.0.0.1:{provider_port}/v1", "apiKey": "{env:LOCAL_AI_OPENCODE_PROVIDER_TOKEN}"},
-            "models": {model: {"name": model}},
-        },
-    }
-    result["policies"] = [
-        {"action": "provider.use", "resource": "*", "effect": "deny"},
-        {"action": "provider.use", "resource": "local-hub", "effect": "allow"},
-    ]
-    result["plugins"] = [{"package": str(install_dir / "tools" / "opencode_goal"),
-                          "options": {"hubURL": f"http://127.0.0.1:{hub_port}"}}]
-    return result
-
-
 def _apply_response_budget_schema(schemas: dict[str, dict[str, Any]], cfg: dict[str, Any]) -> None:
     """Describe the common response budget contract for every public tool."""
     for schema in schemas.values():
@@ -1422,10 +1331,6 @@ def write_all_generated(
     vscode_mcp_path = gen_dir / "vscode-mcp.json"
     vscode_mcp_path.write_text(json_dumps({"servers": {k: {"type": "stdio", **v} for k, v in vscode_mcp.items()}}) + "\n", encoding="utf-8")
     results["mcp"].append(str(vscode_mcp_path))
-
-    opencode_mcp_path = gen_dir / "opencode-mcp.json"
-    opencode_mcp_path.write_text(json_dumps(generate_opencode_mcp_config(cfg, target_root, python_bin, serena)) + "\n", encoding="utf-8")
-    results["mcp"].append(str(opencode_mcp_path))
 
     # 4. Generated JSON tool schemas
     schemas_dir = gen_dir / "schemas"

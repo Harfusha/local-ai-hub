@@ -42,6 +42,7 @@ dev = ["pytest>=8,<10", "pyflakes>=3.2,<4", "coverage[toml]>=7,<8", "psutil>=7,<
 
 [project.scripts]
 local-ai-hub = "local_ai_hub.__main__:main"
+laya-dataset-merge = "local_ai_hub.laya_dataset_merge:main"
 tokcount = "local_ai_hub.token_economy:tokcount_main"
 trim-run = "local_ai_hub.token_economy:trim_run_main"
 repo-map = "local_ai_hub.token_economy:repo_map_main"
@@ -58,9 +59,6 @@ local_ai_hub = ["defaults.toml", "automation_browser.js"]
 
 [tool.setuptools.data-files]
 "browser_bridge" = ["browser_bridge/background.js", "browser_bridge/capture.js", "browser_bridge/manifest.json", "browser_bridge/README.md"]
-"tools/opencode_goal" = ["tools/opencode_goal/index.js", "tools/opencode_goal/core.js", "tools/opencode_goal/transport.js", "tools/opencode_goal/package.json"]
-"tools/opencode_mcp" = ["tools/opencode_mcp/index.js", "tools/opencode_mcp/package.json"]
-"tools" = ["tools/opencode_pipe_client.cjs", "tools/opencode_sandbox_bootstrap.cjs", "tools/opencode_stop_client.ps1"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

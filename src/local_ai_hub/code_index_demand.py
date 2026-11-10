@@ -342,8 +342,20 @@ def _php_psr4_candidates(
     return True, list(dict.fromkeys(found))
 
 
+def _index_eligible_paths_by_basename(eligible: set[str]) -> dict[str, list[str]]:
+    by_basename: dict[str, list[str]] = {}
+    for path in eligible:
+        by_basename.setdefault(PurePosixPath(path).name, []).append(path)
+    return by_basename
+
+
 def _direct_import_candidates_for_seed(
-    base: Path, seed: str, eligible: set[str], repo_tools: Any, ingest_cache: Any = None
+    base: Path,
+    seed: str,
+    eligible: set[str],
+    repo_tools: Any,
+    ingest_cache: Any = None,
+    eligible_by_basename: dict[str, list[str]] | None = None,
 ) -> list[str]:
     if seed not in eligible or not _safe_inventory_file(base, seed, repo_tools):
         return []
@@ -401,7 +413,10 @@ def _direct_import_candidates_for_seed(
                 if parts:
                     class_file = parts[-1] + ".php"
                     rel_path = "/".join(parts) + ".php"
-                    for el in eligible:
+                    by_basename = eligible_by_basename
+                    if by_basename is None:
+                        by_basename = _index_eligible_paths_by_basename(eligible)
+                    for el in by_basename.get(class_file, ()):
                         if el.endswith("/" + rel_path) or el == rel_path or el.endswith("/" + class_file):
                             candidates.append(el)
         elif suffix == ".go":
@@ -433,11 +448,20 @@ def one_hop_related_files(
     base = Path(root).resolve(strict=True)
     found: list[str] = []
     seen = set(seeds)
+    eligible_by_basename = (
+        _index_eligible_paths_by_basename(eligible)
+        if any(seed in eligible and PurePosixPath(seed).suffix.lower() == ".php" for seed in seeds[:128])
+        else None
+    )
 
     for seed in seeds[:128]:
         if len(found) >= limit:
             break
-        for path in _direct_import_candidates_for_seed(base, seed, eligible, repo_tools, ingest_cache=ingest_cache):
+        for path in _direct_import_candidates_for_seed(
+            base, seed, eligible, repo_tools,
+            ingest_cache=ingest_cache,
+            eligible_by_basename=eligible_by_basename,
+        ):
             if path not in seen and len(found) < limit:
                 seen.add(path)
                 found.append(path)
@@ -471,10 +495,19 @@ def two_hop_weighted_files(
     base = Path(root).resolve(strict=True)
     weights: dict[str, float] = {}
     seeds_set = set(seeds)
+    eligible_by_basename = (
+        _index_eligible_paths_by_basename(eligible)
+        if any(seed in eligible and PurePosixPath(seed).suffix.lower() == ".php" for seed in seeds[:128])
+        else None
+    )
 
     # Hop 1
     for seed in seeds[:128]:
-        candidates = _direct_import_candidates_for_seed(base, seed, eligible, repo_tools, ingest_cache=ingest_cache)
+        candidates = _direct_import_candidates_for_seed(
+            base, seed, eligible, repo_tools,
+            ingest_cache=ingest_cache,
+            eligible_by_basename=eligible_by_basename,
+        )
         for cand in candidates:
             if cand in seeds_set:
                 continue
@@ -483,9 +516,17 @@ def two_hop_weighted_files(
 
     # Hop 2
     hop1_sorted = sorted(weights.keys(), key=lambda p: (-weights[p], p))[:hop1_limit]
+    if eligible_by_basename is None and any(
+        PurePosixPath(path).suffix.lower() == ".php" for path in hop1_sorted
+    ):
+        eligible_by_basename = _index_eligible_paths_by_basename(eligible)
     for h1_file in hop1_sorted:
         h1_weight = weights[h1_file]
-        h2_candidates = _direct_import_candidates_for_seed(base, h1_file, eligible, repo_tools, ingest_cache=ingest_cache)
+        h2_candidates = _direct_import_candidates_for_seed(
+            base, h1_file, eligible, repo_tools,
+            ingest_cache=ingest_cache,
+            eligible_by_basename=eligible_by_basename,
+        )
         for h2_cand in h2_candidates:
             if h2_cand in seeds_set:
                 continue

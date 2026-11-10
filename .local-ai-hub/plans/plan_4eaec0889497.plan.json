@@ -8,19 +8,21 @@
   "tasks": {
     "task_preprocessing_audit": {
       "acceptance_criteria": [
-        "Trace current preprocessing phase triggers and state transitions; distinguish watcher availability from incremental run-mode flags.",
-        "Preserve incremental watcher behavior, project path confinement, cancellation/preemption and scheduler fairness.",
-        "No major-change heuristic clears all project caches; matching identities reuse cached file/module/project/RAG work and only stale dependents regenerate.",
-        "Measure or attribute significant costs in inventory, hashing, lexical/code indexing, cards, RAG, SQLite and background model scheduling before optimizing.",
-        "Implement evidence-backed high-value improvements without changing preprocessing provider or pulling models; add focused regression coverage.",
-        "Run affected targeted validation and record runtime evidence plus explicit unverified limits."
+        "Trace actual ProjectPreprocessor.PHASES, scheduler, cursor, activity, GPU admission and resource-limit paths before editing.",
+        "Schedule active projects across base phases, then RAG/files, then optional phases; schedule inactive projects across the same layers at lower priority; diagnostics remains separately disabled by default.",
+        "Foreground agent access refreshes only the matching canonical absolute root's durable activity timestamp; background/internal work never refreshes it; rolling 24-hour expiry and immediate reactivation work.",
+        "New foreground activity raises next selection priority; bounded batches rotate projects; active arrivals and high layers cannot starve inactive projects or lower layers.",
+        "Restart resumes durable checkpoints without repeating completed work; content changes invalidate only stale dependents and task deduplication remains correct.",
+        "Every batch reuses existing path, security, writer-lease, admission, concurrency, batch, CPU/RAM, time, queue, model and GPU controls; limits are never exceeded; preemption/defer never publishes incomplete model/GPU results.",
+        "Focused tests cover layering, activity/background exclusion, 24-hour expiry/reactivation, per-root isolation, fairness/starvation, batching, restart/checkpoint, all resource limits and unavailable/preempted resume.",
+        "Update relevant docs and INSTALL_PROMPT/UPDATE_PROMPT; report no performance claim without measurement."
       ],
       "blocker": null,
       "clarifications": [],
       "depends_on": [],
-      "description": "Broadened user request: audit and improve the full preprocessing pipeline. Preserve no-global-invalidation and content-addressed reuse; inspect phase transitions, watcher delivery, inventory, hashing, indexing, cards, RAG, SQLite batching, scheduler/resource use, cancellation, and latency. Keep provider unchanged and preserve unrelated dirty work. Reconcile-steering/spec action is unavailable for the prior execution task because it has no bound session; use this existing plan task and current-revision edits.",
+      "description": "Implement fair layered multi-project preprocessing. Foreground activity per canonical absolute root defines active projects over a rolling 24-hour window. Background preprocessing must not refresh activity. Preserve phase dependencies, durable cursors/checkpoints, cache invalidation, deduplication, path confinement, writer leases, admission and all configured limits. Active projects traverse base phases together, then RAG/files, then optional phases; inactive projects receive the same layers at lower priority with anti-starvation. Diagnostics stays separate and disabled by default. No live DB refresh, provider/model-route change, API or data-format change.",
       "kind": "analysis",
-      "next_action": "Evaluate remaining code-index, cards, warm-incremental and foreground behavior without disrupting active Hub. Isolated actual preprocessing through RAG on 32 files, fake embeddings and no model/code-index/cards: two A/B samples, median 1001.1 ms eager vs 559.8 ms deferred; identical indexed text, 1203 chunks/vectors and 19 embedding calls. Live GPU backend and model timing remain unverified.",
+      "next_action": "Inspect indexed sources and current dirty diff; identify scheduler selection, persistent activity and existing limit gates before implementation.",
       "title": "End-to-end preprocessing optimization",
       "work_phase": "verification",
       "work_status": "in_progress"

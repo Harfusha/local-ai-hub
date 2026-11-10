@@ -55,6 +55,8 @@ from .speculative_lint import SpeculativeLintQueue
 from .debug_traces import DebugTraceStore
 from .agent_events import AgentStateStore
 from .agent_tasks import TaskStore, TaskStatus
+from .laya_candidates import LayaCandidateStore
+from .laya_lifecycle import DEFAULT_IDLE_UNLOAD_SECONDS, LayaSessionLifecycle
 from .agent_identity import AgentScope
 from .project_config import resolve_project_context
 from .agent_memory import MemoryStore, MemoryRecord, MemoryStatus, _normalise_scope_root
@@ -139,7 +141,13 @@ _STATUS_METADATA_KEYS = frozenset(
     f"{view}:{scope}:{name}"
     for view in ("live", "full") for scope in ("process", "window")
     for name in ("telemetry.summary", "preprocessing.status")
-)
+) | frozenset({
+    # These read-only counters are diagnostic and can be reused across the
+    # short dashboard refresh window when their probe outlives its deadline.
+    "debug_traces",
+    "runtime_stats.generation_cache",
+    "runtime_stats.repo_cache",
+})
 
 
 def _status_probe_key(view: str, scope: str, key: str) -> str:
@@ -451,13 +459,6 @@ class LocalAIApp:
         fast_runtime = OllamaRuntime(self.config)
         self.runtime = TieredOllamaRuntime(self.config, fast_runtime=fast_runtime) if bool(self.config.get("smart_ollama", {}).get("enabled", False)) else fast_runtime
         self.scheduler = AffinityScheduler(self.runtime, self.config)
-        from .opencode_provider_service import ProviderService
-        from .opencode_peer import verify_supervised_peer
-        self.opencode_provider = ProviderService(
-            self.scheduler,
-            upstream_url=self.config.get("server", {}).get("ollama_url", ""),
-            peer_verifier=lambda connection: verify_supervised_peer(connection, state_dir),
-        )
         self.background_gpu = IdleGPUWorker(self.config, self.scheduler)
         self.scheduler.set_foreground_preempt_hook(self.background_gpu.preempt_foreground)
         self.embeddings = EmbeddingModel(self.config)
@@ -508,6 +509,12 @@ class LocalAIApp:
             max_payload_bytes=int(agent_state_cfg.get("max_payload_bytes", 65536)),
         )
         self.agent_tasks = TaskStore(self.agent_state)
+        self.laya_candidates = LayaCandidateStore(state_dir)
+        laya_cfg = self.config.get("laya", {})
+        self.laya_lifecycle = LayaSessionLifecycle(
+            laya_cfg.get("idle_unload_seconds", DEFAULT_IDLE_UNLOAD_SECONDS)
+        )
+        self.scheduler.add_idle_maintenance_callback(self.laya_lifecycle.poll_idle_unload)
         from .automation_service import create_automation_broker
         self.automation = create_automation_broker(self.config, self.artifacts)
         self.agent_memory = MemoryStore(self.agent_state)
@@ -1386,6 +1393,7 @@ class LocalAIApp:
                 "reranker": reranker, "features": dict(self.config.get("features", {})),
                 "hardware": dict(self.config.get("_hardware", {})), "accelerators": accelerators,
                 "code_intelligence": code_intelligence,
+                "laya_runtime": self.laya_lifecycle.status,
                 "observability": telemetry_summary, "token_saving": ({k: v for k, v in telemetry_summary.items() if k != "sessions"} if isinstance(telemetry_summary, dict) else telemetry_summary), "debug_traces": debug_traces,
             }
             res["agent_state"] = agent_state
@@ -1467,7 +1475,7 @@ class LocalAIApp:
             max(1, int(cfg.get("max_rows_per_table", 1_000_000))),
         )
 
-    def export_diagnostics(self, *, cancelled: Any = None) -> Any:
+    def export_diagnostics(self, *, cancelled: Any = None, candidate_export: Any = None) -> Any:
         """Build a large installation-wide support archive without project filtering."""
         from .diagnostics_export import (
             DEFAULT_MAX_ARCHIVE_BYTES,
@@ -1480,12 +1488,35 @@ class LocalAIApp:
         max_source_bytes = int(limits.get("max_source_bytes", DEFAULT_MAX_SOURCE_BYTES))
         state_dir = Path(self.config["server"]["state_dir"])
         flush_complete = self.telemetry.flush(1.0) if getattr(self, "telemetry", None) else False
+        laya_candidate_payload = None
+        if candidate_export is not None:
+            if type(candidate_export) is not dict or set(candidate_export) != {"root", "laya_candidate_export"}:
+                raise ValueError("candidate ZIP export requires root and laya_candidate_export")
+            if (type(candidate_export["root"]) is not str or not candidate_export["root"]
+                    or not Path(candidate_export["root"]).expanduser().is_absolute()):
+                raise ValueError("candidate ZIP export root must be an absolute repository path")
+            laya_candidate_payload = self.laya_candidates.export_train_payload(
+                candidate_export["laya_candidate_export"],
+                root=candidate_export["root"],
+                task_store=self.agent_tasks,
+            )
+        laya_telemetry = {"status": "unavailable"}
+        if getattr(self, "telemetry", None):
+            telemetry_report = self.telemetry.report(_flush=False)
+            laya_telemetry = {
+                "generated_at": telemetry_report.get("generated_at"),
+                "window_days": telemetry_report.get("window_days"),
+                "decisions": telemetry_report.get("laya_decisions", {"status": "unavailable"}),
+                "runtime": self.laya_lifecycle.status,
+            }
         return create_diagnostics_archive(
             state_dir,
             max_archive_bytes=max_archive_bytes,
             max_source_bytes=max_source_bytes,
             config=self.config,
             telemetry_flush_complete=flush_complete,
+            laya_candidate_payload=laya_candidate_payload,
+            laya_telemetry=laya_telemetry,
             cancelled=cancelled,
         )
 
@@ -2445,7 +2476,7 @@ class LocalAIApp:
                     ("status_dependencies", lambda: self._status_dependency_executor.shutdown(wait=False, cancel_futures=True)),
                     ("helper_threads", join_helpers),
                 ]
-                for name in ("automation", "recovery", "preprocessor", "external_tools", "work_orchestrator", "async_jobs", "opencode_provider", "background_gpu", "scheduler", "telemetry", "deterministic", "code_index"):
+                for name in ("automation", "recovery", "preprocessor", "external_tools", "work_orchestrator", "async_jobs", "background_gpu", "scheduler", "laya_lifecycle", "telemetry", "deterministic", "code_index", "endpoint_stats"):
                     component = getattr(self, name, None)
                     if component is not None and callable(getattr(component, "close", None)):
                         steps.append((name, component.close))

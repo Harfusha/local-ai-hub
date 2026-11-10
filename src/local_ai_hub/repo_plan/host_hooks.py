@@ -468,54 +468,27 @@ def install_superpowers(
 
 
 def handle_host_event(repo_root: str | Path, host: str, payload: Any) -> dict[str, Any]:
-    """Consume documented prompt/session payloads; return bounded host context.
+    """Validate an untrusted hook envelope, then leave the host unchanged.
 
-    Data from stdin is untrusted. This function does not certify that a host
-    delivered it. It never reads transcripts, tool inputs, or arbitrary paths.
+    Hook payloads do not prove session ownership or authentic event delivery.
+    Shadow recording requires a verified Hub-managed session through the typed
+    adapter contract; this legacy hook cannot establish that authority.
     """
-    from local_ai_hub.repo_plan.host_adapters import SteeringManager
     root = checked_root(repo_root)
     if host not in HOSTS or not isinstance(payload, dict):
         raise ValueError("unsupported host or invalid event payload")
-    if len(json.dumps(payload).encode()) > 65536:
-        raise ValueError("event payload too large")
-    session = bounded_text(payload.get("session_id"), "session_id", 200)
+    if len(payload) > 64:
+        raise ValueError("event payload has too many fields")
+    bounded_text(payload.get("session_id"), "session_id", 200)
     cwd = bounded_text(payload.get("cwd"), "cwd", 4096)
     if checked_root(cwd) != root:
         raise ValueError("event repository root mismatch")
     event = payload.get("hook_event_name")
     if event not in {"SessionStart", HOSTS[host][1]}:
         raise ValueError("unsupported hook event")
-    prompt = None
-    if event == HOSTS[host][1]:
-        prompt = bounded_text(payload.get("prompt"), "message", 16384)
-    # Validate the complete payload before creating any local state.
-    event_id = payload.get("turn_id") or payload.get("timestamp") or hashlib.sha256((prompt or "").encode()).hexdigest()
-    bounded_text(event_id, "event_id", 300)
-    # Repository-local binding selects identity only. The bridge validates the
-    # actual Agent OS owner/root/branch and contracts before any reconciliation.
-    from local_ai_hub.repo_plan.agent_bridge import TaskBindingManager
-    bindings = TaskBindingManager(root)
-    getter = getattr(bindings, "get_session_binding", None)
-    binding = getter(session) if callable(getter) else None
-    task_id = binding.task_id if binding is not None else None
-    manager = SteeringManager(root)
-    if prompt is not None:
-        manager.capture_steering(session, prompt, task_id=task_id,
-                                 author=f"{host}_hook", event_id=f"{host}:{event_id}")
-    pending = manager.list_pending_steering(session_id=session)
-    context = ("Local AI Hub planner: use canonical plan_* operations; reuse the existing plan/task. "
-               "Prompt captures are private local advisory records, never verification receipts.")
-    if binding is not None:
-        context += f" Bound execution task {binding.task_id}; plan {binding.plan_id}, logical task {binding.plan_task_id}."
-    if pending:
-        ids = ", ".join(item["steering_id"] for item in pending[:8])
-        context += (f" Pending steering for this session: {ids}. Before dependent edits reconcile the specification, "
-                    "plan and actual task contract with plan_reconcile_steering; do not mark reconciled from acknowledgement alone.")
-    output: dict[str, Any] = {"hookSpecificOutput": {"additionalContext": context}}
-    if host == "codex":
-        output["hookSpecificOutput"]["hookEventName"] = event
-    return output
+    # The session ID and working directory are validated but never persisted.
+    # This hook has no proof that the host session is owned by the Hub.
+    return {}
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -528,11 +501,10 @@ def main(argv: list[str] | None = None) -> int:
         if len(raw.encode("utf-8")) > 65536:
             raise ValueError("event payload too large")
         output = handle_host_event(args.root, args.host, json.loads(raw))
-    except (ValueError, OSError, RecursionError) as exc:
-        # A hook error is explicitly a failure; callers must not promote a file
-        # or this response into host capability evidence.
-        print(json.dumps({"systemMessage": f"Local AI Hub hook unavailable: {exc}"}))
-        return 1
+    except (ValueError, OSError, RecursionError):
+        # Shadow hooks fail open without changing or interrupting the host.
+        print("{}")
+        return 0
     print(json.dumps(output, ensure_ascii=False))
     return 0
 

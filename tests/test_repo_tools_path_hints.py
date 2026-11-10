@@ -84,3 +84,40 @@ def test_search_paths_rejects_traversal_and_symlink_hints(tmp_path: Path, monkey
     )
     assert symlink["success"] is False
     assert "symlink" in symlink["error"].lower()
+
+
+def test_large_candidate_validation_uses_workers_and_preserves_order(tmp_path: Path, monkeypatch):
+    import threading
+    import time
+
+    from local_ai_hub.project_config import ProjectSettings
+    from local_ai_hub.repo_tools import GitFileInventory
+
+    root = tmp_path / "repo"
+    root.mkdir()
+    paths = []
+    for index in range(40):
+        path = root / f"file-{index:02d}.php"
+        path.write_text(f"content {index}", encoding="utf-8")
+        paths.append(path)
+
+    tools = _tools()
+    settings = ProjectSettings()
+    inventory = GitFileInventory(paths, complete=True)
+    original = tools._project_file_allowed
+    thread_ids = set()
+    thread_ids_lock = threading.Lock()
+
+    def observe_validation(*args, **kwargs):
+        with thread_ids_lock:
+            thread_ids.add(threading.get_ident())
+        time.sleep(0.002)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(tools, "_project_file_allowed", observe_validation)
+    result = list(tools._iter_project_search_files(
+        root, settings, 25, git_inventory=inventory, candidate_limit=40,
+    ))
+
+    assert result == paths
+    assert len(thread_ids) > 1

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 from copy import deepcopy
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -467,6 +468,7 @@ _ACTION_SCOPED_FIELDS = {
         "worktree_path": frozenset({"worktree_release"}),
         "delete_branch": frozenset({"worktree_release"}),
         "output_path": frozenset({"curate_dataset"}),
+        "laya_operation": frozenset({"curate_dataset"}),
         "min_receipts": frozenset({"curate_dataset"}),
         "command_id": frozenset({"record_native_receipt"}),
         "changed_paths": frozenset({"context_compile", "task_checkpoint", "task_create", "task_update", "claim", "release"}),
@@ -917,7 +919,7 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
             "worktree_lease": ("root", "branch"),
             "worktree_release": ("root", "worktree_path", "worktree_id", "delete_branch", "branch"),
             "simulate_merge": ("root", "source_branch", "target_branch"),
-            "curate_dataset": ("root", "output_path", "min_receipts", "format"),
+            "curate_dataset": ("root", "output_path", "min_receipts", "format", "laya_operation"),
             "negative_knowledge_record": ("root", "record"),
             "negative_knowledge_find": ("root", "query", "limit"),
             "incident_decision": ("root", "fingerprint", "state_revision"),
@@ -1140,6 +1142,8 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
             "delete_branch": {"type": "boolean", "default": True},
             "output_path": {"type": "string", "default": "training_dataset.jsonl"},
             "min_receipts": {"type": "integer", "default": 1},
+            "laya_operation": {"type": ["object", "null"], "default": None,
+                               "description": "Explicit-consent Laya candidate lifecycle action; capture_batch accepts up to 100 examples with consent=true on each item."},
             "session_id": {"type": "string", "default": "", "maxLength": 256},
             "question_id": {"type": "string", "default": "", "maxLength": 80},
             "question": {"type": "string", "default": "", "maxLength": 16_384},
@@ -2002,8 +2006,41 @@ def _requirements_met(features: Any, requirements: tuple[str, ...] | list[str]) 
     return True
 
 
-def operation_parameters_schema(tool: str, features: Any = None) -> dict[str, Any]:
-    """Build a feature-filtered JSON Schema parameter object from the registry."""
+def _schema_cache_inputs(tool: str, features: Any) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    contract = operation_contract(tool)
+    if contract is None:
+        return (), ()
+
+    requirements = {str(value) for value in contract.get("feature_requirements", ())}
+    requirements.update(str(value) for value in contract.get("conditional_properties", {}))
+    for action in contract["actions"].values():
+        requirements.update(str(value) for value in action.get("requires", ()))
+    has_profile_gates = False
+    for action in contract["action_order"]:
+        capability_id = _CAPABILITY_BY_OPERATION.get((tool, action))
+        definition = CAPABILITY_REGISTRY.get(capability_id) if capability_id else None
+        gate = definition.get("feature_gate") if isinstance(definition, dict) else None
+        if gate:
+            requirements.add({
+                "local_vision": "local_vision_qualified",
+                "local_code_generation": "local_code_generation_qualified",
+                "local_automation": "local_automation_qualified",
+                "bounded_local_work": "bounded_work_qualified",
+            }.get(gate, gate))
+        has_profile_gates = has_profile_gates or capability_minimum_profile(tool, action) != "cpu"
+    enabled = {
+        name for name in requirements if _requirements_met(features, (name,))
+    }
+    if has_profile_gates:
+        enabled.add(f"__hardware_profile__:{getattr(features, 'hardware_profile', 'cpu')}")
+    return operation_actions(tool, features), tuple(sorted(enabled))
+
+
+@lru_cache(maxsize=64)
+def _cached_operation_parameters_schema(
+    tool: str, available_actions: tuple[str, ...], enabled_requirements: tuple[str, ...],
+) -> dict[str, Any]:
+    """Build the internal read-only schema for one effective feature snapshot."""
     contract = operation_contract(tool)
     if contract is None:
         return {"type": "object", "properties": {}}
@@ -2012,7 +2049,6 @@ def operation_parameters_schema(tool: str, features: Any = None) -> dict[str, An
     if not properties:
         return {"type": "object", "properties": {}}
     selector_field = str(contract.get("selector_field", "action"))
-    available_actions = operation_actions(tool, features)
     for field in {selector_field, "action"}:
         if field in properties:
             field_actions = list(available_actions)
@@ -2023,7 +2059,7 @@ def operation_parameters_schema(tool: str, features: Any = None) -> dict[str, An
                 )
             properties[field]["enum"] = field_actions
     for requirements, conditional_properties in contract.get("conditional_properties", {}).items():
-        if _requirements_met(features, (str(requirements),)):
+        if str(requirements) in enabled_requirements:
             properties.update(deepcopy(conditional_properties))
 
     if tool == "local_ai_repo":
@@ -2208,6 +2244,12 @@ def operation_parameters_schema(tool: str, features: Any = None) -> dict[str, An
     return parameters
 
 
+def operation_parameters_schema(tool: str, features: Any = None) -> dict[str, Any]:
+    """Build a feature-filtered JSON Schema parameter object from the registry."""
+    available_actions, enabled_requirements = _schema_cache_inputs(tool, features)
+    return deepcopy(_cached_operation_parameters_schema(tool, available_actions, enabled_requirements))
+
+
 def validate_operation_call(
     tool: str,
     arguments: dict[str, Any],
@@ -2340,7 +2382,7 @@ def validate_operation_arguments(
     contract = operation_contract(tool)
     if contract is None:
         return f"no operation contract is registered for {tool!r}"
-    available_actions = operation_actions(tool, features)
+    available_actions, enabled_requirements = _schema_cache_inputs(tool, features)
     if not isinstance(action, str) or action not in available_actions:
         supported = ", ".join(available_actions)
         return f"invalid action for {tool}: expected one of {supported}"
@@ -2348,7 +2390,9 @@ def validate_operation_arguments(
         return "local_ai_work submit requires mode='bounded'"
 
     scoped_fields = _ACTION_SCOPED_FIELDS.get(tool, {})
-    properties = operation_parameters_schema(tool, features).get("properties", {})
+    properties = _cached_operation_parameters_schema(
+        tool, available_actions, enabled_requirements,
+    ).get("properties", {})
 
     def is_empty_noncanonical_scoped_default(field: str) -> bool:
         scoped_actions = scoped_fields.get(field, ())

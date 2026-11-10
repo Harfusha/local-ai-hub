@@ -114,7 +114,7 @@ def test_metadata_cache_separates_scope_and_view_and_does_not_retain_errors(erro
     keys = [app_module._status_probe_key(view, scope, "telemetry.summary")
             for view in ("live", "full") for scope in ("process", "window")]
     assert len(set(keys)) == 4
-    assert len(app_module._STATUS_METADATA_KEYS) == 8
+    assert len(app_module._STATUS_METADATA_KEYS) == 11
     with ThreadPoolExecutor(max_workers=1) as executor:
         for key in keys:
             value, healthy = app_module._status_dependency(
@@ -144,3 +144,48 @@ def test_metadata_cache_separates_scope_and_view_and_does_not_retain_errors(erro
             assert key not in inflight
             assert key not in completed_cache
         assert calls == [1, 1]
+
+
+@pytest.mark.parametrize("key", [
+    "debug_traces",
+    "runtime_stats.generation_cache",
+    "runtime_stats.repo_cache",
+])
+def test_slow_status_counters_reuse_completed_diagnostic_snapshot(key):
+    assert key in app_module._STATUS_METADATA_KEYS
+    lock = threading.Lock()
+    inflight = {}
+    completed_cache = {}
+    slots = threading.BoundedSemaphore(1)
+    started, release = threading.Event(), threading.Event()
+    calls = []
+
+    def stats():
+        calls.append(1)
+        started.set()
+        assert release.wait(1)
+        return {"calls": len(calls)}
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        try:
+            first = app_module._status_dependency(
+                stats, {}, key=key, lock=lock, inflight=inflight,
+                slots=slots, executor=executor, deadline=time.monotonic() + 0.01,
+                completed_cache=completed_cache,
+            )
+            assert first == ({}, False)
+            assert started.wait(1)
+            entry = inflight[key]
+            release.set()
+            assert entry["completed"].wait(1)
+
+            value, healthy = app_module._status_dependency(
+                stats, {}, key=key, lock=lock, inflight=inflight,
+                slots=slots, executor=executor, deadline=time.monotonic() + 1,
+                completed_cache=completed_cache,
+            )
+            assert healthy and value == {"calls": 1}
+        finally:
+            release.set()
+
+    assert calls == [1]

@@ -16,6 +16,7 @@ from local_ai_hub.agent_tasks import (
     TaskStore,
     _task_scope_root,
 )
+from local_ai_hub.operation_contracts import operation_parameters_schema, validate_operation_arguments
 
 
 @pytest.fixture
@@ -215,3 +216,99 @@ def test_dataset_enforces_serialized_byte_budget(store: TaskStore, tmp_path: Pat
         )
 
     assert not output.exists()
+
+
+def test_laya_candidate_file_import_is_retired_from_task_export(store: TaskStore, tmp_path: Path):
+    root = tmp_path / "repo"
+    root.mkdir()
+    legacy = store.curate_training_dataset("legacy.jsonl", repo_root=root)
+    assert legacy["count"] == 0
+    with pytest.raises(ValueError, match="state_dir candidate lifecycle"):
+        store.curate_training_dataset(
+            "candidate.jsonl", repo_root=root, candidate_file_path="candidates.jsonl"
+        )
+
+
+def test_laya_candidate_lifecycle_uses_existing_canonical_coord_field():
+    schema = operation_parameters_schema("local_ai_coord")
+    assert "laya_operation" in schema["properties"]
+    args = {
+        "root": ".",
+        "output_path": "laya-candidates.jsonl",
+        "min_receipts": 1,
+        "format": "jsonl",
+        "laya_operation": {"action": "list"},
+    }
+    assert validate_operation_arguments("local_ai_coord", "curate_dataset", args) is None
+    assert validate_operation_arguments(
+        "local_ai_coord", "curate_dataset", {**args, "group_id": "caller"}
+    ) is not None
+
+
+def test_laya_candidate_export_rejects_input_escape_and_same_file_output(
+    store: TaskStore, tmp_path: Path
+):
+    root = tmp_path / "repo"
+    outside = tmp_path / "outside.jsonl"
+    root.mkdir()
+    outside.write_text("{}\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="state_dir candidate lifecycle"):
+        store.curate_training_dataset(
+            "export.jsonl", repo_root=root, include_laya_candidates=True,
+            candidate_file_path="../outside.jsonl",
+        )
+
+    source = root / "candidates.jsonl"
+    source.write_text("", encoding="utf-8")
+    with pytest.raises(ValueError, match="state_dir candidate lifecycle"):
+        store.curate_training_dataset(
+            "candidates.jsonl", repo_root=root, include_laya_candidates=True,
+            candidate_file_path="candidates.jsonl",
+        )
+
+
+def test_laya_candidate_export_rejects_task_from_another_repository(
+    store: TaskStore, tmp_path: Path, monkeypatch
+):
+    root = tmp_path / "repo"
+    other_root = tmp_path / "other"
+    root.mkdir()
+    other_root.mkdir()
+    other_task = _create_task(store, other_root, "foreign-task")
+    monkeypatch.setattr(store, "list_tasks", lambda **kwargs: [other_task])
+    (root / "candidates.jsonl").write_text(json.dumps({
+        "candidate_id": "case-1", "task_id": other_task.task_id,
+        "category": "context_source", "input_text": "input",
+        "annotations": {"annotator_a": "indexed", "annotator_b": "artifact", "adjudicated": "indexed"},
+        "label_provenance": {"annotator_a": "a1", "annotator_b": "b1", "adjudicator": "c1"},
+    }) + "\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="state_dir candidate lifecycle"):
+        store.curate_training_dataset(
+            "export.jsonl", repo_root=root, include_laya_candidates=True,
+            candidate_file_path="candidates.jsonl",
+        )
+
+
+@pytest.mark.parametrize(("category", "label"), [
+    ("task_routing", "fast"),
+    ("context_source", "not_a_supported_option"),
+])
+def test_laya_candidate_export_rejects_unknown_categories_and_labels(
+    store: TaskStore, tmp_path: Path, monkeypatch, category: str, label: str
+):
+    root = tmp_path / "repo"
+    root.mkdir()
+    task = _create_task(store, root, "candidate-task")
+    monkeypatch.setattr(store, "list_tasks", lambda **kwargs: [task])
+    row = {
+        "candidate_id": "case-1", "task_id": task.task_id,
+        "category": category, "input_text": "input",
+        "annotations": {"annotator_a": label, "annotator_b": "artifact", "adjudicated": "artifact"},
+        "label_provenance": {"annotator_a": "a1", "annotator_b": "b1", "adjudicator": "c1"},
+    }
+    (root / "candidates.jsonl").write_text(json.dumps(row) + "\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="state_dir candidate lifecycle"):
+        store.curate_training_dataset(
+            "export.jsonl", repo_root=root, include_laya_candidates=True,
+            candidate_file_path="candidates.jsonl",
+        )

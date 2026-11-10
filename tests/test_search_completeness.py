@@ -58,14 +58,16 @@ def test_structural_search_marks_syntax_fallback_partial(tmp_path: Path) -> None
 def test_structural_search_marks_file_read_failure_partial(tmp_path: Path, monkeypatch) -> None:
     source = tmp_path / "blocked.ts"
     source.write_text("needle\n", encoding="utf-8")
-    original_read_text = Path.read_text
+    import os
 
-    def denied_read(path: Path, *args, **kwargs):
-        if path == source:
+    original_open = os.open
+
+    def denied_read(path, *args, **kwargs):
+        if Path(path) == source:
             raise PermissionError("private path detail")
-        return original_read_text(path, *args, **kwargs)
+        return original_open(path, *args, **kwargs)
 
-    monkeypatch.setattr(Path, "read_text", denied_read)
+    monkeypatch.setattr(os, "open", denied_read)
     result = DeterministicEngine().structural_search(str(tmp_path), pattern="needle", path="blocked.ts")
 
     assert result["read_errors"] == 1
@@ -74,7 +76,7 @@ def test_structural_search_marks_file_read_failure_partial(tmp_path: Path, monke
     assert "private path detail" not in str(result)
 
 
-def test_structural_search_skips_absolute_path_outside_root(tmp_path: Path) -> None:
+def test_structural_search_rejects_absolute_path_outside_root(tmp_path: Path) -> None:
     root = tmp_path / "repo"
     root.mkdir()
     outside = tmp_path / "outside.py"
@@ -82,9 +84,13 @@ def test_structural_search_skips_absolute_path_outside_root(tmp_path: Path) -> N
 
     result = DeterministicEngine().structural_search(str(root), pattern="needle", path=str(outside))
 
-    assert result["success"] is True
-    assert result["matches"] == []
-    assert result["files_scanned"] == 0
+    assert result == {
+        "success": False,
+        "status_code": 403,
+        "terminal": True,
+        "retryable": False,
+        "error": "path must stay within repository root without symlinks or reparse points",
+    }
 
 
 def test_structural_search_does_not_swallow_unexpected_parser_failure(tmp_path: Path, monkeypatch) -> None:

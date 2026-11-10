@@ -43,6 +43,18 @@ def _uses_gpu_route(backend: Any, device: Any) -> bool:
     )
 
 
+def _limit_embedding_cpu_threads(backend: Any, device: Any) -> None:
+    if str(backend).lower() != "sentence-transformers" or str(device).lower() != "cpu":
+        return
+    try:
+        import torch
+
+        if hasattr(torch, "set_num_threads") and torch.get_num_threads() > 4:
+            torch.set_num_threads(max(1, min(4, (os.cpu_count() or 4) // 2)))
+    except Exception:
+        pass
+
+
 class EmbeddingModel:
     """Lazy local embeddings with GPU acceleration, CPU fallback and cross-workspace persistent cache."""
 
@@ -444,6 +456,7 @@ class EmbeddingModel:
         self._st_candidates = candidates
         self._st_candidate_index = index
         try:
+            _limit_embedding_cpu_threads(backend, device)
             loaded_model_name = self.model_name
             kwargs: dict[str, Any] = {
                 "device": str(device).lower(),
@@ -824,21 +837,23 @@ class EmbeddingModel:
         return None
 
     def encode(self, texts: list[str], query: bool = False, priority: int = 3) -> dict[str, Any]:
-        from .opencode_boundary import generation_denial
-
-        if texts:
-            denied = generation_denial()
-            if denied is not None:
-                return denied
         self._execution_local.snapshot = None
         self._execution_local.ollama_gpu_fenced = False
         backend = getattr(self, "backend", "")
         device = getattr(self, "device", None)
+        candidate_specs: list[tuple[str, str]] | None = None
+
+        def get_candidate_specs() -> list[tuple[str, str]]:
+            nonlocal candidate_specs
+            if candidate_specs is None:
+                candidate_specs = self._candidate_specs()
+            return candidate_specs
+
         cuda_candidate = (
             (backend in {"auto", "sentence-transformers"} and uses_torch_cuda("sentence-transformers", device))
             or (backend == "auto" and any(
                 candidate_backend == "sentence-transformers" and uses_torch_cuda(candidate_backend, candidate_device)
-                for candidate_backend, candidate_device in self._candidate_specs()
+                for candidate_backend, candidate_device in get_candidate_specs()
             ))
         )
         cuda_loaded = uses_torch_cuda(getattr(self, "active_backend", None), getattr(self, "active_device", None))
@@ -846,7 +861,7 @@ class EmbeddingModel:
         planned_gpu_route = False
         if texts:
             try:
-                planned_candidates = self._candidate_specs()
+                planned_candidates = get_candidate_specs()
                 planned_index = self._st_candidate_index if self._st_candidates == planned_candidates else 0
                 if 0 <= planned_index < len(planned_candidates):
                     planned_gpu_route = _uses_gpu_route(*planned_candidates[planned_index])

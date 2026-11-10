@@ -186,10 +186,9 @@ def test_semantic_backend_failure_preserves_chunker_stale_status(tmp_path, monke
     assert store.index(str(root), workspace=workspace)["success"] is True
 
     monkeypatch.setattr(rag_module, "RAG_CHUNKER_VERSION", "v2", raising=False)
-    monkeypatch.setattr(
-        "local_ai_hub.opencode_boundary.generation_denial",
-        lambda: "backend unavailable",
-    )
+    monkeypatch.setattr(store.services, "embed", lambda *args, **kwargs: {
+        "success": False, "error": "backend unavailable",
+    })
     result = store.search(
         "stable source", workspace=workspace, top_k=2,
         use_reranker=False, semantic_only=True,

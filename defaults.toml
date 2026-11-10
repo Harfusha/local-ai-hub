@@ -17,8 +17,12 @@ max_request_body_bytes = 16777216 # 16 MiB for JSON/API requests; bundle upload 
 [security]
 # HTTP access is loopback-only and requires no API credential.
 
+[laya]
+# Shared Laya provider sessions unload after this much idle time. Zero disables it.
+idle_unload_seconds = 600
+
 [automation]
-enabled = false
+enabled = true
 allowed_targets = [] # Exact HTTP(S) origin and optional path; no wildcards.
 max_sessions = 8 # Active resource capacity, not a limit on agent identities.
 session_ttl_seconds = 900
@@ -193,10 +197,9 @@ resident_fast_margin = 0
 reasoning_resident_fallback = false
 
 [background_gpu]
-# Separate Ollama server for semantic preprocessing. GPU use is opt-in so
-# background batches do not repeatedly acquire the installation GPU lease.
-# The foreground model keeps its hardware-profile routing.
-enabled = false
+# Separate Ollama server enriches provisional file cards after foreground idle
+# grace and scheduler admission. The foreground model keeps profile routing.
+enabled = true
 process_priority = "idle"
 ollama_url = "http://127.0.0.1:11438"
 # Optional serial CPU lane used while the GPU worker is not eligible. It is a
@@ -836,9 +839,9 @@ orphan_cleanup_roots_per_run = 4
 lexical_files_per_step = 128
 code_index_files_per_step = 256
 deterministic_files_per_step = 256
-# Most simple/source/test/config cards are built from parsers instead of Ollama.
+# Build fast provisional cards from parsers, then enrich eligible cards from source.
 prefer_deterministic_cards = true
-disable_llm_card_synthesis = true
+disable_llm_card_synthesis = false
 idle_diagnostics_enabled = false
 # Aggregate deterministic file cards into module/project cards before considering Ollama enrichment.
 prefer_deterministic_modules = true
@@ -879,7 +882,7 @@ hot_queries = [
 max_projects = 6
 cpu_workers = 16
 model_parallel = 8
-# Enrich unparsed-file stubs while retaining the old card until replacement succeeds.
+# Enrich eligible provisional cards while retaining them until replacement succeeds.
 enrich_stub_cards = true
 
 [local_tools]

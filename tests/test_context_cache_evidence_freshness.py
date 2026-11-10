@@ -68,3 +68,200 @@ def test_current_evidence_reuses_cache_without_recomputation(tmp_path):
     result = service._repo_cached("hybrid-context", str(root), {}, lambda: (_ for _ in ()).throw(AssertionError("unneeded recomputation")))
     assert result["success"] is True
     assert result["cache_hit"] is True
+
+
+def test_adaptive_context_uses_current_fast_fallback_after_stale_hybrid_result(tmp_path):
+    root = tmp_path / "repo"
+    root.mkdir()
+    received_budgets = []
+
+    class Deterministic:
+        def context_pack(self, root, query, *, max_chars, max_raw_evidence):
+            received_budgets.append(max_chars)
+            return {
+                "success": True,
+                "context": "current deterministic context",
+                "evidence": [{"path": "current.py", "text": "current source"}],
+            }
+
+    service = LocalAIServices.__new__(LocalAIServices)
+    service.config = {"features": {"rag": False}, "deterministic": {}}
+    service.deterministic = Deterministic()
+    service.rag = None
+    cache_keys = []
+
+    def repo_cached(key, root, params, compute):
+        cache_keys.append(key)
+        if key == "hybrid-context":
+            return {
+                "success": False,
+                "stale": True,
+                "error": "context source evidence is stale or cannot be verified",
+                "context": "",
+                "evidence": [],
+            }
+        return compute()
+
+    service._repo_cached = repo_cached
+    service._hybrid_context_uncached = lambda *args, **kwargs: (_ for _ in ()).throw(
+        AssertionError("stale hybrid result must not be recomputed here")
+    )
+
+    result = service._hybrid_context(
+        str(root),
+        "inspect context cache",
+        workspace=None,
+        max_tokens=256,
+        quality_first=True,
+        context_identity={"project_config_digest": "fixture"},
+    )
+
+    assert result["success"] is True
+    assert result["context"] == "current deterministic context"
+    assert result["context_source"] == "deterministic-fast-fallback"
+    assert result["degraded"] is True
+    assert result["degraded_reason"] == "adaptive_stale_evidence"
+    assert result["fallback_from"] == "adaptive-hybrid"
+    assert result.get("stale") is not True
+    assert received_budgets == [1024]
+    assert cache_keys == ["hybrid-context", "fast-context"]
+
+
+def test_adaptive_context_keeps_stale_error_when_fast_fallback_is_not_current(tmp_path):
+    root = tmp_path / "repo"
+    root.mkdir()
+
+    class Deterministic:
+        def context_pack(self, root, query, *, max_chars, max_raw_evidence):
+            return {"success": False, "stale": True, "context": "old", "evidence": []}
+
+    service = LocalAIServices.__new__(LocalAIServices)
+    service.config = {"features": {"rag": False}, "deterministic": {}}
+    service.deterministic = Deterministic()
+    service.rag = None
+
+    def repo_cached(key, root, params, compute):
+        if key == "hybrid-context":
+            return {
+                "success": False,
+                "stale": True,
+                "error": "context source evidence is stale or cannot be verified",
+                "context": "",
+                "evidence": [],
+            }
+        return compute()
+
+    service._repo_cached = repo_cached
+    service._hybrid_context_uncached = lambda *args, **kwargs: (_ for _ in ()).throw(
+        AssertionError("stale hybrid result must not be recomputed here")
+    )
+
+    result = service._hybrid_context(
+        str(root),
+        "inspect context cache",
+        workspace=None,
+        max_tokens=256,
+        quality_first=True,
+        context_identity={"project_config_digest": "fixture"},
+    )
+
+    assert result["success"] is False
+    assert result["stale"] is True
+    assert result["context"] == ""
+
+
+def test_adaptive_context_falls_back_when_backend_deadline_returns_empty_pack(tmp_path):
+    root = tmp_path / "repo"
+    root.mkdir()
+
+    class Deterministic:
+        def context_pack(self, root, query, *, max_chars, max_raw_evidence):
+            return {
+                "success": True,
+                "context": "current deterministic context",
+                "evidence": [{"path": "current.py", "text": "current source"}],
+            }
+
+    service = LocalAIServices.__new__(LocalAIServices)
+    service.config = {"features": {"rag": False}, "deterministic": {}}
+    service.deterministic = Deterministic()
+    service.rag = None
+    cache_keys = []
+
+    def repo_cached(key, root, params, compute):
+        cache_keys.append(key)
+        if key == "hybrid-context":
+            return {
+                "success": True,
+                "context": "",
+                "evidence": [],
+                "retrieval": {"backend_selection": {"decision": "deadline_exhausted"}},
+            }
+        return compute()
+
+    service._repo_cached = repo_cached
+    service._hybrid_context_uncached = lambda *args, **kwargs: (_ for _ in ()).throw(
+        AssertionError("cached deadline result must not be recomputed here")
+    )
+
+    result = service._hybrid_context(
+        str(root),
+        "inspect context cache",
+        workspace=None,
+        max_tokens=256,
+        quality_first=True,
+        context_identity={"project_config_digest": "fixture"},
+    )
+
+    assert result["success"] is True
+    assert result["context"] == "current deterministic context"
+    assert result["context_source"] == "deterministic-fast-fallback"
+    assert result["degraded_reason"] == "adaptive_deadline_empty"
+    assert cache_keys == ["hybrid-context", "fast-context"]
+
+
+def test_adaptive_context_falls_back_when_optional_backends_return_no_evidence(tmp_path):
+    root = tmp_path / "repo"
+    root.mkdir()
+
+    class Deterministic:
+        def context_pack(self, root, query, *, max_chars, max_raw_evidence):
+            return {
+                "success": True,
+                "context": "current deterministic context",
+                "evidence": [{"path": "current.py", "text": "current source"}],
+            }
+
+    service = LocalAIServices.__new__(LocalAIServices)
+    service.config = {"features": {"rag": False}, "deterministic": {}}
+    service.deterministic = Deterministic()
+    service.rag = None
+
+    def repo_cached(key, root, params, compute):
+        if key == "hybrid-context":
+            return {
+                "success": True,
+                "context": "",
+                "evidence": [],
+                "retrieval": {"backend_selection": {"decision": "optional_backends_selected"}},
+            }
+        return compute()
+
+    service._repo_cached = repo_cached
+    service._hybrid_context_uncached = lambda *args, **kwargs: (_ for _ in ()).throw(
+        AssertionError("cached empty result must not be recomputed here")
+    )
+
+    result = service._hybrid_context(
+        str(root),
+        "inspect context cache",
+        workspace=None,
+        max_tokens=256,
+        quality_first=True,
+        context_identity={"project_config_digest": "fixture"},
+    )
+
+    assert result["success"] is True
+    assert result["context"] == "current deterministic context"
+    assert result["context_source"] == "deterministic-fast-fallback"
+    assert result["degraded_reason"] == "adaptive_optional_empty"

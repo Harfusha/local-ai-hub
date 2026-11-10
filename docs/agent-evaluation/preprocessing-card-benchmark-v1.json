@@ -1,0 +1,79 @@
+{
+  "benchmark": "preprocess-file-card",
+  "version": 1,
+  "fixture_revision": "eval-fixtures-v7",
+  "split": "held_out_evaluation_only",
+  "schema_fields": [
+    "purpose",
+    "symbols",
+    "dependencies",
+    "side_effects",
+    "risks",
+    "tests",
+    "keywords"
+  ],
+  "cases": [
+    {
+      "id": "consumer-python-01",
+      "source_path": "docs/agent-evaluation/fixtures/alpha/src/demo_core/consumer.py",
+      "source_sha256": "b65cca12f04912c02a047477e1cf7b4e41c772cfe93b8c5b284cf6fa41562426",
+      "required_facts": [
+        {"field": "symbols", "value": "load_project"},
+        {"field": "dependencies", "value": ".paths.normalize_path"},
+        {"field": "purpose", "value": "normalizes a project path, then looks it up in a catalog"}
+      ],
+      "forbidden_claims": ["HTTP endpoint", "SQL database", "security validation"]
+    },
+    {
+      "id": "task-service-python-01",
+      "source_path": "docs/agent-evaluation/fixtures/alpha/src/demo_core/task_service.py",
+      "source_sha256": "7b98d932cab51c38bfa48ecf99da1b4b16ee291a6b5f4da6ce35a2f807bfebee",
+      "required_facts": [
+        {"field": "symbols", "value": "TaskService"},
+        {"field": "symbols", "value": "create_task"},
+        {"field": "dependencies", "value": ".task_store.TaskStore"},
+        {"field": "side_effects", "value": "saves a planned task through the injected store"}
+      ],
+      "forbidden_claims": ["SQL database", "HTTP request", "filesystem persistence"]
+    },
+    {
+      "id": "task-store-python-01",
+      "source_path": "docs/agent-evaluation/fixtures/alpha/src/demo_core/task_store.py",
+      "source_sha256": "6ab5048f07619ae05af4324c1b8399512e851e2152fdf0eefcb45814be8642e5",
+      "required_facts": [
+        {"field": "symbols", "value": "TaskStore"},
+        {"field": "symbols", "value": "save"},
+        {"field": "side_effects", "value": "stores tasks in an in-memory dictionary keyed by task id"}
+      ],
+      "forbidden_claims": ["SQL database", "network access", "disk persistence"]
+    },
+    {
+      "id": "task-routes-python-01",
+      "source_path": "docs/agent-evaluation/fixtures/alpha/src/demo_api/routes.py",
+      "source_sha256": "1f5966ae98086ea016e8959a01c4b9cde8216decfc9488bd17f792a184f1edfc",
+      "required_facts": [
+        {"field": "symbols", "value": "post_task"},
+        {"field": "symbols", "value": "checkpoint_task"},
+        {"field": "dependencies", "value": "demo_core.task_service.TaskService"},
+        {"field": "side_effects", "value": "post_task delegates task creation to TaskService.create_task"},
+        {"field": "purpose", "value": "checkpoint_task returns task_id with a nested checkpoint"}
+      ],
+      "forbidden_claims": ["FastAPI decorator", "database", "authentication"]
+    }
+  ],
+  "scoring": {
+    "method": "manual_source_grounded_review",
+    "report_per_case": [
+      "schema_pass",
+      "required_fact_recall",
+      "supported_claim_precision",
+      "unsupported_claim_count",
+      "input_tokens",
+      "output_tokens",
+      "latency_ms",
+      "error_or_truncation"
+    ],
+    "repetitions_target": 3,
+    "production_qualification": false
+  }
+}

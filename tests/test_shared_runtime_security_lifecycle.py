@@ -1608,6 +1608,70 @@ def test_task_dataset_curation_forwards_authenticated_root_scope(tmp_path, monke
     })]
 
 
+def test_laya_candidate_curation_forwards_state_dir_operation_under_authenticated_root(tmp_path, monkeypatch):
+    root = tmp_path / "allowed"
+    root.mkdir()
+    state, _coordination_id = _project_state(root, tmp_path / "state")
+    operation = {"action": "capture", "consent": True}
+    calls = []
+
+    def handle(candidate_operation, *, root, task_store):
+        calls.append((candidate_operation, root, task_store))
+        return {"success": True, "count": 1}
+
+    task_store = SimpleNamespace(state_store=SimpleNamespace(enabled=True))
+    app = SimpleNamespace(
+        debug_traces=SimpleNamespace(enabled=True),
+        config={"security": {"allowed_roots": [str(root)]}},
+        agent_state=state,
+        agent_tasks=task_store,
+        laya_candidates=SimpleNamespace(handle=handle),
+    )
+    status, _body = _dispatch_post(
+        monkeypatch,
+        "/api/agent-state/tasks",
+        {
+            "root": str(root),
+            "action": "curate_dataset",
+            "task_id": "task-1",
+            "laya_operation": operation,
+        },
+        app,
+    )[0]
+    assert status == 200
+    assert calls == [(operation, str(root.resolve()), task_store)]
+
+
+def test_laya_candidate_curation_rejects_retired_repo_root_import(tmp_path, monkeypatch):
+    root = tmp_path / "allowed"
+    root.mkdir()
+    state, _coordination_id = _project_state(root, tmp_path / "state")
+    calls = []
+    app = SimpleNamespace(
+        debug_traces=SimpleNamespace(enabled=True),
+        config={"security": {"allowed_roots": [str(root)]}},
+        agent_state=state,
+        agent_tasks=SimpleNamespace(
+            state_store=SimpleNamespace(enabled=True),
+            curate_training_dataset=lambda *args, **kwargs: calls.append((args, kwargs)),
+        ),
+    )
+    status, body = _dispatch_post(
+        monkeypatch,
+        "/api/agent-state/tasks",
+        {
+            "root": str(root),
+            "action": "curate_dataset",
+            "candidate_file_path": "candidates.jsonl",
+        },
+        app,
+    )[0]
+    assert status == 400
+    assert body["success"] is False
+    assert "retired" in body["error"]
+    assert calls == []
+
+
 @pytest.mark.parametrize("payload,headers", [
     ({"action": "reap"}, {}),
     ({"action": "curate_dataset", "root": "C:/outside"}, {}),

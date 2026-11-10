@@ -250,6 +250,59 @@ def test_submit_coalesces_active_job_without_outer_scheduler_enqueue(tmp_path):
     manager.close()
 
 
+def test_request_id_replay_uses_existing_partial_lookup_index(tmp_path):
+    manager, _scheduler = _manager(tmp_path)
+    statements = []
+    original_connect = manager._connect
+
+    def traced_connect():
+        con = original_connect()
+        con.set_trace_callback(statements.append)
+        return con
+
+    manager._connect = traced_connect
+    payload = {"task": "request-id index probe", "request_id": "request-id-index-probe"}
+    try:
+        first = manager.submit("reason", payload, dispatch_delay_seconds=30.0)
+        second = manager.submit("reason", payload, dispatch_delay_seconds=30.0)
+
+        assert second["job_id"] == first["job_id"]
+        assert second["idempotent_replay"] is True
+        lookup = next(
+            statement
+            for statement in reversed(statements)
+            if statement.startswith("SELECT job_id,action,request_hash,state,trace_id,task_id,expires_at,created_at,error,artifact_id FROM async_jobs WHERE")
+        )
+        with closing(original_connect()) as con:
+            plan = [str(row[3]) for row in con.execute(f"EXPLAIN QUERY PLAN {lookup}")]
+
+        assert any("idx_async_jobs_request_id" in detail for detail in plan), plan
+    finally:
+        manager.close()
+
+
+def test_queue_admission_caps_count_at_configured_limit(tmp_path):
+    manager, _scheduler = _manager(tmp_path)
+    manager.max_pending = 2
+    try:
+        first = manager.submit("reason", {"task": "first"}, dispatch_delay_seconds=30.0)
+        second = manager.submit("reason", {"task": "second"}, dispatch_delay_seconds=30.0)
+        rejected = manager.submit("reason", {"task": "third"}, dispatch_delay_seconds=30.0)
+
+        assert first["success"] is True
+        assert second["success"] is True
+        assert rejected["success"] is False
+        assert rejected["admission"]["reason"] == "queue_limit"
+
+        assert manager.cancel(first["job_id"])["success"] is True
+        admitted_after_cancel = manager.submit(
+            "reason", {"task": "after cancel"}, dispatch_delay_seconds=30.0,
+        )
+        assert admitted_after_cancel["success"] is True
+    finally:
+        manager.close()
+
+
 def test_async_execution_does_not_consume_model_scheduler_slot(tmp_path):
     manager, scheduler = _manager(tmp_path)
     try:

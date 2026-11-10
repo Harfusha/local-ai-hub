@@ -48,6 +48,16 @@ def test_allow_installed_allows_local_config_backup(tmp_path):
     assert list(_iter_release_hygiene_violations(tmp_path, allow_installed=True)) == []
 
 
+def test_allow_installed_ignores_local_build_but_release_tree_rejects_it(tmp_path):
+    build_file = tmp_path / "build" / "output" / "local-wheel.whl"
+    build_file.parent.mkdir(parents=True)
+    build_file.write_bytes(b"local build artifact")
+
+    assert list(_iter_release_hygiene_violations(tmp_path, allow_installed=True)) == []
+    assert list(_iter_release_hygiene_violations(tmp_path)) == ["forbidden directory: build/"]
+    assert list(_iter_release_hygiene_violations(tmp_path, strict_tree=True)) == ["forbidden directory: build/"]
+
+
 @pytest.mark.parametrize("options", [{}, {"strict_tree": True}, {"post_test": True}])
 def test_generated_merge_checks_are_rejected_from_release_tree(tmp_path, options):
     scratch = tmp_path / ".merge-checks" / "pytest-final" / "repo"

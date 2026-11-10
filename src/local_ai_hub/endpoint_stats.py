@@ -206,12 +206,32 @@ class EndpointStatsStore:
         self.state_dir = Path(state_dir)
         self.path = self.state_dir / "endpoint_stats.sqlite3"
         self._lock = threading.RLock()
+        self._write_connection: sqlite3.Connection | None = None
         self.state_dir.mkdir(parents=True, exist_ok=True)
         if self.enabled:
             self._init_db()
 
-    def _connect(self, timeout_seconds: float = 5.0) -> sqlite3.Connection:
-        return connect_sqlite(self.path, timeout_seconds=timeout_seconds)
+    def _connect(
+        self, timeout_seconds: float = 5.0, *, check_same_thread: bool = True,
+    ) -> sqlite3.Connection:
+        return connect_sqlite(
+            self.path,
+            timeout_seconds=timeout_seconds,
+            check_same_thread=check_same_thread,
+        )
+
+    def close(self) -> None:
+        """Close the reusable writer connection during shutdown."""
+        with self._lock:
+            connection, self._write_connection = self._write_connection, None
+            if connection is not None:
+                connection.close()
+
+    def __del__(self) -> None:
+        try:
+            self.close()
+        except Exception:
+            pass
 
     def _init_db(self) -> None:
         with self._lock, closing(self._connect()) as con:
@@ -276,8 +296,13 @@ class EndpointStatsStore:
             {col_b} = {col_b} + 1,
             last_used = ?
         """
+        con: sqlite3.Connection | None = None
         try:
-            with self._lock, closing(self._connect()) as con:
+            with self._lock:
+                con = self._write_connection
+                if con is None:
+                    con = self._connect(check_same_thread=False)
+                    self._write_connection = con
                 if event_id:
                     con.execute("BEGIN IMMEDIATE")
                     cursor = con.execute("INSERT OR IGNORE INTO endpoint_call_ids(event_id, created_at) VALUES (?, ?)", (event_id, now))
@@ -289,7 +314,14 @@ class EndpointStatsStore:
                     con.execute("DELETE FROM endpoint_call_ids WHERE created_at < ? OR seq <= (SELECT MAX(seq) - 100000 FROM endpoint_call_ids)", (now - 7 * 86400,))
                 con.commit()
         except sqlite3.Error:
-            pass
+            if con is not None:
+                with self._lock:
+                    if self._write_connection is con:
+                        self._write_connection = None
+                        try:
+                            con.close()
+                        except sqlite3.Error:
+                            pass
 
     def get_stats(
         self,
