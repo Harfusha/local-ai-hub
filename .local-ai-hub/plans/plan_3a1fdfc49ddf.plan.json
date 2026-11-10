@@ -14,12 +14,12 @@
         "Run focused validation for each change and separate test proof from live-runtime proof.",
         "Report remaining unverified performance and runtime gaps."
       ],
-      "blocker": "RAG workspace is empty. Live repo search took 44.5 s, while direct worktree candidate search took 146 ms; installed repo_tools.py hash differs from the worktree source. Full semantic RAG latency/quality and live adoption of worktree changes remain unverified.",
+      "blocker": "Worktree RAG is empty (list request req_594341325993; 0 chunks). Prior index operation returned outcome_unknown and is not replayed. Two searches returned empty_index (req_26a6b22b0723, req_bbec01a3763d). Installed runtime source differs from worktree; no adoption proof. Dashboard trace inspected separately used C:\\Users\\Adam\\.local-ai-hub, so it is not worktree runtime proof.",
       "clarifications": [],
       "depends_on": [],
-      "description": "Measure and improve expensive or frequent paths across MCP/API, retrieval/RAG, embeddings/reranking, caches, indexing, scheduler, IPC and preprocessing. Assess CPU/GPU/iGPU/NPU and Rust/Cython against measured bottlenecks. Preserve response contracts, provider choices, GPU fences, path security and existing worktree changes.",
+      "description": "Whole-Hub performance work beyond preprocessing. Existing worktree changes include path/root caching, scheduler reservation snapshot, CPU thread cap, and benchmark correctness guard. Prior focused validation: 43 passed, 1 skipped. Current measurements: BGE small embedding batch of 8, CPU median 72.04 ms vs CUDA 79.82 ms; BGE reranker batch of 8, CPU 756.78 ms vs CUDA 302.66 ms. Current worktree candidate search median 146.04 ms; installed live search 44.46 s is not directly comparable because installed source hash differs. No provider change or model pull.",
       "kind": "analysis",
-      "next_action": "Reconcile the live Hub source/runtime with this worktree, restore a usable RAG index path, then capture fresh end-to-end RAG and warm live-search measurements. Do not replay terminal preprocessing/index requests.",
+      "next_action": "Reconcile the prior unknown outcome before any fresh authorized RAG index operation; then capture current-worktree end-to-end RAG latency and quality. Keep runtime adoption and iGPU/NPU unverified. Do not deploy/install or pull models.",
       "title": "Whole-Hub performance audit and optimization",
       "work_phase": "verification",
       "work_status": "in_progress"
