@@ -1,18 +1,13 @@
 from __future__ import annotations
 
 import threading
-import pytest
 from concurrent.futures import Future
 from types import SimpleNamespace
 
 from local_ai_hub.app import LocalAIApp
 
 
-@pytest.mark.parametrize(
-    ("consented", "receipt_id"),
-    [(True, "3d2180de-cd16-4c32-9fc7-1778c1af28ad"), (False, None)],
-)
-def test_ordinary_context_shadow_operation_carries_capture_consent(tmp_path, consented, receipt_id):
+def test_ordinary_context_shadow_operation_omits_per_example_consent(tmp_path):
     app = LocalAIApp.__new__(LocalAIApp)
     app.config = {"laya": {"runtime": {"enabled": True}}}
     task = SimpleNamespace(context={"session_id": "session-1"})
@@ -67,12 +62,7 @@ def test_ordinary_context_shadow_operation_carries_capture_consent(tmp_path, con
         ],
     }
 
-    queued = app.capture_laya_context_source_from_context(
-        request,
-        result,
-        per_example_consented=consented,
-        consent_receipt_id=receipt_id,
-    )
+    queued = app.capture_laya_context_source_from_context(request, result)
 
     assert queued == {"status": "queued"}
     operation = observed["args"][0]
@@ -80,7 +70,6 @@ def test_ordinary_context_shadow_operation_carries_capture_consent(tmp_path, con
     assert operation["task_id"] == "task-1"
     assert operation["session_id"] == "session-1"
     assert len(operation["evidence"]["evidence_ids"]) == 2
-    assert operation["per_example_consented"] is consented
-    assert operation["consent_receipt_id"] == receipt_id
+    assert set(operation) == {"action", "task_id", "session_id", "evidence"}
     assert "per_example_consented" not in operation["evidence"]
     assert "consent_receipt_id" not in operation["evidence"]

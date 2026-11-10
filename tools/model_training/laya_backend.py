@@ -234,8 +234,6 @@ def _validate_laya_label_provenance(
     if data_class == "synthetic_non_private":
         _opaque_id(provenance.get("fixture_id"), field="fixture_id", label=label)
     elif data_class == "local_scoped":
-        if {"consent", "consent_receipt_id", "per_example_consented", "consent_receipt_sha256"}.intersection(provenance):
-            raise ValueError(f"{label}: retired consent fields are not accepted in training provenance")
         candidate_id = provenance.get("candidate_id")
         candidate_hash = provenance.get("candidate_sha256")
         if not isinstance(candidate_id, str) or not candidate_id.strip():

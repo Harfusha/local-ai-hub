@@ -81,8 +81,6 @@ def _validate_row(row: Any) -> None:
     if not isinstance(row["provenance"], dict) or row["provenance"].get("source") != "laya_candidate_store":
         raise ValueError("candidate provenance is missing or invalid")
     provenance = row["provenance"]
-    if {"consent", "consent_receipt_id", "per_example_consented", "consent_receipt_sha256"}.intersection(provenance):
-        raise ValueError("retired consent fields are not accepted in training provenance")
     if provenance.get("data_class") != "local_scoped":
         raise ValueError("candidate provenance.data_class must be local_scoped")
     if provenance.get("candidate_id") != row["id"]:
