@@ -21,8 +21,16 @@ max_request_body_bytes = 16777216 # 16 MiB for JSON/API requests; bundle upload 
 # Shared Laya provider sessions unload after this much idle time. Zero disables it.
 idle_unload_seconds = 600
 
+[laya.runtime]
+# Shadow evaluation is callable only after a local pinned checkpoint is configured.
+enabled = false
+checkpoint_path = ""
+revision = ""
+expected_sha256 = {}
+allow_cpu = false
+
 [automation]
-enabled = true
+enabled = false
 allowed_targets = [] # Exact HTTP(S) origin and optional path; no wildcards.
 max_sessions = 8 # Active resource capacity, not a limit on agent identities.
 session_ttl_seconds = 900
@@ -199,7 +207,7 @@ reasoning_resident_fallback = false
 [background_gpu]
 # Separate Ollama server enriches provisional file cards after foreground idle
 # grace and scheduler admission. The foreground model keeps profile routing.
-enabled = true
+enabled = false
 process_priority = "idle"
 ollama_url = "http://127.0.0.1:11438"
 # Optional serial CPU lane used while the GPU worker is not eligible. It is a
@@ -720,6 +728,7 @@ l1_entries = 256
 l1_ttl_seconds = 3600
 
 [resilience]
+repository_search_timeout_seconds = 30
 watchdog_enabled = true
 watchdog_interval_seconds = 5
 journal_stale_seconds = 900

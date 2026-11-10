@@ -140,6 +140,7 @@ def test_file_card_cache_hits_share_one_database_connection(tmp_path: Path):
     root.mkdir()
     tools = RepositoryTools(config)
     pre = ProjectPreprocessor(config, _Noop(), _Rag(), _Noop(), _Noop(), tools)
+    pre._file_card_enrichment_enabled = lambda: False
     try:
         now = time.time()
         with closing(pre._connect()) as con:

@@ -120,8 +120,19 @@ def _validate_row(row: dict[str, Any], *, split: str, line_number: int) -> None:
         raise ValueError(f"{prefix} needs expected output or task-specific scoring criteria")
 
 
-def validate_dataset_pair(train_path: Path | str, evaluation_path: Path | str) -> dict[str, Any]:
+def validate_dataset_pair(
+    train_path: Path | str,
+    evaluation_path: Path | str,
+    *,
+    backend: str = "transformers_lora",
+) -> dict[str, Any]:
     """Validate chat JSONL inputs and reject project/content leakage across splits."""
+    if backend == "laya":
+        from .laya_backend import validate_laya_dataset_pair
+
+        return validate_laya_dataset_pair(train_path, evaluation_path)
+    if backend != "transformers_lora":
+        raise ValueError(f"unsupported model-training backend: {backend}")
     train_file, eval_file = Path(train_path), Path(evaluation_path)
     train_rows = _read_jsonl(train_file, split="train")
     eval_rows = _read_jsonl(eval_file, split="evaluation")
@@ -175,6 +186,13 @@ def load_run_manifest(path: Path | str) -> dict[str, Any]:
         raise ValueError(f"cannot read run manifest: {exc}") from exc
     if not isinstance(config, dict):
         raise ValueError("run manifest must be a JSON object")
+    backend = config.get("backend", "transformers_lora")
+    if backend == "laya":
+        from .laya_backend import load_laya_run_manifest
+
+        return load_laya_run_manifest(manifest_path)
+    if backend != "transformers_lora":
+        raise ValueError(f"unsupported model-training backend: {backend}")
     required = ("schema_version", "name", "task_type", "base_model", "train_file", "evaluation_file", "output_dir", "system_prompt", "output_schema")
     missing = [key for key in required if key not in config]
     if missing:
@@ -195,6 +213,7 @@ def load_run_manifest(path: Path | str) -> dict[str, Any]:
     validate_run_options(config.get("training", {}), config.get("benchmark", {}), config.get("lora", {}))
 
     config["_manifest_path"] = str(manifest_path)
+    config["backend"] = backend
     for key in ("train_file", "evaluation_file", "output_dir"):
         if not isinstance(config[key], str) or not config[key].strip():
             raise ValueError(f"run manifest {key} must be a non-empty path string")

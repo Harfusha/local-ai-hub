@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 
 import pytest
 
@@ -8,10 +9,23 @@ from local_ai_hub.laya_dataset_merge import _validate_row, merge_training_archiv
 
 
 def _row(label: str = "allow", state: str = "The user asks to save this setting.") -> dict[str, object]:
-    return {
+    base = {
         "state": state,
         "questions": {"intent": {"type": "choice", "options": ["allow", "deny"]}},
         "expected": {"intent": label},
+    }
+    digest = hashlib.sha256(json.dumps(base, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    return {
+        "id": f"candidate-{digest[:16]}",
+        "group_id": f"group-{digest[16:32]}",
+        "source_sha256": digest,
+        **base,
+        "provenance": {
+            "source": "laya_candidate_store",
+            "data_class": "local_scoped",
+            "candidate_id": f"candidate-{digest[:16]}",
+            "candidate_sha256": digest,
+        },
     }
 
 
@@ -45,6 +59,22 @@ def test_merge_deduplicates_train_rows_and_marks_output_ineligible_for_evaluatio
     assert manifest["duplicate_rows_removed"] == 1
     assert "notebook.zip" not in json.dumps(manifest)
     assert "desktop.zip" not in json.dumps(manifest)
+
+
+def test_merge_reads_and_merges_real_encrypted_zip_members(tmp_path):
+    first, second = tmp_path / "notebook.zip", tmp_path / "desktop.zip"
+    _archive(first, [_row("allow", "same state"), _row("deny", "notebook state")], password="one")
+    _archive(second, [_row("allow", "same state"), _row("maybe", "desktop state")], password="two")
+    output = tmp_path / "pooled"
+
+    manifest = merge_training_archives([(first, "one"), (second, "two")], output)
+
+    rows = [json.loads(line) for line in (output / "laya.train.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert rows == [_row("allow", "same state"), _row("deny", "notebook state"), _row("maybe", "desktop state")]
+    assert manifest["input_rows"] == 4
+    assert manifest["unique_rows"] == 3
+    assert manifest["duplicate_rows_removed"] == 1
+    assert manifest["evaluation_eligible"] is False
 
 
 def test_merge_rejects_conflicting_label_for_same_state_and_questions_atomically(tmp_path, monkeypatch):
@@ -92,4 +122,32 @@ def test_merge_rejects_unexpected_row_shape(tmp_path):
 def test_validate_row_rejects_non_finite_json_numbers():
     with pytest.raises(ValueError, match="Out of range float values"):
         _validate_row({**_row(), "questions": {"intent": {"score": float("nan")}}})
+
+
+@pytest.mark.parametrize("changes", [
+    {"consent": True},
+    {"consent_receipt_id": "receipt-raw"},
+    {"per_example_consented": True},
+    {"consent_receipt_sha256": "short"},
+])
+def test_validate_row_rejects_retired_consent_fields(changes):
+    row = _row()
+    row["provenance"].update(changes)
+
+    with pytest.raises(ValueError, match="consent"):
+        _validate_row(row)
+
+
+def test_merge_rejects_conflicting_labels_for_identical_inputs(tmp_path, monkeypatch):
+    first, second = tmp_path / "first.zip", tmp_path / "second.zip"
+    first.touch()
+    second.touch()
+    rows_by_path = {
+        first: [_row("allow", "same content")],
+        second: [_row("deny", "same content")],
+    }
+    monkeypatch.setattr("local_ai_hub.laya_dataset_merge._read_rows", lambda path, password: rows_by_path[path])
+
+    with pytest.raises(ValueError, match="conflicting labels"):
+        merge_training_archives([(first, "one"), (second, "two")], tmp_path / "merged")
 

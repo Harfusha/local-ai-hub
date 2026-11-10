@@ -54,7 +54,9 @@ def test_project_search_candidates_reuse_project_path_policy_root(tmp_path, monk
     ))
 
     assert candidates == targets
-    assert target_resolves == {target: 1 for target in targets}
+    # The project policy resolves the root once, then validates each candidate
+    # with no redundant Path.resolve() calls.
+    assert target_resolves == {target: 0 for target in targets}
     assert base_resolves == 1
 
 

@@ -22,6 +22,20 @@ def test_registered_rag_description_states_explicit_content_requirement(monkeypa
     assert "Document ingestion requires non-empty content" in description
 
 
+def test_rag_index_requests_auto_delivery(monkeypatch, tmp_path):
+    client = _CapturingClient()
+    monkeypatch.setattr(mcp_server, "CLIENT", client)
+    monkeypatch.setattr(mcp_server.FEATURES, "rag", True)
+
+    result = mcp_server.local_ai_rag(action="index", root=str(tmp_path.resolve()))
+
+    assert result["success"] is True
+    path, payload, _timeout = client.calls[0]
+    assert path == "/api/rag/index"
+    assert payload["delivery"] == "auto"
+    assert payload["latency_budget_ms"] == 30_000
+
+
 def test_document_ingest_requires_explicit_content_and_does_not_use_query_or_root(monkeypatch):
     client = _CapturingClient()
     monkeypatch.setattr(mcp_server, "CLIENT", client)

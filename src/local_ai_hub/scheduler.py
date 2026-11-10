@@ -1224,6 +1224,9 @@ class AffinityScheduler:
         def keepalive() -> None:
             while not stop.wait(interval):
                 with self._cond:
+                    # Once execution reports an unknown outcome, stop the lease
+                    # heartbeat. The scheduler's idle expiry path keeps admissions
+                    # fenced until TTL, then clears stale in-memory state.
                     if (self._internal_gpu_digest != digest or self._internal_gpu_uncertain
                             or not self._running):
                         return

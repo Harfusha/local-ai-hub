@@ -9,6 +9,15 @@ from contextlib import closing
 
 import local_ai_hub.async_jobs as async_jobs_module
 from local_ai_hub.async_jobs import AsyncJobManager
+
+
+def test_rag_index_is_a_durable_gpu_admitted_job():
+    assert "rag_index" in AsyncJobManager.ACTIONS
+    assert "rag_index" in AsyncJobManager.DIRECT_INFERENCE_ACTIONS
+    assert AsyncJobManager._safe_payload({"root": "C:/project", "workspace": "workspace-1"}) == {
+        "root": "C:/project",
+        "workspace": "workspace-1",
+    }
 from local_ai_hub.debug_traces import DebugTraceStore
 
 

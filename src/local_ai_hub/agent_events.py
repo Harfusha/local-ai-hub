@@ -260,8 +260,11 @@ class AgentStateStore:
         ("table", "agent_learning_candidates", "agent_learning_candidates"): "3b8650b155c972e370825d72cf2222c005401a696b7f996a991c1f9d552b5caa",
         ("index", "idx_laya_candidate_events_scope_time", "laya_candidate_events"): "9dec9120a0129db8d033f855aee0079507045c00eda48339110882e1e3215aff",
         ("index", "idx_laya_candidates_scope_status", "laya_candidates"): "dfea55ca9301bb2bdae3b906f52b0ca88983e080993773b717fd503172381499",
+        ("index", "idx_laya_dataset_assignments_candidate", "laya_dataset_assignments"): "9de3281159425b7023066a5622d9f324d18b2ae32c1942b3c06751d5e5c1ef95",
         ("table", "laya_candidate_events", "laya_candidate_events"): "fb54555cbeb26845df2ea4a901be3d4b6dd54d39a3a230901ef072ec77868b17",
         ("table", "laya_candidates", "laya_candidates"): "ef37fa71b3398d96b291b900caafbce1f7889173ce1bb4eb614ade833f89b24e",
+        ("table", "laya_dataset_assignments", "laya_dataset_assignments"): "affe434b93da5b62b84b7f9394a3d95a56c3cf841615295fd93af15b8246cfb2",
+        ("table", "laya_dataset_snapshots", "laya_dataset_snapshots"): "b9519cb0b433893db6c13c4e762cfdfca80c23725e6b5966643d9d1649b4126d",
         ("table", "agent_memory_embeddings", "agent_memory_embeddings"): "282899bb465cddbcbe5cb4aafbac17a159860de991e61d5704bd277cf6fda810",
         ("table", "agent_memory_fts", "agent_memory_fts"): "a3f3691e421244a8516c26f942a893b8b7a112b7771e9ba84ecded8eab4e3755",
         ("table", "agent_memory_fts_config", "agent_memory_fts_config"): "e78061e43ffaa4b703c9aa4a44e02c6bae4128c3b1aad6a4324e6d3b97772c02",
@@ -1158,6 +1161,34 @@ class AgentStateStore:
             finally:
                 con.set_progress_handler(None, 0)
         return row is not None
+
+    def event_by_idempotency_key(self, stream_id: str, idempotency_key: str) -> AgentEvent | None:
+        """Fetch one canonical event for a stream/idempotency pair."""
+        for identity in (stream_id, idempotency_key):
+            if not isinstance(identity, str) or not identity.strip() or "\x00" in identity:
+                raise ValueError("event lookup requires valid identities")
+        if not self.enabled:
+            raise RuntimeError("agent_state is disabled")
+        if not self.db_path.exists():
+            return None
+        self._ensure_schema()
+        deadline = time.monotonic() + 1.0
+        with closing(connect_sqlite(self.db_path, timeout_seconds=1.0, isolation_level=None)) as con:
+            con.set_progress_handler(lambda: int(time.monotonic() >= deadline), 1000)
+            try:
+                row = con.execute(
+                    "SELECT stream_id, seq, event_id, kind, payload, idempotency_key, "
+                    "correlation_id, actor, created_at FROM agent_events "
+                    "WHERE stream_id = ? AND idempotency_key = ? LIMIT 1",
+                    (stream_id, idempotency_key),
+                ).fetchone()
+            except sqlite3.OperationalError as exc:
+                if is_busy_error(exc) or time.monotonic() >= deadline:
+                    raise TimeoutError("event lookup time limit exceeded") from exc
+                raise
+            finally:
+                con.set_progress_handler(None, 0)
+        return AgentEvent.from_row(row) if row is not None else None
 
     def events(self, stream_id: str, after_seq: int = 0, limit: int = 1000) -> list[AgentEvent]:
         # Initialize first so durable-schema failures remain typed and actionable.

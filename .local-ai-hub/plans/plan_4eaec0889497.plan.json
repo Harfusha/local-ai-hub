@@ -17,12 +17,12 @@
         "Focused tests cover layering, activity/background exclusion, 24-hour expiry/reactivation, per-root isolation, fairness/starvation, batching, restart/checkpoint, all resource limits and unavailable/preempted resume.",
         "Update relevant docs and INSTALL_PROMPT/UPDATE_PROMPT; report no performance claim without measurement."
       ],
-      "blocker": null,
+      "blocker": "No app terminal session is attached, so authenticated command_execution_record.v2 receipts remain unavailable.",
       "clarifications": [],
       "depends_on": [],
       "description": "Implement fair layered multi-project preprocessing. Foreground activity per canonical absolute root defines active projects over a rolling 24-hour window. Background preprocessing must not refresh activity. Preserve phase dependencies, durable cursors/checkpoints, cache invalidation, deduplication, path confinement, writer leases, admission and all configured limits. Active projects traverse base phases together, then RAG/files, then optional phases; inactive projects receive the same layers at lower priority with anti-starvation. Diagnostics stays separate and disabled by default. No live DB refresh, provider/model-route change, API or data-format change.",
       "kind": "analysis",
-      "next_action": "Inspect indexed sources and current dirty diff; identify scheduler selection, persistent activity and existing limit gates before implementation.",
+      "next_action": "Attach a terminal session to this thread, then record native receipts for the focused test and release checks and run verify_completion. Latest focused suite: 395 passed, 2 explicitly model-dependent skips.",
       "title": "End-to-end preprocessing optimization",
       "work_phase": "verification",
       "work_status": "in_progress"

@@ -204,8 +204,8 @@ class TestGlobalPolicyGeneration:
         section_title = "## Hardware-tiered local-model capabilities"
 
         assert section_title in install and section_title in update
-        install_section = install.split(section_title, 1)[1]
-        update_section = update.split(section_title, 1)[1]
+        install_section = install.split(section_title, 1)[1].split("\n## ", 1)[0]
+        update_section = update.split(section_title, 1)[1].split("\n## ", 1)[0]
         assert install_section == update_section
         assert "features.search_summaries=true" in install_section
         assert 'mode="bounded"' in install_section
@@ -446,7 +446,7 @@ class TestWriteAllGenerated:
         res = write_all_generated(cfg, tmp_path)
         assert len(res["skill"]) >= 4
         assert len(res["instructions"]) >= 1
-        assert len(res["mcp"]) == 3
+        assert len(res["mcp"]) == 2
         assert len(res["schemas"]) >= 5
 
         skill_md = (tmp_path / "skills" / "local-ai-orchestrator" / "SKILL.md").read_text(encoding="utf-8")

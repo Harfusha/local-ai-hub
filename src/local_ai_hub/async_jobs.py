@@ -43,12 +43,12 @@ def report_job_progress(progress_percent: float, current_stage: str) -> bool:
 class AsyncJobManager:
     """Durable single-owner orchestration whose model calls use the scheduler."""
 
-    ACTIONS = {"delegate", "reason", "review", "review_diff", "second_opinion", "compress", "route", "batch", "speculative_lint"}
+    ACTIONS = {"delegate", "reason", "review", "review_diff", "second_opinion", "compress", "route", "batch", "speculative_lint", "rag_index"}
     INFERENCE_ACTIONS = frozenset(ACTIONS - {"speculative_lint"})
     DIRECT_INFERENCE_ACTIONS = frozenset({
         "embed", "rerank", "transcribe", "vision", "benchmark", "complete_code",
         "scaffold", "speculative_draft", "generate_tests", "solve", "eval_suite",
-        "prompt_eval", "eval_drift",
+            "prompt_eval", "eval_drift", "rag_index",
     })
     INFERENCE_ADMISSION_ACTIONS = INFERENCE_ACTIONS | DIRECT_INFERENCE_ACTIONS
     TERMINAL_STATES = frozenset({"done", "failed", "cancelled", "expired", "outcome_unknown"})
@@ -215,6 +215,7 @@ class AsyncJobManager:
             "task", "context", "candidate", "complexity", "max_tokens", "tasks", "task_id", "root", "cwd", "paths", "command",
             "repository_id", "session_id", "clone_id", "worktree_id", "branch",
             "instructions", "base", "staged", "mode", "diff_tokens", "consensus", "_async_job", "request_id",
+            "workspace",
         }
         return {key: payload[key] for key in allowed if key in payload}
 
@@ -316,6 +317,22 @@ class AsyncJobManager:
     def _can_replay_after_interruption(self, action: Any, payload: Any, attempts: int) -> bool:
         normalized_action = str(action or "").strip().lower().replace("-", "_")
         attempt_count = int(attempts or 0)
+        if normalized_action == "rag_index":
+            try:
+                decoded = json.loads(payload) if isinstance(payload, str) else payload
+            except Exception:
+                return False
+            if not isinstance(decoded, dict):
+                return False
+            root = decoded.get("root")
+            workspace = decoded.get("workspace")
+            return (
+                isinstance(root, str)
+                and bool(root.strip())
+                and os.path.isabs(root)
+                and (workspace is None or (isinstance(workspace, str) and bool(workspace.strip())))
+                and 0 < attempt_count < self.max_attempts
+            )
         return (
             normalized_action in {"delegate", "reason", "review", "review_diff", "second_opinion", "compress", "route", "batch"}
             and bool(self._replay_request_id(payload))

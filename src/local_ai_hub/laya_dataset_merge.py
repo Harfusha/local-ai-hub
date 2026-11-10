@@ -1,4 +1,4 @@
-"""Pool opted-in Laya train rows from encrypted Hub diagnostic archives."""
+"""Pool explicitly included Laya train rows from encrypted Hub diagnostic archives."""
 
 from __future__ import annotations
 
@@ -6,6 +6,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import shutil
 import tempfile
 import zipfile
@@ -70,8 +71,24 @@ def _read_rows(archive_path: Path, password: str) -> list[dict[str, Any]]:
 
 
 def _validate_row(row: Any) -> None:
-    if not isinstance(row, dict) or set(row) != {"state", "questions", "expected"}:
-        raise ValueError("unexpected fields; expected only state, questions, expected")
+    fields = {"id", "group_id", "source_sha256", "state", "questions", "expected", "provenance"}
+    if not isinstance(row, dict) or set(row) != fields:
+        raise ValueError("unexpected fields; expected candidate identity, group, provenance, state, questions, and expected")
+    if not isinstance(row["id"], str) or not row["id"] or not isinstance(row["group_id"], str) or not row["group_id"]:
+        raise ValueError("id and group_id must be non-empty strings")
+    if not isinstance(row["source_sha256"], str) or not re.fullmatch(r"[0-9a-f]{64}", row["source_sha256"]):
+        raise ValueError("source_sha256 must be a lowercase SHA-256")
+    if not isinstance(row["provenance"], dict) or row["provenance"].get("source") != "laya_candidate_store":
+        raise ValueError("candidate provenance is missing or invalid")
+    provenance = row["provenance"]
+    if {"consent", "consent_receipt_id", "per_example_consented", "consent_receipt_sha256"}.intersection(provenance):
+        raise ValueError("retired consent fields are not accepted in training provenance")
+    if provenance.get("data_class") != "local_scoped":
+        raise ValueError("candidate provenance.data_class must be local_scoped")
+    if provenance.get("candidate_id") != row["id"]:
+        raise ValueError("candidate provenance ID does not match row ID")
+    if provenance.get("candidate_sha256") != row["source_sha256"]:
+        raise ValueError("candidate provenance hash does not match source_sha256")
     if not isinstance(row["state"], str) or not isinstance(row["questions"], dict):
         raise ValueError("state must be text and questions must be an object")
     if not row["questions"] or any(not isinstance(key, str) or not isinstance(value, dict) for key, value in row["questions"].items()):
@@ -86,10 +103,10 @@ def _validate_row(row: Any) -> None:
 
 
 def merge_training_archives(sources: Sequence[tuple[str | Path, str]], output_dir: str | Path) -> dict[str, Any]:
-    """Merge opted-in AES-256 ZIP train members into a train-only JSONL directory.
+    """Merge explicitly included AES-256 ZIP train members into a train-only JSONL directory.
 
-    The source exports omit global task/session/group provenance. The result is
-    therefore never eligible for pooled calibration or evaluation.
+    Rows preserve opaque candidate/group identities, but source archives contain
+    train rows only and cannot supply a pooled held-out evaluation set.
     """
     if len(sources) < 2:
         raise ValueError("at least two training archives are required")
@@ -121,13 +138,13 @@ def merge_training_archives(sources: Sequence[tuple[str | Path, str]], output_di
             raise ValueError("merged train input exceeds byte limit")
         added = 0
         for row in rows:
+            canonical = _canonical_json(row)
             input_key = _canonical_json({"state": row["state"], "questions": row["questions"]})
             label_key = _canonical_json(row["expected"])
             previous_label = labels_by_input.get(input_key)
             if previous_label is not None and previous_label != label_key:
                 raise ValueError(f"{path}: conflicting labels for identical state/questions")
             labels_by_input[input_key] = label_key
-            canonical = _canonical_json(row)
             if canonical in unique:
                 duplicate_rows_removed += 1
                 continue
@@ -144,7 +161,7 @@ def merge_training_archives(sources: Sequence[tuple[str | Path, str]], output_di
         raise ValueError("merged train output exceeds byte limit")
     digest = hashlib.sha256(payload).hexdigest()
     manifest = {
-        "schema_version": 1,
+        "schema_version": 2,
         "dataset_kind": "laya_train_only",
         "source_count": len(source_counts),
         "source_rows": source_counts,
@@ -154,7 +171,7 @@ def merge_training_archives(sources: Sequence[tuple[str | Path, str]], output_di
         "train_jsonl_sha256": digest,
         "training_only": True,
         "evaluation_eligible": False,
-        "evaluation_blocker": "source archives omit global task, session, group, and label provenance",
+        "evaluation_blocker": "source archives contain training rows only and no separate held-out evaluation data",
     }
 
     stage = Path(tempfile.mkdtemp(prefix=".laya-merge-", dir=output.parent))
@@ -177,8 +194,8 @@ def merge_training_archives(sources: Sequence[tuple[str | Path, str]], output_di
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Merge opted-in Laya train members from encrypted Hub ZIP exports.")
-    parser.add_argument("archives", nargs="+", type=Path, help="AES-256 Hub ZIP archives containing opted-in Laya train JSONL")
+    parser = argparse.ArgumentParser(description="Merge locally scoped Laya train members from encrypted Hub ZIP exports.")
+    parser.add_argument("archives", nargs="+", type=Path, help="AES-256 Hub ZIP archives containing scoped Laya train JSONL")
     parser.add_argument("--output-dir", required=True, type=Path, help="new directory for laya.train.jsonl and manifest.json")
     args = parser.parse_args(argv)
     if len(args.archives) < 2:

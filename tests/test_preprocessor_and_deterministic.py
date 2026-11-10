@@ -307,6 +307,43 @@ def test_preprocessor_pause_resume_status_regressions(tmp_path: Path):
         pre.close()
 
 
+def test_preprocess_status_reports_resource_wait_for_pending_file_cards(tmp_path: Path):
+    cfg = _cfg(tmp_path)
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    repo_tools = RepositoryTools(cfg)
+    pre = ProjectPreprocessor(cfg, _Noop(), _Rag(), _Noop(), _Noop(), repo_tools)
+    try:
+        root = str(repo.resolve())
+        pre._background_work_allowed = lambda: True
+        pre._file_card_enrichment_enabled = lambda: True
+        pre.background_gpu = SimpleNamespace(ready=lambda: False)
+        now = time.time()
+        with closing(pre._connect()) as con:
+            con.execute(
+                "INSERT INTO projects(root,workspace,status,phase,registered_at,updated_at,next_check_at) VALUES(?,?,?,?,?,?,?)",
+                (root, "workspace", "running", "files", now, now, now),
+            )
+            con.execute(
+                "INSERT INTO content_cards(card_key,content_hash,model,analyzer_version,card_json,created_at,accessed_at) VALUES(?,?,?,?,?,?,?)",
+                ("stub-key", "content-hash", "deterministic-stub", "v1", "{}", now, now),
+            )
+            con.execute(
+                "INSERT INTO file_refs(root,path,content_hash,size,needs_hash,generation,card_key,updated_at) VALUES(?,?,?,?,?,?,?,?)",
+                (root, "module.py", "content-hash", 10, 0, 1, "stub-key", now),
+            )
+            con.commit()
+
+        project = pre.status(root)["projects"][0]
+
+        assert project["status"] == "running"
+        assert project["waiting"] is True
+        assert project["waiting_reason"] == "Waiting for preprocessing model or resources"
+        assert project["active_detail"].startswith("Waiting for preprocessing model or resources")
+    finally:
+        pre.close()
+
+
 def test_active_watcher_suppresses_periodic_full_inventory(tmp_path: Path):
     cfg = _cfg(tmp_path)
     repo = tmp_path / "repo"

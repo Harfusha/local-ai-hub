@@ -88,10 +88,11 @@ def test_release_uses_only_current_local_ai_hub_contracts():
 
 def test_release_has_compact_mcp_surface_and_tool_first_policy(tmp_path: Path):
     source = (ROOT / "src" / "local_ai_hub" / "mcp_server.py").read_text(encoding="utf-8")
+    descriptions = (ROOT / "src" / "local_ai_hub" / "mcp_tool_descriptions.py").read_text(encoding="utf-8")
     assert source.count("@mcp.tool()") == 7
-    assert "Omitted mode selects adaptive" in source
+    assert "Omitted mode selects adaptive" in descriptions
     assert "context mode must be adaptive" in source
-    assert "CodeGraphContext" not in source and "handmade grep terms" in source
+    assert "CodeGraphContext" not in source and "handmade grep terms" in descriptions
     write_all_generated({"models": {"fast_code": "qwen2.5-coder:7b"}}, tmp_path)
     skill = (tmp_path / "skills" / "local-ai-orchestrator" / "SKILL.md").read_text(encoding="utf-8")
     assert "before native broad discovery" in skill

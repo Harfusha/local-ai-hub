@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import hashlib
+import sqlite3
+from contextlib import closing
 from pathlib import Path
 
 import pytest
@@ -320,3 +322,345 @@ def test_run_matrix_orders_baseline_training_and_after_benchmark(tmp_path: Path,
 
     assert events == ["before", "train", "after"]
     assert len(result) == 1
+
+
+def _write_existing_card_index(tmp_path: Path) -> tuple[Path, Path]:
+    project = tmp_path / "project"
+    project.mkdir()
+    state = tmp_path / "state"
+    state.mkdir()
+    source = "def secret(): return 'private source text'\n"
+    source_hash = hashlib.sha256(source.encode("utf-8")).hexdigest()
+    card_key = "src/example.py"
+    with closing(sqlite3.connect(state / "preprocess.sqlite3")) as connection:
+        connection.executescript(
+            """
+            CREATE TABLE projects(root TEXT PRIMARY KEY);
+            CREATE TABLE content_cards(
+                card_key TEXT PRIMARY KEY, card_json TEXT, model TEXT, analyzer_version TEXT
+            );
+            CREATE TABLE file_refs(
+                root TEXT, path TEXT, content_hash TEXT, needs_hash INTEGER, card_key TEXT
+            );
+            CREATE TABLE source_index(root TEXT, path TEXT, text TEXT, content_hash TEXT);
+            """
+        )
+        connection.execute("INSERT INTO projects(root) VALUES (?)", (str(project),))
+        connection.execute(
+            "INSERT INTO content_cards VALUES (?, ?, ?, ?)",
+            (card_key, json.dumps({"summary": "example"}), "local-teacher", "v1"),
+        )
+        connection.execute(
+            "INSERT INTO file_refs VALUES (?, ?, ?, ?, ?)",
+            (str(project), card_key, source_hash, 0, card_key),
+        )
+        connection.execute(
+            "INSERT INTO source_index VALUES (?, ?, ?, ?)",
+            (str(project), card_key, source, source_hash),
+        )
+        connection.commit()
+    return state, project
+
+
+def test_existing_card_export_lists_metadata_then_exports_local_rows(tmp_path: Path) -> None:
+    from tools.model_training.existing_cards import (
+        export_existing_cards,
+        list_existing_card_candidates,
+    )
+
+    state, _project = _write_existing_card_index(tmp_path)
+    candidates = list_existing_card_candidates(state_dir=state, format="card-training")
+    assert len(candidates["candidates"]) == 1
+    candidate = candidates["candidates"][0]
+    assert "private source text" not in json.dumps(candidates)
+    assert set(candidate) == {
+        "row_id", "root_id", "card_kind", "relative_path", "card_sha256",
+        "source_sha256", "card_model", "card_version",
+    }
+
+    output = state / "cards.jsonl"
+    result = export_existing_cards(
+        state_dir=state,
+        output_path=output,
+        format="card-training",
+    )
+    rows = [json.loads(line) for line in output.read_text(encoding="utf-8").splitlines()]
+    assert result["row_count"] == 1
+    assert rows[0]["provenance"]["source"] == "existing_hub_preprocess_card"
+    assert rows[0]["provenance"]["data_class"] == "existing_local"
+    assert "per_example_consented" not in rows[0]["provenance"]
+    assert "consent_receipt_sha256" not in rows[0]["provenance"]
+    assert any("private source text" in message["content"] for message in rows[0]["messages"])
+
+
+def test_existing_card_export_resume_drops_rows_missing_from_current_index(tmp_path: Path) -> None:
+    from tools.model_training.existing_cards import export_existing_cards, list_existing_card_candidates
+
+    state, project = _write_existing_card_index(tmp_path)
+    second_source = "def second(): return 'private second source text'\\n"
+    second_hash = hashlib.sha256(second_source.encode("utf-8")).hexdigest()
+    with closing(sqlite3.connect(state / "preprocess.sqlite3")) as connection:
+        connection.execute(
+            "INSERT INTO content_cards VALUES (?, ?, ?, ?)",
+            ("src/second.py", json.dumps({"summary": "second example"}), "local-teacher", "v1"),
+        )
+        connection.execute(
+            "INSERT INTO file_refs VALUES (?, ?, ?, ?, ?)",
+            (str(project), "src/second.py", second_hash, 0, "src/second.py"),
+        )
+        connection.execute(
+            "INSERT INTO source_index VALUES (?, ?, ?, ?)",
+            (str(project), "src/second.py", second_source, second_hash),
+        )
+        connection.commit()
+    candidates = list_existing_card_candidates(state_dir=state, format="card-training")["candidates"]
+    output = state / "cards.jsonl"
+    export_existing_cards(state_dir=state, output_path=output, format="card-training")
+    selected = next(row for row in candidates if row["relative_path"] == "src/example.py")
+    with closing(sqlite3.connect(state / "preprocess.sqlite3")) as connection:
+        connection.execute("DELETE FROM file_refs WHERE path=?", ("src/second.py",))
+        connection.commit()
+
+    result = export_existing_cards(
+        state_dir=state, output_path=output, format="card-training",
+        resume=True,
+    )
+
+    rows = [json.loads(line) for line in output.read_text(encoding="utf-8").splitlines()]
+    assert result["row_count"] == 1
+    assert [row["id"] for row in rows] == [selected["row_id"]]
+
+
+def _laya_row(
+    item_id: str,
+    group_id: str,
+    *,
+    provenance: dict[str, object] | None = None,
+) -> dict[str, object]:
+    row: dict[str, object] = {
+        "id": item_id,
+        "group_id": group_id,
+        "state": {"gap_code": "unresolved_evidence_gap", "case": item_id},
+        "questions": {"source": {"options": ["indexed", "rag"]}},
+        "expected": {"source": "indexed"},
+    }
+    if provenance is not None:
+        row["provenance"] = provenance
+    return row
+
+
+def _target_sha256(targets: dict[str, str]) -> str:
+    canonical = json.dumps(targets, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def test_laya_dataset_rejects_rows_without_verified_label_provenance(tmp_path: Path) -> None:
+    from tools.model_training.laya_backend import validate_laya_dataset_pair
+
+    train = tmp_path / "laya-train.jsonl"
+    evaluation = tmp_path / "laya-eval.jsonl"
+    _write_jsonl(train, [_laya_row("train-1", "repo-train")])
+    _write_jsonl(evaluation, [_laya_row("eval-1", "repo-eval")])
+
+    with pytest.raises(ValueError, match="provenance"):
+        validate_laya_dataset_pair(train, evaluation)
+
+
+def test_laya_dataset_accepts_verified_double_reviewed_synthetic_rows(tmp_path: Path) -> None:
+    from tools.model_training.laya_backend import validate_laya_dataset_pair
+
+    target = {"source": "indexed"}
+    label_provenance = {
+        "status": "verified",
+        "method": "blind_double_annotation",
+        "target_sha256": _target_sha256(target),
+        "annotation_identity_sha256": [
+            hashlib.sha256(b"annotation-1").hexdigest(),
+            hashlib.sha256(b"annotation-2").hexdigest(),
+        ],
+        "agreement": False,
+        "adjudicator_identity_sha256": hashlib.sha256(b"adjudicator-1").hexdigest(),
+        "verification_identity_sha256": hashlib.sha256(b"verifier-1").hexdigest(),
+    }
+    train = tmp_path / "laya-train.jsonl"
+    evaluation = tmp_path / "laya-eval.jsonl"
+    _write_jsonl(
+        train,
+        [
+            _laya_row(
+                "train-1",
+                "repo-train",
+                provenance={
+                    "data_class": "synthetic_non_private",
+                    "fixture_id": "fixture-train",
+                    "label_provenance": label_provenance,
+                },
+            )
+        ],
+    )
+    _write_jsonl(
+        evaluation,
+        [
+            _laya_row(
+                "eval-1",
+                "repo-eval",
+                provenance={
+                    "data_class": "synthetic_non_private",
+                    "fixture_id": "fixture-eval",
+                    "label_provenance": {
+                        **label_provenance,
+                        "annotation_identity_sha256": [
+                            hashlib.sha256(b"annotation-3").hexdigest(),
+                            hashlib.sha256(b"annotation-4").hexdigest(),
+                        ],
+                        "agreement": True,
+                        "adjudicator_identity_sha256": hashlib.sha256(b"adjudicator-2").hexdigest(),
+                        "verification_identity_sha256": hashlib.sha256(b"verifier-2").hexdigest(),
+                    },
+                },
+            )
+        ],
+    )
+
+    result = validate_laya_dataset_pair(train, evaluation)
+    assert result["group_overlap"] == []
+
+
+def test_existing_card_export_includes_all_authorized_indexed_rows(tmp_path: Path) -> None:
+    from tools.model_training.existing_cards import (
+        export_existing_cards,
+        list_existing_card_candidates,
+    )
+
+    state, project = _write_existing_card_index(tmp_path)
+    second_source = "def secret_two(): return 'private second source text'\n"
+    second_hash = hashlib.sha256(second_source.encode("utf-8")).hexdigest()
+    with closing(sqlite3.connect(state / "preprocess.sqlite3")) as connection:
+        connection.execute(
+            "INSERT INTO content_cards VALUES (?, ?, ?, ?)",
+            ("src/second.py", json.dumps({"summary": "second example"}), "local-teacher", "v1"),
+        )
+        connection.execute(
+            "INSERT INTO file_refs VALUES (?, ?, ?, ?, ?)",
+            (str(project), "src/second.py", second_hash, 0, "src/second.py"),
+        )
+        connection.execute(
+            "INSERT INTO source_index VALUES (?, ?, ?, ?)",
+            (str(project), "src/second.py", second_source, second_hash),
+        )
+        connection.commit()
+
+    candidates = list_existing_card_candidates(state_dir=state, format="card-training")
+    assert candidates["candidate_count"] == 2
+    output = state / "cards.jsonl"
+    result = export_existing_cards(
+        state_dir=state,
+        output_path=output,
+        format="card-training",
+    )
+    rows = [json.loads(line) for line in output.read_text(encoding="utf-8").splitlines()]
+    assert result["row_count"] == 2
+    assert {row["id"] for row in rows} == {candidate["row_id"] for candidate in candidates["candidates"]}
+    assert all(row["provenance"]["data_class"] == "existing_local" for row in rows)
+    assert all("consent_receipt_sha256" not in row["provenance"] for row in rows)
+
+
+def test_existing_card_export_requires_no_per_example_consent(tmp_path: Path) -> None:
+    from tools.model_training.existing_cards import export_existing_cards
+
+    state, _project = _write_existing_card_index(tmp_path)
+    result = export_existing_cards(state_dir=state, output_path=state / "cards.jsonl", format="card-training")
+    assert result["row_count"] == 1
+
+
+def test_laya_dataset_accepts_verified_local_scoped_rows(tmp_path: Path) -> None:
+    from tools.model_training.laya_backend import validate_laya_dataset_pair
+
+    target = {"source": "indexed"}
+    label_provenance = {
+        "status": "verified",
+        "method": "blind_double_annotation",
+        "target_sha256": _target_sha256(target),
+        "annotation_identity_sha256": [
+            hashlib.sha256(b"annotation-a").hexdigest(),
+            hashlib.sha256(b"annotation-b").hexdigest(),
+        ],
+        "agreement": True,
+        "adjudicator_identity_sha256": hashlib.sha256(b"adjudicator-a").hexdigest(),
+        "verification_identity_sha256": hashlib.sha256(b"verifier-a").hexdigest(),
+    }
+    train = tmp_path / "laya-train.jsonl"
+    evaluation = tmp_path / "laya-eval.jsonl"
+    train_provenance = {
+        "data_class": "local_scoped",
+        "candidate_id": "train-1",
+        "candidate_sha256": "a" * 64,
+        "label_provenance": label_provenance,
+    }
+    eval_provenance = {
+        "data_class": "local_scoped",
+        "candidate_id": "eval-1",
+        "candidate_sha256": "b" * 64,
+        "label_provenance": {
+            **label_provenance,
+            "annotation_identity_sha256": [
+                hashlib.sha256(b"annotation-c").hexdigest(),
+                hashlib.sha256(b"annotation-d").hexdigest(),
+            ],
+            "adjudicator_identity_sha256": hashlib.sha256(b"adjudicator-b").hexdigest(),
+            "verification_identity_sha256": hashlib.sha256(b"verifier-b").hexdigest(),
+        },
+    }
+    train_row = _laya_row("train-1", "repo-train", provenance=train_provenance)
+    train_row["source_sha256"] = "a" * 64
+    evaluation_row = _laya_row("eval-1", "repo-eval", provenance=eval_provenance)
+    evaluation_row["source_sha256"] = "b" * 64
+    _write_jsonl(train, [train_row])
+    _write_jsonl(evaluation, [evaluation_row])
+
+    assert validate_laya_dataset_pair(train, evaluation)["group_overlap"] == []
+    evaluation_row["group_id"] = train_row["group_id"]
+    _write_jsonl(evaluation, [evaluation_row])
+    with pytest.raises(ValueError, match="group"):
+        validate_laya_dataset_pair(train, evaluation)
+
+
+def test_laya_dataset_rejects_retired_consent_fields(tmp_path: Path) -> None:
+    from tools.model_training.laya_backend import validate_laya_dataset_pair
+
+    train = tmp_path / "laya-train.jsonl"
+    evaluation = tmp_path / "laya-eval.jsonl"
+    target = {"source": "indexed"}
+    proof = {
+        "status": "verified",
+        "method": "blind_double_annotation",
+        "target_sha256": _target_sha256(target),
+        "annotation_identity_sha256": [
+            hashlib.sha256(b"reviewer-x").hexdigest(),
+            hashlib.sha256(b"reviewer-y").hexdigest(),
+        ],
+        "agreement": True,
+        "adjudicator_identity_sha256": hashlib.sha256(b"adjudicator-x").hexdigest(),
+        "verification_identity_sha256": hashlib.sha256(b"verifier-x").hexdigest(),
+    }
+    train_row = _laya_row("train-1", "repo-train", provenance={
+        "data_class": "local_scoped",
+        "candidate_id": "train-1",
+        "candidate_sha256": "a" * 64,
+        "consent_receipt_id": "receipt-reused",
+        "label_provenance": proof,
+    })
+    evaluation_row = _laya_row("eval-1", "repo-eval", provenance={
+        "data_class": "local_scoped",
+        "candidate_id": "eval-1",
+        "candidate_sha256": "b" * 64,
+        "consent_receipt_id": "receipt-reused",
+        "label_provenance": proof,
+    })
+    train_row["source_sha256"] = "a" * 64
+    evaluation_row["source_sha256"] = "b" * 64
+    _write_jsonl(train, [train_row])
+    _write_jsonl(evaluation, [evaluation_row])
+
+    with pytest.raises(ValueError, match="retired consent fields"):
+        validate_laya_dataset_pair(train, evaluation)

@@ -2,7 +2,7 @@
   "default_target_ref": "refs/heads/master",
   "description": "Fix evidence-backed endpoint underuse across both agent platforms. Keep native command execution and ownership rules intact; make deterministic/indexed Hub calls the normal route when applicable and semantic calls explicitly conditional.",
   "id": "plan_4fc62af31642",
-  "lifecycle": "draft",
+  "lifecycle": "active",
   "schema_version": 1,
   "spec_refs": [],
   "tasks": {
@@ -21,19 +21,22 @@
         "Shadow is default and metadata-only; it never sends host messages, changes turns, stops/forces continuation, approves actions, starts delegation, or stores prompts/transcripts/source.",
         "Host observations distinguish proposed, simulated, executed, and verified; permission checks remain unknown unless observed.",
         "Unknown or disconnected host connection status returns uncertain and persists no shadow event.",
-        "Codex App Server and Antigravity CLI stream-json have separate stage gates and honest support states.",
+        "Codex App Server and Antigravity CLI stream-json have separate stage gates and honest support states; concrete client adapters remain deferred per user steering.",
         "Hook handling no longer injects planner advice or stores full prompts by default.",
         "Analysis/status live in docs/FINAL_COMPLETION_PLAN.md without duplicate plan or direct plan-store edits.",
-        "OpenCode integration is removed from master and preserved on a dedicated branch for future client-agnostic redesign; preservation is not runtime acceptance."
+        "OpenCode integration is removed from master and preserved on a dedicated branch for future client-agnostic redesign; preservation is not runtime acceptance.",
+        "Generated API_COVERAGE.md and API_COVERAGE.json match the current source inventory and do not advertise OpenCode endpoints.",
+        "Each future shadow capability has an evidence-backed event/input gate, privacy boundary, honest support state, and separate evaluation criteria before opt-in.",
+        "Agent OS checkpoint pause/continue proposals use only typed status and presence bits, canonical source event IDs, and existing AgentStateStore; storage failure does not change task or host behavior."
       ],
-      "blocker": "Codex 0.167.0-alpha.3.2 App Server initialize/thread/start/thread/started is freshly verified in isolated temporary CODEX_HOME; host adapter/hook suite passes (53 passed, 2 skipped) and live smoke passes (1). The shared shadow gate now returns uncertain and stores nothing for disconnected or unknown connection status. No production Hub caller/supervisor currently supplies live connection state; post-handshake EOF, timeout, reconnect/recovery, turn and approval events, and provider-backed pre-inference monetary cap remain not_verified. Antigravity CLI is absent from the current shell; local version and hook delivery remain not_verified. Official hooks alone do not prove Hub ownership; payload contains lastUserInput/transcript path. Headless stream-json requires prompt/inference; tool-free launch, process ownership, permissions, cleanup and cost cap remain not_verified. Sidecar agentapi availability/permissions remain not_verified.",
+      "blocker": "Current main-root snapshot has 24 v3 observations across six task streams at state/shadow-evaluation/exports/local-ai-hub-v3-3622e498f91c.jsonl. Every row is task.checkpointed recommend_pause with reason checkpoint_has_blockers. The one-class sample is not representative and cannot measure continue/none behavior or false negatives. Two independent human annotations and adjudication are absent. Reviewer identity, model quality, live production Codex caller, and Antigravity stream remain not_verified. Concrete IDE adapters remain deferred by user direction.",
       "clarifications": [],
       "depends_on": [],
-      "description": "Extend existing Codex and Antigravity endpoint routing work with a staged, evidence-backed native host integration. Shadow remains metadata-only and cannot change host sessions. Audit findings and stage gates live in docs/FINAL_COMPLETION_PLAN.md; implement only source-supported safe stages.",
+      "description": "Concrete IDE/client adapters remain deferred per user steering. Client-neutral Agent OS checkpoint shadow producer writes v3 metadata-only observations into canonical task streams, including explicit not_proposed outcomes. The offline evaluator exports root/task-scoped observations and requires strict six-field annotations with independent and adjudication stages. One adjudicator can resolve only a disagreement between at least two independent reviewers; adjudicated_cases scores the adjudicated label, while unresolved cases remain excluded. CLI --require-double-review rejects any unannotated export observation, single-reviewer observation, or disagreement without adjudication. double_review_gate=passed proves only complete labels under supplied pseudonymous reviewer_ref values; reviewer_identity_status remains not_verified because human identity and independence are operator-attested, not technically verified. quality_status remains not_verified. Generated repository tool descriptions, skill/workflow references, and global policy name only profile-enabled repository actions. FINAL_COMPLETION_PLAN.md records client deferral, shadow privacy/status semantics, annotation workflow, reviewer identity limitation, quality gates, and the six sequential post-shadow gates. Current targeted validation on HEAD ecf259c7 (dirty tree): tests/test_agent_tasks.py tests/test_shadow_evaluation.py tests/test_host_shadow_adapters.py tests/test_host_adapters_superpowers.py tests/test_managed_host_hooks.py => 140 passed, 2 skipped (opt-in Codex smoke, symlink unavailable). These are source regressions only; no inference or live host acceptance ran.",
       "kind": "code",
-      "next_action": "Implement a bounded Hub-owned Codex App Server observer around the existing parser and shadow sink only after tests specify EOF, post-handshake disconnect, timeout, cancellation, cleanup, and uncertain outcomes. It must never call turn/start or persist raw IDs/content. Validate it with a fake host process and the no-turn live smoke. Keep Antigravity hooks/headless CLI and sidecar unsupported until ownership, permissions, privacy, cleanup, and budget gates are proven.",
+      "next_action": "Keep collecting natural client-neutral checkpoint observations until the sample includes proposed and not_proposed behavior across relevant states. Then obtain two independent human labels per selected observation, adjudicate disagreements, and run the offline scorer. Do not infer host event delivery from installed docs or binaries.",
       "title": "Codex and Antigravity host integration, shadow contract, and endpoint routing",
-      "work_phase": "verification",
+      "work_phase": "implementation",
       "work_status": "in_progress"
     }
   },

@@ -578,6 +578,32 @@ def test_internal_and_external_claims_share_one_atomic_fence(tmp_path):
     assert store.reserve(_digest("external"), owner="external") is not None
 
 
+def test_internal_release_retries_windows_sharing_violation(tmp_path, monkeypatch):
+    path = tmp_path / "external-gpu-reservation"
+    store = ExternalGpuReservationStore(path, ttl_seconds=10, clock=lambda: 100.0)
+    digest = _digest("internal")
+    assert store.claim_internal(digest)
+    original_unlink = Path.unlink
+    attempts = 0
+
+    def unlink_with_transient_sharing_violation(candidate, *args, **kwargs):
+        nonlocal attempts
+        if candidate == path and attempts == 0:
+            attempts += 1
+            error = OSError("simulated Windows sharing violation")
+            error.winerror = 32
+            raise error
+        if candidate == path:
+            attempts += 1
+        return original_unlink(candidate, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", unlink_with_transient_sharing_violation)
+
+    assert store.release_internal(digest) is True
+    assert attempts == 2
+    assert not path.exists()
+
+
 def test_competing_external_reservations_have_one_winner(tmp_path):
     path = tmp_path / "external-gpu-reservation"
     stores = [ExternalGpuReservationStore(path) for _ in range(12)]

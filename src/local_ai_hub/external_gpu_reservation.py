@@ -178,50 +178,62 @@ class ExternalGpuReservationStore:
         """Refresh a live digest-only internal fence without changing ownership."""
         _validate_digest(digest)
         with self._locked():
-            if self.metadata_path.exists() or self.path.is_symlink():
-                return False
-            try:
-                with self.path.open("rb") as stream:
-                    before = os.fstat(stream.fileno())
-                    if not stat.S_ISREG(before.st_mode) or before.st_size != 64:
+            for attempt in range(6):
+                if self.metadata_path.exists() or self.path.is_symlink():
+                    return False
+                try:
+                    with self.path.open("rb") as stream:
+                        before = os.fstat(stream.fileno())
+                        if not stat.S_ISREG(before.st_mode) or before.st_size != 64:
+                            return False
+                        raw_digest = stream.read(65)
+                        after = os.fstat(stream.fileno())
+                        current = self.path.stat(follow_symlinks=False)
+                        if (not os.path.samestat(before, after)
+                                or not os.path.samestat(after, current)
+                                or raw_digest.decode("ascii") != digest):
+                            return False
+                        now = self._clock()
+                        os.utime(self.path, (now, now))
+                        renewed = os.fstat(stream.fileno())
+                        if self.path.is_symlink():
+                            return False
+                        current = self.path.stat(follow_symlinks=False)
+                        return os.path.samestat(after, renewed) and os.path.samestat(renewed, current)
+                except UnicodeDecodeError:
+                    return False
+                except OSError as exc:
+                    # Brief Windows sharing violations must not strand the scheduler
+                    # in outcome_unknown while the same internal fence is still valid.
+                    if getattr(exc, "winerror", None) != 32 or attempt == 5:
                         return False
-                    raw_digest = stream.read(65)
-                    after = os.fstat(stream.fileno())
-                    current = self.path.stat(follow_symlinks=False)
-                    if (not os.path.samestat(before, after)
-                            or not os.path.samestat(after, current)
-                            or raw_digest.decode("ascii") != digest):
-                        return False
-                    now = self._clock()
-                    os.utime(self.path, (now, now))
-                    renewed = os.fstat(stream.fileno())
-                    if self.path.is_symlink():
-                        return False
-                    current = self.path.stat(follow_symlinks=False)
-                    return os.path.samestat(after, renewed) and os.path.samestat(renewed, current)
-            except (OSError, UnicodeDecodeError):
-                return False
+                    time.sleep(0.01)
+            return False
 
     def release_internal(self, digest: str) -> bool:
         _validate_digest(digest)
         with self._locked():
-            if self.metadata_path.exists() or self.path.is_symlink():
-                return False
-            try:
-                current = self.path.read_text(encoding="ascii")
-            except FileNotFoundError:
-                return True
-            except OSError:
-                return False
-            if not hmac.compare_digest(current, digest):
-                return False
-            try:
-                self.path.unlink()
-            except FileNotFoundError:
-                return True
-            except OSError:
-                return False
-            return True
+            for attempt in range(6):
+                if self.metadata_path.exists() or self.path.is_symlink():
+                    return False
+                try:
+                    current = self.path.read_text(encoding="ascii")
+                except FileNotFoundError:
+                    return True
+                except OSError:
+                    return False
+                if not hmac.compare_digest(current, digest):
+                    return False
+                try:
+                    self.path.unlink()
+                    return True
+                except FileNotFoundError:
+                    return True
+                except OSError as exc:
+                    if getattr(exc, "winerror", None) != 32 or attempt == 5:
+                        return False
+                    time.sleep(0.01)
+            return False
 
     def reserve(self, token_digest: str, *, owner: str) -> dict[str, Any] | None:
         _validate_digest(token_digest)

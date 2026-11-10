@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 from typing import Any
 
 from .manifest import _read_jsonl, _validate_row, validate_dataset_pair
@@ -111,4 +112,87 @@ def split_dataset(
         "evaluation_fraction_requested": evaluation_fraction,
         "evaluation_fraction_actual": round(len(eval_rows) / len(rows), 4),
         "evaluation_group_ids": sorted(evaluation_groups),
+    }
+
+
+def split_embedding_corpus(
+    source_path: Path | str,
+    train_path: Path | str,
+    evaluation_path: Path | str,
+    *,
+    evaluation_fraction: float = 0.2,
+    seed: int = 20261110,
+) -> dict[str, Any]:
+    """Deduplicate exact card text, then split the remaining corpus by project."""
+    if not 0.05 <= evaluation_fraction <= 0.5:
+        raise ValueError("evaluation_fraction must be between 0.05 and 0.5")
+    source_file = Path(source_path).resolve()
+    train_output, eval_output = Path(train_path).resolve(), Path(evaluation_path).resolve()
+    if source_file in {train_output, eval_output} or train_output == eval_output:
+        raise ValueError("source, train, and evaluation paths must be distinct")
+    rows = _read_jsonl(source_file, split="embedding corpus")
+    groups: set[str] = set()
+    ids: set[str] = set()
+    rows_by_hash: dict[str, dict[str, Any]] = {}
+
+    for line_number, row in enumerate(rows, 1):
+        group, row_id = row.get("group_id"), row.get("id")
+        if not isinstance(group, str) or not group.strip():
+            raise ValueError(f"embedding corpus line {line_number} needs group_id")
+        if not isinstance(row_id, str) or not row_id.strip() or row_id in ids:
+            raise ValueError(f"embedding corpus line {line_number} needs a unique id")
+        if not isinstance(row.get("text"), str) or not row["text"].strip():
+            raise ValueError(f"embedding corpus line {line_number} needs non-empty text")
+        provenance = row.get("provenance")
+        digest = provenance.get("card_sha256") if isinstance(provenance, dict) else None
+        if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
+            raise ValueError(f"embedding corpus line {line_number} needs provenance.card_sha256")
+        ids.add(row_id)
+        groups.add(group)
+        previous = rows_by_hash.get(digest)
+        if previous is None or (group, row_id) < (previous["group_id"], previous["id"]):
+            rows_by_hash[digest] = row
+
+    deduplicated_rows = [rows_by_hash[key] for key in sorted(rows_by_hash)]
+    deduplicated_groups = {row["group_id"] for row in deduplicated_rows}
+    if len(deduplicated_groups) < 2:
+        raise ValueError("at least two independent project groups are required for a held-out split")
+    rows_by_group = {group: 0 for group in deduplicated_groups}
+    for row in deduplicated_rows:
+        rows_by_group[row["group_id"]] += 1
+    ordered = sorted(
+        deduplicated_groups,
+        key=lambda group: hashlib.sha256(f"{seed}\0{group}".encode()).hexdigest(),
+    )
+    target = max(1, round(len(deduplicated_rows) * evaluation_fraction))
+    evaluation_groups: set[str] = set()
+    evaluation_count = 0
+    for group in ordered[:-1]:
+        if not evaluation_groups or evaluation_count < target:
+            evaluation_groups.add(group)
+            evaluation_count += rows_by_group[group]
+    train_rows = [row for row in deduplicated_rows if row["group_id"] not in evaluation_groups]
+    eval_rows = [row for row in deduplicated_rows if row["group_id"] in evaluation_groups]
+    if not train_rows or not eval_rows:
+        raise ValueError("project-group split did not produce non-empty train and evaluation sets")
+    train_hashes = {row["provenance"]["card_sha256"] for row in train_rows}
+    eval_hashes = {row["provenance"]["card_sha256"] for row in eval_rows}
+    if train_hashes & eval_hashes:
+        raise ValueError("identical existing card content leaked across embedding splits")
+    _write_jsonl_atomic(train_output, train_rows)
+    _write_jsonl_atomic(eval_output, eval_rows)
+    return {
+        "success": True,
+        "format": "embedding-corpus",
+        "source_count": len(rows),
+        "deduplicated_count": len(deduplicated_rows),
+        "exact_duplicate_rows_removed": len(rows) - len(deduplicated_rows),
+        "train_count": len(train_rows),
+        "evaluation_count": len(eval_rows),
+        "project_group_count": len(deduplicated_groups),
+        "evaluation_group_ids": sorted(evaluation_groups),
+        "seed": seed,
+        "evaluation_fraction_requested": evaluation_fraction,
+        "evaluation_fraction_actual": round(len(eval_rows) / len(deduplicated_rows), 4),
+        "relevance_labels": "not_present",
     }

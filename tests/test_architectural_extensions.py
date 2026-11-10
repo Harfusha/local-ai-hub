@@ -236,7 +236,10 @@ def test_extract_api_spec_prunes_excluded_directories(tmp_path: Path, monkeypatc
         "@app.get('/visible')\ndef visible(): return {}\n",
         encoding="utf-8",
     )
-    excluded_dirs = {".git", ".venv", "venv", "tool-envs", "node_modules", "__pycache__"}
+    excluded_dirs = {
+        ".git", ".venv", "venv", "tool-envs", "node_modules", "__pycache__",
+        "vendor", "dist", "build", ".local-ai-hub",
+    }
     for dirname in excluded_dirs:
         nested = tmp_path / dirname / "nested"
         nested.mkdir(parents=True)

@@ -1,0 +1,15 @@
+# Laya Natural-Use Capture and Review
+
+**Operator steering (2026-11-10):** Laya is part of ordinary Local AI Hub context use. The Hub runs its pinned local checkpoint in shadow mode and collects examples from real runtime calls. This operator instruction authorizes scoped local capture; per-example consent receipts are not required. No synthetic examples, generated cards, training, or benchmark runs are part of this task.
+
+**Capture contract:** On eligible successful context requests with an unresolved evidence gap and at least two authorized sources, build the existing typed `context_source` input from trusted gap/source/freshness/coverage codes and evidence IDs. Run Laya in shadow; its output never changes Hub retrieval, routing, permissions, task state, receipts, or tool execution. Persist only actual runtime outcomes, scoped to canonical repository/task/session and validated evidence provenance. No per-example receipt or raw request content is stored.
+
+**Privacy and provenance:** Keep raw prompts, source text, credentials, and transcripts out of Laya inputs, candidate rows, and telemetry. Retain typed gap/source/freshness/coverage codes, evidence IDs, model output, runtime identity, and group provenance. Candidate rows remain local and pending; model output is not a label.
+
+**Review and labels:** After a practical-use collection period, review candidates, reject unsuitable examples, and record human labels with rubric and reviewer provenance. Keep unresolved or rejected candidates out of training exports. Preserve group provenance so related tasks cannot leak across dataset splits. Deletion invalidates snapshots and removes linked local exports and candidate event payloads.
+
+**Execution and checkpoint:** Submit automatic inference through an existing bounded Hub executor, with at most one queued or running capture per process. Ordinary context responses must not wait for Laya. Use only the already cached local multilingual checkpoint with pinned revision and verified file hashes. Inference is authorized for ordinary shadow capture on this installation. This installation's explicit runtime config enables Laya; the checked-in default remains disabled for other installations. Runtime/driver installation and model downloads are not authorized. Keep CPU fallback disabled. Startup remains lazy; inference or capture failures must not change ordinary Hub responses.
+
+**Export and limits:** Keep candidates in the configured `server.state_dir`, scoped to the authorized repository/task/session. Metadata-only diagnostics exclude candidate content. Export only current reviewed and verified labels through the existing group-safe snapshot flow with `data_class=local_scoped`. Training and benchmark execution remain unstarted until the user requests them after practical data collection and review.
+
+**Existing-card export:** Read only existing indexed Hub cards and their source pairs. Skip known deterministic card models, preserve source provenance, and generate no new cards.

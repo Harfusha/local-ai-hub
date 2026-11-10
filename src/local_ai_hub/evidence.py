@@ -94,6 +94,15 @@ class EvidenceStore:
                 );
                 CREATE INDEX IF NOT EXISTS idx_evidence_root_path ON evidence(root,path);
                 CREATE INDEX IF NOT EXISTS idx_evidence_hits ON evidence(hits);
+                CREATE TABLE IF NOT EXISTS evidence_source_provenance(
+                    evidence_id TEXT NOT NULL,
+                    root TEXT NOT NULL,
+                    source_code TEXT NOT NULL,
+                    created_at REAL NOT NULL,
+                    PRIMARY KEY(evidence_id, root, source_code)
+                );
+                CREATE INDEX IF NOT EXISTS idx_evidence_source_provenance_root
+                    ON evidence_source_provenance(root, evidence_id);
                 """)
                 con.commit()
         except sqlite3.DatabaseError as exc:
@@ -111,12 +120,88 @@ class EvidenceStore:
                 CREATE TABLE IF NOT EXISTS evidence(id TEXT PRIMARY KEY,root TEXT NOT NULL,path TEXT NOT NULL,file_hash TEXT NOT NULL,start_line INTEGER NOT NULL,end_line INTEGER NOT NULL,text TEXT NOT NULL,created_at REAL NOT NULL,accessed_at REAL NOT NULL,hits INTEGER NOT NULL DEFAULT 0);
                 CREATE INDEX IF NOT EXISTS idx_evidence_root_path ON evidence(root,path);
                 CREATE INDEX IF NOT EXISTS idx_evidence_hits ON evidence(hits);
+                CREATE TABLE IF NOT EXISTS evidence_source_provenance(evidence_id TEXT NOT NULL,root TEXT NOT NULL,source_code TEXT NOT NULL,created_at REAL NOT NULL,PRIMARY KEY(evidence_id,root,source_code));
+                CREATE INDEX IF NOT EXISTS idx_evidence_source_provenance_root ON evidence_source_provenance(root,evidence_id);
                 """)
 
     @staticmethod
     def _id(root: str, path: str, file_hash: str, start: int, end: int, text: str) -> str:
         raw = f"{root}\0{path}\0{file_hash}\0{start}\0{end}\0{text}".encode("utf-8", errors="replace")
         return "E" + hashlib.sha256(raw).hexdigest()[:20]
+
+    _SOURCE_CODES = frozenset({"indexed", "artifact", "rag"})
+
+    @staticmethod
+    def _prune_orphaned_source_provenance(con: sqlite3.Connection) -> None:
+        con.execute(
+            "DELETE FROM evidence_source_provenance WHERE NOT EXISTS ("
+            "SELECT 1 FROM evidence WHERE evidence.id=evidence_source_provenance.evidence_id "
+            "AND evidence.root=evidence_source_provenance.root)"
+        )
+
+    def record_source_provenance(
+        self, evidence_id: str, *, root: str, source_code: str
+    ) -> bool:
+        """Record a trusted retrieval route for an existing root-scoped evidence ID."""
+        if (
+            not is_evidence_id(evidence_id)
+            or type(root) is not str
+            or not root
+            or root != root.strip()
+            or type(source_code) is not str
+            or source_code not in self._SOURCE_CODES
+        ):
+            return False
+        try:
+            with self._lock, closing(self._connect()) as con:
+                con.execute("BEGIN IMMEDIATE")
+                exists = con.execute(
+                    "SELECT 1 FROM evidence WHERE id=? AND root=?",
+                    (evidence_id, root),
+                ).fetchone()
+                if exists is None:
+                    con.rollback()
+                    return False
+                con.execute(
+                    "INSERT OR IGNORE INTO evidence_source_provenance"
+                    "(evidence_id,root,source_code,created_at) VALUES(?,?,?,?)",
+                    (evidence_id, root, source_code, time.time()),
+                )
+                con.commit()
+            return True
+        except sqlite3.DatabaseError:
+            return False
+
+    def validate_source_provenance(
+        self, evidence_ids: Any, source_codes: Any, *, root: str
+    ) -> bool:
+        """Require every source code to match stored provenance for its evidence ID."""
+        if (
+            type(evidence_ids) is not list
+            or type(source_codes) is not list
+            or not evidence_ids
+            or len(evidence_ids) != len(source_codes)
+            or len(evidence_ids) > 64
+            or type(root) is not str
+            or not root
+            or root != root.strip()
+            or any(type(value) is not str or not is_evidence_id(value) for value in evidence_ids)
+            or len(set(evidence_ids)) != len(evidence_ids)
+            or any(type(code) is not str or code not in self._SOURCE_CODES for code in source_codes)
+        ):
+            return False
+        placeholders = ",".join("?" for _ in evidence_ids)
+        try:
+            with self._lock, closing(self._connect()) as con:
+                rows = con.execute(
+                    "SELECT evidence_id,source_code FROM evidence_source_provenance "
+                    f"WHERE root=? AND evidence_id IN ({placeholders})",
+                    [root, *evidence_ids],
+                ).fetchall()
+            recorded = {(str(row["evidence_id"]), str(row["source_code"])) for row in rows}
+            return all((evidence_id, source_code) in recorded for evidence_id, source_code in zip(evidence_ids, source_codes, strict=True))
+        except sqlite3.DatabaseError:
+            return False
 
     def put(self, root: str, item: dict[str, Any]) -> str | None:
         if not isinstance(item, Mapping):
@@ -147,6 +232,7 @@ class EvidenceStore:
                     count = int(con.execute("SELECT COUNT(*) FROM evidence").fetchone()[0])
                     if count > self.max_entries:
                         con.execute("DELETE FROM evidence WHERE id IN (SELECT id FROM evidence ORDER BY accessed_at ASC LIMIT ?)", (count - self.max_entries + 32,))
+                        self._prune_orphaned_source_provenance(con)
                 con.commit()
         except sqlite3.DatabaseError:
             return None
@@ -168,7 +254,17 @@ class EvidenceStore:
         return [{"path": str(row["path"]), "uses": int(row["uses"]),
                  "last_used": float(row["last_used"])} for row in rows]
 
-    def put_many(self, root: str, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    def put_many(
+        self,
+        root: str,
+        items: list[dict[str, Any]],
+        *,
+        source_code: str | None = None,
+    ) -> list[dict[str, Any]]:
+        if source_code is not None and (
+            type(source_code) is not str or source_code not in self._SOURCE_CODES
+        ):
+            raise ValueError("source_code must be a supported provenance code")
         if not items or not isinstance(items, (list, tuple)):
             return []
         clean_root = _clean_text(root)
@@ -199,10 +295,17 @@ class EvidenceStore:
             try:
                 with self._lock, closing(self._connect()) as con:
                     con.executemany("INSERT OR IGNORE INTO evidence(id,root,path,file_hash,start_line,end_line,text,created_at,accessed_at,hits) VALUES(?,?,?,?,?,?,?,?,?,0)", inserts)
+                    if source_code is not None:
+                        con.executemany(
+                            "INSERT OR IGNORE INTO evidence_source_provenance"
+                            "(evidence_id,root,source_code,created_at) VALUES(?,?,?,?)",
+                            [(row[0], clean_root, source_code, now) for row in inserts],
+                        )
                     con.executemany("UPDATE evidence SET accessed_at=?,hits=hits+1 WHERE id=?", updates)
                     count = int(con.execute("SELECT COUNT(*) FROM evidence").fetchone()[0])
                     if count > self.max_entries:
                         con.execute("DELETE FROM evidence WHERE id IN (SELECT id FROM evidence ORDER BY accessed_at ASC LIMIT ?)", (count - self.max_entries + 32,))
+                        self._prune_orphaned_source_provenance(con)
                     con.commit()
             except sqlite3.DatabaseError as store_exc:
                 logger.debug(

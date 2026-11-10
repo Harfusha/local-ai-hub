@@ -1615,7 +1615,7 @@ def test_laya_candidate_curation_forwards_state_dir_operation_under_authenticate
     operation = {"action": "capture", "consent": True}
     calls = []
 
-    def handle(candidate_operation, *, root, task_store):
+    def handle(candidate_operation, *, root, task_store, evidence_store=None):
         calls.append((candidate_operation, root, task_store))
         return {"success": True, "count": 1}
 
@@ -1625,6 +1625,7 @@ def test_laya_candidate_curation_forwards_state_dir_operation_under_authenticate
         config={"security": {"allowed_roots": [str(root)]}},
         agent_state=state,
         agent_tasks=task_store,
+        evidence=SimpleNamespace(),
         laya_candidates=SimpleNamespace(handle=handle),
     )
     status, _body = _dispatch_post(

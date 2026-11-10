@@ -197,7 +197,21 @@ def handle_post_repository_analysis(
             handler._send(400, {"success": False, "error": "limit must be an integer from 1 to 50", "terminal": True, "retryable": False})
             return True
         if app.deterministic is not None:
-            handler._send(200, app.services.find_hotspots(root, days=days, limit=limit))
+            result = app.services.find_hotspots(root, days=days, limit=limit)
+            status = 200
+            if isinstance(result, dict) and result.get("success") is False:
+                result = dict(result)
+                result_status = result.get("status_code")
+                if isinstance(result_status, int) and not isinstance(result_status, bool) and 400 <= result_status <= 599:
+                    status = result_status
+                elif "analysis_deadline" in result.get("incomplete_reasons", []):
+                    status = 504
+                else:
+                    status = 500
+                result.setdefault("status_code", status)
+                result.setdefault("retryable", status == 504)
+                result.setdefault("terminal", status != 504)
+            handler._send(status, result)
         else:
             handler._send(200, {"success": False, "error": "deterministic engine disabled"})
         return True

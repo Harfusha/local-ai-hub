@@ -159,6 +159,34 @@ def test_hotspot_truncation_is_incomplete_and_not_cached(tmp_path, monkeypatch):
     assert "git_output_truncated" in result["incomplete_reasons"]
 
 
+def test_hotspot_deadline_is_checked_within_large_commit(tmp_path, monkeypatch):
+    from local_ai_hub import deterministic
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    now = 1_800_000_000.0
+    timestamp = int(now - 86_400)
+    paths = [f"src/module_{index}.py".encode() for index in range(1_024)]
+    output = b"\0LAH_HOTSPOT:" + str(timestamp).encode() + b"\0\0\n" + b"\0".join(paths) + b"\0"
+    ticks = iter(range(100))
+    monkeypatch.setattr(deterministic.time, "monotonic", lambda: float(next(ticks)))
+    monkeypatch.setattr(deterministic.time, "time", lambda: now)
+    monkeypatch.setattr("local_ai_hub.deterministic.shutil.which", lambda _name: "git.exe")
+    monkeypatch.setattr(
+        deterministic,
+        "run_hidden",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            returncode=0, stdout=output, stdout_truncated=False, stderr_truncated=False,
+        ),
+    )
+
+    result = _engine(tmp_path).find_hotspots(str(repo))
+
+    assert result["complete"] is False
+    assert "analysis_deadline" in result["incomplete_reasons"]
+    assert result["analysis"]["files_seen"] < len(paths)
+
+
 @pytest.mark.parametrize("legacy", [{"diff": "90"}, {"max_tokens": 90}])
 def test_hotspot_contract_rejects_retired_inputs(legacy):
     assert validate_operation_arguments("local_ai_repo", "hotspots", legacy) is not None

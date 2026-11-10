@@ -836,7 +836,13 @@ class EmbeddingModel:
                 self._release_embedding_gpu(owned_reservation)
         return None
 
-    def encode(self, texts: list[str], query: bool = False, priority: int = 3) -> dict[str, Any]:
+    def encode(
+        self,
+        texts: list[str],
+        query: bool = False,
+        priority: int = 3,
+        wait_timeout_seconds: float | None = None,
+    ) -> dict[str, Any]:
         self._execution_local.snapshot = None
         self._execution_local.ollama_gpu_fenced = False
         backend = getattr(self, "backend", "")
@@ -848,6 +854,13 @@ class EmbeddingModel:
             if candidate_specs is None:
                 candidate_specs = self._candidate_specs()
             return candidate_specs
+
+        def run_flight(key: str, operation: Any) -> tuple[Any, bool]:
+            if wait_timeout_seconds is None:
+                return self.flight_group.do(key, operation)
+            return self.flight_group.do(
+                key, operation, timeout_seconds=max(0.0, float(wait_timeout_seconds)),
+            )
 
         cuda_candidate = (
             (backend in {"auto", "sentence-transformers"} and uses_torch_cuda("sentence-transformers", device))
@@ -890,7 +903,10 @@ class EmbeddingModel:
                     return self._encode_uncached(texts, query=query, priority=priority)
 
             # Do not expose the CPU preflight sentinel to a normal GPU flight.
-            result, _coalesced = self.flight_group.do("cpu-fallback:" + self._encode_request_key(texts, query), compute_cpu)
+            result, _coalesced = run_flight(
+                "cpu-fallback:" + self._encode_request_key(texts, query),
+                compute_cpu,
+            )
             if result is not None:
                 output = dict(result)
                 if isinstance(output.get("embeddings"), list):
@@ -919,7 +935,7 @@ class EmbeddingModel:
                     }
                 else:
                     request_key = self._encode_request_key(texts, query)
-                    result, _coalesced = self.flight_group.do(
+                    result, _coalesced = run_flight(
                         request_key,
                         lambda: self._encode_uncached(texts, query=query, priority=priority),
                     )

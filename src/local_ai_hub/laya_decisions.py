@@ -34,10 +34,24 @@ class DecisionStatus(StrEnum):
     ERROR = "error"
 
 
+class ContextSourceFreshness(StrEnum):
+    CURRENT = "current"
+    STALE = "stale"
+    UNKNOWN = "unknown"
+
+
+class ContextSourceCoverage(StrEnum):
+    COMPLETE = "complete"
+    PARTIAL = "partial"
+    INCOMPLETE = "incomplete"
+    UNKNOWN = "unknown"
+
+
 _REQUEST_KEYS = frozenset({"category", "evidence_ids", "options"})
 _RESULT_KEYS = frozenset({"success", "status", "suggestion", "reason_codes"})
 _IDENTIFIER = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}\Z")
 _OPTION = re.compile(r"[a-z][a-z0-9_]{0,63}\Z")
+_CONTEXT_SOURCE_TYPES = frozenset({"indexed", "artifact", "memory", "rag"})
 _CATEGORY_OPTIONS = {
     DecisionCategory.CONTEXT_SOURCE: frozenset(
         {"indexed", "artifact", "memory", "rag", "more_evidence"}
@@ -100,6 +114,93 @@ def _string_list(value: Any, field: str, pattern: re.Pattern[str], *, maximum: i
     if len(set(items)) != len(items):
         raise ValueError(f"duplicate {field}")
     return tuple(items)
+
+
+@dataclass(frozen=True)
+class ContextSourceEvidence:
+    """Minimal, text-free context-source codes for a future approved evaluation.
+
+    This validates shape only. It does not prove that evidence IDs are
+    authorized or current; the calling Hub path must resolve each ID before use.
+    """
+
+    gap_code: str
+    source_codes: tuple[str, ...]
+    freshness_codes: tuple[ContextSourceFreshness, ...]
+    coverage_codes: tuple[ContextSourceCoverage, ...]
+    evidence_ids: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        if self.gap_code != "unresolved_evidence_gap":
+            raise ValueError("invalid context source gap code")
+        if not isinstance(self.source_codes, tuple) or not 2 <= len(self.source_codes) <= 4:
+            raise ValueError("context source codes must contain two to four entries")
+        if any(not isinstance(item, str) or item not in _CONTEXT_SOURCE_TYPES for item in self.source_codes):
+            raise ValueError("invalid context source code")
+        if len(set(self.source_codes)) != len(self.source_codes):
+            raise ValueError("duplicate context source code")
+        if not isinstance(self.freshness_codes, tuple) or len(self.freshness_codes) != len(self.source_codes):
+            raise ValueError("context source freshness codes must align with source codes")
+        if any(not isinstance(item, ContextSourceFreshness) for item in self.freshness_codes):
+            raise ValueError("invalid context source freshness code")
+        if not isinstance(self.coverage_codes, tuple) or len(self.coverage_codes) != len(self.source_codes):
+            raise ValueError("context source coverage codes must align with source codes")
+        if any(not isinstance(item, ContextSourceCoverage) for item in self.coverage_codes):
+            raise ValueError("invalid context source coverage code")
+        if not isinstance(self.evidence_ids, tuple) or len(self.evidence_ids) != len(self.source_codes):
+            raise ValueError("context source evidence IDs must align with source codes")
+        if any(not isinstance(item, str) or not _IDENTIFIER.fullmatch(item) for item in self.evidence_ids):
+            raise ValueError("invalid context source evidence IDs")
+        if len(set(self.evidence_ids)) != len(self.evidence_ids):
+            raise ValueError("duplicate context source evidence ID")
+
+    @classmethod
+    def from_mapping(cls, value: Mapping[str, Any]) -> "ContextSourceEvidence":
+        """Validate the approved code-only shape without inferring authorization."""
+        fields = {"gap_code", "source_codes", "freshness_codes", "coverage_codes", "evidence_ids"}
+        if type(value) is not dict or set(value) != fields:
+            raise ValueError("context source evidence fields invalid")
+        if value["gap_code"] != "unresolved_evidence_gap":
+            raise ValueError("invalid context source gap code")
+        source_codes = _string_list(value["source_codes"], "source_codes", _OPTION, maximum=4)
+        if not 2 <= len(source_codes) <= 4 or any(item not in _CONTEXT_SOURCE_TYPES for item in source_codes):
+            raise ValueError("invalid context source codes")
+        raw_freshness = value["freshness_codes"]
+        raw_coverage = value["coverage_codes"]
+        if type(raw_freshness) is not list or len(raw_freshness) != len(source_codes):
+            raise ValueError("context source freshness codes must align with source codes")
+        if type(raw_coverage) is not list or len(raw_coverage) != len(source_codes):
+            raise ValueError("context source coverage codes must align with source codes")
+        try:
+            freshness_codes = tuple(ContextSourceFreshness(item) for item in raw_freshness)
+            coverage_codes = tuple(ContextSourceCoverage(item) for item in raw_coverage)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("invalid context source status code") from exc
+        evidence_ids = _string_list(value["evidence_ids"], "evidence_ids", _IDENTIFIER, maximum=4)
+        if len(evidence_ids) != len(source_codes):
+            raise ValueError("context source evidence IDs must align with source codes")
+        return cls(
+            gap_code=value["gap_code"],
+            source_codes=source_codes,
+            freshness_codes=freshness_codes,
+            coverage_codes=coverage_codes,
+            evidence_ids=evidence_ids,
+        )
+
+    @property
+    def decision_options(self) -> tuple[str, ...]:
+        """Return the supplied choices so unsafe selections remain measurable false positives."""
+        return self.source_codes
+
+    def model_input(self) -> dict[str, Any]:
+        """Project only approved codes and opaque IDs; the caller must resolve IDs before use."""
+        return {
+            "gap_code": self.gap_code,
+            "source_codes": list(self.source_codes),
+            "freshness_codes": [item.value for item in self.freshness_codes],
+            "coverage_codes": [item.value for item in self.coverage_codes],
+            "evidence_ids": list(self.evidence_ids),
+        }
 
 
 @dataclass(frozen=True)

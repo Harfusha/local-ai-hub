@@ -1,6 +1,7 @@
 from contextlib import closing
 import hashlib
 import sqlite3
+import pytest
 
 from local_ai_hub import evidence as evidence_module
 from local_ai_hub.evidence import EvidenceStore
@@ -68,6 +69,80 @@ def test_current_evidence_identity_requires_current_source_and_stored_row(tmp_pa
             ("forged evidence", evidence_id),
         )
     assert store_validator(evidence_id) is False
+
+
+def test_source_provenance_is_persisted_and_repository_scoped(tmp_path):
+    root = tmp_path / "repo"
+    root.mkdir()
+    source = root / "sample.py"
+    source.write_text("value = 1\n", encoding="utf-8")
+    file_hash = hashlib.sha256(source.read_bytes()).hexdigest()
+    state_dir = tmp_path / "state"
+    store = EvidenceStore(state_dir)
+    evidence_id = store.put(
+        str(root),
+        {
+            "path": "sample.py",
+            "file_sha256": file_hash,
+            "start_line": 1,
+            "end_line": 1,
+            "text": "value = 1",
+        },
+    )
+
+    assert evidence_id is not None
+    assert store.record_source_provenance(
+        evidence_id, root=str(root), source_code="indexed"
+    ) is True
+    assert store.validate_source_provenance(
+        [evidence_id], ["indexed"], root=str(root)
+    ) is True
+    assert store.validate_source_provenance(
+        [evidence_id], ["artifact"], root=str(root)
+    ) is False
+    assert store.validate_source_provenance(
+        [evidence_id], ["indexed"], root=str(tmp_path / "foreign")
+    ) is False
+    assert store.record_source_provenance(
+        evidence_id, root=str(root), source_code="arbitrary"
+    ) is False
+
+    reopened = EvidenceStore(state_dir)
+    assert reopened.validate_source_provenance(
+        [evidence_id], ["indexed"], root=str(root)
+    ) is True
+
+
+def test_put_many_records_source_provenance_atomically(tmp_path):
+    root = tmp_path / "repo"
+    root.mkdir()
+    source = root / "sample.py"
+    source.write_text("value = 1\n", encoding="utf-8")
+    file_hash = hashlib.sha256(source.read_bytes()).hexdigest()
+    store = EvidenceStore(tmp_path / "state")
+
+    stored = store.put_many(
+        str(root),
+        [{
+            "path": "sample.py",
+            "file_sha256": file_hash,
+            "start_line": 1,
+            "end_line": 1,
+            "text": "value = 1",
+        }],
+        source_code="indexed",
+    )
+
+    evidence_id = stored[0]["evidence_id"]
+    assert store.validate_source_provenance(
+        [evidence_id], ["indexed"], root=str(root)
+    ) is True
+    assert EvidenceStore(tmp_path / "state").validate_source_provenance(
+        [evidence_id], ["indexed"], root=str(root)
+    ) is True
+
+    with pytest.raises(ValueError, match="supported provenance code"):
+        store.put_many(str(root), [], source_code="caller_attested")
 
 
 def test_put_many_does_not_return_unpersisted_evidence_ids(tmp_path, caplog):

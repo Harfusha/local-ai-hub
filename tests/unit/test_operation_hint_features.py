@@ -4,6 +4,14 @@ from local_ai_hub.features import FeatureSet
 from local_ai_hub.operation_contracts import operation_action_guide, operation_actions, operation_argument_hint, operation_parameters_schema
 
 
+def test_coord_schema_documents_laya_scope_and_evidence_requirements():
+    schema = operation_parameters_schema("local_ai_coord")
+    description = schema["properties"]["laya_operation"]["description"]
+    assert "canonical task/session identity" in description
+    assert "authorized evidence provenance" in description
+    assert "per-example consent receipts are not required" in description
+
+
 @pytest.mark.parametrize("enabled", [False, True])
 def test_hint_matches_active_feature_schema(enabled):
     features = FeatureSet({"hardware": {"profile": "high"}})

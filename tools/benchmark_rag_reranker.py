@@ -30,9 +30,19 @@ from tools.benchmark_live_search import validate_cases
 CASE_FILE = Path(__file__).resolve().parents[1] / "tests" / "fixtures" / "search_benchmark_cases.json"
 
 
-def load_benchmark_dataset(root: Path) -> tuple[dict, list[dict]]:
+def load_benchmark_dataset(root: Path, case_file: Path | None = None) -> tuple[dict, list[dict]]:
     """Load source-anchored labels and return positive cases for ranking."""
-    data = json.loads(CASE_FILE.read_text(encoding="utf-8"))
+    selected_case_file = case_file or CASE_FILE
+    if not selected_case_file.is_absolute():
+        selected_case_file = root / selected_case_file
+    if selected_case_file.is_symlink() or (
+        hasattr(selected_case_file, "is_junction") and selected_case_file.is_junction()
+    ):
+        raise ValueError("benchmark case file cannot be a symlink or junction")
+    selected_case_file = selected_case_file.resolve(strict=True)
+    if not selected_case_file.is_file():
+        raise ValueError("benchmark case file must be a regular file")
+    data = json.loads(selected_case_file.read_text(encoding="utf-8"))
     if not isinstance(data, dict) or data.get("schema_version") != 1:
         raise ValueError("unsupported search benchmark case schema")
     cases = data.get("cases")
@@ -298,7 +308,8 @@ def _benchmark_embeddings(model, query: str, candidates: list[dict], *,
 
 
 def run(root: Path, config_path: Path, *, repeats: int = 3, offline_device: str = "cpu",
-        embedding_model_path: Path | None = None, embedding_device: str = "cpu") -> dict:
+        embedding_model_path: Path | None = None, embedding_device: str = "cpu",
+        case_file: Path | None = None) -> dict:
     if type(repeats) is not int or not 1 <= repeats <= 20:
         raise ValueError("repeats must be between 1 and 20")
     if type(offline_device) is not str or offline_device not in {"cpu", "cuda"}:
@@ -307,7 +318,7 @@ def run(root: Path, config_path: Path, *, repeats: int = 3, offline_device: str 
         raise ValueError("embedding_device must be 'cpu' or 'cuda'")
     model_path = local_embedding_model_path(embedding_model_path) if embedding_model_path is not None else None
     root = root.resolve(strict=True)
-    dataset, cases = load_benchmark_dataset(root)
+    dataset, cases = load_benchmark_dataset(root, case_file)
     client = HubClient(config_path=str(config_path), auto_start=False)
     workspace = canonical_workspace_id(root)
     with tempfile.TemporaryDirectory(prefix="hub-reranker-eval-") as directory:
@@ -478,9 +489,12 @@ if __name__ == "__main__":
                         help="Optional absolute local SentenceTransformers model directory; no downloads are allowed.")
     parser.add_argument("--embedding-device", choices=("cpu", "cuda"), default="cpu",
                         help="Device for the optional local embedding model; CUDA requires shared Hub state_dir.")
+    parser.add_argument("--cases", type=Path,
+                        help="Optional existing benchmark case file; labels remain source-anchor validated.")
     args = parser.parse_args()
     config_path = args.config or args.root / "config.toml"
     print(json.dumps(run(args.root, config_path, repeats=args.repeats,
                          offline_device=args.offline_device,
                          embedding_model_path=args.embedding_model_dir,
-                         embedding_device=args.embedding_device), ensure_ascii=False, indent=2))
+                         embedding_device=args.embedding_device,
+                         case_file=args.cases), ensure_ascii=False, indent=2))

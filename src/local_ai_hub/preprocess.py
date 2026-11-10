@@ -272,13 +272,14 @@ class ProjectPreprocessor:
     content-addressed cards and RAG commits remain reusable.
     """
 
-    # Local AI keeps deterministic parsing first, then performs CPU-only semantic
-    # indexing before any idle-GPU card generation. This lets embeddings run even
-    # while foreground model work is active instead of waiting behind GPU-idle work.
-    PHASES = ("inventory", "hash", "code_index", "deterministic", "serena", "lexical", "rag", "files", "file_card_enrichment", "modules", "project", "hot_queries", "diagnostics", "complete")
+    # Fresh projects complete deterministic and lexical indexing before retrieval
+    # and file cards. Optional Serena then runs after file cards. The legacy
+    # "serena" phase remains resumable for projects already checkpointed there.
+    PHASES = ("inventory", "hash", "code_index", "deterministic", "serena", "lexical", "rag", "files", "serena_optional", "modules", "project", "hot_queries", "file_card_enrichment", "diagnostics", "complete")
     PHASE_WEIGHTS = {
         "inventory": 2.0, "hash": 3.0, "code_index": 10.0, "deterministic": 5.0,
         "serena": 5.0, "lexical": 5.0, "rag": 40.0, "files": 20.0,
+        "serena_optional": 5.0,
         "modules": 4.0, "project": 3.0, "hot_queries": 2.0, "diagnostics": 1.0,
     }
 
@@ -2310,8 +2311,8 @@ class ProjectPreprocessor:
                     phase_pct = round(min(100.0, (det_count / total_files) * 100), 1)
                     frac = phase_pct / 100.0
                     overall_progress = round(min(100.0, max(0.0, ((phase_index - 1 + frac) / total_phases) * 100)), 1)
-                elif phase_str == "serena":
-                    ext_state = external_indexes.get(phase_str, {}).get("status", "")
+                elif phase_str in {"serena", "serena_optional"}:
+                    ext_state = external_indexes.get("serena", {}).get("status", "")
                     phase_pct = 100.0 if ext_state in {"ready", "unavailable", "skipped", "degraded"} else 25.0
                     frac = phase_pct / 100.0
                     overall_progress = round(min(100.0, max(0.0, ((phase_index - 1 + frac) / total_phases) * 100)), 1)
@@ -2376,9 +2377,9 @@ class ProjectPreprocessor:
                     elif phase_str in ("hash", "code_index", "deterministic", "lexical"):
                         unit = "files/s"
                         remaining = max(0, total_files - (hashed_files if phase_str == "hash" else (ci_count if phase_str == "code_index" else (det_count if phase_str == "deterministic" else source_count))))
-                    elif phase_str == "serena":
+                    elif phase_str in {"serena", "serena_optional"}:
                         unit = "index"
-                        remaining = 0 if external_indexes.get(phase_str, {}).get("status") in {"ready", "unavailable", "skipped", "degraded"} else 1
+                        remaining = 0 if external_indexes.get("serena", {}).get("status") in {"ready", "unavailable", "skipped", "degraded"} else 1
                     else:
                         unit = "ops/s"
                         remaining = max(0, total_files)
@@ -2406,12 +2407,17 @@ class ProjectPreprocessor:
                 last_err_short = last_err.strip().splitlines()[0][:90] if last_err else ""
                 retry_after_val = float(row["retry_after"] or 0)
                 is_paused_row = bool(row["paused"])
-                is_waiting_row = status_str == "waiting" and not is_paused_row
+                is_slot_waiting = status_str == "waiting" and not is_paused_row
+                is_model_waiting = bool(
+                    status_str == "running" and phase_str == "files" and pending_stub_cards
+                    and (self.background_gpu is None or not self.background_gpu.ready())
+                )
+                is_waiting_row = is_slot_waiting or is_model_waiting
 
                 waiting_reason = ""
                 if is_paused_row:
                     waiting_reason = "Project is paused"
-                elif is_waiting_row:
+                elif is_slot_waiting:
                     waiting_reason = f"Waiting for preprocessing slot (max {self._project_limit()})"
                 elif status_str == "error":
                     waiting_reason = f"Error: {last_err_short}" if last_err_short else "Project encountered an error"
@@ -2419,8 +2425,7 @@ class ProjectPreprocessor:
                     waiting_reason = f"Cooldown ({int(retry_after_val - time.time())}s remaining)"
                 elif status_str == "complete":
                     waiting_reason = "100% complete and up to date"
-                elif (status_str == "running" and phase_str == "files" and pending_stub_cards
-                      and (self.background_gpu is None or not self.background_gpu.ready())):
+                elif is_model_waiting:
                     waiting_reason = "Waiting for preprocessing model or resources"
                 elif status_str == "running":
                     waiting_reason = f"Processing phase: {phase_str}"
@@ -2435,8 +2440,13 @@ class ProjectPreprocessor:
                     active_detail = "100% ready · Real-time file sync"
                 elif is_paused_row:
                     active_detail = "Project is paused"
-                elif is_waiting_row:
+                elif is_slot_waiting:
                     active_detail = f"Waiting for preprocessing slot (max {self._project_limit()})"
+                elif is_model_waiting:
+                    active_detail = (
+                        f"{waiting_reason}: {effective_file_cards}/{total_files} files "
+                        f"({phase_pct}%) · {pending_stub_cards} awaiting enrichment"
+                    )
                 elif status_str == "error":
                     active_detail = f"Error: {last_err_short}" if last_err_short else "Error during processing"
                 elif phase_str == "inventory":
@@ -2447,7 +2457,7 @@ class ProjectPreprocessor:
                     active_detail = f"AST symbol extraction: {ci_count}/{total_files} files ({phase_pct}%)"
                 elif phase_str == "deterministic":
                     active_detail = f"Facts & routes extraction: {det_count}/{total_files} files ({phase_pct}%)"
-                elif phase_str == "serena":
+                elif phase_str in {"serena", "serena_optional"}:
                     ext = external_indexes.get("serena", {})
                     s_st = ext.get("status", "running")
                     reason = f": {ext.get('error')}" if s_st in {"unavailable", "skipped", "degraded"} and ext.get("error") else ""
@@ -2606,11 +2616,12 @@ class ProjectPreprocessor:
                CASE phase
                    WHEN 'inventory' THEN 0 WHEN 'hash' THEN 1
                    WHEN 'code_index' THEN 2 WHEN 'deterministic' THEN 3
-                   WHEN 'serena' THEN 4 WHEN 'lexical' THEN 5
-                   WHEN 'rag' THEN 6 WHEN 'files' THEN 7
-                   WHEN 'modules' THEN 8 WHEN 'project' THEN 9
-                   WHEN 'hot_queries' THEN 10 WHEN 'file_card_enrichment' THEN 11
-                   WHEN 'diagnostics' THEN 12 ELSE 13 END,
+                   WHEN 'lexical' THEN 4 WHEN 'rag' THEN 5
+                   WHEN 'files' THEN 6 WHEN 'serena' THEN 7
+                   WHEN 'serena_optional' THEN 8 WHEN 'modules' THEN 9
+                   WHEN 'project' THEN 10 WHEN 'hot_queries' THEN 11
+                   WHEN 'file_card_enrichment' THEN 12
+                   WHEN 'diagnostics' THEN 13 ELSE 14 END,
                force_refresh DESC,
                CASE WHEN last_requested_at>=? THEN 0 ELSE 1 END,
                updated_at-CASE WHEN last_requested_at>=? THEN 60 ELSE 0 END ASC,
@@ -2630,7 +2641,7 @@ class ProjectPreprocessor:
                 """SELECT * FROM projects
                    WHERE paused=0 AND retry_after<=?
                      AND status IN ('queued','running','error')
-                     AND phase IN ('inventory', 'hash', 'code_index', 'deterministic', 'serena', 'lexical', 'rag', 'files', 'file_card_enrichment', 'modules', 'project', 'hot_queries', 'diagnostics')
+                     AND phase IN ('inventory', 'hash', 'code_index', 'deterministic', 'serena', 'lexical', 'rag', 'files', 'serena_optional', 'file_card_enrichment', 'modules', 'project', 'hot_queries', 'diagnostics')
                    ORDER BY """ + order_sql + " LIMIT ?",
                 (now, *order_params, self._project_limit()),
             ).fetchall()
@@ -2667,15 +2678,20 @@ class ProjectPreprocessor:
             rows = con.execute(
                 """SELECT * FROM projects
                    WHERE paused=0 AND retry_after<=? AND status IN ('queued','running','error')
-                     AND phase IN ('inventory', 'hash', 'code_index', 'deterministic', 'serena', 'lexical', 'rag', 'files', 'file_card_enrichment', 'modules', 'project', 'hot_queries', 'diagnostics')
+                     AND phase IN ('inventory', 'hash', 'code_index', 'deterministic', 'serena', 'lexical', 'rag', 'files', 'serena_optional', 'file_card_enrichment', 'modules', 'project', 'hot_queries', 'diagnostics')
                    ORDER BY """ + order_sql + " LIMIT ?",
                 (now, *order_params, self._project_limit()),
             ).fetchall()
             if rows:
-                if str(rows[0]["phase"]) not in {"files", "file_card_enrichment", "modules", "project", "hot_queries"}:
+                preferred_phase = str(rows[0]["phase"])
+                gpu_phases = {"files", "file_card_enrichment", "modules", "project", "hot_queries"}
+                if preferred_phase not in gpu_phases:
                     return None
-                # Do not let the GPU worker pass the globally preferred project.
-                return self._first_unowned_project(rows[:1])
+                # A project already owned by a CPU worker is unavailable to this
+                # worker. Select another admitted root in the same preferred
+                # phase, while keeping later GPU phases behind it.
+                same_phase = [row for row in rows if str(row["phase"]) == preferred_phase]
+                return self._first_unowned_project(same_phase)
 
             # Completed projects can predate model enrichment. Schedule only roots
             # with eligible provisional cards, through the ordinary bounded GPU
@@ -3063,7 +3079,13 @@ class ProjectPreprocessor:
         if phase == "deterministic":
             return self._step_deterministic(row)
         if phase == "serena":
-            return self._step_external_index(row, "serena", "lexical")
+            # Older durable rows placed optional Serena before the built-in
+            # lexical phase. Preserve their external index state, but defer
+            # optional work until the new post-files checkpoint.
+            self._set_project(root, phase="lexical")
+            return True
+        if phase == "serena_optional":
+            return self._step_external_index(row, "serena", "modules")
         if phase == "files":
             return self._step_file_card(row)
         if phase == "file_card_enrichment":
@@ -4113,7 +4135,7 @@ class ProjectPreprocessor:
     def _step_deterministic(self, row: dict[str, Any]) -> bool:
         root = str(row["root"])
         if self.deterministic is None:
-            self._set_project(root, phase="serena")
+            self._set_project(root, phase="lexical")
             return True
         limit = max(1, int(self.cfg.get("deterministic_files_per_step", 256)))
         generation_key = (root, int(row.get("generation", 0) or 0))
@@ -4167,7 +4189,7 @@ class ProjectPreprocessor:
                     self.deterministic.precompute_dead_code(root)
                 except Exception as exc:
                     logger.debug("Dead code precompute failed: %s", exc)
-            self._set_project(root, phase="serena")
+            self._set_project(root, phase="lexical")
             return True
 
         try:
@@ -4624,6 +4646,11 @@ class ProjectPreprocessor:
         # model only after the foreground GPU has been idle long enough. Embeddings
         # and reranking never enter this path.
         if self.background_gpu is not None:
+            worker_enabled = bool(getattr(self.background_gpu, "enabled", True))
+            worker_ready = bool(getattr(self.background_gpu, "ready", lambda: worker_enabled)())
+        else:
+            worker_enabled = worker_ready = False
+        if self.background_gpu is not None and (worker_enabled or worker_ready):
             result = self.background_gpu.generate(
                 prompt=prompt, system=system, schema=schema, max_tokens=int(max_tokens), source=source,
                 preprocessing=True,
@@ -4721,7 +4748,7 @@ class ProjectPreprocessor:
                 self._set_project(root, phase="complete", status="complete", force_refresh=0,
                                   last_complete_at=completed_at, next_check_at=completed_at + interval)
             elif str(row.get("phase")) == "files":
-                self._set_project(root, phase="modules", force_refresh=0)
+                self._set_project(root, phase="serena_optional", force_refresh=0)
             return True
 
         background_model = self._configured_preprocessing_model()
@@ -4919,8 +4946,12 @@ class ProjectPreprocessor:
 
         # Do not even start/lease the background GPU until the full foreground idle
         # grace is satisfied. This avoids pointless unload/reload churn between users.
+        use_background_gpu = False
         if self.background_gpu is not None:
-            if not self.background_gpu.ready():
+            worker_enabled = bool(getattr(self.background_gpu, "enabled", True))
+            worker_ready = bool(getattr(self.background_gpu, "ready", lambda: worker_enabled)())
+            use_background_gpu = worker_ready
+            if not worker_ready and worker_enabled:
                 return progressed
         claimed_tasks: list[dict[str, Any]] = []
         claimed_meta: list[tuple[sqlite3.Row, str, str]] = []
@@ -4932,7 +4963,7 @@ class ProjectPreprocessor:
         if not claimed_tasks:
             return progressed
 
-        if self.background_gpu is not None:
+        if use_background_gpu:
             results = self.background_gpu.generate_many(claimed_tasks, preprocessing=True)
         else:
             results = [

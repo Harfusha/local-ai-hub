@@ -72,6 +72,15 @@ from local_ai_hub.task_memory_wire import (
     task_private_state_projection as _task_private_state_projection,
 )
 from local_ai_hub.routing import semantic_handoff_hint, targeted_semantic_handoff
+from local_ai_hub.mcp_tool_descriptions import (
+    describe_artifact,
+    describe_coord,
+    describe_rag,
+    describe_repo,
+    describe_status,
+    describe_task,
+    describe_work,
+)
 from local_ai_hub.operation_contracts import (
     operation_contract,
     operation_actions,
@@ -614,11 +623,7 @@ def _specialized_note(tool_name: str) -> str:
 
 
 def _desc_status() -> str:
-    return (
-        "Compact Hub and local-model readiness: online state, active model, and VRAM pressure. detail supports only brief."
-        " Use once when Hub or local inference availability affects the next action; skip routine checks."
-        f"{_specialized_note('local_ai_status')}"
-    )
+    return describe_status(_specialized_note)
 
 
 def _semantic_handoff_contract(enabled: bool, status_enabled: bool = True) -> str:
@@ -668,75 +673,13 @@ def _task_delivery_contract() -> str:
         " Conversation IDs identify reservations in this installation; model settings stay pinned and only one turn runs at a time. Defaults: 12 turns, prompt limit from `model_conversations.max_prompt_tokens` (fallback `token_saving.max_local_input_tokens`, default 56,000), idle/active TTLs of 900/1,800 seconds, and capacity 1,000. State is process-memory only and lost on restart."
     )
 def _desc_task() -> str:
-    local_enabled = FEATURES.tasks and FEATURES.has_any_model()
-    supported_actions = FEATURES.supported_task_actions()
-    semantic_actions = set(supported_actions) & {"delegate", "explore", "reason", "review", "second_opinion", "continue", "batch", "compress"}
-    action_note = _actions_note(tuple(supported_actions))
-    semantic_labels = []
-    if semantic_actions & {"delegate", "explore", "reason"}:
-        semantic_labels.append("semantic generation, exploration and reasoning")
-    if "review" in semantic_actions:
-        semantic_labels.append("review")
-    if "second_opinion" in semantic_actions:
-        semantic_labels.append("independent second opinions")
-    if "compress" in semantic_actions:
-        semantic_labels.append("semantic compression")
-    semantic_summary = ", ".join(semantic_labels)
-    if not local_enabled:
-        return (
-            "Local inference is disabled on this installation for this tool."
-            " Returns unsupported=true for local-model actions."
-            " Use deterministic/indexed evidence only."
-            " Use when: a bounded semantic task requires a local model backend."
-            " Skip when: the task is trivial, pure evidence lookup, security/privacy constrained, or local-model tasks are disabled."
-            f"{action_note}"
-        )
-    if LEAN_SCHEMAS:
-        return (
-            "Bounded local-model worker. The current schema action enum is authoritative; disabled actions are unavailable. "
-            f"{'Exposed work includes ' + semantic_summary + '. ' if semantic_summary else ''}"
-            "For compress, pass source in `text` and optional instructions in `task`; `max_tokens` targets generated output, `max_response_tokens` bounds the response envelope. "
-            "An empty active_model does not establish that no models are installed. "
-            "Use deterministic/indexed tools for exact facts, symbols, diff and tests. "
-            f"{_semantic_handoff_contract(bool(semantic_actions), FEATURES.status)}"
-            "Command failure diagnosis remains disabled by default; never pass raw logs or open-ended coding. "
-            "Codex retains ownership of native subagent orchestration; that does not replace direct Hub endpoint use by the main agent. "
-            "Use when: bounded local generation, compression, review, routing, second opinion, or named advisory subagent work is needed. "
-            "Skip when: task is trivial, pure evidence lookup, security/privacy constrained, local tasks are disabled, or no exposed bounded semantic action fits. "
-            f"{action_note}"
-        )
-    profile_note = ""
-    if FEATURES.subagents and FEATURES.subagent_profiles:
-        profile_names = ", ".join(f"`{p}`" for p in FEATURES.subagent_profiles)
-        profile_note = (
-            f" Named advisory profiles ({profile_names}) use Local AI Hub read-only tooling"
-            " directly when `root` is supplied."
-        )
-    return (
-        f"Bounded local-model worker for the main agent."
-        f" {'Exposed work includes ' + semantic_summary + '.' if semantic_summary else 'Semantic actions are currently gated.'}"
-        " For compress, pass source in `text` and optional instructions in `task`; `max_tokens` targets generated output, `max_response_tokens` bounds the response envelope."
-        " An empty active_model does not establish that no models are installed."
-        f" Route preprocessing through `{FEATURES.background_model}`, quick tasks through `{FEATURES.fast_model}`, complex tasks through `{FEATURES.smart_model}`, and the hardest reasoning through `{FEATURES.reasoning_model}`."
-        f" Explicit model overrides must match a configured model tag."
-        f"{profile_note}"
-        " Use deterministic/indexed tools for exact facts, symbols, diff and tests; use only actions exposed by the current schema."
-        f"{_semantic_handoff_contract(bool(semantic_actions), FEATURES.status)}"
-        " Command failure diagnosis is disabled by default; enable `features.local_diagnostic_dispatch=true` only for one local diagnostic after low-confidence deterministic command parsing with an artifact reference and narrow preview, never raw logs."
-        " Never automatically dispatch local inference for architecture, security, mutations, or open-ended coding."
-        " Codex manages native subagents directly; the main agent still calls Hub endpoints when applicable, and a Hub call does not imply delegation."
-        f"{action_note}"
-        f"{_specialized_note('local_ai_task')}"
-        " `delivery=sync` preserves the foreground contract; `async` returns a durable job now;"
-        " `auto` requires a positive `latency_budget_ms` and only defers after sufficient endpoint history shows p95 above it."
-        " Evaluation stores only opaque ids, booleans, and numeric metadata; it never stores prompts or source text."
-        " Async wait is bounded to 90 seconds; never poll loops."
-        " Start a short-lived conversation with `conversation=true` on delegate or reason, then use `continue` with its opaque `conversation_id`; conversations are sync-only and process-memory only."
-        " Use when: a currently exposed local task action fits the request."
-        " Skip when: task is trivial, pure evidence lookup, security/privacy constrained, local tasks are disabled,"
-        " or no exposed bounded semantic action fits."
+    return describe_task(
+        FEATURES,
+        LEAN_SCHEMAS,
+        _actions_note,
+        _semantic_handoff_contract,
+        _specialized_note,
     )
-
 
 def _tier_repo_description(description: str) -> str:
     repo_actions = set(FEATURES.supported_repo_actions())
@@ -767,197 +710,34 @@ def _tier_repo_description(description: str) -> str:
 
 
 def _desc_repo() -> str:
-    local_enabled = FEATURES.tasks and FEATURES.has_any_model()
-    if not local_enabled:
-        return _tier_repo_description((
-            "Primary repository worker for repository navigation, symbols, and impact."
-            " Local inference is disabled on this installation."
-            " Serena-backed retrieval or indexing may create .serena metadata in the repository; do not use it when workspace writes are prohibited."
-            " Semantic generation, reasoning, review, independent second opinions, and compression are unavailable until a local model backend is enabled."
-            " Use deterministic/indexed evidence only for exact facts, symbols, diff, tests, and verification."
-            " Native fallback requires terminal=true and retryable=false."
-            " Use when: indexed repository evidence is needed."
-            " Skip when: the task is not repository-scoped or fresh evidence already answers it."
-        ))
-    if LEAN_SCHEMAS:
-        return _tier_repo_description((
-            "Primary repository worker for repository navigation, symbols, and impact with aggregate-bounded responses; optional max_response_tokens, response_profile, reuse_key. Reuse fresh sufficient evidence; use bounded indexed/source lookup directly for exact facts. When non-trivial work lacks sufficient fresh evidence, adaptive context fuses deterministic/indexed evidence, Serena, bounded lexical search and RAG, then returns grounded diverse context. Send the task/context rather than handmade grep terms. It accepts guarded task/phase/focus fields, requires evidence IDs and reuse candidates first, treats deterministic/indexed evidence as authoritative, limits local models to ranking/compression of structured evidence, and requires `override_reason` plus approval when requested. Raw model/debug fields require dashboard detailed diagnostics; extra_fields cannot enable them. Omitted mode selects adaptive; explicit fast and full modes retain distinct retrieval paths. Use deterministic/indexed actions for exact facts, symbols, diff and tests; use `local_ai_task` for semantic generation, reasoning, review, independent second opinions and compression. `solve` preserves one bounded local pass for explicit semantic requests even when exact evidence is strong. Native fallback requires terminal=true and retryable=false. Use `code_index` for indexed symbol lookup. Actions: search, code_index, context, solve, review_diff, callers, dead_code, preprocess (idempotent registration of a stable repository root; do not force-refresh or poll)."
-            " Serena-backed retrieval or indexing may create .serena metadata in the repository; do not use it when workspace writes are prohibited."
-            " Use when: every non-trivial repository task needs indexed evidence or a bounded Hub operation."
-            " Skip when: the task is not repository-scoped or fresh evidence already answers it and no independent Hub scope exists."
-        ))
-    _ = ""
-    if FEATURES.has_semantic():
-        _ = f" -> {FEATURES.semantic_hint()} for relationships"
-    _ = ""
-    if FEATURES.has_any_model():
-        _ = f" -> {FEATURES.fast_model} -> smart model"
-    _ = " -> RAG" if FEATURES.rag else ""
-    return _tier_repo_description((
-        "Primary bounded repository worker for repository navigation, symbols, and impact."
-        " Serena-backed retrieval or indexing may create .serena metadata in the repository; do not use it when workspace writes are prohibited."
-        " Reuse fresh evidence and bounded indexed/source lookup for exact facts; use adaptive context when non-trivial work lacks sufficient fresh evidence."
-        f" Use the adaptive context orchestrator: deterministic, code_index, Serena, bounded lexical search, and RAG are fused when available;"
-        " agreement is ranked, paths are deduplicated/diversified, and optional local models only rerank/compress grounded evidence."
-        f" Use deterministic, code_index/search,{' ' + FEATURES.semantic_hint() + ',' if FEATURES.has_semantic() else ''}"
-        " context and solve for bounded evidence and implementation support."
-        " Reuse fresh sufficient repository evidence. For exact file or symbol lookups, use bounded indexed/source lookup directly. Use `context` in adaptive mode only when non-trivial planning, editing, review or testing lacks sufficient fresh evidence; send the task/context, not handmade grep terms. Reuse existing evidence and reuse candidates first, require evidence IDs, and treat deterministic/indexed evidence as authoritative. Guarded overrides require `override_reason` and approval when requested. Raw model/debug fields stay omitted unless requested through `extra_fields`. Omitted mode selects adaptive; explicit fast and full modes retain distinct retrieval paths."
-        " For implementation, diagnosis, refactoring or complex review, call `solve` after evidence and before native edits."
-        f"{' When generating, use `' + FEATURES.fast_model + '` for quick tasks, `' + FEATURES.smart_model + '` for complex work, and `' + FEATURES.reasoning_model + '` for hardest reasoning.' if local_enabled else ''}"
-        " `review_diff` and `security_audit` are targeted local checks. MCP `review_diff` uses adaptive delivery with a 30-second latency budget; if deferred, follow the returned job ID through exposed `local_ai_task` status/wait/result actions and wait once without replaying the review."
-        f"{'  After any needed indexed evidence, use `local_ai_task` for semantic generation, reasoning, review, independent second opinions and compression. `solve` preserves one bounded local pass for explicit semantic requests even when exact evidence is strong.' if local_enabled else ''}"
-        f"{_semantic_handoff_contract(local_enabled, FEATURES.status)}"
-        " Codex separately decides whether to use native Codex subagents;"
-        " Local AI Hub does not route or manage those agents."
-        " Preprocess only when a stable absolute root is unindexed or its evidence is stale; preprocessing is asynchronous, so never wait/poll/force-refresh it."
-        f" Retrieval path: reuse fresh evidence; use bounded deterministic/indexed/source lookup for exact facts and adaptive context only when evidence is insufficient. Context fans out only bounded independent backends, fuses their ranked paths, and stops optional layers on timeout/degradation. Semantic generation, reasoning, review, independent second opinions and compression use `local_ai_task` after evidence;"
-        " never fan out duplicate native searches or manually translate a task into a long grep-term list."
-        " Reuse fresh evidence/artifact slices and never repeat an identical root/query/action while repo state is unchanged."
-        " `in_progress` means another owner is doing identical work; retryable/429/503 means back off;"
-        " degraded/stale means verify only the affected slice."
-        " Native fallback requires terminal=true and retryable=false."
-        " Always pass the stable absolute project root; never rely on MCP cwd. Never loop or increase timeouts indefinitely."
-        " Use when: every non-trivial repository task needs indexed evidence or a bounded Hub operation."
-        " Skip when: the task is not repository-scoped or fresh evidence already answers it and no independent Hub scope exists."
-        f"{_actions_note(FEATURES.supported_repo_actions())}"
-        f"{_specialized_note('local_ai_repo')}"
-    ))
-
-
-
-def _desc_rag() -> str:
-    if LEAN_SCHEMAS:
-        return (
-            "Semantic RAG and documentation search with aggregate-bounded responses; response controls: max_response_tokens, response_profile (minimal, compact, delta), reuse_key, extra_fields for additional safe response fields. Actions: search, index, list, docset_index, docset_search, ingest_document, ingest_diagram."
-            " Project search/index and ingestion require an explicit absolute authorized root and root-bound workspace. Search ingested documents with action=search in that workspace; docset_index/docset_search use a separate owner-global docset namespace. Document ingestion requires non-empty content; diagram files stay inside that root."
-            " Use when: cheaper indexed repository paths cannot answer a bounded semantic retrieval question."
-            " Skip when: deterministic/indexed evidence is sufficient or RAG is disabled."
-        )
-    if not FEATURES.rag:
-        return (
-            "Semantic retrieval — RAG backend is disabled on this installation (`features.rag=false`)."
-            " All actions return unsupported=true. Enable RAG in config.toml to activate."
-            " Skip when: always (RAG disabled). Use when: never."
-        )
-    return (
-        "Fallback semantic retrieval for the main agent only after deterministic, code_index, search"
-        " and preprocessed evidence are insufficient."
-        " Keep queries bounded and use it only for bounded semantic retrieval, not open-ended agent orchestration."
-        f"{_actions_note(FEATURES.supported_rag_actions())}"
-        f"{_specialized_note('local_ai_rag')}"
-        " Response controls: max_response_tokens; response_profile minimal|compact|delta; reuse_key; extra_fields selects additional safe response fields retained by the compact projector."
-        " Index is file-incremental and query-cached."
-        " Do not trigger index repeatedly for a fresh stable workspace."
-        " Use when: cheaper indexed repository paths cannot answer a bounded semantic retrieval question."
-        " Skip when: deterministic/indexed evidence is sufficient. Native subagent ownership does not affect direct retrieval endpoint use."
-        " Project search/index and ingestion require an explicit absolute authorized root and root-bound workspace. Search ingested documents with action=search in that workspace; docset_index/docset_search use a separate owner-global docset namespace. Document ingestion requires non-empty content; diagram files stay inside that root."
+    return describe_repo(
+        FEATURES,
+        LEAN_SCHEMAS,
+        _tier_repo_description,
+        _actions_note,
+        _semantic_handoff_contract,
+        _specialized_note,
     )
 
+def _desc_rag() -> str:
+    return describe_rag(FEATURES, LEAN_SCHEMAS, _actions_note, _specialized_note)
 
 def _desc_coord() -> str:
-    if LEAN_SCHEMAS:
-        supported = set(FEATURES.supported_coord_actions())
-        actions = sorted(supported)
-        reservation_note = (
-            " GPU reservation status is owner-global and takes no root; gpu_reservation_release requires consent=true, generation and audit_reason, then expiry or confirmed owner death. gpu_reservation_release_authorized requires explicit consent=true and audit_reason, without a generation or owner-liveness preflight. It releases a valid reservation or records a durable operator-release marker when the reservation file is already missing, allowing the scheduler to clear only stale in-memory external admission. Malformed metadata and symlinks remain fail-closed."
-            if {"gpu_reservation_status", "gpu_reservation_release", "gpu_reservation_release_authorized"}.issubset(actions)
-            else ""
-        )
-        purpose = (
-            "Agent OS coordination for task contracts, ownership, checkpoints, and verification receipts"
-            if FEATURES.agent_os else "Coordination for leases"
-        )
-        return (
-            f"{purpose} with aggregate-bounded responses; optional max_response_tokens, response_profile, reuse_key."
-            f"{_actions_note(actions)}"
-            f"{reservation_note}"
-            f"{_plan_coord_note()}"
-            " Use when: any non-trivial task benefits from durable state/verification, or Hub workers share edit paths or reusable findings."
-            " Skip when: task is a trivial one-step lookup with no shared state to preserve."
-            f"{_specialized_note('local_ai_coord')}"
-        )
-    if FEATURES.agent_os:
-        agent_os_note = (
-            " For non-trivial multi-step, long-running, delegated, or acceptance-criteria work, create an Agent OS task contract first;"
-            " checkpoint meaningful phases, search/record durable memory as useful, compile context when resuming,"
-            " and gate task completion on verification receipts."
-        )
-        usage_note = (
-            " Use when: any non-trivial task benefits from durable state/verification, or Hub workers share edit paths or reusable findings."
-            " Skip when: task is a trivial one-step lookup with no shared state to preserve."
-        )
-    else:
-        agent_os_note = ""
-        usage_note = (
-            " Use when: Hub workers share edit paths, leases, or reusable findings."
-            " Skip when: work is isolated and no shared Hub state or memo is involved."
-        )
-    return (
-        "Cross-agent coordination for ownership, checkpoints, and verification receipts."
-        f"{_actions_note(FEATURES.supported_coord_actions())}"
-        f"{_plan_coord_note()}"
-        f"{agent_os_note}"
-        " Claim overlapping edit paths before concurrent Hub work."
-        " Use scoped Agent OS memory_find/memory_record for reusable findings; workspace memo actions are operator-only and unavailable through this tool."
-        " Native peer subagents are coordinated by Codex rather than by this Hub tool."
-        f"{usage_note}"
-        f"{_specialized_note('local_ai_coord')}"
+    return describe_coord(
+        FEATURES,
+        LEAN_SCHEMAS,
+        _actions_note,
+        _plan_coord_note,
+        _specialized_note,
     )
 
 
 def _desc_work() -> str:
-    actions = operation_actions("local_ai_work", FEATURES)
-    submit_enabled = "submit" in actions
-    bounded = ""
-    if submit_enabled:
-        bounded = (
-            " For bounded mode, use only for explicit closed delegation when profile high is active and task-specific model quality is evaluated."
-            " Supply exact allowed files, approved commands, permissions, finite time and acceptance criteria."
-            " The primary agent must review the diff, actual tests and integration; a handoff is not task completion."
-            " For work owned by the responding process, timed_out=true with in_progress=true is not a terminal result or permission to retry; cancellation is cooperative."
-        )
-    action_note = f" Actions: {', '.join(actions)}." if actions else " No actions are enabled."
-    intro = (
-        "Delegate one closed, low-risk work item to Local AI Hub and return a compact handoff."
-        if submit_enabled
-        else "Manage existing Local AI Hub work; new submissions are unavailable under the active profile or quality gates."
-    )
-    if LEAN_SCHEMAS:
-        suitability = " Use only for self-contained repository outcomes; skip micro-edits and live discussion." if submit_enabled else ""
-        use_when = (
-            " Use when: submitting a qualified closed work item or checking its existing handoff."
-            if submit_enabled
-            else " Use when: checking, waiting on, retrieving, or cancelling existing work."
-        )
-        skip_when = " Skip when: the task is micro-edits/live discussion, requires an unresolved decision, or submission gates are unmet."
-        return intro + bounded + suitability + use_when + skip_when + f"{_specialized_note('local_ai_work')}" + " Common controls: max_response_tokens, response_profile (minimal, compact, delta), reuse_key, extra_fields for additional safe response fields. Work projection controls: return_fields selects top-level fields; max_output_tokens bounds handoff text; work profiles are minimal, compact, standard, debug." + action_note
-    return (
-        intro
-        + bounded
-        + action_note
-        + " Common response controls: max_response_tokens, response_profile=minimal|compact|delta, reuse_key, extra_fields; work projection profile=minimal|compact|standard|debug; return_fields selects only needed top-level fields; "
-        + "max_output_tokens bounds the handoff while full details remain artifact-backed. Use when: the task can be delegated as a self-contained repository outcome. "
-        + "Skip when: the agent must make an unresolved product decision, credentials/network are required, only one tiny lookup is needed, or work is micro-edits/live discussion."
-        + _specialized_note("local_ai_work")
-    )
+    return describe_work(FEATURES, LEAN_SCHEMAS, operation_actions, _specialized_note)
 
 
 def _desc_artifact() -> str:
-    if LEAN_SCHEMAS:
-        actions = ", ".join(operation_actions("local_ai_artifact"))
-        return (
-            f"Fetch an exact source or log slice or bounded binary artifact metadata; binary retrieval never inlines payloads; optional max_response_tokens, response_profile, reuse_key. Actions: {actions}."
-            " Source: action=source, path, line_start/line_end; workspace-confined, file/range/output bounded with SHA-256 provenance."
-            " Use when: exact source or evidence text is required after indexed discovery."
-            " Skip when: no source slice is needed or the existing compact result is sufficient."
-            f"{_specialized_note('local_ai_artifact')}"
-        )
-    return (
-        "Fetch one exact source or log slice or bounded binary artifact metadata. Binary payloads are never inlined in MCP responses. Evidence IDs start with E."
-        " Use when: exact source or evidence text is required after indexed discovery."
-        " Skip when: no source slice is needed or the existing compact result is sufficient."
-        f"{_specialized_note('local_ai_artifact')}"
-    )
+    return describe_artifact(LEAN_SCHEMAS, operation_actions, _specialized_note)
 
 
 TaskAction: TypeAlias = Literal.__getitem__(operation_actions("local_ai_task", None))
@@ -5258,7 +5038,7 @@ def local_ai_rag(
     path: str = "",
     file: str = "",
 ) -> dict[str, Any]:
-    """Fallback semantic retrieval after deterministic and indexed repository evidence. Search defaults workspace to the explicit repository root. Optional reranking is enabled by default on every hardware profile and can be disabled with `features.local_reranking=false`; CUDA is preferred on NVIDIA, with CPU fallback. Document ingestion requires non-empty content; title and metadata are optional. Diagram ingestion requires image_path; caption and metadata are optional. Raster diagrams are indexed as metadata-only; SVG text nodes are indexed with their extraction provenance. Use when: cheaper indexed paths are insufficient. Skip when: deterministic or indexed evidence already answers the question."""
+    """Fallback semantic retrieval after deterministic and indexed repository evidence. Search defaults workspace to the explicit repository root. RAG index submits through the durable job queue on cold start or when measured latency exceeds its 30-second budget; use local_ai_task status/wait/result with its returned job_id. Optional reranking is enabled by default on every hardware profile and can be disabled with `features.local_reranking=false`; CUDA is preferred on NVIDIA, with CPU fallback. Document ingestion requires non-empty content; title and metadata are optional. Diagram ingestion requires image_path; caption and metadata are optional. Raster diagrams are indexed as metadata-only; SVG text nodes are indexed with their extraction provenance. Use when: cheaper indexed paths are insufficient. Skip when: deterministic or indexed evidence already answers the question."""
     if not FEATURES.rag:
         return {"success": False, "unsupported": True, "error": "RAG backend is disabled (features.rag=false in config.toml)"}
     valid_actions = tuple(RagAction.__args__)
@@ -5304,7 +5084,12 @@ def local_ai_rag(
     ):
         effective_workspace = canonical_workspace_id(root)
     if action == "index":
-        return _compact(CLIENT.post("/api/rag/index", {"root": root, "workspace": effective_workspace}, timeout=_timeout("long")))
+        return _compact(CLIENT.post("/api/rag/index", {
+            "root": root,
+            "workspace": effective_workspace,
+            "delivery": "auto",
+            "latency_budget_ms": 30_000,
+        }, timeout=_timeout("long")))
     if action == "search":
         capability_status = getattr(FEATURES, "capability_status", None)
         capabilities = capability_status() if callable(capability_status) else {}

@@ -1,12 +1,75 @@
 import pytest
 
 from local_ai_hub.laya_decisions import (
+    ContextSourceEvidence,
     DecisionCategory,
     DecisionMode,
     DecisionRequest,
     DecisionResult,
     DecisionStatus,
 )
+
+
+def test_context_source_evidence_accepts_only_minimal_code_only_state():
+    context = ContextSourceEvidence.from_mapping(
+        {
+            "gap_code": "unresolved_evidence_gap",
+            "source_codes": ["indexed", "artifact", "memory"],
+            "freshness_codes": ["current", "current", "stale"],
+            "coverage_codes": ["complete", "complete", "complete"],
+            "evidence_ids": ["ev-1", "ev-2", "ev-3"],
+        },
+    )
+
+    assert context.decision_options == ("indexed", "artifact", "memory")
+    assert context.model_input() == {
+        "gap_code": "unresolved_evidence_gap",
+        "source_codes": ["indexed", "artifact", "memory"],
+        "freshness_codes": ["current", "current", "stale"],
+        "coverage_codes": ["complete", "complete", "complete"],
+        "evidence_ids": ["ev-1", "ev-2", "ev-3"],
+    }
+
+
+@pytest.mark.parametrize(
+    "override",
+    [
+        {"prompt": "private text"},
+        {"gap_code": "please read this source"},
+        {"source_codes": ["private source text", "artifact"]},
+        {"freshness_codes": ["recent-ish", "current"]},
+        {"coverage_codes": ["complete", "almost-complete"]},
+        {"coverage_codes": ["complete"]},
+        {"source_codes": ["indexed", "indexed"]},
+        {"evidence_ids": ["ev-1", "ev-1"]},
+    ],
+)
+def test_context_source_evidence_rejects_free_text_aliases_and_invalid_codes(override):
+    payload = {
+        "gap_code": "unresolved_evidence_gap",
+        "source_codes": ["indexed", "artifact", "memory"],
+        "freshness_codes": ["current", "stale", "unknown"],
+        "coverage_codes": ["complete", "complete", "incomplete"],
+        "evidence_ids": ["ev-1", "ev-2", "ev-3"],
+    }
+    payload.update(override)
+
+    with pytest.raises(ValueError):
+        ContextSourceEvidence.from_mapping(payload)
+
+
+def test_context_source_evidence_retains_bad_source_codes_for_false_positive_measurement():
+    context = ContextSourceEvidence.from_mapping(
+        {
+            "gap_code": "unresolved_evidence_gap",
+            "source_codes": ["indexed", "artifact", "memory"],
+            "freshness_codes": ["current", "stale", "current"],
+            "coverage_codes": ["complete", "complete", "partial"],
+            "evidence_ids": ["ev-1", "ev-2", "ev-3"],
+        },
+    )
+
+    assert context.decision_options == ("indexed", "artifact", "memory")
 
 
 def test_request_accepts_only_closed_categories_and_authorized_evidence_ids():

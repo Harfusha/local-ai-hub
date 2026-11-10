@@ -648,15 +648,17 @@ def test_http_transcribe_route_preserves_requested_model(tmp_path: Path, monkeyp
             },
             method="POST",
         )
-        with urllib.request.urlopen(request) as response:
-            result = json.loads(response.read().decode("utf-8"))
-        assert result == {
-            "success": False,
-            "request_id": request_id,
-            "model": "base.en",
-            "language": "cs",
-            "audio_path": "/fixture/sample.wav",
-        }
+        with pytest.raises(urllib.error.HTTPError) as error:
+            urllib.request.urlopen(request)
+        assert error.value.code == 500
+        result = json.loads(error.value.read().decode("utf-8"))
+        assert result["success"] is False
+        assert result["request_id"] == request_id
+        assert result["model"] == "base.en"
+        assert result["language"] == "cs"
+        assert result["audio_path"] == "/fixture/sample.wav"
+        assert result["status_code"] == 500
+        assert result["retryable"] is False
     finally:
         server.shutdown()
         server.server_close()

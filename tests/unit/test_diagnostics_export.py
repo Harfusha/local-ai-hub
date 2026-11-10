@@ -7,7 +7,7 @@ import sqlite3
 import pyzipper
 import pytest
 
-from local_ai_hub.diagnostics_export import create_diagnostics_archive
+from local_ai_hub.diagnostics_export import _sanitize_laya_snapshot, create_diagnostics_archive
 
 
 def _database(path, rows: list[tuple[str, str]]) -> None:
@@ -34,6 +34,30 @@ def _source_tree(root):
     (root / "models").mkdir()
     (root / "models" / "weights.gguf").write_bytes(b"model weights")
     (root / ".env").write_text("API_TOKEN=do-not-copy", encoding="utf-8")
+
+
+def test_diagnostics_snapshot_removes_new_laya_candidate_receipt_tables(tmp_path):
+    database = tmp_path / "agent_state.sqlite"
+    connection = sqlite3.connect(database)
+    connection.execute(
+        "CREATE TABLE laya_candidate_consent_receipts (candidate_id TEXT, receipt_id TEXT)"
+    )
+    connection.execute(
+        "INSERT INTO laya_candidate_consent_receipts VALUES ('candidate-1', 'private-receipt')"
+    )
+    connection.commit()
+    connection.close()
+
+    result = _sanitize_laya_snapshot(database, redact_candidates=True, redact_traces=False)
+
+    assert result["candidate_tables"] == 1
+    connection = sqlite3.connect(database)
+    try:
+        assert connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='laya_candidate_consent_receipts'"
+        ).fetchone() is None
+    finally:
+        connection.close()
 
 
 def test_support_archive_streams_global_state_source_and_redacted_config(tmp_path):
@@ -103,6 +127,57 @@ def test_support_archive_streams_global_state_source_and_redacted_config(tmp_pat
     assert not archive_path.exists()
 
 
+def test_support_archive_exports_laya_shadow_metadata_and_manifest(tmp_path):
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    laya_telemetry = {
+        "generated_at": 1_700_000_000.0,
+        "window_days": 7,
+        "decisions": {
+            "available": True,
+            "mode_counts": {"shadow": 3},
+            "category_counts": {"context_source": 3},
+            "status_counts": {"success": 2, "abstain": 1},
+        },
+        "runtime": {"status": "NOT_VERIFIED"},
+    }
+
+    with create_diagnostics_archive(
+        state_dir,
+        laya_telemetry=laya_telemetry,
+        source_root=tmp_path / "no-source",
+        temp_dir=tmp_path,
+    ) as export:
+        with pyzipper.AESZipFile(export.path) as archive:
+            archive.setpassword(export.password.encode("ascii"))
+            names = set(archive.namelist())
+            assert "laya/report.json" in names
+            assert "laya/candidates.train.jsonl" not in names
+            report = json.loads(archive.read("laya/report.json"))
+            manifest = json.loads(archive.read("manifest.json"))
+
+    assert report["schema_version"] == 1
+    assert report["period"] == {
+        "scope": "window",
+        "generated_at": laya_telemetry["generated_at"],
+        "window_days": 7,
+    }
+    assert report["shadow_telemetry"] == laya_telemetry
+    assert report["runtime"] == {"status": "NOT_VERIFIED"}
+    assert report["missing_data"]["shadow_telemetry"] == 0
+    assert report["missing_data"]["evaluation_report"] == 1
+    assert report["candidate_text_export"]["status"] == "omitted"
+    assert report["candidate_text_export"]["included_rows"] == 0
+    assert manifest["laya"]["candidate_text"]["status"] == "omitted"
+    assert manifest["laya"]["missing_data"] == report["missing_data"]
+    assert any(
+        item["name"] == "laya/report.json"
+        and item["category"] == "laya_metadata_report"
+        and item["status"] == "included"
+        for item in manifest["files"]
+    )
+
+
 def test_support_archive_uses_fresh_password_and_enforces_configured_limits(tmp_path):
     state_dir = tmp_path / "state"
     (state_dir / "logs").mkdir(parents=True)
@@ -141,12 +216,17 @@ def test_support_archive_redacts_laya_candidates_from_database_and_debug_traces(
     state_dir = tmp_path / "state"
     state_dir.mkdir()
     sentinel = "PRIVATE_LAYA_CANDIDATE_TEXT_7f9263"
+    receipt_sentinel = "PRIVATE_LAYA_CONSENT_RECEIPT_53ab"
 
     agent_state = sqlite3.connect(state_dir / "agent_state.sqlite")
     agent_state.execute("CREATE TABLE laya_candidates (candidate_id TEXT, candidate_json TEXT, content_hash TEXT)")
     agent_state.execute("INSERT INTO laya_candidates VALUES ('candidate-1', ?, 'private-hash')", (json.dumps({"state": sentinel}),))
     agent_state.execute("CREATE TABLE laya_candidate_events (metadata_json TEXT)")
     agent_state.execute("INSERT INTO laya_candidate_events VALUES ('{}')")
+    agent_state.execute("CREATE TABLE laya_candidate_consent_receipts (candidate_id TEXT, receipt_id TEXT)")
+    agent_state.execute(
+        "INSERT INTO laya_candidate_consent_receipts VALUES ('candidate-1', ?)", (receipt_sentinel,)
+    )
     agent_state.commit()
     agent_state.close()
 
@@ -177,6 +257,7 @@ def test_support_archive_redacts_laya_candidates_from_database_and_debug_traces(
             state_copy = archive.read("state/agent_state.sqlite")
             trace_copy = archive.read("state/debug_traces.sqlite3")
             assert sentinel.encode() not in state_copy
+            assert receipt_sentinel.encode() not in state_copy
             assert b"private-hash" not in state_copy
             assert sentinel.encode() not in trace_copy
             assert event_only_sentinel.encode() not in trace_copy
@@ -187,6 +268,9 @@ def test_support_archive_redacts_laya_candidates_from_database_and_debug_traces(
             try:
                 assert sanitized_state.execute(
                     "SELECT 1 FROM sqlite_master WHERE type='table' AND name='laya_candidates'"
+                ).fetchone() is None
+                assert sanitized_state.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='laya_candidate_consent_receipts'"
                 ).fetchone() is None
             finally:
                 sanitized_state.close()

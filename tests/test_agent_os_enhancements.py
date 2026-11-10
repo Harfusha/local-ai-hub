@@ -257,6 +257,26 @@ allowed_roots = ["{tmp_path.as_posix()}"]
         assert r1["success"] is True
         assert r1["task"]["task_id"] == "flat-1"
 
+        budget_status, budget_error = post_json_status(
+            "/api/agent-state/tasks",
+            {
+                "action": "create",
+                "task_id": "budget-too-small",
+                "goal": "Budget preflight",
+                "response_budget_tokens": 1,
+            },
+        )
+        assert budget_status == 413
+        assert budget_error["error_code"] == "response_budget_too_small"
+        assert budget_error["mutation_applied"] is False
+        assert budget_error["operation_not_started"] is True
+        assert budget_error["response_budget"]["required_tokens"] > 1
+        missing_status, missing_task = post_json_status(
+            "/api/agent-state/tasks", {"action": "get", "task_id": "budget-too-small"}
+        )
+        assert missing_status == 404
+        assert missing_task["error"] == "task not found"
+
         # 2. Flat task_checkpoint
         old_status, old_response = post_json_status(
             "/api/agent-state/tasks",

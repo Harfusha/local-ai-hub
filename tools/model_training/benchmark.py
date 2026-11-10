@@ -102,9 +102,20 @@ def benchmark_from_manifest(
     *,
     adapter_path: Path | str | None,
     output_path: Path | str,
+    baseline_report_path: Path | str | None = None,
     allow_model_download: bool = False,
 ) -> dict[str, Any]:
     config = load_run_manifest(manifest_path)
+    if config.get("backend") == "laya":
+        from .laya_backend import benchmark_laya_from_config
+
+        return benchmark_laya_from_config(
+            config,
+            checkpoint_path=adapter_path,
+            output_path=output_path,
+            baseline_report_path=baseline_report_path,
+            allow_model_download=allow_model_download,
+        )
     dataset_summary = validate_dataset_pair(config["train_file"], config["evaluation_file"])
     evaluation_rows = _read_jsonl(Path(config["evaluation_file"]), split="evaluation")
     training = config.get("training", {})

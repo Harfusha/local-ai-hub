@@ -186,7 +186,8 @@ def test_enriched_repo_search_returns_symbol_and_evidence_for_hit(tmp_path: Path
             return {"success": True, "results": []}
 
     class _Evidence:
-        def put_many(self, _root, hits):
+        def put_many(self, _root, hits, *, source_code):
+            assert source_code == "indexed"
             hits[0]["evidence_id"] = "E-search"
             return hits
 

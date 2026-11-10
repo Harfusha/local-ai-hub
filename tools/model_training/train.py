@@ -62,6 +62,10 @@ def _git_revision() -> str | None:
 
 def train_from_manifest(manifest_path: Path | str, *, allow_model_download: bool = False) -> dict[str, Any]:
     config = load_run_manifest(manifest_path)
+    if config.get("backend") == "laya":
+        from .laya_backend import train_laya_from_config
+
+        return train_laya_from_config(config, allow_model_download=allow_model_download)
     dataset_summary = validate_dataset_pair(config["train_file"], config["evaluation_file"])
     training = config.get("training", {})
     runtime = resolve_runtime(device=str(training.get("device", "cuda")))

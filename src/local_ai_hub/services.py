@@ -3128,7 +3128,8 @@ class LocalAIServices:
 
         def encode_uncached(batch: list[str]) -> dict[str, Any]:
             if backend in {"auto", "sentence-transformers", "openvino"}:
-                return reject_uncertain(self.embeddings.encode(batch, query=query, priority=priority))
+                encode_options = {} if wait_timeout is None else {"wait_timeout_seconds": wait_timeout}
+                return reject_uncertain(self.embeddings.encode(batch, query=query, priority=priority, **encode_options))
             batch_size = int(self.config.get("rag", {}).get("embedding_batch_size", 12))
 
             def run() -> dict[str, Any]:
@@ -3662,8 +3663,14 @@ class LocalAIServices:
                     "reranker": {"requested": use_reranker, "used": False,
                                  "degraded": bool(use_reranker)},
                 }
+            search_timeout = max(
+                0.1,
+                float(self.config.get("resilience", {}).get("repository_search_timeout_seconds", 30.0)),
+            )
+            deadline = time.perf_counter() + search_timeout
             raw = rag.search(query, workspace=workspace, top_k=min(MAX_PAGE_SIZE, max(1, top_k)),
-                             use_reranker=use_reranker, semantic_only=True, priority=1)
+                             use_reranker=use_reranker, semantic_only=True, priority=1,
+                             deadline=deadline)
             if not isinstance(raw, dict) or raw.get("success") is not True:
                 raise RuntimeError("rag_search_failed")
             project_context = rag.project_context(base)
@@ -4484,7 +4491,9 @@ class LocalAIServices:
                 try:
                     result = dict(result)
                     stored_results = self.evidence_store.put_many(
-                        str(result.get("root", root)), result["results"]
+                        str(result.get("root", root)),
+                        result["results"],
+                        source_code="indexed",
                     )
                     receipts_complete = all(
                         isinstance(item, dict)
@@ -7745,7 +7754,11 @@ class LocalAIServices:
             ))
         if self.evidence_store is not None:
             try:
-                stored_evidence = self.evidence_store.put_many(str(lexical.get("root", root)), evidence)
+                stored_evidence = self.evidence_store.put_many(
+                    str(lexical.get("root", root)),
+                    evidence,
+                    source_code="indexed",
+                )
             except Exception as exc:
                 return {
                     "success": False, "terminal": True, "retryable": False,
@@ -7928,6 +7941,21 @@ class LocalAIServices:
                     for field in ("symbol", "start_line", "end_line", "repository_revision"):
                         if field in item:
                             rag_evidence[field] = item[field]
+                    evidence_store = getattr(self, "evidence_store", None)
+                    if evidence_store is not None and item.get("content_hash") and item.get("start_line") and item.get("end_line"):
+                        stored = evidence_store.put_many(
+                            str(root_path),
+                            [{
+                                "path": path,
+                                "text": str(item.get("text", "")),
+                                "content_hash": str(item.get("content_hash")),
+                                "start_line": item.get("start_line"),
+                                "end_line": item.get("end_line"),
+                            }],
+                            source_code="rag",
+                        )
+                        if stored and stored[0].get("evidence_id"):
+                            rag_evidence["evidence_id"] = stored[0]["evidence_id"]
                     evidence.append(rag_evidence)
                     semantic_included_count += 1
                     if item.get("content_hash"):

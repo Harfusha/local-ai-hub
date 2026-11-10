@@ -679,7 +679,8 @@ def test_incomplete_evidence_receipt_fails_closed(tmp_path: Path) -> None:
 
     class IncompleteEvidenceStore:
         @staticmethod
-        def put_many(_root: str, _evidence: list[dict]) -> list[dict]:
+        def put_many(_root: str, _evidence: list[dict], *, source_code: str) -> list[dict]:
+            assert source_code == "indexed"
             return [{"path": "src/routes.py"}]
 
     services = LocalAIServices.__new__(LocalAIServices)

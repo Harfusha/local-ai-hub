@@ -1,6 +1,6 @@
 {
   "default_target_ref": "refs/heads/master",
-  "description": "User authorized downloading Qwen/Qwen2.5-Coder-1.5B-Instruct and preparing one isolated LoRA adapter on separate synthetic training data. Evaluate only the existing preprocess:file-card path. Preserve production provider, config, routing, and model profile. Keep adapter experimental and unpromoted. Spec: docs/superpowers/specs/2026-11-10-preprocessing-card-model-evaluation.md. Held-out benchmark: docs/agent-evaluation/preprocessing-card-benchmark-v1.json.",
+  "description": "Operator direction 2026-11-10: use only existing cards in the configured Hub preprocess index for preprocessing and embedding datasets. Do not generate new teacher cards, download models, train, or run live benchmarks in this task. Export is read-only and all indexed projects are explicitly selected. Data-preparation spec: docs/superpowers/specs/2026-11-10-existing-hub-cards-data-export.md.",
   "id": "plan_eed2783af553",
   "lifecycle": "draft",
   "schema_version": 1,
@@ -8,22 +8,21 @@
   "tasks": {
     "task_preprocessing_card_pilot": {
       "acceptance_criteria": [
-        "Use Qwen/Qwen2.5-Coder-1.5B-Instruct as the base and train an isolated LoRA adapter on separate synthetic data.",
-        "Keep all four eval-fixtures-v7 cases and their source files out of training.",
-        "Run matched base-versus-adapter evaluations and report quality, hallucinations, latency, token counts, errors, and exact model/runtime identities.",
-        "Do not modify production provider, config, routing, or model profile; do not merge, publish, or promote the adapter.",
-        "Do not train while another owner has an active GPU reservation or foreground use.",
-        "Treat the four-case, one-project result as a pilot signal, not production qualification."
+        "Read configured preprocess.sqlite3 in SQLite read-only mode across the selected registered roots.",
+        "Export only existing card/source pairs with matching content hashes for preprocessing.",
+        "Export existing file, module, and project card text for the embedding corpus without fabricated relevance labels.",
+        "Remove exact duplicate card text before project-held-out embedding split; no group or content leakage.",
+        "Do not generate cards, call models, preprocess, download, train, or benchmark."
       ],
-      "blocker": "The latest Hub readiness check reports qwen2.5-coder:7b active. GPU reservation is free, but the loaded foreground model remains in use; do not compete with it.",
+      "blocker": "Embedding corpus lacks authentic query-to-card relevance pairs and cannot support supervised retrieval evaluation by itself.",
       "clarifications": [],
       "depends_on": [],
-      "description": "Build a synthetic training set separate from the held-out benchmark, download the authorized base model, prepare an isolated PEFT/LoRA environment, train one experimental adapter when GPU use is safe, and compare base versus adapter without production routing changes.",
+      "description": "Exported current configured index for 19 projects: 140 existing card/source pairs split 110/30; embedding corpus 20,775 rows deduplicated to 11,348, split 9,011/2,337 by project. Both exports report zero model calls and no preprocessing. Full snapshot details are in docs/MODEL_TRAINING.md.",
       "kind": "analysis",
-      "next_action": "Wait until qwen2.5-coder:7b is no longer active, then train the isolated LoRA adapter and run paired evaluation.",
-      "title": "Build and run held-out file-card pilot",
-      "work_phase": "implementation",
-      "work_status": "in_progress"
+      "next_action": "Collect authentic query-to-card relevance pairs before supervised embedding fine-tuning.",
+      "title": "Export existing preprocessing and embedding cards",
+      "work_phase": "verification",
+      "work_status": "done"
     }
   },
   "title": "Preprocessing file-card fine-tuning pilot"

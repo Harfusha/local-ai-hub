@@ -235,3 +235,40 @@ def test_cold_start_review_diff_auto_delivery_is_async(monkeypatch):
     assert status == 200
     assert response["job_id"] == "job-cold-review"
     assert submitted["action"] == "review_diff"
+
+
+def test_cold_start_rag_index_auto_delivery_uses_durable_job(monkeypatch):
+    submitted = {}
+
+    class _Telemetry:
+        def http_latency_estimate(self, _action):
+            return {"samples": 8, "p95_duration_ms": 0}
+
+    class _Jobs:
+        def submit(self, action, payload):
+            submitted.update(action=action, payload=payload)
+            return {"success": True, "job_id": "job-rag-index", "state": "queued"}
+
+    class _App:
+        telemetry = _Telemetry()
+        async_jobs = _Jobs()
+
+    monkeypatch.setattr(http_server, "APP", _App())
+    handler = object.__new__(http_server.Handler)
+    status, response = handler._async_delivery(
+        "/api/rag/index",
+        {
+            "delivery": "auto",
+            "latency_budget_ms": 30_000,
+            "root": "C:/project",
+            "workspace": "workspace-1",
+        },
+    )
+
+    assert status == 200
+    assert response["job_id"] == "job-rag-index"
+    assert response["delivery"]["reason"] == "cold_start_rag_index"
+    assert submitted == {
+        "action": "rag_index",
+        "payload": {"root": "C:/project", "workspace": "workspace-1"},
+    }

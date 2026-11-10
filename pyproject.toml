@@ -34,6 +34,7 @@ classifiers = [
 native = ["Cython>=3,<4"]
 ast-index = ["tree-sitter-language-pack==1.18.0"]
 local-nlp = ["sentence-transformers>=5.4,<6"]
+laya-runtime = ["laya==0.4.31", "vegaml==0.16.1"]
 intel-accelerators = ["sentence-transformers[openvino]>=5.4,<6", "openvino>=2026.1,<2027"]
 token-economy = ["tiktoken>=0.7", "files-to-prompt>=0.4", "grep-ast>=0.3"]
 performance = ["orjson>=3.10,<4", "msgspec>=0.18,<1", "Cython>=3,<4"]

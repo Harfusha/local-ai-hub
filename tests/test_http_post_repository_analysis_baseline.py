@@ -214,11 +214,14 @@ def test_public_http_baseline_preserves_tracker_unavailable_response(
 
     status, response = _post(base_url, "/api/repo/state", payload)
 
-    assert status == 200
+    assert status == 500
     assert response == {
         "success": False,
         "error": "repo state unavailable",
         "error_code": "repo_state_unavailable",
+        "status_code": 500,
+        "terminal": True,
+        "retryable": False,
     }
     assert calls == []
 
@@ -260,6 +263,12 @@ def test_public_http_baseline_preserves_disabled_deterministic_response(
 
     status, response = _post(base_url, "/api/git/status", payload)
 
-    assert status == 200
-    assert response == {"success": False, "error": "deterministic engine disabled"}
+    assert status == 500
+    assert response == {
+        "success": False,
+        "error": "deterministic engine disabled",
+        "status_code": 500,
+        "terminal": True,
+        "retryable": False,
+    }
     assert calls == []

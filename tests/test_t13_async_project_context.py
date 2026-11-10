@@ -160,6 +160,43 @@ def test_async_secondary_actions_keep_workspace_roots_and_drop_caller_prefixes()
         assert "system_prefix" not in payload
 
 
+def test_async_rag_index_revalidates_root_and_workspace_binding(monkeypatch):
+    from local_ai_hub import repository_scope
+
+    authorized = []
+    indexed = []
+
+    def authorize(config, root):
+        authorized.append((config, root))
+        return "C:/authorized/project"
+
+    class Rag:
+        def require_workspace_root(self, *, workspace, root):
+            indexed.append(("validate", workspace, root))
+
+        def index(self, root, *, workspace):
+            indexed.append(("index", root, workspace))
+            return {"success": True, "workspace": workspace}
+
+    monkeypatch.setattr(repository_scope, "authorized_repository_root", authorize)
+    app = SimpleNamespace(
+        async_jobs=_Admission(), services=SimpleNamespace(), config={"server": {}}, rag=Rag()
+    )
+
+    result = LocalAIApp._execute_async_task(
+        app,
+        "rag_index",
+        {"root": "C:/requested/project", "workspace": "workspace-1"},
+    )
+
+    assert result == {"success": True, "workspace": "workspace-1"}
+    assert authorized == [({"server": {}}, "C:/requested/project")]
+    assert indexed == [
+        ("validate", "workspace-1", "C:/authorized/project"),
+        ("index", "C:/authorized/project", "workspace-1"),
+    ]
+
+
 class _FakeTaskRuntime:
     def __init__(self):
         self.payloads = []

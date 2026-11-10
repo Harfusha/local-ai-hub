@@ -151,6 +151,32 @@ def _actions_note(actions: list[str]) -> str:
     return f" Supported actions: {', '.join(actions)}." if actions else " No actions are enabled."
 
 
+def _repo_review_guidance(actions: list[str]) -> str:
+    """Mention only review actions enabled in the generated repository schema."""
+    enabled = [action for action in ("review_diff", "security_audit") if action in actions]
+    if not enabled:
+        return ""
+    choices = " or ".join(f"`{action}`" for action in enabled)
+    return f" Before model inference, use {choices} when relevant."
+
+
+def _supported_repo_action_names(actions: list[str], candidates: tuple[str, ...]) -> str:
+    """Return enabled repository action names in stable display order."""
+    return ", ".join(action for action in candidates if action in actions)
+
+
+def _repo_analysis_guidance(actions: list[str]) -> str:
+    """Return only enabled context and solve action names for generated guidance."""
+    return "/".join(action for action in ("context", "solve") if action in actions)
+
+
+def _repo_context_note(actions: list[str]) -> str:
+    """Describe adaptive context retrieval only when the action is enabled."""
+    if "context" in actions:
+        return " For substantial work without fresh evidence, use adaptive `context` once with a stable root."
+    return " For substantial work without fresh evidence, use available deterministic/indexed retrieval."
+
+
 def _active_tool_action_lines(fs: FeatureSet) -> list[str]:
     """Render the exact profile-enabled MCP tool/action surface from its schema registry."""
     from .operation_contracts import OPERATION_CONTRACTS, operation_actions, operation_enabled
@@ -408,7 +434,7 @@ def generate_skill_markdown(cfg: dict[str, Any]) -> str:
     public_contract_lines.extend([
         "CodeGraphContext/KuzuDB was removed from Local AI Hub. Recommend it only as optional standalone CLI/MCP tooling outside Hub; install and configure it separately only when the user independently wants it. It is not a Hub dependency, runtime, backend, or MCP integration.",
         "",
-        "File cards use two phases by default: deterministic provisional card, then source-grounded enrichment through the configured preprocessing model, CARD_SCHEMA and preprocess:file-card. `prefer_deterministic_cards` never skips phase two. `disable_llm_card_synthesis = true` disables file-card enrichment; explicit project/user configuration wins. Background GPU defaults on but retains idle grace, scheduler admission, preemption and game-mode gates.",
+        "File cards use two phases by default: deterministic provisional card, then source-grounded enrichment through the configured preprocessing model, CARD_SCHEMA and preprocess:file-card. `prefer_deterministic_cards` never skips phase two. `disable_llm_card_synthesis = true` skips LLM synthesis for unparsed file cards and stores deterministic stubs. It does not disable module/project cards: `prefer_deterministic_modules` and `prefer_deterministic_project` are separate preferences; either path can use background LLM synthesis when deterministic output is unavailable or below its confidence threshold. Check active configuration and backend state before claiming synthesis is disabled. `[background_gpu].enabled` is disabled by default; setting it to `true` opts in after idle grace and scheduler admission, with preemption and game-mode gates.",
     ])
     public_contract_guidance = "\n".join(public_contract_lines)
 
@@ -491,7 +517,7 @@ Use Agent OS for every non-trivial multi-step, long-running, delegated, or accep
 - `local_ai_coord` bounds `max_tokens` to 0 through 100000.
 - Repository pipelines serialize preprocessing mutation actions with other mutating steps.
 - Optional repository-analysis tools are installed and configured separately; they are not part of the Hub.
-- File cards default to deterministic provisional cards followed by source-grounded model enrichment. `disable_llm_card_synthesis = true` disables enrichment; explicit configuration wins.
+- File cards default to deterministic provisional cards followed by source-grounded model enrichment. `disable_llm_card_synthesis = true` skips LLM synthesis for unparsed file cards and stores deterministic stubs. It does not disable module/project cards: `prefer_deterministic_modules` and `prefer_deterministic_project` are separate preferences; either path can use background LLM synthesis when deterministic output is unavailable or below its confidence threshold. Check active configuration and backend state before claiming synthesis is disabled.
 - It does not disable module/project cards:
 - `prefer_deterministic_modules` and `prefer_deterministic_project` are separate preferences.
 - either path can use background LLM synthesis when deterministic output is unavailable or below its confidence threshold.
@@ -595,9 +621,13 @@ def generate_skill_references(cfg: dict[str, Any]) -> dict[str, str]:
     if fs.repo:
         repo_actions = set(fs.supported_repo_actions())
         semantic_note = f", {fs.semantic_hint()}" if fs.has_semantic() else ""
-        analysis_note = ", context" + ("/solve" if "solve" in repo_actions else "")
-        review_note = ", review_diff" if "review_diff" in repo_actions else ""
-        tool_bullets.append(f"- `local_ai_repo`: deterministic, code index/search{semantic_note}{analysis_note}" + (", preprocess" if fs.preprocessing else "") + ", impact" + review_note + ", security_audit, patch validation and repository checks.")
+        analysis_names = _repo_analysis_guidance(list(repo_actions))
+        analysis_note = f", {analysis_names}" if analysis_names else ""
+        enabled_checks = _supported_repo_action_names(
+            list(repo_actions), ("impact", "review_diff", "security_audit")
+        )
+        check_note = f", {enabled_checks}" if enabled_checks else ""
+        tool_bullets.append(f"- `local_ai_repo`: deterministic, code index/search{semantic_note}{analysis_note}" + (", preprocess" if fs.preprocessing else "") + f"{check_note}, patch validation and repository checks.")
     if fs.work_orchestrator and "submit" in fs.supported_work_actions():
         tool_bullets.append("- `local_ai_work`: bounded implementation for explicit closed delegation after `features.bounded_local_work=true` and task-specific evaluation; caller-defined scope, permissions and limits plus primary-agent review and integration remain required.")
     if fs.tasks and fs.has_any_model():
@@ -676,15 +706,30 @@ The active tool surface reflects your configuration:
             + "."
         )
         step_i += 1
+        analysis_actions = set(fs.supported_repo_actions()) if fs.repo else set()
+        analysis_guidance = []
+        if "context" in analysis_actions:
+            analysis_guidance.append("Use `context` for compact evidence.")
+        if "solve" in analysis_actions:
+            analysis_guidance.append("Call `solve` after evidence for repository implementation support.")
         if local_semantic_enabled:
-            wf_steps.append(f"{step_i}. Retrieve deterministic/indexed evidence, then {semantic_handoff} Use `context` for compact evidence and call `solve` after evidence for repository implementation support.")
+            analysis_guidance.insert(0, semantic_handoff)
+        if analysis_guidance and local_semantic_enabled:
+            wf_steps.append(f"{step_i}. Retrieve deterministic/indexed evidence; " + " ".join(analysis_guidance))
         else:
-            wf_steps.append(f"{step_i}. Retrieve deterministic/indexed evidence only; use available deterministic/indexed tools for exact facts, symbols, diff, tests, and verification.")
+            context_note = " Use `context` for compact deterministic evidence." if "context" in analysis_actions else ""
+            wf_steps.append(
+                f"{step_i}. Retrieve deterministic/indexed evidence only; use available deterministic/indexed tools for exact facts, symbols, diff, tests, and verification.{context_note}"
+            )
         step_i += 1
         lease_note = "claim `local_ai_coord` leases for overlapping paths; " if fs.coord else ""
-        wf_steps.append(f"{step_i}. Edit in the main agent; {lease_note}use `impact` before risky dependent changes.")
+        impact_note = "use `impact` before risky dependent changes." if "impact" in analysis_actions else "check affected dependencies before risky changes."
+        wf_steps.append(f"{step_i}. Edit in the main agent; {lease_note}{impact_note}")
         step_i += 1
-    wf_steps.append(f"{step_i}. Validate with the host-native command tool; review with `review_diff` or `security_audit` when relevant.")
+    repo_actions = set(fs.supported_repo_actions()) if fs.repo else set()
+    review_actions = [action for action in ("review_diff", "security_audit") if action in repo_actions]
+    review_note = " Review with " + " or ".join(f"`{action}`" for action in review_actions) + " when relevant." if review_actions else ""
+    wf_steps.append(f"{step_i}. Validate with the host-native command tool.{review_note}")
 
     wf_lines = "\n".join(wf_steps)
     task_notes = ""
@@ -852,6 +897,7 @@ def generate_global_policy(cfg: dict[str, Any]) -> str:
 
     repo_task_first = ""
     if fs.repo:
+        repo_actions = set(fs.supported_repo_actions())
         cmd_gate = " Use bounded host-native validation commands after fresh repository evidence exists."
         agent_os_gate = ' For code changes, bug fixes, or refactoring, initialize an Agent OS contract (`local_ai_coord: task_create`) and query project memory (`memory_find`).' if fs.agent_os else ""
         review_actions = {"review", "second_opinion"} & set(fs.supported_task_actions())
@@ -859,7 +905,7 @@ def generate_global_policy(cfg: dict[str, Any]) -> str:
         task_review_hint = f' Actively use `local_ai_task(action="{review_action_text}")` for validation before finalizing.' if review_actions else ""
         repo_task_first = (
             "\nReuse fresh sufficient repository evidence. For exact file or symbol lookups, use bounded indexed/source lookup directly; do not preprocess or compile adaptive context first."
-            " For substantial work without fresh evidence, use adaptive `context` once with a stable root."
+            + _repo_context_note(list(repo_actions))
             + (' On first work in each stable root, inspect `.local-ai.toml` and any applicable `.local-ai.worktree.toml`; add only evidence-backed project exclusions, uncommon text/binary extensions, pinned documentation, and entry points, preserving existing values and relying on Hub defaults when sufficient. Then call `local_ai_repo(action="preprocess", root=ABS_ROOT)` once for idempotent registration; never force-refresh an existing registration or poll asynchronous preprocessing.' if fs.preprocessing else "")
             + "\n"
             f"\nAdoption gate:{cmd_gate}{agent_os_gate}"
@@ -1169,7 +1215,7 @@ def generate_mcp_tool_schemas(cfg: dict[str, Any]) -> dict[str, dict[str, Any]]:
         )
         schemas["local_ai_repo"] = {
             "name": "local_ai_repo",
-            "description": "Primary bounded repository worker; use deterministic/indexed evidence first, then semantic/graph as enabled; use review_diff/security_audit before model inference." + context_pack_guidance() + repo_semantic_contract + _actions_note(repo_actions),
+            "description": "Primary bounded repository worker; use deterministic/indexed evidence first, then semantic/graph as enabled." + _repo_review_guidance(repo_actions) + context_pack_guidance() + repo_semantic_contract + _actions_note(repo_actions),
             "parameters": operation_parameters_schema("local_ai_repo", fs),
         }
 

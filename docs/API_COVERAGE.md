@@ -179,6 +179,7 @@ Reproduce with `python tools/surface_inventory.py --check --task-id task_d20e0b0
 | HTTP POST | /api/delegate | confirmed | src/local_ai_hub/http_server.py | op-d5d8bbdc9bea |
 | HTTP POST | /api/delegate/batch | confirmed | src/local_ai_hub/http_server.py | op-35a099bc5a33 |
 | HTTP POST | /api/delegate/repo | confirmed | src/local_ai_hub/http_server.py | op-5ec20d3d74e7 |
+| HTTP POST | /api/diagnostics/export | confirmed | src/local_ai_hub/http_server.py | op-678377d6462a |
 | HTTP POST | /api/doctor | confirmed | src/local_ai_hub/http_server.py | op-5bbbe6a2bd65 |
 | HTTP POST | /api/embed | confirmed | src/local_ai_hub/http_server.py | op-a3c592c8f3ad |
 | HTTP POST | /api/evaluation | confirmed | src/local_ai_hub/http_server.py | op-948b0c8e50c7 |
@@ -203,10 +204,6 @@ Reproduce with `python tools/surface_inventory.py --check --task-id task_d20e0b0
 | HTTP POST | /api/memory/put | confirmed | src/local_ai_hub/http_server.py | op-44a091a9353f |
 | HTTP POST | /api/memory/search | confirmed | src/local_ai_hub/http_server.py | op-30f4c47cd58f |
 | HTTP POST | /api/models/manage | confirmed | src/local_ai_hub/http_server.py | op-5b6baefe1fcd |
-| HTTP POST | /api/opencode/provider/start | confirmed | src/local_ai_hub/http_server.py | op-d24afa083b27 |
-| HTTP POST | /api/opencode/provider/status | confirmed | src/local_ai_hub/http_server.py | op-346ee1ffcc57 |
-| HTTP POST | /api/opencode/provider/stop | confirmed | src/local_ai_hub/http_server.py | op-0a0726f09405 |
-| HTTP POST | /api/opencode/provider/wait | confirmed | src/local_ai_hub/http_server.py | op-19c4cbf0a78f |
 | HTTP POST | /api/patch/validate | confirmed | src/local_ai_hub/http_server.py | op-032c78505fe5 |
 | HTTP POST | /api/preprocess | confirmed | src/local_ai_hub/http_server.py | op-4318c2dfdc9c |
 | HTTP POST | /api/query/expand | confirmed | src/local_ai_hub/http_server.py | op-f2e4b1cd8a58 |
@@ -406,6 +403,7 @@ Reproduce with `python tools/surface_inventory.py --check --task-id task_d20e0b0
 | MCP action local_ai_repo | dead_code | confirmed | src/local_ai_hub/generator.py | op-ad77f70411ee |
 | MCP action local_ai_repo | declaration | confirmed | src/local_ai_hub/generator.py | op-30232bb73a3f |
 | MCP action local_ai_repo | definition | confirmed | src/local_ai_hub/generator.py | op-a1eeb3d901a1 |
+| MCP action local_ai_repo | delegate | confirmed | src/local_ai_hub/generator.py | op-45794746f756 |
 | MCP action local_ai_repo | dependency_slice | confirmed | src/local_ai_hub/generator.py | op-e630a70c8f9f |
 | MCP action local_ai_repo | deterministic | confirmed | src/local_ai_hub/generator.py | op-8deb0567f819 |
 | MCP action local_ai_repo | diagnose | confirmed | src/local_ai_hub/generator.py | op-655fc75fc2bb |
@@ -453,6 +451,7 @@ Reproduce with `python tools/surface_inventory.py --check --task-id task_d20e0b0
 | MCP action local_ai_repo | repo_state | confirmed | src/local_ai_hub/generator.py | op-01cf5e21142a |
 | MCP action local_ai_repo | resolve_imports | confirmed | src/local_ai_hub/generator.py | op-c05e4e00c6b6 |
 | MCP action local_ai_repo | revert | confirmed | src/local_ai_hub/generator.py | op-819b235e2895 |
+| MCP action local_ai_repo | review_diff | confirmed | src/local_ai_hub/generator.py | op-44ef3f8ca9f6 |
 | MCP action local_ai_repo | route | confirmed | src/local_ai_hub/generator.py | op-7708e75ee0b4 |
 | MCP action local_ai_repo | schema_inspect | confirmed | src/local_ai_hub/generator.py | op-0da69bc2fc91 |
 | MCP action local_ai_repo | search | confirmed | src/local_ai_hub/generator.py | op-e496067d5e8b |
@@ -461,6 +460,7 @@ Reproduce with `python tools/surface_inventory.py --check --task-id task_d20e0b0
 | MCP action local_ai_repo | semantic | confirmed | src/local_ai_hub/generator.py | op-b90bf404c7ba |
 | MCP action local_ai_repo | semantic_diff | confirmed | src/local_ai_hub/generator.py | op-9744eeb7c3cb |
 | MCP action local_ai_repo | skeletonize | confirmed | src/local_ai_hub/generator.py | op-0a444fa448c5 |
+| MCP action local_ai_repo | solve | confirmed | src/local_ai_hub/generator.py | op-df1164507eed |
 | MCP action local_ai_repo | source | confirmed | src/local_ai_hub/generator.py | op-6e23a8795056 |
 | MCP action local_ai_repo | split_changes | confirmed | src/local_ai_hub/generator.py | op-929bf5e6106e |
 | MCP action local_ai_repo | stat | confirmed | src/local_ai_hub/generator.py | op-60b4c5d10ca7 |
@@ -473,27 +473,41 @@ Reproduce with `python tools/surface_inventory.py --check --task-id task_d20e0b0
 | MCP action local_ai_repo | validate_patch | confirmed | src/local_ai_hub/generator.py | op-76faf5a7f4dd |
 | MCP action local_ai_repo | verify | confirmed | src/local_ai_hub/generator.py | op-e0622f29d5f6 |
 | MCP action local_ai_status | brief | confirmed | src/local_ai_hub/generator.py | op-1f98c119cb01 |
+| MCP action local_ai_task | automation | confirmed | src/local_ai_hub/generator.py | op-6ca1ceea619f |
+| MCP action local_ai_task | batch | confirmed | src/local_ai_hub/generator.py | op-41b713a209b7 |
 | MCP action local_ai_task | benchmark | confirmed | src/local_ai_hub/generator.py | op-0d9ce8635659 |
 | MCP action local_ai_task | browser | confirmed | src/local_ai_hub/generator.py | op-a7500c19b6e6 |
 | MCP action local_ai_task | cancel | confirmed | src/local_ai_hub/generator.py | op-fa58799428e7 |
 | MCP action local_ai_task | candidate_create | confirmed | src/local_ai_hub/generator.py | op-5f0b50b0f4a9 |
 | MCP action local_ai_task | candidate_promote | confirmed | src/local_ai_hub/generator.py | op-4646d94d6e07 |
+| MCP action local_ai_task | complete_code | confirmed | src/local_ai_hub/generator.py | op-c04619aee47c |
 | MCP action local_ai_task | compress | confirmed | src/local_ai_hub/generator.py | op-209b5b5b584d |
+| MCP action local_ai_task | continue | confirmed | src/local_ai_hub/generator.py | op-74e22106b033 |
+| MCP action local_ai_task | delegate | confirmed | src/local_ai_hub/generator.py | op-aecbd1d063aa |
 | MCP action local_ai_task | eval_drift | confirmed | src/local_ai_hub/generator.py | op-833e41bdc8f0 |
 | MCP action local_ai_task | eval_suite | confirmed | src/local_ai_hub/generator.py | op-011366011a98 |
 | MCP action local_ai_task | evaluation_record | confirmed | src/local_ai_hub/generator.py | op-932088270157 |
 | MCP action local_ai_task | evaluation_report | confirmed | src/local_ai_hub/generator.py | op-3d10ee801ee9 |
+| MCP action local_ai_task | explore | confirmed | src/local_ai_hub/generator.py | op-a96277fdee4b |
 | MCP action local_ai_task | hardware_benchmark | confirmed | src/local_ai_hub/generator.py | op-b84c26a2ea94 |
 | MCP action local_ai_task | prompt_eval | confirmed | src/local_ai_hub/generator.py | op-13c56e3873a6 |
+| MCP action local_ai_task | reason | confirmed | src/local_ai_hub/generator.py | op-e00268ff616f |
 | MCP action local_ai_task | result | confirmed | src/local_ai_hub/generator.py | op-3740af3ef793 |
+| MCP action local_ai_task | review | confirmed | src/local_ai_hub/generator.py | op-5f2bf8756b86 |
 | MCP action local_ai_task | route | confirmed | src/local_ai_hub/generator.py | op-005760305b61 |
+| MCP action local_ai_task | scaffold | confirmed | src/local_ai_hub/generator.py | op-a6413b9cc192 |
+| MCP action local_ai_task | second_opinion | confirmed | src/local_ai_hub/generator.py | op-6e3266b30ede |
+| MCP action local_ai_task | speculative_draft | confirmed | src/local_ai_hub/generator.py | op-59a04ae711db |
 | MCP action local_ai_task | status | confirmed | src/local_ai_hub/generator.py | op-0b9eb652b3a7 |
+| MCP action local_ai_task | submit | confirmed | src/local_ai_hub/generator.py | op-072fb3a07ddd |
 | MCP action local_ai_task | transcribe | confirmed | src/local_ai_hub/generator.py | op-a8ba8677d958 |
+| MCP action local_ai_task | vision | confirmed | src/local_ai_hub/generator.py | op-ce179284669c |
 | MCP action local_ai_task | wait | confirmed | src/local_ai_hub/generator.py | op-5fe390a066fe |
 | MCP action local_ai_work | cancel | confirmed | src/local_ai_hub/generator.py | op-de07a6a58a3f |
 | MCP action local_ai_work | continue | confirmed | src/local_ai_hub/generator.py | op-5de5d71ae275 |
 | MCP action local_ai_work | get | confirmed | src/local_ai_hub/generator.py | op-1efe4aa90938 |
 | MCP action local_ai_work | status | confirmed | src/local_ai_hub/generator.py | op-3acb31e4fc5b |
+| MCP action local_ai_work | submit | confirmed | src/local_ai_hub/generator.py | op-8089b8cb44ef |
 | MCP action local_ai_work | wait | confirmed | src/local_ai_hub/generator.py | op-ca22142c0f79 |
 | MCP action schema gap local_ai_coord |  | confirmed | src/local_ai_hub/mcp_server.py | op-6d567ad7dccd |
 | MCP action schema gap local_ai_coord | delete | confirmed | src/local_ai_hub/mcp_server.py | op-b0d3c8bd69ad |
@@ -503,33 +517,17 @@ Reproduce with `python tools/surface_inventory.py --check --task-id task_d20e0b0
 | MCP action schema gap local_ai_coord | markdown | confirmed | src/local_ai_hub/mcp_server.py | op-980db1e41c65 |
 | MCP action schema gap local_ai_coord | memory_reap | confirmed | src/local_ai_hub/mcp_server.py | op-6b44ba5235e0 |
 | MCP action schema gap local_ai_coord | merge | confirmed | src/local_ai_hub/mcp_server.py | op-4ae1b9fe51e3 |
+| MCP action schema gap local_ai_coord | plans | confirmed | src/local_ai_hub/mcp_server.py | op-af09d9135c87 |
 | MCP action schema gap local_ai_coord | relation_find | confirmed | src/local_ai_hub/mcp_server.py | op-b1cf01dbfd56 |
 | MCP action schema gap local_ai_coord | relation_record | confirmed | src/local_ai_hub/mcp_server.py | op-82d193562e1f |
 | MCP action schema gap local_ai_coord | relation_traverse | confirmed | src/local_ai_hub/mcp_server.py | op-4788e51bcd53 |
 | MCP action schema gap local_ai_coord | task_adopt | confirmed | src/local_ai_hub/mcp_server.py | op-0d77dc6fe2ff |
 | MCP action schema gap local_ai_coord | update | confirmed | src/local_ai_hub/mcp_server.py | op-7895aef1d660 |
-| MCP action schema gap local_ai_repo | delegate | confirmed | src/local_ai_hub/mcp_server.py | op-f4fd3aad1a27 |
 | MCP action schema gap local_ai_repo | local_ai_repo | confirmed | src/local_ai_hub/mcp_server.py | op-4ba9ed44d182 |
-| MCP action schema gap local_ai_repo | review_diff | confirmed | src/local_ai_hub/mcp_server.py | op-cfb8fcdce2fc |
 | MCP action schema gap local_ai_repo | serena | confirmed | src/local_ai_hub/mcp_server.py | op-dcd134194c84 |
-| MCP action schema gap local_ai_repo | solve | confirmed | src/local_ai_hub/mcp_server.py | op-ebcea62af0a0 |
 | MCP action schema gap local_ai_repo | status | confirmed | src/local_ai_hub/mcp_server.py | op-c549366190ee |
 | MCP action schema gap local_ai_repo | symbol | confirmed | src/local_ai_hub/mcp_server.py | op-9338a25b094f |
-| MCP action schema gap local_ai_task | automation | confirmed | src/local_ai_hub/mcp_server.py | op-854485be6312 |
-| MCP action schema gap local_ai_task | batch | confirmed | src/local_ai_hub/mcp_server.py | op-27b3cb5c8155 |
-| MCP action schema gap local_ai_task | complete_code | confirmed | src/local_ai_hub/mcp_server.py | op-d0639a668760 |
-| MCP action schema gap local_ai_task | continue | confirmed | src/local_ai_hub/mcp_server.py | op-d55c46959daf |
-| MCP action schema gap local_ai_task | delegate | confirmed | src/local_ai_hub/mcp_server.py | op-ae67c7526dac |
-| MCP action schema gap local_ai_task | explore | confirmed | src/local_ai_hub/mcp_server.py | op-cb0f82c16107 |
 | MCP action schema gap local_ai_task | local_ai_task | confirmed | src/local_ai_hub/mcp_server.py | op-68d58d64538a |
-| MCP action schema gap local_ai_task | reason | confirmed | src/local_ai_hub/mcp_server.py | op-b0e080d20eb5 |
-| MCP action schema gap local_ai_task | review | confirmed | src/local_ai_hub/mcp_server.py | op-09c9bcb73f36 |
-| MCP action schema gap local_ai_task | scaffold | confirmed | src/local_ai_hub/mcp_server.py | op-be740230a7ce |
-| MCP action schema gap local_ai_task | second_opinion | confirmed | src/local_ai_hub/mcp_server.py | op-ef1b030e51a7 |
-| MCP action schema gap local_ai_task | speculative_draft | confirmed | src/local_ai_hub/mcp_server.py | op-0daa8dd4907a |
-| MCP action schema gap local_ai_task | submit | confirmed | src/local_ai_hub/mcp_server.py | op-d502c94998f0 |
-| MCP action schema gap local_ai_task | vision | confirmed | src/local_ai_hub/mcp_server.py | op-c9f3461fa162 |
-| MCP action schema gap local_ai_work | submit | confirmed | src/local_ai_hub/mcp_server.py | op-3ad3e3e98395 |
 | MCP detail local_ai_status | brief | confirmed | src/local_ai_hub/generator.py | op-54d83bfd1ae2 |
 | HubClient method | __init__ | confirmed | src/local_ai_hub/client.py | op-d7a30147c276 |
 | HubClient method | _drop_connection | confirmed | src/local_ai_hub/client.py | op-cf96fd285a5f |
@@ -696,7 +694,6 @@ Reproduce with `python tools/surface_inventory.py --check --task-id task_d20e0b0
 | CLI operation | logs | confirmed | tools/hubctl.py | op-7a6e42f71891 |
 | CLI operation | memory | confirmed | tools/hubctl.py | op-ee8a4e3836f2 |
 | CLI operation | mode | confirmed | tools/hubctl.py | op-9dc37e51eae5 |
-| CLI operation | opencode | confirmed | tools/hubctl.py | op-a17bf057f2c5 |
 | CLI operation | pause | confirmed | tools/hubctl.py | op-ad185fd1da6f |
 | CLI operation | plans | confirmed | tools/hubctl.py | op-432acf5a87c8 |
 | CLI operation | restart | confirmed | tools/hubctl.py | op-ce45818ace8e |

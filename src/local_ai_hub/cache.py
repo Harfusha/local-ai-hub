@@ -1141,7 +1141,13 @@ class SingleFlightCache:
     def coalesced_timeouts(self, v: int) -> None:
         self._coalesced_timeouts[0] = v
 
-    def get_or_compute(self, key: str, compute: Callable[[], dict[str, Any]]) -> tuple[dict[str, Any], bool, bool]:
+    def get_or_compute(
+        self,
+        key: str,
+        compute: Callable[[], dict[str, Any]],
+        *,
+        wait_timeout_seconds: float | None = None,
+    ) -> tuple[dict[str, Any], bool, bool]:
         if not self.enabled:
             self._misses[0] += 1
             try:
@@ -1174,7 +1180,12 @@ class SingleFlightCache:
                 self._coalesced_waiters[idx] += 1
 
         if not owner:
-            if not event.wait(self.wait_timeout_seconds):
+            wait_timeout = (
+                self.wait_timeout_seconds
+                if wait_timeout_seconds is None
+                else max(0.01, float(wait_timeout_seconds))
+            )
+            if not event.wait(wait_timeout):
                 with lock:
                     self._coalesced_timeouts[idx] += 1
                     started = inflight_started.get(key, time.monotonic())

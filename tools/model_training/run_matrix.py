@@ -38,6 +38,12 @@ def load_matrix_manifest(path: Path | str) -> dict[str, Any]:
         raise ValueError(f"cannot read matrix manifest: {exc}") from exc
     if not isinstance(config, dict):
         raise ValueError("matrix manifest must be a JSON object")
+    if config.get("backend", "transformers_lora") == "laya":
+        from .laya_backend import load_laya_matrix_manifest
+
+        return load_laya_matrix_manifest(manifest_path)
+    if config.get("backend", "transformers_lora") != "transformers_lora":
+        raise ValueError(f"unsupported model-training backend: {config.get('backend')}")
     required = ("schema_version", "name", "task_type", "train_file", "evaluation_file", "output_root", "output_schema", "models")
     missing = [key for key in required if key not in config]
     if missing:
@@ -81,6 +87,10 @@ def load_matrix_manifest(path: Path | str) -> dict[str, Any]:
 
 def run_matrix(manifest_path: Path | str, *, allow_model_download: bool = False) -> list[dict[str, Any]]:
     matrix = load_matrix_manifest(manifest_path)
+    if matrix.get("backend", "transformers_lora") == "laya":
+        from .laya_backend import run_laya_matrix
+
+        return run_laya_matrix(matrix, allow_model_download=allow_model_download)
     dataset = validate_dataset_pair(matrix["train_file"], matrix["evaluation_file"])
     output_root = Path(matrix["output_root"])
     results: list[dict[str, Any]] = []
@@ -95,6 +105,7 @@ def run_matrix(manifest_path: Path | str, *, allow_model_download: bool = False)
         lora.update(model_spec.get("lora", {}))
         effective = {
             "schema_version": 1,
+            "backend": "transformers_lora",
             "name": f"{matrix['name']}-{model_spec['name']}",
             "task_type": matrix["task_type"],
             "base_model": model_spec["base_model"],

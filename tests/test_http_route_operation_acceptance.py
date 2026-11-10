@@ -773,7 +773,6 @@ def test_http_post_agent_state_tasks_captures_laya_candidate_without_echoing_sta
 
     capture_operation = {
         "action": "capture",
-        "consent": True,
         "task_id": "task-31",
         "session_id": "session:http-route-acceptance",
         "candidate": {
@@ -820,21 +819,28 @@ def test_http_post_agent_state_tasks_captures_laya_candidate_without_echoing_sta
         toggled = json.loads(response.read().decode("utf-8"))
     assert toggled["success"] is True
 
-    captured = post(capture_operation)
+    request = urllib_request.Request(
+        url,
+        data=json.dumps({
+            "action": "curate_dataset", "root": str(tmp_path), "laya_operation": capture_operation,
+        }).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with pytest.raises(HTTPError) as denied_capture:
+        urllib_request.urlopen(request)
+    assert denied_capture.value.code == 400
+    body = json.loads(denied_capture.value.read().decode("utf-8"))
+    assert "actual Laya runtime callback" in body["error"]
+    assert candidate_state not in json.dumps(body)
+    assert app.laya_candidates.handle(
+        {"action": "list", "task_id": "task-31"},
+        root=str(tmp_path),
+        task_store=app.agent_tasks,
+    )["count"] == 0
 
-    assert captured["success"] is True
-    assert captured["status"] == "pending"
-    assert captured["candidate_id"].startswith("laya_")
-    assert candidate_state not in json.dumps(captured)
 
-    listed = post({"action": "list", "task_id": "task-31"})
-    assert listed["success"] is True
-    assert listed["count"] == 1
-    assert listed["candidates"][0]["candidate_id"] == captured["candidate_id"]
-    assert candidate_state not in json.dumps(listed)
-
-
-def test_http_diagnostics_export_requires_laya_consent_and_forwards_snapshot_scope(
+def test_http_diagnostics_export_rejects_retired_laya_consent_and_forwards_snapshot_scope(
     running_http_hub, tmp_path, monkeypatch
 ):
     base_url, app = running_http_hub
@@ -895,7 +901,6 @@ def test_http_diagnostics_export_requires_laya_consent_and_forwards_snapshot_sco
             {
                 "root": str(tmp_path),
                 "laya_candidate_export": {
-                    "consent": True,
                     "snapshot_id": "snapshot-test",
                 },
             }
@@ -912,7 +917,6 @@ def test_http_diagnostics_export_requires_laya_consent_and_forwards_snapshot_sco
     assert calls[0][1] == {
         "root": str(tmp_path),
         "laya_candidate_export": {
-            "consent": True,
             "snapshot_id": "snapshot-test",
         },
     }

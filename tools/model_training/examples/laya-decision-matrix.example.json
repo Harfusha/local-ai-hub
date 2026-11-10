@@ -1,0 +1,32 @@
+{
+  "schema_version": 1,
+  "name": "laya-multilingual-decision",
+  "backend": "laya",
+  "task_type": "decision_model",
+  "base_model": "convaiinnovations/laya-multilingual",
+  "base_revision": "1720e3e3357cfe1e281542e223f8273b0890ca34",
+  "train_file": "../../../state/experiments/model-training/data/laya-train.jsonl",
+  "evaluation_file": "../../../state/experiments/model-training/data/laya-eval.jsonl",
+  "output_root": "../../../state/experiments/model-training/runs/laya",
+  "training": {
+    "device": "cuda",
+    "epochs": 4,
+    "micro_batch": 8,
+    "grad_accum": 8,
+    "encoder_lr": 0.000025,
+    "head_lr": 0.0001,
+    "loss": "rlcd",
+    "shuffle_options": ["choice"],
+    "amp": true,
+    "gradient_checkpointing": true,
+    "calib_max": 400,
+    "calib_frac": 0.1,
+    "seed": 20261110
+  },
+  "benchmark": {
+    "device": "cuda",
+    "backend": "auto",
+    "batch_size": 1,
+    "sort_by_length": false
+  }
+}

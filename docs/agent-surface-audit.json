@@ -95,27 +95,6 @@
     "command": "Public tool/HTTP removed by coordinated command owner; internal run/discover/simulate remain because orchestrator uses them."
   },
   "operations": {
-    "POST /api/diagnostics/export": {
-      "decision": "diagnostic",
-      "role": "operator_diagnostic",
-      "reason": "Installation-wide support archives include state databases, logs and potentially captured request and response detail across projects.",
-      "response_policy": "Require the operator-enabled dashboard diagnostics gate before execution; stream an encrypted archive with its password in a no-store response, or return bounded error metadata.",
-      "source_contract": {
-        "source": "src/local_ai_hub/http_route_registry.py",
-        "handler": "post_diagnostics_export_1",
-        "literal_response_fields": [
-          "error",
-          "error_code",
-          "retryable",
-          "success",
-          "terminal"
-        ],
-        "response_producers": [
-          "bool"
-        ],
-        "action_literals": []
-      }
-    },
     "GET /": {
       "decision": "retain",
       "role": "dashboard",
@@ -1839,6 +1818,50 @@
         ]
       }
     },
+    "MCP local_ai_coord.context_compile": {
+      "decision": "retain",
+      "role": "agent",
+      "reason": "Scoped durable task/memory/verification/lease/board/event coordination; these are agent working state and safety controls, not operator profiling.",
+      "response_policy": "Preserve work result, errors/retry/cancellation, identities, evidence and pagination; project_agent_response removes internal observations outside dashboard detail; caller documents remain opaque.",
+      "source_contract": {
+        "source": "src/local_ai_hub/operation_contracts.py",
+        "selector": "action",
+        "output_schema_fields": [
+          "cancel_reason",
+          "cancel_requested",
+          "cancelled",
+          "degraded",
+          "error",
+          "evidence_ids",
+          "retryable",
+          "stale",
+          "success",
+          "terminal"
+        ]
+      }
+    },
+    "MCP local_ai_coord.curate_dataset": {
+      "decision": "diagnostic",
+      "role": "operator_diagnostic",
+      "reason": "Hub model routing, evaluation, benchmark or learning-data administration; no ordinary repository work depends on invoking this explicitly.",
+      "response_policy": "Dashboard debug_traces.enabled required before work/read; normal response is actionable disabled error (empty disabled trace list is the exception). Enabled detail retains original payload; private accounting never goes on wire.",
+      "source_contract": {
+        "source": "src/local_ai_hub/operation_contracts.py",
+        "selector": "action",
+        "output_schema_fields": [
+          "cancel_reason",
+          "cancel_requested",
+          "cancelled",
+          "degraded",
+          "error",
+          "evidence_ids",
+          "retryable",
+          "stale",
+          "success",
+          "terminal"
+        ]
+      }
+    },
     "MCP local_ai_coord.gpu_reservation_release": {
       "decision": "retain",
       "role": "agent",
@@ -1888,50 +1911,6 @@
       "role": "agent",
       "reason": "Scoped GPU reservation status supports safe resource coordination without exposing reservation credentials.",
       "response_policy": "Preserve reservation presence, state, expiry and manual-intervention requirement; never expose the reservation digest or raw token.",
-      "source_contract": {
-        "source": "src/local_ai_hub/operation_contracts.py",
-        "selector": "action",
-        "output_schema_fields": [
-          "cancel_reason",
-          "cancel_requested",
-          "cancelled",
-          "degraded",
-          "error",
-          "evidence_ids",
-          "retryable",
-          "stale",
-          "success",
-          "terminal"
-        ]
-      }
-    },
-    "MCP local_ai_coord.context_compile": {
-      "decision": "retain",
-      "role": "agent",
-      "reason": "Scoped durable task/memory/verification/lease/board/event coordination; these are agent working state and safety controls, not operator profiling.",
-      "response_policy": "Preserve work result, errors/retry/cancellation, identities, evidence and pagination; project_agent_response removes internal observations outside dashboard detail; caller documents remain opaque.",
-      "source_contract": {
-        "source": "src/local_ai_hub/operation_contracts.py",
-        "selector": "action",
-        "output_schema_fields": [
-          "cancel_reason",
-          "cancel_requested",
-          "cancelled",
-          "degraded",
-          "error",
-          "evidence_ids",
-          "retryable",
-          "stale",
-          "success",
-          "terminal"
-        ]
-      }
-    },
-    "MCP local_ai_coord.curate_dataset": {
-      "decision": "diagnostic",
-      "role": "operator_diagnostic",
-      "reason": "Hub model routing, evaluation, benchmark or learning-data administration; no ordinary repository work depends on invoking this explicitly.",
-      "response_policy": "Dashboard debug_traces.enabled required before work/read; normal response is actionable disabled error (empty disabled trace list is the exception). Enabled detail retains original payload; private accounting never goes on wire.",
       "source_contract": {
         "source": "src/local_ai_hub/operation_contracts.py",
         "selector": "action",
@@ -2235,6 +2214,28 @@
         ]
       }
     },
+    "MCP local_ai_coord.plan_bind_task": {
+      "decision": "retain",
+      "role": "agent",
+      "reason": "Project-scoped file-backed plan and task execution state; retain actionable lifecycle, revision, evidence, and recovery fields.",
+      "response_policy": "Preserve work results, errors, retry/cancellation, identities, evidence, and pagination; project_agent_response removes internal observations outside dashboard detail; caller documents remain opaque.",
+      "source_contract": {
+        "source": "src/local_ai_hub/operation_contracts.py",
+        "selector": "action",
+        "output_schema_fields": [
+          "cancel_reason",
+          "cancel_requested",
+          "cancelled",
+          "degraded",
+          "error",
+          "evidence_ids",
+          "retryable",
+          "stale",
+          "success",
+          "terminal"
+        ]
+      }
+    },
     "MCP local_ai_coord.plan_board_view": {
       "decision": "retain",
       "role": "agent",
@@ -2328,6 +2329,28 @@
       "role": "agent",
       "reason": "Scoped durable task/memory/verification/lease/board/event coordination; these are agent working state and safety controls, not operator profiling.",
       "response_policy": "Preserve work result, errors/retry/cancellation, identities, evidence and pagination; project_agent_response removes internal observations outside dashboard detail; caller documents remain opaque.",
+      "source_contract": {
+        "source": "src/local_ai_hub/operation_contracts.py",
+        "selector": "action",
+        "output_schema_fields": [
+          "cancel_reason",
+          "cancel_requested",
+          "cancelled",
+          "degraded",
+          "error",
+          "evidence_ids",
+          "retryable",
+          "stale",
+          "success",
+          "terminal"
+        ]
+      }
+    },
+    "MCP local_ai_coord.plan_reconcile_steering": {
+      "decision": "retain",
+      "role": "agent",
+      "reason": "Project-scoped file-backed plan and task execution state; retain actionable lifecycle, revision, evidence, and recovery fields.",
+      "response_policy": "Preserve work results, errors, retry/cancellation, identities, evidence, and pagination; project_agent_response removes internal observations outside dashboard detail; caller documents remain opaque.",
       "source_contract": {
         "source": "src/local_ai_hub/operation_contracts.py",
         "selector": "action",
@@ -6624,6 +6647,8 @@
           "APP.agent_tasks.cleanup_worktree",
           "APP.agent_tasks.curate_training_dataset",
           "APP.commands.increase_task_budget",
+          "APP.evaluate_laya_context_source",
+          "APP.laya_candidates.handle",
           "local:error_payload",
           "local:response",
           "local:result",
@@ -6675,9 +6700,7 @@
         ],
         "response_producers": [
           "local:res",
-          "local:result",
-          "local:revision_stop",
-          "run_goal_project_verification"
+          "local:revision_stop"
         ],
         "action_literals": [
           "completion",
@@ -7476,6 +7499,175 @@
         "action_literals": []
       }
     },
+    "POST /api/coord/plan_adopt_legacy_board": {
+      "decision": "retain",
+      "role": "agent",
+      "reason": "Project-scoped file-backed plan and task execution state; retain actionable lifecycle, revision, evidence, and recovery fields.",
+      "response_policy": "Preserve work results, errors, retry/cancellation, identities, evidence, and pagination; project_agent_response removes internal observations outside dashboard detail; caller documents remain opaque.",
+      "source_contract": {
+        "source": "src/local_ai_hub/http_route_registry.py",
+        "handler": "post_coord_plan_adopt_legacy_board_1",
+        "literal_response_fields": [],
+        "response_producers": [],
+        "action_literals": []
+      }
+    },
+    "POST /api/coord/plan_archive": {
+      "decision": "retain",
+      "role": "agent",
+      "reason": "Project-scoped file-backed plan and task execution state; retain actionable lifecycle, revision, evidence, and recovery fields.",
+      "response_policy": "Preserve work results, errors, retry/cancellation, identities, evidence, and pagination; project_agent_response removes internal observations outside dashboard detail; caller documents remain opaque.",
+      "source_contract": {
+        "source": "src/local_ai_hub/http_route_registry.py",
+        "handler": "post_coord_plan_archive_1",
+        "literal_response_fields": [],
+        "response_producers": [],
+        "action_literals": []
+      }
+    },
+    "POST /api/coord/plan_bind_task": {
+      "decision": "retain",
+      "role": "agent",
+      "reason": "Project-scoped file-backed plan and task execution state; retain actionable lifecycle, revision, evidence, and recovery fields.",
+      "response_policy": "Preserve work results, errors, retry/cancellation, identities, evidence, and pagination; project_agent_response removes internal observations outside dashboard detail; caller documents remain opaque.",
+      "source_contract": {
+        "source": "src/local_ai_hub/http_route_registry.py",
+        "handler": "post_coord_plan_bind_task_1",
+        "literal_response_fields": [],
+        "response_producers": [],
+        "action_literals": []
+      }
+    },
+    "POST /api/coord/plan_board_view": {
+      "decision": "retain",
+      "role": "agent",
+      "reason": "Project-scoped file-backed plan and task execution state; retain actionable lifecycle, revision, evidence, and recovery fields.",
+      "response_policy": "Preserve work results, errors, retry/cancellation, identities, evidence, and pagination; project_agent_response removes internal observations outside dashboard detail; caller documents remain opaque.",
+      "source_contract": {
+        "source": "src/local_ai_hub/http_route_registry.py",
+        "handler": "post_coord_plan_board_view_1",
+        "literal_response_fields": [],
+        "response_producers": [],
+        "action_literals": []
+      }
+    },
+    "POST /api/coord/plan_create": {
+      "decision": "retain",
+      "role": "agent",
+      "reason": "Project-scoped file-backed plan and task execution state; retain actionable lifecycle, revision, evidence, and recovery fields.",
+      "response_policy": "Preserve work results, errors, retry/cancellation, identities, evidence, and pagination; project_agent_response removes internal observations outside dashboard detail; caller documents remain opaque.",
+      "source_contract": {
+        "source": "src/local_ai_hub/http_route_registry.py",
+        "handler": "post_coord_plan_create_1",
+        "literal_response_fields": [],
+        "response_producers": [],
+        "action_literals": []
+      }
+    },
+    "POST /api/coord/plan_get": {
+      "decision": "retain",
+      "role": "agent",
+      "reason": "Project-scoped file-backed plan and task execution state; retain actionable lifecycle, revision, evidence, and recovery fields.",
+      "response_policy": "Preserve work results, errors, retry/cancellation, identities, evidence, and pagination; project_agent_response removes internal observations outside dashboard detail; caller documents remain opaque.",
+      "source_contract": {
+        "source": "src/local_ai_hub/http_route_registry.py",
+        "handler": "post_coord_plan_get_1",
+        "literal_response_fields": [],
+        "response_producers": [],
+        "action_literals": []
+      }
+    },
+    "POST /api/coord/plan_init": {
+      "decision": "retain",
+      "role": "agent",
+      "reason": "Project-scoped file-backed plan and task execution state; retain actionable lifecycle, revision, evidence, and recovery fields.",
+      "response_policy": "Preserve work results, errors, retry/cancellation, identities, evidence, and pagination; project_agent_response removes internal observations outside dashboard detail; caller documents remain opaque.",
+      "source_contract": {
+        "source": "src/local_ai_hub/http_route_registry.py",
+        "handler": "post_coord_plan_init_1",
+        "literal_response_fields": [],
+        "response_producers": [],
+        "action_literals": []
+      }
+    },
+    "POST /api/coord/plan_list": {
+      "decision": "retain",
+      "role": "agent",
+      "reason": "Project-scoped file-backed plan and task execution state; retain actionable lifecycle, revision, evidence, and recovery fields.",
+      "response_policy": "Preserve work results, errors, retry/cancellation, identities, evidence, and pagination; project_agent_response removes internal observations outside dashboard detail; caller documents remain opaque.",
+      "source_contract": {
+        "source": "src/local_ai_hub/http_route_registry.py",
+        "handler": "post_coord_plan_list_1",
+        "literal_response_fields": [],
+        "response_producers": [],
+        "action_literals": []
+      }
+    },
+    "POST /api/coord/plan_reconcile_steering": {
+      "decision": "retain",
+      "role": "agent",
+      "reason": "Project-scoped file-backed plan and task execution state; retain actionable lifecycle, revision, evidence, and recovery fields.",
+      "response_policy": "Preserve work results, errors, retry/cancellation, identities, evidence, and pagination; project_agent_response removes internal observations outside dashboard detail; caller documents remain opaque.",
+      "source_contract": {
+        "source": "src/local_ai_hub/http_route_registry.py",
+        "handler": "post_coord_plan_reconcile_steering_1",
+        "literal_response_fields": [],
+        "response_producers": [],
+        "action_literals": []
+      }
+    },
+    "POST /api/coord/plan_task_delete": {
+      "decision": "retain",
+      "role": "agent",
+      "reason": "Project-scoped file-backed plan and task execution state; retain actionable lifecycle, revision, evidence, and recovery fields.",
+      "response_policy": "Preserve work results, errors, retry/cancellation, identities, evidence, and pagination; project_agent_response removes internal observations outside dashboard detail; caller documents remain opaque.",
+      "source_contract": {
+        "source": "src/local_ai_hub/http_route_registry.py",
+        "handler": "post_coord_plan_task_delete_1",
+        "literal_response_fields": [],
+        "response_producers": [],
+        "action_literals": []
+      }
+    },
+    "POST /api/coord/plan_task_edit": {
+      "decision": "retain",
+      "role": "agent",
+      "reason": "Project-scoped file-backed plan and task execution state; retain actionable lifecycle, revision, evidence, and recovery fields.",
+      "response_policy": "Preserve work results, errors, retry/cancellation, identities, evidence, and pagination; project_agent_response removes internal observations outside dashboard detail; caller documents remain opaque.",
+      "source_contract": {
+        "source": "src/local_ai_hub/http_route_registry.py",
+        "handler": "post_coord_plan_task_edit_1",
+        "literal_response_fields": [],
+        "response_producers": [],
+        "action_literals": []
+      }
+    },
+    "POST /api/coord/plan_update": {
+      "decision": "retain",
+      "role": "agent",
+      "reason": "Project-scoped file-backed plan and task execution state; retain actionable lifecycle, revision, evidence, and recovery fields.",
+      "response_policy": "Preserve work results, errors, retry/cancellation, identities, evidence, and pagination; project_agent_response removes internal observations outside dashboard detail; caller documents remain opaque.",
+      "source_contract": {
+        "source": "src/local_ai_hub/http_route_registry.py",
+        "handler": "post_coord_plan_update_1",
+        "literal_response_fields": [],
+        "response_producers": [],
+        "action_literals": []
+      }
+    },
+    "POST /api/coord/plan_validate": {
+      "decision": "retain",
+      "role": "agent",
+      "reason": "Project-scoped file-backed plan and task execution state; retain actionable lifecycle, revision, evidence, and recovery fields.",
+      "response_policy": "Preserve work results, errors, retry/cancellation, identities, evidence, and pagination; project_agent_response removes internal observations outside dashboard detail; caller documents remain opaque.",
+      "source_contract": {
+        "source": "src/local_ai_hub/http_route_registry.py",
+        "handler": "post_coord_plan_validate_1",
+        "literal_response_fields": [],
+        "response_producers": [],
+        "action_literals": []
+      }
+    },
     "POST /api/coord/pubsub_poll": {
       "decision": "retain",
       "role": "agent",
@@ -7783,6 +7975,27 @@
         "action_literals": []
       }
     },
+    "POST /api/diagnostics/export": {
+      "decision": "diagnostic",
+      "role": "operator_diagnostic",
+      "reason": "Installation-wide support archives include state databases, logs and potentially captured request and response detail across projects.",
+      "response_policy": "Require the operator-enabled dashboard diagnostics gate before execution; stream an encrypted archive with its password in a no-store response, or return bounded error metadata.",
+      "source_contract": {
+        "source": "src/local_ai_hub/http_route_registry.py",
+        "handler": "post_diagnostics_export_1",
+        "literal_response_fields": [
+          "error",
+          "error_code",
+          "retryable",
+          "success",
+          "terminal"
+        ],
+        "response_producers": [
+          "bool"
+        ],
+        "action_literals": []
+      }
+    },
     "POST /api/doctor": {
       "decision": "diagnostic",
       "role": "operator_diagnostic",
@@ -7919,6 +8132,7 @@
           "app.services.git_diff",
           "app.services.git_history_search",
           "app.services.test_matrix",
+          "dict",
           "local:result",
           "tracker.fingerprint"
         ],
@@ -7946,6 +8160,7 @@
           "app.services.git_diff",
           "app.services.git_history_search",
           "app.services.test_matrix",
+          "dict",
           "local:result",
           "tracker.fingerprint"
         ],
@@ -7973,6 +8188,7 @@
           "app.services.git_diff",
           "app.services.git_history_search",
           "app.services.test_matrix",
+          "dict",
           "local:result",
           "tracker.fingerprint"
         ],
@@ -7993,6 +8209,24 @@
         ],
         "response_producers": [
           "APP.services.synthesize_commit"
+        ],
+        "action_literals": []
+      }
+    },
+    "POST /api/gpu-reservation": {
+      "decision": "protocol_boundary",
+      "role": "agent",
+      "reason": "Explicit GPU reservation management is an operator boundary used for bounded cross-process resource admission and recovery.",
+      "response_policy": "Preserve success and errors; require the route's current authorization checks and retain fail-closed handling for unknown owner liveness. Do not expose reservation credentials.",
+      "source_contract": {
+        "source": "src/local_ai_hub/http_route_registry.py",
+        "handler": "post_gpu_reservation_1",
+        "literal_response_fields": [
+          "error",
+          "success"
+        ],
+        "response_producers": [
+          "local:res"
         ],
         "action_literals": []
       }
@@ -8282,7 +8516,8 @@
         "handler": "post_rag_index_1",
         "literal_response_fields": [],
         "response_producers": [
-          "APP.rag.index"
+          "APP.rag.index",
+          "local:result"
         ],
         "action_literals": []
       }
@@ -8371,106 +8606,6 @@
         ],
         "response_producers": [
           "APP.services.refactor_impact"
-        ],
-        "action_literals": []
-      }
-    },
-    "POST /api/opencode/provider/start": {
-      "decision": "retain",
-      "role": "readiness_or_control",
-      "reason": "Provider lifecycle start operation for the supervised OpenCode session.",
-      "response_policy": "Preserve actionable lifecycle state, errors, retryability and terminal status; retain existing authorization and response filtering.",
-      "source_contract": {
-        "source": "src/local_ai_hub/http_route_registry.py",
-        "handler": "post_opencode_provider_start_1",
-        "literal_response_fields": [
-          "error",
-          "retryable",
-          "state",
-          "success",
-          "terminal"
-        ],
-        "response_producers": [
-          "local:current",
-          "local:rejection",
-          "service.start",
-          "service.status",
-          "service.wait"
-        ],
-        "action_literals": []
-      }
-    },
-    "POST /api/opencode/provider/status": {
-      "decision": "retain",
-      "role": "readiness_or_control",
-      "reason": "Provider lifecycle status operation for the supervised OpenCode session.",
-      "response_policy": "Preserve actionable lifecycle state, errors, retryability and terminal status; retain existing authorization and response filtering.",
-      "source_contract": {
-        "source": "src/local_ai_hub/http_route_registry.py",
-        "handler": "post_opencode_provider_status_1",
-        "literal_response_fields": [
-          "error",
-          "retryable",
-          "state",
-          "success",
-          "terminal"
-        ],
-        "response_producers": [
-          "local:current",
-          "local:rejection",
-          "service.start",
-          "service.status",
-          "service.wait"
-        ],
-        "action_literals": []
-      }
-    },
-    "POST /api/opencode/provider/stop": {
-      "decision": "retain",
-      "role": "readiness_or_control",
-      "reason": "Provider lifecycle stop operation for the supervised OpenCode session.",
-      "response_policy": "Preserve actionable lifecycle state, errors, retryability and terminal status; retain existing authorization and response filtering.",
-      "source_contract": {
-        "source": "src/local_ai_hub/http_route_registry.py",
-        "handler": "post_opencode_provider_stop_1",
-        "literal_response_fields": [
-          "error",
-          "retryable",
-          "state",
-          "success",
-          "terminal"
-        ],
-        "response_producers": [
-          "local:current",
-          "local:rejection",
-          "service.start",
-          "service.status",
-          "service.wait"
-        ],
-        "action_literals": []
-      }
-    },
-    "POST /api/opencode/provider/wait": {
-      "decision": "retain",
-      "role": "readiness_or_control",
-      "reason": "Provider lifecycle wait operation for the supervised OpenCode session.",
-      "response_policy": "Preserve actionable lifecycle state, errors, retryability and terminal status; retain existing authorization and response filtering.",
-      "source_contract": {
-        "source": "src/local_ai_hub/http_route_registry.py",
-        "handler": "post_opencode_provider_wait_1",
-        "literal_response_fields": [
-          "error",
-          "retryable",
-          "state",
-          "success",
-          "terminal"
-        ],
-        "response_producers": [
-          "local:current",
-          "local:rejection",
-          "service.start",
-          "service.status",
-          "service.wait"
         ],
         "action_literals": []
       }
@@ -8886,6 +9021,7 @@
           "app.services.git_diff",
           "app.services.git_history_search",
           "app.services.test_matrix",
+          "dict",
           "local:result",
           "tracker.fingerprint"
         ],
@@ -9152,6 +9288,7 @@
           "app.services.git_diff",
           "app.services.git_history_search",
           "app.services.test_matrix",
+          "dict",
           "local:result",
           "tracker.fingerprint"
         ],
@@ -9326,24 +9463,6 @@
         "response_producers": [
           "APP.services.repo_search",
           "local:result"
-        ],
-        "action_literals": []
-      }
-    },
-    "POST /api/gpu-reservation": {
-      "decision": "protocol_boundary",
-      "role": "agent",
-      "reason": "Explicit GPU reservation management is an operator boundary used for bounded cross-process resource admission and recovery.",
-      "response_policy": "Preserve success and errors; require the route's current authorization checks and retain fail-closed handling for unknown owner liveness. Do not expose reservation credentials.",
-      "source_contract": {
-        "source": "src/local_ai_hub/http_route_registry.py",
-        "handler": "post_gpu_reservation_1",
-        "literal_response_fields": [
-          "error",
-          "success"
-        ],
-        "response_producers": [
-          "local:res"
         ],
         "action_literals": []
       }
@@ -9572,6 +9691,24 @@
         "action_literals": []
       }
     },
+    "POST /api/telemetry/endpoint-stats/reset": {
+      "decision": "retain",
+      "role": "readiness_or_control",
+      "reason": "Operator reset of dashboard endpoint statistics for a selected project.",
+      "response_policy": "Preserve reset outcome, project root and actionable status; retain existing authorization.",
+      "source_contract": {
+        "source": "src/local_ai_hub/http_route_registry.py",
+        "handler": "post_telemetry_endpoint_stats_reset_1",
+        "literal_response_fields": [
+          "available",
+          "reset",
+          "root",
+          "success"
+        ],
+        "response_producers": [],
+        "action_literals": []
+      }
+    },
     "POST /api/telemetry/timeline": {
       "decision": "diagnostic",
       "role": "operator_diagnostic",
@@ -9592,24 +9729,6 @@
         "response_producers": [
           "APP.telemetry.get_timeline_page"
         ],
-        "action_literals": []
-      }
-    },
-    "POST /api/telemetry/endpoint-stats/reset": {
-      "decision": "retain",
-      "role": "readiness_or_control",
-      "reason": "Operator reset of dashboard endpoint statistics for a selected project.",
-      "response_policy": "Preserve reset outcome, project root and actionable status; retain existing authorization.",
-      "source_contract": {
-        "source": "src/local_ai_hub/http_route_registry.py",
-        "handler": "post_telemetry_endpoint_stats_reset_1",
-        "literal_response_fields": [
-          "available",
-          "reset",
-          "root",
-          "success"
-        ],
-        "response_producers": [],
         "action_literals": []
       }
     },
@@ -9652,6 +9771,7 @@
           "app.services.git_diff",
           "app.services.git_history_search",
           "app.services.test_matrix",
+          "dict",
           "local:result",
           "tracker.fingerprint"
         ],
@@ -9719,219 +9839,6 @@
           "submit",
           "wait"
         ]
-      }
-    },
-    "MCP local_ai_coord.plan_bind_task": {
-      "decision": "retain",
-      "role": "agent",
-      "reason": "Project-scoped file-backed plan and task execution state; retain actionable lifecycle, revision, evidence, and recovery fields.",
-      "response_policy": "Preserve work results, errors, retry/cancellation, identities, evidence, and pagination; project_agent_response removes internal observations outside dashboard detail; caller documents remain opaque.",
-      "source_contract": {
-        "source": "src/local_ai_hub/operation_contracts.py",
-        "selector": "action",
-        "output_schema_fields": [
-          "cancel_reason",
-          "cancel_requested",
-          "cancelled",
-          "degraded",
-          "error",
-          "evidence_ids",
-          "retryable",
-          "stale",
-          "success",
-          "terminal"
-        ]
-      }
-    },
-    "MCP local_ai_coord.plan_reconcile_steering": {
-      "decision": "retain",
-      "role": "agent",
-      "reason": "Project-scoped file-backed plan and task execution state; retain actionable lifecycle, revision, evidence, and recovery fields.",
-      "response_policy": "Preserve work results, errors, retry/cancellation, identities, evidence, and pagination; project_agent_response removes internal observations outside dashboard detail; caller documents remain opaque.",
-      "source_contract": {
-        "source": "src/local_ai_hub/operation_contracts.py",
-        "selector": "action",
-        "output_schema_fields": [
-          "cancel_reason",
-          "cancel_requested",
-          "cancelled",
-          "degraded",
-          "error",
-          "evidence_ids",
-          "retryable",
-          "stale",
-          "success",
-          "terminal"
-        ]
-      }
-    },
-    "POST /api/coord/plan_adopt_legacy_board": {
-      "decision": "retain",
-      "role": "agent",
-      "reason": "Project-scoped file-backed plan and task execution state; retain actionable lifecycle, revision, evidence, and recovery fields.",
-      "response_policy": "Preserve work results, errors, retry/cancellation, identities, evidence, and pagination; project_agent_response removes internal observations outside dashboard detail; caller documents remain opaque.",
-      "source_contract": {
-        "source": "src/local_ai_hub/http_route_registry.py",
-        "handler": "post_coord_plan_adopt_legacy_board_1",
-        "literal_response_fields": [],
-        "response_producers": [],
-        "action_literals": []
-      }
-    },
-    "POST /api/coord/plan_archive": {
-      "decision": "retain",
-      "role": "agent",
-      "reason": "Project-scoped file-backed plan and task execution state; retain actionable lifecycle, revision, evidence, and recovery fields.",
-      "response_policy": "Preserve work results, errors, retry/cancellation, identities, evidence, and pagination; project_agent_response removes internal observations outside dashboard detail; caller documents remain opaque.",
-      "source_contract": {
-        "source": "src/local_ai_hub/http_route_registry.py",
-        "handler": "post_coord_plan_archive_1",
-        "literal_response_fields": [],
-        "response_producers": [],
-        "action_literals": []
-      }
-    },
-    "POST /api/coord/plan_bind_task": {
-      "decision": "retain",
-      "role": "agent",
-      "reason": "Project-scoped file-backed plan and task execution state; retain actionable lifecycle, revision, evidence, and recovery fields.",
-      "response_policy": "Preserve work results, errors, retry/cancellation, identities, evidence, and pagination; project_agent_response removes internal observations outside dashboard detail; caller documents remain opaque.",
-      "source_contract": {
-        "source": "src/local_ai_hub/http_route_registry.py",
-        "handler": "post_coord_plan_bind_task_1",
-        "literal_response_fields": [],
-        "response_producers": [],
-        "action_literals": []
-      }
-    },
-    "POST /api/coord/plan_board_view": {
-      "decision": "retain",
-      "role": "agent",
-      "reason": "Project-scoped file-backed plan and task execution state; retain actionable lifecycle, revision, evidence, and recovery fields.",
-      "response_policy": "Preserve work results, errors, retry/cancellation, identities, evidence, and pagination; project_agent_response removes internal observations outside dashboard detail; caller documents remain opaque.",
-      "source_contract": {
-        "source": "src/local_ai_hub/http_route_registry.py",
-        "handler": "post_coord_plan_board_view_1",
-        "literal_response_fields": [],
-        "response_producers": [],
-        "action_literals": []
-      }
-    },
-    "POST /api/coord/plan_create": {
-      "decision": "retain",
-      "role": "agent",
-      "reason": "Project-scoped file-backed plan and task execution state; retain actionable lifecycle, revision, evidence, and recovery fields.",
-      "response_policy": "Preserve work results, errors, retry/cancellation, identities, evidence, and pagination; project_agent_response removes internal observations outside dashboard detail; caller documents remain opaque.",
-      "source_contract": {
-        "source": "src/local_ai_hub/http_route_registry.py",
-        "handler": "post_coord_plan_create_1",
-        "literal_response_fields": [],
-        "response_producers": [],
-        "action_literals": []
-      }
-    },
-    "POST /api/coord/plan_get": {
-      "decision": "retain",
-      "role": "agent",
-      "reason": "Project-scoped file-backed plan and task execution state; retain actionable lifecycle, revision, evidence, and recovery fields.",
-      "response_policy": "Preserve work results, errors, retry/cancellation, identities, evidence, and pagination; project_agent_response removes internal observations outside dashboard detail; caller documents remain opaque.",
-      "source_contract": {
-        "source": "src/local_ai_hub/http_route_registry.py",
-        "handler": "post_coord_plan_get_1",
-        "literal_response_fields": [],
-        "response_producers": [],
-        "action_literals": []
-      }
-    },
-    "POST /api/coord/plan_init": {
-      "decision": "retain",
-      "role": "agent",
-      "reason": "Project-scoped file-backed plan and task execution state; retain actionable lifecycle, revision, evidence, and recovery fields.",
-      "response_policy": "Preserve work results, errors, retry/cancellation, identities, evidence, and pagination; project_agent_response removes internal observations outside dashboard detail; caller documents remain opaque.",
-      "source_contract": {
-        "source": "src/local_ai_hub/http_route_registry.py",
-        "handler": "post_coord_plan_init_1",
-        "literal_response_fields": [],
-        "response_producers": [],
-        "action_literals": []
-      }
-    },
-    "POST /api/coord/plan_list": {
-      "decision": "retain",
-      "role": "agent",
-      "reason": "Project-scoped file-backed plan and task execution state; retain actionable lifecycle, revision, evidence, and recovery fields.",
-      "response_policy": "Preserve work results, errors, retry/cancellation, identities, evidence, and pagination; project_agent_response removes internal observations outside dashboard detail; caller documents remain opaque.",
-      "source_contract": {
-        "source": "src/local_ai_hub/http_route_registry.py",
-        "handler": "post_coord_plan_list_1",
-        "literal_response_fields": [],
-        "response_producers": [],
-        "action_literals": []
-      }
-    },
-    "POST /api/coord/plan_reconcile_steering": {
-      "decision": "retain",
-      "role": "agent",
-      "reason": "Project-scoped file-backed plan and task execution state; retain actionable lifecycle, revision, evidence, and recovery fields.",
-      "response_policy": "Preserve work results, errors, retry/cancellation, identities, evidence, and pagination; project_agent_response removes internal observations outside dashboard detail; caller documents remain opaque.",
-      "source_contract": {
-        "source": "src/local_ai_hub/http_route_registry.py",
-        "handler": "post_coord_plan_reconcile_steering_1",
-        "literal_response_fields": [],
-        "response_producers": [],
-        "action_literals": []
-      }
-    },
-    "POST /api/coord/plan_task_delete": {
-      "decision": "retain",
-      "role": "agent",
-      "reason": "Project-scoped file-backed plan and task execution state; retain actionable lifecycle, revision, evidence, and recovery fields.",
-      "response_policy": "Preserve work results, errors, retry/cancellation, identities, evidence, and pagination; project_agent_response removes internal observations outside dashboard detail; caller documents remain opaque.",
-      "source_contract": {
-        "source": "src/local_ai_hub/http_route_registry.py",
-        "handler": "post_coord_plan_task_delete_1",
-        "literal_response_fields": [],
-        "response_producers": [],
-        "action_literals": []
-      }
-    },
-    "POST /api/coord/plan_task_edit": {
-      "decision": "retain",
-      "role": "agent",
-      "reason": "Project-scoped file-backed plan and task execution state; retain actionable lifecycle, revision, evidence, and recovery fields.",
-      "response_policy": "Preserve work results, errors, retry/cancellation, identities, evidence, and pagination; project_agent_response removes internal observations outside dashboard detail; caller documents remain opaque.",
-      "source_contract": {
-        "source": "src/local_ai_hub/http_route_registry.py",
-        "handler": "post_coord_plan_task_edit_1",
-        "literal_response_fields": [],
-        "response_producers": [],
-        "action_literals": []
-      }
-    },
-    "POST /api/coord/plan_update": {
-      "decision": "retain",
-      "role": "agent",
-      "reason": "Project-scoped file-backed plan and task execution state; retain actionable lifecycle, revision, evidence, and recovery fields.",
-      "response_policy": "Preserve work results, errors, retry/cancellation, identities, evidence, and pagination; project_agent_response removes internal observations outside dashboard detail; caller documents remain opaque.",
-      "source_contract": {
-        "source": "src/local_ai_hub/http_route_registry.py",
-        "handler": "post_coord_plan_update_1",
-        "literal_response_fields": [],
-        "response_producers": [],
-        "action_literals": []
-      }
-    },
-    "POST /api/coord/plan_validate": {
-      "decision": "retain",
-      "role": "agent",
-      "reason": "Project-scoped file-backed plan and task execution state; retain actionable lifecycle, revision, evidence, and recovery fields.",
-      "response_policy": "Preserve work results, errors, retry/cancellation, identities, evidence, and pagination; project_agent_response removes internal observations outside dashboard detail; caller documents remain opaque.",
-      "source_contract": {
-        "source": "src/local_ai_hub/http_route_registry.py",
-        "handler": "post_coord_plan_validate_1",
-        "literal_response_fields": [],
-        "response_producers": [],
-        "action_literals": []
       }
     }
   }

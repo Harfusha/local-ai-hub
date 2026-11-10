@@ -9,6 +9,7 @@ import sqlite3
 import threading
 import time
 import traceback
+import uuid
 import zipfile
 from contextlib import ExitStack
 from concurrent.futures import CancelledError
@@ -514,6 +515,7 @@ class LocalAIApp:
         self.laya_lifecycle = LayaSessionLifecycle(
             laya_cfg.get("idle_unload_seconds", DEFAULT_IDLE_UNLOAD_SECONDS)
         )
+        self._laya_capture_inflight = threading.Lock()
         self.scheduler.add_idle_maintenance_callback(self.laya_lifecycle.poll_idle_unload)
         from .automation_service import create_automation_broker
         self.automation = create_automation_broker(self.config, self.artifacts)
@@ -814,6 +816,40 @@ class LocalAIApp:
         async_payload["priority"] = 1
         for untrusted_context in ("project_context", "project_model_profile", "system_prefix"):
             async_payload.pop(untrusted_context, None)
+        if action == "rag_index":
+            from .repository_scope import RepositoryScopeError, authorized_repository_root
+            raw_root = payload.get("root")
+            workspace = payload.get("workspace")
+            try:
+                root = authorized_repository_root(self.config, raw_root)
+            except RepositoryScopeError as exc:
+                return {
+                    "success": False,
+                    "error": str(exc),
+                    "error_code": exc.code,
+                    "terminal": True,
+                    "retryable": False,
+                    "operation_not_started": True,
+                }
+            if not isinstance(workspace, str) or not workspace.strip():
+                return {
+                    "success": False,
+                    "error": "workspace is required for asynchronous RAG indexing",
+                    "terminal": True,
+                    "retryable": False,
+                    "operation_not_started": True,
+                }
+            try:
+                self.rag.require_workspace_root(workspace=workspace, root=str(root))
+            except (TypeError, ValueError) as exc:
+                return {
+                    "success": False,
+                    "error": str(exc),
+                    "terminal": True,
+                    "retryable": False,
+                    "operation_not_started": True,
+                }
+            return self.rag.index(str(root), workspace=workspace)
         if action == "delegate":
             return self.services.delegate(async_payload)
         if action == "reason":
@@ -2444,6 +2480,347 @@ class LocalAIApp:
 
     def __exit__(self, _exc_type: Any, _exc: Any, _tb: Any) -> None:
         self.close()
+
+    def evaluate_laya_context_source(self, operation: Any, *, root: str) -> dict[str, Any]:
+        """Run one typed shadow decision and capture its actual runtime outcome."""
+        if type(operation) is not dict or set(operation) != {
+            "action", "task_id", "session_id", "evidence",
+        }:
+            raise ValueError("Laya shadow evaluation fields invalid")
+        if operation["action"] != "evaluate_context_source":
+            raise ValueError("unsupported Laya runtime action")
+        laya_cfg = self.config.get("laya", {})
+        runtime_cfg = laya_cfg.get("runtime", {}) if isinstance(laya_cfg, dict) else {}
+        if not isinstance(runtime_cfg, dict) or runtime_cfg.get("enabled") is not True:
+            raise RuntimeError("Laya shadow runtime is disabled")
+        checkpoint_path = runtime_cfg.get("checkpoint_path")
+        revision = runtime_cfg.get("revision")
+        expected_sha256 = runtime_cfg.get("expected_sha256")
+        if not isinstance(checkpoint_path, str) or not checkpoint_path:
+            raise RuntimeError("Laya shadow checkpoint is not configured")
+        if not isinstance(revision, str) or not revision:
+            raise RuntimeError("Laya shadow revision is not configured")
+        if not isinstance(expected_sha256, dict) or not expected_sha256:
+            raise RuntimeError("Laya shadow checkpoint hashes are not configured")
+        if type(runtime_cfg.get("allow_cpu", False)) is not bool:
+            raise RuntimeError("laya.runtime.allow_cpu must be a boolean")
+
+        from .laya_decisions import ContextSourceEvidence, DecisionCategory, DecisionMode, DecisionRequest
+        from .laya_runtime import LayaRuntimeAdapter, discover_torch_devices
+        from .project_config import resolve_project_context
+
+        canonical_root = str(Path(root).resolve(strict=True))
+        project = resolve_project_context(canonical_root, Path(self.config["server"]["state_dir"]))
+        repository_id = getattr(project, "coordination_id", None)
+        if not isinstance(repository_id, str) or not repository_id:
+            raise ValueError("Laya shadow evaluation requires resolved repository identity")
+        task_id = operation["task_id"]
+        task = self.laya_candidates._find_task(self.agent_tasks, canonical_root, task_id)
+        session_id = self.laya_candidates._session_for_task(task)
+        if operation["session_id"] != session_id:
+            raise ValueError("Laya session identity does not match its scoped task")
+        evidence = ContextSourceEvidence.from_mapping(operation["evidence"])
+        request = DecisionRequest.from_mapping(
+            {
+                "category": DecisionCategory.CONTEXT_SOURCE.value,
+                "evidence_ids": list(evidence.evidence_ids),
+                "options": list(evidence.decision_options),
+            },
+            decision_id="laya_" + uuid.uuid4().hex,
+            mode=DecisionMode.SHADOW,
+            repository_id=repository_id,
+            task_id=task_id,
+            session_id=session_id,
+        )
+        candidate = self.laya_candidates._candidate_input({
+            "decision_schema_version": "laya-decision-v1",
+            "category": request.category.value,
+            "state": {key: value for key, value in evidence.model_input().items() if key != "evidence_ids"},
+            "options": list(request.options),
+            "language": "und",
+            "preprocessing": {"name": "laya-runtime", "version": revision},
+            "evidence_ids": list(request.evidence_ids),
+        })
+        self.laya_candidates._validate_context_source_evidence(
+            candidate, evidence_store=self.evidence, canonical_root=canonical_root
+        )
+
+        adapter = getattr(self, "_laya_runtime_adapter", None)
+        if adapter is None:
+            devices = discover_torch_devices()
+            if runtime_cfg.get("allow_cpu", False) is not True:
+                devices = tuple(device for device in devices if device.device_class != "cpu")
+            adapter = LayaRuntimeAdapter(
+                checkpoint_path=checkpoint_path,
+                revision=revision,
+                expected_sha256=expected_sha256,
+                device_candidates=devices,
+                evaluation_mode=True,
+            )
+            self._laya_runtime_adapter = adapter
+
+        captured: dict[str, Any] = {}
+
+        def record_outcome(actual_request: Any, actual_evidence: Any, outcome: Any) -> None:
+            captured.update(self.laya_candidates.capture_runtime_outcome(
+                actual_request,
+                actual_evidence,
+                outcome,
+                root=canonical_root,
+                task_store=self.agent_tasks,
+                evidence_store=self.evidence,
+            ))
+
+        outcome = adapter.evaluate_context_source(
+            request,
+            evidence,
+            session_lifecycle=self.laya_lifecycle,
+            outcome_recorder=record_outcome,
+        )
+        decision = outcome.decision
+        self._record_laya_runtime_decision(request, decision)
+        runtime = outcome.runtime
+        return {
+            "success": decision.success,
+            "decision": {
+                "decision_id": request.decision_id,
+                "category": request.category.value,
+                "mode": request.mode.value,
+                "status": decision.status.value,
+                "suggestion": decision.suggestion,
+                "reason_codes": list(decision.reason_codes),
+            },
+            "runtime": vars(runtime) if runtime is not None else None,
+            "capture_status": outcome.capture_status,
+            "candidate": {key: captured[key] for key in ("candidate_id", "duplicate", "status", "runtime_output_recorded") if key in captured},
+        }
+
+    def _record_laya_runtime_decision(self, request: Any, decision: Any) -> bool:
+        """Store the typed decision projection through existing metadata telemetry."""
+        try:
+            recorded = self.telemetry.record_laya_decision(
+                decision.metadata(),
+                repository_id=request.repository_id,
+                task_id=request.task_id,
+                session_id=request.session_id,
+            )
+        except Exception as exc:
+            logger.warning("Laya decision telemetry failed: %s", type(exc).__name__)
+            return False
+        if recorded is not True:
+            logger.warning("Laya decision telemetry was not recorded")
+            return False
+        return True
+
+    def _record_laya_capture_observation(
+        self,
+        status: str,
+        reason: str,
+        *,
+        error_type: str = "",
+    ) -> bool:
+        """Persist typed capture lifecycle metadata without request content."""
+        statuses = {"disabled", "skipped", "queued", "captured", "failed"}
+        reasons = {
+            "runtime_disabled", "context_unavailable", "task_identity_unavailable",
+            "task_scope_unavailable", "session_identity_mismatch",
+            "retrieval_provenance_unavailable", "backend_states_unavailable",
+            "fewer_than_two_verified_sources", "no_unresolved_evidence_gap",
+            "capture_executor_unavailable", "hub_shutdown", "capture_in_flight",
+            "capture_queue_unavailable", "runtime_error", "outcome_not_captured",
+            "runtime_outcome", "queued", "unspecified", "capture_exception",
+        }
+        safe_status = status if status in statuses else "failed"
+        safe_reason = reason if reason in reasons else "unspecified"
+        recorder = getattr(getattr(self, "telemetry", None), "record_stage", None)
+        if not callable(recorder):
+            return False
+        event = {
+            "action": "laya_capture",
+            "stage": safe_status,
+            "bypass_reason": safe_reason,
+            "success": safe_status != "failed",
+        }
+        if safe_status == "failed" and error_type:
+            event["error_type"] = error_type
+        try:
+            recorder(**event)
+            return True
+        except Exception as exc:
+            self.logger.warning("Laya capture telemetry failed: %s", type(exc).__name__)
+            return False
+
+    def capture_laya_context_source_from_context(
+        self,
+        request: Any,
+        result: Any,
+    ) -> dict[str, Any]:
+        try:
+            observation = self._capture_laya_context_source_from_context(request, result)
+        except Exception as exc:
+            self._record_laya_capture_observation(
+                "failed", "capture_exception", error_type=type(exc).__name__
+            )
+            raise
+        status = observation.get("status") if isinstance(observation, dict) else "failed"
+        reason = observation.get("reason") if isinstance(observation, dict) else "outcome_not_captured"
+        if status == "disabled":
+            reason = "runtime_disabled"
+        elif status == "queued":
+            reason = "queued"
+        elif not isinstance(reason, str):
+            reason = "unspecified"
+        if status != "queued":
+            self._record_laya_capture_observation(status, reason)
+        return observation
+
+    def _capture_laya_context_source_from_context(
+        self,
+        request: Any,
+        result: Any,
+    ) -> dict[str, Any]:
+        """Collect one real, incomplete context decision in shadow mode only."""
+        runtime_cfg = self.config.get("laya", {}).get("runtime", {})
+        if not isinstance(runtime_cfg, dict) or runtime_cfg.get("enabled") is not True:
+            return {"status": "disabled"}
+        if not isinstance(result, dict) or result.get("success") is not True:
+            return {"status": "skipped", "reason": "context_unavailable"}
+        task_id = str(getattr(request, "task_id", "") or "").strip()
+        if not task_id:
+            return {"status": "skipped", "reason": "task_identity_unavailable"}
+        try:
+            canonical_root = str(Path(getattr(request, "root", "")).resolve(strict=True))
+            task = self.laya_candidates._find_task(self.agent_tasks, canonical_root, task_id)
+            session_id = self.laya_candidates._session_for_task(task)
+            request_session = str(getattr(request, "session_id", "") or "").strip()
+            if request_session and request_session != session_id:
+                return {"status": "skipped", "reason": "session_identity_mismatch"}
+        except (OSError, RuntimeError, ValueError):
+            return {"status": "skipped", "reason": "task_scope_unavailable"}
+
+        retrieval = result.get("retrieval")
+        evidence_rows = result.get("evidence")
+        if not isinstance(retrieval, dict) or not isinstance(evidence_rows, list):
+            return {"status": "skipped", "reason": "retrieval_provenance_unavailable"}
+        states = retrieval.get("backend_states")
+        if not isinstance(states, dict):
+            return {"status": "skipped", "reason": "backend_states_unavailable"}
+
+        source_rows: dict[str, dict[str, Any]] = {}
+        for row in evidence_rows:
+            if not isinstance(row, dict):
+                continue
+            semantic = row.get("semantic") is True
+            source_code = "rag" if semantic else "indexed"
+            eligible_backend = states.get("rag") == "used" if semantic else any(
+                states.get(name) == "used" for name in ("lexical", "deterministic", "code_index", "preprocessor")
+            )
+            if not eligible_backend or source_code in source_rows:
+                continue
+            if not row.get("path") or not (row.get("content_hash") or row.get("file_sha256")):
+                continue
+            evidence_id = None
+            if semantic:
+                evidence_id = str(row.get("evidence_id") or "")
+                verified = self.evidence.get_many([evidence_id], verify=True, root=canonical_root) if evidence_id else []
+                provenance_ok = self.evidence.validate_source_provenance(
+                    [evidence_id], [source_code], root=canonical_root,
+                ) if evidence_id else False
+                if not verified or verified[0].get("success") is not True or verified[0].get("stale") is not False or not provenance_ok:
+                    evidence_id = None
+            elif row.get("text"):
+                stored = self.evidence.put_many(canonical_root, [row], source_code=source_code)
+                evidence_id = str(stored[0].get("evidence_id") or "") if stored else None
+            if evidence_id:
+                source_rows[source_code] = {"evidence_id": evidence_id, "row": row}
+        if len(source_rows) < 2:
+            return {"status": "skipped", "reason": "fewer_than_two_verified_sources"}
+
+        sources = list(source_rows.items())[:4]
+        freshness: list[str] = []
+        coverage: list[str] = []
+        lexical = retrieval.get("lexical") if isinstance(retrieval.get("lexical"), dict) else {}
+        semantic = retrieval.get("semantic") if isinstance(retrieval.get("semantic"), dict) else {}
+        for source_code, _ in sources:
+            metadata = semantic if source_code == "rag" else lexical
+            raw_freshness = metadata.get("freshness") if isinstance(metadata.get("freshness"), dict) else {}
+            freshness_status = raw_freshness.get("status")
+            freshness.append("current" if freshness_status == "current" and result.get("stale") is not True else "unknown")
+            raw_coverage = metadata.get("coverage") if isinstance(metadata.get("coverage"), dict) else {}
+            if raw_coverage.get("complete") is True and metadata.get("truncated") is not True:
+                coverage.append("complete")
+            elif raw_coverage.get("candidate_count", 0) or raw_coverage.get("included_evidence_count", 0):
+                coverage.append("partial")
+            else:
+                coverage.append("incomplete")
+        if all(code == "complete" for code in coverage):
+            return {"status": "skipped", "reason": "no_unresolved_evidence_gap"}
+
+        evidence = {
+            "gap_code": "unresolved_evidence_gap",
+            "source_codes": [source_code for source_code, _ in sources],
+            "freshness_codes": freshness,
+            "coverage_codes": coverage,
+            "evidence_ids": [source_rows[source_code]["evidence_id"] for source_code, _ in sources],
+        }
+        operation = {
+            "action": "evaluate_context_source",
+            "task_id": task_id,
+            "session_id": session_id,
+            "evidence": evidence,
+        }
+        executor = getattr(self, "_status_dependency_executor", None)
+        inflight = getattr(self, "_laya_capture_inflight", None)
+        shutdown = getattr(self, "_shutdown", None)
+        if not callable(getattr(executor, "submit", None)) or not callable(
+            getattr(inflight, "acquire", None)
+        ):
+            return {"status": "skipped", "reason": "capture_executor_unavailable"}
+        if shutdown is not None and shutdown.is_set():
+            return {"status": "skipped", "reason": "hub_shutdown"}
+        if not inflight.acquire(blocking=False):
+            return {"status": "skipped", "reason": "capture_in_flight"}
+        try:
+            future = executor.submit(
+                self.evaluate_laya_context_source, operation, root=canonical_root
+            )
+        except Exception as exc:
+            inflight.release()
+            # Laya is observational; a model or capture failure cannot block context delivery.
+            return {"status": "skipped", "reason": "capture_queue_unavailable"}
+
+        self._record_laya_capture_observation("queued", "queued")
+
+        def observe_capture(completed: Any) -> None:
+            try:
+                error = completed.exception()
+                if error is not None:
+                    self._record_laya_capture_observation(
+                        "failed", "runtime_error", error_type=type(error).__name__
+                    )
+                    self.logger.warning("Laya shadow capture failed: %s", type(error).__name__)
+                else:
+                    result = completed.result()
+                    candidate = result.get("candidate") if isinstance(result, dict) else None
+                    if not isinstance(candidate, dict) or not candidate:
+                        self._record_laya_capture_observation(
+                            "failed", "outcome_not_captured"
+                        )
+                        self.logger.warning("Laya shadow outcome was not captured")
+                    else:
+                        self._record_laya_capture_observation(
+                            "captured", "runtime_outcome"
+                        )
+            except Exception as exc:
+                self._record_laya_capture_observation(
+                    "failed", "runtime_error", error_type=type(exc).__name__
+                )
+                self.logger.warning("Laya shadow capture result unavailable: %s", type(exc).__name__)
+            finally:
+                inflight.release()
+
+        future.add_done_callback(observe_capture)
+        return {"status": "queued"}
 
     def close(self, *, timeout: float = 5.0) -> None:
         """Stop admission, then wait boundedly for owned component cleanup.

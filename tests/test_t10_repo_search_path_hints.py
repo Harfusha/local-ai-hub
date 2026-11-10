@@ -661,7 +661,8 @@ def test_repo_search_skips_partial_code_index_for_natural_query_and_keeps_exact_
 def test_repo_search_does_not_claim_progressive_disclosure_without_receipts(tmp_path: Path) -> None:
     class IncompleteEvidenceStore:
         @staticmethod
-        def put_many(_root: str, hits: list[dict]) -> list[dict]:
+        def put_many(_root: str, hits: list[dict], *, source_code: str) -> list[dict]:
+            assert source_code == "indexed"
             return [dict(hit) for hit in hits]
 
     (tmp_path / "src").mkdir()

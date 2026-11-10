@@ -383,6 +383,32 @@ def test_singleflight_waiter_returns_retryable_in_progress_quickly():
     assert owner_result == [{"success": True, "value": 1}]
 
 
+def test_singleflight_call_timeout_overrides_long_default():
+    from local_ai_hub.cache import MemoryLRUCache, SingleFlightCache
+
+    cache = SingleFlightCache(MemoryLRUCache(8, 60), wait_timeout_seconds=5)
+    owner_started = threading.Event()
+
+    def compute():
+        owner_started.set()
+        time.sleep(0.15)
+        return {"success": True, "value": 1}
+
+    owner = threading.Thread(target=lambda: cache.get_or_compute("bounded", compute))
+    owner.start()
+    assert owner_started.wait(0.5)
+    started = time.monotonic()
+    waiter, hit, coalesced = cache.get_or_compute(
+        "bounded", compute, wait_timeout_seconds=0.03,
+    )
+    elapsed = time.monotonic() - started
+    owner.join(1)
+
+    assert elapsed < 0.12
+    assert hit is False and coalesced is True
+    assert waiter["in_progress"] is True and waiter["retryable"] is True
+
+
 def test_recovery_journal_waiter_replays_completed_owner_response(tmp_path: Path):
     journal = RecoveryJournal(tmp_path / "state")
     payload = {"query": "needle"}

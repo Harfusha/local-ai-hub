@@ -12,6 +12,8 @@ import time
 from pathlib import Path
 from typing import Any, Callable
 
+from .sqlite_support import connect_sqlite
+
 
 DEFAULT_MAX_ARCHIVE_BYTES = 8 * 1024 * 1024 * 1024
 DEFAULT_MAX_SOURCE_BYTES = 64 * 1024 * 1024 * 1024
@@ -203,8 +205,13 @@ def _check_limits(size: int, *, max_source_bytes: int, category: str) -> None:
 
 
 def _snapshot_database(path: Path, destination: Path, *, cancelled: Callable[[], bool] | None) -> None:
-    source = sqlite3.connect(f"{path.as_uri()}?mode=ro", uri=True, timeout=1.0)
-    snapshot = sqlite3.connect(destination)
+    source = connect_sqlite(path, timeout_seconds=1.0, read_only=True, foreign_keys=False)
+    snapshot = connect_sqlite(
+        destination,
+        timeout_seconds=5.0,
+        isolation_level="DEFERRED",
+        foreign_keys=False,
+    )
     started = time.monotonic()
 
     def progress(status: int, remaining: int, total: int) -> None:
@@ -252,7 +259,7 @@ def _sanitize_laya_snapshot(
     database: Path, *, redact_candidates: bool, redact_traces: bool
 ) -> dict[str, int]:
     """Remove candidate payloads from a disposable support-archive DB snapshot."""
-    connection = sqlite3.connect(database, timeout=2.0)
+    connection = connect_sqlite(database, timeout_seconds=2.0, foreign_keys=False)
     connection.row_factory = sqlite3.Row
     removed = {"candidate_rows": 0, "candidate_tables": 0, "trace_records": 0}
     try:
@@ -263,7 +270,12 @@ def _sanitize_laya_snapshot(
             )
         }
         if redact_candidates:
-            for table in sorted(_LAYA_PRIVATE_TABLES & tables):
+            private_tables = _LAYA_PRIVATE_TABLES & tables
+            private_tables.update(
+                table for table in tables
+                if table.startswith(("laya_candidate_", "laya_dataset_"))
+            )
+            for table in sorted(private_tables):
                 if table == "laya_candidates":
                     removed["candidate_rows"] = int(connection.execute(
                         "SELECT COUNT(*) FROM laya_candidates"
@@ -342,7 +354,7 @@ def _sanitize_laya_snapshot(
 
 def _laya_candidate_metadata(database: Path) -> dict[str, Any]:
     """Return aggregate-only candidate status/category/language counts."""
-    connection = sqlite3.connect(f"{database.as_uri()}?mode=ro", uri=True, timeout=1.0)
+    connection = connect_sqlite(database, timeout_seconds=1.0, read_only=True, foreign_keys=False)
     result: dict[str, Any] = {
         "schema_version": 1,
         "candidate_status_counts": {},

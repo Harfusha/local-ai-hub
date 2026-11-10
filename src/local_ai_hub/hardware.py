@@ -477,7 +477,7 @@ PROFILE_OVERRIDES: dict[str, dict[str, Any]] = {
             "flash_attention": True,
             "num_threads": max(1, (os.cpu_count() or 4) - 2),
         },
-        "background_gpu": {"parallel": 2, "file_batch_size": 1, "module_batch_size": 1},
+        "background_gpu": {"enabled": False, "parallel": 2, "file_batch_size": 1, "module_batch_size": 1},
         "cpu_retrieval": {"embedding_batch_size": 4, "reranker_batch_size": 2, "reranker_max_length": 512, "embedding_trust_remote_code": False},
         "deterministic": {"context_raw_evidence": 3, "context_max_chars": 3600},
         "search": {"context_top_k": 8, "max_snippets_per_file": 2},
@@ -788,11 +788,6 @@ def profile_overrides(profile_name: str, detected: dict[str, Any] | None = None)
         str(gpu.get("vendor", "")).lower() == "intel" and bool(gpu.get("integrated"))
         for gpu in gpus
     )
-    has_nvidia = any(
-        str(gpu.get("vendor", "")).lower() == "nvidia"
-        or "nvidia" in str(gpu.get("name", "")).lower()
-        for gpu in gpus
-    )
     has_npu = bool(detected.get("npus"))
     has_fp4 = any(bool(g.get("has_fp4")) for g in gpus if isinstance(g, dict))
     if has_fp4 and profile_name not in ("cpu", "integrated"):
@@ -806,11 +801,6 @@ def profile_overrides(profile_name: str, detected: dict[str, Any] | None = None)
         sub_critic = result.get("ollama_subagents", {}).get("profiles", {}).get("qwen-critic", {})
         if sub_critic.get("model") == "qwen3.5:9b":
             result = _deep_merge_dict(result, {"ollama_subagents": {"profiles": {"qwen-critic": {"model": "qwen3.5:9b-nvfp4"}}}})
-    if has_nvidia:
-        nvidia_models: dict[str, Any] = {"reranker_device": "cuda"}
-        if profile_name in ("high", "max"):
-            nvidia_models["embedding_device"] = "cuda"
-        result = _deep_merge_dict(result, {"models": nvidia_models})
     if has_npu:
         # Keep embeddings on auto so a missing/unsupported NPU can fall through
         # to the next available GPU tier. Reranker follows the same route order.

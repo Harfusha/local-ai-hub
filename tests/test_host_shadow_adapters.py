@@ -17,10 +17,12 @@ from local_ai_hub.repo_plan.host_adapters import (
     HostCapabilitySnapshot,
     HostOperationStatus,
     HostShadowRequest,
+    HostTokenUsage,
     HostVerificationStatus,
     _antigravity_init_matches,
     authorize_antigravity_cli_turn,
     parse_antigravity_stream_event,
+    parse_codex_app_server_approval_request,
     parse_codex_app_server_notification,
     record_codex_shadow_event,
     record_antigravity_shadow_event,
@@ -67,6 +69,15 @@ def capability(**overrides):
     }
     values.update(overrides)
     return HostCapabilitySnapshot(**values)
+
+
+def test_shadow_request_rejects_usage_from_unsupported_host_surface():
+    with pytest.raises(ValueError, match="unsupported for this host surface"):
+        request(
+            host_name="cursor",
+            surface="ide",
+            token_usage=HostTokenUsage(input_tokens=1),
+        )
 
 
 def test_shadow_observation_records_metadata_only_and_deduplicates(tmp_path):
@@ -226,7 +237,7 @@ def test_codex_thread_started_parser_checks_scope_and_strips_private_fields(tmp_
         )
     with pytest.raises(ValueError, match="unsupported"):
         parse_codex_app_server_notification(
-            json.dumps({"method": "turn/completed", "params": {}}),
+            json.dumps({"method": "item/started", "params": {}}),
             sequence=1, repo_root=root, expected_cli_version="0.167.0-alpha.3.2",
         )
     with pytest.raises(ValueError, match="unsupported"):
@@ -234,6 +245,338 @@ def test_codex_thread_started_parser_checks_scope_and_strips_private_fields(tmp_
             json.dumps({"method": "thread/started", "id": 1, "params": {}}),
             sequence=1, repo_root=root, expected_cli_version="0.167.0-alpha.3.2",
         )
+
+
+def test_codex_token_usage_parser_keeps_only_cumulative_counts(tmp_path):
+    root = tmp_path.resolve()
+    line = json.dumps({
+        "method": "thread/tokenUsage/updated",
+        "params": {
+            "threadId": "raw-thread-id",
+            "turnId": "raw-turn-id",
+            "tokenUsage": {
+                "last": {
+                    "inputTokens": 7,
+                    "outputTokens": 3,
+                    "cachedInputTokens": 2,
+                    "reasoningOutputTokens": 1,
+                    "totalTokens": 10,
+                },
+                "total": {
+                    "inputTokens": 107,
+                    "outputTokens": 23,
+                    "cachedInputTokens": 32,
+                    "reasoningOutputTokens": 11,
+                    "totalTokens": 130,
+                    "cacheWriteInputTokens": 4,
+                },
+            },
+            "private": "must not persist",
+        },
+    })
+
+    observation = parse_codex_app_server_notification(
+        line,
+        sequence=4,
+        repo_root=root,
+        expected_cli_version="0.167.0-alpha.3.2",
+        expected_thread_id="raw-thread-id",
+        stream_instance_id="process-one",
+    )
+
+    assert observation.event_type == "thread.token_usage.updated"
+    assert observation.token_usage == HostTokenUsage(
+        input_tokens=107,
+        output_tokens=23,
+        thinking_tokens=11,
+        cache_read_tokens=32,
+        total_tokens=130,
+    )
+    serialized = json.dumps(observation.to_dict())
+    for secret in ("raw-thread-id", "raw-turn-id", "cacheWriteInputTokens", "must not persist"):
+        assert secret not in serialized
+    assert str(root) not in serialized
+    assert observation.source_stream_ref
+
+    store = AgentStateStore(tmp_path / "codex_token_usage.sqlite", enabled=True)
+    snapshot = capability(
+        host_name="codex",
+        host_version="0.167.0-alpha.3.2",
+        surface="app_server",
+        session_type="thread",
+        available_events=("thread.token_usage.updated",),
+    )
+    recorded = record_codex_shadow_event(
+        observation,
+        repository_id="a" * 64,
+        capability=snapshot,
+        event_store=store,
+        task_id="task_123",
+    )
+    assert recorded.status is HostOperationStatus.SHADOW_ONLY
+    payload = store.events(f"host-shadow:{recorded.session_ref}")[0].payload
+    assert payload["token_usage"] == {
+        "input_tokens": 107,
+        "output_tokens": 23,
+        "thinking_tokens": 11,
+        "cache_read_tokens": 32,
+        "total_tokens": 130,
+    }
+    assert payload["token_usage_scope"] == "session_cumulative"
+    assert payload["source_sequence"] == 4
+    assert "raw-thread-id" not in json.dumps(payload)
+    assert "raw-turn-id" not in json.dumps(payload)
+
+    duplicate = parse_codex_app_server_notification(
+        line,
+        sequence=4,
+        repo_root=root,
+        expected_cli_version="0.167.0-alpha.3.2",
+        expected_thread_id="raw-thread-id",
+        stream_instance_id="process-one",
+    )
+    restarted = parse_codex_app_server_notification(
+        line,
+        sequence=4,
+        repo_root=root,
+        expected_cli_version="0.167.0-alpha.3.2",
+        expected_thread_id="raw-thread-id",
+        stream_instance_id="process-restart",
+    )
+    assert duplicate.event_id == observation.event_id
+    assert restarted.session_ref == observation.session_ref
+    assert restarted.event_id != observation.event_id
+    assert restarted.source_stream_ref != observation.source_stream_ref
+
+    with pytest.raises(ValueError, match="thread identity mismatch"):
+        parse_codex_app_server_notification(
+            line,
+            sequence=5,
+            repo_root=root,
+            expected_cli_version="0.167.0-alpha.3.2",
+            expected_thread_id="different-thread",
+            stream_instance_id="process-one",
+        )
+
+    with pytest.raises(ValueError, match="stream instance"):
+        parse_codex_app_server_notification(
+            line,
+            sequence=5,
+            repo_root=root,
+            expected_cli_version="0.167.0-alpha.3.2",
+            expected_thread_id="raw-thread-id",
+        )
+
+
+def test_codex_turn_notification_keeps_status_and_drops_turn_content(tmp_path):
+    root = tmp_path.resolve()
+    line = json.dumps({
+        "method": "turn/completed",
+        "params": {
+            "threadId": "raw-thread-id",
+            "turn": {
+                "id": "raw-turn-id",
+                "status": "interrupted",
+                "items": [{"type": "agentMessage", "text": "private turn output"}],
+                "error": {"message": "private error"},
+            },
+        },
+    })
+
+    observation = parse_codex_app_server_notification(
+        line,
+        sequence=12,
+        repo_root=root,
+        expected_cli_version="0.167.0-alpha.3.2",
+        expected_thread_id="raw-thread-id",
+        stream_instance_id="process-turn-test",
+    )
+
+    assert observation.event_type == "turn.completed"
+    assert observation.source_result == "interrupted"
+    serialized = json.dumps(observation.to_dict())
+    for secret in ("raw-thread-id", "raw-turn-id", "private turn output", "private error"):
+        assert secret not in serialized
+
+    store = AgentStateStore(tmp_path / "codex_turn_status.sqlite", enabled=True)
+    snapshot = capability(
+        host_name="codex",
+        host_version="0.167.0-alpha.3.2",
+        surface="app_server",
+        session_type="thread",
+        available_events=("turn.completed",),
+    )
+    recorded = record_codex_shadow_event(
+        observation,
+        repository_id="a" * 64,
+        capability=snapshot,
+        event_store=store,
+    )
+    assert recorded.status is HostOperationStatus.SHADOW_ONLY
+    payload = store.events(f"host-shadow:{recorded.session_ref}")[0].payload
+    assert payload["source_result"] == "interrupted"
+    assert payload["event_type"] == "turn.completed"
+    assert "private turn output" not in json.dumps(payload)
+
+    with pytest.raises(ValueError, match="unsupported Codex turn status"):
+        parse_codex_app_server_notification(
+            json.dumps({
+                "method": "turn/completed",
+                "params": {"threadId": "raw-thread-id", "turn": {"id": "turn", "status": "unknown", "items": []}},
+            }),
+            sequence=13,
+            repo_root=root,
+            expected_cli_version="0.167.0-alpha.3.2",
+            expected_thread_id="raw-thread-id",
+            stream_instance_id="process-turn-test",
+        )
+
+
+def test_codex_thread_status_keeps_enum_and_drops_active_flags(tmp_path):
+    root = tmp_path.resolve()
+    line = json.dumps({
+        "method": "thread/status/changed",
+        "params": {
+            "threadId": "raw-thread-id",
+            "status": {"type": "active", "activeFlags": ["private-approval-context"]},
+        },
+    })
+
+    observation = parse_codex_app_server_notification(
+        line,
+        sequence=14,
+        repo_root=root,
+        expected_cli_version="0.167.0-alpha.3.2",
+        expected_thread_id="raw-thread-id",
+        stream_instance_id="process-status-test",
+    )
+
+    assert observation.event_type == "thread.status.changed"
+    assert observation.source_result == "active"
+    serialized = json.dumps(observation.to_dict())
+    assert "raw-thread-id" not in serialized
+    assert "private-approval-context" not in serialized
+
+    store = AgentStateStore(tmp_path / "codex_thread_status.sqlite", enabled=True)
+    snapshot = capability(
+        host_name="codex",
+        host_version="0.167.0-alpha.3.2",
+        surface="app_server",
+        session_type="thread",
+        available_events=("thread.status.changed",),
+    )
+    recorded = record_codex_shadow_event(
+        observation,
+        repository_id="a" * 64,
+        capability=snapshot,
+        event_store=store,
+    )
+    assert recorded.status is HostOperationStatus.SHADOW_ONLY
+    payload = store.events(f"host-shadow:{recorded.session_ref}")[0].payload
+    assert payload["source_result"] == "active"
+    assert "activeFlags" not in json.dumps(payload)
+
+
+def test_codex_approval_request_shadow_keeps_only_type_and_permission_check(tmp_path):
+    line = json.dumps({
+        "id": "private-rpc-request-id",
+        "method": "item/commandExecution/requestApproval",
+        "params": {
+            "threadId": "raw-thread-id",
+            "turnId": "raw-turn-id",
+            "itemId": "raw-item-id",
+            "startedAtMs": 1234,
+            "command": "python private-source.py --secret value",
+            "cwd": str(tmp_path),
+            "reason": "private command reason",
+        },
+    })
+
+    observation = parse_codex_app_server_approval_request(
+        line,
+        sequence=20,
+        expected_thread_id="raw-thread-id",
+        stream_instance_id="approval-process",
+    )
+
+    assert observation.event_type == "approval.command_execution.requested"
+    serialized = json.dumps(observation.to_dict())
+    for secret in (
+        "private-rpc-request-id", "raw-thread-id", "raw-turn-id", "raw-item-id",
+        "private-source.py", "secret value", str(tmp_path), "private command reason",
+    ):
+        assert secret not in serialized
+
+    store = AgentStateStore(tmp_path / "codex_approval.sqlite", enabled=True)
+    snapshot = capability(
+        host_name="codex",
+        host_version="0.167.0-alpha.3.2",
+        surface="app_server",
+        session_type="thread",
+        available_events=("approval.command_execution.requested",),
+        would_be_denied=True,
+    )
+    recorded = record_codex_shadow_event(
+        observation,
+        repository_id="a" * 64,
+        capability=snapshot,
+        event_store=store,
+    )
+    assert recorded.status is HostOperationStatus.REFUSED
+    assert recorded.reason == "existing_permissions_would_deny"
+    assert recorded.recorded
+    payload = store.events(f"host-shadow:{recorded.session_ref}")[0].payload
+    assert payload["permission_check"] == {"status": "would_deny", "would_be_denied": True}
+    assert payload["proposal"]["status"] == "proposed"
+    assert payload["outcome"] == "simulated"
+    assert "private-source.py" not in json.dumps(payload)
+
+    with pytest.raises(ValueError, match="thread identity mismatch"):
+        parse_codex_app_server_approval_request(
+            line,
+            sequence=21,
+            expected_thread_id="different-thread",
+            stream_instance_id="approval-process",
+        )
+
+
+@pytest.mark.parametrize(
+    ("method", "params", "event_type", "private_values"),
+    [
+        (
+            "item/fileChange/requestApproval",
+            {
+                "threadId": "raw-thread-id", "turnId": "raw-turn-id", "itemId": "raw-item-id",
+                "startedAtMs": 1234, "grantRoot": "C:\\private\\repo", "reason": "private reason",
+            },
+            "approval.file_change.requested",
+            ("raw-turn-id", "raw-item-id", "C:\\private\\repo", "private reason"),
+        ),
+        (
+            "item/permissions/requestApproval",
+            {
+                "threadId": "raw-thread-id", "turnId": "raw-turn-id", "itemId": "raw-item-id",
+                "startedAtMs": 1234, "cwd": "C:\\private\\repo", "permissions": ["network", "write"],
+            },
+            "approval.permissions.requested",
+            ("raw-turn-id", "raw-item-id", "C:\\private\\repo", "network", "write"),
+        ),
+    ],
+)
+def test_codex_non_command_approval_requests_keep_only_event_type(
+    method, params, event_type, private_values
+):
+    observation = parse_codex_app_server_approval_request(
+        json.dumps({"id": 17, "method": method, "params": params}),
+        sequence=30,
+        expected_thread_id="raw-thread-id",
+        stream_instance_id="approval-process",
+    )
+
+    assert observation.event_type == event_type
+    serialized = json.dumps(observation.to_dict())
+    for value in private_values:
+        assert value not in serialized
 
 
 def test_codex_thread_started_uses_shared_shadow_sink(tmp_path):
@@ -582,7 +925,9 @@ def test_antigravity_stream_parser_keeps_metadata_and_discards_content():
         },
     })
 
-    observed = parse_antigravity_stream_event(line, sequence=4)
+    observed = parse_antigravity_stream_event(
+        line, sequence=4, stream_instance_id="parser-test"
+    )
 
     assert observed.host_name == "antigravity"
     assert observed.event_type == "step_update.tool.done"
@@ -600,11 +945,11 @@ def test_antigravity_stream_parser_accepts_init_and_result_metadata_only():
         "event": "init",
         "conversation_id": "conv-init",
         "init": {"cwd": "C:\\private", "tools": ["run_command"], "permission_mode": "request-review"},
-    }), sequence=0)
+    }), sequence=0, stream_instance_id="init-test")
     result = parse_antigravity_stream_event(json.dumps({
         "event": "result",
         "result": {"conversation_id": "conv-init", "status": "SUCCESS", "response": "private response"},
-    }), sequence=9)
+    }), sequence=9, stream_instance_id="init-test")
 
     assert init.event_type == "session.initialized"
     assert result.event_type == "session.result.success"
@@ -613,13 +958,165 @@ def test_antigravity_stream_parser_accepts_init_and_result_metadata_only():
     assert "private response" not in json.dumps(result.to_dict())
 
 
+def test_antigravity_usage_counters_are_sanitized_shadow_metadata(tmp_path):
+    usage = {
+        "input_tokens": 12,
+        "output_tokens": 5,
+        "thinking_tokens": 2,
+        "cache_read_tokens": 7,
+        "total_tokens": 19,
+        "raw_payload": "sensitive usage text",
+    }
+    expected_counters = {key: value for key, value in usage.items() if key != "raw_payload"}
+    observation = parse_antigravity_stream_event(json.dumps({
+        "event": "result",
+        "result": {
+            "conversation_id": "conversation-secret",
+            "status": "SUCCESS",
+            "response": "private response",
+            "usage": usage,
+        },
+    }), sequence=10, stream_instance_id="usage-test")
+
+    assert observation.token_usage.to_dict() == expected_counters
+    assert "conversation-secret" not in json.dumps(observation.to_dict())
+    assert "private response" not in json.dumps(observation.to_dict())
+    assert "sensitive usage text" not in json.dumps(observation.to_dict())
+
+    store = AgentStateStore(tmp_path / "agent_state.sqlite", enabled=True)
+    snapshot = capability(
+        host_name="antigravity",
+        host_version="1.4.12",
+        surface="cli_stream_json",
+        session_type="conversation",
+        available_events=("session.result.success",),
+        available_commands=(),
+        available_permissions=(),
+        permission_mode="request-review",
+        permissions_verified=False,
+        verification_status=HostVerificationStatus.VERIFIED,
+    )
+    recorded = record_antigravity_shadow_event(
+        observation,
+        repository_id="a" * 64,
+        capability=snapshot,
+        event_store=store,
+        task_id="task_123",
+    )
+
+    assert recorded.status is HostOperationStatus.SHADOW_ONLY
+    event = store.events(f"host-shadow:{recorded.session_ref}")[0]
+    assert event.kind == "host.shadow.observation.v2"
+    payload = event.payload
+    assert payload["schema"] == "local-ai-hub.host-shadow-observation.v2"
+    assert payload["token_usage"] == expected_counters
+    assert payload["token_usage_scope"] == "session_cumulative"
+    serialized = json.dumps(payload)
+    assert "conversation-secret" not in serialized
+    assert "private response" not in serialized
+    assert "sensitive usage text" not in serialized
+
+
+@pytest.mark.parametrize("bad_value", [True, -1, 1.5, "12", 2**53])
+def test_antigravity_usage_rejects_invalid_token_counts(bad_value):
+    line = json.dumps({
+        "event": "result",
+        "result": {
+            "conversation_id": "conversation-secret",
+            "status": "SUCCESS",
+            "usage": {"input_tokens": bad_value},
+        },
+    })
+
+    with pytest.raises(ValueError, match="token usage"):
+        parse_antigravity_stream_event(
+            line, sequence=10, stream_instance_id="invalid-usage-test"
+        )
+
+
+def test_antigravity_usage_preserves_zero_without_filling_missing_counters():
+    observed = parse_antigravity_stream_event(json.dumps({
+        "event": "result",
+        "result": {
+            "conversation_id": "conversation-secret",
+            "status": "SUCCESS",
+            "usage": {"input_tokens": 0},
+        },
+    }), sequence=10, stream_instance_id="usage-stream")
+
+    assert observed.token_usage.to_dict() == {"input_tokens": 0}
+
+
+def test_antigravity_stream_restart_separates_events_but_keeps_session(tmp_path):
+    line = json.dumps({
+        "event": "result",
+        "result": {
+            "conversation_id": "conversation-secret",
+            "status": "SUCCESS",
+            "response": "private response",
+            "usage": {"input_tokens": 120, "total_tokens": 145},
+        },
+    })
+    first = parse_antigravity_stream_event(
+        line, sequence=8, stream_instance_id="process-first"
+    )
+    duplicate = parse_antigravity_stream_event(
+        line, sequence=8, stream_instance_id="process-first"
+    )
+    restarted = parse_antigravity_stream_event(
+        line, sequence=8, stream_instance_id="process-restart"
+    )
+
+    assert first.session_ref == restarted.session_ref
+    assert first.event_id == duplicate.event_id
+    assert first.event_id != restarted.event_id
+    assert first.source_stream_ref != restarted.source_stream_ref
+
+    store = AgentStateStore(tmp_path / "agent_state.sqlite", enabled=True)
+    snapshot = capability(
+        host_name="antigravity",
+        host_version="1.4.12",
+        surface="cli_stream_json",
+        session_type="conversation",
+        available_events=("session.result.success",),
+        available_commands=(),
+        available_permissions=(),
+        permissions_verified=False,
+        verification_status=HostVerificationStatus.VERIFIED,
+    )
+    recorded_session_ref = None
+    for observation in (first, restarted):
+        result = record_antigravity_shadow_event(
+            observation,
+            repository_id="a" * 64,
+            capability=snapshot,
+            event_store=store,
+        )
+        assert result.status is HostOperationStatus.SHADOW_ONLY
+        assert result.session_ref is not None
+        if recorded_session_ref is None:
+            recorded_session_ref = result.session_ref
+        else:
+            assert result.session_ref == recorded_session_ref
+
+    events = store.events(f"host-shadow:{recorded_session_ref}")
+    assert len(events) == 2
+    assert {event.payload["source_sequence"] for event in events} == {8}
+    assert len({event.payload["source_stream_ref"] for event in events}) == 2
+    serialized = json.dumps([event.payload for event in events])
+    assert "process-first" not in serialized
+    assert "process-restart" not in serialized
+    assert "conversation-secret" not in serialized
+    assert "private response" not in serialized
+
+
 def test_antigravity_stream_observation_uses_shared_shadow_gate(tmp_path):
     store = AgentStateStore(tmp_path / "agent_state.sqlite", enabled=True)
     observation = parse_antigravity_stream_event(json.dumps({
         "event": "init",
         "conversation_id": "conversation-secret",
         "init": {"cwd": "C:\\private", "tools": ["run_command"], "permission_mode": "request-review"},
-    }), sequence=0)
+    }), sequence=0, stream_instance_id="sink-test")
     snapshot = capability(
         host_name="antigravity",
         host_version="1.4.2",
@@ -655,7 +1152,9 @@ def test_antigravity_stream_observation_uses_shared_shadow_gate(tmp_path):
 ])
 def test_antigravity_stream_parser_fails_closed(line, sequence):
     with pytest.raises(ValueError):
-        parse_antigravity_stream_event(line, sequence=sequence)
+        parse_antigravity_stream_event(
+            line, sequence=sequence, stream_instance_id="invalid-event-test"
+        )
 
 
 def test_antigravity_cli_locator_finds_documented_windows_path(monkeypatch, tmp_path):
@@ -850,3 +1349,155 @@ def test_antigravity_cli_turn_is_unsupported_without_enforceable_cost_cap(monkey
     assert result.reason == "enforceable_monetary_budget_unavailable"
     assert result.response_text == ""
     assert not result.budget_reserved
+
+
+def test_antigravity_post_tool_use_parser_discards_private_hook_fields(tmp_path):
+    from local_ai_hub.repo_plan import host_adapters
+
+    payload = {
+        "toolCall": {
+            "name": "run_command",
+            "args": {"CommandLine": "PRIVATE COMMAND", "Cwd": str(tmp_path)},
+        },
+        "stepIdx": 7,
+        "error": "PRIVATE ERROR",
+        "conversationId": "raw-antigravity-conversation",
+        "workspacePaths": [str(tmp_path)],
+        "transcriptPath": str(tmp_path / "transcript.jsonl"),
+        "artifactDirectoryPath": str(tmp_path / "brain"),
+        "modelName": "private-model-name",
+    }
+
+    observation = host_adapters.parse_antigravity_post_tool_use_event(
+        payload,
+        expected_conversation_id="raw-antigravity-conversation",
+        expected_workspace_root=tmp_path,
+    )
+
+    assert observation.host_name == "antigravity"
+    assert observation.surface == "antigravity_post_tool_use"
+    assert observation.session_type == "conversation"
+    assert observation.event_type == "tool.failed"
+    assert observation.sequence == 7
+    assert observation.verification_status is HostVerificationStatus.NOT_VERIFIED
+    serialized = json.dumps(observation.to_dict())
+    for private_value in (
+        "raw-antigravity-conversation",
+        "PRIVATE COMMAND",
+        "PRIVATE ERROR",
+        str(tmp_path),
+        "transcript.jsonl",
+        "private-model-name",
+    ):
+        assert private_value not in serialized
+
+    duplicate = host_adapters.parse_antigravity_post_tool_use_event(
+        payload,
+        expected_conversation_id="raw-antigravity-conversation",
+        expected_workspace_root=tmp_path,
+    )
+    next_step = dict(payload)
+    next_step["stepIdx"] = 8
+    following = host_adapters.parse_antigravity_post_tool_use_event(
+        next_step,
+        expected_conversation_id="raw-antigravity-conversation",
+        expected_workspace_root=tmp_path,
+    )
+    assert duplicate.event_id == observation.event_id
+    assert following.session_ref == observation.session_ref
+    assert following.event_id != observation.event_id
+
+
+def test_antigravity_post_tool_use_parser_rejects_unbound_conversation_or_workspace(tmp_path):
+    from local_ai_hub.repo_plan import host_adapters
+
+    payload = {
+        "toolCall": {"name": "run_command", "args": {}},
+        "stepIdx": 3,
+        "conversationId": "another-conversation",
+        "workspacePaths": [str(tmp_path)],
+    }
+    with pytest.raises(ValueError, match="conversation identity mismatch"):
+        host_adapters.parse_antigravity_post_tool_use_event(
+            payload,
+            expected_conversation_id="expected-conversation",
+            expected_workspace_root=tmp_path,
+        )
+
+    payload["conversationId"] = "expected-conversation"
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    payload["workspacePaths"] = [str(outside)]
+    with pytest.raises(ValueError, match="workspace identity mismatch"):
+        host_adapters.parse_antigravity_post_tool_use_event(
+            payload,
+            expected_conversation_id="expected-conversation",
+            expected_workspace_root=tmp_path,
+        )
+
+
+def test_antigravity_post_tool_use_shadow_uses_shared_fail_closed_gate(tmp_path):
+    from local_ai_hub.repo_plan import host_adapters
+
+    payload = {
+        "toolCall": {"name": "run_command", "args": {"secret": "PRIVATE ARG"}},
+        "stepIdx": 9,
+        "conversationId": "raw-antigravity-conversation",
+        "workspacePaths": [str(tmp_path)],
+    }
+    observation = host_adapters.parse_antigravity_post_tool_use_event(
+        payload,
+        expected_conversation_id="raw-antigravity-conversation",
+        expected_workspace_root=tmp_path,
+    )
+    store = AgentStateStore(tmp_path / "agent_state.sqlite", enabled=True)
+    unverified = capability(
+        host_name="antigravity",
+        host_version="1.4.12",
+        surface="antigravity_post_tool_use",
+        session_type="conversation",
+        available_events=("tool.completed", "tool.failed"),
+        verification_status=HostVerificationStatus.NOT_VERIFIED,
+        permissions_verified=False,
+        hub_managed=True,
+        connection_status="connected",
+    )
+
+    refused = host_adapters.record_antigravity_hook_shadow_event(
+        observation,
+        repository_id="a" * 64,
+        capability=unverified,
+        event_store=store,
+    )
+    assert refused.status is HostOperationStatus.UNCERTAIN
+    assert not refused.recorded
+    assert store.events(f"host-shadow:{refused.session_ref}") == []
+
+    verified = capability(
+        host_name="antigravity",
+        host_version="1.4.12",
+        surface="antigravity_post_tool_use",
+        session_type="conversation",
+        available_events=("tool.completed", "tool.failed"),
+        verification_status=HostVerificationStatus.VERIFIED,
+        permissions_verified=False,
+        hub_managed=True,
+        connection_status="connected",
+    )
+    recorded = host_adapters.record_antigravity_hook_shadow_event(
+        observation,
+        repository_id="a" * 64,
+        capability=verified,
+        event_store=store,
+    )
+    assert recorded.status is HostOperationStatus.SHADOW_ONLY
+    assert recorded.recorded and not recorded.duplicate
+    payload = store.events(f"host-shadow:{recorded.session_ref}")[0].payload
+    assert payload["permission_check"] == {
+        "status": "not_evaluated",
+        "would_be_denied": None,
+    }
+    assert payload["content_stored"] is False
+    serialized = json.dumps(payload)
+    assert "PRIVATE ARG" not in serialized
+    assert "raw-antigravity-conversation" not in serialized

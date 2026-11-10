@@ -710,6 +710,8 @@ class RepositoryTools:
         """Resolve an inventory path after rejecting links and reparse points."""
         try:
             relative = path.relative_to(base)
+            if any(part in {".", ".."} for part in relative.parts):
+                return None
             current = base
             for part in relative.parts:
                 current = current / part
@@ -718,9 +720,9 @@ class RepositoryTools:
                     return None
             if resolved_base is None:
                 resolved_base = base.resolve(strict=True)
-            elif not resolved_base.is_absolute():
+            elif not resolved_base.is_absolute() or not base.samefile(resolved_base):
                 return None
-            resolved_path = path.resolve(strict=True)
+            resolved_path = resolved_base / relative
             resolved_path.relative_to(resolved_base)
             return resolved_base, resolved_path
         except (OSError, RuntimeError, ValueError):
@@ -1739,6 +1741,22 @@ class RepositoryTools:
         project_path_policy: Any | None = None,
     ) -> bool:
         try:
+            relative_candidate = path.relative_to(base)
+            if not relative_candidate.parts or any(part in {".", ".."} for part in relative_candidate.parts):
+                return False
+            relative = relative_candidate.as_posix()
+            if any(part.casefold() in _HARD_SEARCH_DIRS for part in relative_candidate.parts[:-1]):
+                return False
+            if is_root_archive_path(relative_candidate):
+                return False
+            if relative_candidate.name in {".local-ai.toml", ".local-ai.worktree.toml"}:
+                return False
+            _text, _binary, forced_patterns, _maximum = self._project_settings_values(project_settings)
+            force_include = force_include or self._project_path_matches(relative, forced_patterns)
+            soft_ignored = any(part.casefold() in self.ignore_dirs for part in relative_candidate.parts[:-1])
+            if soft_ignored and not force_include:
+                return False
+
             cached_root = getattr(project_path_policy, "project_root", None)
             resolved_paths = self._resolve_inventory_path_safe(
                 base,
@@ -1750,19 +1768,8 @@ class RepositoryTools:
             resolved_base, resolved = resolved_paths
             relative_path = resolved.relative_to(resolved_base)
             relative = relative_path.as_posix()
-            if any(part.casefold() in _HARD_SEARCH_DIRS for part in relative_path.parts[:-1]):
-                return False
-            if is_root_archive_path(relative_path):
-                return False
-            if resolved.name in {".local-ai.toml", ".local-ai.worktree.toml"}:
-                return False
             size_bytes = resolved.stat().st_size
             if size_bytes > self.max_file_bytes:
-                return False
-            _text, _binary, forced_patterns, _maximum = self._project_settings_values(project_settings)
-            force_include = force_include or self._project_path_matches(relative, forced_patterns)
-            soft_ignored = any(part.casefold() in self.ignore_dirs for part in relative_path.parts[:-1])
-            if soft_ignored and not force_include:
                 return False
             if project_path_policy is None:
                 from .project_config import path_is_allowed

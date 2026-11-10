@@ -129,6 +129,28 @@ def test_hotspot_route_rejects_noncanonical_bounds_before_service(field, value):
     assert body["retryable"] is False
 
 
+@pytest.mark.parametrize(
+    ("result", "expected_status", "retryable"),
+    [
+        ({"success": False, "error": "request failed", "incomplete_reasons": ["analysis_deadline"]}, 504, True),
+        ({"success": False, "error": "git history failed"}, 500, False),
+    ],
+)
+def test_hotspot_route_surfaces_service_failures_as_http_errors(result, expected_status, retryable):
+    app, _calls = _app(services={"find_hotspots": lambda *_args, **_kwargs: result})
+    handler = Handler()
+
+    assert handle_post_repository_analysis(
+        handler, {"root": "r"}, ("post_hotspots_1",), app,
+    ) is True
+
+    status, body = handler.responses[0]
+    assert status == expected_status
+    assert body["status_code"] == expected_status
+    assert body["retryable"] is retryable
+    assert body["terminal"] is (not retryable)
+
+
 @pytest.mark.parametrize("payload", [
     {"root": "r", "query": 7},
     {"root": "r", "query": "needle", "max_commits": True},

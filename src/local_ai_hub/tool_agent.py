@@ -356,6 +356,21 @@ class ToolAwareLocalAgent:
             # Progressive disclosure: return coordinates/evidence ids first, raw text only on evidence_get.
             if self.evidence is not None and isinstance(result.get("results"), list):
                 enriched = self.evidence.put_many(str(result.get("root", root)), result["results"])
+                record_source = getattr(self.evidence, "record_source_provenance", None)
+                if callable(record_source):
+                    source_aliases = {"lexical": "indexed", "rag": "rag"}
+                    evidence_root = str(result.get("root", root))
+                    for item in enriched:
+                        evidence_id = item.get("evidence_id") if isinstance(item, dict) else None
+                        raw_sources = item.get("sources") if isinstance(item, dict) else None
+                        if not isinstance(raw_sources, (list, tuple)) and result.get("result_source") == "lexical":
+                            raw_sources = ["lexical"]
+                        if not isinstance(evidence_id, str) or not isinstance(raw_sources, (list, tuple)):
+                            continue
+                        for source in raw_sources:
+                            source_code = source_aliases.get(source) if isinstance(source, str) else None
+                            if source_code is not None:
+                                record_source(evidence_id, root=evidence_root, source_code=source_code)
                 result = dict(result)
                 receipts_complete = all(
                     isinstance(item, dict)
@@ -424,7 +439,11 @@ class ToolAwareLocalAgent:
             if self.evidence is None:
                 return {"success": False, "error": "evidence store unavailable"}
             evidence_id = str(args.get("evidence_id", "")).replace("\x00", "")
-            return self.evidence.get(evidence_id, verify=True, root=root)
+            result = self.evidence.get(evidence_id, verify=True, root=root)
+            record_source = getattr(self.evidence, "record_source_provenance", None)
+            if result.get("success") is True and callable(record_source):
+                record_source(evidence_id, root=root, source_code="artifact")
+            return result
         if name == "file_slice":
             path = str(args.get("path", "")).replace("\x00", "")
             start = _safe_int(args.get("start_line", 1), default=1, min_val=1)

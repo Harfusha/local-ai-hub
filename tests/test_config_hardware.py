@@ -71,14 +71,13 @@ def test_every_hardware_profile_enables_local_reranking(profile: str) -> None:
 
 
 @pytest.mark.parametrize("profile", ("cpu", "integrated", "low", "balanced", "medium", "high", "max"))
-def test_every_nvidia_profile_prefers_cuda_reranker(profile: str) -> None:
+def test_every_nvidia_profile_keeps_auto_retrieval_routes(profile: str) -> None:
     overrides = profile_overrides(
         profile,
         {"gpus": [{"vendor": "nvidia", "vram_mb": 4 * 1024}], "ram": {"total_gb": 32}},
     )
-    assert overrides["models"]["reranker_device"] == "cuda"
-    if profile not in {"high", "max"}:
-        assert overrides["models"].get("embedding_device") != "cuda"
+    assert overrides["models"].get("embedding_device", "auto") == "auto"
+    assert overrides["models"].get("reranker_device", "auto") == "auto"
 
 
 def test_background_work_defaults_to_low_os_priority(tmp_path: Path):
@@ -104,7 +103,7 @@ def test_profile_selection_thresholds():
 
 
 @pytest.mark.parametrize("profile", ("high", "max"))
-def test_16gb_nvidia_profiles_bound_parallelism_and_admit_cuda_retrieval(profile: str):
+def test_16gb_nvidia_profiles_bound_parallelism_and_keep_auto_retrieval(profile: str):
     overrides = profile_overrides(
         profile,
         {"gpus": [{"vendor": "nvidia", "vram_mb": 16_303}], "ram": {"total_gb": 32}},
@@ -115,8 +114,8 @@ def test_16gb_nvidia_profiles_bound_parallelism_and_admit_cuda_retrieval(profile
     assert overrides["ollama"]["kv_cache_type"] == ("q4_0" if profile == "high" else "q8_0")
     assert overrides["llama_cpp"]["cache_type_k"] == ("q4_0" if profile == "high" else "q8_0")
     assert overrides["llama_cpp"]["cache_type_v"] == ("q4_0" if profile == "high" else "q8_0")
-    assert overrides["models"]["embedding_device"] == "cuda"
-    assert overrides["models"]["reranker_device"] == "cuda"
+    assert overrides["models"].get("embedding_device", "auto") == "auto"
+    assert overrides["models"].get("reranker_device", "auto") == "auto"
     assert overrides["model_execution"]["smart"]["context_tokens"] == 65_536
     assert overrides["model_execution"]["smart"]["parallel"] == 1
     retired_models = {"qwen3.5:4b-q4_K_M", "gemma4:12b"}

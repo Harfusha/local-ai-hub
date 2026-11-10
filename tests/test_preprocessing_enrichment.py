@@ -162,6 +162,124 @@ def test_exclusive_enriches_stub_without_removing_it_on_model_failure(tmp_path, 
         prep.close()
 
 
+def test_disabled_background_gpu_uses_scheduler_for_stub_enrichment(tmp_path):
+    root = tmp_path / "project"
+    root.mkdir()
+    source = b"A useful explanation of a project component.\n"
+    (root / "notes.md").write_bytes(source)
+    cfg = {
+        "server": {"state_dir": str(tmp_path / "state")},
+        "preprocessing": {"enabled": False, "model": "configured-model", "disable_llm_card_synthesis": False,
+                          "prefer_deterministic_cards": False, "exclusive": {"enrich_stub_cards": True}},
+        "background_gpu": {"enabled": False, "file_batch_size": 1},
+    }
+    digest = hashlib.sha256(source).hexdigest()
+    fallback_calls = []
+    gpu = SimpleNamespace(
+        enabled=False,
+        ready=lambda: False,
+        generate_many=lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("disabled GPU worker used")),
+    )
+    prep = ProjectPreprocessor(cfg, _Noop(), SimpleNamespace(index_reset=False), _Noop(), _Noop(),
+                               RepositoryTools(cfg), background_gpu=gpu)
+    try:
+        with closing(prep._connect()) as con:
+            con.execute(
+                "INSERT INTO content_cards(card_key,content_hash,model,analyzer_version,card_json,created_at,accessed_at,hits) VALUES(?,?,?,?,?,?,?,?)",
+                ("stub", digest, "deterministic-stub", PREPROCESS_ANALYZER_VERSION, "{}", 0, 0, 0),
+            )
+            con.execute(
+                "INSERT INTO file_refs(root,path,content_hash,size,needs_hash,generation,card_key,updated_at) VALUES(?,?,?,?,?,?,?,?)",
+                (str(root), "notes.md", digest, len(source), 0, 1, "stub", 0),
+            )
+            con.commit()
+        snapshot = set_operational_mode(tmp_path / "state", "preprocessing")
+        publish_preprocessing_ready(tmp_path / "state", snapshot)
+
+        def fallback(*args):
+            fallback_calls.append(args)
+            return {"success": True, "model": "configured-model", "data": _enriched_card()}
+
+        prep._run_background_generate = fallback
+        assert prep._step_file_card({"root": str(root), "phase": "files"}) is True
+        assert len(fallback_calls) == 1
+        with closing(prep._connect()) as con:
+            row = con.execute(
+                "SELECT c.model,c.card_json FROM file_refs f JOIN content_cards c ON c.card_key=f.card_key WHERE f.root=?",
+                (str(root),),
+            ).fetchone()
+        assert row[0] == "configured-model"
+        assert "Verified source summary" in row[1]
+    finally:
+        prep.close()
+
+
+def test_disabled_background_gpu_generation_uses_foreground_scheduler(tmp_path, monkeypatch):
+    cfg = {
+        "server": {"state_dir": str(tmp_path / "state")},
+        "preprocessing": {"model": "configured-model"},
+        "background_gpu": {"enabled": False},
+    }
+    submitted = []
+
+    class Scheduler:
+        def foreground_busy(self):
+            return False
+
+        def submit(self, model, *, execute, **kwargs):
+            submitted.append((model, kwargs))
+            return execute()
+
+    class Policy:
+        def profile(self, *_args, **_kwargs):
+            return SimpleNamespace(prompt_budget_tokens=4096)
+
+        def apply_payload(self, _model, payload, **_kwargs):
+            return payload, SimpleNamespace(prompt_budget_tokens=4096)
+
+    class Runtime:
+        def request_interruptible(self, *_args, **_kwargs):
+            return {"response": '{"purpose":"Verified summary","symbols":[],"dependencies":[],"side_effects":[],"risks":[],"tests":[],"keywords":[]}'}
+
+    gpu = SimpleNamespace(
+        enabled=False,
+        generate=lambda **_kwargs: (_ for _ in ()).throw(AssertionError("disabled GPU worker used")),
+    )
+    services = SimpleNamespace(model_policy=Policy())
+    prep = ProjectPreprocessor(cfg, services, _Noop(), Scheduler(), Runtime(), RepositoryTools(cfg), background_gpu=gpu)
+    try:
+        prep._gpu_yield = lambda: False
+        import local_ai_hub.operational_mode as operational_mode
+        monkeypatch.setattr(operational_mode, "load_operational_mode", lambda _state_dir: SimpleNamespace())
+        monkeypatch.setattr(operational_mode, "preprocessing_mode_ready", lambda *_args: True)
+        monkeypatch.setattr(operational_mode, "operational_mode_gate_error", lambda *_args: None)
+        result = prep._run_background_generate("configured-model", "prompt", "system", {"type": "object"}, 32, "preprocess:file-card")
+        assert result["success"] is True, result
+        assert result["model"] == "configured-model"
+        assert len(submitted) == 1
+        assert submitted[0][0] == "configured-model"
+        assert submitted[0][1]["background"] is True
+    finally:
+        prep.close()
+
+
+def test_disabled_background_gpu_can_still_use_ready_cpu_fallback():
+    calls = []
+    gpu = SimpleNamespace(
+        enabled=False,
+        ready=lambda: True,
+        generate=lambda **kwargs: calls.append(kwargs) or {"success": True, "model": "cpu-model"},
+    )
+    prep = object.__new__(ProjectPreprocessor)
+    prep.config = {"server": {}}
+    prep.background_gpu = gpu
+    prep._gpu_yield = lambda: False
+    result = prep._run_background_generate("cpu-model", "prompt", "system", {}, 16, "preprocess:file-card")
+    assert result["success"] is True
+    assert len(calls) == 1
+    assert calls[0]["preprocessing"] is True
+
+
 def _card_ref(prep, root, path, source, card_key=None):
     digest = hashlib.sha256(source).hexdigest()
     with closing(prep._connect()) as con:
@@ -336,21 +454,21 @@ def test_changed_source_rejects_late_model_result(tmp_path):
         prep.close()
 
 
-def test_default_file_card_synthesis_and_background_gpu_are_enabled(tmp_path):
+def test_default_file_card_synthesis_enabled_and_background_gpu_profile_defaults(tmp_path):
     root = Path(__file__).resolve().parents[1]
     for defaults_path in (root / "defaults.toml", root / "src/local_ai_hub/defaults.toml"):
         with defaults_path.open("rb") as handle:
             defaults = tomllib.load(handle)
         assert defaults["preprocessing"]["disable_llm_card_synthesis"] is False
-        assert defaults["background_gpu"]["enabled"] is True
+        assert defaults["background_gpu"]["enabled"] is False
     assert PROFILE_OVERRIDES["cpu"]["background_gpu"].get("enabled", True) is True
-    assert PROFILE_OVERRIDES["integrated"]["background_gpu"].get("enabled", True) is True
+    assert PROFILE_OVERRIDES["integrated"]["background_gpu"].get("enabled", True) is False
 
     config_path = tmp_path / "config.toml"
     config_path.write_text("", encoding="utf-8")
     effective = load_config(config_path, probe_hardware=False)
     assert effective["preprocessing"]["disable_llm_card_synthesis"] is False
-    assert effective["background_gpu"]["enabled"] is True
+    assert effective["background_gpu"]["enabled"] is False
     config_path.write_text("[preprocessing]\ndisable_llm_card_synthesis = true\n[background_gpu]\nenabled = false\n", encoding="utf-8")
     override = load_config(config_path, probe_hardware=False)
     assert override["preprocessing"]["disable_llm_card_synthesis"] is True

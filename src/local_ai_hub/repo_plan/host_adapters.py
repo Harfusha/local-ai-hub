@@ -148,6 +148,14 @@ class HostShadowRequest:
     task_id: str | None = None
     evidence_ids: tuple[str, ...] = ()
     mode: str = "shadow"
+    token_usage: HostTokenUsage | None = None
+    source_sequence: int | None = None
+    source_stream_ref: str | None = None
+    source_result: str | None = None
+    proposal_status: str = "proposed"
+    source_task_status: str | None = None
+    source_has_blockers: bool | None = None
+    source_has_next_action: bool | None = None
 
     def __post_init__(self) -> None:
         for name in ("host_name", "host_version", "surface", "session_type", "session_id", "event_id"):
@@ -158,12 +166,60 @@ class HostShadowRequest:
             raise ValueError("invalid repository_id")
         _contract_code(self.proposed_action, "proposed_action")
         _contract_code(self.reason_code, "reason_code")
+        if self.proposal_status not in {"proposed", "not_proposed"}:
+            raise ValueError("invalid proposal_status")
+        if (self.proposal_status == "not_proposed") != (self.proposed_action == "none"):
+            raise ValueError("proposal_status and proposed_action disagree")
+        source_fields = (
+            self.source_task_status,
+            self.source_has_blockers,
+            self.source_has_next_action,
+        )
+        if any(value is not None for value in source_fields):
+            if (
+                self.host_name != "local-ai-hub"
+                or self.surface != "agent_os"
+                or self.session_type != "task"
+                or self.source_task_status not in {
+                    "draft", "planned", "active", "verifying", "completed",
+                    "waiting", "blocked", "failed", "cancelled", "abandoned",
+                }
+                or type(self.source_has_blockers) is not bool
+                or type(self.source_has_next_action) is not bool
+            ):
+                raise ValueError("invalid task shadow signal metadata")
+        if self.proposal_status == "not_proposed" and self.source_task_status is None:
+            raise ValueError("not_proposed observations require task signal metadata")
         if self.task_id is not None:
             _contract_token(self.task_id, "task_id")
             if "/" in self.task_id or "\\" in self.task_id:
                 raise ValueError("invalid task_id")
         if self.mode != "shadow":
             raise ValueError("only shadow mode is supported")
+        if self.token_usage is not None and not isinstance(self.token_usage, HostTokenUsage):
+            raise ValueError("invalid token usage metadata")
+        if self.token_usage is not None and (self.host_name, self.surface) not in {
+            ("antigravity", "cli_stream_json"),
+            ("codex", "app_server"),
+        }:
+            raise ValueError("token usage is unsupported for this host surface")
+        if self.source_sequence is not None and (
+            type(self.source_sequence) is not int or not 0 <= self.source_sequence <= 1_000_000_000
+        ):
+            raise ValueError("invalid source sequence")
+        if self.source_stream_ref is not None and not re.fullmatch(
+            r"[a-f0-9]{32}", self.source_stream_ref
+        ):
+            raise ValueError("invalid source stream reference")
+        if self.source_result is not None and (
+            self.host_name != "codex"
+            or self.surface != "app_server"
+            or self.source_result not in {
+                "completed", "interrupted", "failed", "inProgress",
+                "notLoaded", "idle", "systemError", "active",
+            }
+        ):
+            raise ValueError("invalid source result")
         if not isinstance(self.evidence_ids, (tuple, list)) or len(self.evidence_ids) > 64:
             raise ValueError("invalid evidence_ids")
         evidence_ids = tuple(_contract_token(item, "evidence_id") for item in self.evidence_ids)
@@ -187,6 +243,7 @@ class HostOperationResult:
     event_id: str | None = None
     recorded: bool = False
     duplicate: bool = False
+    proposal_status: str = "proposed"
 
 
 @dataclass(frozen=True)
@@ -209,9 +266,50 @@ class HostLaunchResult:
     budget_reserved: bool = False
 
 
+_HOST_TOKEN_USAGE_FIELDS = (
+    "input_tokens", "output_tokens", "thinking_tokens",
+    "cache_read_tokens", "total_tokens",
+)
+
+
+@dataclass(frozen=True)
+class HostTokenUsage:
+    """Allowlisted aggregate token counters; no prompt or result content."""
+
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    thinking_tokens: int | None = None
+    cache_read_tokens: int | None = None
+    total_tokens: int | None = None
+
+    def __post_init__(self) -> None:
+        for name in _HOST_TOKEN_USAGE_FIELDS:
+            value = getattr(self, name)
+            if value is not None and (
+                type(value) is not int or value < 0 or value > (2**53 - 1)
+            ):
+                raise ValueError(f"invalid token usage counter: {name}")
+
+    @classmethod
+    def from_payload(cls, value: Any) -> HostTokenUsage:
+        if not isinstance(value, dict):
+            raise ValueError("invalid token usage metadata")
+        counters = {name: value[name] for name in _HOST_TOKEN_USAGE_FIELDS if name in value}
+        if not counters:
+            raise ValueError("invalid token usage metadata")
+        return cls(**counters)
+
+    def to_dict(self) -> dict[str, int]:
+        return {
+            name: value
+            for name in _HOST_TOKEN_USAGE_FIELDS
+            if (value := getattr(self, name)) is not None
+        }
+
+
 @dataclass(frozen=True)
 class HostStreamObservation:
-    """Sanitized metadata extracted from one Antigravity CLI NDJSON event."""
+    """Sanitized metadata extracted from one supported host event."""
 
     host_name: str
     surface: str
@@ -221,6 +319,9 @@ class HostStreamObservation:
     event_type: str
     sequence: int
     verification_status: HostVerificationStatus = HostVerificationStatus.NOT_VERIFIED
+    token_usage: HostTokenUsage | None = None
+    source_stream_ref: str | None = None
+    source_result: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -247,17 +348,25 @@ def resolve_antigravity_cli() -> Path | None:
     return None
 
 
-def parse_antigravity_stream_event(line: str, *, sequence: int) -> HostStreamObservation:
+def parse_antigravity_stream_event(
+    line: str,
+    *,
+    sequence: int,
+    stream_instance_id: str,
+) -> HostStreamObservation:
     """Extract only bounded event metadata; never return stream content or IDs.
 
     The caller must separately prove that the process and conversation are
     Hub-owned before using this observation for a shadow write. Parsing a stream
     does not authenticate host delivery, permissions, or conversation ownership.
+    ``stream_instance_id`` must be freshly generated by the Hub for each process;
+    only its conversation-bound hash is returned, so restarts do not reuse event IDs.
     """
     if not isinstance(line, str) or not line or len(line) > 65536:
         raise ValueError("invalid Antigravity stream line")
     if isinstance(sequence, bool) or not isinstance(sequence, int) or not 0 <= sequence <= 1_000_000_000:
         raise ValueError("invalid Antigravity stream sequence")
+    stream_instance_id = _contract_token(stream_instance_id, "stream_instance_id")
     try:
         message = json.loads(line)
     except (TypeError, json.JSONDecodeError) as exc:
@@ -266,6 +375,7 @@ def parse_antigravity_stream_event(line: str, *, sequence: int) -> HostStreamObs
         raise ValueError("Antigravity stream event must be an object")
 
     event = message.get("event")
+    token_usage = None
     if event == "init":
         payload = message.get("init")
         conversation_id = message.get("conversation_id")
@@ -286,12 +396,16 @@ def parse_antigravity_stream_event(line: str, *, sequence: int) -> HostStreamObs
             raise ValueError("unknown Antigravity step state")
         if step_type not in {"user_input", "agent_response", "tool", "checkpoint"}:
             raise ValueError("unknown Antigravity step type")
+        if "usage" in payload:
+            token_usage = HostTokenUsage.from_payload(payload["usage"])
         event_type = f"step_update.{step_type}.{state.lower()}"
     elif event == "result":
         payload = message.get("result")
         if not isinstance(payload, dict):
             raise ValueError("invalid Antigravity result event")
         conversation_id = payload.get("conversation_id")
+        if "usage" in payload:
+            token_usage = HostTokenUsage.from_payload(payload["usage"])
         event_type = (
             "session.result.success"
             if payload.get("status") == "SUCCESS"
@@ -304,8 +418,11 @@ def parse_antigravity_stream_event(line: str, *, sequence: int) -> HostStreamObs
     session_ref = hashlib.sha256(
         f"antigravity\0{conversation_id}".encode("utf-8")
     ).hexdigest()[:32]
+    source_stream_ref = hashlib.sha256(
+        f"antigravity-stream\0{conversation_id}\0{stream_instance_id}".encode("utf-8")
+    ).hexdigest()[:32]
     event_id = hashlib.sha256(
-        f"antigravity\0{conversation_id}\0{sequence}".encode("utf-8")
+        f"antigravity\0{conversation_id}\0{source_stream_ref}\0{sequence}".encode("utf-8")
     ).hexdigest()
     return HostStreamObservation(
         host_name="antigravity",
@@ -315,6 +432,84 @@ def parse_antigravity_stream_event(line: str, *, sequence: int) -> HostStreamObs
         event_id=event_id,
         event_type=event_type,
         sequence=sequence,
+        token_usage=token_usage,
+        source_stream_ref=source_stream_ref,
+    )
+
+
+def parse_antigravity_post_tool_use_event(
+    payload: Any,
+    *,
+    expected_conversation_id: str,
+    expected_workspace_root: str | Path,
+) -> HostStreamObservation:
+    """Sanitize a documented PostToolUse envelope without proving hook delivery.
+
+    Conversation identity and workspace paths are checked in memory and never
+    returned. Tool arguments, error details, transcript/artifact paths, and model
+    names are discarded. A caller must separately verify Hub ownership before
+    recording the observation through the shared shadow gate.
+    """
+    if not isinstance(payload, dict):
+        raise ValueError("invalid Antigravity PostToolUse payload")
+    expected_conversation_id = _contract_token(
+        expected_conversation_id, "expected_conversation_id", limit=200
+    )
+    conversation_id = payload.get("conversationId")
+    conversation_id = _contract_token(conversation_id, "conversation_id", limit=200)
+    if conversation_id != expected_conversation_id:
+        raise ValueError("Antigravity hook conversation identity mismatch")
+
+    tool_call = payload.get("toolCall")
+    if not isinstance(tool_call, dict):
+        raise ValueError("invalid Antigravity PostToolUse tool call")
+    _contract_token(tool_call.get("name"), "tool_name")
+    if not isinstance(tool_call.get("args"), dict):
+        raise ValueError("invalid Antigravity PostToolUse tool arguments")
+
+    step_index = payload.get("stepIdx")
+    if type(step_index) is not int or not 0 <= step_index <= 1_000_000_000:
+        raise ValueError("invalid Antigravity PostToolUse step index")
+    error = payload.get("error", "")
+    if not isinstance(error, str) or len(error) > 65536:
+        raise ValueError("invalid Antigravity PostToolUse error metadata")
+
+    workspace_paths = payload.get("workspacePaths")
+    if not isinstance(workspace_paths, list) or not workspace_paths or len(workspace_paths) > 64:
+        raise ValueError("invalid Antigravity PostToolUse workspace metadata")
+    try:
+        from local_ai_hub.agent_tasks import _canonical_repository_root
+
+        expected_root = _canonical_repository_root(str(expected_workspace_root))
+        observed_roots = []
+        for workspace_path in workspace_paths:
+            if not isinstance(workspace_path, str) or not workspace_path:
+                raise ValueError("invalid Antigravity workspace path")
+            observed_roots.append(_canonical_repository_root(workspace_path))
+    except (OSError, RuntimeError, TypeError, ValueError) as exc:
+        raise ValueError("Antigravity hook workspace is not verifiable") from exc
+    if expected_root not in observed_roots:
+        raise ValueError("Antigravity hook workspace identity mismatch")
+
+    session_ref = hashlib.sha256(
+        f"antigravity-post-tool-use-session\\0{conversation_id}".encode("utf-8")
+    ).hexdigest()[:32]
+    source_stream_ref = hashlib.sha256(
+        f"antigravity-post-tool-use\\0{conversation_id}".encode("utf-8")
+    ).hexdigest()[:32]
+    event_id = hashlib.sha256(
+        f"antigravity-post-tool-use\\0{conversation_id}\\0{step_index}".encode("utf-8")
+    ).hexdigest()
+    return HostStreamObservation(
+        host_name="antigravity",
+        surface="antigravity_post_tool_use",
+        session_type="conversation",
+        session_ref=session_ref,
+        event_id=event_id,
+        event_type="tool.failed" if error else "tool.completed",
+        sequence=step_index,
+        verification_status=HostVerificationStatus.NOT_VERIFIED,
+        source_stream_ref=source_stream_ref,
     )
 
 
@@ -324,12 +519,15 @@ def parse_codex_app_server_notification(
     sequence: int,
     repo_root: str | Path,
     expected_cli_version: str,
+    expected_thread_id: str | None = None,
+    stream_instance_id: str | None = None,
 ) -> HostStreamObservation:
-    """Parse only the verified Codex ``thread/started`` notification shape.
+    """Parse verified Codex thread-start and cumulative-usage metadata.
 
     The thread preview, path, and identifiers are used only for validation or
     pseudonym derivation and are never returned. Other notifications remain
-    unsupported until their delivery and metadata contract are verified.
+    unsupported until their delivery and metadata contract are verified. Usage
+    updates require the in-memory thread identity and a fresh Hub process nonce.
     """
     if not isinstance(line, str) or not line or len(line) > 65536:
         raise ValueError("invalid Codex app-server notification")
@@ -341,13 +539,131 @@ def parse_codex_app_server_notification(
         message = json.loads(line)
     except (TypeError, json.JSONDecodeError) as exc:
         raise ValueError("invalid Codex app-server JSON") from exc
-    if (
-        not isinstance(message, dict)
-        or message.get("method") != "thread/started"
-        or "id" in message
-    ):
+    if not isinstance(message, dict) or "id" in message:
         raise ValueError("unsupported Codex app-server notification")
+    method = message.get("method")
     params = message.get("params")
+    if method == "thread/tokenUsage/updated":
+        if expected_thread_id is None or stream_instance_id is None:
+            raise ValueError("Codex token usage requires expected thread identity and stream instance")
+        expected_thread_id = _contract_token(expected_thread_id, "expected_thread_id")
+        stream_instance_id = _contract_token(stream_instance_id, "stream_instance_id")
+        if not isinstance(params, dict):
+            raise ValueError("invalid Codex token usage notification")
+        thread_id = params.get("threadId")
+        token_usage = params.get("tokenUsage")
+        if thread_id != expected_thread_id:
+            raise ValueError("Codex thread identity mismatch")
+        if (
+            not isinstance(token_usage, dict)
+            or not isinstance(token_usage.get("last"), dict)
+            or not isinstance(token_usage.get("total"), dict)
+        ):
+            raise ValueError("invalid Codex token usage metadata")
+        total = token_usage["total"]
+        required = {
+            "inputTokens", "outputTokens", "cachedInputTokens",
+            "reasoningOutputTokens", "totalTokens",
+        }
+        if not required.issubset(total):
+            raise ValueError("incomplete Codex cumulative token usage")
+        usage = HostTokenUsage.from_payload({
+            "input_tokens": total["inputTokens"],
+            "output_tokens": total["outputTokens"],
+            "cache_read_tokens": total["cachedInputTokens"],
+            "thinking_tokens": total["reasoningOutputTokens"],
+            "total_tokens": total["totalTokens"],
+        })
+        session_ref = hashlib.sha256(f"codex\0{thread_id}".encode("utf-8")).hexdigest()[:32]
+        source_stream_ref = hashlib.sha256(
+            f"codex-stream\0{thread_id}\0{stream_instance_id}".encode("utf-8")
+        ).hexdigest()[:32]
+        event_id = hashlib.sha256(
+            f"codex\0{source_stream_ref}\0thread.token_usage.updated\0{sequence}".encode("utf-8")
+        ).hexdigest()
+        return HostStreamObservation(
+            host_name="codex",
+            surface="app_server",
+            session_type="thread",
+            session_ref=session_ref,
+            event_id=event_id,
+            event_type="thread.token_usage.updated",
+            sequence=sequence,
+            token_usage=usage,
+            source_stream_ref=source_stream_ref,
+        )
+    if method == "thread/status/changed":
+        if expected_thread_id is None or stream_instance_id is None:
+            raise ValueError("Codex thread status requires expected thread identity and stream instance")
+        expected_thread_id = _contract_token(expected_thread_id, "expected_thread_id")
+        stream_instance_id = _contract_token(stream_instance_id, "stream_instance_id")
+        if not isinstance(params, dict) or params.get("threadId") != expected_thread_id:
+            raise ValueError("Codex thread identity mismatch")
+        status = params.get("status")
+        status_type = status.get("type") if isinstance(status, dict) else None
+        if status_type not in {"notLoaded", "idle", "systemError", "active"}:
+            raise ValueError("unsupported Codex thread status")
+        session_ref = hashlib.sha256(
+            f"codex\0{expected_thread_id}".encode("utf-8")
+        ).hexdigest()[:32]
+        source_stream_ref = hashlib.sha256(
+            f"codex-stream\0{expected_thread_id}\0{stream_instance_id}".encode("utf-8")
+        ).hexdigest()[:32]
+        event_id = hashlib.sha256(
+            f"codex\0{source_stream_ref}\0thread.status.changed\0{sequence}".encode("utf-8")
+        ).hexdigest()
+        return HostStreamObservation(
+            host_name="codex",
+            surface="app_server",
+            session_type="thread",
+            session_ref=session_ref,
+            event_id=event_id,
+            event_type="thread.status.changed",
+            sequence=sequence,
+            source_stream_ref=source_stream_ref,
+            source_result=status_type,
+        )
+    if method in {"turn/started", "turn/completed"}:
+        if expected_thread_id is None or stream_instance_id is None:
+            raise ValueError("Codex turn event requires expected thread identity and stream instance")
+        expected_thread_id = _contract_token(expected_thread_id, "expected_thread_id")
+        stream_instance_id = _contract_token(stream_instance_id, "stream_instance_id")
+        if not isinstance(params, dict) or params.get("threadId") != expected_thread_id:
+            raise ValueError("Codex thread identity mismatch")
+        turn = params.get("turn")
+        if (
+            not isinstance(turn, dict)
+            or not isinstance(turn.get("id"), str)
+            or not isinstance(turn.get("items"), list)
+        ):
+            raise ValueError("invalid Codex turn notification")
+        turn_id = _contract_token(turn["id"], "turn_id")
+        status = turn.get("status")
+        if status not in {"completed", "interrupted", "failed", "inProgress"}:
+            raise ValueError("unsupported Codex turn status")
+        event_type = method.replace("/", ".")
+        session_ref = hashlib.sha256(
+            f"codex\0{expected_thread_id}".encode("utf-8")
+        ).hexdigest()[:32]
+        source_stream_ref = hashlib.sha256(
+            f"codex-stream\0{expected_thread_id}\0{stream_instance_id}".encode("utf-8")
+        ).hexdigest()[:32]
+        event_id = hashlib.sha256(
+            f"codex\0{source_stream_ref}\0{event_type}\0{turn_id}\0{sequence}".encode("utf-8")
+        ).hexdigest()
+        return HostStreamObservation(
+            host_name="codex",
+            surface="app_server",
+            session_type="thread",
+            session_ref=session_ref,
+            event_id=event_id,
+            event_type=event_type,
+            sequence=sequence,
+            source_stream_ref=source_stream_ref,
+            source_result=status,
+        )
+    if method != "thread/started":
+        raise ValueError("unsupported Codex app-server notification")
     thread = params.get("thread") if isinstance(params, dict) else None
     if not isinstance(thread, dict):
         raise ValueError("invalid Codex thread notification")
@@ -384,10 +700,90 @@ def parse_codex_app_server_notification(
     )
 
 
+def parse_codex_app_server_approval_request(
+    line: str,
+    *,
+    sequence: int,
+    expected_thread_id: str,
+    stream_instance_id: str,
+) -> HostStreamObservation:
+    """Record only the existence and type of a Codex approval request."""
+    if not isinstance(line, str) or not line or len(line) > 65536:
+        raise ValueError("invalid Codex app-server request")
+    if isinstance(sequence, bool) or not isinstance(sequence, int) or not 0 <= sequence <= 1_000_000_000:
+        raise ValueError("invalid Codex app-server sequence")
+    expected_thread_id = _contract_token(expected_thread_id, "expected_thread_id")
+    stream_instance_id = _contract_token(stream_instance_id, "stream_instance_id")
+    try:
+        message = json.loads(line)
+    except (TypeError, json.JSONDecodeError) as exc:
+        raise ValueError("invalid Codex app-server JSON") from exc
+    approval_events = {
+        "item/commandExecution/requestApproval": "approval.command_execution.requested",
+        "item/fileChange/requestApproval": "approval.file_change.requested",
+        "item/permissions/requestApproval": "approval.permissions.requested",
+    }
+    method = message.get("method") if isinstance(message, dict) else None
+    if not isinstance(method, str) or method not in approval_events:
+        raise ValueError("unsupported Codex app-server approval request")
+    request_id = message.get("id")
+    if type(request_id) is int:
+        if request_id < 0 or request_id > (2**53 - 1):
+            raise ValueError("invalid Codex approval request identity")
+        request_identity = str(request_id)
+    elif isinstance(request_id, str) and request_id:
+        request_identity = _contract_token(request_id, "request_id")
+    else:
+        raise ValueError("invalid Codex approval request identity")
+    params = message.get("params")
+    if not isinstance(params, dict) or params.get("threadId") != expected_thread_id:
+        raise ValueError("Codex thread identity mismatch")
+    for name in ("turnId", "itemId"):
+        if not isinstance(params.get(name), str):
+            raise ValueError("invalid Codex approval request metadata")
+    if method in {
+        "item/commandExecution/requestApproval",
+        "item/permissions/requestApproval",
+    } and not isinstance(params.get("cwd"), str):
+        raise ValueError("invalid Codex approval request metadata")
+    if method == "item/commandExecution/requestApproval" and not isinstance(
+        params.get("command"), str
+    ):
+        raise ValueError("invalid Codex approval request metadata")
+    if method == "item/permissions/requestApproval" and (
+        not isinstance(params.get("permissions"), list)
+        or any(not isinstance(permission, str) for permission in params["permissions"])
+    ):
+        raise ValueError("invalid Codex approval request metadata")
+    started_at = params.get("startedAtMs")
+    if type(started_at) is not int or started_at < 0:
+        raise ValueError("invalid Codex approval request metadata")
+
+    session_ref = hashlib.sha256(f"codex\0{expected_thread_id}".encode("utf-8")).hexdigest()[:32]
+    source_stream_ref = hashlib.sha256(
+        f"codex-stream\0{expected_thread_id}\0{stream_instance_id}".encode("utf-8")
+    ).hexdigest()[:32]
+    event_id = hashlib.sha256(
+        f"codex-approval\0{source_stream_ref}\0{method}\0{request_identity}\0{sequence}".encode("utf-8")
+    ).hexdigest()
+    return HostStreamObservation(
+        host_name="codex",
+        surface="app_server",
+        session_type="thread",
+        session_ref=session_ref,
+        event_id=event_id,
+        event_type=approval_events[method],
+        sequence=sequence,
+        source_stream_ref=source_stream_ref,
+    )
+
+
 def record_shadow_observation(
     request: HostShadowRequest,
     capability: HostCapabilitySnapshot,
     event_store: Any,
+    *,
+    event_stream_id: str | None = None,
 ) -> HostOperationResult:
     """Persist a shadow proposal only for an owned, verified session.
 
@@ -408,7 +804,8 @@ def record_shadow_observation(
             host_version=request.host_version, surface=request.surface,
             session_type=request.session_type, session_ref=session_ref,
             task_id=request.task_id, evidence_ids=request.evidence_ids,
-            proposed_action=request.proposed_action, **values,
+            proposed_action=request.proposed_action,
+            proposal_status=request.proposal_status, **values,
         )
 
     if request.mode != "shadow":
@@ -431,18 +828,34 @@ def record_shadow_observation(
         return result(HostOperationStatus.UNSUPPORTED, "event_not_available")
     if event_store is None or not getattr(event_store, "enabled", False):
         return result(HostOperationStatus.UNCERTAIN, "agent_event_store_unavailable")
+    if event_stream_id is not None and (
+        not request.task_id
+        or event_stream_id != f"task:{request.task_id}"
+        or request.host_name != "local-ai-hub"
+        or request.surface != "agent_os"
+        or request.session_type != "task"
+    ):
+        return result(HostOperationStatus.REFUSED, "invalid_shadow_event_stream_scope")
 
     event_digest = hashlib.sha256(
         f"{request.repository_id}\0{request.host_name}\0{request.session_id}\0{request.event_id}".encode("utf-8")
     ).hexdigest()
-    would_be_denied = capability.would_be_denied if capability.permissions_verified else None
+    would_be_denied = (
+        capability.would_be_denied
+        if capability.permissions_verified and request.proposal_status == "proposed"
+        else None
+    )
     permission_status = (
         "not_evaluated" if would_be_denied is None
         else "would_deny" if would_be_denied
         else "would_allow"
     )
     payload = {
-        "schema": "local-ai-hub.host-shadow-observation.v1",
+        "schema": (
+            "local-ai-hub.host-shadow-observation.v3"
+            if request.source_task_status is not None
+            else "local-ai-hub.host-shadow-observation.v2"
+        ),
         "event_id": event_digest,
         "event_type": request.event_type,
         "observed_at": time.time(),
@@ -468,9 +881,9 @@ def record_shadow_observation(
         "proposal": {
             "action": request.proposed_action,
             "reason_code": request.reason_code,
-            "status": "proposed",
+            "status": request.proposal_status,
         },
-        "outcome": "simulated",
+        "outcome": "simulated" if request.proposal_status == "proposed" else "observed",
         "permission_check": {
             "status": permission_status,
             "would_be_denied": would_be_denied,
@@ -478,14 +891,33 @@ def record_shadow_observation(
         "evidence_ids": list(request.evidence_ids),
         "content_stored": False,
     }
+    if request.source_task_status is not None:
+        payload["source_state"] = {
+            "task_status": request.source_task_status,
+            "has_blockers": request.source_has_blockers,
+            "has_next_action": request.source_has_next_action,
+        }
+    if request.token_usage is not None:
+        payload["token_usage"] = request.token_usage.to_dict()
+        payload["token_usage_scope"] = "session_cumulative"
+    if request.source_sequence is not None:
+        payload["source_sequence"] = request.source_sequence
+    if request.source_stream_ref is not None:
+        payload["source_stream_ref"] = request.source_stream_ref
+    if request.source_result is not None:
+        payload["source_result"] = request.source_result
     if not math.isfinite(payload["observed_at"]):
         return result(HostOperationStatus.UNCERTAIN, "invalid_observation_time")
 
     from local_ai_hub.agent_events import AgentEvent
 
     event = AgentEvent.create(
-        stream_id=f"host-shadow:{session_ref}",
-        kind="host.shadow.observation.v1",
+        stream_id=event_stream_id or f"host-shadow:{session_ref}",
+        kind=(
+            "host.shadow.observation.v3"
+            if request.source_task_status is not None
+            else "host.shadow.observation.v2"
+        ),
         payload=payload,
         idempotency_key=f"host-shadow:{event_digest}",
         actor="host_shadow",
@@ -497,7 +929,10 @@ def record_shadow_observation(
         return result(HostOperationStatus.UNCERTAIN, "shadow_event_store_write_uncertain")
     if appended.error or appended.retryable or appended.event is None:
         return result(HostOperationStatus.UNCERTAIN, "shadow_event_store_write_uncertain")
-    if capability.permissions_verified and would_be_denied is True:
+    if request.proposal_status == "not_proposed":
+        status = HostOperationStatus.SHADOW_ONLY
+        reason = "no_actionable_proposal_recorded"
+    elif capability.permissions_verified and would_be_denied is True:
         status = HostOperationStatus.REFUSED
         reason = "existing_permissions_would_deny"
     elif not capability.permissions_verified:
@@ -509,6 +944,81 @@ def record_shadow_observation(
     return result(
         status, reason, event_id=appended.event.event_id,
         recorded=True, duplicate=bool(appended.duplicate),
+    )
+
+
+def record_agent_task_checkpoint_shadow(task: Any, source_event: Any, event_store: Any) -> HostOperationResult | None:
+    """Record a client-neutral pause/continue proposal from one Agent OS checkpoint.
+
+    Only typed task status and checkpoint presence bits inform the proposal. The
+    source event payload, goal, blockers, next action, and checkpoint state are
+    never copied into shadow telemetry. This function cannot mutate the task.
+    """
+    import re
+
+    from local_ai_hub import __version__
+    from local_ai_hub.agent_events import AgentEvent
+    from local_ai_hub.agent_tasks import TaskState, TaskStatus
+
+    if not isinstance(task, TaskState) or not isinstance(source_event, AgentEvent):
+        return None
+    if source_event.kind != "task.checkpointed" or source_event.stream_id != f"task:{task.task_id}":
+        return None
+    repository_id = task.context.repository_id
+    if not isinstance(repository_id, str) or not re.fullmatch(r"[a-f0-9]{64}", repository_id):
+        return None
+
+    checkpoint = task.checkpoint
+    if task.status is TaskStatus.BLOCKED:
+        proposed_action = "recommend_pause"
+        reason_code = "task_status_blocked"
+        proposal_status = "proposed"
+    elif checkpoint.has_blockers():
+        proposed_action = "recommend_pause"
+        reason_code = "checkpoint_has_blockers"
+        proposal_status = "proposed"
+    elif task.status is TaskStatus.ACTIVE and checkpoint.next_action:
+        proposed_action = "recommend_continue"
+        reason_code = "checkpoint_has_next_action"
+        proposal_status = "proposed"
+    else:
+        proposed_action = "none"
+        reason_code = "no_actionable_signal"
+        proposal_status = "not_proposed"
+
+    capability = HostCapabilitySnapshot(
+        host_name="local-ai-hub",
+        host_version=__version__,
+        surface="agent_os",
+        session_type="task",
+        hub_managed=True,
+        available_events=("task.checkpointed",),
+        verification_status=HostVerificationStatus.VERIFIED,
+        connection_status=HostConnectionStatus.CONNECTED,
+    )
+    request = HostShadowRequest(
+        host_name=capability.host_name,
+        host_version=capability.host_version,
+        surface=capability.surface,
+        session_type=capability.session_type,
+        session_id=task.task_id,
+        repository_id=repository_id,
+        event_id=source_event.event_id,
+        event_type=source_event.kind,
+        proposed_action=proposed_action,
+        reason_code=reason_code,
+        task_id=task.task_id,
+        evidence_ids=(source_event.event_id,),
+        proposal_status=proposal_status,
+        source_task_status=task.status.value,
+        source_has_blockers=checkpoint.has_blockers(),
+        source_has_next_action=bool(checkpoint.next_action),
+    )
+    return record_shadow_observation(
+        request,
+        capability,
+        event_store,
+        event_stream_id=f"task:{task.task_id}",
     )
 
 
@@ -539,6 +1049,46 @@ def record_antigravity_shadow_event(
         reason_code="stream_event_metadata",
         task_id=task_id,
         evidence_ids=evidence_ids,
+        token_usage=observation.token_usage,
+        source_sequence=observation.sequence,
+        source_stream_ref=observation.source_stream_ref,
+    )
+    return record_shadow_observation(request, capability, event_store)
+
+
+def record_antigravity_hook_shadow_event(
+    observation: HostStreamObservation,
+    *,
+    repository_id: str,
+    capability: HostCapabilitySnapshot,
+    event_store: Any,
+    task_id: str | None = None,
+    evidence_ids: tuple[str, ...] = (),
+) -> HostOperationResult:
+    """Record sanitized PostToolUse metadata only through the shared shadow gate."""
+    if not isinstance(observation, HostStreamObservation):
+        raise ValueError("invalid Antigravity PostToolUse observation")
+    if (
+        observation.host_name != "antigravity"
+        or observation.surface != "antigravity_post_tool_use"
+        or observation.event_type not in {"tool.completed", "tool.failed"}
+    ):
+        raise ValueError("observation is not from Antigravity PostToolUse")
+    request = HostShadowRequest(
+        host_name=observation.host_name,
+        host_version=capability.host_version,
+        surface=observation.surface,
+        session_type=observation.session_type,
+        session_id=observation.session_ref,
+        repository_id=repository_id,
+        event_id=observation.event_id,
+        event_type=observation.event_type,
+        proposed_action="observe_event",
+        reason_code="post_tool_use_metadata",
+        task_id=task_id,
+        evidence_ids=evidence_ids,
+        source_sequence=observation.sequence,
+        source_stream_ref=observation.source_stream_ref,
     )
     return record_shadow_observation(request, capability, event_store)
 
@@ -557,7 +1107,12 @@ def record_codex_shadow_event(
         raise ValueError("invalid Codex app-server observation")
     if observation.host_name != "codex" or observation.surface != "app_server":
         raise ValueError("observation is not from Codex App Server")
-    if observation.event_type != "thread.started":
+    if observation.event_type not in {
+        "thread.started", "thread.status.changed", "thread.token_usage.updated",
+        "turn.started", "turn.completed",
+        "approval.command_execution.requested", "approval.file_change.requested",
+        "approval.permissions.requested",
+    }:
         raise ValueError("unsupported Codex shadow event")
     request = HostShadowRequest(
         host_name=observation.host_name,
@@ -568,10 +1123,22 @@ def record_codex_shadow_event(
         repository_id=repository_id,
         event_id=observation.event_id,
         event_type=observation.event_type,
-        proposed_action="observe_event",
-        reason_code="app_server_event_metadata",
+        proposed_action=(
+            "record_approval_notice"
+            if observation.event_type.startswith("approval.")
+            else "observe_event"
+        ),
+        reason_code=(
+            "approval_request_metadata"
+            if observation.event_type.startswith("approval.")
+            else "app_server_event_metadata"
+        ),
         task_id=task_id,
         evidence_ids=evidence_ids,
+        token_usage=observation.token_usage,
+        source_sequence=observation.sequence,
+        source_stream_ref=observation.source_stream_ref,
+        source_result=observation.source_result,
     )
     return record_shadow_observation(request, capability, event_store)
 

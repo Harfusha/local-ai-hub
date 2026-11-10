@@ -676,7 +676,7 @@ def test_context_http_rejects_malformed_max_tokens_and_guard_fields(tmp_path, mo
                 "path_hints": [{"path": "src/api.py", "purpose": "implementation"}],
                 "max_tokens": 512,
             })
-            assert status == 200
+            assert status == 500
             assert unavailable_revision["success"] is False
             assert unavailable_revision["terminal"] is True
             assert unavailable_revision["retryable"] is False

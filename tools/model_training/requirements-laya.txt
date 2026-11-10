@@ -1,0 +1,3 @@
+# Optional backend for Laya typed-decision fine-tuning and evaluation.
+# Install only in the dedicated model-training environment.
+laya==0.4.30

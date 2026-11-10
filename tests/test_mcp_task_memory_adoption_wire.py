@@ -416,7 +416,7 @@ def test_registered_mcp_checkpoint_preflight_allows_full_memory_wire(
     else:
         assert "original_tokens" not in payload["response_budget"]
     assert tasks.get(TASK_ID).checkpoint.state_data["memory_audit"] == audit
-    assert tasks.state_store.event_page(f"task:{TASK_ID}")["last_seq"] == 2
+    assert tasks.state_store.event_page(f"task:{TASK_ID}")["last_seq"] == 3
     assert calls[-1]["body"]["response_budget_tokens"] == 3200
 
 

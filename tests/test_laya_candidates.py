@@ -2,6 +2,7 @@ import json
 import hashlib
 import sqlite3
 from contextlib import closing
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -26,12 +27,12 @@ def candidate_env(tmp_path, monkeypatch):
     return repo, state, task_store, LayaCandidateStore(state)
 
 
-def _capture(*, consent=True, state="A short approved state", **changes):
+def _capture(*, state="A short approved state", **changes):
     operation = {
         "action": "capture",
-        "consent": consent,
         "task_id": "task-1",
         "session_id": "session-1",
+        "_runtime_capture_token": candidates_module._RUNTIME_CAPTURE_TOKEN,
         "candidate": {
             "decision_schema_version": "laya-hub-v1",
             "category": "model_route",
@@ -46,13 +47,150 @@ def _capture(*, consent=True, state="A short approved state", **changes):
     return operation
 
 
+def test_capture_persists_only_real_runtime_candidate(candidate_env):
+    repo, _state, task_store, store = candidate_env
+    captured = store.handle(_capture(), root=str(repo), task_store=task_store)
+
+    assert captured["success"] is True
+    assert captured["status"] == "pending"
+    with closing(sqlite3.connect(store.path)) as con:
+        candidate_json = con.execute(
+            "SELECT candidate_json FROM laya_candidates WHERE candidate_id=?",
+            (captured["candidate_id"],),
+        ).fetchone()[0]
+        consent_table = con.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='laya_candidate_consents'"
+        ).fetchone()
+    assert "consent_receipt_id" not in candidate_json
+    assert "per_example_consented" not in candidate_json
+    assert consent_table is None
+
+
+def test_duplicate_capture_is_not_stored_twice(candidate_env):
+    repo, _state, task_store, store = candidate_env
+    first = store.handle(_capture(state="same"), root=str(repo), task_store=task_store)
+    duplicate_operation = _capture(state="same")
+    second = store.handle(duplicate_operation, root=str(repo), task_store=task_store)
+
+    with closing(sqlite3.connect(store.path)) as con:
+        payload = con.execute("SELECT candidate_json FROM laya_candidates WHERE candidate_id=?", (first["candidate_id"],)).fetchone()[0]
+        candidate_count = con.execute("SELECT COUNT(*) FROM laya_candidates").fetchone()[0]
+    assert second["duplicate"] is True
+    assert "consent_receipt_id" not in payload
+    assert candidate_count == 1
+
+
+def test_capture_rejects_retired_per_example_consent_fields(candidate_env):
+    repo, _state, task_store, store = candidate_env
+    operation = _capture()
+    operation["consent_receipt_id"] = "receipt-retired"
+
+    with pytest.raises(ValueError, match="capture fields invalid"):
+        store.handle(operation, root=str(repo), task_store=task_store)
+
+    assert store.handle({"action": "list"}, root=str(repo), task_store=task_store)["count"] == 0
+
+
+def test_capture_rejects_retired_per_example_consent_boolean(candidate_env):
+    repo, _state, task_store, store = candidate_env
+    operation = _capture(state="different", per_example_consented=True)
+
+    with pytest.raises(ValueError, match="capture fields invalid"):
+        store.handle(operation, root=str(repo), task_store=task_store)
+
+
+def test_deleted_candidate_can_be_replaced_by_later_runtime_outcome(candidate_env):
+    repo, _state, task_store, store = candidate_env
+    captured = store.handle(_capture(state="delete me"), root=str(repo), task_store=task_store)
+    store.handle({"action": "delete", "candidate_id": captured["candidate_id"]}, root=str(repo), task_store=task_store)
+    replacement = store.handle(_capture(state="replacement"), root=str(repo), task_store=task_store)
+    assert replacement["success"] is True
+
+
+def test_runtime_capture_requires_internal_token_without_receipt(candidate_env):
+    repo, _state, task_store, store = candidate_env
+    operation = _capture(state="reserved sample")
+    operation.pop("_runtime_capture_token")
+    with pytest.raises(ValueError, match="actual Laya runtime callback"):
+        store.handle(operation, root=str(repo), task_store=task_store)
+
+
+def _context_source_capture(*, state=None, evidence_ids=None):
+    operation = _capture()
+    candidate = operation["candidate"]
+    candidate.update({
+        "category": "context_source",
+        "state": state or {
+            "gap_code": "unresolved_evidence_gap",
+            "source_codes": ["indexed", "artifact"],
+            "freshness_codes": ["current", "current"],
+            "coverage_codes": ["partial", "complete"],
+        },
+        "options": ["indexed", "artifact", "more_evidence"],
+        "evidence_ids": evidence_ids or ["E" + "0" * 20, "E" + "1" * 20],
+    })
+    return operation
+
+
+def test_context_source_candidate_options_must_match_available_source_codes():
+    candidate = _context_source_capture()["candidate"]
+    candidate["options"] = ["indexed", "rag"]
+
+    with pytest.raises(ValueError, match="not present in context_source codes"):
+        LayaCandidateStore._candidate_input(candidate)
+
+
+def test_context_source_capture_rejects_codes_without_matching_stored_provenance(candidate_env):
+    repo, _state, _task_store, _store = candidate_env
+    candidate = LayaCandidateStore._candidate_input(_context_source_capture()["candidate"])
+
+    with pytest.raises(ValueError, match="do not match recorded provenance"):
+        LayaCandidateStore._validate_context_source_evidence(
+            candidate,
+            evidence_store=_evidence_store(source_codes=["indexed", "rag"]),
+            canonical_root=str(repo),
+        )
+
+
+def _evidence_store(*, stale=False, available=True, root_override=None, source_codes=None):
+    def get_many(evidence_ids, *, verify, root):
+        return [
+            {
+                "success": available,
+                "evidence_id": evidence_id,
+                "root": root if root_override is None else root_override,
+                "stale": stale,
+            }
+            for evidence_id in evidence_ids
+        ]
+
+    def validate_source_provenance(evidence_ids, claimed_codes, *, root):
+        return (
+            available
+            and not stale
+            and (root_override is None or root_override == root)
+            and list(claimed_codes) == (
+                ["indexed", "artifact"] if source_codes is None else source_codes
+            )
+            and len(evidence_ids) == len(claimed_codes)
+        )
+
+    return SimpleNamespace(
+        get_many=get_many,
+        validate_source_provenance=validate_source_provenance,
+    )
+
+
 def _capture_batch(*, examples=None):
-    example = {"consent": True, "candidate": _capture()["candidate"]}
+    first = _capture()
+    second = _capture()
+    example = {"candidate": first["candidate"]}
+    second_example = {"candidate": second["candidate"]}
     return {
         "action": "capture_batch",
         "task_id": "task-1",
         "session_id": "session-1",
-        "examples": [example, dict(example)] if examples is None else examples,
+        "examples": [example, second_example] if examples is None else examples,
     }
 
 
@@ -60,7 +198,12 @@ def _capture_and_verify(store, repo, task_store, task_id, session_id, state, suf
     operation = _capture(state=state)
     operation["task_id"] = task_id
     operation["session_id"] = session_id
-    captured = store.handle(operation, root=str(repo), task_store=task_store)
+    captured = store.handle(
+        operation,
+        root=str(repo),
+        task_store=task_store,
+        _runtime_capture_token=candidates_module._RUNTIME_CAPTURE_TOKEN,
+    )
     cid = captured["candidate_id"]
     store.handle({
         "action": "label", "candidate_id": cid,
@@ -71,25 +214,152 @@ def _capture_and_verify(store, repo, task_store, task_id, session_id, state, suf
         "adjudication": {"reviewer_ref": f"adjudicator-{suffix}", "target": "fast"},
     }, root=str(repo), task_store=task_store)
     store.handle({
-        "action": "verify", "candidate_id": cid, "consent": True,
+        "action": "verify", "candidate_id": cid,
         "reviewer_ref": f"verifier-{suffix}",
     }, root=str(repo), task_store=task_store)
     return cid
 
 
-def test_capture_requires_per_example_consent_and_reuses_agent_state_database(candidate_env):
+def test_context_source_capture_accepts_only_approved_minimal_codes(candidate_env):
+    repo, _state, task_store, store = candidate_env
+
+    result = store.handle(
+        _context_source_capture(),
+        root=str(repo),
+        task_store=task_store,
+        evidence_store=_evidence_store(),
+    )
+
+    assert result["success"] is True
+    assert result["status"] == "pending"
+
+
+def test_direct_capture_is_rejected_and_runtime_capture_uses_internal_token(candidate_env):
+    repo, _state, task_store, store = candidate_env
+    public_operation = _capture()
+    public_operation.pop("_runtime_capture_token")
+    with pytest.raises(ValueError, match="actual Laya runtime callback"):
+        store.handle(public_operation, root=str(repo), task_store=task_store)
+    captured = store.handle(
+        _capture(),
+        root=str(repo),
+        task_store=task_store,
+        _runtime_capture_token=candidates_module._RUNTIME_CAPTURE_TOKEN,
+    )
+    assert captured["success"] is True
+
+
+def test_context_source_capture_requires_authorized_current_scoped_evidence(candidate_env):
+    repo, _state, task_store, store = candidate_env
+    invalid_stores = [
+        None,
+        _evidence_store(available=False),
+        _evidence_store(stale=True),
+        _evidence_store(root_override=str(repo.parent / "foreign")),
+    ]
+
+    for evidence_store in invalid_stores:
+        with pytest.raises(ValueError, match="context_source evidence is not authorized and current"):
+            store.handle(
+                _context_source_capture(),
+                root=str(repo),
+                task_store=task_store,
+                evidence_store=evidence_store,
+            )
+
+
+def test_context_source_batch_authorization_failure_has_no_partial_writes(candidate_env):
+    repo, _state, task_store, store = candidate_env
+    with pytest.raises(ValueError, match="only actual per-decision runtime callbacks"):
+        store.handle(
+            {
+                "action": "capture_batch",
+                "task_id": "task-1",
+                "session_id": "session-1",
+                "examples": [{"candidate": _context_source_capture()["candidate"]}],
+            },
+            root=str(repo),
+            task_store=task_store,
+        )
+
+    assert store.handle({"action": "list"}, root=str(repo), task_store=task_store)["count"] == 0
+
+
+@pytest.mark.parametrize(
+    ("state", "evidence_ids", "message"),
+    [
+        ("free-form task or source text", ["E" + "0" * 20, "E" + "1" * 20], "context_source state"),
+        (
+            {
+                "gap_code": "unresolved_evidence_gap",
+                "source_codes": ["indexed", "artifact"],
+                "freshness_codes": ["current"],
+                "coverage_codes": ["partial", "complete"],
+            },
+            ["E" + "0" * 20, "E" + "1" * 20],
+            "context_source state codes",
+        ),
+        (
+            {
+                "gap_code": "unresolved_evidence_gap",
+                "source_codes": ["indexed", "artifact"],
+                "freshness_codes": ["current", "current"],
+                "coverage_codes": ["partial", "complete"],
+                "task_text": "must not be captured",
+            },
+            ["E" + "0" * 20, "E" + "1" * 20],
+            "context_source state",
+        ),
+        (
+            {
+                "gap_code": "unresolved_evidence_gap",
+                "source_codes": ["indexed", "artifact"],
+                "freshness_codes": ["current", "current"],
+                "coverage_codes": ["partial", "complete"],
+            },
+            ["ev-1", "ev-2"],
+            "context_source evidence_ids",
+        ),
+    ],
+)
+def test_context_source_capture_rejects_text_malformed_codes_and_unshaped_evidence_ids(
+    candidate_env, state, evidence_ids, message
+):
+    repo, _state, task_store, store = candidate_env
+
+    with pytest.raises(ValueError, match=message):
+        store.handle(
+            _context_source_capture(state=state, evidence_ids=evidence_ids),
+            root=str(repo),
+            task_store=task_store,
+        )
+
+
+def test_capture_records_local_scoped_metadata_in_agent_state_database(candidate_env):
     repo, state, task_store, store = candidate_env
-
-    with pytest.raises(ValueError, match="consent=true"):
-        store.handle(_capture(consent=False), root=str(repo), task_store=task_store)
-
-    result = store.handle(_capture(), root=str(repo), task_store=task_store)
+    operation = _capture()
+    result = store.handle(operation, root=str(repo), task_store=task_store)
     assert result["success"] is True
     assert result["status"] == "pending"
     assert store.path == task_store.state_store.db_path
     assert store.path.exists()
+    with closing(sqlite3.connect(store.path)) as con:
+        candidate_json = con.execute("SELECT candidate_json FROM laya_candidates WHERE candidate_id=?", (result["candidate_id"],)).fetchone()[0]
+        captured_metadata = con.execute(
+            "SELECT metadata_json FROM laya_candidate_events WHERE candidate_id=? AND action='captured'",
+            (result["candidate_id"],),
+        ).fetchone()[0]
+    assert "consent_receipt_id" not in json.loads(candidate_json)
+    assert json.loads(captured_metadata)["data_class"] == "local_scoped"
     assert not (state / "laya_candidates.sqlite3").exists()
     assert not list(repo.glob("*.sqlite3"))
+
+
+def test_capture_batch_is_not_an_outcome_source(candidate_env):
+    repo, _state, task_store, store = candidate_env
+    with pytest.raises(ValueError, match="only actual per-decision runtime callbacks"):
+        store.handle(_capture_batch(), root=str(repo), task_store=task_store)
+    assert store.handle({"action": "list"}, root=str(repo), task_store=task_store)["count"] == 0
 
 
 def test_capture_deduplicates_exact_inputs_and_list_omits_candidate_text(candidate_env):
@@ -129,29 +399,19 @@ def test_capture_preserves_laya_choice_option_order_in_persisted_question(candid
 
 def test_capture_batch_deduplicates_in_one_scoped_request(candidate_env):
     repo, _state, task_store, store = candidate_env
-
-    result = store.handle(_capture_batch(), root=str(repo), task_store=task_store)
-
-    assert result["success"] is True
-    assert result["count"] == 2
-    assert result["captured_count"] == 1
-    assert result["duplicate_count"] == 1
-    assert result["results"][0]["candidate_id"] == result["results"][1]["candidate_id"]
-    assert store.handle({"action": "list"}, root=str(repo), task_store=task_store)["count"] == 1
-
-
-def test_capture_batch_rejects_missing_example_consent_without_partial_writes(candidate_env):
-    repo, _state, task_store, store = candidate_env
-    examples = _capture_batch()["examples"]
-    examples[1]["consent"] = False
-
-    with pytest.raises(ValueError, match="per-example consent=true"):
-        store.handle(_capture_batch(examples=examples), root=str(repo), task_store=task_store)
-
+    with pytest.raises(ValueError, match="only actual per-decision runtime callbacks"):
+        store.handle(_capture_batch(), root=str(repo), task_store=task_store)
     assert store.handle({"action": "list"}, root=str(repo), task_store=task_store)["count"] == 0
 
 
-def test_label_verify_and_split_snapshot_require_independent_review_and_consent(candidate_env):
+def test_capture_batch_is_unavailable(candidate_env):
+    repo, _state, task_store, store = candidate_env
+    with pytest.raises(ValueError, match="only actual per-decision runtime callbacks"):
+        store.handle(_capture_batch(), root=str(repo), task_store=task_store)
+    assert store.handle({"action": "list"}, root=str(repo), task_store=task_store)["count"] == 0
+
+
+def test_label_verify_and_split_snapshot_require_independent_review(candidate_env):
     repo, _state, task_store, store = candidate_env
     captured = store.handle(_capture(), root=str(repo), task_store=task_store)
     cid = captured["candidate_id"]
@@ -167,34 +427,35 @@ def test_label_verify_and_split_snapshot_require_independent_review_and_consent(
     reviewed = store.handle(labels, root=str(repo), task_store=task_store)
     assert reviewed["status"] == "reviewed"
     with pytest.raises(ValueError, match="independent"):
-        store.handle({"action": "verify", "candidate_id": cid, "consent": True, "reviewer_ref": "reviewer-a"}, root=str(repo), task_store=task_store)
-    verified = store.handle({"action": "verify", "candidate_id": cid, "consent": True, "reviewer_ref": "reviewer-d"}, root=str(repo), task_store=task_store)
+        store.handle({"action": "verify", "candidate_id": cid, "reviewer_ref": "reviewer-a"}, root=str(repo), task_store=task_store)
+    verified = store.handle({"action": "verify", "candidate_id": cid, "reviewer_ref": "reviewer-d"}, root=str(repo), task_store=task_store)
     assert verified["status"] == "verified"
 
-    with pytest.raises(ValueError, match="consent=true"):
-        store.handle({"action": "prepare_splits", "consent": False}, root=str(repo), task_store=task_store)
-    snapshot = store.handle({"action": "prepare_splits", "consent": True}, root=str(repo), task_store=task_store)
+    snapshot = store.handle({"action": "prepare_splits"}, root=str(repo), task_store=task_store)
     assert snapshot["sufficiency_status"] == "INSUFFICIENT DATA"
-    repeated = store.handle({"action": "prepare_splits", "consent": True}, root=str(repo), task_store=task_store)
+    repeated = store.handle({"action": "prepare_splits"}, root=str(repo), task_store=task_store)
     assert repeated["snapshot_id"] == snapshot["snapshot_id"]
     assert repeated["reused"] is True
-    with pytest.raises(ValueError, match="consent=true"):
-        store.handle({
-            "action": "export", "consent": False, "output_path": "dataset.jsonl",
-            "snapshot_id": snapshot["snapshot_id"],
-        }, root=str(repo), task_store=task_store)
     assert store.handle({"action": "list", "status": "verified"}, root=str(repo), task_store=task_store)["count"] == 1
 
 
 def test_split_preparation_without_verified_candidates_reports_insufficient_data(candidate_env):
     repo, _state, task_store, store = candidate_env
     store.handle(_capture(), root=str(repo), task_store=task_store)
-    result = store.handle({"action": "prepare_splits", "consent": True}, root=str(repo), task_store=task_store)
+    result = store.handle({"action": "prepare_splits"}, root=str(repo), task_store=task_store)
 
     assert result["snapshot_id"] is None
     assert result["candidate_count"] == 0
     assert result["status_counts"] == {"pending": 1}
     assert result["sufficiency_status"] == "INSUFFICIENT DATA"
+
+
+def test_verified_local_scoped_candidate_needs_no_per_example_receipt(candidate_env):
+    repo, _state, task_store, store = candidate_env
+    _capture_and_verify(store, repo, task_store, "task-1", "session-1", "verified local example", "no-receipt")
+    snapshot = store.handle({"action": "prepare_splits"}, root=str(repo), task_store=task_store)
+    assert snapshot["candidate_count"] == 1
+    assert snapshot["sufficiency_status"] == "INSUFFICIENT DATA"
 
 
 def test_group_and_near_duplicate_safe_splits_keep_test_labels_out_of_train_export(candidate_env):
@@ -222,7 +483,7 @@ def test_group_and_near_duplicate_safe_splits_keep_test_labels_out_of_train_expo
         store, repo, task_store, task_specs[2][0], task_specs[2][1],
         "A second distinct state for task two, with separate evidence and option context.", "same-group",
     )
-    snapshot = store.handle({"action": "prepare_splits", "consent": True}, root=str(repo), task_store=task_store)
+    snapshot = store.handle({"action": "prepare_splits"}, root=str(repo), task_store=task_store)
     assert snapshot["candidate_count"] == 102
     assert snapshot["sufficiency_status"] == "UNASSESSED"
     assert snapshot["near_duplicate_group_merges"] >= 1
@@ -245,19 +506,23 @@ def test_group_and_near_duplicate_safe_splits_keep_test_labels_out_of_train_expo
     assert all(value > 0 for value in snapshot["split_counts"].values())
 
     zip_payload = store.export_train_payload(
-        {"consent": True, "snapshot_id": snapshot["snapshot_id"]},
+        {"snapshot_id": snapshot["snapshot_id"]},
         root=str(repo), task_store=task_store,
     )
     zip_rows = [json.loads(line) for line in zip_payload.decode("utf-8").splitlines()]
     assert len(zip_rows) == snapshot["split_counts"]["train"]
-    assert all(set(row) == {"state", "questions", "expected"} for row in zip_rows)
+    assert all(set(row) == {"id", "group_id", "source_sha256", "state", "questions", "expected", "provenance"} for row in zip_rows)
+    assert all(row["provenance"]["data_class"] == "local_scoped" for row in zip_rows)
+    assert all("per_example_consented" not in row["provenance"] for row in zip_rows)
+    assert all("consent_receipt_sha256" not in row["provenance"] for row in zip_rows)
 
     exported = store.handle({
-        "action": "export", "consent": True, "output_path": "train.jsonl",
-        "snapshot_id": snapshot["snapshot_id"],
+        "action": "export", "snapshot_id": snapshot["snapshot_id"],
     }, root=str(repo), task_store=task_store)
     assert exported["count"] == snapshot["split_counts"]["train"]
-    export_rows = [json.loads(line) for line in (repo / "train.jsonl").read_text(encoding="utf-8").splitlines()]
+    export_rows = [json.loads(line) for line in Path(exported["output_path"]).read_text(encoding="utf-8").splitlines()]
+    assert all(row["provenance"]["data_class"] == "local_scoped" for row in export_rows)
+    assert all("per_example_consented" not in row["provenance"] for row in export_rows)
     train_states = {
         json.loads(candidate_json)["state"]
         for _task_id, _session_id, split_name, candidate_json, _candidate_id in assignments if split_name == "train"
@@ -265,33 +530,47 @@ def test_group_and_near_duplicate_safe_splits_keep_test_labels_out_of_train_expo
     assert {row["state"] for row in export_rows} == train_states
     test_candidate_id = next(candidate_id for _task, _session, split_name, _json, candidate_id in assignments if split_name == "test")
     store.handle(
-        {"action": "delete", "candidate_id": test_candidate_id, "consent": True},
+        {"action": "delete", "candidate_id": test_candidate_id},
         root=str(repo), task_store=task_store,
     )
     with pytest.raises(ValueError, match="invalidated"):
         store.export_train_payload(
-            {"consent": True, "snapshot_id": snapshot["snapshot_id"]},
+            {"snapshot_id": snapshot["snapshot_id"]},
             root=str(repo), task_store=task_store,
         )
     with pytest.raises(ValueError, match="invalidated"):
         store.handle({
-            "action": "export", "consent": True, "output_path": "train-again.jsonl",
-            "snapshot_id": snapshot["snapshot_id"],
+            "action": "export", "snapshot_id": snapshot["snapshot_id"],
         }, root=str(repo), task_store=task_store)
 
 
-def test_candidate_delete_removes_payload_and_keeps_metadata_only_audit(candidate_env):
+def test_candidate_delete_purges_private_events_and_invalidates_export(candidate_env, monkeypatch):
     repo, _state, task_store, store = candidate_env
-    captured = store.handle(_capture(state="private example payload"), root=str(repo), task_store=task_store)
-    cid = captured["candidate_id"]
-    result = store.handle({"action": "delete", "candidate_id": cid, "consent": True}, root=str(repo), task_store=task_store)
+    monkeypatch.setattr(candidates_module, "_split_for_group", lambda _group: "train")
+    operation = _capture(state="private example payload")
+    cid = _capture_and_verify(store, repo, task_store, "task-1", "session-1", operation["candidate"]["state"], "delete")
+    snapshot = store.handle({"action": "prepare_splits"}, root=str(repo), task_store=task_store)
+    exported = store.handle(
+        {"action": "export", "snapshot_id": snapshot["snapshot_id"]},
+        root=str(repo), task_store=task_store,
+    )
+    output_path = Path(exported["output_path"])
+    assert output_path.is_file()
+    with closing(store._connect(task_store)) as con:
+        store._event(con, cid, "scope", "task-1", "runtime_output", {"suggestion": "private model output"}, 1.0)
+
+    result = store.handle({"action": "delete", "candidate_id": cid}, root=str(repo), task_store=task_store)
 
     assert result["deleted"] is True
+    assert not output_path.exists()
     assert store.handle({"action": "list"}, root=str(repo), task_store=task_store)["count"] == 0
     with closing(sqlite3.connect(store.path)) as con:
         rows = con.execute("SELECT action,metadata_json FROM laya_candidate_events").fetchall()
-    assert any(action == "deleted" for action, _metadata in rows)
-    assert all("private example payload" not in metadata for _action, metadata in rows)
+    actions = {action for action, _metadata in rows}
+    assert actions == {"deleted"}
+    serialized_events = json.dumps(rows)
+    assert "private example payload" not in serialized_events
+    assert "private model output" not in serialized_events
 
 
 @pytest.mark.parametrize("changes", [
@@ -314,4 +593,4 @@ def test_candidate_operations_are_scoped_to_authorized_repository(candidate_env,
     other_repo = tmp_path / "other"
     other_repo.mkdir()
     with pytest.raises(ValueError, match="not found"):
-        store.handle({"action": "verify", "candidate_id": captured["candidate_id"], "consent": True, "reviewer_ref": "reviewer-x"}, root=str(other_repo), task_store=task_store)
+        store.handle({"action": "verify", "candidate_id": captured["candidate_id"], "reviewer_ref": "reviewer-x"}, root=str(other_repo), task_store=task_store)

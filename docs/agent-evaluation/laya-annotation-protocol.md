@@ -1,20 +1,60 @@
 # Laya Annotation and Evaluation Protocol (Draft)
 
-**Status:** Proposed protocol. No candidate data has been collected or approved.
+**Status:** Laya shadow inference is integrated with eligible ordinary Hub
+context requests when a pinned local checkpoint is configured. Capture stores
+only actual runtime outcomes scoped to repository/task/session and validated
+evidence provenance. Per-example consent and receipt IDs are not required or
+stored. Laya output remains separate from deterministic Hub behavior and human
+labels. Training and benchmark runs remain off until requested after practical
+collection and review.
+
+Existing-card export reads only selected eligible, non-deterministic cards and
+source text already stored in the Hub index. It needs no per-example consent
+manifest, makes no model calls, and generates no cards.
+
+## Approved `context_source` pilot
+
+- Trigger: an unresolved evidence gap with at least two authorized sources.
+- Minimal input: `gap_code=unresolved_evidence_gap`, two to four unique
+  `source_codes` from `indexed`, `artifact`, `memory`, or `rag`, aligned
+  `freshness_codes` (`current`, `stale`, `unknown`) and `coverage_codes`
+  (`complete`, `partial`, `incomplete`, `unknown`), plus one evidence ID
+  per source in the same order. No task or source text.
+- Current deterministic retrieval order is the baseline.
+- Two independent blinded annotators label each candidate. A separate
+  adjudicator resolves disagreements.
+- Useful only when it removes one retrieval roundtrip without losing any
+  required fact. Unauthorized, stale, or incomplete sources count as false
+  positives. Abstain when evidence is insufficient.
+- Capture resolves every evidence ID through the existing EvidenceStore
+  under the authorized repository root and rejects missing, cross-root, or
+  stale references. It also requires each source code to match route metadata
+  recorded by trusted Hub retrieval callsites in the same EvidenceStore
+  database. Current capture provenance supports `indexed` from repository and
+  deterministic retrieval, `rag` from repository-search result metadata, and
+  `artifact` after a successful `evidence_get`. The schema accepts `memory`
+  as a code, but capture rejects it until an existing root-scoped EvidenceStore
+  path can record that route. Caller-supplied codes alone cannot establish
+  provenance.
+- Capture is tied to actual typed runtime execution, not an automatic scrape or
+  synthetic inference. It requires the strict typed-input, authorized-root,
+  task/session, and evidence-provenance checks above. Training remains disabled.
+
+The current Laya Multilingual model card reports typed-decision zero-shot
+accuracy of 0.342 against a 0.461 majority baseline and warns that its
+probabilities are uncalibrated and overconfident. This upstream result is not a
+Hub evaluation and does not prove this pilot useful.
 
 ## Entry gate
 
-Do not collect or evaluate examples until an operator approves the category, its
-minimal input fields, the deterministic Hub baseline, the label rubric, and the
-privacy scope. The current Laya Multilingual model card reports typed-decision
-zero-shot accuracy of 0.342 against a 0.461 majority baseline and warns that
-its probabilities are uncalibrated and overconfident. This upstream result is
-not a Hub evaluation and does not select a category.
+The approved pilot scope fixes its category, minimal fields, deterministic
+baseline, label rubric, and privacy scope. Do not enable other categories until
+their own evidence, labels, baseline, and approval gates pass.
 
 ## Candidate handling
 
-- Use only examples explicitly opted in for this evaluation. Keep the input to
-  the minimum fields needed by the chosen decision category.
+- Use only examples from the scoped candidate lifecycle. Keep the input to the
+  minimum fields needed by the chosen decision category.
 - Exclude full transcripts, prompts, source files, private conversations,
   credentials, and unnecessary personal data. Redact or exclude an example if
   its minimum useful input cannot be shared within the approved scope.
@@ -26,8 +66,35 @@ not a Hub evaluation and does not select a category.
   or conversation. Keep related examples in the same group. Do not derive a
   group key from text, paths, or other private content.
 - Preserve label source, rubric version, annotator pseudonym, adjudication
-  reference, consent scope, and group key with each exported example. These
+  reference, and group key with each exported example. These
   fields record provenance; they do not prove that a label is independent.
+- Keep repository/task/session identity, evidence IDs, model output, and human
+  label provenance separate. Metadata-only diagnostics omit candidate rows.
+- `laya_operation={action:"delete",candidate_id:"..."}` invalidates affected
+  snapshots, removes local train JSONL exports and candidate/runtime event
+  payloads, then retains only a minimal deletion audit. It cannot recall copies
+  already exported outside `server.state_dir`.
+
+### Existing-card export and dataset admission
+
+The model-training exporter reads only cards already stored in the Hub
+preprocessing index. It does not call a model or generate new cards. Candidate
+listing returns metadata only; content export is local and scoped to registered
+project roots. Source text is included only when its indexed hash still matches
+the card's source pair. Resume drops rows no longer present in the current
+index. `card-training` export uses selected, currently indexed rows with
+matching source hashes. It skips deterministic-generated cards when provenance
+identifies them. It needs no per-example consent manifest and generates no cards.
+
+Laya training/evaluation rows preserve candidate, evidence, label, and group
+provenance. Candidate rows use `provenance.data_class="local_scoped"` with
+candidate identity/hash, repository/task/session and evidence scope. Existing
+card rows remain a separate source and do not become Laya candidates. Synthetic fixtures retain an explicit
+`synthetic_non_private` fixture ID. Candidate labels need a verified record
+whose target hash matches exported labels. Blind double annotation requires two
+distinct annotators, independent adjudicator, and independent verifier.
+Deterministic labels require evidence IDs. The offline validator checks schema
+and target binding; it cannot authenticate reviewer identity.
 
 ## Labeling
 
@@ -68,16 +135,17 @@ not accepted. Candidate rows and metadata events live in the existing
 public endpoint, telemetry field, or exporter is used. Ordinary task export
 omits candidate text. The existing support ZIP strips candidate tables and
 linked Laya capture traces from disposable snapshots. Synthetic archive tests
-verify the exclusion, metadata-only report, and manifest counts; candidate
-JSONL still requires explicit consent and an authorized repository/snapshot.
-This verifies the code path, not consent or readiness for production data.
+verify the exclusion, metadata-only report, and manifest counts. Candidate
+JSONL requires an authorized repository, verified snapshot, and separate
+  local export. This verifies the code path, not data quality or label quality.
 
-- `capture` requires per-example `consent=true`, a task and matching session
-  resolved under the authorized repository root, and a closed typed candidate.
+- `capture` requires a task and matching session resolved under the authorized
+  repository root, authorized evidence provenance, a closed typed candidate,
+  and server-derived group identity.
   The server derives the group ID. Do not supply caller-authored group IDs.
-- `capture_batch` accepts 1–100 examples for the same scoped task/session. Each
-  item needs its own `consent=true`; the batch validates fully before one
-  transaction, deduplicates exact inputs, and returns IDs/status only.
+- `capture_batch` accepts 1–100 examples for the same scoped task/session; every
+  row uses a closed typed candidate. It validates the full batch before one
+  transaction, deduplicates exact inputs and returns IDs/status only.
 - Capture only the minimal state, category, allowed options, language,
   preprocessing identity, and authorized evidence IDs required by the approved
   decision. Never include transcripts, prompts, source files, or evidence
@@ -90,11 +158,11 @@ This verifies the code path, not consent or readiness for production data.
   telemetry and ordinary diagnostics. Explicit `delete` removes the payload
   while retaining metadata-only audit events.
 - `label` requires two distinct annotators and a separate adjudicator, all with
-  allowed option values. `verify` requires explicit consent and a reviewer
-  distinct from all three. Capture, labeling, and verification do not prove that
+  allowed option values. `verify` requires a reviewer distinct from all three.
+  Capture, labeling, and verification do not prove that
   references are real people or that review was blind; provenance is
   caller-attested until independently checked.
-- reject and delete require explicit consent. prepare_splits snapshots
+- Reject and delete remain explicit scoped operations. `prepare_splits` snapshots
   verified candidates into deterministic 80/10/10 train/calibration/test
   groups. It joins matching task or session groups and merges state strings
   whose normalized character-trigram Jaccard similarity is at least 0.80.
@@ -103,31 +171,32 @@ This verifies the code path, not consent or readiness for production data.
 - Split reports contain counts and label distributions, not candidate text or
   test labels. Fewer than two independent calibration or test groups for any
   category/language is INSUFFICIENT DATA; otherwise status remains UNASSESSED
-  until case-count and quality thresholds are predeclared. export requires
-  consent=true plus a snapshot ID and exports its train split only. Validation
+  until case-count and quality thresholds are predeclared. `export` requires a
+  snapshot ID and writes its train split under configured `server.state_dir`. Validation
   and locked-test rows cannot enter this training export. Treat explicit JSONL
   output as sensitive.
-- The ZIP includes `laya/candidates.train.jsonl` only after explicit opt-in
-  during export. It contains that installation and repository's train split,
-  serialized only as `state`, `questions`, and `expected`; it omits candidate,
-  task, session, group, label-provenance, and split identities. The offline
+- Normal support ZIPs exclude candidate text. An explicitly requested candidate
+  export contains that installation and repository's train split,
+  serialized with stable `id`, opaque `group_id`, `source_sha256`, minimal
+  provenance, `state`, `questions`, and `expected`; task/session identities and
+  labeler references stay private. The offline
   `laya-dataset-merge <notebook.zip> <desktop.zip> --output-dir <new-directory>`
-  command can pool two or more opted-in encrypted ZIP members. It prompts for
+  command can pool two or more explicitly included encrypted ZIP members. It prompts for
   each password, reads only that exact member,
   validates the row shape, removes exact canonical duplicates, and aborts on
   conflicting labels for identical state/questions. It writes
   `laya.train.jsonl` plus a manifest with row counts and no archive names.
-  Output is marked `training_only=true` and `evaluation_eligible=false`.
-  Because source rows omit global groups and provenance, this merge cannot
-  reconstruct a valid pooled split or prove holdout isolation. Never use it
-  for pooled calibration or evaluation; those require authorized source
-  records and a separately defined global group/near-duplicate split.
-- Do not capture any examples until the operator approves one category,
-  minimal input/privacy scope, deterministic baseline, and label rubric.
-  Synthetic archive tests verify candidate-text exclusion and
-  manifest reporting in the existing ZIP; they do not authorize production
-  capture. No production examples, inference, or training have been performed
-  in this task. No automatic collection is enabled.
+  Output preserves candidate IDs and opaque group IDs, and is marked
+  `training_only=true` and `evaluation_eligible=false` because the archive
+  member contains training rows only. Never use it for pooled calibration or
+  evaluation; those require a separate held-out split.
+- The operator approved a `context_source` pilot only for an unresolved evidence
+  gap with at least two authorized sources. Inputs contain only gap/source/
+  freshness/coverage codes and evidence IDs; never task or source text. Compare
+  with deterministic retrieval; success requires one fewer retrieval roundtrip
+  with no factual loss. Runtime outputs may be collected only when an explicit
+  scoped callback is attached to an actual runtime call. No production examples
+  have been collected. Synthetic tests do not prove data quality.
 - Near-duplicate grouping is deterministic heuristic protection, not semantic
   proof. Independent provenance validation, retention expiry, split
   sufficiency thresholds, paired baselines, and quality evaluation remain
@@ -135,16 +204,14 @@ This verifies the code path, not consent or readiness for production data.
 
 ## Current blocker
 
-No Hub-specific category has an approved minimal input, independent labeled
-examples, deterministic paired baseline, or sealed group-safe holdout. The
-state_dir-backed candidate lifecycle is infrastructure only: it does not prove
-category suitability, consent for any example, independent labels, quality, or
-utility. Synthetic tests verify the support-ZIP candidate exclusion and truthful
-manifest, but do not authorize collecting production examples. Collection
-remains stopped pending category/input/privacy approval, a deterministic
-baseline, independent labels, and fixed evaluation thresholds. This draft
-grants no collection consent and enables no shadow, advisory, or guarded
-execution.
+No Hub-specific category has independent labeled examples, a deterministic
+paired baseline, or a sealed group-safe holdout. The `context_source` pilot
+remains scoped to authorized roots and minimal typed metadata. The state_dir-backed
+candidate lifecycle is infrastructure only: it does not prove label quality or utility.
+Synthetic tests verify support-ZIP exclusion and truthful manifests, not
+production-data quality. Independent labels, a deterministic baseline, and
+fixed evaluation thresholds remain required. No shadow, advisory, or guarded
+execution is enabled.
 
 ## Fine-tuning format evidence
 
@@ -162,12 +229,13 @@ The [official Laya fine-tuning docs](https://github.com/NandhaKishorM/laya/blob/
 JSONL accepts `{state, questions, expected}` hard labels or `{state, questions,
 gold}` teacher distributions. The existing candidate train export's
 `state`/`questions`/`expected` shape matches the documented hard-label input;
-this is format compatibility only. The exporter omits global group and label
-provenance, so merged output remains training-only and cannot support pooled
-calibration or evaluation. Before training, pin a compatible Laya package/source
+this is format compatibility only. Merged output remains training-only and
+cannot support pooled calibration or evaluation. Before training, pin a
+compatible Laya package/source
 revision alongside the model revision and validate the dataset with
 `laya-train --dry-run`; no package install, data download, inference, or training
-is performed by this protocol.
+is performed by this protocol. Local validators check dataset structure and
+label provenance but do not authenticate reviewer identity.
 
 The upstream [Python `ONNXAgent` reference](https://github.com/NandhaKishorM/laya/blob/main/docs/reference/agent.md)
 (checked 2026-11-10) documents CPU execution. [ONNX Runtime's provider list](https://onnxruntime.ai/docs/execution-providers/)

@@ -2632,11 +2632,14 @@ class DeterministicEngine:
         items: list[dict[str, Any]] = []
         merged_items = self.merge_overlapping_slices(str(base), candidates)
         put_many = getattr(self.evidence, "put_many", None)
+        record_source = getattr(self.evidence, "record_source_provenance", None)
         if callable(put_many):
             stored_items = put_many(str(base), merged_items)
             for item, stored in zip(merged_items, stored_items):
                 if isinstance(stored, dict) and stored.get("evidence_id"):
                     item["evidence_id"] = stored["evidence_id"]
+                    if callable(record_source):
+                        record_source(str(item["evidence_id"]), root=str(base), source_code="indexed")
                 item.pop("text", None)  # progressive disclosure at the API boundary
                 items.append(item)
         else:
@@ -2644,6 +2647,8 @@ class DeterministicEngine:
                 eid = self.evidence.put(str(base), item)
                 if eid:
                     item["evidence_id"] = eid
+                    if callable(record_source):
+                        record_source(str(eid), root=str(base), source_code="indexed")
                 item.pop("text", None)  # progressive disclosure at the API boundary
                 items.append(item)
         return items
@@ -4860,9 +4865,11 @@ class DeterministicEngine:
     ) -> dict[str, Any]:
         """Rank Git-touched files by bounded recency-weighted churn and complexity."""
         if isinstance(days, bool) or not isinstance(days, int) or not 1 <= days <= 3650:
-            return {"success": False, "error": "days must be an integer from 1 to 3650"}
+            return {"success": False, "status_code": 400, "terminal": True, "retryable": False,
+                    "error": "days must be an integer from 1 to 3650"}
         if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 50:
-            return {"success": False, "error": "limit must be an integer from 1 to 50"}
+            return {"success": False, "status_code": 400, "terminal": True, "retryable": False,
+                    "error": "limit must be an integer from 1 to 50"}
         resolved = self._root(root)
         git_exe = shutil.which("git") or "git"
 
@@ -4929,7 +4936,24 @@ class DeterministicEngine:
                     if files_raw.endswith(b"\n"):
                         files_raw = files_raw[:-1]
                     per_commit: set[str] = set()
-                    for raw_path in files_raw.split(b"\0"):
+                    path_offset = 0
+                    path_count = 0
+                    while path_offset <= len(files_raw):
+                        if path_count >= _HOTSPOT_PATH_LIMIT:
+                            if path_offset < len(files_raw):
+                                incomplete.add("path_limit_reached")
+                            break
+                        if path_count % 64 == 0 and time.monotonic() >= deadline:
+                            incomplete.add("analysis_deadline")
+                            break
+                        separator_at = files_raw.find(b"\0", path_offset)
+                        if separator_at < 0:
+                            raw_path = files_raw[path_offset:]
+                            path_offset = len(files_raw) + 1
+                        else:
+                            raw_path = files_raw[path_offset:separator_at]
+                            path_offset = separator_at + 1
+                        path_count += 1
                         if not raw_path:
                             continue
                         relative = raw_path.decode("utf-8", "strict").replace("\\", "/")
@@ -4939,13 +4963,16 @@ class DeterministicEngine:
                             continue
                         if any(part.lower() in {".git", "vendor", "node_modules", "dist", "build"} for part in pure_path.parts):
                             continue
-                        per_commit.add(pure_path.as_posix())
+                        relative_path = pure_path.as_posix()
+                        if relative_path in per_commit:
+                            continue
+                        if relative_path not in churn_counts and len(churn_counts) >= _HOTSPOT_PATH_LIMIT:
+                            incomplete.add("path_limit_reached")
+                            break
+                        per_commit.add(relative_path)
                     age_days = max(0.0, (now - float(timestamp)) / 86_400.0)
                     weight = 0.5 ** (age_days / 90.0)
                     for relative in per_commit:
-                        if relative not in churn_counts and len(churn_counts) >= _HOTSPOT_PATH_LIMIT:
-                            incomplete.add("path_limit_reached")
-                            continue
                         churn_counts[relative] += 1
                         weighted_counts[relative] += weight
                 except (UnicodeDecodeError, ValueError, OverflowError):
@@ -8804,7 +8831,11 @@ def test_{sym}_regression_edge_cases():
     def extract_api_spec(self, root: str, framework: str | None = None) -> dict[str, Any]:
         """Statically extract API routes and endpoints into OpenAPI 3.0 schema."""
         p_root = Path(root).expanduser().resolve(strict=False)
-        skip_dirs = {".git", ".venv", "venv", "tool-envs", "node_modules", "__pycache__"}
+        skip_dirs = {
+            str(name).casefold()
+            for name in getattr(getattr(self, "repo_tools", None), "ignore_dirs", ())
+        }
+        skip_dirs.update({".git", ".venv", "venv", "tool-envs", "node_modules", "__pycache__"})
         endpoints: list[dict[str, Any]] = []
 
         # Check for static openapi.json / swagger.json in root
@@ -8861,7 +8892,7 @@ def test_{sym}_regression_edge_cases():
             files_by_pattern["*.py"].append(authoritative_registry)
         else:
             for current_root, dirnames, filenames in os.walk(p_root, topdown=True, followlinks=False):
-                dirnames[:] = sorted(name for name in dirnames if name not in skip_dirs)
+                dirnames[:] = sorted(name for name in dirnames if name.casefold() not in skip_dirs)
                 for filename in sorted(filenames):
                     path = Path(current_root) / filename
                     for pattern in scan_patterns:

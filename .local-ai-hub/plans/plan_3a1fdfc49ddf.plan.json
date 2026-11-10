@@ -2,54 +2,56 @@
   "default_target_ref": "refs/heads/master",
   "description": "Inspect operational logs and endpoint telemetry; fix confirmed slow/failing endpoints and improve request/response contracts with focused validation.",
   "id": "plan_3a1fdfc49ddf",
-  "lifecycle": "draft",
+  "lifecycle": "active",
   "schema_version": 1,
   "spec_refs": [],
   "tasks": {
     "task_endpoint_reliability_audit": {
       "acceptance_criteria": [
-        "Measure and rank recurring latency/cost hot paths across MCP/API, retrieval/RAG, embedding/reranking, caches, indexing, scheduler and IPC using retained telemetry or bounded representative benchmarks.",
-        "For each candidate, record baseline, workload, sample count and limits; separate cold-start from steady-state and avoid attributing noisy synthetic changes to source.",
-        "Implement high-value safe optimizations for confirmed CPU, filesystem, SQLite or network bottlenecks with focused regressions and measured before/after evidence.",
-        "Evaluate compatible CPU, dedicated GPU, integrated GPU and NPU routes for embeddings/reranking; preserve explicit provider choice and CPU fallback; do not install providers or pull models without user opt-in.",
-        "Assess Rust/Cython only after profiling isolates CPU-bound work; document measured tradeoffs and do not add native code when I/O, serialization, database or model latency dominates.",
-        "Recent endpoint failures and latency hotspots are classified from retained telemetry and trace evidence.",
-        "Confirmed server or response-contract defects are fixed at their source with focused regression coverage.",
-        "Repetition detection releases the GPU fence only after the backend confirms completion; incomplete or timed-out streams remain fenced.",
-        "Focused checks pass and diff check is clean.",
-        "Live process has loaded the current source and representative endpoint/trace behavior is verified after the already authorized restart.",
-        "Opening #traceInspector directly loads retained trace summaries; request-history rows match by request_id; enabled HTTP model traces persist output and retain API response separately.",
-        "Remaining unmeasured or blocked hotspots are explicit."
+        "Measure and rank high-frequency or high-latency Hub paths from current source and runtime evidence; preserve baselines and distinguish synthetic results.",
+        "Integrate performance changes while preserving all user modifications, durable job lifecycle, duplicate request identity rules, synchronous fast-path contracts, and RAG indexing progress/terminal behavior.",
+        "Resume six-root RAG recovery and GPU measurement only after active work ends and GPU admission is verified.",
+        "Preserve explicit provider selection, CPU fallback, active GPU fencing, and never release a live reservation or pull models/providers without opt-in.",
+        "Recent endpoint failures and latency hotspots are classified from retained telemetry and traces.",
+        "Confirmed server or response-contract defects are fixed at source with focused regression coverage.",
+        "Run focused validation and diff checks; separate source/test evidence from live runtime evidence.",
+        "After active GPU work ends, install current source, configure MCP/instructions/skills, restart Hub, and verify current runtime and representative endpoints.",
+        "Remaining unresolved hotspots and operational blockers are recorded."
       ],
-      "blocker": "Whole-Hub sweep active. Synthetic 100-file/10k-RAG benchmark passed, inference skipped: warm search p50/p95 2.60/2.82ms, batch index 214.8/244.5ms. 10k CodeIndex file benchmark rejected by configured size budget; no bypass. Live lexical repo search: 820.5ms then 596.3ms. Candidate discovery 626.6/415ms, path validation 187/192.7ms, Git inventory 391.3/175.4ms. Worker sweep mixed; no change. Existing checkpoint retains benchmark detail. Hub processes predate source mtimes; user restart ongoing. GPU inference and current iGPU/NPU inventory unverified; prior hardware_benchmark outcome_unknown is not replayed. Worktree RAG list req_594341325993 returned 0 chunks; prior index operation outcome_unknown was not replayed, and searches req_26a6b22b0723 and req_bbec01a3763d returned empty_index. Installed runtime source differs from this worktree, so adoption is unverified.",
+      "blocker": "GPU reservation active under embedding:51676:1528; do not restart or release while work remains active.",
       "clarifications": [],
       "depends_on": [],
-      "description": "Audit and improve performance across the full Local AI Hub: recurring MCP/API, retrieval/RAG, embeddings/reranking, cache, indexing, scheduler, IPC and preprocessing. Measure before changes; preserve endpoint reliability, response contracts, GPU fencing, existing user changes, explicit provider choices and CPU fallback. Assess GPU/iGPU/NPU and Rust/Cython only against measured bottlenecks. Include prior endpoint trace, Trace Inspector and HTTP model-output capture work.",
+      "description": "Reconcile both performance worktree contributions; preserve user changes, durable job lifecycle, request identity rules, fast-path contracts, RAG progress and six-root recovery; install and live-verify current Hub. Fix confirmed endpoint/runtime errors with evidence.",
       "kind": "analysis",
-      "next_action": "Attribute remaining repo search and queue costs; profile API, caches, scheduler and indexing with bounded workloads; implement further changes only for repeatable bottlenecks. Finish GPU/iGPU/NPU and Rust/Cython assessment; verify current source after the user's restart.",
+      "next_action": "Commit perf overlay on a named branch; protect master overlay as a WIP commit if needed for safe merge; integrate and validate; install, configure and restart after active GPU work ends.",
       "results": [
         {
-          "evidence_id": "inline",
+          "evidence_id": "req_15f353283be4",
           "kind": "evidence_reference",
-          "summary": "61 focused MCP/schema tests pass; git diff --check clean. Contract validation warm microbenchmark p50 338.328ms to 39.834ms per 1000 warm calls across 9 samples (8.49x); no endpoint latency claim. EndpointStatsStore p50 0.096ms vs 13.748ms fresh connection (143x), 10 focused tests pass. RAG warm SQLite reuse p50 4.227ms to 3.436ms; repo archive path check 1.706ms to 0.042ms. Candidate validation 600 files, 7 pairs: sequential p50 225.430ms vs 8 workers 168.213ms (~25%), order preserved."
+          "summary": "Live Hub online; status showed external_reservation."
         },
         {
-          "evidence_id": "inline",
+          "evidence_id": "req_b47ae1ec0407",
           "kind": "evidence_reference",
-          "summary": "Current synthetic 100-file/10k-RAG benchmark passed in 15.4s, 3 comparison samples, 7 light samples, concurrency 1/4, inference skipped, 5/5 supported quality checks. Warm RAG search p50/p95 2.60/2.82ms; batch index 214.8/244.5ms; CodeIndex 48.1/113.0ms; queue admission concurrency4 70.7/80.8ms; context pack 37.4/56.1ms. 10k-file case stopped by CodeIndex size budget."
+          "summary": "Valid reservation owner embedding:19888:45744 was renewed while process thread was observed running."
         },
         {
-          "evidence_id": "inline",
+          "evidence_id": "req_194faccff48f",
           "kind": "evidence_reference",
-          "summary": "Two lexical repo search calls: 820.5ms and 596.3ms; candidate discovery 626.6/415ms, Git inventory 391.3/175.4ms, project iteration 235.3/239.5ms, path validation 187.0/192.7ms. Direct Git inventory 111.1ms cold/2.27ms warm over 2,095 paths. Worker sweep mixed: 4 vs 8 workers p50 59.9 vs 64.5ms for 256 files; 135.5 vs 140.7ms for 600; four concurrent 600-file searches 597.6 vs 587.1ms. No worker change. Candidate-limit guard passes."
+          "summary": "Deterministic impact scan reported concurrency-sensitive candidate changes; unrelated dirty files preserved."
         },
         {
-          "evidence_id": "inline",
+          "evidence_id": "req_a28c98aa315f",
           "kind": "evidence_reference",
-          "summary": "Follow-up worktree measurements: BGE small embedding batch of 8, CPU median 72.04ms vs CUDA 79.82ms; BGE reranker batch of 8, CPU 756.78ms vs CUDA 302.66ms. Worktree candidate search median 146.04ms; installed live search 44.46s is not comparable because installed source hash differs. No provider change or model pull."
+          "summary": "Dashboard /api/context/pack HTTP 200 in 73.592 s; request-only record, no body or linked trace."
+        },
+        {
+          "evidence_id": "req_4b2fdf86",
+          "kind": "evidence_reference",
+          "summary": "Linked /api/context/pack HTTP 200 in 11.775 s; adaptive cache miss and retrieval consumed 11.625 s."
         }
       ],
-      "title": "Profile and optimize Local AI Hub hot paths",
+      "title": "Local AI Hub performance, integration, and runtime validation",
       "work_phase": "implementation",
       "work_status": "in_progress"
     }

@@ -39,6 +39,22 @@ _STATUS_DEPENDENCY_TIMEOUT_SECONDS = 0.25
 _STATUS_TOTAL_BUDGET_SECONDS = 1.0
 
 
+def _api_result_http_response(result: Any) -> tuple[int, Any]:
+    if not isinstance(result, dict) or result.get("success") is not False:
+        return 200, result
+    body = dict(result)
+    retryable = body.get("retryable") is True
+    result_status = body.get("status_code")
+    if isinstance(result_status, int) and not isinstance(result_status, bool) and 400 <= result_status <= 599:
+        status = result_status
+    else:
+        status = 503 if retryable else 500
+    body.setdefault("status_code", status)
+    body.setdefault("retryable", retryable)
+    body.setdefault("terminal", not retryable)
+    return status, body
+
+
 def _status_dependency(callback, fallback, *, key, lock, inflight, slots, timeout_seconds=None):
     timeout = _STATUS_DEPENDENCY_TIMEOUT_SECONDS if timeout_seconds is None else max(0.0, float(timeout_seconds))
     if timeout <= 0:
@@ -3442,6 +3458,7 @@ class Handler(BaseHTTPRequestHandler):
             "/api/review/diff": "review_diff",
             "/api/second-opinion": "second_opinion", "/api/compress": "compress",
             "/api/route": "route", "/api/delegate/batch": "batch",
+            "/api/rag/index": "rag_index",
         }
         job_action = action_by_path.get(path)
         if not job_action:
@@ -3476,6 +3493,8 @@ class Handler(BaseHTTPRequestHandler):
                     queue_age_ms=queue_age_ms,
                     max_queue_age_ms=max_queue_age_ms,
                 )
+            elif job_action == "rag_index" and delivery.strip().lower() == "auto" and budget_ms > 0 and samples < 10:
+                decision = {"mode": "async", "reason": "cold_start_rag_index"}
             elif job_action == "review_diff" and delivery.strip().lower() == "auto" and budget_ms > 0 and samples < 5:
                 # A cold-start review has no trustworthy p95 yet. Do not let a
                 # large diff run synchronously while telemetry learns the cost.
@@ -3546,6 +3565,14 @@ class Handler(BaseHTTPRequestHandler):
         self._send(503, response)
 
     def _send(self, status: int, data: Any, *, headers: Mapping[str, str] | None = None) -> None:
+        if (
+            isinstance(status, int)
+            and not isinstance(status, bool)
+            and 200 <= status < 300
+            and isinstance(data, dict)
+            and data.get("success") is False
+        ):
+            status, data = _api_result_http_response(data)
         execution_started = getattr(self, "_handler_execution_started", None)
         operation = str(getattr(self, "_admin_operation", ""))
         if operation:
@@ -3564,6 +3591,12 @@ class Handler(BaseHTTPRequestHandler):
                         "outcome_unknown": True, "terminal": True, "retryable": False}
         if status >= 400:
             data = normalize_transport_error(status, data)
+        if (
+            status == 413
+            and isinstance(data, dict)
+            and data.get("error") == "checkpoint_response_budget_too_small"
+        ):
+            data = {**data, "error_code": "response_budget_too_small"}
         request_headers = getattr(self, "headers", None)
         response_request_id = request_headers.get("X-LocalAI-Request-ID", "") if hasattr(request_headers, "get") else ""
         if (
@@ -6443,12 +6476,18 @@ class Handler(BaseHTTPRequestHandler):
                         if type(laya_operation) is not dict:
                             self._send(400, {"success": False, "error": "laya_operation must be an object", "terminal": True, "retryable": False}); return
                         try:
-                            result = APP.laya_candidates.handle(
-                                laya_operation,
-                                root=repo_root,
-                                task_store=APP.agent_tasks,
-                            )
+                            if laya_operation.get("action") == "evaluate_context_source":
+                                result = APP.evaluate_laya_context_source(laya_operation, root=repo_root)
+                            else:
+                                result = APP.laya_candidates.handle(
+                                    laya_operation,
+                                    root=repo_root,
+                                    task_store=APP.agent_tasks,
+                                    evidence_store=APP.evidence,
+                                )
                             self._send(200, result); return
+                        except RuntimeError as exc:
+                            self._send(503, {"success": False, "error": str(exc), "terminal": True, "retryable": False}); return
                         except Exception as exc:
                             self._send(400, {"success": False, "error": str(exc), "terminal": True, "retryable": False}); return
                     if "include_laya_candidates" in payload or "candidate_file_path" in payload:
@@ -7595,6 +7634,22 @@ class Handler(BaseHTTPRequestHandler):
                                 mode=repository_mode,
                                 since_hash=str(payload.get("repo_since_hash", "")),
                             )
+                            if isinstance(repository, dict) and repository.get("success") is True:
+                                try:
+                                    capture = APP.capture_laya_context_source_from_context(
+                                        repository_request,
+                                        repository,
+                                    )
+                                    if capture.get("status") not in {"queued", "disabled"}:
+                                        APP.logger.debug(
+                                            "Laya shadow capture skipped: %s",
+                                            capture.get("reason", capture.get("status", "unknown")),
+                                        )
+                                except Exception as exc:
+                                    APP.logger.warning(
+                                        "Laya shadow capture scheduling failed: %s",
+                                        type(exc).__name__,
+                                    )
                         except Exception as exc:
                             repository = {
                                 "success": False,
@@ -8211,10 +8266,8 @@ class Handler(BaseHTTPRequestHandler):
                         if type(payload["root"]) is not str or not payload["root"]:
                             raise RequestBodyError("candidate export root must be an absolute repository path")
                         operation = payload["laya_candidate_export"]
-                        if type(operation) is not dict or set(operation) != {"consent", "snapshot_id"}:
-                            raise RequestBodyError("laya_candidate_export requires exactly consent and snapshot_id")
-                        if operation["consent"] is not True:
-                            raise RequestBodyError("candidate ZIP export requires explicit consent=true")
+                        if type(operation) is not dict or set(operation) != {"snapshot_id"}:
+                            raise RequestBodyError("laya_candidate_export requires exactly snapshot_id")
                         candidate_export = payload
                     export = APP.export_diagnostics(cancelled=export_cancelled, candidate_export=candidate_export)
                     APP.logger.info(
@@ -8562,6 +8615,22 @@ class Handler(BaseHTTPRequestHandler):
                             mode=mode,
                             since_hash=str(payload.get("since_hash", "")),
                         )
+                        if isinstance(result, dict) and result.get("success") is True:
+                            try:
+                                capture = APP.capture_laya_context_source_from_context(
+                                    request,
+                                    result,
+                                )
+                                if capture.get("status") not in {"queued", "disabled"}:
+                                    APP.logger.debug(
+                                        "Laya shadow capture skipped: %s",
+                                        capture.get("reason", capture.get("status", "unknown")),
+                                    )
+                            except Exception as exc:
+                                APP.logger.warning(
+                                    "Laya shadow capture scheduling failed: %s",
+                                    type(exc).__name__,
+                                )
                     except Exception as exc:
                         result = {
                             "success": False,
@@ -8756,7 +8825,8 @@ class Handler(BaseHTTPRequestHandler):
                 result = APP.rag.index(root, workspace=payload.get("workspace"))
                 if isinstance(result, dict) and result.get("success") is True:
                     APP.services._touch_project(root)
-                self._send(200, result); return
+                status, result = _api_result_http_response(result)
+                self._send(status, result); return
             if 'post_rag_search_1' in post_route_ids:
                 workspace = str(payload.get("workspace", ""))
                 if not workspace:

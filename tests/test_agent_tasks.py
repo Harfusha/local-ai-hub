@@ -29,6 +29,186 @@ from local_ai_hub.sqlite_support import connect_sqlite
 from local_ai_hub import trace_context
 
 
+@pytest.mark.parametrize(
+    ("repository_id", "blockers", "next_action", "expected_action", "expected_reason"),
+    [
+        ("a" * 64, ("PRIVATE BLOCKER",), "PRIVATE NEXT ACTION", "recommend_pause", "checkpoint_has_blockers"),
+        ("a" * 64, (), "PRIVATE NEXT ACTION", "recommend_continue", "checkpoint_has_next_action"),
+        ("a" * 64, (), "", None, None),
+        ("repo-1", ("PRIVATE BLOCKER",), "PRIVATE NEXT ACTION", None, None),
+    ],
+)
+def test_checkpoint_shadow_proposal_uses_only_safe_metadata(
+    store: TaskStore, repository_id, blockers, next_action, expected_action, expected_reason
+):
+    task_id = "task-shadow-checkpoint"
+    task = store.create(
+        GoalContract(goal="PRIVATE GOAL"),
+        ScopeContext(repository_id=repository_id, branch="main", task_id=task_id),
+        task_id=task_id,
+    )
+    store.transition(
+        task.task_id,
+        TaskStatus.ACTIVE,
+        reason="start",
+        actor="agent",
+        idempotency_key="activate-shadow-task",
+    )
+    checkpoint = TaskCheckpoint(
+        phase="PRIVATE PHASE",
+        next_action=next_action,
+        blockers=blockers,
+        evidence_ids=("private-evidence-id",),
+        state_data={"private": "PRIVATE STATE"},
+    )
+
+    updated = store.checkpoint(
+        task.task_id,
+        checkpoint,
+        actor="agent",
+        idempotency_key="shadow-checkpoint-event",
+    )
+
+    stream_id = f"task:{task_id}"
+    events = tuple(
+        event for event in store.state_store.events(stream_id)
+        if event.kind == "host.shadow.observation.v3"
+    )
+    assert updated.checkpoint == checkpoint
+    assert len(events) == (1 if repository_id == "a" * 64 else 0)
+    if repository_id != "a" * 64:
+        return
+
+    payload = events[0].payload
+    assert events[0].stream_id == stream_id
+    assert payload["source_state"] == {
+        "task_status": "active",
+        "has_blockers": bool(blockers),
+        "has_next_action": bool(next_action),
+    }
+    serialized = json.dumps(payload)
+    for private_value in (
+        "PRIVATE GOAL",
+        "PRIVATE PHASE",
+        "PRIVATE NEXT ACTION",
+        "PRIVATE BLOCKER",
+        "PRIVATE STATE",
+        "private-evidence-id",
+    ):
+        assert private_value not in serialized
+
+    if not expected_action:
+        assert payload["proposal"] == {
+            "action": "none",
+            "reason_code": "no_actionable_signal",
+            "status": "not_proposed",
+        }
+        assert payload["outcome"] == "observed"
+        return
+
+    assert payload["proposal"]["action"] == expected_action
+    assert payload["proposal"]["reason_code"] == expected_reason
+    assert payload["permission_check"] == {
+        "status": "not_evaluated",
+        "would_be_denied": None,
+    }
+
+    reloaded_store = TaskStore(store.state_store)
+    replayed = reloaded_store.checkpoint(
+        task.task_id,
+        checkpoint,
+        actor="agent",
+        idempotency_key="shadow-checkpoint-event",
+    )
+    assert replayed == updated
+    assert tuple(
+        event for event in reloaded_store.state_store.events(stream_id)
+        if event.kind == "host.shadow.observation.v3"
+    ) == events
+
+
+def test_checkpoint_shadow_failure_does_not_change_task_result(store: TaskStore, monkeypatch):
+    repository_id = "b" * 64
+    task_id = "task-shadow-failure"
+    task = store.create(
+        GoalContract(goal="PRIVATE GOAL"),
+        ScopeContext(repository_id=repository_id, branch="main", task_id=task_id),
+        task_id=task_id,
+    )
+    store.transition(
+        task.task_id,
+        TaskStatus.ACTIVE,
+        reason="start",
+        actor="agent",
+        idempotency_key="activate-shadow-failure-task",
+    )
+
+    from local_ai_hub.repo_plan import host_adapters
+
+    def fail_shadow(*_args, **_kwargs):
+        raise RuntimeError("shadow sink failed")
+
+    monkeypatch.setattr(host_adapters, "record_agent_task_checkpoint_shadow", fail_shadow)
+    checkpoint = TaskCheckpoint(phase="private", blockers=("PRIVATE BLOCKER",))
+    updated = store.checkpoint(
+        task.task_id,
+        checkpoint,
+        actor="agent",
+        idempotency_key="checkpoint-shadow-failure",
+    )
+
+    assert updated.checkpoint == checkpoint
+    assert store.get(task.task_id).checkpoint == checkpoint
+
+
+def test_blocked_task_checkpoint_shadow_uses_blocked_status_reason(store: TaskStore):
+    from hashlib import sha256
+
+    repository_id = "c" * 64
+    task_id = "task-shadow-blocked"
+    task = store.create(
+        GoalContract(goal="PRIVATE GOAL"),
+        ScopeContext(repository_id=repository_id, branch="main", task_id=task_id),
+        task_id=task_id,
+    )
+    store.transition(
+        task.task_id,
+        TaskStatus.ACTIVE,
+        reason="start",
+        actor="agent",
+        idempotency_key="activate-shadow-blocked-task",
+    )
+    store.transition(
+        task.task_id,
+        TaskStatus.BLOCKED,
+        reason="PRIVATE BLOCKER REASON",
+        actor="agent",
+        idempotency_key="block-shadow-task",
+    )
+
+    store.checkpoint(
+        task.task_id,
+        TaskCheckpoint(phase="PRIVATE PHASE"),
+        actor="agent",
+        idempotency_key="checkpoint-blocked-shadow-task",
+    )
+
+    events = tuple(
+        event for event in store.state_store.events(f"task:{task_id}")
+        if event.kind == "host.shadow.observation.v3"
+    )
+    assert len(events) == 1
+    assert events[0].payload["proposal"] == {
+        "action": "recommend_pause",
+        "reason_code": "task_status_blocked",
+        "status": "proposed",
+    }
+    serialized = json.dumps(events[0].payload)
+    assert "PRIVATE GOAL" not in serialized
+    assert "PRIVATE BLOCKER REASON" not in serialized
+    assert "PRIVATE PHASE" not in serialized
+
+
 @pytest.fixture
 def store(tmp_path: Path) -> TaskStore:
     state_store = AgentStateStore(tmp_path / "agent_state.sqlite3")
@@ -1705,3 +1885,46 @@ def test_same_status_retry_serializes_with_concurrent_transition_event(
     assert len(outcome) == 1 and isinstance(outcome[0], ValueError)
     assert str(outcome[0]) == "idempotency key was already used"
     assert active.status is TaskStatus.ACTIVE
+
+
+def test_resume_refreshes_server_memory_and_starts_a_fresh_audit(store: TaskStore, monkeypatch):
+    task_id = "resume-memory-refresh"
+    task = store.create(
+        GoalContract(goal="resume memory refresh"),
+        ScopeContext(task_id=task_id),
+        task_id=task_id,
+    )
+    store.transition(
+        task.task_id,
+        TaskStatus.ACTIVE,
+        reason="start",
+        actor="agent",
+        idempotency_key="activate-resume-memory-refresh",
+    )
+    memory_context = {
+        "schema_version": 2,
+        "context": {
+            "root": "",
+            "coordination_id": "",
+            "task_id": task_id,
+            "session_id": "",
+            "clone_id": "",
+            "worktree_id": "",
+            "branch": "",
+        },
+        "items": [{"id": "memory-1", "volatile": False}],
+        "warnings": [],
+    }
+    monkeypatch.setattr(
+        store,
+        "_task_memory_context",
+        lambda *_args, **_kwargs: memory_context,
+    )
+
+    resumed = store.resume(task.task_id)
+
+    assert resumed.checkpoint.state_data["memory_context"] == memory_context
+    assert resumed.checkpoint.state_data["memory_audit"] == {
+        "used_ids": [],
+        "not_used_reason": "Refreshed memory context has not yet been reviewed or used by the resumed task.",
+    }

@@ -35,7 +35,7 @@ def test_generated_policy_configures_and_registers_repository_on_first_contact()
 
 
 def test_mcp_repository_descriptions_have_no_mandatory_context_gate() -> None:
-    source_path = Path(__file__).resolve().parents[2] / "src" / "local_ai_hub" / "mcp_server.py"
+    source_path = Path(__file__).resolve().parents[2] / "src" / "local_ai_hub" / "mcp_tool_descriptions.py"
     source = source_path.read_text(encoding="utf-8")
 
     assert "Call this before broad repository reads/searches" not in source

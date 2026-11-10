@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import statistics
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -170,8 +171,14 @@ def test_workload_metrics_separate_executions_and_cached_repeats() -> None:
 
 
 def test_command_broker_reports_latency_throughput_and_failure_behavior(tmp_path: Path) -> None:
-    worktree = Path(__file__).resolve().parents[1]
-    assert (worktree / ".git").exists(), "benchmark must run inside a Git worktree"
+    worktree = tmp_path / "benchmark-repo"
+    worktree.mkdir()
+    subprocess.run(["git", "init", str(worktree)], check=True, capture_output=True, text=True)
+    subprocess.run(["git", "-C", str(worktree), "config", "user.email", "benchmark@example.invalid"], check=True)
+    subprocess.run(["git", "-C", str(worktree), "config", "user.name", "Benchmark"], check=True)
+    (worktree / "README.md").write_text("stable command benchmark\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(worktree), "add", "README.md"], check=True)
+    subprocess.run(["git", "-C", str(worktree), "commit", "-m", "benchmark baseline"], check=True, capture_output=True, text=True)
     broker = _command_broker(tmp_path)
     cold_elapsed: list[float] = []
     warm_elapsed: list[float] = []

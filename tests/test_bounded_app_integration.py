@@ -158,7 +158,7 @@ def test_registered_mcp_http_bounded_patch_and_real_broker(tmp_path, monkeypatch
             assert tool_calls == []
             minimal = call({"action": "get", "root": str(root), "work_id": submitted["work_id"],
                             "response_profile": "minimal", "return_fields": ["summary"],
-                            "max_output_tokens": 128, "max_response_tokens": 256})
+                            "max_output_tokens": 128, "max_response_tokens": 512})
             assert minimal["local_exploration_status"] == "unavailable", minimal
         assert (root / "a.txt").read_text(encoding="utf-8").strip() == ("old" if scenario in {"denied", "handoff_storage_none", "handoff_storage_error"} else "new")
     finally:
@@ -277,7 +277,7 @@ def test_mcp_reports_active_bounded_deadline_without_terminal_handoff(tmp_path, 
         clock.expired = True
         for action in ("status", "get", "wait"):
             args = {"action": action, "root": str(root), "work_id": submitted["work_id"],
-                    "response_profile": "minimal", "max_response_tokens": 256}
+                    "response_profile": "minimal", "max_response_tokens": 512}
             if action == "wait":
                 args["timeout_seconds"] = 0
             if action == "get":

@@ -4,6 +4,7 @@ import copy
 import ipaddress
 import math
 import os
+import re
 import tempfile
 import tomllib
 from pathlib import Path
@@ -221,9 +222,33 @@ def validate_config(data: dict[str, Any]) -> None:
     idle_unload_seconds = laya.get("idle_unload_seconds") if isinstance(laya, dict) else None
     if isinstance(idle_unload_seconds, (int, float)) and not isinstance(idle_unload_seconds, bool) and not math.isfinite(float(idle_unload_seconds)):
         raise ConfigError("laya.idle_unload_seconds must be finite")
+    laya_runtime = laya.get("runtime", {}) if isinstance(laya, dict) else {}
+    if not isinstance(laya_runtime, dict):
+        raise ConfigError("laya.runtime must be a table")
+    runtime_enabled = laya_runtime.get("enabled", False)
+    allow_laya_cpu = laya_runtime.get("allow_cpu", False)
+    if type(runtime_enabled) is not bool or type(allow_laya_cpu) is not bool:
+        raise ConfigError("laya.runtime enabled and allow_cpu must be booleans")
+    if runtime_enabled:
+        checkpoint_path = laya_runtime.get("checkpoint_path")
+        revision = laya_runtime.get("revision")
+        expected_hashes = laya_runtime.get("expected_sha256")
+        if (not isinstance(checkpoint_path, str) or not checkpoint_path
+                or not Path(checkpoint_path).is_absolute()):
+            raise ConfigError("enabled laya.runtime requires an absolute checkpoint_path")
+        if (not isinstance(revision, str) or not revision or Path(checkpoint_path).name != revision):
+            raise ConfigError("enabled laya.runtime requires revision matching the checkpoint directory")
+        if not isinstance(expected_hashes, dict) or not expected_hashes:
+            raise ConfigError("enabled laya.runtime requires expected_sha256 hashes")
+        for filename, digest in expected_hashes.items():
+            if (not isinstance(filename, str) or Path(filename).is_absolute()
+                    or ".." in Path(filename).parts or not isinstance(digest, str)
+                    or not re.fullmatch(r"[0-9a-f]{64}", digest)):
+                raise ConfigError("laya.runtime expected_sha256 contains an invalid path or digest")
 
     resilience = data.get("resilience", {})
     _number(resilience, "singleflight_wait_timeout_seconds", minimum=0.1, maximum=3600)
+    _number(resilience, "repository_search_timeout_seconds", minimum=0.1, maximum=900)
     _number(resilience, "scheduler_wait_timeout_seconds", minimum=0.1, maximum=86400)
 
     ollama = data.get("ollama", {})

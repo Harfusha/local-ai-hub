@@ -67,16 +67,25 @@ def test_next_checkpoint_requires_declaration_without_mutating_task_or_events(ma
 def test_known_usage_or_reason_is_accepted_and_carries_forward(make_task, use_memory):
     tasks, _, _, task, record = make_task()
     audit = {"used_ids": [record.record_id]} if use_memory else {"used_ids": [], "not_used_reason": "Current source made this advisory fact unnecessary"}
-    before_events = len(tasks.state_store.events(f"task:{task.task_id}"))
+    before_checkpoints = sum(
+        event.kind == "task.checkpointed"
+        for event in tasks.state_store.events(f"task:{task.task_id}")
+    )
     updated = tasks.checkpoint(task.task_id, TaskCheckpoint(phase="edit", state_data={"memory_audit": audit}))
     assert updated.checkpoint.state_data["memory_context"] == task.checkpoint.state_data["memory_context"]
     assert updated.checkpoint.state_data["memory_audit"] == audit
-    assert len(tasks.state_store.events(f"task:{task.task_id}")) == before_events + 1
+    assert sum(
+        event.kind == "task.checkpointed"
+        for event in tasks.state_store.events(f"task:{task.task_id}")
+    ) == before_checkpoints + 1
     carried = tasks.checkpoint(task.task_id, TaskCheckpoint(phase="verify"))
     assert carried.checkpoint.state_data["memory_audit"] == audit
     assert carried.owner == task.owner
     assert asdict(carried.context) == asdict(task.context)
-    assert len(tasks.state_store.events(f"task:{task.task_id}")) == before_events + 2
+    assert sum(
+        event.kind == "task.checkpointed"
+        for event in tasks.state_store.events(f"task:{task.task_id}")
+    ) == before_checkpoints + 2
 
 
 def test_unknown_memory_id_is_rejected_at_checkpoint(make_task):

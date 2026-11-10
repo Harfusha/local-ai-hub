@@ -52,7 +52,7 @@ def rag_with_many_chunks(tmp_path: Path) -> tuple[RAGStore, str]:
 
     # Mock services.embed
     class DummyEmbedServices:
-        def embed(self, texts, priority=3, query=True):
+        def embed(self, texts, priority=3, query=True, wait_timeout=None):
             return {
                 "success": True,
                 "embedding_space_id": "default_space",

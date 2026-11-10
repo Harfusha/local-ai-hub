@@ -18,7 +18,7 @@ import threading
 import time
 from contextlib import closing
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
 
 from .cache import SQLiteCache, TieredCache, SingleFlightCache, stable_hash
 from .normalizer import normalize_query
@@ -2851,11 +2851,16 @@ class RAGStore:
             observed_identity["dimension"] = self._embedding_dimension_cache_identity()
             return raw_result
 
-        if cache_identity_known:
-            raw, hit, coalesced = self.search_flight.get_or_compute(
-                key,
-                compute_search,
+        def get_cached_search(search_key: str, compute: Callable[[], dict[str, Any]]) -> tuple[dict[str, Any], bool, bool]:
+            if deadline is None:
+                return self.search_flight.get_or_compute(search_key, compute)
+            remaining = max(0.01, deadline - time.perf_counter())
+            return self.search_flight.get_or_compute(
+                search_key, compute, wait_timeout_seconds=remaining,
             )
+
+        if cache_identity_known:
+            raw, hit, coalesced = get_cached_search(key, compute_search)
             actual_space = observed_identity.get("space")
             actual_dimension = observed_identity.get("dimension")
             if (
@@ -2865,7 +2870,7 @@ class RAGStore:
                 self.search_flight.cache.delete(key)
                 key = cache_key(str(actual_space) if actual_space else None, actual_dimension, generation)
                 computed_raw = raw
-                raw, hit, coalesced = self.search_flight.get_or_compute(key, lambda: computed_raw)
+                raw, hit, coalesced = get_cached_search(key, lambda: computed_raw)
             if isinstance(raw, dict) and (raw.get("retrieval_mode") == "lexical_fallback" or raw.get("fallback") == "embedding_backend"):
                 self.search_flight.cache.delete(key)
         else:
@@ -2887,6 +2892,7 @@ class RAGStore:
         if latest_generation != generation:
             raw = self._search_uncached(
                 clean_query, workspace, top_k, use_reranker, priority, scope_path,
+                deadline=deadline, cancel_event=cancel_event,
                 allow_cpu_fallback=False, **semantic_search_options,
             )
             hit, coalesced = False, False
@@ -3204,7 +3210,14 @@ class RAGStore:
             query_result = {"success": False, "error": "embedding_disabled"}
         else:
             try:
-                query_result = self.services.embed([embedding_query if embedding_query is not None else query], priority=priority, query=True)
+                embed_options = (
+                    {"wait_timeout": max(0.05, deadline - time.perf_counter())}
+                    if deadline is not None else {}
+                )
+                query_result = self.services.embed(
+                    [embedding_query if embedding_query is not None else query],
+                    priority=priority, query=True, **embed_options,
+                )
             except Exception as exc:
                 query_result = {"success": False, "error": str(exc)}
         if query_result.get("success"):

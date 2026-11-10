@@ -4,6 +4,7 @@ import inspect
 from typing import Any
 
 from local_ai_hub import mcp_server
+from local_ai_hub.http_server import _api_result_http_response
 
 
 class _Backend:
@@ -63,6 +64,28 @@ def test_mcp_rag_index_forwards_root_and_workspace(monkeypatch: Any, tmp_path: A
     ]
     _assert_response_fields(result, response)
     assert result["success"] is True
+
+
+def test_rag_index_failure_http_status_matches_retryability() -> None:
+    retryable_status, retryable_body = _api_result_http_response({
+        "success": False,
+        "error_code": "gpu_reserved",
+        "error": "GPU admission is unavailable",
+        "retryable": True,
+    })
+    assert retryable_status == 503
+    assert retryable_body["status_code"] == 503
+    assert retryable_body["retryable"] is True
+    assert retryable_body["terminal"] is False
+
+    terminal_status, terminal_body = _api_result_http_response({
+        "success": False,
+        "error": "model request pipe failed",
+    })
+    assert terminal_status == 500
+    assert terminal_body["status_code"] == 500
+    assert terminal_body["retryable"] is False
+    assert terminal_body["terminal"] is True
 
 
 def test_mcp_rag_search_clamps_top_k_and_uses_root_workspace_default(monkeypatch: Any, tmp_path: Any) -> None:

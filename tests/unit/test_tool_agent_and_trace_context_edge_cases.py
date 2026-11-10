@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+from types import SimpleNamespace
 from typing import Any
 import pytest
 
@@ -95,6 +96,57 @@ def test_tool_aware_local_agent_init_defensive() -> None:
     assert agent2.max_tool_chars == 6500
     assert agent2.pre_context_chars == 2800
     assert agent2.semantic_bypass_confidence == 1.0
+
+
+def test_repo_search_records_only_server_returned_indexed_and_rag_sources(tmp_path) -> None:
+    root = str(tmp_path)
+    recorded = []
+
+    class Evidence:
+        def put_many(self, _root, items):
+            return [{**item, "evidence_id": "E" + "0" * 20} for item in items]
+
+        def record_source_provenance(self, evidence_id, *, root, source_code):
+            recorded.append((evidence_id, root, source_code))
+            return True
+
+    agent = ToolAwareLocalAgent.__new__(ToolAwareLocalAgent)
+    agent.services = SimpleNamespace(repo_search=lambda *_args, **_kwargs: {
+        "root": root,
+        "result_source": "hybrid",
+        "results": [{"path": "sample.py", "text": "value = 1", "sources": ["lexical", "rag"]}],
+    })
+    agent.evidence = Evidence()
+
+    result = agent._execute_tool("repo_search", {"query": "value"}, root, root)
+
+    assert result["progressive_disclosure"] is True
+    assert {row[2] for row in recorded} == {"indexed", "rag"}
+    assert all(row[:2] == ("E" + "0" * 20, root) for row in recorded)
+
+
+def test_evidence_get_records_artifact_source(tmp_path) -> None:
+    root = str(tmp_path)
+    evidence_id = "E" + "0" * 20
+    recorded = []
+
+    class Evidence:
+        def get(self, received_id, *, verify, root):
+            assert received_id == evidence_id
+            assert verify is True
+            return {"success": True, "evidence_id": received_id, "root": root, "stale": False}
+
+        def record_source_provenance(self, received_id, *, root, source_code):
+            recorded.append((received_id, root, source_code))
+            return True
+
+    agent = ToolAwareLocalAgent.__new__(ToolAwareLocalAgent)
+    agent.evidence = Evidence()
+
+    result = agent._execute_tool("evidence_get", {"evidence_id": evidence_id}, root, root)
+
+    assert result["success"] is True
+    assert recorded == [(evidence_id, root, "artifact")]
 
 
 def test_tool_result_truncation_stays_within_configured_character_limit() -> None:

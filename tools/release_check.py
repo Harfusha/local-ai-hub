@@ -131,8 +131,7 @@ def _iter_release_hygiene_violations(
     payloads and internal workspace files remain fatal so cleanup cannot mask them.
 
     ``allow_installed`` additionally allows managed runtime/tool environments
-    (``.venv``, ``tool-envs``, ``state``) and local ``build`` output present in
-    active developer checkouts.
+    (``.venv``, ``tool-envs``, and ``state``) present in active developer checkouts.
     """
     if strict_tree and (post_test or allow_installed):
         raise ValueError("strict_tree cannot allow test or installed payloads")
@@ -150,9 +149,11 @@ def _iter_release_hygiene_violations(
         ):
             continue
         if allow_installed:
+            if parts and parts[0] == "build":
+                continue
             if parts and parts[0] in _INSTALLED_ENV_DIRS:
                 continue
-            if parts and parts[0] in {"generated", "data", "build"}:
+            if parts and parts[0] in {"generated", "data"}:
                 continue
             if path.name in {"config.toml", ".local-ai-hub.zip"}:
                 continue

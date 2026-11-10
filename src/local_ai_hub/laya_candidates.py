@@ -1,4 +1,4 @@
-"""Explicit-consent Laya training-candidate lifecycle in local state storage."""
+"""Root-scoped Laya training-candidate lifecycle in local state storage."""
 
 from __future__ import annotations
 
@@ -18,8 +18,10 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from .agent_tasks import _canonical_repository_root, _task_matches_scope
+from .evidence import is_evidence_id
 from .json_utils import dumps as json_dumps
-from .laya_decisions import DecisionCategory, _CATEGORY_OPTIONS
+from .laya_decisions import ContextSourceEvidence, DecisionCategory, DecisionRequest, DecisionResult, _CATEGORY_OPTIONS
+from .sqlite_support import connect_sqlite
 
 _SCHEMA_VERSION = 1
 _CHECKPOINT = "convaiinnovations/laya-multilingual"
@@ -28,6 +30,7 @@ _TOKENIZER_SHA256 = "609d8f4c067cd3950f88594c5a802616cea245823836ef5848ee4fc40aa
 _MAX_STATE_BYTES = 16 * 1024
 _MAX_CANDIDATE_BYTES = 64 * 1024
 _MAX_CAPTURE_BATCH_SIZE = 100
+_RUNTIME_CAPTURE_TOKEN = object()
 _MAX_CANDIDATES_PER_EXPORT = 20_000
 _MAX_SPLIT_SHINGLES = 1_000_000
 _MAX_DUPLICATE_COMPARISONS = 250_000
@@ -62,6 +65,42 @@ def _identity(value: Any, label: str) -> str:
     if type(value) is not str or not _IDENT.fullmatch(value):
         raise ValueError(f"{label} invalid")
     return value
+
+
+def _export_label_provenance(candidate: Mapping[str, Any], targets: Mapping[str, Any]) -> dict[str, Any]:
+    """Project verified human-label provenance without exporting reviewer identifiers."""
+    if candidate.get("label_status") != "verified":
+        raise ValueError("Laya training export requires independently verified labels")
+    provenance = candidate.get("label_provenance")
+    if not isinstance(provenance, Mapping):
+        raise ValueError("verified Laya candidate has no label provenance")
+    annotations = provenance.get("annotations")
+    adjudication = provenance.get("adjudication")
+    verification = provenance.get("verification")
+    if not isinstance(annotations, list) or len(annotations) != 2:
+        raise ValueError("verified Laya candidate needs two independent annotations")
+    annotators = [
+        annotation.get("annotator_ref") if isinstance(annotation, Mapping) else None
+        for annotation in annotations
+    ]
+    adjudicator = adjudication.get("reviewer_ref") if isinstance(adjudication, Mapping) else None
+    verifier = verification.get("reviewer_ref") if isinstance(verification, Mapping) else None
+    identities = annotators + [adjudicator, verifier]
+    if any(not isinstance(identity, str) or not identity for identity in identities):
+        raise ValueError("verified Laya candidate has incomplete independent reviewer provenance")
+    identity_hashes = [hashlib.sha256(identity.encode("utf-8")).hexdigest() for identity in identities]
+    if len(set(identity_hashes)) != 4:
+        raise ValueError("verified Laya candidate reviewers are not independent")
+    canonical_targets = json.dumps(targets, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
+    return {
+        "status": "verified",
+        "method": "blind_double_annotation",
+        "target_sha256": hashlib.sha256(canonical_targets.encode("utf-8")).hexdigest(),
+        "annotation_identity_sha256": sorted(identity_hashes[:2]),
+        "agreement": annotations[0].get("target") == annotations[1].get("target"),
+        "adjudicator_identity_sha256": identity_hashes[2],
+        "verification_identity_sha256": identity_hashes[3],
+    }
 
 
 def _event_payload(status: str, *, details: Mapping[str, Any] | None = None) -> str:
@@ -150,7 +189,7 @@ def _split_for_group(cluster_id: str) -> str:
 
 
 class LayaCandidateStore:
-    """Stores consented candidates in the existing Agent State database."""
+    """Stores bounded, explicitly captured candidates in the existing Agent State database."""
 
     def __init__(self, state_dir: str | Path):
         self.state_dir = Path(state_dir).resolve()
@@ -170,12 +209,15 @@ class LayaCandidateStore:
             raise RuntimeError("Agent State schema initializer is unavailable")
         ensure_schema()
         self.path = path
-        con = sqlite3.connect(path, timeout=2.0, isolation_level=None)
-        con.row_factory = sqlite3.Row
-        con.execute("PRAGMA busy_timeout=2000")
-        con.execute("PRAGMA foreign_keys=ON")
+        con = connect_sqlite(
+            path,
+            timeout_seconds=2.0,
+            isolation_level=None,
+            row_factory=sqlite3.Row,
+            foreign_keys=True,
+            wal=True,
+        )
         con.execute("PRAGMA secure_delete=ON")
-        con.execute("PRAGMA journal_mode=WAL")
         con.executescript(
             """
             CREATE TABLE IF NOT EXISTS laya_candidates (
@@ -228,6 +270,38 @@ class LayaCandidateStore:
         )
         return con
 
+    def _purge_snapshot_export(self, snapshot_id: str) -> None:
+        if (
+            type(snapshot_id) is not str
+            or len(snapshot_id) != len("laya_snapshot_") + 32
+            or not snapshot_id.startswith("laya_snapshot_")
+            or any(char not in "0123456789abcdef" for char in snapshot_id[len("laya_snapshot_"):])
+        ):
+            raise ValueError("candidate snapshot ID is invalid")
+
+        data_dir = self.state_dir / "experiments" / "model-training" / "data"
+        current = self.state_dir
+        for part in ("experiments", "model-training", "data"):
+            current = current / part
+            is_junction = getattr(current, "is_junction", None)
+            if current.is_symlink() or (callable(is_junction) and is_junction()):
+                raise ValueError("candidate export directory cannot contain a symlink or junction")
+        resolved_data_dir = data_dir.resolve(strict=False)
+        if not resolved_data_dir.is_relative_to(self.state_dir):
+            raise ValueError("candidate export directory escaped configured state_dir")
+
+        output = resolved_data_dir / f"laya-{snapshot_id}.train.jsonl"
+        is_junction = getattr(output, "is_junction", None)
+        if output.is_symlink() or (callable(is_junction) and is_junction()):
+            raise ValueError("candidate export cannot be a symlink or junction")
+        resolved_output = output.resolve(strict=False)
+        if not resolved_output.is_relative_to(resolved_data_dir):
+            raise ValueError("candidate export path escaped its data directory")
+        if output.exists():
+            if not output.is_file():
+                raise ValueError("candidate export path is not a regular file")
+            output.unlink()
+
     @staticmethod
     def _repo_scope(root: str) -> str:
         canonical = _canonical_repository_root(root)
@@ -264,7 +338,21 @@ class LayaCandidateStore:
         except (TypeError, ValueError) as exc:
             raise ValueError("candidate category invalid") from exc
         state = row["state"]
-        if type(state) is str:
+        context_source = None
+        if category is DecisionCategory.CONTEXT_SOURCE:
+            expected_state_fields = {"gap_code", "source_codes", "freshness_codes", "coverage_codes"}
+            if type(state) is not dict or set(state) != expected_state_fields:
+                raise ValueError("context_source state fields invalid")
+            context_input = {**state, "evidence_ids": row["evidence_ids"]}
+            try:
+                context_source = ContextSourceEvidence.from_mapping(context_input)
+            except ValueError as exc:
+                if "evidence ID" in str(exc) or "evidence_ids" in str(exc):
+                    raise ValueError("context_source evidence_ids invalid") from exc
+                raise ValueError("context_source state codes invalid") from exc
+            if len(_canonical_json(state).encode("utf-8")) > _MAX_STATE_BYTES:
+                raise ValueError("context_source state is too large")
+        elif type(state) is str:
             if not state.strip() or len(state.encode("utf-8")) > _MAX_STATE_BYTES or "\x00" in state:
                 raise ValueError("candidate state invalid or too large")
         elif type(state) is dict:
@@ -284,6 +372,10 @@ class LayaCandidateStore:
                 or len(set(options)) != len(options)
                 or any(item not in _CATEGORY_OPTIONS[category] for item in options)):
             raise ValueError("candidate options invalid for category")
+        if context_source is not None:
+            allowed_context_options = set(context_source.decision_options) | {"more_evidence"}
+            if any(item not in allowed_context_options for item in options):
+                raise ValueError("candidate option not present in context_source codes")
         language = row["language"]
         if type(language) is not str or not _LANG.fullmatch(language):
             raise ValueError("candidate language invalid")
@@ -291,9 +383,17 @@ class LayaCandidateStore:
         if any(type(preprocessing[k]) is not str or not _IDENT.fullmatch(preprocessing[k]) for k in preprocessing):
             raise ValueError("preprocessing identity invalid")
         evidence_ids = row["evidence_ids"]
-        if type(evidence_ids) is not list or len(evidence_ids) > 64:
-            raise ValueError("candidate evidence_ids invalid")
-        evidence_ids = [_identity(item, "evidence_id") for item in evidence_ids]
+        if category is DecisionCategory.CONTEXT_SOURCE:
+            if (
+                type(evidence_ids) is not list
+                or len(evidence_ids) != len(state["source_codes"])
+                or any(type(item) is not str or not is_evidence_id(item) for item in evidence_ids)
+            ):
+                raise ValueError("context_source evidence_ids invalid")
+        else:
+            if type(evidence_ids) is not list or len(evidence_ids) > 64:
+                raise ValueError("candidate evidence_ids invalid")
+            evidence_ids = [_identity(item, "evidence_id") for item in evidence_ids]
         if len(set(evidence_ids)) != len(evidence_ids):
             raise ValueError("duplicate evidence_id")
         question = {
@@ -323,22 +423,81 @@ class LayaCandidateStore:
             raise ValueError("candidate exceeds byte limit")
         return candidate
 
-    def handle(self, operation: Any, *, root: str, task_store: Any) -> dict[str, Any]:
+    @staticmethod
+    def _validate_context_source_evidence(
+        candidate: Mapping[str, Any],
+        *,
+        evidence_store: Any,
+        canonical_root: str,
+    ) -> None:
+        if candidate.get("category") != DecisionCategory.CONTEXT_SOURCE.value:
+            return
+        get_many = getattr(evidence_store, "get_many", None)
+        evidence_ids = candidate["evidence_ids"]
+        if not callable(get_many):
+            raise ValueError("context_source evidence is not authorized and current")
+        try:
+            rows = get_many(evidence_ids, verify=True, root=canonical_root)
+        except Exception as exc:
+            raise ValueError("context_source evidence is not authorized and current") from exc
+        if type(rows) is not list or len(rows) != len(evidence_ids) or any(
+            type(row) is not dict
+            or row.get("success") is not True
+            or row.get("evidence_id") != evidence_id
+            or row.get("root") != canonical_root
+            or row.get("stale") is not False
+            for row, evidence_id in zip(rows, evidence_ids, strict=True)
+        ):
+            raise ValueError("context_source evidence is not authorized and current")
+        validate_provenance = getattr(evidence_store, "validate_source_provenance", None)
+        if not callable(validate_provenance):
+            raise ValueError("context_source evidence source provenance is unavailable")
+        try:
+            provenance_valid = validate_provenance(
+                evidence_ids,
+                candidate["state"]["source_codes"],
+                root=canonical_root,
+            )
+        except Exception as exc:
+            raise ValueError("context_source evidence source provenance is unavailable") from exc
+        if provenance_valid is not True:
+            raise ValueError("context_source source codes do not match recorded provenance")
+
+    def handle(
+        self,
+        operation: Any,
+        *,
+        root: str,
+        task_store: Any,
+        evidence_store: Any = None,
+        _runtime_capture_token: object | None = None,
+    ) -> dict[str, Any]:
         if type(operation) is not dict or type(operation.get("action")) is not str:
             raise ValueError("laya_operation must be an object with an action")
         action = operation["action"]
+        if operation.get("_runtime_capture_token") is _RUNTIME_CAPTURE_TOKEN:
+            if _runtime_capture_token is None:
+                _runtime_capture_token = _RUNTIME_CAPTURE_TOKEN
+            operation = {key: value for key, value in operation.items() if key != "_runtime_capture_token"}
         canonical_root = _canonical_repository_root(root)
         scope = self._repo_scope(canonical_root)
         if action == "capture":
-            op = _strict_object(operation, {"action", "consent", "task_id", "session_id", "candidate"}, "capture")
-            if op["consent"] is not True:
-                raise ValueError("capture requires explicit per-example consent=true")
+            if _runtime_capture_token is not _RUNTIME_CAPTURE_TOKEN:
+                raise ValueError("candidate capture is available only from an actual Laya runtime callback")
+            op = _strict_object(
+                operation,
+                {"action", "task_id", "session_id", "candidate"},
+                "capture",
+            )
             task_id = _identity(op["task_id"], "task_id")
             task = self._find_task(task_store, canonical_root, task_id)
             session_id = _identity(op["session_id"], "session_id")
             if self._session_for_task(task) != session_id:
                 raise ValueError("session_id does not match the scoped task")
             candidate = self._candidate_input(op["candidate"])
+            self._validate_context_source_evidence(
+                candidate, evidence_store=evidence_store, canonical_root=canonical_root
+            )
             content_hash = hashlib.sha256(_canonical_json(candidate).encode("utf-8")).hexdigest()
             group_id = "grp_" + hashlib.sha256(f"{scope}\0{task_id}\0{session_id}".encode()).hexdigest()[:32]
             now = time.time()
@@ -348,20 +507,33 @@ class LayaCandidateStore:
                     "SELECT candidate_id,status FROM laya_candidates WHERE repository_scope=? AND content_hash=?",
                     (scope, content_hash),
                 ).fetchone()
+                candidate_id = str(existing["candidate_id"]) if existing else "laya_" + uuid.uuid4().hex
                 if existing:
-                    con.rollback()
-                    return {"success": True, "duplicate": True, "candidate_id": existing["candidate_id"], "status": existing["status"]}
-                candidate_id = "laya_" + uuid.uuid4().hex
+                    self._event(
+                        con, candidate_id, scope, task_id, "duplicate_capture",
+                        {"schema_version": _SCHEMA_VERSION, "data_class": "local_scoped"}, now,
+                    )
+                    con.commit()
+                    return {"success": True, "duplicate": True, "candidate_id": candidate_id, "status": existing["status"]}
                 con.execute(
                     "INSERT INTO laya_candidates VALUES(?,?,?,?,?,?,?,?,?,?)",
-                    (candidate_id, scope, task_id, session_id, group_id, content_hash, "pending", _canonical_json(candidate), now, now),
+                    (candidate_id, scope, task_id, session_id, group_id, content_hash,
+                     "pending", _canonical_json(candidate), now, now),
                 )
-                self._event(con, candidate_id, scope, task_id, "captured", {"schema_version": _SCHEMA_VERSION}, now)
+                self._event(
+                    con, candidate_id, scope, task_id, "captured",
+                    {"schema_version": _SCHEMA_VERSION, "data_class": "local_scoped"}, now,
+                )
                 self._event(con, candidate_id, scope, task_id, "pending", {"label_status": "pending"}, now)
                 con.commit()
             return {"success": True, "duplicate": False, "candidate_id": candidate_id, "status": "pending"}
         if action == "capture_batch":
-            op = _strict_object(operation, {"action", "task_id", "session_id", "examples"}, "capture_batch")
+            raise ValueError("capture_batch is unavailable; only actual per-decision runtime callbacks may capture")
+            op = _strict_object(
+                operation,
+                {"action", "task_id", "session_id", "examples"},
+                "capture_batch",
+            )
             task_id = _identity(op["task_id"], "task_id")
             task = self._find_task(task_store, canonical_root, task_id)
             session_id = _identity(op["session_id"], "session_id")
@@ -372,10 +544,15 @@ class LayaCandidateStore:
                 raise ValueError(f"capture_batch requires 1..{_MAX_CAPTURE_BATCH_SIZE} examples")
             prepared: list[tuple[str, dict[str, Any]]] = []
             for example in examples:
-                row = _strict_object(example, {"consent", "candidate"}, "capture_batch example")
-                if row["consent"] is not True:
-                    raise ValueError("capture_batch requires per-example consent=true")
+                row = _strict_object(
+                    example,
+                    {"candidate"},
+                    "capture_batch example",
+                )
                 candidate = self._candidate_input(row["candidate"])
+                self._validate_context_source_evidence(
+                    candidate, evidence_store=evidence_store, canonical_root=canonical_root
+                )
                 content_hash = hashlib.sha256(_canonical_json(candidate).encode("utf-8")).hexdigest()
                 prepared.append((content_hash, candidate))
             group_id = "grp_" + hashlib.sha256(f"{scope}\0{task_id}\0{session_id}".encode()).hexdigest()[:32]
@@ -398,17 +575,27 @@ class LayaCandidateStore:
                             if existing is not None:
                                 candidate_id = str(existing["candidate_id"])
                                 duplicate = True
-                            else:
-                                candidate_id = "laya_" + uuid.uuid4().hex
+                        if not duplicate and existing is None:
+                            candidate_id = "laya_" + uuid.uuid4().hex
+                        if not duplicate:
+                            if existing is None:
                                 con.execute(
                                     "INSERT INTO laya_candidates VALUES(?,?,?,?,?,?,?,?,?,?)",
                                     (candidate_id, scope, task_id, session_id, group_id, content_hash,
                                      "pending", _canonical_json(candidate), now, now),
                                 )
-                                self._event(con, candidate_id, scope, task_id, "captured", {"schema_version": _SCHEMA_VERSION}, now)
+                                self._event(
+                                    con, candidate_id, scope, task_id, "captured",
+                                    {"schema_version": _SCHEMA_VERSION, "data_class": "local_scoped"}, now,
+                                )
                                 self._event(con, candidate_id, scope, task_id, "pending", {"label_status": "pending"}, now)
                                 captured_count += 1
                             seen[content_hash] = candidate_id
+                        else:
+                            self._event(
+                                con, candidate_id, scope, task_id, "duplicate_capture",
+                                {"schema_version": _SCHEMA_VERSION, "data_class": "local_scoped"}, now,
+                            )
                         status = str(existing["status"]) if existing is not None else "pending"
                         results.append({"candidate_id": candidate_id, "duplicate": duplicate, "status": status})
                     con.commit()
@@ -449,18 +636,12 @@ class LayaCandidateStore:
         if action == "prepare_splits":
             return self._prepare_splits(operation, scope=scope, task_store=task_store)
         if action == "export":
-            op = _strict_object(operation, {"action", "consent", "output_path", "snapshot_id"}, "export")
-            if op["consent"] is not True:
-                raise ValueError("candidate export requires explicit consent=true")
+            op = _strict_object(operation, {"action", "snapshot_id"}, "export")
             snapshot_id = _identity(op["snapshot_id"], "snapshot_id")
-            requested = Path(op["output_path"]).expanduser()
-            if type(op["output_path"]) is not str or not op["output_path"].strip():
-                raise ValueError("output_path is required for candidate export")
-            if not requested.is_absolute():
-                requested = Path(canonical_root) / requested
-            out_file = requested.resolve(strict=False)
-            if out_file == Path(canonical_root) or not out_file.is_relative_to(Path(canonical_root)):
-                raise ValueError("candidate export path must remain inside authorized repository root")
+            out_dir = (self.state_dir / "experiments" / "model-training" / "data").resolve()
+            if not out_dir.is_relative_to(self.state_dir):
+                raise ValueError("candidate export path escaped configured state_dir")
+            out_file = out_dir / f"laya-{snapshot_id}.train.jsonl"
             with self._lock, closing(self._connect(task_store)) as con:
                 con.execute("BEGIN IMMEDIATE")
                 snapshot = con.execute(
@@ -472,7 +653,7 @@ class LayaCandidateStore:
                 if snapshot["status"] == "invalidated":
                     raise ValueError("dataset snapshot is invalidated")
                 assignments = con.execute(
-                    "SELECT a.candidate_id,a.content_hash,c.candidate_json,c.status "
+                    "SELECT a.candidate_id,a.group_id,a.content_hash,c.candidate_json,c.status,c.task_id,c.session_id "
                     "FROM laya_dataset_assignments a JOIN laya_candidates c ON c.candidate_id=a.candidate_id "
                     "WHERE a.snapshot_id=? AND a.split_name='train' AND c.repository_scope=? "
                     "ORDER BY c.created_at,c.candidate_id LIMIT ?",
@@ -482,7 +663,35 @@ class LayaCandidateStore:
                     raise ValueError("dataset snapshot contains a candidate no longer verified")
                 if any(hashlib.sha256(row["candidate_json"].encode("utf-8")).hexdigest() != row["content_hash"] for row in assignments):
                     raise ValueError("dataset snapshot candidate content changed")
-                rows = [json.loads(row["candidate_json"]) for row in assignments]
+                rows = []
+                for row in assignments:
+                    candidate = json.loads(row["candidate_json"])
+                    task = self._find_task(task_store, canonical_root, str(row["task_id"]))
+                    if self._session_for_task(task) != row["session_id"]:
+                        raise ValueError("candidate session identity no longer matches its task")
+                    question_id = candidate["category"]
+                    target = candidate.get("targets", {}).get(question_id)
+                    if not isinstance(target, str) or target not in candidate["questions"][question_id]["criteria"]:
+                        raise ValueError("verified candidate has no valid Laya training target")
+                    rows.append({
+                        "id": str(row["candidate_id"]),
+                        "group_id": str(row["group_id"]),
+                        "source_sha256": str(row["content_hash"]),
+                        "state": candidate["state"],
+                        "questions": candidate["questions"],
+                        "expected": {question_id: target},
+                        "provenance": {
+                            "source": "laya_candidate_store",
+                            "data_class": "local_scoped",
+                            "candidate_id": str(row["candidate_id"]),
+                            "candidate_sha256": str(row["content_hash"]),
+                            "repository_scope_sha256": scope,
+                            "task_id": str(row["task_id"]),
+                            "session_id": str(row["session_id"]),
+                            "evidence_ids": list(candidate["evidence_ids"]),
+                            "label_provenance": _export_label_provenance(candidate, {question_id: target}),
+                        },
+                    })
                 if len(rows) > _MAX_CANDIDATES_PER_EXPORT:
                     raise ValueError("candidate export exceeds row limit")
                 payload = "".join(_canonical_json(row) + "\n" for row in rows)
@@ -492,8 +701,8 @@ class LayaCandidateStore:
                     raise ValueError("dataset snapshot has no train candidates to export")
                 out_file.parent.mkdir(parents=True, exist_ok=True)
                 out_file = out_file.resolve(strict=False)
-                if not out_file.is_relative_to(Path(canonical_root)):
-                    raise ValueError("candidate export path escaped authorized repository root")
+                if not out_file.is_relative_to(self.state_dir):
+                    raise ValueError("candidate export path escaped configured state_dir")
                 fd, tmp_name = tempfile.mkstemp(prefix=".laya-export-", dir=out_file.parent)
                 try:
                     with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as stream:
@@ -522,11 +731,102 @@ class LayaCandidateStore:
             return {"success": True, "count": len(rows), "output_path": str(out_file), "format": "jsonl", "dataset_kind": "laya_candidates", "split": "train", "snapshot_id": snapshot_id}
         raise ValueError("unsupported laya_operation action")
 
+    def capture_runtime_outcome(
+        self,
+        request: DecisionRequest,
+        evidence: ContextSourceEvidence,
+        outcome: Any,
+        *,
+        root: str,
+        task_store: Any,
+        evidence_store: Any,
+    ) -> dict[str, Any]:
+        """Persist a real runtime result through the normal scoped candidate lifecycle."""
+        if not isinstance(request, DecisionRequest) or not isinstance(evidence, ContextSourceEvidence):
+            raise ValueError("validated Laya request and evidence are required")
+        decision = getattr(outcome, "decision", None)
+        runtime = getattr(outcome, "runtime", None)
+        if not isinstance(decision, DecisionResult) or decision.request != request or runtime is None:
+            raise ValueError("only an executed Laya runtime outcome can be captured")
+        if request.category is not DecisionCategory.CONTEXT_SOURCE:
+            raise ValueError("runtime capture only supports context_source")
+        if request.task_id is None or request.session_id is None:
+            raise ValueError("runtime capture requires server-bound task and session identity")
+        if request.evidence_ids != evidence.evidence_ids or request.options != evidence.decision_options:
+            raise ValueError("runtime request does not match its validated evidence")
+        canonical_root = _canonical_repository_root(root)
+        task_id = _identity(request.task_id, "task_id")
+        session_id = _identity(request.session_id, "session_id")
+        task = self._find_task(task_store, canonical_root, task_id)
+        if self._session_for_task(task) != session_id:
+            raise ValueError("runtime session identity does not match its scoped task")
+        evidence_mapping = evidence.model_input()
+        state = {key: value for key, value in evidence_mapping.items() if key != "evidence_ids"}
+        runtime_version = _identity(str(getattr(runtime, "runtime_version", "")), "runtime_version")
+        candidate = {
+            "decision_schema_version": "laya-decision-v1",
+            "category": request.category.value,
+            "state": state,
+            "options": list(request.options),
+            "language": "und",
+            "preprocessing": {"name": "laya-runtime", "version": runtime_version},
+            "evidence_ids": list(request.evidence_ids),
+        }
+        captured = self.handle(
+            {
+                "action": "capture", "task_id": task_id, "session_id": session_id,
+                "candidate": candidate,
+            },
+            root=canonical_root,
+            task_store=task_store,
+            evidence_store=evidence_store,
+            _runtime_capture_token=_RUNTIME_CAPTURE_TOKEN,
+        )
+        candidate_id = _identity(captured.get("candidate_id"), "candidate_id")
+        runtime_record = {
+            "decision_id": request.decision_id,
+            "success": decision.success,
+            "status": decision.status.value,
+            "suggestion": decision.suggestion,
+            "reason_codes": list(decision.reason_codes),
+            "runtime": {
+                "model_id": runtime.model_id,
+                "revision": runtime.revision,
+                "provider": runtime.provider,
+                "runtime_version": runtime.runtime_version,
+                "device": runtime.device,
+                "device_class": runtime.device_class,
+                "device_name": runtime.device_name,
+                "parameter_device": runtime.parameter_device,
+                "execution_verification": runtime.execution_verification,
+                "quality_status": runtime.quality_status,
+                "latency_ms": runtime.latency_ms,
+                "input_tokens": runtime.input_tokens,
+                "output_tokens": runtime.output_tokens,
+                "fallback_reason": runtime.fallback_reason,
+            },
+        }
+        _canonical_json(runtime_record)
+        scope = self._repo_scope(canonical_root)
+        now = time.time()
+        with self._lock, closing(self._connect(task_store)) as con:
+            con.execute("BEGIN IMMEDIATE")
+            row = con.execute(
+                "SELECT task_id,session_id,content_hash,candidate_json FROM laya_candidates "
+                "WHERE candidate_id=? AND repository_scope=?",
+                (candidate_id, scope),
+            ).fetchone()
+            if row is None or row["task_id"] != task_id or row["session_id"] != session_id:
+                raise ValueError("captured runtime candidate escaped its repository/task/session scope")
+            if hashlib.sha256(row["candidate_json"].encode("utf-8")).hexdigest() != row["content_hash"]:
+                raise ValueError("captured runtime candidate content changed")
+            self._event(con, candidate_id, scope, task_id, "runtime_output", runtime_record, now)
+            con.commit()
+        return {**captured, "runtime_output_recorded": True}
+
     def export_train_payload(self, operation: Any, *, root: str, task_store: Any) -> bytes:
         """Build an explicit, scope-checked upstream training JSONL payload in memory."""
-        op = _strict_object(operation, {"consent", "snapshot_id"}, "candidate ZIP export")
-        if op["consent"] is not True:
-            raise ValueError("candidate ZIP export requires explicit consent=true")
+        op = _strict_object(operation, {"snapshot_id"}, "candidate ZIP export")
         canonical_root = _canonical_repository_root(root)
         scope = self._repo_scope(canonical_root)
         snapshot_id = _identity(op["snapshot_id"], "snapshot_id")
@@ -541,7 +841,7 @@ class LayaCandidateStore:
             if snapshot["status"] == "invalidated":
                 raise ValueError("dataset snapshot is invalidated")
             assignments = con.execute(
-                "SELECT a.content_hash,c.candidate_json,c.status,c.task_id,c.session_id "
+                    "SELECT a.candidate_id,a.group_id,a.content_hash,c.candidate_json,c.status,c.task_id,c.session_id "
                 "FROM laya_dataset_assignments a JOIN laya_candidates c ON c.candidate_id=a.candidate_id "
                 "WHERE a.snapshot_id=? AND a.split_name='train' AND c.repository_scope=? "
                 "ORDER BY c.created_at,c.candidate_id LIMIT ?",
@@ -566,9 +866,23 @@ class LayaCandidateStore:
                 if not isinstance(target, str) or target not in candidate["questions"][question_id]["criteria"]:
                     raise ValueError("verified candidate has no valid Laya training target")
                 rows.append({
+                    "id": str(row["candidate_id"]),
+                    "group_id": str(row["group_id"]),
+                    "source_sha256": str(row["content_hash"]),
                     "state": candidate["state"],
                     "questions": candidate["questions"],
                     "expected": {question_id: target},
+                    "provenance": {
+                        "source": "laya_candidate_store",
+                            "data_class": "local_scoped",
+                        "candidate_id": str(row["candidate_id"]),
+                        "candidate_sha256": str(row["content_hash"]),
+                        "repository_scope_sha256": scope,
+                        "task_id": str(row["task_id"]),
+                        "session_id": str(row["session_id"]),
+                        "evidence_ids": list(candidate["evidence_ids"]),
+                        "label_provenance": _export_label_provenance(candidate, {question_id: target}),
+                    },
                 })
             payload = "".join(_canonical_json(row) + "\n" for row in rows).encode("utf-8")
             if len(payload) > 16 * 1024 * 1024:
@@ -577,9 +891,7 @@ class LayaCandidateStore:
             return payload
 
     def _prepare_splits(self, operation: dict[str, Any], *, scope: str, task_store: Any) -> dict[str, Any]:
-        op = _strict_object(operation, {"action", "consent"}, "prepare_splits")
-        if op["consent"] is not True:
-            raise ValueError("preparing dataset splits requires explicit consent=true")
+        _strict_object(operation, {"action"}, "prepare_splits")
         with self._lock, closing(self._connect(task_store)) as con:
             con.execute("BEGIN IMMEDIATE")
             status_counts = {
@@ -710,9 +1022,9 @@ class LayaCandidateStore:
     def _transition(self, operation: dict[str, Any], *, action: str, scope: str, root: str, task_store: Any) -> dict[str, Any]:
         fields = {
             "label": {"action", "candidate_id", "annotations", "adjudication"},
-            "verify": {"action", "candidate_id", "consent", "reviewer_ref"},
-            "reject": {"action", "candidate_id", "consent", "status", "reason_code"},
-            "delete": {"action", "candidate_id", "consent"},
+            "verify": {"action", "candidate_id", "reviewer_ref"},
+            "reject": {"action", "candidate_id", "status", "reason_code"},
+            "delete": {"action", "candidate_id"},
         }[action]
         op = _strict_object(operation, fields, action)
         candidate_id = _identity(op["candidate_id"], "candidate_id")
@@ -754,8 +1066,8 @@ class LayaCandidateStore:
                 new_status = "reviewed"
                 details = {"annotator_count": 2, "adjudicator_ref": reviewer}
             elif action == "verify":
-                if current != "reviewed" or op["consent"] is not True:
-                    con.rollback(); raise ValueError("verify requires reviewed candidate and explicit consent=true")
+                if current != "reviewed":
+                    con.rollback(); raise ValueError("verify requires a reviewed candidate")
                 reviewer = _identity(op["reviewer_ref"], "reviewer_ref")
                 provenance = candidate.get("label_provenance", {})
                 annotators = {item["annotator_ref"] for item in provenance.get("annotations", [])}
@@ -767,8 +1079,8 @@ class LayaCandidateStore:
                 new_status = "verified"
                 details = {"reviewer_ref": reviewer, "method": "explicit_human_review"}
             elif action == "reject":
-                if current not in {"pending", "reviewed", "ambiguous"} or op["consent"] is not True:
-                    con.rollback(); raise ValueError("reject requires a reviewable candidate and consent=true")
+                if current not in {"pending", "reviewed", "ambiguous"}:
+                    con.rollback(); raise ValueError("reject requires a reviewable candidate")
                 new_status = op["status"]
                 if new_status not in {"rejected", "ambiguous"}:
                     con.rollback(); raise ValueError("reject status must be rejected or ambiguous")
@@ -779,13 +1091,20 @@ class LayaCandidateStore:
                 )
                 details = {"reason_code": reason_code}
             else:
-                if op["consent"] is not True:
-                    con.rollback(); raise ValueError("delete requires explicit consent=true")
-                self._event(con, candidate_id, scope, row["task_id"], "deleted", {"previous_status": current}, now)
+                snapshots = con.execute(
+                    "SELECT DISTINCT snapshot_id FROM laya_dataset_assignments WHERE candidate_id=?",
+                    (candidate_id,),
+                ).fetchall()
+                for snapshot in snapshots:
+                    self._purge_snapshot_export(str(snapshot["snapshot_id"]))
                 con.execute(
                     "UPDATE laya_dataset_snapshots SET status='invalidated' "
                     "WHERE snapshot_id IN (SELECT snapshot_id FROM laya_dataset_assignments WHERE candidate_id=?)",
                     (candidate_id,),
+                )
+                con.execute("DELETE FROM laya_candidate_events WHERE candidate_id=?", (candidate_id,))
+                self._event(
+                    con, candidate_id, scope, row["task_id"], "deleted", {"status": "deleted"}, now
                 )
                 con.execute("DELETE FROM laya_candidates WHERE candidate_id=?", (candidate_id,))
                 con.commit()

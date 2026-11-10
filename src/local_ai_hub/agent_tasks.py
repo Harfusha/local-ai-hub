@@ -2465,6 +2465,7 @@ class TaskStore:
                     actor=actor,
                     idempotency_key=idempotency_key,
                     _prepared_updated_at=_prepared_updated_at,
+                    _allow_server_memory_refresh=_allow_server_memory_refresh,
                 )
             if not idempotency_key:
                 self._preflight_response_budget(current, response_budget_tokens)
@@ -2592,7 +2593,7 @@ class TaskStore:
         """Serialize a no-op retry with writers and validate its original operation."""
         def _read_retry() -> TaskState:
             con = connect_sqlite(
-                self.state_store.db_path, isolation_level=None, timeout_seconds=0.25
+                self.state_store.db_path, isolation_level=None, timeout_seconds=5.0
             )
             try:
                 con.execute("BEGIN IMMEDIATE")
@@ -3134,6 +3135,7 @@ class TaskStore:
         actor: str = "agent",
         idempotency_key: str = "",
         _prepared_updated_at: float | None = None,
+        _allow_server_memory_refresh: bool = False,
     ) -> TaskState:
         if response_budget_tokens is not None and (
             isinstance(response_budget_tokens, bool)
@@ -3146,15 +3148,19 @@ class TaskStore:
             raise KeyError(f"Task {task_id} not found")
 
         checkpoint = _preserve_checkpoint_memory_state(
-            current.checkpoint.state_data, checkpoint
+            current.checkpoint.state_data,
+            checkpoint,
+            allow_server_memory_refresh=_allow_server_memory_refresh,
         )
-        self._validate_memory_audit(replace(current, checkpoint=checkpoint))
+        if not _allow_server_memory_refresh:
+            self._validate_memory_audit(replace(current, checkpoint=checkpoint))
 
         return self._persist_checkpoint(
             current, checkpoint, capture_files=capture_files,
             actor=actor, idempotency_key=idempotency_key,
             response_budget_tokens=response_budget_tokens,
             _prepared_updated_at=_prepared_updated_at,
+            _allow_server_memory_refresh=_allow_server_memory_refresh,
         )
 
     def _persist_checkpoint(
@@ -3167,6 +3173,7 @@ class TaskStore:
         actor: str = "agent",
         idempotency_key: str = "",
         _prepared_updated_at: float | None = None,
+        _allow_server_memory_refresh: bool = False,
     ) -> TaskState:
         """Persist a validated agent checkpoint or server-owned bookkeeping."""
         task_id = current.task_id
@@ -3237,7 +3244,41 @@ class TaskStore:
             idempotency_key=idempotency_key or f"chk_{task_id}_{time.time_ns()}",
             actor=actor,
         )
-        return self._commit_update(current, updated, event)
+        committed = self._commit_update(
+            current,
+            updated,
+            event,
+            allow_server_memory_refresh=_allow_server_memory_refresh,
+        )
+        try:
+            from .repo_plan.host_adapters import (
+                HostOperationStatus,
+                record_agent_task_checkpoint_shadow,
+            )
+
+            source_event = self.state_store.event_by_idempotency_key(
+                event.stream_id, event.idempotency_key
+            )
+            if source_event is None:
+                return committed
+            shadow_result = record_agent_task_checkpoint_shadow(
+                committed, source_event, self.state_store
+            )
+            if shadow_result is not None and shadow_result.status is HostOperationStatus.UNCERTAIN:
+                import logging
+
+                logging.getLogger(__name__).warning(
+                    "task checkpoint shadow observation unavailable: %s",
+                    shadow_result.reason,
+                )
+        except Exception as exc:
+            import logging
+
+            logging.getLogger(__name__).warning(
+                "task checkpoint shadow observation unavailable (%s)",
+                type(exc).__name__,
+            )
+        return committed
 
     def _begin_fenced_work_mutation(
         self, task_id: str, *, root: str, owner: str, fencing_store: Any,
@@ -3478,7 +3519,10 @@ class TaskStore:
         state_data["memory_context"] = self._task_memory_context(
             task_id, current.contract, context, root_override=_task_scope_root(current), previous=None
         )
-        state_data["memory_audit"] = None
+        state_data["memory_audit"] = {
+            "used_ids": [],
+            "not_used_reason": "Refreshed memory context has not yet been reviewed or used by the resumed task.",
+        }
         checkpoint = replace(current.checkpoint, state_data=state_data)
         updated = replace(current, context=context, checkpoint=checkpoint, updated_at=time.time())
         self._preflight_response_budget(updated, response_budget_tokens)
@@ -3529,7 +3573,10 @@ class TaskStore:
             # Explicit server refresh: omission would preserve the old snapshot
             # through the existing immutable-checkpoint merge.
             state_data["memory_context"] = None
-        state_data["memory_audit"] = None
+        state_data["memory_audit"] = {
+            "used_ids": [],
+            "not_used_reason": "Refreshed memory context has not yet been reviewed or used by the resumed task.",
+        }
         resumed_checkpoint = TaskCheckpoint(
             phase=current.checkpoint.phase,
             next_action=current.checkpoint.next_action,

@@ -4,8 +4,17 @@ from types import SimpleNamespace
 
 import pytest
 
+from local_ai_hub.agent_events import AgentStateStore
+from local_ai_hub.agent_identity import ScopeContext
 from local_ai_hub.agent_consistency import AgentConsistencyGuard, ConsistencyRequest
-from local_ai_hub.agent_tasks import CheckpointResponseBudgetError, CompletionGateError, TaskStore
+from local_ai_hub.agent_tasks import (
+    CheckpointResponseBudgetError,
+    CompletionGateError,
+    GoalContract,
+    TaskCheckpoint,
+    TaskStatus,
+    TaskStore,
+)
 from local_ai_hub.token_accounting import json_tokens
 from local_ai_hub.task_memory_wire import task_memory_projection, task_memory_wire_tokens, task_private_state_projection
 
@@ -187,6 +196,38 @@ def test_memory_ids_still_require_audit_and_current_membership():
         TaskStore._validate_memory_audit(_task(_snapshot()))
     with pytest.raises(CompletionGateError, match="unavailable memory IDs"):
         TaskStore._validate_memory_audit(_task(_snapshot(), {"used_ids": ["other-memory"]}))
+
+
+def test_resume_refreshes_memory_before_agent_audit_then_keeps_gate(tmp_path):
+    store = TaskStore(AgentStateStore(tmp_path / "state.sqlite3"))
+    store._task_memory_context = lambda *_args, **_kwargs: _snapshot()
+    task_id = "task-one"
+    store.create(
+        GoalContract(goal="resume with current memory"),
+        ScopeContext(task_id=task_id),
+        task_id=task_id,
+    )
+    store.transition(
+        task_id,
+        TaskStatus.ACTIVE,
+        reason="start task",
+        actor="test",
+        idempotency_key="start-task",
+    )
+
+    resumed = store.resume(task_id, actor="test")
+
+    assert resumed.status is TaskStatus.ACTIVE
+    assert resumed.checkpoint.state_data["memory_context"] == _snapshot()
+    assert resumed.checkpoint.state_data["memory_audit"] is None
+    with pytest.raises(CompletionGateError, match="memory_audit"):
+        store.checkpoint(task_id, TaskCheckpoint(phase="next"), actor="test")
+    audited = store.checkpoint(
+        task_id,
+        TaskCheckpoint(phase="next", state_data={"memory_audit": {"used_ids": ["memory-one"]}}),
+        actor="test",
+    )
+    assert audited.checkpoint.state_data["memory_audit"] == {"used_ids": ["memory-one"]}
 
 
 @pytest.mark.parametrize("value", [None, "", False, "former-owner"])

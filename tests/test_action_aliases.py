@@ -19,6 +19,16 @@ def test_only_canonical_action_names_are_published_and_accepted():
             assert rejection is not None
 
 
+def test_laya_candidate_schema_requires_scoped_capture_contract():
+    schema = operation_tool_input_schema("local_ai_coord")
+    description = schema["properties"]["laya_operation"]["description"]
+
+    assert "canonical task/session identity" in description
+    assert "authorized evidence provenance" in description
+    assert "per-example consent receipts are not required" in description
+    assert "atomic write" in description
+
+
 def test_normalize_deterministic_keys_and_timestamps():
     data = {
         "z_key": 1,

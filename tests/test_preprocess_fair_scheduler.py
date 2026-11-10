@@ -22,6 +22,10 @@ def scheduler(tmp_path, monkeypatch):
             force_refresh INTEGER DEFAULT 0, last_requested_at REAL DEFAULT 0,
             updated_at REAL DEFAULT 0, retry_after REAL DEFAULT 0, next_check_at REAL DEFAULT 0
         )""")
+        con.execute("""CREATE TABLE file_refs (
+            root TEXT, path TEXT, content_hash TEXT DEFAULT '', card_key TEXT,
+            updated_at REAL DEFAULT 0, PRIMARY KEY(root,path)
+        )""")
         con.commit()
 
     instance = ProjectPreprocessor.__new__(ProjectPreprocessor)
@@ -85,8 +89,14 @@ def test_active_files_precede_optional_phases(scheduler):
     [
         ("hash", "code_index"),
         ("code_index", "deterministic"),
-        ("deterministic", "serena"),
-        ("serena", "lexical"),
+        ("deterministic", "lexical"),
+        ("lexical", "serena"),
+        ("lexical", "rag"),
+        ("rag", "files"),
+        ("files", "serena"),
+        ("serena", "serena_optional"),
+        ("files", "serena_optional"),
+        ("serena_optional", "modules"),
         ("modules", "project"),
         ("project", "hot_queries"),
     ],
@@ -100,6 +110,65 @@ def test_phase_order_beats_small_timestamp_differences(scheduler, earlier, later
     assert instance._next_cpu_project()["root"] == "earlier-phase"
 
 
+def test_legacy_serena_checkpoint_remains_schedulable(scheduler):
+    instance, connect = scheduler
+    now = instance._test_now[0]
+    add(connect, "legacy-serena", "serena", updated_at=now - 10, last_requested_at=now - 5)
+
+    assert instance._next_cpu_project()["phase"] == "serena"
+
+
+def test_new_projects_enter_lexical_directly_after_deterministic(scheduler):
+    instance, _connect = scheduler
+    transitions = []
+    instance.deterministic = None
+    instance._set_project = lambda root, **values: transitions.append((root, values))
+
+    assert instance._step_deterministic({"root": "repo", "generation": 0}) is True
+    assert transitions[-1][1]["phase"] == "lexical"
+
+
+def test_file_phase_enters_optional_serena_checkpoint(scheduler):
+    instance, _connect = scheduler
+    transitions = []
+    instance.config = {"background_gpu": {}}
+    instance.cfg = {"auto_recheck_seconds": 1800}
+    instance._file_card_enrichment_enabled = lambda: False
+    instance._find_next_files = lambda _root, _limit: []
+    instance._set_project = lambda root, **values: transitions.append((root, values))
+
+    assert instance._step_file_card({"root": "repo", "phase": "files"}) is True
+    assert transitions[-1][1]["phase"] == "serena_optional"
+
+
+@pytest.mark.parametrize(
+    ("phase", "expected_next", "should_index"),
+    [("serena", "lexical", False), ("serena_optional", "modules", True)],
+)
+def test_serena_checkpoint_routes_preserve_legacy_and_new_flow(
+    scheduler, tmp_path, phase, expected_next, should_index
+):
+    instance, _connect = scheduler
+    root = tmp_path / phase
+    root.mkdir()
+    transitions = []
+    instance._background_work_allowed = lambda: True
+    instance._yield = lambda: False
+    project_transitions = []
+    instance._set_project = lambda root, **values: project_transitions.append((root, values))
+    instance._step_external_index = lambda _row, backend, next_phase: transitions.append((backend, next_phase)) or True
+
+    assert instance._step({"root": str(root), "phase": phase, "status": "queued"}) is True
+    assert transitions == ([("serena", expected_next)] if should_index else [])
+    if should_index:
+        assert project_transitions == [(str(root), {"status": "running"})]
+    else:
+        assert project_transitions == [
+            (str(root), {"status": "running"}),
+            (str(root), {"phase": expected_next}),
+        ]
+
+
 def test_gpu_worker_waits_for_active_cpu_layer(scheduler):
     instance, connect = scheduler
     now = instance._test_now[0]
@@ -107,6 +176,40 @@ def test_gpu_worker_waits_for_active_cpu_layer(scheduler):
     add(connect, "inventory-active", "inventory", updated_at=now - 10, last_requested_at=now - 5)
 
     assert instance._next_gpu_project() is None
+
+
+def test_gpu_skips_locked_head_within_preferred_phase(scheduler):
+    instance, connect = scheduler
+    now = instance._test_now[0]
+    add(connect, "locked-files", "files", updated_at=now - 20, last_requested_at=now - 5)
+    add(connect, "available-files", "files", updated_at=now - 10, last_requested_at=now - 5)
+    instance._project_limit = lambda: 2
+    lock = threading.Lock()
+    lock.acquire()
+    instance._step_locks_guard = threading.Lock()
+    instance._step_locks = {"locked-files": lock}
+
+    try:
+        assert instance._next_gpu_project()["root"] == "available-files"
+    finally:
+        lock.release()
+
+
+def test_gpu_does_not_skip_locked_preferred_phase(scheduler):
+    instance, connect = scheduler
+    now = instance._test_now[0]
+    add(connect, "locked-files", "files", updated_at=now - 20, last_requested_at=now - 5)
+    add(connect, "available-modules", "modules", updated_at=now - 10, last_requested_at=now - 5)
+    instance._project_limit = lambda: 2
+    lock = threading.Lock()
+    lock.acquire()
+    instance._step_locks_guard = threading.Lock()
+    instance._step_locks = {"locked-files": lock}
+
+    try:
+        assert instance._next_gpu_project() is None
+    finally:
+        lock.release()
 
 
 def test_project_expires_at_24_hours_and_foreground_touch_reactivates_it(scheduler, tmp_path):
