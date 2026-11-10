@@ -8,21 +8,20 @@
   "tasks": {
     "task_endpoint_reliability_audit": {
       "acceptance_criteria": [
-        "Recent endpoint failures and latency hotspots are classified from retained telemetry and trace evidence.",
-        "Confirmed server or response-contract defects are fixed at their source with focused regression coverage.",
-        "Repetition detection releases the GPU fence only after the backend confirms completion; incomplete or timed-out streams remain fenced.",
-        "Focused checks pass and diff check is clean.",
-        "Live process has loaded the current source and representative endpoint/trace behavior is verified after separately authorized restart.",
-        "Opening #traceInspector directly loads retained trace summaries; request-history rows match by request_id; enabled HTTP model traces persist output and retain API response separately."
+        "Measure high-frequency or high-latency paths across the full Hub from current source and runtime evidence.",
+        "Implement only repeatable, behavior-preserving, high-value optimizations.",
+        "Assess CPU/GPU/iGPU/NPU and Rust/Cython using observed bottlenecks and available providers.",
+        "Run focused validation for each change and separate test proof from live-runtime proof.",
+        "Report remaining unverified performance and runtime gaps."
       ],
-      "blocker": "Full pytest and a later fail-fast run reported failures and are not final candidate evidence. FIM quality, detailed diagnostics, release-check nested DB, and affected_tests empty-path contract remain open.",
+      "blocker": "RAG workspace is empty. Live repo search took 44.5 s, while direct worktree candidate search took 146 ms; installed repo_tools.py hash differs from the worktree source. Full semantic RAG latency/quality and live adoption of worktree changes remain unverified.",
       "clarifications": [],
       "depends_on": [],
-      "description": "Audit operational logs and endpoint latency/failures; repair response contracts and recurring GPU reservation after repetition while preserving fail-closed behavior; include Trace Inspector direct-link history loading, request-to-trace matching, and enabled HTTP model-output capture.",
+      "description": "Measure and improve expensive or frequent paths across MCP/API, retrieval/RAG, embeddings/reranking, caches, indexing, scheduler, IPC and preprocessing. Assess CPU/GPU/iGPU/NPU and Rust/Cython against measured bottlenecks. Preserve response contracts, provider choices, GPU fences, path security and existing worktree changes.",
       "kind": "analysis",
-      "next_action": "Fix Trace Inspector history loading and HTTP DebugTraceObserver wiring; add focused regression coverage. Then continue existing endpoint audit.",
-      "title": "Review logs, fix confirmed endpoint defects, verify live changes",
-      "work_phase": "implementation",
+      "next_action": "Reconcile the live Hub source/runtime with this worktree, restore a usable RAG index path, then capture fresh end-to-end RAG and warm live-search measurements. Do not replay terminal preprocessing/index requests.",
+      "title": "Whole-Hub performance audit and optimization",
+      "work_phase": "verification",
       "work_status": "in_progress"
     }
   },

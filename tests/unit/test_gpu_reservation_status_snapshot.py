@@ -1,4 +1,5 @@
 import threading
+from contextlib import contextmanager
 from concurrent.futures import ThreadPoolExecutor
 
 from local_ai_hub.external_gpu_reservation import ExternalGpuReservationStore
@@ -69,3 +70,25 @@ def test_status_snapshot_and_competing_reservation_are_serialized(tmp_path, monk
 
     assert status['state'] == 'free' and status['reservation_present'] is False
     assert reservation['owner'] == 'new-owner'
+
+
+def test_scheduler_gpu_check_reads_store_under_one_cross_process_lock(tmp_path, monkeypatch):
+    store = ExternalGpuReservationStore(tmp_path / 'gpu')
+    store.reserve('c' * 64, owner='another-scheduler')
+    scheduler = _scheduler(store)
+    scheduler._external_gpu_path = store.path
+
+    lock_count = 0
+    original_locked = store._locked
+
+    @contextmanager
+    def counted_locked():
+        nonlocal lock_count
+        lock_count += 1
+        with original_locked():
+            yield
+
+    monkeypatch.setattr(store, '_locked', counted_locked)
+
+    assert scheduler._external_gpu_reserved() is True
+    assert lock_count == 1

@@ -136,9 +136,10 @@ def latency_summary(samples: list[dict]) -> dict:
 
 def offline_device_metrics(requested_device: str, result: dict, samples: list[dict],
                            candidate_count: int) -> dict:
-    actual_device = result.get("device") if type(result.get("device")) is str else None
-    backend = result.get("backend") if type(result.get("backend")) is str else None
-    successful = [sample for sample in samples if sample.get("success") is True]
+    has_candidates = type(candidate_count) is int and candidate_count > 0
+    actual_device = result.get("device") if has_candidates and type(result.get("device")) is str else None
+    backend = result.get("backend") if has_candidates and type(result.get("backend")) is str else None
+    successful = [sample for sample in samples if sample.get("success") is True] if has_candidates else []
     latencies = latency_summary(successful)
     elapsed_ms = sum(float(sample["latency_ms"]) for sample in successful)
     throughput = (
@@ -248,6 +249,11 @@ def _benchmark_embeddings(model, query: str, candidates: list[dict], *,
     ranked: list[dict] = []
     query_result: dict = {}
     document_result: dict = {}
+    if not candidates:
+        sample = {"latency_ms": 0.0, "phase": "rejected", "success": False, "error": "no_candidates"}
+        failure = {"success": False, "error": "no_candidates"}
+        metrics = offline_embedding_metrics(requested_device, failure, failure, [sample], candidate_count=0)
+        return ranked, [sample], metrics, cold_inference_recorded
     texts = [str(item.get("text", "")) for item in candidates]
     for repeat in range(repeats):
         started = time.perf_counter()
@@ -347,12 +353,16 @@ def run(root: Path, config_path: Path, *, repeats: int = 3, offline_device: str 
                 )
                 candidates = source.get("results", [])
                 offline_samples = []
-                ranked = {"success": False, "error": "reranker did not run", "results": []}
+                ranked = {
+                    "success": False,
+                    "error": "no_candidates" if not candidates else "reranker did not run",
+                    "results": [],
+                }
                 embedding_ranked: list[dict] = []
                 embedding_samples: list[dict] = []
                 embedding_metrics = None
                 candidate_texts = [str(item.get("text", "")) for item in candidates]
-                for _ in range(repeats):
+                for _ in range(repeats if candidates else 0):
                     started = time.perf_counter()
                     attempt_result = reranker.rerank(query, candidate_texts, top_k=len(candidates))
                     elapsed = (time.perf_counter() - started) * 1000

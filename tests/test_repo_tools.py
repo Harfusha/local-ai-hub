@@ -46,6 +46,83 @@ def _cfg(tmp_path: Path):
     return load_config(str(path))
 
 
+def test_inventory_path_safety_reuses_resolved_project_root(tmp_path: Path, monkeypatch):
+    root = tmp_path / "repo"
+    root.mkdir()
+    target = root / "module.py"
+    target.write_text("safe\n", encoding="utf-8")
+    resolved_root = root.resolve(strict=True)
+    original_resolve = Path.resolve
+    root_resolve_calls = 0
+
+    def track_resolve(path: Path, *args, **kwargs):
+        nonlocal root_resolve_calls
+        if path == root:
+            root_resolve_calls += 1
+        return original_resolve(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "resolve", track_resolve)
+
+    result = RepositoryTools._resolve_inventory_path_safe(
+        root, target, resolved_base=resolved_root,
+    )
+
+    assert result is not None
+    assert result[0] == resolved_root
+    assert result[1] == target.resolve(strict=True)
+    assert root_resolve_calls == 0
+    other_root = tmp_path / "other"
+    other_root.mkdir()
+    assert RepositoryTools._resolve_inventory_path_safe(
+        root, target, resolved_base=other_root.resolve(strict=True),
+    ) is None
+
+
+def test_inventory_path_safety_with_cached_root_still_rejects_symlink(tmp_path: Path):
+    root = tmp_path / "repo"
+    outside = tmp_path / "outside"
+    root.mkdir()
+    outside.mkdir()
+    (outside / "module.py").write_text("outside\n", encoding="utf-8")
+    link = root / "linked"
+    try:
+        link.symlink_to(outside, target_is_directory=True)
+    except OSError as exc:
+        pytest.skip(f"symlinks are unavailable: {exc}")
+
+    result = RepositoryTools._resolve_inventory_path_safe(
+        root, link / "module.py", resolved_base=root.resolve(strict=True),
+    )
+
+    assert result is None
+
+
+def test_inventory_path_safety_with_cached_root_rejects_reparse_point(tmp_path: Path, monkeypatch):
+    root = tmp_path / "repo"
+    linked = root / "linked"
+    root.mkdir()
+    reparse_flag = 1 << 10
+    monkeypatch.setattr(repo_tools_module.stat, "FILE_ATTRIBUTE_REPARSE_POINT", reparse_flag, raising=False)
+    original_lstat = Path.lstat
+
+    class ReparsePointInfo:
+        st_mode = 0
+        st_file_attributes = reparse_flag
+
+    def fake_lstat(path: Path, *args, **kwargs):
+        if path == linked:
+            return ReparsePointInfo()
+        return original_lstat(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "lstat", fake_lstat)
+
+    result = RepositoryTools._resolve_inventory_path_safe(
+        root, linked / "module.py", resolved_base=root.resolve(strict=True),
+    )
+
+    assert result is None
+
+
 def test_ripgrep_project_candidates_stay_in_one_bounded_argument_batch(tmp_path: Path, monkeypatch):
     repo = tmp_path / "repo"
     repo.mkdir()

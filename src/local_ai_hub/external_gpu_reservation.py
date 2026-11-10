@@ -51,16 +51,7 @@ class ExternalGpuReservationStore:
     def operator_release_marker(self) -> str | None:
         """Return the latest durable consented-release marker for scheduler reconciliation."""
         with self._locked():
-            if self.operator_release_path.is_symlink():
-                return None
-            try:
-                if self.operator_release_path.stat().st_size > 1024:
-                    return None
-                payload = json.loads(self.operator_release_path.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError):
-                return None
-            marker = payload.get("release_id") if isinstance(payload, dict) else None
-            return marker if isinstance(marker, str) and re.fullmatch(r"[0-9a-f]{32}", marker) else None
+            return self._operator_release_marker_unlocked()
 
     def read(self) -> dict[str, Any] | None:
         with self._locked():
@@ -72,6 +63,31 @@ class ExternalGpuReservationStore:
             record = self._read_unlocked()
             present = record is not None or self.path.exists() or self.path.is_symlink()
             return record, present
+
+    def scheduler_snapshot(self) -> tuple[bool, dict[str, Any] | None, str | None]:
+        """Reap expired state and read scheduler metadata under one file lock."""
+        with self._locked():
+            record = self._read_unlocked()
+            if record is None:
+                reaped = self._reap_expired_legacy_fence_unlocked()
+            elif record["expires_at"] <= self._clock():
+                reaped = self._remove_unlocked(record["generation"])
+                record = None if reaped else self._read_unlocked()
+            else:
+                reaped = False
+            return reaped, record, self._operator_release_marker_unlocked()
+
+    def _operator_release_marker_unlocked(self) -> str | None:
+        if self.operator_release_path.is_symlink():
+            return None
+        try:
+            if self.operator_release_path.stat().st_size > 1024:
+                return None
+            payload = json.loads(self.operator_release_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return None
+        marker = payload.get("release_id") if isinstance(payload, dict) else None
+        return marker if isinstance(marker, str) and re.fullmatch(r"[0-9a-f]{32}", marker) else None
 
     def owns_internal_fence(self, digest: str) -> bool:
         """Verify a scheduler-owned digest-only fence without trusting metadata."""

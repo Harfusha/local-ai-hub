@@ -701,7 +701,12 @@ class RepositoryTools:
         return False
 
     @staticmethod
-    def _resolve_inventory_path_safe(base: Path, path: Path) -> tuple[Path, Path] | None:
+    def _resolve_inventory_path_safe(
+        base: Path,
+        path: Path,
+        *,
+        resolved_base: Path | None = None,
+    ) -> tuple[Path, Path] | None:
         """Resolve an inventory path after rejecting links and reparse points."""
         try:
             relative = path.relative_to(base)
@@ -711,7 +716,10 @@ class RepositoryTools:
                 info = current.lstat()
                 if stat.S_ISLNK(info.st_mode) or getattr(info, "st_file_attributes", 0) & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0):
                     return None
-            resolved_base = base.resolve(strict=True)
+            if resolved_base is None:
+                resolved_base = base.resolve(strict=True)
+            elif not resolved_base.is_absolute():
+                return None
             resolved_path = path.resolve(strict=True)
             resolved_path.relative_to(resolved_base)
             return resolved_base, resolved_path
@@ -1722,7 +1730,12 @@ class RepositoryTools:
         project_path_policy: Any | None = None,
     ) -> bool:
         try:
-            resolved_paths = self._resolve_inventory_path_safe(base, path)
+            cached_root = getattr(project_path_policy, "project_root", None)
+            resolved_paths = self._resolve_inventory_path_safe(
+                base,
+                path,
+                resolved_base=cached_root if isinstance(cached_root, Path) else None,
+            )
             if resolved_paths is None:
                 return False
             resolved_base, resolved = resolved_paths

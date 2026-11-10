@@ -43,6 +43,18 @@ def _uses_gpu_route(backend: Any, device: Any) -> bool:
     )
 
 
+def _limit_embedding_cpu_threads(backend: Any, device: Any) -> None:
+    if str(backend).lower() != "sentence-transformers" or str(device).lower() != "cpu":
+        return
+    try:
+        import torch
+
+        if hasattr(torch, "set_num_threads") and torch.get_num_threads() > 4:
+            torch.set_num_threads(max(1, min(4, (os.cpu_count() or 4) // 2)))
+    except Exception:
+        pass
+
+
 class EmbeddingModel:
     """Lazy local embeddings with GPU acceleration, CPU fallback and cross-workspace persistent cache."""
 
@@ -444,6 +456,7 @@ class EmbeddingModel:
         self._st_candidates = candidates
         self._st_candidate_index = index
         try:
+            _limit_embedding_cpu_threads(backend, device)
             loaded_model_name = self.model_name
             kwargs: dict[str, Any] = {
                 "device": str(device).lower(),
