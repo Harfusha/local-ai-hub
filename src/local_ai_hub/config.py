@@ -214,6 +214,7 @@ def validate_config(data: dict[str, Any]) -> None:
 
     resilience = data.get("resilience", {})
     _number(resilience, "singleflight_wait_timeout_seconds", minimum=0.1, maximum=3600)
+    _number(resilience, "repository_search_timeout_seconds", minimum=0.1, maximum=900)
     _number(resilience, "scheduler_wait_timeout_seconds", minimum=0.1, maximum=86400)
 
     ollama = data.get("ollama", {})

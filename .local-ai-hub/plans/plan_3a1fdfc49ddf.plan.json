@@ -8,20 +8,24 @@
   "tasks": {
     "task_endpoint_reliability_audit": {
       "acceptance_criteria": [
-        "Measure high-frequency or high-latency paths across the full Hub from current source and runtime evidence.",
-        "Implement only repeatable, behavior-preserving, high-value optimizations.",
-        "Assess CPU/GPU/iGPU/NPU and Rust/Cython using observed bottlenecks and available providers.",
-        "Run focused validation for each change and separate test proof from live-runtime proof.",
-        "Report remaining unverified performance and runtime gaps."
+        "Measure and rank high-frequency or high-latency Hub paths from current source and runtime evidence; preserve baselines and distinguish synthetic results.",
+        "Integrate performance changes while preserving all user modifications, durable job lifecycle, duplicate request identity rules, synchronous fast-path contracts, and RAG indexing progress/terminal behavior.",
+        "Resume six-root RAG recovery and GPU measurement only after active work ends and GPU admission is verified.",
+        "Preserve explicit provider selection, CPU fallback, active GPU fencing, and never release a live reservation or pull models/providers without opt-in.",
+        "Recent endpoint failures and latency hotspots are classified from retained telemetry and traces.",
+        "Confirmed server or response-contract defects are fixed at source with focused regression coverage.",
+        "Run focused validation and diff checks; separate source/test evidence from live runtime evidence.",
+        "After active GPU work ends, install current source, configure MCP/instructions/skills, restart Hub, and verify current runtime and representative endpoints.",
+        "Remaining unresolved hotspots and operational blockers are recorded."
       ],
-      "blocker": "Worktree RAG is empty (list request req_594341325993; 0 chunks). Prior index operation returned outcome_unknown and is not replayed. Two searches returned empty_index (req_26a6b22b0723, req_bbec01a3763d). Installed runtime source differs from worktree; no adoption proof. Dashboard trace inspected separately used C:\\Users\\Adam\\.local-ai-hub, so it is not worktree runtime proof.",
+      "blocker": "GPU reservation active under embedding:51676:1528; do not restart or release while work remains active.",
       "clarifications": [],
       "depends_on": [],
-      "description": "Whole-Hub performance work beyond preprocessing. Existing worktree changes include path/root caching, scheduler reservation snapshot, CPU thread cap, and benchmark correctness guard. Prior focused validation: 43 passed, 1 skipped. Current measurements: BGE small embedding batch of 8, CPU median 72.04 ms vs CUDA 79.82 ms; BGE reranker batch of 8, CPU 756.78 ms vs CUDA 302.66 ms. Current worktree candidate search median 146.04 ms; installed live search 44.46 s is not directly comparable because installed source hash differs. No provider change or model pull.",
+      "description": "Reconcile both performance worktree contributions; preserve user changes, durable job lifecycle, request identity rules, fast-path contracts, RAG progress and six-root recovery; install and live-verify current Hub. Fix confirmed endpoint/runtime errors with evidence.",
       "kind": "analysis",
-      "next_action": "Reconcile the prior unknown outcome before any fresh authorized RAG index operation; then capture current-worktree end-to-end RAG latency and quality. Keep runtime adoption and iGPU/NPU unverified. Do not deploy/install or pull models.",
-      "title": "Whole-Hub performance audit and optimization",
-      "work_phase": "verification",
+      "next_action": "Commit perf overlay on a named branch; protect master overlay as a WIP commit if needed for safe merge; integrate and validate; install, configure and restart after active GPU work ends.",
+      "title": "Local AI Hub performance, integration, and runtime validation",
+      "work_phase": "implementation",
       "work_status": "in_progress"
     }
   },

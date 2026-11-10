@@ -47,6 +47,45 @@ def test_project_path_policy_resolves_root_once_and_keeps_confinement(
     assert root_resolutions == 1
 
 
+def test_project_path_policy_reuses_precomputed_lexical_relative(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "repo"
+    target = root / "src" / "module.py"
+    target.parent.mkdir(parents=True)
+    target.write_bytes(b"safe\n")
+    policy = ProjectPathPolicy(root, ProjectSettings())
+    resolved = target.resolve(strict=True)
+    original_relative_to = Path.relative_to
+    relative_to_calls = 0
+
+    def count_relative_to(path: Path, other: Path) -> Path:
+        nonlocal relative_to_calls
+        relative_to_calls += 1
+        return original_relative_to(path, other)
+
+    monkeypatch.setattr(Path, "relative_to", count_relative_to)
+
+    assert policy.allows(
+        target,
+        phase="search",
+        size_bytes=5,
+        _resolved_candidate=resolved,
+        _lexical_relative="src/module.py",
+    )
+    assert relative_to_calls == 1
+
+    relative_to_calls = 0
+    assert not policy.allows(
+        target,
+        phase="search",
+        size_bytes=5,
+        _resolved_candidate=resolved,
+        _lexical_relative="src/other.py",
+    )
+    assert relative_to_calls == 1
+
+
 def _mock_resolutions(monkeypatch, resolutions: dict[Path, Path]) -> None:
     original_resolve = Path.resolve
     resolved_targets = {

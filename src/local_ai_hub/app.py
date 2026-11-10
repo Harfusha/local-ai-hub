@@ -807,6 +807,40 @@ class LocalAIApp:
         async_payload["priority"] = 1
         for untrusted_context in ("project_context", "project_model_profile", "system_prefix"):
             async_payload.pop(untrusted_context, None)
+        if action == "rag_index":
+            from .repository_scope import RepositoryScopeError, authorized_repository_root
+            raw_root = payload.get("root")
+            workspace = payload.get("workspace")
+            try:
+                root = authorized_repository_root(self.config, raw_root)
+            except RepositoryScopeError as exc:
+                return {
+                    "success": False,
+                    "error": str(exc),
+                    "error_code": exc.code,
+                    "terminal": True,
+                    "retryable": False,
+                    "operation_not_started": True,
+                }
+            if not isinstance(workspace, str) or not workspace.strip():
+                return {
+                    "success": False,
+                    "error": "workspace is required for asynchronous RAG indexing",
+                    "terminal": True,
+                    "retryable": False,
+                    "operation_not_started": True,
+                }
+            try:
+                self.rag.require_workspace_root(workspace=workspace, root=str(root))
+            except (TypeError, ValueError) as exc:
+                return {
+                    "success": False,
+                    "error": str(exc),
+                    "terminal": True,
+                    "retryable": False,
+                    "operation_not_started": True,
+                }
+            return self.rag.index(str(root), workspace=workspace)
         if action == "delegate":
             return self.services.delegate(async_payload)
         if action == "reason":

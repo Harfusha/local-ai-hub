@@ -117,3 +117,46 @@ def test_identical_concurrent_rerank_calls_share_execution_and_copy_results(tmp_
     assert second_result["success"] is True
     second_result["results"][0]["score"] = 0.9
     assert first_result["results"][0]["score"] == pytest.approx(0.5)
+
+
+def test_reranker_batches_cache_reads_and_writes(tmp_path, monkeypatch):
+    model = _RevisionedCrossEncoder("e" * 40, 0.5)
+    reranker = _reranker(tmp_path, model)
+    original_get = reranker.cache.get
+    original_get_many = reranker.cache.get_many
+    original_set = reranker.cache.set
+    original_set_many = reranker.cache.set_many
+    calls = {"get": 0, "get_many": 0, "set": 0, "set_many": 0}
+
+    def get(key):
+        calls["get"] += 1
+        return original_get(key)
+
+    def get_many(keys):
+        calls["get_many"] += 1
+        return original_get_many(keys)
+
+    def set(key, value):
+        calls["set"] += 1
+        return original_set(key, value)
+
+    def set_many(values):
+        calls["set_many"] += 1
+        return original_set_many(values)
+
+    monkeypatch.setattr(reranker.cache, "get", get)
+    monkeypatch.setattr(reranker.cache, "get_many", get_many)
+    monkeypatch.setattr(reranker.cache, "set", set)
+    monkeypatch.setattr(reranker.cache, "set_many", set_many)
+
+    documents = [f"document-{index}" for index in range(4)]
+    first = reranker.rerank("query", documents)
+    assert first["success"] is True
+    assert model.predict_calls == 2
+    assert calls == {"get": 0, "get_many": 1, "set": 0, "set_many": 1}
+
+    second = reranker.rerank("query", documents)
+    assert second["success"] is True
+    assert second["cache_hits"] == len(documents)
+    assert model.predict_calls == 2
+    assert calls == {"get": 0, "get_many": 2, "set": 0, "set_many": 1}

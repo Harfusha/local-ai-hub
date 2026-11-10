@@ -720,6 +720,7 @@ l1_ttl_seconds = 3600
 watchdog_enabled = true
 watchdog_interval_seconds = 5
 journal_stale_seconds = 900
+repository_search_timeout_seconds = 30
 circuit_failure_threshold = 3
 circuit_cooldown_seconds = 20
 scheduler_wait_timeout_seconds = 900

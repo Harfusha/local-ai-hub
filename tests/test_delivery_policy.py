@@ -21,6 +21,7 @@ def test_async_delivery_docs_match_supported_actions_and_cold_start_rules():
     assert "sparse history stays inline" in docs
     assert "fewer than 5 telemetry samples" in docs
     assert "`cold_start_review_diff`" in docs
+    assert "`cold_start_rag_index`" in docs
 
 
 def test_install_and_update_prompts_cover_async_and_conversation_contracts():
@@ -42,6 +43,7 @@ def test_install_and_update_prompts_cover_async_and_conversation_contracts():
             "/api/compress",
             "/api/route",
             "/api/delegate/batch",
+            "/api/rag/index",
         ):
             assert f"`{path}`" in docs
         for phrase in (
@@ -54,6 +56,7 @@ def test_install_and_update_prompts_cover_async_and_conversation_contracts():
             "`timeout_seconds`",
             "`HubClient.submit_async_job`",
             "`cold_start_review_diff`",
+            "`cold_start_rag_index`",
             "fewer than five telemetry samples",
             "at least ten",
             "sparse history stays inline",
@@ -95,6 +98,7 @@ def test_mcp_task_description_exposes_async_and_conversation_contracts():
         "`delivery=auto`",
         "`review.max_queue_age_ms`",
         "`cold_start_review_diff`",
+        "`cold_start_rag_index`",
         "`speculative_lint`",
         "`X-LocalAI-Request-ID`",
         "12 turns",
@@ -235,3 +239,40 @@ def test_cold_start_review_diff_auto_delivery_is_async(monkeypatch):
     assert status == 200
     assert response["job_id"] == "job-cold-review"
     assert submitted["action"] == "review_diff"
+
+
+def test_cold_start_rag_index_auto_delivery_uses_durable_job(monkeypatch):
+    submitted = {}
+
+    class _Telemetry:
+        def http_latency_estimate(self, _action):
+            return {"samples": 8, "p95_duration_ms": 0}
+
+    class _Jobs:
+        def submit(self, action, payload):
+            submitted.update(action=action, payload=payload)
+            return {"success": True, "job_id": "job-rag-index", "state": "queued"}
+
+    class _App:
+        telemetry = _Telemetry()
+        async_jobs = _Jobs()
+
+    monkeypatch.setattr(http_server, "APP", _App())
+    handler = object.__new__(http_server.Handler)
+    status, response = handler._async_delivery(
+        "/api/rag/index",
+        {
+            "delivery": "auto",
+            "latency_budget_ms": 30_000,
+            "root": "C:/project",
+            "workspace": "workspace-1",
+        },
+    )
+
+    assert status == 200
+    assert response["job_id"] == "job-rag-index"
+    assert response["delivery"]["reason"] == "cold_start_rag_index"
+    assert submitted == {
+        "action": "rag_index",
+        "payload": {"root": "C:/project", "workspace": "workspace-1"},
+    }

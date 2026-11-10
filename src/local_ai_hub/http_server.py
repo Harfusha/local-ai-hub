@@ -40,6 +40,22 @@ _STATUS_DEPENDENCY_TIMEOUT_SECONDS = 0.25
 _STATUS_TOTAL_BUDGET_SECONDS = 1.0
 
 
+def _api_result_http_response(result: Any) -> tuple[int, Any]:
+    if not isinstance(result, dict) or result.get("success") is not False:
+        return 200, result
+    body = dict(result)
+    retryable = body.get("retryable") is True
+    result_status = body.get("status_code")
+    if isinstance(result_status, int) and not isinstance(result_status, bool) and 400 <= result_status <= 599:
+        status = result_status
+    else:
+        status = 503 if retryable else 500
+    body.setdefault("status_code", status)
+    body.setdefault("retryable", retryable)
+    body.setdefault("terminal", not retryable)
+    return status, body
+
+
 def _status_dependency(callback, fallback, *, key, lock, inflight, slots, timeout_seconds=None):
     timeout = _STATUS_DEPENDENCY_TIMEOUT_SECONDS if timeout_seconds is None else max(0.0, float(timeout_seconds))
     if timeout <= 0:
@@ -3403,6 +3419,7 @@ class Handler(BaseHTTPRequestHandler):
             "/api/review/diff": "review_diff",
             "/api/second-opinion": "second_opinion", "/api/compress": "compress",
             "/api/route": "route", "/api/delegate/batch": "batch",
+            "/api/rag/index": "rag_index",
         }
         job_action = action_by_path.get(path)
         if not job_action:
@@ -3437,9 +3454,11 @@ class Handler(BaseHTTPRequestHandler):
                     queue_age_ms=queue_age_ms,
                     max_queue_age_ms=max_queue_age_ms,
                 )
+            elif job_action == "rag_index" and delivery.strip().lower() == "auto" and budget_ms > 0 and samples < 10:
+                decision = {"mode": "async", "reason": "cold_start_rag_index"}
             elif job_action == "review_diff" and delivery.strip().lower() == "auto" and budget_ms > 0 and samples < 5:
-                # A cold-start review has no trustworthy p95 yet. Do not let a
-                # large diff run synchronously while telemetry learns the cost.
+                # Cold-start long work has no trustworthy p95 yet. Keep RAG
+                # indexing and large-diff review off the synchronous request.
                 decision = {"mode": "async", "reason": "cold_start_review_diff"}
             else:
                 decision = decide_delivery(
@@ -3507,6 +3526,14 @@ class Handler(BaseHTTPRequestHandler):
         self._send(503, response)
 
     def _send(self, status: int, data: Any, *, headers: Mapping[str, str] | None = None) -> None:
+        if (
+            isinstance(status, int)
+            and not isinstance(status, bool)
+            and 200 <= status < 300
+            and isinstance(data, dict)
+            and data.get("success") is False
+        ):
+            status, data = _api_result_http_response(data)
         execution_started = getattr(self, "_handler_execution_started", None)
         operation = str(getattr(self, "_admin_operation", ""))
         if operation:

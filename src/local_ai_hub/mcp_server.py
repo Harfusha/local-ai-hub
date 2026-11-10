@@ -660,10 +660,10 @@ def _async_job_lifecycle_contract(*, include_mcp_tool: bool = True) -> str:
 
 def _task_delivery_contract() -> str:
     return (
-        " Delivery: `sync` is default; `async` submits immediately on mapped HTTP routes; `auto` needs a positive `latency_budget_ms` and at least ten endpoint observations with p95 above budget, while sparse history stays inline."
-        " HTTP delivery maps `/api/delegate`, `/api/reason`, `/api/review`, `/api/review/diff`, `/api/second-opinion`, `/api/compress`, `/api/route`, and `/api/delegate/batch` to durable actions."
+        " Delivery: `sync` is default; `async` submits immediately on mapped HTTP routes; `auto` needs a positive `latency_budget_ms` and at least ten endpoint observations with p95 above budget, while sparse history stays inline except RAG indexing, which submits async below ten samples."
+        " HTTP delivery maps `/api/delegate`, `/api/reason`, `/api/review`, `/api/review/diff`, `/api/second-opinion`, `/api/compress`, `/api/route`, `/api/delegate/batch`, and `/api/rag/index` to durable actions. MCP RAG indexing uses a 30-second budget; cold start submits with reason `cold_start_rag_index`. Inspect returned `job_id` with status, wait, or result."
         " For `delivery=auto` on `/api/review/diff`, a positive `review.max_queue_age_ms` exceeded by queue age returns a terminal 503 before cold-start handling; otherwise positive budget with fewer than five samples selects async as `cold_start_review_diff`."
-        " Direct `submit` job_action accepts `batch`, `compress`, `delegate`, `reason`, `review`, `review_diff`, `route`, `second_opinion`, or `speculative_lint`; body `request_id` is the idempotency key and `X-LocalAI-Request-ID` is a separate journal ID."
+        " Direct `submit` job_action accepts `batch`, `compress`, `delegate`, `rag_index`, `reason`, `review`, `review_diff`, `route`, `second_opinion`, or `speculative_lint`; body `request_id` is the idempotency key and `X-LocalAI-Request-ID` is a separate journal ID."
         f"{_async_job_lifecycle_contract()}"
         " Start synchronously with HTTP POST `/api/delegate` or `/api/reason` or MCP `local_ai_task(action=delegate|explore|reason, conversation=true, delivery=sync)`; continue via HTTP `POST /api/conversations/continue` (`conversation_id`, `task`, optional `context`) or MCP `local_ai_task(action=continue, conversation_id=..., task=..., context=...)`."
         " `HubClient` has no dedicated start helper; use `HubClient.post` for `/api/delegate` or `/api/reason`. `HubClient.continue_conversation(conversation_id, prompt, context=...)` sends `conversation_id`, maps `prompt` to `task`, and includes optional `context`."
@@ -5260,7 +5260,7 @@ def local_ai_rag(
     path: str = "",
     file: str = "",
 ) -> dict[str, Any]:
-    """Fallback semantic retrieval after deterministic and indexed repository evidence. Search defaults workspace to the explicit repository root. Optional reranking is enabled by default on every hardware profile and can be disabled with `features.local_reranking=false`; CUDA is preferred on NVIDIA, with CPU fallback. Document ingestion requires non-empty content; title and metadata are optional. Diagram ingestion requires image_path; caption and metadata are optional. Raster diagrams are indexed as metadata-only; SVG text nodes are indexed with their extraction provenance. Use when: cheaper indexed paths are insufficient. Skip when: deterministic or indexed evidence already answers the question."""
+    """Fallback semantic retrieval after deterministic and indexed repository evidence. Search defaults workspace to the explicit repository root. RAG index submits through the durable job queue on cold start or when measured latency exceeds its 30-second budget; use local_ai_task status/wait/result with its returned job_id. Optional reranking is enabled by default on every hardware profile and can be disabled with `features.local_reranking=false`; CUDA is preferred on NVIDIA, with CPU fallback. Document ingestion requires non-empty content; title and metadata are optional. Diagram ingestion requires image_path; caption and metadata are optional. Raster diagrams are indexed as metadata-only; SVG text nodes are indexed with their extraction provenance. Use when: cheaper indexed paths are insufficient. Skip when: deterministic or indexed evidence already answers the question."""
     if not FEATURES.rag:
         return {"success": False, "unsupported": True, "error": "RAG backend is disabled (features.rag=false in config.toml)"}
     valid_actions = tuple(RagAction.__args__)
@@ -5306,7 +5306,12 @@ def local_ai_rag(
     ):
         effective_workspace = canonical_workspace_id(root)
     if action == "index":
-        return _compact(CLIENT.post("/api/rag/index", {"root": root, "workspace": effective_workspace}, timeout=_timeout("long")))
+        return _compact(CLIENT.post("/api/rag/index", {
+            "root": root,
+            "workspace": effective_workspace,
+            "delivery": "auto",
+            "latency_budget_ms": 30_000,
+        }, timeout=_timeout("long")))
     if action == "search":
         capability_status = getattr(FEATURES, "capability_status", None)
         capabilities = capability_status() if callable(capability_status) else {}

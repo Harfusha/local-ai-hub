@@ -72,3 +72,79 @@ def test_hybrid_search_falls_back_cleanly_on_rag_mismatch(tmp_path):
     # Lexical fallback results must be preserved
     assert len(result.get("results", [])) > 0
     assert result["results"][0]["path"] == "guide.md"
+
+
+def test_repo_rag_search_passes_configured_deadline(tmp_path):
+    import time
+
+    class StubRag:
+        def __init__(self):
+            self.search_kwargs = None
+
+        def workspace_id(self, _root):
+            return "workspace"
+
+        def require_workspace_root(self, **_kwargs):
+            return None
+
+        def has_workspace_chunks(self, **_kwargs):
+            return True
+
+        def search(self, *_args, **kwargs):
+            self.search_kwargs = kwargs
+            return {"success": False, "error": "test fallback"}
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    services = LocalAIServices.__new__(LocalAIServices)
+    services.config = {
+        "features": {"rag": True, "reranker": False},
+        "resilience": {"repository_search_timeout_seconds": 0.5},
+    }
+    services.rag = StubRag()
+
+    started = time.perf_counter()
+    services._repo_rag_search(str(repo), "needle", 8)
+
+    deadline = services.rag.search_kwargs["deadline"]
+    assert started + 0.4 <= deadline <= started + 0.7
+
+
+def test_rag_search_caps_singleflight_wait_to_deadline(tmp_path, monkeypatch):
+    import time
+
+    store = RAGStore({"server": {"state_dir": str(tmp_path / "state")}})
+    store.services = MagicMock()
+    store._embedding_space_cache_identity_known = lambda: True
+    store._embedding_space_id = lambda *_args, **_kwargs: "space"
+    store._embedding_dimension_cache_identity = lambda: {"dimension": 3}
+    store._search_uncached = lambda *_args, **_kwargs: {"success": True, "results": []}
+
+    observed_timeouts = []
+    original = store.search_flight.get_or_compute
+
+    def capture_timeout(key, compute, *, wait_timeout_seconds=None):
+        observed_timeouts.append(wait_timeout_seconds)
+        if wait_timeout_seconds is None:
+            return original(key, compute)
+        return original(key, compute, wait_timeout_seconds=wait_timeout_seconds)
+
+    monkeypatch.setattr(store.search_flight, "get_or_compute", capture_timeout)
+    deadline = time.perf_counter() + 0.5
+    store.search("needle", workspace="workspace", deadline=deadline, semantic_only=True)
+
+    assert observed_timeouts
+    assert 0 < observed_timeouts[0] <= 0.5
+
+
+def test_auto_embedding_receives_search_wait_timeout():
+    services = LocalAIServices.__new__(LocalAIServices)
+    services.config = {"models": {"embedding_backend": "auto", "embedding": "test-model"}}
+    services.embeddings = MagicMock()
+    services.embeddings.encode.return_value = {"success": True, "embeddings": [[0.1]]}
+
+    services.embed(["needle"], query=True, wait_timeout=0.25)
+
+    services.embeddings.encode.assert_called_once_with(
+        ["needle"], query=True, priority=3, wait_timeout_seconds=0.25,
+    )

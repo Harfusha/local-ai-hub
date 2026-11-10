@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import io
 import shutil
+import stat
 import subprocess
 import time
 from pathlib import Path
@@ -50,7 +51,7 @@ def test_inventory_path_safety_reuses_resolved_project_root(tmp_path: Path, monk
     root = tmp_path / "repo"
     root.mkdir()
     target = root / "module.py"
-    target.write_text("safe\n", encoding="utf-8")
+    target.write_bytes(b"safe\n")
     resolved_root = root.resolve(strict=True)
     original_resolve = Path.resolve
     root_resolve_calls = 0
@@ -76,6 +77,128 @@ def test_inventory_path_safety_reuses_resolved_project_root(tmp_path: Path, monk
     assert RepositoryTools._resolve_inventory_path_safe(
         root, target, resolved_base=other_root.resolve(strict=True),
     ) is None
+
+
+def test_inventory_path_safety_avoids_resolving_each_candidate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+):
+    root = tmp_path / "repo"
+    nested = root / "src" / "module.py"
+    nested.parent.mkdir(parents=True)
+    nested.write_text("safe\n", encoding="utf-8")
+    resolved_root = root.resolve(strict=True)
+
+    def reject_resolve(_path: Path, *args, **kwargs):
+        pytest.fail("candidate path should use the already-resolved project root")
+
+    monkeypatch.setattr(Path, "resolve", reject_resolve)
+
+    result = RepositoryTools._resolve_inventory_path_safe(
+        root, nested, resolved_base=resolved_root,
+    )
+
+    assert result == (resolved_root, resolved_root / "src" / "module.py")
+
+
+def test_inventory_path_safety_still_rejects_lstat_link_candidates(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+):
+    root = tmp_path / "repo"
+    target = root / "module.py"
+    root.mkdir()
+    target.write_text("unsafe\n", encoding="utf-8")
+    resolved_root = root.resolve(strict=True)
+    real_lstat = Path.lstat
+
+    class LinkStat:
+        st_mode = stat.S_IFLNK
+        st_file_attributes = 0
+
+    def link_target(path: Path, *args, **kwargs):
+        if path == target:
+            return LinkStat()
+        return real_lstat(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "lstat", link_target)
+
+    assert RepositoryTools._resolve_inventory_path_safe(
+        root, target, resolved_base=resolved_root,
+    ) is None
+
+
+def test_project_file_allowed_skips_path_resolution_for_soft_ignored_files(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+):
+    root = tmp_path / "repo"
+    ignored = root / "slow-cache" / "module.py"
+    ignored.parent.mkdir(parents=True)
+    ignored.write_text("ignored\n", encoding="utf-8")
+    tools = RepositoryTools(_cfg(tmp_path))
+    tools.ignore_dirs = {*tools.ignore_dirs, "slow-cache"}
+    calls: list[Path] = []
+
+    def record_resolution(base: Path, path: Path, *, resolved_base=None):
+        calls.append(path)
+        return (root, path)
+
+    monkeypatch.setattr(tools, "_resolve_inventory_path_safe", record_resolution)
+
+    assert tools._project_file_allowed(root, ignored, None) is False
+    assert calls == []
+
+
+def test_project_file_allowed_keeps_safety_resolution_for_forced_files(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+):
+    root = tmp_path / "repo"
+    forced = root / "slow-cache" / "module.py"
+    forced.parent.mkdir(parents=True)
+    forced.write_text("forced\n", encoding="utf-8")
+    tools = RepositoryTools(_cfg(tmp_path))
+    tools.ignore_dirs = {*tools.ignore_dirs, "slow-cache"}
+    calls: list[Path] = []
+
+    def reject_resolution(base: Path, path: Path, *, resolved_base=None):
+        calls.append(path)
+        return None
+
+    monkeypatch.setattr(tools, "_resolve_inventory_path_safe_with_stat", reject_resolution)
+
+    assert tools._project_file_allowed(root, forced, None, force_include=True) is False
+    assert calls == [forced]
+
+
+def test_project_file_allowed_reuses_lstat_metadata_for_size(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+):
+    root = tmp_path / "repo"
+    target = root / "src" / "module.py"
+    target.parent.mkdir(parents=True)
+    target.write_bytes(b"safe\n")
+    resolved_root = root.resolve(strict=True)
+    tools = RepositoryTools(_cfg(tmp_path))
+
+    class Policy:
+        project_root = resolved_root
+
+        @staticmethod
+        def allows(path: Path, **kwargs) -> bool:
+            assert kwargs["size_bytes"] == len(b"safe\n")
+            assert kwargs["_resolved_candidate"] == path
+            return True
+
+    original_stat = Path.stat
+
+    def reject_final_stat(path: Path, *args, **kwargs):
+        if path == target and kwargs.get("follow_symlinks") is not False:
+            raise AssertionError("candidate size should reuse the safety lstat result")
+        return original_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", reject_final_stat)
+
+    assert tools._project_file_allowed(
+        root, target, None, project_path_policy=Policy(),
+    ) is True
 
 
 def test_inventory_path_safety_with_cached_root_still_rejects_symlink(tmp_path: Path):

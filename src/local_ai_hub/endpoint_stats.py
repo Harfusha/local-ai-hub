@@ -330,33 +330,35 @@ class EndpointStatsStore:
 
         projects: list[str] = []
         try:
-            with self._lock, closing(self._connect()) as con:
-                p_rows = con.execute("SELECT DISTINCT scope_root FROM endpoint_stats WHERE scope_root != '' ORDER BY scope_root").fetchall()
-                projects = ["legacy:" + quote(str(r[0]), safe="") for r in p_rows]
-                projects += [str(r[0]) for r in con.execute("SELECT DISTINCT scope_root FROM endpoint_stats_exact WHERE scope_root != '' ORDER BY scope_root").fetchall()]
+            with closing(self._connect()) as con:
+                con.execute("BEGIN")
+                if is_global:
+                    p_rows = con.execute("SELECT DISTINCT scope_root FROM endpoint_stats WHERE scope_root != '' ORDER BY scope_root").fetchall()
+                    projects = ["legacy:" + quote(str(r[0]), safe="") for r in p_rows]
+                    projects += [str(r[0]) for r in con.execute("SELECT DISTINCT scope_root FROM endpoint_stats_exact WHERE scope_root != '' ORDER BY scope_root").fetchall()]
 
-                # Also include all items currently known in DB across any scope
-                db_items = con.execute("SELECT item_type, item_name FROM endpoint_stats UNION SELECT item_type, item_name FROM endpoint_stats_exact").fetchall()
-                for d_type, d_name in db_items:
-                    key = (str(d_type), str(d_name))
-                    if key not in known_map:
-                        entry = {
-                            "type": str(d_type),
-                            "name": str(d_name),
-                            "calls": 0,
-                            "success_calls": 0,
-                            "fail_calls": 0,
-                            "success_rate": None,
-                            "p50_ms": 0.0,
-                            "p95_ms": 0.0,
-                            "p99_ms": 0.0,
-                            "last_used": 0.0,
-                            "status": "unused",
-                            "issues": [],
-                        }
-                        if include_buckets:
-                            entry["bucket_counts"] = [0] * NUM_BUCKETS
-                        known_map[key] = entry
+                    # Global requests need dynamic names from every project.
+                    db_items = con.execute("SELECT item_type, item_name FROM endpoint_stats UNION SELECT item_type, item_name FROM endpoint_stats_exact").fetchall()
+                    for d_type, d_name in db_items:
+                        key = (str(d_type), str(d_name))
+                        if key not in known_map:
+                            entry = {
+                                "type": str(d_type),
+                                "name": str(d_name),
+                                "calls": 0,
+                                "success_calls": 0,
+                                "fail_calls": 0,
+                                "success_rate": None,
+                                "p50_ms": 0.0,
+                                "p95_ms": 0.0,
+                                "p99_ms": 0.0,
+                                "last_used": 0.0,
+                                "status": "unused",
+                                "issues": [],
+                            }
+                            if include_buckets:
+                                entry["bucket_counts"] = [0] * NUM_BUCKETS
+                            known_map[key] = entry
 
                 bucket_cols = ", ".join(f"b{i}" for i in range(NUM_BUCKETS))
                 if is_global:
@@ -435,18 +437,20 @@ class EndpointStatsStore:
         else:
             items = all_items
 
-        return {
+        result = {
             "success": True,
             "root": (("legacy:" + quote(target_root, safe="")) if scope_kind == "legacy" else target_root) if not is_global else "",
             "is_global": is_global,
             "project_scope_precision": "mixed" if is_global else ("historical_basename" if scope_kind == "legacy" else "exact_root"),
-            "projects": projects,
             "total_items": len(all_items),
             "unused_count": unused_count,
             "slow_count": slow_count,
             "failing_count": failing_count,
             "items": items,
         }
+        if is_global:
+            result["projects"] = projects
+        return result
 
     def reset(self, root: str | None = None) -> bool:
         """Reset statistics globally or for a specific project."""

@@ -63,11 +63,12 @@ The canonical envelope is the JSON body plus `X-LocalAI-Agent` when supplied and
 
 For model-backed `local_ai_task` actions, use `delivery="sync"` when the answer must be inline (the default), `delivery="async"` when the agent can continue independently, or `delivery="auto"` with a positive `latency_budget_ms`. Auto delivery submits the existing durable, coalesced background job only after at least ten observations show endpoint p95 over that budget; sparse history stays inline rather than guessing. Retrieve a submitted job with one bounded `wait`, then `result`; never poll.
 
-Durable async actions: `batch`, `compress`, `delegate`, `reason`, `review`, `review_diff`, `route`, `second_opinion`, `speculative_lint`.
+Durable async actions: `batch`, `compress`, `delegate`, `rag_index`, `reason`, `review`, `review_diff`, `route`, `second_opinion`, `speculative_lint`.
 
 HTTP foreground delivery maps `/api/delegate`, `/api/reason`, `/api/review`, `/api/review/diff`, `/api/second-opinion`, `/api/compress`, `/api/route`, and `/api/delegate/batch` to their corresponding durable actions. Direct MCP `submit` uses `job_action` from the durable action list above. `sync` is the default delivery; `async` submits immediately on mapped HTTP routes.
 
 For HTTP `/api/review/diff`, auto delivery first checks queue age: when `review.max_queue_age_ms` is positive and queue age exceeds it, the request returns a terminal 503 bypass. Otherwise, a positive `latency_budget_ms` with fewer than 5 telemetry samples selects async with reason `cold_start_review_diff`. Other auto delivery follows the measured p95 rule above.
+MCP RAG indexing requests `/api/rag/index` with `delivery="auto"` and a 30-second latency budget. With fewer than ten samples (reason `cold_start_rag_index`) or measured p95 above budget, the server returns a durable `rag_index` job ID; inspect it with `local_ai_task(action="status"|"wait"|"result")`. The worker revalidates the repository root and runs under GPU admission.
 
 Async lifecycle responses preserve `job_id`, `state`, `artifact_id` (empty until available), and `expires_at` (Unix timestamp seconds). Expiry is set at submission; terminal job results become `expired` at that time. `async_jobs.result_ttl_seconds` defaults to 259,200 seconds (72 hours), and artifact-store TTL must cover it. A timed-out wait returns current state with `wait_timeout_seconds` and does not cancel the job. Queued cancellation returns terminal `cancelled`; running cancellation returns `running` with `cancel_requested=true` as acknowledgement, then worker completion supplies final state.
 

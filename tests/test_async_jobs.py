@@ -9,6 +9,32 @@ from contextlib import closing
 
 import local_ai_hub.async_jobs as async_jobs_module
 from local_ai_hub.async_jobs import AsyncJobManager
+
+
+def test_rag_index_is_a_durable_gpu_admitted_job():
+    assert "rag_index" in AsyncJobManager.ACTIONS
+    assert "rag_index" in AsyncJobManager.DIRECT_INFERENCE_ACTIONS
+    assert AsyncJobManager._safe_payload({"root": "C:/project", "workspace": "workspace-1"}) == {
+        "root": "C:/project",
+        "workspace": "workspace-1",
+    }
+
+
+def test_rag_index_job_persists_workspace_and_coalesces_duplicate_submission(tmp_path):
+    manager, _scheduler = _manager(tmp_path)
+    payload = {"root": "C:/project", "workspace": "workspace-1"}
+    try:
+        first = manager.submit("rag_index", payload, dispatch_delay_seconds=30.0)
+        replay = manager.submit("rag_index", payload, dispatch_delay_seconds=30.0)
+
+        assert first["success"] is True
+        assert replay["job_id"] == first["job_id"]
+        assert replay["coalesced"] is True
+        stored = manager._row(first["job_id"])
+        assert stored is not None
+        assert json.loads(stored["payload_json"])["workspace"] == "workspace-1"
+    finally:
+        manager.close()
 from local_ai_hub.debug_traces import DebugTraceStore
 
 
@@ -416,6 +442,57 @@ def test_recovery_keeps_unkeyed_running_job_outcome_unknown(tmp_path):
     assert dispatched == []
     assert scheduler.calls == []
     manager.close()
+
+
+def test_recovery_requeues_interrupted_idempotent_rag_index(tmp_path):
+    manager, scheduler = _manager(tmp_path)
+    executed = []
+    manager.executor = lambda action, payload: (
+        executed.append((action, payload.get("root"), payload.get("workspace")))
+        or {"success": True, "workspace": payload["workspace"]}
+    )
+    now = time.time()
+    payload = json.dumps({"root": str(tmp_path.resolve()), "workspace": "root-recovery"})
+    with closing(manager._connect()) as con:
+        con.execute(
+            "INSERT INTO async_jobs(job_id,action,request_hash,payload_json,state,attempts,created_at,updated_at,expires_at) VALUES(?,?,?,?, 'running',1,?,?,?)",
+            ("rag-index-recovery", "rag_index", "rag-index-recovery-hash", payload, now, now, now + 600),
+        )
+        con.commit()
+
+    try:
+        assert manager.recover() == 1
+        _wait_for_terminal(manager, "rag-index-recovery")
+        status = manager.status("rag-index-recovery")
+        assert status["state"] == "done"
+        assert executed == [("rag_index", str(tmp_path.resolve()), "root-recovery")]
+        assert scheduler.calls == []
+    finally:
+        manager.close()
+
+
+def test_recovery_does_not_requeue_rag_index_without_absolute_root(tmp_path):
+    manager, scheduler = _manager(tmp_path)
+    dispatched = []
+    manager._dispatch = dispatched.append
+    now = time.time()
+    payload = json.dumps({"root": "relative/project", "workspace": "root-recovery"})
+    with closing(manager._connect()) as con:
+        con.execute(
+            "INSERT INTO async_jobs(job_id,action,request_hash,payload_json,state,attempts,created_at,updated_at,expires_at) VALUES(?,?,?,?, 'running',1,?,?,?)",
+            ("rag-index-invalid-root", "rag_index", "rag-index-invalid-root-hash", payload, now, now, now + 600),
+        )
+        con.commit()
+
+    try:
+        assert manager.recover() == 0
+        status = manager.status("rag-index-invalid-root")
+        assert status["state"] == "outcome_unknown"
+        assert status["outcome_unknown"] is True
+        assert dispatched == []
+        assert scheduler.calls == []
+    finally:
+        manager.close()
 
 
 def test_completed_job_returns_artifact_backed_result(tmp_path):

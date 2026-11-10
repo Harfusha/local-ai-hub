@@ -1170,6 +1170,7 @@ class ProjectPathPolicy:
         binary: bool = False,
         size_bytes: int | None = None,
         _resolved_candidate: Path | None = None,
+        _lexical_relative: str | None = None,
     ) -> bool:
         settings = self.settings
         project_root = self.project_root
@@ -1185,22 +1186,31 @@ class ProjectPathPolicy:
                 candidate = project_root / candidate
             if candidate.name in _LOCAL_CONFIG_FILES:
                 return False
-            lexical_candidate = Path(os.path.abspath(candidate))
-            lexical_relative = lexical_candidate.relative_to(project_root).as_posix()
+            if _lexical_relative is None:
+                lexical_candidate = Path(os.path.abspath(candidate))
+                lexical_relative = lexical_candidate.relative_to(project_root).as_posix()
+            else:
+                if type(_lexical_relative) is not str or not _lexical_relative:
+                    return False
+                lexical_candidate = Path(_lexical_relative)
+                if lexical_candidate.is_absolute() or any(
+                    part in {".", ".."} for part in lexical_candidate.parts
+                ):
+                    return False
+                lexical_relative = lexical_candidate.as_posix()
             if _resolved_candidate is None:
                 resolved = candidate.resolve(strict=True)
+                resolved_relative_path = resolved.relative_to(project_root)
             else:
                 resolved = Path(_resolved_candidate)
                 if not resolved.is_absolute():
                     return False
-                resolved_relative_for_identity = resolved.relative_to(project_root)
-                if os.path.normcase(os.path.normpath(str(resolved_relative_for_identity))) != os.path.normcase(
+                resolved_relative_path = resolved.relative_to(project_root)
+                if os.path.normcase(os.path.normpath(str(resolved_relative_path))) != os.path.normcase(
                     os.path.normpath(str(Path(lexical_relative)))
                 ):
                     return False
-            if not resolved.is_relative_to(project_root):
-                return False
-            resolved_relative = resolved.relative_to(project_root).as_posix()
+            resolved_relative = resolved_relative_path.as_posix()
         except (OSError, RuntimeError, ValueError):
             return False
         if resolved.name in _LOCAL_CONFIG_FILES:

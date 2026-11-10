@@ -3088,7 +3088,8 @@ class LocalAIServices:
 
         def encode_uncached(batch: list[str]) -> dict[str, Any]:
             if backend in {"auto", "sentence-transformers", "openvino"}:
-                return reject_uncertain(self.embeddings.encode(batch, query=query, priority=priority))
+                encode_options = {} if wait_timeout is None else {"wait_timeout_seconds": wait_timeout}
+                return reject_uncertain(self.embeddings.encode(batch, query=query, priority=priority, **encode_options))
             batch_size = int(self.config.get("rag", {}).get("embedding_batch_size", 12))
 
             def run() -> dict[str, Any]:
@@ -3625,8 +3626,14 @@ class LocalAIServices:
                     "reranker": {"requested": use_reranker, "used": False,
                                  "degraded": bool(use_reranker)},
                 }
+            search_timeout = max(
+                0.1,
+                float(self.config.get("resilience", {}).get("repository_search_timeout_seconds", 30.0)),
+            )
+            deadline = time.perf_counter() + search_timeout
             raw = rag.search(query, workspace=workspace, top_k=min(MAX_PAGE_SIZE, max(1, top_k)),
-                             use_reranker=use_reranker, semantic_only=True, priority=1)
+                             use_reranker=use_reranker, semantic_only=True, priority=1,
+                             deadline=deadline)
             if not isinstance(raw, dict) or raw.get("success") is not True:
                 raise RuntimeError("rag_search_failed")
             project_context = rag.project_context(base)
