@@ -64,8 +64,7 @@ def is_direct_owned_child(job: int, parent: dict, child: dict) -> bool:
             info, returned = ProcessBasicInformation(), wintypes.ULONG()
             if query(handles[1], 0, ctypes.byref(info), ctypes.sizeof(info), ctypes.byref(returned)) != 0:
                 return False
-            return (returned.value == ctypes.sizeof(info) and info.pid == child["pid"]
-                    and info.parent_pid == parent["pid"]
+            return (info.pid == child["pid"] and info.parent_pid == parent["pid"]
                     and all(kernel.WaitForSingleObject(handle, 0) == 0x102 for handle in handles))
         finally:
             for handle in handles:

@@ -4,11 +4,15 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import os
 import re
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 from typing import Any, Callable
+
+from .process_utils import hidden_run_kwargs
 
 _EXECUTOR_SHA256 = "090f5d1f7bb93104ab08dcd4e8034ef954aeefcdaf6658dde5f7dff4cfc12f3a"
 _NETWORK = {"egress": {"default": "deny"}, "ingress": {"default": "allow", "hostLoopback": "allow"}}
@@ -16,6 +20,43 @@ _NETWORK = {"egress": {"default": "deny"}, "ingress": {"default": "allow", "host
 
 class SandboxError(RuntimeError):
     """Sandbox policy or executor could not be established."""
+
+
+def _watch_policy_cleanup(path: Path, *, owner_pid: int, timeout_seconds: float) -> subprocess.Popen[Any]:
+    """Delete a temporary policy if its launcher is forcibly terminated."""
+    if os.name != "nt":
+        return
+    temp_root = Path(tempfile.gettempdir()).resolve()
+    resolved = path.resolve(strict=True)
+    if (resolved.parent != temp_root or not resolved.name.startswith("lah-mxc-policy-")
+            or not resolved.name.endswith(".json") or type(owner_pid) is not int or owner_pid <= 0):
+        raise SandboxError("invalid temporary policy cleanup scope")
+    watcher = (
+        "import ctypes,os,sys,time\n"
+        "path=sys.argv[1]; pid=int(sys.argv[2]); deadline=time.monotonic()+float(sys.argv[3])\n"
+        "k=ctypes.WinDLL('kernel32',use_last_error=True)\n"
+        "k.OpenProcess.argtypes=[ctypes.c_ulong,ctypes.c_int,ctypes.c_ulong]; k.OpenProcess.restype=ctypes.c_void_p\n"
+        "k.WaitForSingleObject.argtypes=[ctypes.c_void_p,ctypes.c_ulong]; k.WaitForSingleObject.restype=ctypes.c_ulong\n"
+        "k.CloseHandle.argtypes=[ctypes.c_void_p]\n"
+        "h=k.OpenProcess(0x00101000,False,pid)\n"
+        "if h:\n"
+        "  try:\n"
+        "    while time.monotonic()<deadline and os.path.exists(path) and k.WaitForSingleObject(h,100)!=0: pass\n"
+        "  finally: k.CloseHandle(h)\n"
+        "if os.path.exists(path):\n"
+        "  try: os.unlink(path)\n"
+        "  except OSError: pass\n"
+    )
+    kwargs = hidden_run_kwargs(text=False)
+    kwargs["creationflags"] = int(kwargs.get("creationflags", 0)) | getattr(subprocess, "CREATE_BREAKAWAY_FROM_JOB", 0x01000000)
+    try:
+        return subprocess.Popen(
+            [sys.executable, "-c", watcher, str(resolved), str(owner_pid), str(timeout_seconds + 30.0)],
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            cwd=str(temp_root), close_fds=True, **kwargs,
+        )
+    except (OSError, ValueError) as exc:
+        raise SandboxError("temporary policy cleanup could not be guaranteed") from exc
 
 
 def _directory(value: Path) -> Path:
@@ -108,7 +149,16 @@ def run_sandbox(executor: Path, policy: dict[str, Any], *, cwd: Path, environmen
         raise SandboxError("invalid sandbox policy") from exc
     # On Windows NamedTemporaryFile uses delete-on-close. Keep its handle open
     # while MXC reads it so a terminated launcher does not leave credentials.
-    with tempfile.NamedTemporaryFile(prefix="lah-mxc-policy-", suffix=".json", mode="w+", encoding="utf-8", delete=True) as stream:
-        json.dump(policy, stream, ensure_ascii=True)
-        stream.flush()
-        return run_child([str(target), stream.name], cwd=Path(cwd), env=environment, timeout=timeout_seconds)
+    watcher: subprocess.Popen[Any] | None = None
+    try:
+        with tempfile.NamedTemporaryFile(prefix="lah-mxc-policy-", suffix=".json", mode="w+", encoding="utf-8", delete=True) as stream:
+            json.dump(policy, stream, ensure_ascii=True)
+            stream.flush()
+            watcher = _watch_policy_cleanup(Path(stream.name), owner_pid=os.getpid(), timeout_seconds=timeout_seconds)
+            return run_child([str(target), stream.name], cwd=Path(cwd), env=environment, timeout=timeout_seconds)
+    finally:
+        if watcher is not None:
+            # Normal completion removes the temporary file as the context exits.
+            # Reap the watchdog after it observes that deletion; on forced parent
+            # termination it remains detached and performs the same cleanup.
+            watcher.wait(timeout=2.0)
