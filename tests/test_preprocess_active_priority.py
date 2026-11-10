@@ -78,6 +78,7 @@ def test_recent_activity_does_not_permanently_starve_another_project(scheduler, 
 
 def test_gpu_does_not_select_a_project_in_retry_cooldown(scheduler):
     instance, connect = scheduler
+    instance._file_card_enrichment_enabled = lambda: False
     add(connect, "cooldown", "error", 9990, 9999)
     with closing(connect()) as con:
         con.execute("UPDATE projects SET retry_after=10100 WHERE root='cooldown'")

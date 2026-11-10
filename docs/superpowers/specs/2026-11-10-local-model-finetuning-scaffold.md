@@ -12,7 +12,7 @@ Add reusable, local-first tooling in Local AI Hub for selecting model and datase
 - Consume explicit project roots and JSONL output paths. Do not enumerate or process all machine projects unless the operator runs that command with those roots.
 - Generate cards through the local Ollama API only. Never send project source to a cloud service.
 - Use grouped train/evaluation splits and reject overlapping groups, IDs, or source hashes.
-- Fine-tune with LoRA. Require CUDA by default; fail clearly when unavailable. Permit CPU only by explicit config. Prefer BF16, SDPA, gradient checkpointing, fused AdamW, and bounded batches when supported; record actual choices.
+- Fine-tune with LoRA. Require CUDA by default; fail clearly when unavailable. Permit CPU only by explicit config. Prefer BF16, SDPA, gradient checkpointing, fused AdamW, and bounded batches when supported; offer explicit 4-bit QLoRA for larger models; record actual choices.
 - Benchmark base and adapter with identical prompts, schema, decoding settings, and held-out cases. Record schema/task scores, unsupported claims when supplied, token counts, latency, runtime, model revisions, and dataset hashes.
 - Keep all datasets, checkpoints, adapters, and reports in caller-selected output directories. No automatic model promotion, Hugging Face login, repo creation, or upload.
 

@@ -6,7 +6,7 @@ import os
 from pathlib import Path
 from typing import Any
 
-from .manifest import _read_jsonl, validate_dataset_pair
+from .manifest import _read_jsonl, _validate_row, validate_dataset_pair
 
 
 def _write_jsonl_atomic(path: Path, rows: list[dict[str, Any]]) -> None:
@@ -31,12 +31,17 @@ def split_dataset(
     """Create deterministic group-held-out JSONL; duplicate source hashes stay together."""
     if not 0.05 <= evaluation_fraction <= 0.5:
         raise ValueError("evaluation_fraction must be between 0.05 and 0.5")
-    rows = _read_jsonl(Path(source_path), split="source")
-    groups = {row.get("group_id") for row in rows}
-    if any(not isinstance(group, str) or not group for group in groups):
+    source_file = Path(source_path).resolve()
+    train_output, eval_output = Path(train_path).resolve(), Path(evaluation_path).resolve()
+    if source_file in {train_output, eval_output} or train_output == eval_output:
+        raise ValueError("source, train, and evaluation paths must be distinct")
+    rows = _read_jsonl(source_file, split="source")
+    group_values = [row.get("group_id") for row in rows]
+    if any(not isinstance(group, str) or not group for group in group_values):
         raise ValueError("every source row needs a non-empty group_id")
-    if any(not isinstance(row.get("messages"), list) or len(row["messages"]) != 3 for row in rows):
-        raise ValueError("source rows need system, user, and assistant messages")
+    groups = set(group_values)
+    for line_number, row in enumerate(rows, 1):
+        _validate_row(row, split="train", line_number=line_number)
     ids = [row.get("id") for row in rows]
     if any(not isinstance(item_id, str) or not item_id for item_id in ids) or len(set(ids)) != len(ids):
         raise ValueError("source rows need unique non-empty ids")
@@ -97,7 +102,6 @@ def split_dataset(
             eval_row["expected"] = answer
         eval_rows.append(eval_row)
 
-    train_output, eval_output = Path(train_path), Path(evaluation_path)
     _write_jsonl_atomic(train_output, train_rows)
     _write_jsonl_atomic(eval_output, eval_rows)
     validated = validate_dataset_pair(train_output, eval_output)

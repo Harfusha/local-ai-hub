@@ -44,7 +44,7 @@ def score_prediction(text: str, row: dict[str, Any], output_schema: dict[str, An
     schema_pass = parsed is not None and not list(Draft202012Validator(output_schema).iter_errors(parsed))
     expected_present = "expected" in row
     expected = row.get("expected")
-    exact_match = bool(expected_present and parsed == expected)
+    exact_match = (parsed == expected) if expected_present else None
     required_facts = row.get("required_facts", [])
     if not isinstance(required_facts, list):
         raise ValueError("required_facts must be a list")
@@ -64,7 +64,7 @@ def score_prediction(text: str, row: dict[str, Any], output_schema: dict[str, An
         "exact_match": exact_match,
         "required_fact_hits": hits,
         "required_fact_total": len(required_facts),
-        "required_fact_recall": hits / max(1, len(required_facts)),
+        "required_fact_recall": hits / len(required_facts) if required_facts else None,
         "forbidden_claim_hits": forbidden_hits,
         "forbidden_claim_count": len(forbidden_hits),
     }

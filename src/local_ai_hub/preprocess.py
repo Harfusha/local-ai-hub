@@ -2602,7 +2602,6 @@ class ProjectPreprocessor:
         """Share bounded age, activity, and phase ordering across workers."""
         return (
             """CASE WHEN updated_at<=? THEN 0 ELSE 1 END,
-               force_refresh DESC,
                CASE WHEN last_requested_at>=? THEN 0 ELSE 1 END,
                CASE phase
                    WHEN 'inventory' THEN 0 WHEN 'hash' THEN 1
@@ -2612,6 +2611,7 @@ class ProjectPreprocessor:
                    WHEN 'modules' THEN 8 WHEN 'project' THEN 9
                    WHEN 'hot_queries' THEN 10 WHEN 'file_card_enrichment' THEN 11
                    WHEN 'diagnostics' THEN 12 ELSE 13 END,
+               force_refresh DESC,
                CASE WHEN last_requested_at>=? THEN 0 ELSE 1 END,
                updated_at-CASE WHEN last_requested_at>=? THEN 60 ELSE 0 END ASC,
                CASE status WHEN 'queued' THEN 0 WHEN 'running' THEN 1 ELSE 2 END,

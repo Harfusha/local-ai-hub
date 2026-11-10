@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import re
 from pathlib import Path
 from typing import Any
@@ -8,9 +9,61 @@ from typing import Any
 from jsonschema import Draft202012Validator
 
 
-_TRAIN_ROLES = ("system", "user", "assistant")
-_EVAL_ROLES = ("system", "user")
 _SHA256_RE = re.compile(r"^[0-9a-fA-F]{64}$")
+
+
+def validate_run_options(training: Any, benchmark: Any, lora: Any) -> None:
+    if not isinstance(training, dict) or not isinstance(benchmark, dict) or not isinstance(lora, dict):
+        raise ValueError("training, benchmark, and lora options must be JSON objects")
+    device = training.get("device", "cuda")
+    quantization = training.get("quantization", "none")
+    if not isinstance(device, str) or device not in {"cuda", "cpu"}:
+        raise ValueError("training.device must be cuda or cpu")
+    if not isinstance(quantization, str) or quantization not in {"none", "4bit"}:
+        raise ValueError("training.quantization must be none or 4bit")
+    if quantization == "4bit" and device != "cuda":
+        raise ValueError("4bit QLoRA requires training.device=cuda")
+    bounds = {
+        "epochs": (1, 20),
+        "batch_size": (1, 32),
+        "gradient_accumulation_steps": (1, 128),
+        "max_length": (16, 32768),
+    }
+    for name, (minimum, maximum) in bounds.items():
+        value = training.get(name)
+        if value is not None and (type(value) is not int or not minimum <= value <= maximum):
+            raise ValueError(f"training.{name} must be an integer from {minimum} to {maximum}")
+    learning_rate = training.get("learning_rate", 2e-4)
+    if isinstance(learning_rate, bool) or not isinstance(learning_rate, (int, float)) or not math.isfinite(learning_rate) or learning_rate <= 0:
+        raise ValueError("training.learning_rate must be a finite positive number")
+    attention = training.get("attention", "sdpa")
+    if not isinstance(attention, str) or attention not in {"sdpa", "eager"}:
+        raise ValueError("training.attention must be sdpa or eager")
+    gradient_checkpointing = training.get("gradient_checkpointing", True)
+    if not isinstance(gradient_checkpointing, bool):
+        raise ValueError("training.gradient_checkpointing must be boolean")
+    max_grad_norm = training.get("max_grad_norm", 1.0)
+    if isinstance(max_grad_norm, bool) or not isinstance(max_grad_norm, (int, float)) or not math.isfinite(max_grad_norm) or max_grad_norm <= 0:
+        raise ValueError("training.max_grad_norm must be a finite positive number")
+    for name, minimum, maximum in (("r", 1, 256), ("alpha", 1, 1024)):
+        value = lora.get(name)
+        if value is not None and (type(value) is not int or not minimum <= value <= maximum):
+            raise ValueError(f"lora.{name} must be an integer from {minimum} to {maximum}")
+    dropout = lora.get("dropout", 0.05)
+    if isinstance(dropout, bool) or not isinstance(dropout, (int, float)) or not 0 <= dropout < 1:
+        raise ValueError("lora.dropout must be in [0, 1)")
+    target_modules = lora.get("target_modules", ["q_proj", "k_proj", "v_proj", "o_proj"])
+    if not isinstance(target_modules, list) or not target_modules or any(not isinstance(item, str) or not item for item in target_modules):
+        raise ValueError("lora.target_modules must be a non-empty list of strings")
+    benchmark_device = benchmark.get("device", device)
+    if not isinstance(benchmark_device, str) or benchmark_device not in {"cuda", "cpu"}:
+        raise ValueError("benchmark.device must be cuda or cpu")
+    for name, minimum, maximum in (("max_new_tokens", 1, 8192), ("warmup_runs", 0, 5)):
+        value = benchmark.get(name)
+        if value is not None and (type(value) is not int or not minimum <= value <= maximum):
+            raise ValueError(f"benchmark.{name} must be an integer from {minimum} to {maximum}")
+    if quantization == "4bit" and benchmark_device != "cuda":
+        raise ValueError("4bit QLoRA requires benchmark.device=cuda")
 
 
 def _read_jsonl(path: Path, *, split: str) -> list[dict[str, Any]]:
@@ -44,11 +97,22 @@ def _validate_row(row: dict[str, Any], *, split: str, line_number: int) -> None:
     if source_hash is not None and (not isinstance(source_hash, str) or not _SHA256_RE.fullmatch(source_hash)):
         raise ValueError(f"{prefix} source_sha256 must be a 64-character hexadecimal digest")
     messages = row.get("messages")
-    expected_roles = _TRAIN_ROLES if split == "train" else _EVAL_ROLES
-    if not isinstance(messages, list) or tuple(
-        message.get("role") if isinstance(message, dict) else None for message in messages
-    ) != expected_roles:
-        raise ValueError(f"{prefix} messages must have roles {', '.join(expected_roles)}")
+    if not isinstance(messages, list) or len(messages) < 2:
+        raise ValueError(f"{prefix} messages must be a non-empty chat")
+    roles = tuple(message.get("role") if isinstance(message, dict) else None for message in messages)
+    valid = (
+        split == "train"
+        and len(roles) >= 3
+        and roles[0] == "system"
+        and roles[-2:] == ("user", "assistant")
+        or split != "train"
+        and len(roles) >= 2
+        and roles[0] == "system"
+        and roles[-1] == "user"
+    )
+    if not valid or any(role not in {"system", "user", "assistant"} for role in roles):
+        expected = "system … user, assistant" if split == "train" else "system … user"
+        raise ValueError(f"{prefix} messages must end with roles {expected}")
     for message in messages:
         if not isinstance(message.get("content"), str) or not message["content"].strip():
             raise ValueError(f"{prefix} messages need non-empty string content")
@@ -117,7 +181,7 @@ def load_run_manifest(path: Path | str) -> dict[str, Any]:
         raise ValueError(f"run manifest missing fields: {', '.join(missing)}")
     if config["schema_version"] != 1:
         raise ValueError("unsupported run manifest schema_version")
-    if config["task_type"] not in {"preprocess_card", "decision_model"}:
+    if not isinstance(config["task_type"], str) or config["task_type"] not in {"preprocess_card", "decision_model"}:
         raise ValueError("task_type must be preprocess_card or decision_model")
     for key in ("name", "base_model", "system_prompt"):
         if not isinstance(config[key], str) or not config[key].strip():
@@ -128,9 +192,12 @@ def load_run_manifest(path: Path | str) -> dict[str, Any]:
         Draft202012Validator.check_schema(config["output_schema"])
     except Exception as exc:
         raise ValueError(f"run manifest output_schema is invalid: {exc}") from exc
+    validate_run_options(config.get("training", {}), config.get("benchmark", {}), config.get("lora", {}))
 
     config["_manifest_path"] = str(manifest_path)
     for key in ("train_file", "evaluation_file", "output_dir"):
+        if not isinstance(config[key], str) or not config[key].strip():
+            raise ValueError(f"run manifest {key} must be a non-empty path string")
         value = Path(config[key])
         config[key] = str(value if value.is_absolute() else (manifest_path.parent / value).resolve())
     return config

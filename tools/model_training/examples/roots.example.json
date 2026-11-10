@@ -1,0 +1,6 @@
+{
+  "roots": [
+    {"id": "project-a", "path": "C:/absolute/path/to/project-a"},
+    {"id": "project-b", "path": "C:/absolute/path/to/project-b"}
+  ]
+}

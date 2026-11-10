@@ -3,9 +3,9 @@ from __future__ import annotations
 import hashlib
 import json
 import random
-import shutil
 import subprocess
 import time
+import gc
 from contextlib import nullcontext
 from pathlib import Path
 from typing import Any
@@ -27,7 +27,9 @@ def _input_ids(value: Any) -> list[int]:
         value = value["input_ids"]
     elif hasattr(value, "input_ids"):
         value = value.input_ids
-    if value and isinstance(value[0], list):
+    if hasattr(value, "tolist"):
+        value = value.tolist()
+    if len(value) and isinstance(value[0], list):
         value = value[0]
     return [int(item) for item in value]
 
@@ -63,6 +65,11 @@ def train_from_manifest(manifest_path: Path | str, *, allow_model_download: bool
     dataset_summary = validate_dataset_pair(config["train_file"], config["evaluation_file"])
     training = config.get("training", {})
     runtime = resolve_runtime(device=str(training.get("device", "cuda")))
+    quantization = str(training.get("quantization", "none"))
+    if quantization not in {"none", "4bit"}:
+        raise ValueError("training.quantization must be none or 4bit")
+    if quantization == "4bit" and runtime["device"] != "cuda":
+        raise ValueError("4bit QLoRA requires CUDA")
     output_dir = Path(config["output_dir"])
     if output_dir.exists() and any(output_dir.iterdir()):
         raise ValueError(f"output directory is not empty: {output_dir}")
@@ -89,6 +96,19 @@ def train_from_manifest(manifest_path: Path | str, *, allow_model_download: bool
     )
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token = tokenizer.eos_token
+    load_options: dict[str, Any] = {}
+    if quantization == "4bit":
+        try:
+            from peft import prepare_model_for_kbit_training
+            from transformers import BitsAndBytesConfig
+        except ImportError as exc:
+            raise RuntimeError("4bit QLoRA needs bitsandbytes and current transformers/peft") from exc
+        load_options["quantization_config"] = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_quant_type="nf4",
+            bnb_4bit_use_double_quant=True,
+            bnb_4bit_compute_dtype=runtime["dtype"],
+        )
     model = AutoModelForCausalLM.from_pretrained(
         base_model,
         local_files_only=local_files_only,
@@ -98,12 +118,16 @@ def train_from_manifest(manifest_path: Path | str, *, allow_model_download: bool
         device_map={"": 0 if runtime["device"] == "cuda" else "cpu"},
         attn_implementation=attention,
         use_safetensors=True,
+        **load_options,
     )
     model.config.use_cache = False
     checkpointing = bool(training.get("gradient_checkpointing", True))
+    if quantization == "4bit":
+        model = prepare_model_for_kbit_training(model, use_gradient_checkpointing=checkpointing)
     if checkpointing:
-        model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
-        model.enable_input_require_grads()
+        if quantization != "4bit":
+            model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
+            model.enable_input_require_grads()
     lora = config.get("lora", {})
     lora_config = LoraConfig(
         r=int(lora.get("r", 8)),
@@ -211,11 +235,15 @@ def train_from_manifest(manifest_path: Path | str, *, allow_model_download: bool
         "task_type": config["task_type"],
         "base_model": base_model,
         "base_revision": config.get("revision"),
+        "resolved_model_revision": getattr(model.config, "_commit_hash", None),
         "adapter_path": str(output_dir.resolve()),
+        "run_manifest_sha256": _file_sha256(Path(config["_manifest_path"])),
         "train_file": str(Path(config["train_file"]).resolve()),
         "train_sha256": _file_sha256(Path(config["train_file"])),
+        "evaluation_sha256": _file_sha256(Path(config["evaluation_file"])),
         "dataset": dataset_summary,
         "runtime": {key: value for key, value in runtime.items() if key != "dtype"},
+        "quantization": quantization,
         "gpu": gpu,
         "torch": torch.__version__,
         "transformers": __import__("transformers").__version__,
@@ -229,4 +257,8 @@ def train_from_manifest(manifest_path: Path | str, *, allow_model_download: bool
         "repository_revision": _git_revision(),
     }
     (output_dir / "training_run.json").write_text(json.dumps(record, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    del model, tokenizer, optimizer, train_rows, encoded
+    gc.collect()
+    if runtime["device"] == "cuda":
+        torch.cuda.empty_cache()
     return record

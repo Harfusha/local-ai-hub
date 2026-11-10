@@ -29,7 +29,9 @@ def _input_ids(tokenizer: Any, messages: list[dict[str, str]]) -> list[int]:
         value = value["input_ids"]
     elif hasattr(value, "input_ids"):
         value = value.input_ids
-    if value and isinstance(value[0], list):
+    if hasattr(value, "tolist"):
+        value = value.tolist()
+    if len(value) and isinstance(value[0], list):
         value = value[0]
     return [int(item) for item in value]
 
@@ -60,11 +62,13 @@ def _generate_one(
         torch.cuda.synchronize()
     output_ids = generated[len(input_ids) :]
     text = tokenizer.decode(output_ids, skip_special_tokens=True).strip()
+    output_length = len(output_ids)
+    last_token = int(output_ids[-1]) if output_length else None
     result = {
         "input_tokens": len(input_ids),
-        "output_tokens": len(output_ids),
+        "output_tokens": output_length,
         "latency_ms": round((time.perf_counter() - started) * 1000, 2),
-        "truncated": len(output_ids) >= max_new_tokens or (bool(output_ids) and int(output_ids[-1]) != tokenizer.eos_token_id),
+        "truncated": output_length >= max_new_tokens or (last_token is not None and last_token != tokenizer.eos_token_id),
         "raw_output": text,
     }
     result.update(score_prediction(text, row, row["_output_schema"]))
@@ -76,11 +80,13 @@ def _summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
         return {"runs": 0}
     latencies = sorted(float(row["latency_ms"]) for row in rows)
     p95_index = max(0, math.ceil(0.95 * len(latencies)) - 1)
+    exact_rows = [row for row in rows if row["exact_match"] is not None]
+    fact_rows = [row for row in rows if row["required_fact_recall"] is not None]
     return {
         "runs": len(rows),
         "schema_pass_rate": round(sum(bool(row["schema_pass"]) for row in rows) / len(rows), 4),
-        "exact_match_rate": round(sum(bool(row["exact_match"]) for row in rows) / len(rows), 4),
-        "mean_required_fact_recall": round(statistics.mean(float(row["required_fact_recall"]) for row in rows), 4),
+        "exact_match_rate": round(sum(bool(row["exact_match"]) for row in exact_rows) / len(exact_rows), 4) if exact_rows else None,
+        "mean_required_fact_recall": round(statistics.mean(float(row["required_fact_recall"]) for row in fact_rows), 4) if fact_rows else None,
         "forbidden_claim_hits": sum(int(row["forbidden_claim_count"]) for row in rows),
         "mean_input_tokens": round(statistics.mean(int(row["input_tokens"]) for row in rows), 2),
         "mean_output_tokens": round(statistics.mean(int(row["output_tokens"]) for row in rows), 2),
@@ -104,6 +110,11 @@ def benchmark_from_manifest(
     training = config.get("training", {})
     benchmark_config = config.get("benchmark", {})
     runtime = resolve_runtime(device=str(benchmark_config.get("device", training.get("device", "cuda"))))
+    quantization = str(training.get("quantization", "none"))
+    if quantization not in {"none", "4bit"}:
+        raise ValueError("training.quantization must be none or 4bit")
+    if quantization == "4bit" and runtime["device"] != "cuda":
+        raise ValueError("4bit QLoRA benchmark requires CUDA")
     adapter_dir = Path(adapter_path).resolve() if adapter_path is not None else None
     if adapter_dir is not None and not adapter_dir.is_dir():
         raise ValueError(f"adapter directory does not exist: {adapter_dir}")
@@ -127,6 +138,18 @@ def benchmark_from_manifest(
     )
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token = tokenizer.eos_token
+    load_options: dict[str, Any] = {}
+    if quantization == "4bit":
+        try:
+            from transformers import BitsAndBytesConfig
+        except ImportError as exc:
+            raise RuntimeError("4bit QLoRA benchmark needs bitsandbytes and current transformers") from exc
+        load_options["quantization_config"] = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_quant_type="nf4",
+            bnb_4bit_use_double_quant=True,
+            bnb_4bit_compute_dtype=runtime["dtype"],
+        )
     model = AutoModelForCausalLM.from_pretrained(
         base_model,
         local_files_only=local_files_only,
@@ -136,6 +159,7 @@ def benchmark_from_manifest(
         device_map={"": 0 if runtime["device"] == "cuda" else "cpu"},
         attn_implementation=runtime["attention"],
         use_safetensors=True,
+        **load_options,
     )
     if adapter_dir is not None:
         model = PeftModel.from_pretrained(model, adapter_dir, is_trainable=False)
@@ -161,7 +185,6 @@ def benchmark_from_manifest(
             model, tokenizer, case, adapter_enabled=False, device=runtime["device"], max_new_tokens=max_new_tokens
         )
         base_rows.append({"id": case["id"], "group_id": case["group_id"], **base_result})
-        item = {"id": case["id"], "group_id": case["group_id"], **base_result}
         if adapter_dir is not None:
             adapter_result = _generate_one(
                 model, tokenizer, case, adapter_enabled=True, device=runtime["device"], max_new_tokens=max_new_tokens
@@ -182,8 +205,10 @@ def benchmark_from_manifest(
     if adapter_summary is not None:
         delta = {
             "schema_pass_rate": round(adapter_summary["schema_pass_rate"] - base_summary["schema_pass_rate"], 4),
-            "exact_match_rate": round(adapter_summary["exact_match_rate"] - base_summary["exact_match_rate"], 4),
-            "mean_required_fact_recall": round(adapter_summary["mean_required_fact_recall"] - base_summary["mean_required_fact_recall"], 4),
+            "exact_match_rate": round(adapter_summary["exact_match_rate"] - base_summary["exact_match_rate"], 4)
+            if adapter_summary["exact_match_rate"] is not None and base_summary["exact_match_rate"] is not None else None,
+            "mean_required_fact_recall": round(adapter_summary["mean_required_fact_recall"] - base_summary["mean_required_fact_recall"], 4)
+            if adapter_summary["mean_required_fact_recall"] is not None and base_summary["mean_required_fact_recall"] is not None else None,
             "mean_latency_ms": round(adapter_summary["mean_latency_ms"] - base_summary["mean_latency_ms"], 2),
             "latency_speedup": round(base_summary["mean_latency_ms"] / adapter_summary["mean_latency_ms"], 4)
             if adapter_summary["mean_latency_ms"] else None,
@@ -198,12 +223,15 @@ def benchmark_from_manifest(
         "task_type": config["task_type"],
         "base_model": base_model,
         "base_revision": config.get("revision"),
+        "resolved_model_revision": getattr(model.config, "_commit_hash", None),
+        "run_manifest_sha256": _sha256(Path(config["_manifest_path"])),
         "phase": "before_training" if adapter_dir is None else "paired_after_training",
         "adapter_path": str(adapter_dir) if adapter_dir is not None else None,
         "evaluation_file": str(Path(config["evaluation_file"]).resolve()),
         "evaluation_sha256": _sha256(Path(config["evaluation_file"])),
         "dataset": dataset_summary,
         "runtime": {key: value for key, value in runtime.items() if key != "dtype"},
+        "quantization": quantization,
         "gpu": gpu_name,
         "torch": torch.__version__,
         "transformers": transformers.__version__,

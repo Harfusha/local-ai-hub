@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 from pathlib import Path
 
 import pytest
@@ -150,6 +151,16 @@ def test_split_dataset_keeps_projects_and_duplicate_sources_together(tmp_path: P
     assert all(len(row["messages"]) == 2 and "expected" in row for row in eval_rows)
 
 
+def test_split_dataset_refuses_to_overwrite_its_input(tmp_path: Path) -> None:
+    from tools.model_training.dataset import split_dataset
+
+    source = tmp_path / "all.jsonl"
+    _write_jsonl(source, [_row("a-1", "repo-a"), _row("b-1", "repo-b")])
+
+    with pytest.raises(ValueError, match="paths must be distinct"):
+        split_dataset(source, source, tmp_path / "eval.jsonl")
+
+
 def test_teacher_roots_require_explicit_absolute_directories(tmp_path: Path) -> None:
     from tools.model_training.teacher_cards import load_roots
 
@@ -199,3 +210,113 @@ def test_task_scorer_marks_malformed_output_as_schema_failure() -> None:
 
     assert result["schema_pass"] is False
     assert result["exact_match"] is False
+
+
+def test_teacher_source_walk_skips_secrets_and_generated_directories(tmp_path: Path) -> None:
+    from tools.model_training.teacher_cards import iter_source_files
+
+    root = tmp_path / "project"
+    (root / ".git").mkdir(parents=True)
+    (root / "node_modules").mkdir()
+    (root / "src").mkdir()
+    (root / "src" / "good.py").write_text("print('ok')\n", encoding="utf-8")
+    (root / ".env").write_text("TOKEN=secret\n", encoding="utf-8")
+    (root / ".git" / "ignored.py").write_text("ignored = True\n", encoding="utf-8")
+    (root / "node_modules" / "ignored.js").write_text("ignored()\n", encoding="utf-8")
+    (root / "large.py").write_text("x" * 50, encoding="utf-8")
+
+    found = list(iter_source_files([{"id": "repo-a", "path": str(root)}], max_bytes=100, max_chars=20))
+
+    assert [(group_id, relative_path) for group_id, _, relative_path, _, _ in found] == [
+        ("repo-a", "src/good.py")
+    ]
+
+
+def test_teacher_messages_include_exact_schema_contract() -> None:
+    from tools.model_training.teacher_cards import CARD_SCHEMA, build_messages
+
+    messages = build_messages("src/example.py", "def example(): return 1")
+
+    assert messages[0]["role"] == "system"
+    assert json.dumps(CARD_SCHEMA, separators=(",", ":")) in messages[0]["content"]
+
+
+def test_matrix_manifest_rejects_path_traversal_model_name(tmp_path: Path) -> None:
+    from tools.model_training.run_matrix import load_matrix_manifest
+
+    manifest = {
+        "schema_version": 1,
+        "name": "preprocess",
+        "task_type": "preprocess_card",
+        "train_file": "train.jsonl",
+        "evaluation_file": "eval.jsonl",
+        "output_root": "runs",
+        "output_schema": {"type": "object"},
+        "models": [{"name": "../outside", "base_model": "Qwen/model"}],
+    }
+    path = tmp_path / "matrix.json"
+    path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="unsafe model run name"):
+        load_matrix_manifest(path)
+
+
+def test_run_matrix_orders_baseline_training_and_after_benchmark(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import tools.model_training.run_matrix as matrix_runner
+
+    train_file = tmp_path / "train.jsonl"
+    eval_file = tmp_path / "eval.jsonl"
+    _write_jsonl(train_file, [_row("train-1", "repo-train")])
+    _write_jsonl(eval_file, [_row("eval-1", "repo-eval", "user")])
+    manifest = {
+        "schema_version": 1,
+        "name": "preprocess-card",
+        "task_type": "preprocess_card",
+        "train_file": str(train_file),
+        "evaluation_file": str(eval_file),
+        "output_root": str(tmp_path / "runs"),
+        "system_prompt": "Return JSON.",
+        "output_schema": {"type": "object"},
+        "training": {"device": "cuda"},
+        "benchmark": {"device": "cuda"},
+        "models": [{"name": "tiny", "base_model": "local-base"}],
+    }
+    manifest_path = tmp_path / "matrix.json"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    events: list[str] = []
+
+    def fake_benchmark(run_path: Path, *, adapter_path: Path | None, output_path: Path, allow_model_download: bool) -> dict[str, object]:
+        run_data = json.loads(run_path.read_text(encoding="utf-8"))
+        model = run_data["base_model"]
+        phase = "before" if adapter_path is None else "after"
+        events.append(phase)
+        value = {
+            "base_model": model,
+            "run_manifest_sha256": hashlib.sha256(run_path.read_bytes()).hexdigest(),
+            "evaluation_sha256": hashlib.sha256(eval_file.read_bytes()).hexdigest(),
+            "summary": {"base": {"runs": 1}, "adapter": None if adapter_path is None else {"runs": 1}},
+        }
+        output_path.write_text(json.dumps(value), encoding="utf-8")
+        return value
+
+    def fake_train(run_path: Path, *, allow_model_download: bool) -> dict[str, object]:
+        run_data = json.loads(run_path.read_text(encoding="utf-8"))
+        events.append("train")
+        adapter = Path(run_data["output_dir"])
+        adapter.mkdir(parents=True, exist_ok=True)
+        value = {
+            "base_model": run_data["base_model"],
+            "run_manifest_sha256": hashlib.sha256(run_path.read_bytes()).hexdigest(),
+            "evaluation_sha256": hashlib.sha256(eval_file.read_bytes()).hexdigest(),
+            "train_sha256": hashlib.sha256(train_file.read_bytes()).hexdigest(),
+        }
+        (adapter / "training_run.json").write_text(json.dumps(value), encoding="utf-8")
+        return value
+
+    monkeypatch.setattr(matrix_runner, "benchmark_from_manifest", fake_benchmark)
+    monkeypatch.setattr(matrix_runner, "train_from_manifest", fake_train)
+
+    result = matrix_runner.run_matrix(manifest_path)
+
+    assert events == ["before", "train", "after"]
+    assert len(result) == 1

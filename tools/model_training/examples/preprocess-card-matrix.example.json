@@ -1,0 +1,41 @@
+{
+  "schema_version": 1,
+  "name": "preprocess-card",
+  "task_type": "preprocess_card",
+  "train_file": "../../../state/experiments/model-training/data/preprocess-card-train.jsonl",
+  "evaluation_file": "../../../state/experiments/model-training/data/preprocess-card-eval.jsonl",
+  "output_root": "../../../state/experiments/model-training/runs/preprocess-card",
+  "system_prompt": "Use the source as sole authority. Return one JSON file card matching output_schema.",
+  "output_schema": {
+    "type": "object",
+    "properties": {
+      "purpose": {"type": "string"},
+      "symbols": {"type": "array", "items": {"type": "string"}},
+      "dependencies": {"type": "array", "items": {"type": "string"}},
+      "side_effects": {"type": "array", "items": {"type": "string"}},
+      "risks": {"type": "array", "items": {"type": "string"}},
+      "tests": {"type": "array", "items": {"type": "string"}},
+      "keywords": {"type": "array", "items": {"type": "string"}}
+    },
+    "required": ["purpose", "symbols", "dependencies", "side_effects", "risks", "tests", "keywords"],
+    "additionalProperties": false
+  },
+  "training": {
+    "device": "cuda",
+    "quantization": "none",
+    "epochs": 3,
+    "batch_size": 1,
+    "gradient_accumulation_steps": 4,
+    "max_length": 2048,
+    "learning_rate": 0.0002,
+    "gradient_checkpointing": true,
+    "seed": 20261110
+  },
+  "benchmark": {"device": "cuda", "max_new_tokens": 320, "warmup_runs": 1},
+  "lora": {"r": 8, "alpha": 16, "dropout": 0.05, "target_modules": ["q_proj", "k_proj", "v_proj", "o_proj"]},
+  "models": [
+    {"name": "qwen25-coder-0.5b", "base_model": "Qwen/Qwen2.5-Coder-0.5B-Instruct"},
+    {"name": "qwen25-coder-1.5b", "base_model": "Qwen/Qwen2.5-Coder-1.5B-Instruct"},
+    {"name": "qwen25-coder-3b", "base_model": "Qwen/Qwen2.5-Coder-3B-Instruct"}
+  ]
+}

@@ -3,7 +3,6 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import re
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -11,6 +10,8 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from jsonschema import Draft202012Validator
+
+from .manifest import _read_jsonl
 
 
 CARD_SCHEMA: dict[str, Any] = {
@@ -87,7 +88,8 @@ def validate_local_endpoint(endpoint: str) -> str:
 
 
 def _safe_source(path: Path, root: Path, *, max_bytes: int, max_chars: int) -> tuple[str, str] | None:
-    if path.is_symlink() or path.name.lower() in _EXCLUDED_NAMES or path.suffix.lower() in _EXCLUDED_SUFFIXES:
+    lowered_name = path.name.lower()
+    if path.is_symlink() or lowered_name in _EXCLUDED_NAMES or lowered_name.startswith(".env") or path.suffix.lower() in _EXCLUDED_SUFFIXES:
         return None
     if path.suffix.lower() not in _TEXT_EXTENSIONS:
         return None
@@ -161,6 +163,9 @@ def generate_card(
     try:
         with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
             result = json.loads(response.read())
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")[:500]
+        raise RuntimeError(f"local teacher HTTP {exc.code}: {detail}") from exc
     except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
         raise RuntimeError(f"local teacher request failed: {exc}") from exc
     raw_output = result.get("response")
@@ -186,12 +191,16 @@ def generate_cards(
     endpoint: str = "http://127.0.0.1:11434/api/generate", resume: bool = False, limit: int | None = None,
     max_bytes: int = 180_000, max_chars: int = 16_000,
 ) -> dict[str, int]:
+    if limit is not None and limit < 1:
+        raise ValueError("limit must be positive")
+    if max_bytes < 1 or max_chars < 1:
+        raise ValueError("max_bytes and max_chars must be positive")
     output = Path(output_path)
     if output.exists() and not resume:
         raise ValueError(f"output exists; pass resume=True to append: {output}")
     endpoint = validate_local_endpoint(endpoint)
     completed: set[str] = set()
-    if output.exists():
+    if output.exists() and output.stat().st_size:
         for row in _read_jsonl(output, split="existing generated"):
             completed.add(str(row.get("id", "")))
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -217,4 +226,6 @@ def generate_cards(
             stream.flush()
             generated += 1
             total_tokens += stats["prompt_tokens"] + stats["output_tokens"]
+            if generated == 1 or generated % 25 == 0:
+                print(json.dumps({"generated": generated, "skipped_existing": skipped, "tokens": total_tokens}), flush=True)
     return {"generated": generated, "skipped_existing": skipped, "tokens": total_tokens}

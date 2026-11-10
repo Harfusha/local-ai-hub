@@ -63,6 +63,12 @@ class HostOperationStatus(str, Enum):
     SHADOW_ONLY = "shadow_only"
 
 
+class HostConnectionStatus(str, Enum):
+    CONNECTED = "connected"
+    DISCONNECTED = "disconnected"
+    UNKNOWN = "unknown"
+
+
 def _contract_token(value: str, name: str, *, limit: int = 200) -> str:
     if not isinstance(value, str) or not value or len(value) > limit:
         raise ValueError(f"invalid {name}")
@@ -93,6 +99,7 @@ class HostCapabilitySnapshot:
     permissions_verified: bool = False
     would_be_denied: bool | None = None
     verification_status: HostVerificationStatus = HostVerificationStatus.NOT_VERIFIED
+    connection_status: HostConnectionStatus = HostConnectionStatus.UNKNOWN
 
     def __post_init__(self) -> None:
         for name in ("host_name", "host_version", "surface", "session_type", "permission_mode"):
@@ -106,6 +113,11 @@ class HostCapabilitySnapshot:
         except (TypeError, ValueError) as exc:
             raise ValueError("invalid host verification status") from exc
         object.__setattr__(self, "verification_status", state)
+        try:
+            connection = HostConnectionStatus(self.connection_status)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("invalid host connection status") from exc
+        object.__setattr__(self, "connection_status", connection)
         for field_name in ("available_events", "available_commands", "available_permissions"):
             values = getattr(self, field_name)
             if not isinstance(values, (tuple, list)) or len(values) > 128:
@@ -411,6 +423,10 @@ def record_shadow_observation(
         return result(HostOperationStatus.UNCERTAIN, "capability_identity_mismatch")
     if not capability.hub_managed:
         return result(HostOperationStatus.REFUSED, "session_not_hub_managed")
+    if capability.connection_status is HostConnectionStatus.DISCONNECTED:
+        return result(HostOperationStatus.UNCERTAIN, "host_connection_lost")
+    if capability.connection_status is not HostConnectionStatus.CONNECTED:
+        return result(HostOperationStatus.UNCERTAIN, "host_connection_not_verified")
     if request.event_type not in capability.available_events:
         return result(HostOperationStatus.UNSUPPORTED, "event_not_available")
     if event_store is None or not getattr(event_store, "enabled", False):

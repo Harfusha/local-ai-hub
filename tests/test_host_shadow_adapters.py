@@ -63,6 +63,7 @@ def capability(**overrides):
         "permissions_verified": True,
         "would_be_denied": None,
         "verification_status": HostVerificationStatus.VERIFIED,
+        "connection_status": "connected",
     }
     values.update(overrides)
     return HostCapabilitySnapshot(**values)
@@ -141,6 +142,7 @@ def test_shadow_observation_deduplicates_after_event_store_restart(tmp_path):
             permissions_verified=False,
             would_be_denied=None,
             verification_status=HostVerificationStatus.VERIFIED,
+            connection_status="connected",
         )
         result = record_shadow_observation(request, capability, store)
         print(json.dumps({
@@ -411,6 +413,7 @@ def test_installed_codex_app_server_event_uses_metadata_only_shadow_sink(tmp_pat
             permission_mode="unknown",
             permissions_verified=False,
             verification_status=HostVerificationStatus.VERIFIED,
+            connection_status="connected",
         )
         store = AgentStateStore(tmp_path / "agent_state.sqlite", enabled=True)
         result = record_codex_shadow_event(
@@ -468,6 +471,27 @@ def test_unknown_or_unowned_session_fails_closed_without_storage(tmp_path):
     assert unknown.status is HostOperationStatus.UNCERTAIN
     assert unowned.status is HostOperationStatus.REFUSED
     assert store.events(f"host-shadow:{unknown.session_ref}") == []
+
+
+@pytest.mark.parametrize(
+    ("connection_status", "expected_reason"),
+    [
+        ("disconnected", "host_connection_lost"),
+        ("unknown", "host_connection_not_verified"),
+    ],
+)
+def test_host_connection_loss_fails_closed_without_shadow_storage(
+    tmp_path, connection_status, expected_reason
+):
+    store = AgentStateStore(tmp_path / "agent_state.sqlite", enabled=True)
+    result = record_shadow_observation(
+        request(), capability(connection_status=connection_status), store
+    )
+
+    assert result.status is HostOperationStatus.UNCERTAIN
+    assert result.reason == expected_reason
+    assert not result.recorded
+    assert store.events(f"host-shadow:{result.session_ref}") == []
 
 
 def test_version_mismatch_and_unsupported_host_fail_closed(tmp_path):

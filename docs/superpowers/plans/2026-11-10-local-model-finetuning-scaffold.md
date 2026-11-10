@@ -10,10 +10,10 @@
 
 ## Tasks
 
-- [ ] Add tests for manifest validation, group/hash leakage rejection, and strict GPU selection.
-- [ ] Implement shared JSONL/manifest validation and provenance hashing.
-- [ ] Implement explicit-root, local-Ollama teacher-card generation with resumable outputs.
-- [ ] Implement config-driven LoRA training with CUDA acceleration and recorded runtime metadata.
-- [ ] Implement paired base/adapter benchmark and JSON report for schema, task facts/labels, latency, and token counts.
-- [ ] Add preprocessing and decision-model example manifests plus operator documentation.
-- [ ] Run focused scaffold tests and CLI validation only; confirm no training, project scan, model pull, production routing change, or upload occurred.
+- [x] Add tests for manifest validation, group/hash leakage rejection, and strict GPU selection.
+- [x] Implement shared JSONL/manifest validation and provenance hashing.
+- [x] Implement explicit-root, local-Ollama teacher-card generation with resumable outputs.
+- [x] Implement config-driven LoRA/optional QLoRA training with CUDA acceleration and recorded runtime metadata.
+- [x] Implement base-only baseline and paired base/adapter benchmark reports for schema, task facts/labels, latency, and token counts.
+- [x] Add preprocessing and decision-model example manifests plus operator documentation.
+- [x] Run focused scaffold tests and CLI validation only; no project corpus generation, model training/download, production routing change, or upload.

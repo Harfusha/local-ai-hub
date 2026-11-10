@@ -80,6 +80,26 @@ def test_active_files_precede_optional_phases(scheduler):
     assert instance._next_cpu_project()["root"] == "files-active"
 
 
+@pytest.mark.parametrize(
+    ("earlier", "later"),
+    [
+        ("hash", "code_index"),
+        ("code_index", "deterministic"),
+        ("deterministic", "serena"),
+        ("serena", "lexical"),
+        ("modules", "project"),
+        ("project", "hot_queries"),
+    ],
+)
+def test_phase_order_beats_small_timestamp_differences(scheduler, earlier, later):
+    instance, connect = scheduler
+    now = instance._test_now[0]
+    add(connect, "later-phase", later, updated_at=now - 20, last_requested_at=now - 5)
+    add(connect, "earlier-phase", earlier, updated_at=now - 10, last_requested_at=now - 5)
+
+    assert instance._next_cpu_project()["root"] == "earlier-phase"
+
+
 def test_gpu_worker_waits_for_active_cpu_layer(scheduler):
     instance, connect = scheduler
     now = instance._test_now[0]
@@ -194,3 +214,84 @@ def test_stale_project_ages_ahead_of_new_active_work(scheduler):
     add(connect, "aged-inactive", "modules", updated_at=now - 301, last_requested_at=now - 86_401)
 
     assert instance._next_cpu_project()["root"] == "aged-inactive"
+
+
+def test_active_project_precedes_inactive_even_when_inactive_phase_is_earlier(scheduler):
+    instance, connect = scheduler
+    now = instance._test_now[0]
+    add(connect, "inactive-base", "inventory", updated_at=now - 20, last_requested_at=now - 86_401)
+    add(connect, "active-optional", "modules", updated_at=now - 10, last_requested_at=now - 5)
+
+    assert instance._next_cpu_project()["root"] == "active-optional"
+
+
+def test_inactive_force_refresh_does_not_jump_active_layer(scheduler):
+    instance, connect = scheduler
+    now = instance._test_now[0]
+    add(connect, "inactive-forced", "inventory", updated_at=now - 20, last_requested_at=now - 86_401)
+    add(connect, "active-normal", "modules", updated_at=now - 10, last_requested_at=now - 5)
+    with closing(connect()) as con:
+        con.execute("UPDATE projects SET force_refresh=1 WHERE root='inactive-forced'")
+        con.commit()
+
+    assert instance._next_cpu_project()["root"] == "active-normal"
+
+
+def test_recent_foreground_activity_boosts_project_within_its_layer(scheduler):
+    instance, connect = scheduler
+    now = instance._test_now[0]
+    add(connect, "recently-used", "inventory", updated_at=now - 30, last_requested_at=now - 1)
+    add(connect, "older-use", "inventory", updated_at=now - 10, last_requested_at=now - 120)
+
+    assert instance._next_cpu_project()["root"] == "recently-used"
+
+
+def test_scheduler_alternates_projects_after_durable_progress(scheduler):
+    instance, connect = scheduler
+    now = instance._test_now[0]
+    add(connect, "project-a", "hash", updated_at=now - 20, last_requested_at=now - 5)
+    add(connect, "project-b", "hash", updated_at=now - 20, last_requested_at=now - 5)
+
+    first = instance._next_cpu_project()
+    assert first["root"] == "project-a"
+    with closing(connect()) as con:
+        con.execute("UPDATE projects SET updated_at=? WHERE root=?", (now, first["root"]))
+        con.commit()
+
+    assert instance._next_cpu_project()["root"] == "project-b"
+
+
+def test_restart_resumes_from_persisted_phase(scheduler):
+    instance, connect = scheduler
+    now = instance._test_now[0]
+    add(connect, "resumed", "hash", updated_at=now - 10, last_requested_at=now - 5)
+
+    resumed = ProjectPreprocessor.__new__(ProjectPreprocessor)
+    resumed._connect = connect
+    resumed._db_lock = threading.RLock()
+    resumed.max_preprocessing_projects = 4
+
+    row = resumed._next_cpu_project()
+    assert row["root"] == "resumed"
+    assert row["phase"] == "hash"
+
+
+def test_retry_after_defers_phase_without_blocking_other_projects(scheduler):
+    instance, connect = scheduler
+    now = instance._test_now[0]
+    add(connect, "deferred", "inventory", updated_at=now - 30, last_requested_at=now - 5)
+    add(connect, "ready", "hash", updated_at=now - 10, last_requested_at=now - 5)
+    with closing(connect()) as con:
+        con.execute("UPDATE projects SET retry_after=? WHERE root='deferred'", (now + 60,))
+        con.commit()
+
+    assert instance._next_cpu_project()["root"] == "ready"
+
+
+def test_gpu_selector_respects_global_phase_order_and_files_precedes_modules(scheduler):
+    instance, connect = scheduler
+    now = instance._test_now[0]
+    add(connect, "modules", "modules", updated_at=now - 20, last_requested_at=now - 5)
+    add(connect, "files", "files", updated_at=now - 10, last_requested_at=now - 5)
+
+    assert instance._next_gpu_project()["root"] == "files"
