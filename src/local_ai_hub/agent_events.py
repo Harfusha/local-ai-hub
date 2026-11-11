@@ -279,6 +279,16 @@ class AgentStateStore:
         ("table", "agent_verification_receipts", "agent_verification_receipts"): "6aeb2ffafd9572d5325f56e99f7c62455989c3d44772bd83d3e47b6f3abe953a",
     }
     _EXPECTED_OBJECT_SQL_HASHES.update({
+        # IncidentStore's canonical FTS5 index, its SQLite-managed shadow
+        # tables, and the triggers that keep the derived index synchronized.
+        ("table", "agent_incidents_fts", "agent_incidents_fts"): "6c0df632f4aaee78daf1bc2e92aad6156e4592091b65e37f0c988c9267d7a473",
+        ("table", "agent_incidents_fts_config", "agent_incidents_fts_config"): "4bc9bbdf470f6bfcdb3826ad218f0ab60be61df1ba31c84e28f3c554fa4af7ea",
+        ("table", "agent_incidents_fts_data", "agent_incidents_fts_data"): "b787c97df463eb6cbe620b9e9e3014105642b10137a236a2ae2b40f7aa267f0c",
+        ("table", "agent_incidents_fts_docsize", "agent_incidents_fts_docsize"): "5310b5eecd4ed98da60d6b95c0e959e85c7c2f49747a685d24ac5f77bd3bbe09",
+        ("table", "agent_incidents_fts_idx", "agent_incidents_fts_idx"): "381a755b9a3c3aaae6a5cc97d2972f42761a094e7665a158b8e24cb5dd0e80bb",
+        ("trigger", "trg_agent_incidents_fts_delete", "agent_incidents"): "8510c800a257053474ab76079e8778d72d8ee6ec3e856053c26535c73f7336a4",
+        ("trigger", "trg_agent_incidents_fts_insert", "agent_incidents"): "0fb6e040fc399f1e5e7c5d0100960d3ea2d5dd4eb23d7a2bb4c6c013dc1cbec4",
+        ("trigger", "trg_agent_incidents_fts_update", "agent_incidents"): "a286c3bc73d12877c7e921b3ed616cfab8a286cfd271e5fbf645e22543285239",
         ("index", "idx_agent_task_search_grams_gram", "agent_task_search_grams"): "47289e8fa6b5eb7e6837a56d77ad684e26fbc466f43f0f7af252e77fb8af5e0a",
         ("index", "idx_agent_verif_task_outbox_pending", "agent_verification_task_outbox"): "50dff1b755ee28d10c80d199270f9f6b12fb2ca958b4a8948cb59ac6ff751f48",
         ("table", "agent_event_cursors", "agent_event_cursors"): "0ecf2e08637aef9d2f4a9167feb61de083e1a9d9b8b927f79ae7a58e74b2ef71",
