@@ -1274,7 +1274,8 @@ class AsyncJobManager:
         attempt_token = _JOB_ATTEMPT.set((job_id, int(row["attempts"]) + 1))
         try:
             result = self._invoke_executor_if_allowed(job_id, action, payload)
-            report_job_progress(99.0, "finalizing")
+            if isinstance(result, dict) and result.get("success") is True:
+                report_job_progress(99.0, "finalizing")
             if not isinstance(result, dict):
                 result = {
                     "success": False,
@@ -1399,6 +1400,32 @@ class AsyncJobManager:
                     (json_dumps(final, ensure_ascii=False, separators=(",", ":")), str(final.get("error", "resource release in progress"))[:500], time.time(), job_id),
                 )
                 deferred_for_resource_release = True
+            elif action == "rag_index" and result.get("error_code") == "gpu_reserved":
+                # RAG publishes file and chunk changes only after every embedding
+                # succeeds. A denied GPU admission therefore has a known no-write
+                # outcome; retrying it can exhaust attempts and mislabel it unknown.
+                final = {
+                    **result,
+                    "success": False,
+                    "state": "failed",
+                    "terminal": True,
+                    "retryable": False,
+                }
+                con.execute(
+                    "UPDATE async_jobs SET state='failed',result_json=?,error=?,lease_until=0,updated_at=? WHERE job_id=?",
+                    (
+                        json_dumps(final, ensure_ascii=False, separators=(",", ":")),
+                        str(final.get("error", "GPU admission unavailable"))[:500],
+                        time.time(),
+                        job_id,
+                    ),
+                )
+                self._stats["failed"] += 1
+                if task_id and self.task_store is not None:
+                    try:
+                        self.task_store.fail(task_id, reason=str(final.get("error", "GPU admission unavailable")))
+                    except Exception:
+                        pass
             elif result.get("success") is True:
                 artifact_id = pre_artifact_id
                 now = time.time()

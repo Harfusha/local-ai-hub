@@ -5,6 +5,7 @@ import logging
 import sqlite3
 import pytest
 from local_ai_hub import agent_blackboard
+from local_ai_hub.agent_events import AgentStateStore
 from local_ai_hub.agent_blackboard import BlackboardStore, merge_sections, BlackboardSection
 
 
@@ -88,12 +89,37 @@ def test_vector_clock_domination():
     )
     sec_b = BlackboardSection(
         section="arch", content="older", author="claude",
-        clock={"codex": 1, "claude": 1}, timestamp=90.0, version=1,
+        clock={"codex": 1, "claude": 1}, timestamp=110.0, version=1,
     )
     merged = merge_sections(sec_a, sec_b)
     assert merged.content == "newer"
     assert merged.author == "codex"
     assert merged.clock == {"codex": 2, "claude": 1}
+    assert merged.timestamp == 100.0
+    assert merged.version == 2
+
+
+@pytest.mark.parametrize(
+    ("local_version", "remote_version", "expected_version"),
+    [(8, 2, 8), (2, 8, 8)],
+)
+def test_dominant_remote_clock_preserves_max_cas_version(
+    local_version: int, remote_version: int, expected_version: int
+):
+    local = BlackboardSection(
+        section="arch", content="local", author="local",
+        clock={"local": 1}, timestamp=100.0, version=local_version,
+    )
+    remote = BlackboardSection(
+        section="arch", content="remote", author="remote",
+        clock={"local": 1, "remote": 1}, timestamp=90.0, version=remote_version,
+    )
+
+    merged = merge_sections(local, remote)
+
+    assert merged.content == "remote"
+    assert merged.clock == {"local": 1, "remote": 1}
+    assert merged.version == expected_version
 
 
 def test_concurrent_conflict_lww_resolution():
@@ -241,4 +267,29 @@ def test_merge_sections_idempotency():
     assert m3.version == 2
     assert m1.content == m2.content == m3.content == "newer"
     assert m1.clock == m2.clock == m3.clock == {"codex": 1, "claude": 1}
+
+
+def test_blackboard_store_merge_replays_existing_merge_event(tmp_path: Path):
+    db_path = tmp_path / "state" / "agent_state.sqlite3"
+    state_store = AgentStateStore(db_path)
+    store = BlackboardStore(db_path, state_store=state_store)
+    remote_sections = {
+        "architecture": {
+            "content": {"pattern": "event-driven"},
+            "author": "remote-agent",
+            "clock": {"remote-agent": 1},
+            "timestamp": 100.0,
+            "version": 1,
+        }
+    }
+
+    first = store.merge("board-1", remote_sections)
+    replay = store.merge("board-1", remote_sections)
+
+    assert first["success"] is True
+    assert replay["success"] is True
+    assert replay["sections"] == first["sections"]
+    events = state_store.event_page("blackboard:board-1:architecture")["events"]
+    assert len(events) == 1
+    assert events[0]["kind"] == "blackboard.merged"
 

@@ -7,7 +7,7 @@ not load Laya, emit telemetry, execute tools, or change Hub decisions.
 
 import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any, Mapping
 
@@ -139,7 +139,7 @@ def _string_list(value: Any, field: str, pattern: re.Pattern[str], *, maximum: i
 
 @dataclass(frozen=True)
 class ContextSourceEvidence:
-    """Minimal, text-free context-source codes for a future approved evaluation.
+    """Typed context-source signals plus separately bounded training text.
 
     This validates shape only. It does not prove that evidence IDs are
     authorized or current; the calling Hub path must resolve each ID before use.
@@ -150,6 +150,8 @@ class ContextSourceEvidence:
     freshness_codes: tuple[ContextSourceFreshness, ...]
     coverage_codes: tuple[ContextSourceCoverage, ...]
     evidence_ids: tuple[str, ...]
+    training_content: Mapping[str, str] = field(default_factory=dict)
+    redacted_fields: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if self.gap_code != "unresolved_evidence_gap":
@@ -174,12 +176,18 @@ class ContextSourceEvidence:
             raise ValueError("invalid context source evidence IDs")
         if len(set(self.evidence_ids)) != len(self.evidence_ids):
             raise ValueError("duplicate context source evidence ID")
+        decision_input = DecisionInput.from_mapping({
+            "state": {"gap_code": self.gap_code},
+            "training_content": dict(self.training_content),
+        })
+        object.__setattr__(self, "training_content", decision_input.training_content)
+        object.__setattr__(self, "redacted_fields", decision_input.redacted_fields)
 
     @classmethod
     def from_mapping(cls, value: Mapping[str, Any]) -> "ContextSourceEvidence":
         """Validate the approved code-only shape without inferring authorization."""
         fields = {"gap_code", "source_codes", "freshness_codes", "coverage_codes", "evidence_ids"}
-        if type(value) is not dict or set(value) != fields:
+        if type(value) is not dict or set(value) not in (fields, fields | {"training_content"}):
             raise ValueError("context source evidence fields invalid")
         if value["gap_code"] != "unresolved_evidence_gap":
             raise ValueError("invalid context source gap code")
@@ -206,6 +214,7 @@ class ContextSourceEvidence:
             freshness_codes=freshness_codes,
             coverage_codes=coverage_codes,
             evidence_ids=evidence_ids,
+            training_content=value.get("training_content", {}),
         )
 
     @property
@@ -214,13 +223,25 @@ class ContextSourceEvidence:
         return self.source_codes
 
     def model_input(self) -> dict[str, Any]:
-        """Project only approved codes and opaque IDs; the caller must resolve IDs before use."""
+        """Project typed signals, opaque evidence IDs, and sanitized useful raw input."""
+        allowed_content_fields = ("task_input", "context_excerpt")
+        missing_fields = [key for key in allowed_content_fields if key not in self.training_content]
+        redacted_fields = sorted(self.redacted_fields)
+        missing_reason = (
+            "none" if not missing_fields
+            else "both_raw_fields_unavailable" if len(missing_fields) == 2
+            else f"{missing_fields[0]}_unavailable"
+        )
         return {
             "gap_code": self.gap_code,
             "source_codes": list(self.source_codes),
             "freshness_codes": [item.value for item in self.freshness_codes],
             "coverage_codes": [item.value for item in self.coverage_codes],
             "evidence_ids": list(self.evidence_ids),
+            **{f"raw_{key}": value for key, value in self.training_content.items()},
+            "training_redacted_fields": "none" if not redacted_fields else "_".join(redacted_fields),
+            "training_missing_fields": "none" if not missing_fields else "_".join(missing_fields),
+            "training_missing_reason": missing_reason,
         }
 
 

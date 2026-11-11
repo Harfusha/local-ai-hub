@@ -99,6 +99,32 @@ def test_terminal_failure_result_is_known_failed_not_outcome_unknown(manager_fac
     assert result.get("outcome_unknown") is not True
 
 
+def test_rag_gpu_admission_rejection_is_terminal_known_failure(manager_factory, tmp_path) -> None:
+    executions = []
+    manager = manager_factory(
+        lambda action, payload: executions.append((action, payload))
+        or {
+            "success": False,
+            "error_code": "gpu_reserved",
+            "error": "GPU admission is unavailable",
+            "retryable": True,
+        }
+    )
+    payload = {"root": str(tmp_path), "workspace": "workspace-test"}
+    submitted = manager.submit("rag_index", payload, dispatch_delay_seconds=30)
+    _cancel_delayed_dispatch(manager, submitted["job_id"])
+
+    manager._execute(submitted["job_id"])
+    result = manager.result(submitted["job_id"])
+
+    assert executions == [("rag_index", payload)]
+    assert result["state"] == "failed"
+    assert result["error"] == "GPU admission is unavailable"
+    assert result["retryable"] is False
+    assert result["terminal"] is True
+    assert result.get("outcome_unknown") is not True
+
+
 def test_same_request_id_after_restart_reuses_completed_job(manager_factory) -> None:
     executions: list[tuple[str, str]] = []
 

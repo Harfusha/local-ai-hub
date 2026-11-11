@@ -4,6 +4,7 @@ import json
 import math
 import sqlite3
 import time
+from contextlib import closing
 from pathlib import Path
 
 import pytest
@@ -48,6 +49,32 @@ def test_merge_sections_mismatched_sections_raises() -> None:
     s2 = BlackboardSection(section="sec_b", content=2, author="b")
     with pytest.raises(ValueError, match="Cannot merge sections with different names"):
         merge_sections(s1, s2)
+
+
+def test_store_merge_skips_remote_section_key_mismatch(tmp_path: Path) -> None:
+    db_file = tmp_path / "bb.sqlite3"
+    store = BlackboardStore(db_file)
+
+    result = store.merge(
+        board_id="board",
+        remote_sections={
+            "map-key": {
+                "section": "payload-section",
+                "content": "must not be written",
+                "author": "remote",
+                "clock": {"remote": 1},
+                "timestamp": 1.0,
+                "version": 1,
+            }
+        },
+    )
+
+    assert result["success"] is True
+    assert result["merged_count"] == 0
+    assert result["sections"] == []
+    with closing(sqlite3.connect(db_file)) as con:
+        row_count = con.execute("SELECT COUNT(*) FROM agent_blackboard").fetchone()[0]
+    assert row_count == 0
 
 
 def test_blackboard_store_input_validation(tmp_path: Path) -> None:

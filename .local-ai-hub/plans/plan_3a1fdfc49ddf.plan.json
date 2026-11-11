@@ -16,43 +16,164 @@
         "Confirmed server or response-contract defects are fixed at source with focused regression coverage.",
         "Run focused validation and diff checks; separate source/test evidence from live runtime evidence.",
         "After active GPU work ends, install current source, configure MCP/instructions/skills, restart Hub, and verify current runtime and representative endpoints.",
-        "Remaining unresolved hotspots and operational blockers are recorded."
+        "Remaining unresolved hotspots and operational blockers are recorded.",
+        "Resolve the EmbeddingModel.encode import of absent opencode_boundary.generation_denial without restoring the removed OpenCode integration; preserve embedding provider routing, request contracts and GPU fencing; validate the focused failure reported for tests/test_embedding_gpu_lease_heartbeat.py."
       ],
-      "blocker": "Current check 2026-11-10: Hub 6.0.0 online; qwen2.5-coder:3b and GPU admission inference_active; reservation is internal. Do not restart or run runtime/GPU tests until foreground work drains. Laya-owned changes now include app.py, http_server.py, Laya modules and tests; preserve them and await the owner's safe-window confirmation. Historical RAG job 987d4d622e6e4d6185687141abd21c01 remains terminal outcome_unknown; current RAG list exposes five workspace IDs, with absolute-root mapping unresolved. GET /api/live/status reports scheduler dependency probe_timeout only when work misses its 1.0s deadline; likely causes remain unproven.",
+      "blocker": "Fresh GPU reservation is present with state=unknown/manual_intervention_required (req_16bd2c4b93b7); Hub status reports gpu_admission_state=outcome_unknown (req_133265c28eb8). Owner process remains unverifiable; no release/restart/index/replay. Three jobs are terminal outcome_unknown, retryable=false; results expose no artifacts (req_77f9a354e939, req_2c555bb60d9d, req_f797ed4b73c1; result calls req_670305a80403, req_559a6d00d1a7, req_29caa25af073). Existing async_jobs patch author/task/lease unknown. Laya handoff/window absent; two RAG roots empty; Shpotify extras, live endpoint telemetry, and unmerged Git status unresolved.",
       "clarifications": [],
       "depends_on": [],
-      "description": "Reconcile both performance worktree contributions; preserve user changes, durable job lifecycle, request identity rules, fast-path contracts, RAG progress and six-root recovery; install and live-verify current Hub. Fix confirmed endpoint/runtime errors with evidence.",
+      "description": "Latest revalidation. Both root defaults.toml and src/local_ai_hub/defaults.toml parse with Python tomllib (native read-only check exit 0); bounded source slices 720-755 show same `[resilience]` section, and targeted git_status says src/local_ai_hub/defaults.toml is clean (req_93dad19b3640). The reported duplicate-key issue at this location is not present in current source; MCP Hub status is also online, but active installed config identity remains separate. Fresh search locates `_claim_embedding_gpu` in embeddings.py; bounded source slice at SHA c40c88cb8f55c8d92645477f776ef3fad79b9370c65c0187e6dc27232b41df9f lines 756-790 shows `store.reserve` and `store.renew` failure or caught OSError/ValueError collapse to `False`; encode maps that to the same `gpu_reserved` error. Therefore the observed RAG denial does not prove an external live owner; underlying cause may be reservation contention, invalid/missing generation, or storage error. A subsequent status read showed admission available, which does not reveal the root cause. Existing async_jobs.py patch remains the only targeted modified source file, unstaged (req_98784b88711d); diff SHA ff73b5a43c62a7e450f96203201fea9ed5752336f3a9c60072d72036547e138b. Laya states the patch is foreign to her and still no handoff; Laya thread turn completed with idle status at cursor revision 139. The active cross-vendor retrieval plan plan_ad8164af4995 has empty task list and explicitly says keep existing dirty work intact (req_c6259933644c). Our current task list shows only this Stability task; no active Agent OS owner for the patch was found. Do not infer authorship from absence of a lease/task. No changes were made to source this turn.",
       "kind": "analysis",
-      "next_action": "Commit perf overlay on a named branch; protect master overlay as a WIP commit if needed for safe merge; integrate and validate; install, configure and restart after active GPU work ends.",
+      "next_action": "Keep runtime, GPU, indexing and replay gates closed. Continue independent read-only recovery, trace, and patch-provenance investigation. Coordinate with Laya for path handoff/window; preserve new audit-task leases and all dirty work.",
       "results": [
         {
-          "evidence_id": "req_15f353283be4",
+          "evidence_id": "req_5e1b1e16884d",
           "kind": "evidence_reference",
-          "summary": "Live Hub online; status showed external_reservation."
+          "summary": "Fresh source diff confirms RAG progress callback stages."
         },
         {
-          "evidence_id": "req_b47ae1ec0407",
+          "evidence_id": "req_648588993d03",
           "kind": "evidence_reference",
-          "summary": "Valid reservation owner embedding:19888:45744 was renewed while process thread was observed running."
+          "summary": "Fresh current regression diff covers monotonic progress and retry phase."
         },
         {
-          "evidence_id": "req_194faccff48f",
+          "evidence_id": "req_62900c79833a",
           "kind": "evidence_reference",
-          "summary": "Deterministic impact scan reported concurrency-sensitive candidate changes; unrelated dirty files preserved."
+          "summary": "Current Hub 6.0.0 online; VRAM nominal but GPU admission outcome_unknown."
         },
         {
-          "evidence_id": "req_a28c98aa315f",
+          "evidence_id": "req_7bfbc5b81d24",
           "kind": "evidence_reference",
-          "summary": "Dashboard /api/context/pack HTTP 200 in 73.592 s; request-only record, no body or linked trace."
+          "summary": "GPU reservation is present and state unknown; manual intervention required."
         },
         {
-          "evidence_id": "req_4b2fdf86",
+          "evidence_id": "req_b348df8da546",
           "kind": "evidence_reference",
-          "summary": "Linked /api/context/pack HTTP 200 in 11.775 s; adaptive cache miss and retrieval consumed 11.625 s."
+          "summary": "Laya task heartbeat expired and status active/stale; its thread remains active."
+        },
+        {
+          "evidence_id": "req_f54c59581d1c",
+          "kind": "evidence_reference",
+          "summary": "Home job 987d result still outcome_unknown; safe replay unavailable."
+        },
+        {
+          "evidence_id": "req_c3e06e3024c2",
+          "kind": "evidence_reference",
+          "summary": "Second Home RAG job still outcome_unknown after GPU admission failure."
+        },
+        {
+          "evidence_id": "req_2241b9232003",
+          "kind": "evidence_reference",
+          "summary": "Current Home root clean at HEAD 1e9a4839."
+        },
+        {
+          "evidence_id": "req_a42e0da504cb",
+          "kind": "evidence_reference",
+          "summary": "Current Scan2Cad root at HEAD 55996d7b with 47 changed files."
+        },
+        {
+          "evidence_id": "req_b0ea39c707bb",
+          "kind": "evidence_reference",
+          "summary": "Current Shpotify root at HEAD 77476b43 with 33 changed files."
+        },
+        {
+          "evidence_id": "req_273779aa974b",
+          "kind": "evidence_reference",
+          "summary": "Current SoftwareInc root at HEAD 8a825a7d with 13 changed files."
+        },
+        {
+          "evidence_id": "req_ce9484dd5d02",
+          "kind": "evidence_reference",
+          "summary": "Correct Wishflix root path confirmed at HEAD 320b2064 with one changed path."
+        },
+        {
+          "evidence_id": "req_3182d2216467",
+          "kind": "evidence_reference",
+          "summary": "Current WoodTycoon root at HEAD a7c31758 with 8 changed files."
+        },
+        {
+          "evidence_id": "req_96e245a38ba8",
+          "kind": "evidence_reference",
+          "summary": "Global RAG inventory shows four mapped canonical roots and no Wishflix or WoodTycoon workspaces."
+        },
+        {
+          "evidence_id": "req_c03bc2c5391c",
+          "kind": "evidence_reference",
+          "summary": "Home has no .local-ai.toml; Hub defaults apply."
+        },
+        {
+          "evidence_id": "req_362fd3d4117e",
+          "kind": "evidence_reference",
+          "summary": "Scan2Cad .local-ai.toml found."
+        },
+        {
+          "evidence_id": "req_30f31c53b6fe",
+          "kind": "evidence_reference",
+          "summary": "Shpotify .local-ai.toml found."
+        },
+        {
+          "evidence_id": "req_0486fa4addde",
+          "kind": "evidence_reference",
+          "summary": "SoftwareInc .local-ai.toml found."
+        },
+        {
+          "evidence_id": "req_2c5305871998",
+          "kind": "evidence_reference",
+          "summary": "Wishflix .local-ai.toml found."
+        },
+        {
+          "evidence_id": "req_973f802d6cf3",
+          "kind": "evidence_reference",
+          "summary": "WoodTycoon .local-ai.toml found."
+        },
+        {
+          "evidence_id": "req_921863e2f33b",
+          "kind": "evidence_reference",
+          "summary": "No conflict marker matches in current async_jobs.py."
+        },
+        {
+          "evidence_id": "req_cbe890fd97ea",
+          "kind": "evidence_reference",
+          "summary": "No conflict marker matches in current embeddings.py."
+        },
+        {
+          "evidence_id": "req_50fa1423bfe7",
+          "kind": "evidence_reference",
+          "summary": "No conflict marker matches in current active stability plan JSON."
+        },
+        {
+          "evidence_id": "req_87133c5c542a",
+          "kind": "evidence_reference",
+          "summary": "No conflict marker matches in current Laya plan JSON."
+        },
+        {
+          "evidence_id": "req_35d1c5296be7",
+          "kind": "evidence_reference",
+          "summary": "No conflict marker matches in audit round4 plan JSON."
+        },
+        {
+          "evidence_id": "req_42dc5c4e2d0b",
+          "kind": "evidence_reference",
+          "summary": "No conflict marker matches in audit round6 plan JSON."
+        },
+        {
+          "evidence_id": "req_99d22ae54e21",
+          "kind": "evidence_reference",
+          "summary": "No conflict marker matches in technical audit plan JSON."
+        },
+        {
+          "evidence_id": "req_5e1b1e16884d",
+          "kind": "evidence_reference",
+          "summary": "Current progress source diff."
+        },
+        {
+          "evidence_id": "req_648588993d03",
+          "kind": "evidence_reference",
+          "summary": "Current regression test diff."
         }
       ],
       "title": "Local AI Hub performance, integration, and runtime validation",
-      "work_phase": "implementation",
+      "work_phase": "verification",
       "work_status": "in_progress"
     }
   },

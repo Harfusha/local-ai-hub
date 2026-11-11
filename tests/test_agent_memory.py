@@ -67,6 +67,28 @@ def test_memory_store_falls_back_when_sqlite_lacks_fts5(tmp_path: Path, monkeypa
     assert {item.record_id for item in found} == {record.record_id}
 
 
+@pytest.mark.parametrize("wildcard", ["%", "_"])
+def test_memory_store_find_treats_like_wildcards_as_literal(store: MemoryStore, wildcard: str) -> None:
+    literal = MemoryRecord.create(
+        kind=MemoryKind.FACT,
+        scope=AgentScope.GLOBAL,
+        key=f"match{wildcard}marker",
+        value="literal wildcard record",
+    )
+    wildcard_match = MemoryRecord.create(
+        kind=MemoryKind.FACT,
+        scope=AgentScope.GLOBAL,
+        key="matchXmarker",
+        value="SQL wildcard lookalike",
+    )
+    store.record(literal, actor="user")
+    store.record(wildcard_match, actor="user")
+
+    found = store.find(scope=AgentScope.GLOBAL, query=f"match{wildcard}marker", semantic=False)
+
+    assert {item.record_id for item in found} == {literal.record_id}
+
+
 def _repository_identity(record: MemoryRecord) -> dict[str, object]:
     return {
         "scope": AgentScope.REPOSITORY,

@@ -39,10 +39,14 @@ _MAX_STATE_BYTES = 16 * 1024
 _MAX_CANDIDATE_BYTES = 64 * 1024
 _MAX_CAPTURE_BATCH_SIZE = 100
 _RUNTIME_CAPTURE_TOKEN = object()
+_RUNTIME_BASELINE_METHODS = {
+    DecisionCategory.COMPLETION_GAP: "agent_os_completion_gate",
+}
 _MAX_CANDIDATES_PER_EXPORT = 20_000
 _MAX_SPLIT_SHINGLES = 1_000_000
 _MAX_DUPLICATE_COMPARISONS = 250_000
 _NEAR_DUPLICATE_JACCARD = 0.80
+_LABEL_RUBRIC_VERSION = "laya-source-label-v1"
 _IDENT = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}\Z")
 _LANG = re.compile(r"[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})*\Z")
 _STATES = {"captured", "pending", "reviewed", "verified", "rejected", "ambiguous", "exported"}
@@ -75,6 +79,9 @@ def _export_label_provenance(candidate: Mapping[str, Any], targets: Mapping[str,
     annotations = provenance.get("annotations")
     adjudication = provenance.get("adjudication")
     verification = provenance.get("verification")
+    rubric_version = provenance.get("rubric_version")
+    if rubric_version != _LABEL_RUBRIC_VERSION:
+        raise ValueError("verified Laya candidate has no current label rubric version")
     if not isinstance(annotations, list) or len(annotations) != 2:
         raise ValueError("verified Laya candidate needs two independent annotations")
     annotators = [
@@ -93,6 +100,7 @@ def _export_label_provenance(candidate: Mapping[str, Any], targets: Mapping[str,
     return {
         "status": "verified",
         "method": "blind_double_annotation",
+        "rubric_version": rubric_version,
         "target_sha256": hashlib.sha256(canonical_targets.encode("utf-8")).hexdigest(),
         "annotation_identity_sha256": sorted(identity_hashes[:2]),
         "agreement": annotations[0].get("target") == annotations[1].get("target"),
@@ -339,16 +347,38 @@ class LayaCandidateStore:
         context_source = None
         if category is DecisionCategory.CONTEXT_SOURCE:
             expected_state_fields = {"gap_code", "source_codes", "freshness_codes", "coverage_codes"}
-            if type(state) is not dict or set(state) != expected_state_fields:
+            raw_fields = {"raw_task_input", "raw_context_excerpt"}
+            metadata_fields = {
+                "training_redacted_fields", "training_missing_fields", "training_missing_reason",
+            }
+            if type(state) is not dict or set(state) - (expected_state_fields | raw_fields | metadata_fields) or not expected_state_fields <= set(state):
                 raise ValueError("context_source state fields invalid")
-            context_input = {**state, "evidence_ids": row["evidence_ids"]}
+            if any(type(state.get(key)) is not str for key in metadata_fields if key in state):
+                raise ValueError("context_source training-content metadata invalid")
+            context_input = {
+                **{key: value for key, value in state.items() if key in expected_state_fields},
+                "evidence_ids": row["evidence_ids"],
+                "training_content": {
+                    key.removeprefix("raw_"): value
+                    for key, value in state.items()
+                    if key in raw_fields
+                },
+            }
             try:
                 context_source = ContextSourceEvidence.from_mapping(context_input)
             except ValueError as exc:
                 if "evidence ID" in str(exc) or "evidence_ids" in str(exc):
                     raise ValueError("context_source evidence_ids invalid") from exc
                 raise ValueError("context_source state codes invalid") from exc
-            if len(_canonical_json(state).encode("utf-8")) > _MAX_STATE_BYTES:
+            state = {
+                **{key: value for key, value in state.items() if key in expected_state_fields},
+                **{f"raw_{key}": value for key, value in context_source.training_content.items()},
+                **{
+                    key: context_source.model_input()[key]
+                    for key in metadata_fields
+                },
+            }
+            if len(_canonical_json(state).encode("utf-8")) > _MAX_CANDIDATE_BYTES - 4096:
                 raise ValueError("context_source state is too large")
         elif type(state) is str:
             if not state.strip() or len(state.encode("utf-8")) > _MAX_STATE_BYTES or "\x00" in state:
@@ -431,15 +461,21 @@ class LayaCandidateStore:
         evidence_ids = candidate["evidence_ids"]
         if not evidence_ids:
             return
-        if candidate.get("category") != DecisionCategory.CONTEXT_SOURCE.value and evidence_store is None:
+        is_context_source = candidate.get("category") == DecisionCategory.CONTEXT_SOURCE.value
+        if not is_context_source and evidence_store is None:
             return
+        evidence_error = (
+            "context_source evidence is not authorized and current"
+            if is_context_source
+            else "Laya evidence is not authorized and current"
+        )
         get_many = getattr(evidence_store, "get_many", None)
         if not callable(get_many):
-            raise ValueError("Laya evidence is not authorized and current")
+            raise ValueError(evidence_error)
         try:
             rows = get_many(evidence_ids, verify=True, root=canonical_root)
         except Exception as exc:
-            raise ValueError("Laya evidence is not authorized and current") from exc
+            raise ValueError(evidence_error) from exc
         if type(rows) is not list or len(rows) != len(evidence_ids) or any(
             type(row) is not dict
             or row.get("success") is not True
@@ -448,8 +484,8 @@ class LayaCandidateStore:
             or row.get("stale") is not False
             for row, evidence_id in zip(rows, evidence_ids, strict=True)
         ):
-            raise ValueError("Laya evidence is not authorized and current")
-        if candidate.get("category") != DecisionCategory.CONTEXT_SOURCE.value:
+            raise ValueError(evidence_error)
+        if not is_context_source:
             return
         validate_provenance = getattr(evidence_store, "validate_source_provenance", None)
         if not callable(validate_provenance):
@@ -742,6 +778,7 @@ class LayaCandidateStore:
         root: str,
         task_store: Any,
         evidence_store: Any,
+        baseline: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Persist a real runtime result through the normal scoped candidate lifecycle."""
         if not isinstance(request, DecisionRequest):
@@ -761,6 +798,29 @@ class LayaCandidateStore:
             request.evidence_ids != evidence.evidence_ids or request.options != evidence.decision_options
         ):
             raise ValueError("runtime request does not match its validated evidence")
+        if baseline is None:
+            baseline_record = {"status": "not_available"}
+        else:
+            baseline = _strict_object(baseline, {"method", "suggestion", "evidence_id"}, "baseline")
+            suggestion = _identity(baseline["suggestion"], "baseline suggestion")
+            evidence_id = _identity(baseline["evidence_id"], "baseline evidence_id")
+            if suggestion not in request.options or evidence_id not in request.evidence_ids:
+                raise ValueError("deterministic baseline must match a permitted option and request evidence ID")
+            if isinstance(evidence, ContextSourceEvidence):
+                if (
+                    baseline["method"] != "retrieval_rank_order"
+                    or suggestion not in evidence.source_codes
+                    or evidence_id != evidence.evidence_ids[evidence.source_codes.index(suggestion)]
+                ):
+                    raise ValueError("deterministic baseline does not match validated context-source evidence")
+            elif baseline["method"] != _RUNTIME_BASELINE_METHODS.get(request.category):
+                raise ValueError("deterministic baseline method is not registered for this Laya category")
+            baseline_record = {
+                "status": "recorded",
+                "method": baseline["method"],
+                "suggestion": suggestion,
+                "evidence_id": evidence_id,
+            }
         canonical_root = _canonical_repository_root(root)
         task_id = _identity(request.task_id, "task_id")
         session_id = _identity(request.session_id, "session_id")
@@ -799,6 +859,11 @@ class LayaCandidateStore:
             "status": decision.status.value,
             "suggestion": decision.suggestion,
             "reason_codes": list(decision.reason_codes),
+            "baseline": baseline_record,
+            "downstream_outcome": {
+                "status": "not_observed",
+                "reason": "shadow_only_not_user_exposed",
+            },
             "runtime": {
                 "model_id": runtime.model_id,
                 "revision": runtime.revision,
@@ -1071,7 +1136,11 @@ class LayaCandidateStore:
                 if target not in candidate["questions"][candidate["category"]]["criteria"]:
                     con.rollback(); raise ValueError("adjudication target is not an allowed option")
                 candidate["targets"] = {candidate["category"]: target}
-                candidate["label_provenance"] = {"annotations": parsed, "adjudication": {"reviewer_ref": reviewer, "target": target}}
+                candidate["label_provenance"] = {
+                    "rubric_version": _LABEL_RUBRIC_VERSION,
+                    "annotations": parsed,
+                    "adjudication": {"reviewer_ref": reviewer, "target": target},
+                }
                 candidate["label_status"] = "reviewed"
                 new_status = "reviewed"
                 details = {"annotator_count": 2, "adjudicator_ref": reviewer}

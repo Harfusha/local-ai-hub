@@ -34,13 +34,34 @@ def _init_repo(tmp_path: Path) -> tuple[Path, Path]:
     return repo, wt
 
 
-def test_get_worktree_status_and_is_git_worktree(tmp_path: Path) -> None:
+def _git(path: Path, *args: str) -> str:
+    result = subprocess.run(
+        ["git", "-C", str(path), *args],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return result.stdout.strip()
+
+
+def test_get_worktree_status_and_is_git_worktree(tmp_path: Path, monkeypatch) -> None:
     repo, wt = _init_repo(tmp_path)
 
     # is_git_worktree checks
     assert is_git_worktree(wt) is True
     assert is_git_worktree(tmp_path) is False
     assert is_git_worktree(tmp_path / "nonexistent") is False
+
+    # Lock inspection runs Git from the worktree whose status it reports.
+    original_run = worktrees.subprocess.run
+    list_cwds = []
+
+    def track_worktree_list(command, *args, **kwargs):
+        if command[-3:] == ["worktree", "list", "--porcelain"]:
+            list_cwds.append(command[command.index("-C") + 1])
+        return original_run(command, *args, **kwargs)
+
+    monkeypatch.setattr(worktrees.subprocess, "run", track_worktree_list)
 
     # Clean status
     status = get_worktree_status(wt)
@@ -49,6 +70,8 @@ def test_get_worktree_status_and_is_git_worktree(tmp_path: Path) -> None:
     assert status["uncommitted_files"] == []
     assert status["branch"] == "wt-branch"
     assert status["locked"] is False
+    assert status["lock_status"] == "unlocked"
+    assert list_cwds == [str(wt.resolve())]
 
     # Create uncommitted file
     (wt / "file.py").write_text("print(1)\n", encoding="utf-8")
@@ -56,6 +79,24 @@ def test_get_worktree_status_and_is_git_worktree(tmp_path: Path) -> None:
     assert status_dirty["clean"] is False
     assert len(status_dirty["uncommitted_files"]) > 0
     assert any("file.py" in f for f in status_dirty["uncommitted_files"])
+
+
+def test_get_worktree_status_reports_unknown_when_git_lock_query_fails(
+    tmp_path: Path, monkeypatch
+) -> None:
+    _, wt = _init_repo(tmp_path)
+    original_run = worktrees.subprocess.run
+
+    def fail_worktree_list(command, *args, **kwargs):
+        if command[-3:] == ["worktree", "list", "--porcelain"]:
+            return SimpleNamespace(returncode=1, stdout="", stderr="git unavailable")
+        return original_run(command, *args, **kwargs)
+
+    monkeypatch.setattr(worktrees.subprocess, "run", fail_worktree_list)
+    status = get_worktree_status(wt)
+
+    assert status["locked"] is None
+    assert status["lock_status"] == "unknown"
 
 
 def test_check_worktree_uncommitted_changes_invalid_path(tmp_path: Path) -> None:
@@ -91,3 +132,54 @@ def test_unlock_fallback_never_unlinks_outside_common_dir(tmp_path: Path, monkey
     monkeypatch.setattr(worktrees.subprocess, "run", fake_run)
     assert unlock_worktree(repo, outside) is False
     assert unrelated_lock.read_text(encoding="utf-8") == "keep"
+
+
+def test_unlock_fallback_refuses_basename_collision(tmp_path: Path) -> None:
+    repo, _ = _init_repo(tmp_path)
+    decoy = tmp_path / "decoy" / "collision"
+    decoy.mkdir(parents=True)
+    common = Path(_git(repo, "rev-parse", "--git-common-dir"))
+    if not common.is_absolute():
+        common = (repo / common).resolve()
+    lock = common / "worktrees" / decoy.name / "locked"
+    lock.parent.mkdir(parents=True)
+    lock.write_text("unrelated lock", encoding="utf-8")
+
+    assert unlock_worktree(repo, decoy) is False
+    assert lock.read_text(encoding="utf-8") == "unrelated lock"
+
+
+def test_unlock_fallback_uses_exact_worktree_metadata(
+    tmp_path: Path, monkeypatch
+) -> None:
+    repo, wt = _init_repo(tmp_path)
+    assert worktrees.lock_worktree(repo, wt, reason="test lock") is True
+    git_dir = Path(_git(wt, "rev-parse", "--absolute-git-dir"))
+    lock = git_dir / "locked"
+    assert lock.is_file()
+    original_run = worktrees.subprocess.run
+
+    def fail_git_unlock(command, *args, **kwargs):
+        if command[2:4] == ["worktree", "unlock"]:
+            return SimpleNamespace(returncode=1, stdout="", stderr="fallback test")
+        return original_run(command, *args, **kwargs)
+
+    monkeypatch.setattr(worktrees.subprocess, "run", fail_git_unlock)
+    assert unlock_worktree(repo, wt) is True
+    assert lock.exists() is False
+
+
+def test_unlock_zombie_refuses_mismatched_admin_metadata(
+    tmp_path: Path, monkeypatch
+) -> None:
+    repo, wt = _init_repo(tmp_path)
+    other_wt = tmp_path / "other_worktree"
+    _git(repo, "worktree", "add", "-b", "other-branch", str(other_wt), "HEAD")
+    assert worktrees.lock_worktree(repo, wt, reason="stale lock", pid=99999999)
+
+    git_dir = Path(_git(wt, "rev-parse", "--absolute-git-dir"))
+    (git_dir / "gitdir").write_text(str(other_wt / ".git"), encoding="utf-8")
+    monkeypatch.setattr(worktrees, "pid_alive", lambda _pid: False)
+
+    assert unlock_zombie_worktrees(repo) == []
+    assert (git_dir / "locked").is_file()

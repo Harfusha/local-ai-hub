@@ -11,8 +11,10 @@ _RUNNER_EXTENSIONS = {
     "dotnet": frozenset({".cs", ".fs", ".vb", ".csproj", ".fsproj", ".vbproj"}),
     "cargo": frozenset({".rs"}),
     "go": frozenset({".go"}),
+    "phpunit": frozenset({".php"}),
+    "pest": frozenset({".php"}),
 }
-_RUNNER_ALIASES = {"python": "pytest", "unittest": "pytest", "jest": "npm", "vitest": "npm"}
+_RUNNER_ALIASES = {"python": "pytest", "unittest": "pytest", "jest": "npm", "vitest": "npm", "php": "phpunit"}
 
 
 def canonical_runner(runner: str) -> str:
@@ -32,8 +34,8 @@ def compatible_tests(paths: list[str], runner: str) -> tuple[list[str], list[str
 
 
 def automatic_runner(paths: list[str]) -> str:
-    """Preserve Python/JS/.NET priority; never infer Python from unrelated files."""
-    for runner in ("pytest", "npm", "dotnet", "cargo", "go"):
+    """Preserve runner priority; never infer Python from unrelated files."""
+    for runner in ("pytest", "npm", "dotnet", "cargo", "go", "phpunit", "pest"):
         if compatible_tests(paths, runner)[0]:
             return runner
     return "unknown"
@@ -60,7 +62,21 @@ def affected_test_command(paths: list[str], runner: str) -> str:
         filters = " | ".join(f"FullyQualifiedName~{stem}" for stem in stems)
         return f'dotnet test --filter "{filters}"'
     if runner == "cargo":
-        return "cargo test " + " ".join(quote(stem) for stem in stems)
+        # Cargo's positional argument filters test names. Select direct
+        # integration-test targets with --test; other source paths do not
+        # identify a Cargo target, so run the package's tests without a filter.
+        cargo_paths = [PurePosixPath(path.replace("\\", "/")) for path in selected]
+        if all(len(path.parts) == 2 and path.parts[0] == "tests" for path in cargo_paths):
+            targets = dict.fromkeys(path.stem for path in cargo_paths)
+            return "cargo test " + " ".join(f"--test {quote(target)}" for target in targets)
+        return "cargo test"
     if runner == "go":
-        return f"go test {arguments}"
+        go_paths = [PurePosixPath(path.replace("\\", "/")) for path in selected]
+        packages = dict.fromkeys(
+            "." if path.parent == PurePosixPath(".") else "./" + path.parent.as_posix()
+            for path in go_paths
+        )
+        return "go test " + " ".join(quote(package) for package in packages)
+    if runner in {"phpunit", "pest"}:
+        return f"vendor/bin/{runner} {arguments}"
     return ""

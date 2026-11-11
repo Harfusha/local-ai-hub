@@ -144,13 +144,17 @@ def merge_sections(s1: BlackboardSection, s2: BlackboardSection) -> BlackboardSe
         is_concurrent_conflict = s1.clock != s2.clock
         version = max(s1.version, s2.version) + (1 if is_concurrent_conflict else 0)
 
-    max_ts = max(s1.timestamp if math.isfinite(s1.timestamp) else 0.0, s2.timestamp if math.isfinite(s2.timestamp) else 0.0)
+    merged_timestamp = (
+        winner.timestamp
+        if math.isfinite(winner.timestamp) and winner.timestamp > 0.0
+        else time.time()
+    )
     return BlackboardSection(
         section=s1.section,
         content=winner.content,
         author=winner.author,
         clock=merged_clock,
-        timestamp=max_ts if max_ts > 0.0 else time.time(),
+        timestamp=merged_timestamp,
         version=version,
     )
 

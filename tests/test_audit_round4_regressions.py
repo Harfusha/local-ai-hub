@@ -222,7 +222,16 @@ def test_t4_07_learning_slo_success_rate_window(tmp_path: Path):
     from local_ai_hub.agent_events import AgentStateStore
     state_store = AgentStateStore(db_path=tmp_path / "learning.sqlite3")
     state_store._ensure_schema()
-    store = LearningStore(state_store=state_store)
+    store = LearningStore(
+        state_store=state_store,
+        approval_verifier=lambda candidate, receipt: (
+            "user"
+            if receipt.get("candidate_id") == candidate.candidate_id
+            and receipt.get("action") == "promote"
+            and receipt.get("approval") == "test-approved"
+            else None
+        ),
+    )
 
     candidate = ImprovementCandidate.create(
         "cand_1", "baseline_v1", "v2",
@@ -230,7 +239,21 @@ def test_t4_07_learning_slo_success_rate_window(tmp_path: Path):
         metrics={"slo_obs_total": 0, "slo_obs_success": 0},
     )
     c = store.create_candidate(candidate)
-    dec = store.promote(c.candidate_id, approver="user")
+    for status in (
+        CandidateStatus.REPLAY_PASSED,
+        CandidateStatus.SHADOW_PASSED,
+        CandidateStatus.CANARY_PASSED,
+        CandidateStatus.APPROVED,
+    ):
+        c = store.advance(c.candidate_id, status)
+    dec = store.promote(
+        c.candidate_id,
+        approval_receipt={
+            "candidate_id": c.candidate_id,
+            "action": "promote",
+            "approval": "test-approved",
+        },
+    )
     assert dec.promoted is True
     c_prom = store.get(c.candidate_id)
     assert c_prom.status == CandidateStatus.PROMOTED
@@ -245,7 +268,7 @@ def test_t4_07_learning_slo_success_rate_window(tmp_path: Path):
 
 
 def test_t4_08_contract_mapping_skips_unrelated_files(tmp_path: Path):
-    """T4-08 (A09): build_contract_mappings returns empty mapping when frontend and backend share no endpoint or name."""
+    """T4-08 (A09): unrelated frontend/backend evidence is explicitly insufficient."""
     from local_ai_hub.agent_consistency import AgentConsistencyGuard, ConsistencyRequest
     guard = AgentConsistencyGuard()
     req = ConsistencyRequest(root=str(tmp_path), task_id="t1", changed_paths=("src/users.py", "web/checkout.tsx"))
@@ -255,7 +278,141 @@ def test_t4_08_contract_mapping_skips_unrelated_files(tmp_path: Path):
     ]
     mappings, warnings = guard.build_contract_mappings(req, evidence)
     assert len(mappings) == 0
-    assert len(warnings) == 0
+    assert any(warning.code == "insufficient_evidence" for warning in warnings)
+
+
+def test_t4_08_contract_mapping_requires_link_evidence_even_for_matching_stems(tmp_path: Path):
+    from local_ai_hub.agent_consistency import AgentConsistencyGuard, ConsistencyRequest
+
+    guard = AgentConsistencyGuard()
+    req = ConsistencyRequest(root=str(tmp_path), task_id="t1")
+    evidence = [
+        {"path": "server/users.py", "text": "def get_users(): return []"},
+        {"path": "web/users.tsx", "text": "export const Users = () => <div/>;"},
+    ]
+
+    mappings, warnings = guard.build_contract_mappings(req, evidence)
+
+    assert mappings == ()
+    assert any(warning.code == "insufficient_evidence" for warning in warnings)
+
+
+def test_t4_08_typescript_backend_is_not_classified_as_frontend():
+    from local_ai_hub.agent_consistency import AgentConsistencyGuard
+
+    assert not AgentConsistencyGuard._is_frontend(
+        {"path": "src/server/users.ts", "text": "export async function GET() { return Response.json([]); }"}
+    )
+
+
+def test_t4_08_contract_mapping_requires_shared_endpoint_evidence(tmp_path: Path):
+    from local_ai_hub.agent_consistency import AgentConsistencyGuard, ConsistencyRequest
+
+    guard = AgentConsistencyGuard()
+    req = ConsistencyRequest(root=str(tmp_path), task_id="t1")
+    evidence = [
+        {"path": "server/users.py", "text": "GET /api/users\ndef list_users(): return []", "evidence_id": "backend"},
+        {"path": "web/users.tsx", "text": "GET /api/users\nexport const Users = () => <div/>;", "evidence_id": "frontend"},
+    ]
+
+    mappings, warnings = guard.build_contract_mappings(req, evidence)
+
+    assert any(
+        mapping.kind == "association_endpoint" and mapping.endpoint == "GET /api/users"
+        for mapping in mappings
+    )
+    assert not any(warning.code == "insufficient_evidence" for warning in warnings)
+
+
+@pytest.mark.parametrize(
+    ("association_kind", "backend_text", "frontend_text"),
+    [
+        (
+            "operation_id",
+            "operationId: listUsers",
+            "operationId: listUsers",
+        ),
+        (
+            "dto",
+            "export class UserResponseDTO { id: string }",
+            "import type { UserResponseDTO } from '../server/users';",
+        ),
+        (
+            "import",
+            "export function list_users(): list[dict]: return []",
+            "import { list_users } from '../server/users';",
+        ),
+    ],
+)
+def test_t4_08_contract_mapping_accepts_explicit_contract_links(
+    tmp_path: Path,
+    association_kind: str,
+    backend_text: str,
+    frontend_text: str,
+):
+    from local_ai_hub.agent_consistency import AgentConsistencyGuard, ConsistencyRequest
+
+    guard = AgentConsistencyGuard()
+    req = ConsistencyRequest(root=str(tmp_path), task_id="t1")
+    evidence = [
+        {"path": "server/users.py", "text": backend_text},
+        {"path": "web/users.tsx", "text": frontend_text},
+    ]
+
+    mappings, warnings = guard.build_contract_mappings(req, evidence)
+
+    assert any(mapping.kind == f"association_{association_kind}" for mapping in mappings)
+    assert not any(warning.code == "insufficient_evidence" for warning in warnings)
+
+
+def test_t4_10_check_drift_reuses_computed_candidates(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    from local_ai_hub.agent_consistency import AgentConsistencyGuard, ConsistencyRequest
+
+    guard = AgentConsistencyGuard()
+    request = ConsistencyRequest(
+        root=str(tmp_path),
+        task_id="t1",
+        query="edit users",
+        changed_paths=("src/users.py",),
+    )
+    contract = guard.build_contract(request)
+
+    def unexpected_search(*_args, **_kwargs):
+        pytest.fail("check_drift repeated reuse candidate search")
+
+    monkeypatch.setattr(guard, "find_reuse_candidates", unexpected_search)
+    diff = {
+        "success": True,
+        "paths_complete": True,
+        "diff": "",
+        "changed_paths": ["src/users.py"],
+        "revision": "rev1",
+        "impact": {},
+    }
+
+    warnings = guard.check_drift(
+        request,
+        contract,
+        request.changed_paths,
+        diff,
+        reuse_candidates=(),
+    )
+
+    assert warnings == ()
+
+
+def test_t4_11_diff_analysis_status_surfaces_partial_and_unavailable():
+    from local_ai_hub.agent_consistency import AgentConsistencyGuard
+
+    assert AgentConsistencyGuard.diff_analysis_status(
+        {"success": False, "paths_complete": False, "error": "git unavailable"}
+    ) == "unavailable"
+    assert AgentConsistencyGuard.diff_analysis_status(
+        {"success": True, "paths_complete": False, "truncated": True, "diff": "partial"}
+    ) == "partial"
+    assert AgentConsistencyGuard.diff_analysis_status(
+        {"success": True, "paths_complete": True, "diff": "", "changed_paths": [], "revision": "rev1"}
+    ) == "complete"
 
 
 def test_t4_09_model_quality_receipt_validation():

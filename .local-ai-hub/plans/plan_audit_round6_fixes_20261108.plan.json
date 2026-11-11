@@ -43,12 +43,12 @@
         "Confirmed terminal external requests release reservation immediately",
         "No unrelated repository worktree changes are overwritten"
       ],
-      "blocker": null,
+      "blocker": "Runtime verification remains blocked by unresolved GPU ownership/admission. Stability thread checks req_5b8d8d8e56f8 and req_bed27cdc28b3 reported gpu_admission_state=outcome_unknown and reservation=unknown/manual_intervention_required; Laya-side req_82791a29d948 and req_f941d8ffd84d reported available/free at another observation. These conflict across observations, so no stable window is established. Runtime, async jobs and GPU diagnostics belong to Stability. No restart, release, stress test or model action by this audit.",
       "clarifications": [],
       "depends_on": [],
       "description": "Fix all GPU outcome-unknown and stale reservation causes. Keep active inference fenced with TTL-aware heartbeats; recover inactive expired uncertainty; avoid reserving GPU before external inference begins and release after confirmed terminal completion.",
       "kind": "code",
-      "next_action": "Review focused GPU diff and obtain runtime verification after current source-only checks.",
+      "next_action": "Stability owner reconciles admission and reservation with same-window evidence, confirms exact runtime revision and safe window, then provides focused runtime verification. Until then keep C04 in progress; review only source evidence without changing Stability-owned code.",
       "title": "P0-A: GPU lease lifecycle, unnecessary reservations, and stale outcome recovery",
       "work_status": "in_progress"
     },
@@ -78,11 +78,11 @@
       "blocker": null,
       "clarifications": [],
       "depends_on": [],
-      "description": "P2 opravy: C08 (autotune), C09 (automation locking), C10 (negative knowledge SQL limit), C11 (PHP/C# symbol), C13 (task index digest), C14 (benchmark atomický zápis)",
+      "description": "P2 fixes C08/C09/C10/C11/C13/C14. C10 design: docs/superpowers/specs/2026-11-11-c10-negative-knowledge-fts-ranking.md.",
       "kind": "code",
-      "next_action": "",
+      "next_action": "Implement approved C10 design: derived FTS5 external-content index with triggers/rebuild, repository-scoped BM25 SQL ranking and parameterized candidate cap; test relevance, bounds, and index lifecycle. C08/C09/C11/C13/C14 still need individual reconciliation; C04/C12 stay with Stability.",
       "title": "P2: Optimalizace a opravy stability (C08-C11, C13-C14)",
-      "work_status": "completed"
+      "work_status": "in_progress"
     },
     "task_c12_gpu_offload_admission": {
       "acceptance_criteria": [

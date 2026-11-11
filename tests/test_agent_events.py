@@ -4,6 +4,7 @@ import sqlite3
 import asyncio
 import json
 import threading
+import time
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 from types import SimpleNamespace
@@ -32,6 +33,20 @@ def test_pubsub_rejects_non_json_without_recording_message(tmp_path, message):
     result = bus.publish("invalid", message, sender="synthetic")
     assert result["success"] is False
     assert bus.poll("invalid", after_seq=0)["messages"] == []
+
+
+@pytest.mark.parametrize("durable", [False, True])
+def test_pubsub_poll_since_timestamp_filters_old_messages(tmp_path, durable):
+    state = AgentStateStore(tmp_path / "pubsub-timestamp.sqlite3") if durable else None
+    bus = SwarmPubSub(state_store=state)
+    assert bus.publish("timestamp", "old")["success"] is True
+    first_timestamp = bus.poll("timestamp", after_seq=0)["messages"][0]["timestamp"]
+    time.sleep(0.002)
+    assert bus.publish("timestamp", "new")["success"] is True
+
+    result = bus.poll("timestamp", since_timestamp=first_timestamp, after_seq=0)
+
+    assert [message["payload"] for message in result["messages"]] == ["new"]
 
 
 def test_pubsub_diagnostic_projection_preserves_only_caller_payload():

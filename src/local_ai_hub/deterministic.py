@@ -5504,6 +5504,39 @@ def test_{sym}_regression_edge_cases():
         elif (resolved_root / "go.mod").exists():
             framework = "go"
             run_all_cmd = "go test ./..."
+        else:
+            composer_path = resolved_root / "composer.json"
+            phpunit_config = any((resolved_root / name).is_file() for name in ("phpunit.xml", "phpunit.xml.dist"))
+            php_packages: set[str] = set()
+            if composer_path.exists() or composer_path.is_symlink():
+                try:
+                    manifest_stat = composer_path.lstat()
+                    if stat.S_ISLNK(manifest_stat.st_mode) or (getattr(manifest_stat, "st_file_attributes", 0) & 0x400):
+                        incomplete = True
+                        warnings.append("composer_manifest_reparse_point_skipped")
+                    elif not stat.S_ISREG(manifest_stat.st_mode):
+                        incomplete = True
+                        warnings.append("composer_manifest_not_regular_file")
+                    elif manifest_stat.st_size > 256_000:
+                        incomplete = True
+                        warnings.append("composer_manifest_too_large")
+                    else:
+                        manifest = json.loads(composer_path.read_text(encoding="utf-8-sig"))
+                        if isinstance(manifest, dict):
+                            for field in ("require", "require-dev"):
+                                packages = manifest.get(field, {})
+                                if isinstance(packages, dict):
+                                    php_packages.update(str(name).lower() for name in packages)
+                except (OSError, UnicodeError, json.JSONDecodeError):
+                    incomplete = True
+                    warnings.append("composer_manifest_unreadable")
+            pest_config = (resolved_root / "Pest.php").is_file() or (resolved_root / "tests" / "Pest.php").is_file()
+            if "pestphp/pest" in php_packages or pest_config:
+                framework = "pest"
+                run_all_cmd = "vendor/bin/pest"
+            elif "phpunit/phpunit" in php_packages or phpunit_config:
+                framework = "phpunit"
+                run_all_cmd = "vendor/bin/phpunit"
 
         return framework, run_all_cmd, incomplete, warnings
 
@@ -5518,12 +5551,18 @@ def test_{sym}_regression_edge_cases():
             """Recognize supported test naming conventions in the current tree."""
             normalized = rel_path.replace("\\", "/").lower()
             suffix = Path(normalized).suffix
-            if suffix not in {".py", ".go", ".cs", ".ts", ".tsx", ".js", ".jsx", ".java", ".rs", ".cpp", ".cc", ".c"}:
+            if suffix not in {".py", ".go", ".cs", ".ts", ".tsx", ".js", ".jsx", ".java", ".rs", ".cpp", ".cc", ".c", ".php"}:
                 return False
             name = Path(normalized).name
+            original_name = Path(rel_path.replace("\\", "/")).name
+            if name == "pest.php":
+                return False
+            php_test_name = (
+                name == "test.php" or name.endswith("_test.php") or original_name.endswith("Test.php")
+            )
             return (
                 name.startswith("test_") or name.startswith("tests_") or
-                name.endswith(("_test.py", "_test.go", ".spec.ts", ".spec.js", ".spec.tsx", ".spec.jsx", ".test.ts", ".test.js", ".test.tsx", ".test.jsx")) or
+                name.endswith(("_test.py", "_test.go", ".spec.ts", ".spec.js", ".spec.tsx", ".spec.jsx", ".test.ts", ".test.js", ".test.tsx", ".test.jsx")) or php_test_name or
                 any(part in {"test", "tests", "spec", "specs"} for part in Path(normalized).parts)
             )
 

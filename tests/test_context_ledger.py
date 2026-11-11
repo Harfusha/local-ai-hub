@@ -189,6 +189,60 @@ def test_project_context_changes_ledger_reuse_key() -> None:
     assert changed_hint["reuse_key"] != project_a["reuse_key"]
 
 
+def test_identical_context_reuses_artifact_without_another_put() -> None:
+    class CountingArtifactStore:
+        ttl_seconds = 3600
+
+        def __init__(self) -> None:
+            self.put_calls: list[tuple[str, str]] = []
+            self.get_calls: list[str] = []
+            self.artifacts: dict[str, str] = {}
+
+        def put(self, value: str, *, kind: str) -> str:
+            self.put_calls.append((value, kind))
+            artifact_id = f"artifact-{len(self.put_calls)}"
+            self.artifacts[artifact_id] = value
+            return artifact_id
+
+        def get(self, artifact_id: str, *, offset: int = 0, max_chars: int = 6000) -> dict[str, object]:
+            self.get_calls.append(artifact_id)
+            value = self.artifacts.get(artifact_id)
+            if value is None:
+                return {"success": False, "error": "artifact not found"}
+            return {"success": True, "text": value[offset:offset + max_chars]}
+
+    artifact_store = CountingArtifactStore()
+    ledger = ContextLedger()
+    common = {
+        "task_id": "task-16",
+        "revision": "rev-16",
+        "evidence_ids": ["E16"],
+        "context": "unchanged reusable context",
+        "root": "C:/repo",
+        "session_id": "session-16",
+        "artifact_store": artifact_store,
+    }
+
+    first = ledger.compile(**common)
+    second = ledger.compile(**common)
+
+    assert second["reuse_key"] == first["reuse_key"]
+    assert second["status"] == "unchanged"
+    assert artifact_store.get_calls == ["artifact-1"]
+    assert artifact_store.put_calls == [("unchanged reusable context", "agent-context")]
+
+    artifact_store.artifacts.clear()
+    third = ledger.compile(**common)
+
+    assert third["reuse_key"] == first["reuse_key"]
+    assert artifact_store.get_calls == ["artifact-1", "artifact-1"]
+    assert artifact_store.put_calls == [
+        ("unchanged reusable context", "agent-context"),
+        ("unchanged reusable context", "agent-context"),
+    ]
+    assert ledger._compiled[first["reuse_key"]]["artifact_id"] == "artifact-2"
+
+
 def test_materialized_context_pointer_is_scope_bound_and_ttl_limited(tmp_path, monkeypatch) -> None:
     now = [1_000.0]
     monkeypatch.setattr(context_ledger_module.time, "time", lambda: now[0])

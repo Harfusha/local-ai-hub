@@ -326,8 +326,10 @@ class RoutingEngine:
                 test_target = f"{parent}/{name}_test.go" if parent else f"{name}_test.go"
             elif normalized.endswith(".rs"):
                 test_target = f"tests/{name}_test.rs"
-            else:
+            elif normalized.endswith(".py"):
                 test_target = f"tests/test_{name}.py"
+            else:
+                continue
             if test_target not in selected:
                 selected.append(test_target)
 

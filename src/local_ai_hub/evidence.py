@@ -3,13 +3,17 @@ from __future__ import annotations
 from collections.abc import Mapping
 from contextlib import closing
 import hashlib
+import io
 import logging
+import os
 from pathlib import Path
 import sqlite3
+import stat
 import threading
 import time
 from typing import Any
 
+from .source_slice import MAX_SOURCE_BYTES
 from .sqlite_support import connect_sqlite, initialize_wal, is_busy_error
 
 logger = logging.getLogger(__name__)
@@ -98,10 +102,169 @@ class EvidenceStore:
     @staticmethod
     def _hash_source_file(path: Path) -> str:
         digest = hashlib.sha256()
-        with path.open("rb") as source:
-            while chunk := source.read(65536):
-                digest.update(chunk)
+        path_before = path.stat()
+        flags = (
+            os.O_RDONLY
+            | getattr(os, "O_BINARY", 0)
+            | getattr(os, "O_NONBLOCK", 0)
+            | getattr(os, "O_NOFOLLOW", 0)
+        )
+        descriptor = os.open(path, flags)
+        try:
+            with os.fdopen(descriptor, "rb", closefd=False) as source:
+                before = os.fstat(source.fileno())
+                if not stat.S_ISREG(before.st_mode):
+                    raise ValueError("source path must name a regular file")
+                if before.st_size > MAX_SOURCE_BYTES:
+                    raise ValueError("source file exceeds the 4 MiB read bound")
+                size = 0
+                while chunk := source.read(
+                    min(1024 * 1024, MAX_SOURCE_BYTES + 1 - size)
+                ):
+                    size += len(chunk)
+                    if size > MAX_SOURCE_BYTES:
+                        raise ValueError("source file exceeds the 4 MiB read bound")
+                    digest.update(chunk)
+                after = os.fstat(source.fileno())
+        finally:
+            os.close(descriptor)
+        current = path.stat()
+
+        def identity(info: os.stat_result) -> tuple[int, int, int, int, int]:
+            return (
+                info.st_dev,
+                info.st_ino,
+                info.st_size,
+                info.st_mtime_ns,
+                info.st_ctime_ns,
+            )
+
+        if identity(path_before) != identity(current) or identity(before) != identity(after):
+            raise ValueError("source file changed during hashing")
+        if size != before.st_size:
+            raise ValueError("source file changed during hashing")
         return digest.hexdigest()
+
+    def _verify_source_rows(
+        self, root: str, relative_path: str, rows: list[sqlite3.Row]
+    ) -> dict[str, bool]:
+        """Verify hashes and snippets through one stable, root-confined file handle."""
+        result = {str(row["id"]): False for row in rows}
+        path = _evidence_path_under_root(root, relative_path, strict=True)
+        if path is None:
+            return result
+
+        try:
+            path_before = path.stat()
+            flags = (
+                os.O_RDONLY
+                | getattr(os, "O_BINARY", 0)
+                | getattr(os, "O_NONBLOCK", 0)
+                | getattr(os, "O_NOFOLLOW", 0)
+            )
+            descriptor = os.open(path, flags)
+            try:
+                with os.fdopen(descriptor, "rb", closefd=False) as source:
+                    before = os.fstat(source.fileno())
+                    if (
+                        not stat.S_ISREG(before.st_mode)
+                        or before.st_size > MAX_SOURCE_BYTES
+                    ):
+                        return result
+
+                    digest = hashlib.sha256()
+                    size = 0
+                    while chunk := source.read(
+                        min(1024 * 1024, MAX_SOURCE_BYTES + 1 - size)
+                    ):
+                        size += len(chunk)
+                        if size > MAX_SOURCE_BYTES:
+                            return result
+                        digest.update(chunk)
+
+                    starts: dict[int, list[sqlite3.Row]] = {}
+                    ends: dict[int, list[sqlite3.Row]] = {}
+                    selected: dict[str, list[str]] = {}
+                    active: dict[str, sqlite3.Row] = {}
+                    for row in rows:
+                        start_line = int(row["start_line"])
+                        end_line = int(row["end_line"])
+                        if start_line < 1 or end_line < start_line:
+                            continue
+                        row_id = str(row["id"])
+                        starts.setdefault(start_line, []).append(row)
+                        ends.setdefault(end_line, []).append(row)
+                        selected[row_id] = []
+
+                    line_count = 0
+                    if ends:
+                        source.seek(0)
+                        text_source = io.TextIOWrapper(
+                            source, encoding="utf-8", errors="replace"
+                        )
+                        try:
+                            for line_count, line in enumerate(text_source, start=1):
+                                for row in starts.get(line_count, ()):
+                                    active[str(row["id"])] = row
+                                for row_id in active:
+                                    selected[row_id].append(line)
+                                for row in ends.get(line_count, ()):
+                                    active.pop(str(row["id"]), None)
+                                if line_count >= max(ends):
+                                    break
+                        finally:
+                            text_source.detach()
+
+                    after = os.fstat(source.fileno())
+            finally:
+                os.close(descriptor)
+
+            current_path = _evidence_path_under_root(root, relative_path, strict=True)
+            if current_path is None or current_path != path:
+                return result
+            current = current_path.stat()
+
+            def identity(info: os.stat_result) -> tuple[int, int, int, int, int]:
+                return (
+                    info.st_dev,
+                    info.st_ino,
+                    info.st_size,
+                    info.st_mtime_ns,
+                    info.st_ctime_ns,
+                )
+
+            def opened_identity(info: os.stat_result) -> tuple[int, int, int, int]:
+                return info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns
+
+            if (
+                identity(path_before) != identity(current)
+                or identity(before) != identity(after)
+                or opened_identity(path_before) != opened_identity(before)
+                or size != before.st_size
+            ):
+                return result
+
+            actual_hash = digest.hexdigest()
+            for row in rows:
+                row_id = str(row["id"])
+                if actual_hash != str(row["file_hash"]):
+                    continue
+                start_line = int(row["start_line"])
+                end_line = int(row["end_line"])
+                actual_lines = selected.get(row_id, [])
+                if (
+                    start_line < 1
+                    or end_line < start_line
+                    or line_count < end_line
+                    or len(actual_lines) != end_line - start_line + 1
+                ):
+                    continue
+                actual_text = "".join(actual_lines).rstrip("\r\n")
+                recorded_text = str(row["text"]).rstrip("\r\n")
+                result[row_id] = actual_text == recorded_text
+        except (OSError, RuntimeError, ValueError, UnicodeError):
+            return result
+        return result
 
     def _init_db(self) -> None:
         try:
@@ -377,45 +540,25 @@ class EvidenceStore:
                         self._touched_ids.clear(); self._touched_ids.add(eid)
         except sqlite3.DatabaseError:
             return {"success": False, "error": "evidence store unavailable"}
-        stale = False
+        source_verified = False
         if verify:
             try:
-                path = _evidence_path_under_root(
-                    str(row["root"]), str(row["path"]), strict=False
+                expected_id = self._id(
+                    str(row["root"]),
+                    str(row["path"]),
+                    str(row["file_hash"]),
+                    int(row["start_line"]),
+                    int(row["end_line"]),
+                    str(row["text"]),
                 )
-                if path is None or not path.is_file():
-                    stale = True
-                else:
-                    h = hashlib.sha256()
-                    with path.open("rb") as f:
-                        while chunk := f.read(65536):
-                            h.update(chunk)
-                    if h.hexdigest() != str(row["file_hash"]):
-                        stale = True
-                    else:
-                        try:
-                            with path.open("r", encoding="utf-8", errors="replace") as f:
-                                s_line = int(row["start_line"])
-                                e_line = int(row["end_line"])
-                                selected: list[str] = []
-                                line_count = 0
-                                for line_count, line in enumerate(f, start=1):
-                                    if s_line <= line_count <= e_line:
-                                        selected.append(line)
-                                    if line_count >= e_line:
-                                        break
-                            if s_line < 1 or line_count < e_line or len(selected) != e_line - s_line + 1:
-                                stale = True
-                            else:
-                                expected_snippet = "".join(selected).rstrip("\r\n")
-                                actual_snippet = str(row["text"]).rstrip("\r\n")
-                                if expected_snippet != actual_snippet:
-                                    stale = True
-                        except Exception:
-                            stale = True
+                if expected_id == eid:
+                    source_verified = self._verify_source_rows(
+                        str(row["root"]), str(row["path"]), [row]
+                    ).get(eid, False)
             except Exception:
-                stale = True
-        return {"success": True, "evidence_id": eid, "root": row["root"], "path": row["path"], "file_sha256": row["file_hash"], "start_line": row["start_line"], "end_line": row["end_line"], "text": row["text"], "stale": stale, "source_verified": bool(verify and not stale)}
+                source_verified = False
+        stale = bool(verify and not source_verified)
+        return {"success": True, "evidence_id": eid, "root": row["root"], "path": row["path"], "file_sha256": row["file_hash"], "start_line": row["start_line"], "end_line": row["end_line"], "text": row["text"], "stale": stale, "source_verified": source_verified}
 
     def get_many(self, evidence_ids: list[str], *, verify: bool = True, root: str | None = None) -> list[dict[str, Any]]:
         """Fetch bounded evidence batches, sharing database and source verification work."""
@@ -452,58 +595,35 @@ class EvidenceStore:
 
         stale_by_id: dict[str, bool] = {}
         if verify:
-            rows_by_path: dict[str, list[sqlite3.Row]] = {}
+            rows_by_path: dict[tuple[str, str], list[sqlite3.Row]] = {}
             for row in rows_by_id.values():
-                path = _evidence_path_under_root(
-                    str(row["root"]), str(row["path"]), strict=False
-                )
-                if path is None:
-                    stale_by_id[str(row["id"])] = True
-                    continue
-                rows_by_path.setdefault(str(path), []).append(row)
-            for raw_path, rows in rows_by_path.items():
-                path = Path(raw_path)
-                stale_ids = {str(row["id"]) for row in rows}
+                row_id = str(row["id"])
                 try:
-                    if not path.is_file():
-                        stale_by_id.update({eid: True for eid in stale_ids})
-                        continue
-                    actual_hash = self._hash_source_file(path)
-                    hash_matches = {str(row["id"]): actual_hash == str(row["file_hash"]) for row in rows}
-                    readable = [row for row in rows if hash_matches[str(row["id"])] ]
-                    if readable:
-                        starts: dict[int, list[sqlite3.Row]] = {}
-                        ends: dict[int, list[sqlite3.Row]] = {}
-                        for row in readable:
-                            starts.setdefault(int(row["start_line"]), []).append(row)
-                            ends.setdefault(int(row["end_line"]), []).append(row)
-                        selected: dict[str, list[str]] = {str(row["id"]): [] for row in readable}
-                        active: dict[str, sqlite3.Row] = {}
-                        line_count = 0
-                        with path.open("r", encoding="utf-8", errors="replace") as source:
-                            for line_count, line in enumerate(source, start=1):
-                                for row in starts.get(line_count, ()):
-                                    active[str(row["id"])] = row
-                                for eid in active:
-                                    selected[eid].append(line)
-                                for row in ends.get(line_count, ()):
-                                    active.pop(str(row["id"]), None)
-                                if line_count >= max(ends):
-                                    break
-                        for row in readable:
-                            eid = str(row["id"])
-                            start_line = int(row["start_line"])
-                            end_line = int(row["end_line"])
-                            actual_lines = selected[eid]
-                            expected = "".join(actual_lines).rstrip("\r\n")
-                            recorded = str(row["text"]).rstrip("\r\n")
-                            stale_by_id[eid] = (start_line < 1 or line_count < end_line
-                                                or len(actual_lines) != end_line - start_line + 1
-                                                or expected != recorded)
-                    for eid, matches in hash_matches.items():
-                        stale_by_id.setdefault(eid, not matches)
+                    expected_id = self._id(
+                        str(row["root"]),
+                        str(row["path"]),
+                        str(row["file_hash"]),
+                        int(row["start_line"]),
+                        int(row["end_line"]),
+                        str(row["text"]),
+                    )
                 except Exception:
-                    stale_by_id.update({eid: True for eid in stale_ids})
+                    stale_by_id[row_id] = True
+                    continue
+                if expected_id != row_id:
+                    stale_by_id[row_id] = True
+                    continue
+                row_root = str(row["root"])
+                row_path = str(row["path"])
+                if _evidence_path_under_root(row_root, row_path, strict=True) is None:
+                    stale_by_id[row_id] = True
+                    continue
+                rows_by_path.setdefault((row_root, row_path), []).append(row)
+            for (row_root, row_path), rows in rows_by_path.items():
+                verified = self._verify_source_rows(row_root, row_path, rows)
+                for row in rows:
+                    row_id = str(row["id"])
+                    stale_by_id[row_id] = not verified.get(row_id, False)
 
         results: list[dict[str, Any]] = []
         for eid in ids:
@@ -562,7 +682,7 @@ class EvidenceStore:
             if len(by_id) != len(ids):
                 return False
 
-            file_hashes: dict[Path, str] = {}
+            rows_by_path: dict[tuple[str, str], list[sqlite3.Row]] = {}
             for evidence_id in ids:
                 row = by_id[evidence_id]
                 expected = self._id(
@@ -576,37 +696,14 @@ class EvidenceStore:
                 if expected != evidence_id:
                     return False
 
-                path = _evidence_path_under_root(
-                    str(row["root"]), str(row["path"]), strict=False
-                )
-                if path is None:
+                row_root = str(row["root"])
+                row_path = str(row["path"])
+                if _evidence_path_under_root(row_root, row_path, strict=True) is None:
                     return False
-                actual_hash = file_hashes.get(path)
-                if actual_hash is None:
-                    if not path.is_file():
-                        return False
-                    actual_hash = self._hash_source_file(path)
-                    file_hashes[path] = actual_hash
-                if actual_hash != str(row["file_hash"]):
-                    return False
-
-                start_line = int(row["start_line"])
-                end_line = int(row["end_line"])
-                selected: list[str] = []
-                line_count = 0
-                with path.open("r", encoding="utf-8", errors="replace") as source:
-                    for line_count, line in enumerate(source, start=1):
-                        if start_line <= line_count <= end_line:
-                            selected.append(line)
-                        if line_count >= end_line:
-                            break
-                if (
-                    start_line < 1
-                    or line_count < end_line
-                    or len(selected) != end_line - start_line + 1
-                ):
-                    return False
-                if "".join(selected).rstrip("\r\n") != str(row["text"]).rstrip("\r\n"):
+                rows_by_path.setdefault((row_root, row_path), []).append(row)
+            for (row_root, row_path), grouped_rows in rows_by_path.items():
+                verified = self._verify_source_rows(row_root, row_path, grouped_rows)
+                if any(not verified.get(str(row["id"]), False) for row in grouped_rows):
                     return False
         except Exception:
             return False

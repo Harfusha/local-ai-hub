@@ -10,6 +10,13 @@ import pytest
 import local_ai_hub.laya_candidates as candidates_module
 from local_ai_hub.agent_events import AgentStateStore
 from local_ai_hub.laya_candidates import LayaCandidateStore
+from local_ai_hub.laya_decisions import (
+    ContextSourceEvidence,
+    DecisionInput,
+    DecisionMode,
+    DecisionRequest,
+    DecisionResult,
+)
 
 
 @pytest.fixture
@@ -64,6 +71,204 @@ def test_capture_persists_only_real_runtime_candidate(candidate_env):
     assert "consent_receipt_id" not in candidate_json
     assert "per_example_consented" not in candidate_json
     assert consent_table is None
+
+
+def test_context_source_candidate_persists_only_redacted_raw_training_content():
+    candidate = LayaCandidateStore._candidate_input({
+        "decision_schema_version": "laya-hub-v1",
+        "category": "context_source",
+        "state": {
+            "gap_code": "unresolved_evidence_gap",
+            "source_codes": ["indexed", "artifact"],
+            "freshness_codes": ["current", "current"],
+            "coverage_codes": ["partial", "complete"],
+            "raw_task_input": "Find route for token=secret-value",
+            "raw_context_excerpt": "router.py maps the request",
+        },
+        "options": ["indexed", "artifact"],
+        "language": "en",
+        "preprocessing": {"name": "laya-runtime", "version": "fixture"},
+        "evidence_ids": ["E" + "a" * 20, "E" + "b" * 20],
+    })
+
+    assert candidate["state"]["raw_task_input"] == "Find route for token=[REDACTED]"
+    assert candidate["state"]["raw_context_excerpt"] == "router.py maps the request"
+
+
+def test_verified_label_export_requires_and_preserves_rubric_version():
+    candidate = {
+        "label_status": "verified",
+        "label_provenance": {
+            "rubric_version": "laya-source-label-v1",
+            "annotations": [
+                {"annotator_ref": "annotator-a", "target": "indexed"},
+                {"annotator_ref": "annotator-b", "target": "indexed"},
+            ],
+            "adjudication": {"reviewer_ref": "adjudicator", "target": "indexed"},
+            "verification": {"reviewer_ref": "verifier"},
+        },
+    }
+    targets = {"context_source": "indexed"}
+
+    provenance = candidates_module._export_label_provenance(candidate, targets)
+    assert provenance["rubric_version"] == "laya-source-label-v1"
+
+    candidate["label_provenance"].pop("rubric_version")
+    with pytest.raises(ValueError, match="label rubric version"):
+        candidates_module._export_label_provenance(candidate, targets)
+
+
+def test_runtime_outcome_records_deterministic_baseline_and_unobserved_downstream(candidate_env):
+    repo, _state, task_store, store = candidate_env
+    evidence_ids = ["E" + "a" * 20, "E" + "b" * 20]
+    evidence = ContextSourceEvidence.from_mapping({
+        "gap_code": "unresolved_evidence_gap",
+        "source_codes": ["indexed", "artifact"],
+        "freshness_codes": ["current", "current"],
+        "coverage_codes": ["partial", "complete"],
+        "evidence_ids": evidence_ids,
+        "training_content": {"task_input": "Find route"},
+    })
+    request = DecisionRequest.from_mapping(
+        {"category": "context_source", "evidence_ids": evidence_ids, "options": ["indexed", "artifact"]},
+        decision_id="decision-1",
+        mode=DecisionMode.SHADOW,
+        repository_id="repo-1",
+        task_id="task-1",
+        session_id="session-1",
+    )
+    decision = DecisionResult.from_mapping(request, {
+        "success": True,
+        "status": "success",
+        "suggestion": "artifact",
+        "reason_codes": ["EVIDENCE_SUFFICIENT"],
+    })
+    runtime = SimpleNamespace(
+        runtime_version="fixture", model_id="laya", revision="rev", provider="mock",
+        device="cpu", device_class="cpu", device_name="mock", parameter_device="cpu",
+        execution_verification="NOT_VERIFIED", quality_status="NOT_EVALUATED",
+        latency_ms=3.0, input_tokens=12, output_tokens=2, fallback_reason="",
+    )
+
+    captured = store.capture_runtime_outcome(
+        request,
+        evidence,
+        SimpleNamespace(decision=decision, runtime=runtime),
+        root=str(repo),
+        task_store=task_store,
+        evidence_store=_evidence_store(),
+        baseline={
+            "method": "retrieval_rank_order",
+            "suggestion": "indexed",
+            "evidence_id": evidence_ids[0],
+        },
+    )
+
+    with closing(sqlite3.connect(store.path)) as con:
+        payload = con.execute(
+            "SELECT metadata_json FROM laya_candidate_events WHERE candidate_id=? AND action='runtime_output'",
+            (captured["candidate_id"],),
+        ).fetchone()[0]
+    event = json.loads(payload)
+    assert event["baseline"] == {
+        "status": "recorded",
+        "method": "retrieval_rank_order",
+        "suggestion": "indexed",
+        "evidence_id": evidence_ids[0],
+    }
+    assert event["downstream_outcome"] == {
+        "status": "not_observed",
+        "reason": "shadow_only_not_user_exposed",
+    }
+
+
+def test_runtime_outcome_records_server_derived_baseline_for_typed_category(candidate_env):
+    repo, _state, task_store, store = candidate_env
+    evidence_id = "E" + "c" * 20
+    decision_input = DecisionInput.from_mapping({
+        "state": {"complete": "false", "unsatisfied_count": "1", "stale_count": "0"},
+        "training_content": {},
+    })
+    request = DecisionRequest.from_mapping(
+        {
+            "category": "completion_gap",
+            "evidence_ids": [evidence_id],
+            "options": ["missing_verification", "resolve_blocker"],
+        },
+        decision_id="decision-completion-gap",
+        mode=DecisionMode.SHADOW,
+        repository_id="repo-1",
+        task_id="task-1",
+        session_id="session-1",
+    )
+    decision = DecisionResult.from_mapping(request, {
+        "success": True,
+        "status": "success",
+        "suggestion": "missing_verification",
+        "reason_codes": ["INSUFFICIENT_EVIDENCE"],
+    })
+    runtime = SimpleNamespace(
+        runtime_version="fixture", model_id="laya", revision="rev", provider="mock",
+        device="cpu", device_class="cpu", device_name="mock", parameter_device="cpu",
+        execution_verification="NOT_VERIFIED", quality_status="NOT_EVALUATED",
+        latency_ms=3.0, input_tokens=12, output_tokens=2, fallback_reason="",
+    )
+
+    captured = store.capture_runtime_outcome(
+        request,
+        decision_input,
+        SimpleNamespace(decision=decision, runtime=runtime),
+        root=str(repo),
+        task_store=task_store,
+        evidence_store=_evidence_store(),
+        baseline={
+            "method": "agent_os_completion_gate",
+            "suggestion": "missing_verification",
+            "evidence_id": evidence_id,
+        },
+    )
+
+    with closing(sqlite3.connect(store.path)) as con:
+        payload = con.execute(
+            "SELECT metadata_json FROM laya_candidate_events WHERE candidate_id=? AND action='runtime_output'",
+            (captured["candidate_id"],),
+        ).fetchone()[0]
+    event = json.loads(payload)
+    assert event["baseline"] == {
+        "status": "recorded",
+        "method": "agent_os_completion_gate",
+        "suggestion": "missing_verification",
+        "evidence_id": evidence_id,
+    }
+
+    invalid_baseline = {
+        "method": "agent_os_completion_gate",
+        "suggestion": "missing_verification",
+        "evidence_id": "E" + "d" * 20,
+    }
+    with pytest.raises(ValueError, match="request evidence ID"):
+        store.capture_runtime_outcome(
+            request,
+            decision_input,
+            SimpleNamespace(decision=decision, runtime=runtime),
+            root=str(repo),
+            task_store=task_store,
+            evidence_store=_evidence_store(),
+            baseline=invalid_baseline,
+        )
+
+    invalid_baseline["evidence_id"] = evidence_id
+    invalid_baseline["method"] = "unregistered_method"
+    with pytest.raises(ValueError, match="not registered"):
+        store.capture_runtime_outcome(
+            request,
+            decision_input,
+            SimpleNamespace(decision=decision, runtime=runtime),
+            root=str(repo),
+            task_store=task_store,
+            evidence_store=_evidence_store(),
+            baseline=invalid_baseline,
+        )
 
 
 def test_duplicate_capture_is_not_stored_twice(candidate_env):

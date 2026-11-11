@@ -64,3 +64,21 @@ def test_traverse_graph_bounded_limits_and_cycles(tmp_path: Path) -> None:
     # Test max_nodes limit = 2
     res_bounded = store.traverse_graph("X", max_depth=3, max_nodes=2)
     assert len(res_bounded["nodes"]) == 2
+
+
+def test_traverse_graph_edges_stay_within_returned_node_limit(tmp_path: Path) -> None:
+    state = AgentStateStore(tmp_path / "state.sqlite3")
+    store = MemoryStore(state)
+    store._init_table()
+
+    store.record_relation("A", "connects", "B", weight=1.0)
+    store.record_relation("A", "connects", "C", weight=0.9)
+    store.record_relation("B", "connects", "D", weight=0.8)
+
+    result = store.traverse_graph("A", max_depth=2, max_nodes=2)
+
+    nodes = set(result["nodes"])
+    assert result["truncated"] is True
+    assert len(nodes) == 2
+    assert len(result["edges"]) == 1
+    assert all(edge["source_entity"] in nodes and edge["target_entity"] in nodes for edge in result["edges"])

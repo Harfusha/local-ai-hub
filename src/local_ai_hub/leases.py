@@ -442,18 +442,33 @@ class ScopeLeaseStore:
                         (owner, scope_id),
                     )
                 for scope_id, path in released_scopes:
-                    con.execute(
-                        """
-                        DELETE FROM lease_waits
-                        WHERE blocked_by = ? AND root_id = ?
-                          AND (
-                              requested_path = ?
-                              OR requested_path LIKE (? || '/%')
-                              OR ? LIKE (requested_path || '/%')
-                          )
-                        """,
-                        (owner, scope_id, path, path, path),
-                    )
+                    wait_rows = con.execute(
+                        "SELECT owner,requested_path FROM lease_waits WHERE blocked_by=? AND root_id=?",
+                        (owner, scope_id),
+                    ).fetchall()
+                    active_rows = con.execute(
+                        "SELECT path,root_path FROM leases WHERE owner=? AND root_id=? AND expires_at>?",
+                        (owner, scope_id, time.time()),
+                    ).fetchall()
+                    root_path = next((str(row[1]) for row in active_rows if row[1]), "")
+                    case_insensitive_paths = os.name == "nt" or PureWindowsPath(root_path).is_absolute()
+                    for waiting_owner, requested_path in wait_rows:
+                        if not _overlap(
+                            path, str(requested_path), case_insensitive=case_insensitive_paths
+                        ):
+                            continue
+                        still_blocked = any(
+                            _overlap(
+                                str(requested_path), str(active_path),
+                                case_insensitive=case_insensitive_paths,
+                            )
+                            for active_path, _ in active_rows
+                        )
+                        if not still_blocked:
+                            con.execute(
+                                "DELETE FROM lease_waits WHERE owner=? AND blocked_by=? AND root_id=? AND requested_path=?",
+                                (waiting_owner, owner, scope_id, requested_path),
+                            )
                 for scope_id in roots:
                     has_active = con.execute(
                         "SELECT 1 FROM leases WHERE owner=? AND root_id=? LIMIT 1",

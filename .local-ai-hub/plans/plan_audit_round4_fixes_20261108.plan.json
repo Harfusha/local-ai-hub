@@ -13,9 +13,9 @@
       "depends_on": [],
       "description": "put(): ověřit text vůči obsahu souboru na deklarovaném rozsahu řádků; odmítnout absolutní cesty a úniky mimo root. validate_current(): přidat path.relative_to(root). Přidat pole source_verified. AC: záznam se správným hash+chybným textem nikdy nezíská source_verified=True. Priority: critical.",
       "kind": "code",
-      "next_action": "",
+      "next_action": "Focused source-path race and provenance tests pass. Windows symlink test is skipped because symlink creation is unavailable on this host; retain this platform limitation in final acceptance. No broad suite or live runtime acceptance yet.",
       "title": "A01+A17 — EvidenceStore: source_verified a path confinement",
-      "work_status": "planned"
+      "work_status": "completed"
     },
     "task_t02_evidence_hash_streaming": {
       "acceptance_criteria": [],
@@ -24,9 +24,9 @@
       "depends_on": [],
       "description": "Nahradit path.read_bytes() za blokové čtení 1 MiB chunks. Přidat explicitní limit velikosti souboru. Ověřit identitu souboru před a po čtení. Priority: high.",
       "kind": "code",
-      "next_action": "",
+      "next_action": "Implemented 1 MiB streaming, shared 4 MiB bound, regular-file check, and before/after file identity validation. Boundary test verifies exact limit succeeds and limit+1 is rejected. Focused evidence tests: 12 passed, 1 skipped (host symlink support unavailable).",
       "title": "A02 — EvidenceStore: inkrementální hashování souborů",
-      "work_status": "planned"
+      "work_status": "completed"
     },
     "task_t03_worktree_locking": {
       "acceptance_criteria": [],
@@ -35,9 +35,9 @@
       "depends_on": [],
       "description": "get_worktree_status(): spouštět 'git worktree list' nad samotným worktree, ne nad target.parent. Vracet 'unknown' místo tichého 'unlocked'. unlock_worktree fallback: nepoužívat basename; ověřit skutečná Git worktree metadata. Při nejednoznačnosti odmítnout ruční unlock. Priority: critical.",
       "kind": "code",
-      "next_action": "",
+      "next_action": "Implemented unknown lock status, target-worktree lock query, exact Git metadata validation for fallback and zombie unlock. Focused tests: tests/unit/test_worktrees_extended.py + tests/unit/test_worktree_lock_cleanup.py, 10 passed. Affected paths src/local_ai_hub/worktrees.py and tests/unit/test_worktrees_extended.py. Broader suite remains deferred.",
       "title": "A03+A04 — Worktrees: zjišťování a ruční odemykání zámků",
-      "work_status": "planned"
+      "work_status": "completed"
     },
     "task_t04_stash_ownership": {
       "acceptance_criteria": [],
@@ -46,97 +46,124 @@
       "depends_on": [],
       "description": "restore() a drop() musí používat uloženou _stash_sha pro identifikaci. Ověřit commit před mutací. Odmítnout tiché stash@{0}. Pokud vlastní stash nelze bezpečně identifikovat, selhat bez mutace cizího stashe. Priority: critical.",
       "kind": "code",
-      "next_action": "",
+      "next_action": "Implemented exact recorded SHA matching and pre-mutation commit verification with bounded ref re-resolution. Race regressions insert a foreign stash between lookup and verification; restore/drop retain it and act on the owned stash. Focused test: tests/unit/test_transaction_stash_restore_hook.py, 10 passed. Source SHA-256 ae3c69b965060adefefda918431c9fb0a9aa2fde4a5ca364e0d10befc8d3bba5. Current HEAD 5131e2b1f4658887e44c12ea15ed2c23e98e3d17.",
       "title": "A05 — TransactionStashHook: identita vlastního stashe",
-      "work_status": "planned"
+      "work_status": "completed"
     },
     "task_t05_learning_state_machine": {
-      "acceptance_criteria": [],
-      "blocker": null,
+      "acceptance_criteria": [
+        "Povolit pouze explicitní následné přechody CANDIDATE→REPLAY_PASSED→SHADOW_PASSED→CANARY_PASSED→APPROVED; odmítnout neenum, přeskočené i zpětné přechody a terminální stavy.",
+        "advance() nikdy nesmí nastavit PROMOTED.",
+        "PROMOTED vzniká pouze po validaci autoritativního approval receipt, svázaného s kandidátem a schválenou akcí; approver text sám nestačí."
+      ],
+      "blocker": "Promotion remains fail-closed: agent_learning.py SHA 3ee91a1273e6de15b0518460652e700af9b4eac434d7c4eb2e8c0f9a61eb34a1 lines 486-495 requires a Mapping receipt, rejects missing verifier, invokes it, and checks returned approver. app.py SHA f2586323f04c4cd21f4c36634e9bfe512b6b6ac1469331964ae4b0b44b09a153 lines 550-557 constructs LearningStore without approval_verifier. Host adapter SHA 9ca221d3f41485e82baf67f1e2513417144bc2ab13ea546a8d9ec838f53f3f8e lines 704-778 only records Codex approval-request observations; it does not issue or verify a candidate/action-bound receipt. Bounded indexed issuer search req_f0b615524e2a and req_80cf7ab0ed97 was incomplete; no authoritative issuer was found in inspected results, so absence is not proven. Laya owns app.py and runtime/test overlap; no single-writer handoff or stable runtime window confirmed.",
       "clarifications": [],
       "depends_on": [],
       "description": "Implementovat validační funkci pro všechny přechody CandidateStatus. advance() odmítnout přímý přechod do PROMOTED. Stav PROMOTED smí vzniknout pouze přes schválenou promotion transakci s autoritativním approval receipt. Priority: critical.",
       "kind": "code",
-      "next_action": "",
+      "next_action": "Ask Laya/Stability to identify any authoritative candidate/action-bound receipt issuer and agree app.py writer handoff. Keep promotion fail-closed. Once ownership and stable window are explicit, wire only the authorized issuer/verifier and run focused valid/invalid app-path receipt tests; otherwise retain as open.",
       "title": "A06 — LearningStore: vynucené stavové přechody",
-      "work_status": "planned"
+      "work_status": "in_progress"
     },
     "task_t06_learning_atomicity": {
-      "acceptance_criteria": [],
+      "acceptance_criteria": [
+        "Learning event append and candidate projection write use the same SQLite connection and transaction.",
+        "A repeated identical transition is idempotent and does not create a second logical event.",
+        "Injected failures before/after event append and before/after projection leave both event and projection unchanged."
+      ],
       "blocker": null,
       "clarifications": [],
       "depends_on": [],
       "description": "Ukládat event a projekci v jedné SQLite transakci pomocí append_in_transaction(). Implementovat idempotenci opakovaného přechodu. Testovat selhání před/po eventu a před/po projekci. Priority: high.",
       "kind": "code",
-      "next_action": "",
+      "next_action": "Event append plus learning projection now share one BEGIN IMMEDIATE transaction via append_in_transaction(strict_idempotency=True). Create, advance, promote, and rollback use the atomic helper; duplicate transition retry returns existing projection. Four injected failure points (before/after event and before/after projection) roll back both. Focused validation: 27 passed, 15 deselected across learning, storage reliability, and audit regression selections; git diff --check clean. Broad suite and live runtime remain unverified.",
       "title": "A07 — LearningStore: atomický zápis event+projekce",
-      "work_status": "planned"
+      "work_status": "completed"
     },
     "task_t07_slo_success_rate": {
-      "acceptance_criteria": [],
+      "acceptance_criteria": [
+        "SLO success-rate evaluation uses a bounded count or time window, not lifetime cumulative counters.",
+        "Persist success_count and failure_count for the active window and honor min_samples.",
+        "Rollback only after min_samples and when aggregate window success rate is below min_success_rate."
+      ],
       "blocker": null,
       "clarifications": [],
       "depends_on": [],
       "description": "Zavést časové nebo počtové okno s agregací success_count, failure_count, min_sample_count. Rollback pouze při překročení agregovaného failure rate. Priority: high.",
       "kind": "code",
-      "next_action": "",
+      "next_action": "Added bounded rolling success window (window_size up to 64), persisted window count/success/failure counts and exact bit history in numeric metrics. min_samples gates aggregate success-rate rollback; observation success also requires zero error_count. Regression verifies rolling failures override earlier successes and verifies persisted counts. Focused validation: 29 passed, 15 deselected across learning/storage/audit selections; git diff --check clean. Broad suite and live runtime remain unverified.",
       "title": "A08 — LearningStore: SLO min_success_rate jako agregace",
-      "work_status": "planned"
+      "work_status": "completed"
     },
     "task_t08_contract_mapping": {
-      "acceptance_criteria": [],
+      "acceptance_criteria": [
+        "Backend/frontend file pairs require concrete API evidence: method+endpoint, OpenAPI operation ID, DTO type, or explicit import.",
+        "Pairs without concrete evidence return insufficient_evidence and are not emitted as mappings.",
+        "TypeScript backend files are not misclassified as frontend solely by extension."
+      ],
       "blocker": null,
       "clarifications": [],
       "depends_on": [],
       "description": "build_contract_mappings(): vyžadovat konkrétní API vazbu (HTTP method+endpoint, OpenAPI op ID, DTO typ, explicitní import). Bez vazby vrátit insufficient_evidence. Opravit _is_frontend() pro TypeScript backend. Priority: high.",
       "kind": "code",
-      "next_action": "",
+      "next_action": "Contract mappings now require a shared method+endpoint, operationId, DTO declaration/reference, or explicit frontend import of the backend module. Unlinked frontend/backend candidates produce an insufficient_evidence warning; basename similarity is ignored. TypeScript under backend/server/API path markers is not treated as frontend. Focused regressions: seven A09 cases passed; combined A06-A09 selection: 36 passed, 14 deselected; git diff --check clean. Broad suite and live runtime remain unverified.",
       "title": "A09 — ConsistencyGuard: párování backend/frontend kontraktů",
-      "work_status": "planned"
+      "work_status": "completed"
     },
     "task_t09_guard_reuse": {
-      "acceptance_criteria": [],
+      "acceptance_criteria": [
+        "check_drift receives and reuses already-computed candidates instead of searching again.",
+        "When git diff is unavailable or fails, return analysis_status='unavailable' or 'partial' with the failure represented; do not imply complete analysis."
+      ],
       "blocker": null,
       "clarifications": [],
       "depends_on": [],
       "description": "Předávat vypočtené candidates do check_drift() jako vstup místo opakovaného vyhledávání. Vracet analysis_status=unavailable|partial při neúspěchu diffu. Priority: medium.",
       "kind": "code",
-      "next_action": "",
+      "next_action": "check_drift now accepts reuse_candidates and uses supplied candidates, avoiding a second search from LocalAIServices. Diff analysis status is complete/partial/unavailable; git_diff exceptions and null results become explicit unavailable records, status is returned in both guarded success and stop responses. Focused validation: 93 passed, 1 deselected across agent consistency, service consistency, and audit regressions; deselection is stale A03 T4-04 assertion. git diff --check clean. Broad suite and live runtime remain unverified.",
       "title": "A10+A11 — ConsistencyGuard: recyklace reuse candidates a analysis_status",
-      "work_status": "planned"
+      "work_status": "completed"
     },
     "task_t10_fencing_contention": {
       "acceptance_criteria": [],
-      "blocker": null,
+      "blocker": "Latest Stability thread reports GPU reservation `unknown` requiring manual intervention and Hub gpu_admission_state `outcome_unknown` (thread 01a1c762-d599-75c2-ae34-344aae056aa0, status marker exec-1f92f113-d273-4caa-aea1-a13d6343912c). Earlier Stability available/free and this task's inference_active/nominal reports conflict. The async job is outcome_unknown with result/replay unavailable (req_12180fdb89df, req_452699f02fa0). No safe benchmark window or explicit A12 writer handoff. No source edit or benchmark run.",
       "clarifications": [],
       "depends_on": [],
       "description": "Zvážit oddělené fencing DB podle projektové identity. Zachovat konflikt mezi worktrees stejného repozitáře. Benchmark: 2 nezávislé projekty, pomalý patch + opakovaný renewal, měřit p50/p95/p99 latency a SQLITE_BUSY. Priority: high.",
       "kind": "code",
-      "next_action": "",
+      "next_action": "Wait for Stability's operator-approved reconciliation of reservation/outcome and explicit stable revision/window; agree one writer. Then assess per-project fencing DB while retaining same-repository worktree conflicts and run the two-independent-project slow-patch/repeated-renewal benchmark with p50/p95/p99 and SQLITE_BUSY.",
       "title": "A12 — Work fencing: izolace SQLite per projekt",
-      "work_status": "planned"
+      "work_status": "in_progress"
     },
     "task_t11_snapshot_optimization": {
-      "acceptance_criteria": [],
+      "acceptance_criteria": [
+        "Measure private snapshot cost on NTFS with a representative working tree and record workload and repeatable timings.",
+        "Any optimization preserves dirty overlay, path safety, source pre/post comparison and an operator-selectable full-snapshot path."
+      ],
       "blocker": null,
       "clarifications": [],
       "depends_on": [],
       "description": "Profilovat create_private_transaction_snapshot_with_manifest na NTFS. Zvážit reflink/inkrementální manifest/omezený scope. Zachovat dirty overlay a pre/post image compare. Uživatel musí mít možnost přepnout na plný snapshot. Priority: medium.",
       "kind": "code",
-      "next_action": "",
+      "next_action": "Baseline measured on NTFS with a temporary Git repo: 250 files × 16 KiB (4 MiB), 276 manifest entries, clean tracked tree; three snapshot runs were 10.5863s, 9.5116s and 10.0027s (median 10.0027s). This does not cover dirty/untracked overlays or compare a candidate optimization. Inspect safe traversal reduction and measure a candidate before changing snapshot semantics.",
       "title": "A13 — Transaction snapshot: snížení I/O průchodů",
-      "work_status": "planned"
+      "work_status": "in_progress"
     },
     "task_t12_quality_receipts": {
-      "acceptance_criteria": [],
+      "acceptance_criteria": [
+        "A promotion receipt contains a non-empty model_digest, suite_version, dataset_hash and concrete run_id.",
+        "The receipt names a non-empty evaluator_id.",
+        "Where candidate metadata declares model_digest, the receipt digest must match it.",
+        "A bare evaluation_hash or caller-supplied reproducible=true cannot authorize promotion."
+      ],
       "blocker": null,
       "clarifications": [],
       "depends_on": [],
       "description": "promote_candidate() vynutit vazbu na model digest, verzi suite, hash datasetu, konkrétní run s evaluátorem. Odmítnout receipt pouze s neprázdným evaluation_hash. Priority: high.",
       "kind": "code",
-      "next_action": "",
+      "next_action": "A14 strict receipt binding implemented: require receipt_id, model_digest, suite_version, dataset_hash, run_id and evaluator_id; compare receipt model_digest to candidate top-level/metadata digest when supplied; self-asserted reproducible and bare evaluation_hash no longer bypass the gate. Regression covers accepted complete receipt, weak receipts and digest mismatch. Focused validation: py -3.11 -m pytest -q tests/test_model_quality.py tests/unit/test_model_quality_and_probe_edge_cases.py tests/unit/test_model_quality_hardening_wave20.py --tb=short — 16 passed in 0.72s. git diff --check on scoped files exited 0. Broad suite and live runtime not run.",
       "title": "A14 — Model quality: silné evaluation receipts",
-      "work_status": "planned"
+      "work_status": "completed"
     },
     "task_t13_lint_completeness": {
       "acceptance_criteria": [],
@@ -145,9 +172,9 @@
       "depends_on": [],
       "description": "submit() vrátit requested_paths_count, accepted_paths_count, truncated, omitted_paths_count. Označit lint výsledek jako partial pokud truncated=True. Priority: medium.",
       "kind": "code",
-      "next_action": "",
+      "next_action": "Implemented requested/accepted/omitted counts and truncation metadata in SpeculativeLintQueue.submit; all supplied paths are validated while preserving the existing caller-order cap selection. Cap metadata persists in the async payload. Completed Ruff/Biome/one-shot service results set partial=true only when capped. Regression coverage verifies capped submission/payload, capped completed service result and input-order selection. Fresh focused validation: py -3.11 -m pytest -q tests/test_speculative_lint.py tests/unit/test_speculative_lint_edge_cases.py --tb=short — 10 passed in 0.71s. git diff --check on scoped files exited 0; LF-to-CRLF warning only for edited test file. Dense indexed diff reviewed; unrelated pre-existing services.py A10/A11 hunks preserved. HEAD 5131e2b1f4658887e44c12ea15ed2c23e98e3d17; shared checkout remains dirty.",
       "title": "A15 — SpeculativeLint: explicitní příznak zkrácení",
-      "work_status": "planned"
+      "work_status": "completed"
     },
     "task_t14_audit_contracts": {
       "acceptance_criteria": [],
@@ -156,9 +183,9 @@
       "depends_on": [],
       "description": "completion_audit() vyžadovat passed is True (ne bool('false')=True). Nevalidní typ označit jako invalid_receipt. check_drift() přidat analysis_status. Priority: high.",
       "kind": "code",
-      "next_action": "",
+      "next_action": "`completion_audit` now reports `invalid_receipt` when a current criterion receipt omits `passed` or supplies a non-boolean value; only literal booleans can satisfy. Focused regressions verify string `\"false\"` is invalid, missing `passed` is invalid, `True` satisfies, `False` remains unsatisfied. `py -3.11 -m pytest -q tests/test_agent_consistency.py::test_completion_audit_marks_non_boolean_pass_receipt_invalid tests/test_agent_consistency.py::test_completion_audit_marks_missing_pass_field_invalid --tb=short` — 2 passed in 0.60s. `git diff --check -- src/local_ai_hub/agent_consistency.py tests/test_agent_consistency.py` exited 0. Current diff analysis classification exists (`diff_analysis_status`: complete/partial/unavailable); guarded services responses include `analysis_status`. Prior A10/A11 focused validation is separately recorded; no full suite or live runtime claim.",
       "title": "A16 — completion_audit(): typově přísné boolean výsledky",
-      "work_status": "planned"
+      "work_status": "completed"
     }
   },
   "title": "Audit Round 4: Opravy (commit 2176b0e)"

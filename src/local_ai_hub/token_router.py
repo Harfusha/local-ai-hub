@@ -203,14 +203,16 @@ class LosslessTokenRouter:
                 continue
             start = max(1, start - context_lines)
             end = min(max_line, end + context_lines)
+            raw_score = item.get("score", 1.0)
+            if isinstance(raw_score, bool):
+                continue
             try:
-                raw_score = item.get("score", 1.0)
-                score_val = float(raw_score) if raw_score is not None else 1.0
-                if not (score_val == score_val and abs(score_val) != float("inf")):
-                    score_val = 1.0
+                score_val = float(raw_score)
             except Exception:
-                score_val = 1.0
-            out.append((start, end, max(0.0, min(1.0, score_val))))
+                continue
+            if not math.isfinite(score_val) or not 0.0 <= score_val <= 1.0:
+                continue
+            out.append((start, end, score_val))
             if len(out) >= max_ranges:
                 break
         return out

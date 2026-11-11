@@ -11,7 +11,7 @@ Every token sent to a cloud frontier model (GPT-4o, Claude 3.5 Sonnet, Gemini 1.
 2. **Latency**: Time-to-first-token (TTFT) and throughput degrade as context grows into tens of thousands of tokens.
 3. **Attention Degradation (Lost in the Middle)**: LLMs degrade in reasoning accuracy, instruction adherence, and hallucination rate when overloaded with full-file dumps and verbose compiler output.
 
-Local AI Hub's deterministic index and the **Token Economy Suite** can reduce the context sent to cloud agents. Actual token use and elapsed time depend on the task and must be measured against a comparable baseline; the recorded P1-5 comparison found higher token use and elapsed time with Hub.
+Local AI Hub's deterministic index and the **Token Economy Suite** can reduce the context sent to cloud agents. Actual token use and elapsed time depend on the task and must be measured against a comparable baseline. The 2026-11-09 P1-5 pair used a 306-file runtime snapshot; Hub used 23,089 more input tokens and 11,375 ms more elapsed time. Final pytest outputs reported 22 Native versus 23 Hub passes, but suites differed, so this does not prove equivalent quality. The run-bound environment fingerprint remains incomplete; this single task supports no general savings claim. See [the snapshot-bound report](agent-evaluation/p1-5-ab-snapshot-2026-11-09.md).
 
 ---
 

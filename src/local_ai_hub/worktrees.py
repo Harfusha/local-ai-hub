@@ -140,13 +140,14 @@ def is_worktree_locked(
     repo_root: str | Path,
     worktree: str | Path,
     timeout: float = 5.0,
-) -> tuple[bool, str]:
+) -> tuple[bool | None, str]:
     """Check if worktree is locked using git worktree list --porcelain."""
-    repo = Path(repo_root).resolve(strict=True)
-    target = Path(worktree).resolve(strict=False)
     try:
+        repo = Path(repo_root).resolve(strict=True)
+        target = Path(worktree).resolve(strict=False)
         proc = subprocess.run(
             ["git", "-C", str(repo), "worktree", "list", "--porcelain"],
+            stdin=subprocess.DEVNULL,
             capture_output=True,
             text=True,
             timeout=timeout,
@@ -154,9 +155,10 @@ def is_worktree_locked(
             **hidden_run_kwargs(),
         )
         if proc.returncode != 0:
-            return False, ""
+            return None, "worktree lock status unavailable"
 
         current_wt: Path | None = None
+        found_target = False
         for line in proc.stdout.splitlines():
             line_str = line.strip()
             if line_str.startswith("worktree "):
@@ -165,12 +167,17 @@ def is_worktree_locked(
                     current_wt = Path(raw_wt).resolve(strict=False)
                 except (OSError, RuntimeError, ValueError):
                     current_wt = None
+                    continue
+                if current_wt == target:
+                    found_target = True
             elif current_wt == target and line_str.startswith("locked"):
                 reason = line_str.removeprefix("locked").strip()
                 return True, reason
+        if not found_target:
+            return None, "worktree lock status unavailable"
         return False, ""
     except (OSError, RuntimeError, ValueError, subprocess.SubprocessError):
-        return False, ""
+        return None, "worktree lock status unavailable"
 
 def check_worktree_uncommitted_changes(
     worktree_path: str | Path,
@@ -235,20 +242,89 @@ def lock_worktree(
         return False
 
 
+def _worktree_git_metadata(
+    repo: Path, target: Path, timeout: float
+) -> tuple[Path, Path] | None:
+    """Return common and per-worktree Git dirs only when their backlinks agree."""
+    def git_value(cwd: Path, *args: str) -> str | None:
+        result = subprocess.run(
+            ["git", "-C", str(cwd), *args],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+            **hidden_run_kwargs(),
+        )
+        if result.returncode != 0:
+            return None
+        return result.stdout.strip()
+
+    def resolve_git_path(cwd: Path, raw: str) -> Path:
+        value = Path(raw)
+        return value.resolve(strict=True) if value.is_absolute() else (cwd / value).resolve(strict=True)
+
+    repo_common_text = git_value(repo, "rev-parse", "--git-common-dir")
+    target_common_text = git_value(target, "rev-parse", "--git-common-dir")
+    git_dir_text = git_value(target, "rev-parse", "--absolute-git-dir")
+    if not repo_common_text or not target_common_text or not git_dir_text:
+        return None
+
+    repo_common = resolve_git_path(repo, repo_common_text)
+    target_common = resolve_git_path(target, target_common_text)
+    git_dir = Path(git_dir_text).resolve(strict=True)
+    if repo_common != target_common:
+        return None
+
+    worktrees_root = (repo_common / "worktrees").resolve(strict=True)
+    if git_dir.parent != worktrees_root:
+        return None
+    gitdir_file = git_dir / "gitdir"
+    commondir_file = git_dir / "commondir"
+    target_marker = target / ".git"
+    if any(path.is_symlink() for path in (gitdir_file, commondir_file, target_marker)):
+        return None
+    if not gitdir_file.is_file() or not commondir_file.is_file() or not target_marker.is_file():
+        return None
+
+    recorded_gitdir = Path(gitdir_file.read_text(encoding="utf-8").strip())
+    if not recorded_gitdir.is_absolute():
+        recorded_gitdir = git_dir / recorded_gitdir
+    if recorded_gitdir.resolve(strict=True) != target_marker.resolve(strict=True):
+        return None
+
+    recorded_common = Path(commondir_file.read_text(encoding="utf-8").strip())
+    if not recorded_common.is_absolute():
+        recorded_common = git_dir / recorded_common
+    if recorded_common.resolve(strict=True) != repo_common:
+        return None
+    return repo_common, git_dir
+
+
 def unlock_worktree(
     repo_root: str | Path,
     worktree: str | Path,
     timeout: float = 5.0,
 ) -> bool:
-    """Unlock worktree with git worktree unlock or fallback to unlinking lock file."""
-    repo = Path(repo_root).resolve(strict=True)
-    target_str = str(worktree).strip()
-    if not target_str:
+    """Unlock a registered worktree, verifying its Git metadata on fallback."""
+    try:
+        repo = Path(repo_root).resolve(strict=True)
+    except (OSError, RuntimeError, ValueError):
         return False
-    target = Path(target_str).resolve(strict=False)
+    target_str = str(worktree).strip()
+    if not target_str or "\x00" in target_str:
+        return False
+    candidate = Path(target_str).expanduser()
+    target = (candidate if candidate.is_absolute() else repo / candidate).resolve(
+        strict=False
+    )
+    if not target.is_dir():
+        return False
+
     try:
         proc = subprocess.run(
-            ["git", "-C", str(repo), "worktree", "unlock", target_str],
+            ["git", "-C", str(repo), "worktree", "unlock", str(target)],
+            stdin=subprocess.DEVNULL,
             capture_output=True,
             text=True,
             timeout=timeout,
@@ -257,35 +333,26 @@ def unlock_worktree(
         )
         if proc.returncode == 0:
             return True
-    except Exception:
+    except (OSError, subprocess.SubprocessError, ValueError):
         pass
 
     try:
-        cmn_proc = subprocess.run(
-            ["git", "-C", str(repo), "rev-parse", "--git-common-dir"],
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            check=False,
-            **hidden_run_kwargs(),
-        )
-        if cmn_proc.returncode == 0:
-            raw_cmn = cmn_proc.stdout.strip()
-            cmn_dir = Path(raw_cmn) if Path(raw_cmn).is_absolute() else (repo / raw_cmn).resolve()
-            worktrees_root = (cmn_dir / "worktrees").resolve(strict=False)
-            candidate = (worktrees_root / target.name / "locked").resolve(strict=False)
-            try:
-                candidate.relative_to(worktrees_root)
-            except ValueError:
-                return False
-            if target.name:
-                lock_file = candidate
-                if lock_file.exists():
-                    lock_file.unlink(missing_ok=True)
-                    return True
-    except Exception:
-        pass
-    return False
+        is_locked, _ = is_worktree_locked(repo, target, timeout=timeout)
+        if is_locked is not True:
+            return False
+        metadata = _worktree_git_metadata(repo, target, timeout)
+        if metadata is None:
+            return False
+        _, git_dir = metadata
+        lock_file = git_dir / "locked"
+        if lock_file.is_symlink():
+            return False
+        if not lock_file.is_file():
+            return False
+        lock_file.unlink()
+        return True
+    except (OSError, RuntimeError, ValueError, subprocess.SubprocessError):
+        return False
 
 
 def unlock_zombie_worktrees(
@@ -332,9 +399,20 @@ def unlock_zombie_worktrees(
                     continue
 
                 if not pid_alive(owner_pid):
-                    if unlock_worktree(repo, wt_folder.name, timeout=timeout):
+                    gitdir_file = wt_folder / "gitdir"
+                    if gitdir_file.is_symlink() or not gitdir_file.is_file():
+                        continue
+                    raw_gitdir = gitdir_file.read_text(encoding="utf-8").strip()
+                    gitdir_marker = Path(raw_gitdir)
+                    if not gitdir_marker.is_absolute() or gitdir_marker.name != ".git":
+                        continue
+                    worktree_path = gitdir_marker.resolve(strict=True).parent
+                    metadata = _worktree_git_metadata(repo, worktree_path, timeout)
+                    if metadata is None or metadata[1] != wt_folder.resolve(strict=True):
+                        continue
+                    if unlock_worktree(repo, worktree_path, timeout=timeout):
                         unlocked_list.append({
-                            "worktree": wt_folder.name,
+                            "worktree": worktree_path.name,
                             "pid": owner_pid,
                             "reason": content,
                             "status": "unlocked",
@@ -455,8 +533,9 @@ def get_worktree_status(
             "clean": False,
             "uncommitted_files": [],
             "branch": None,
-            "locked": False,
-            "lock_reason": "",
+            "locked": None,
+            "lock_status": "unknown",
+            "lock_reason": "worktree path unavailable",
         }
     try:
         target = Path(worktree_path).resolve(strict=False)
@@ -466,8 +545,9 @@ def get_worktree_status(
             "clean": False,
             "uncommitted_files": [],
             "branch": None,
-            "locked": False,
-            "lock_reason": "",
+            "locked": None,
+            "lock_status": "unknown",
+            "lock_reason": "worktree path unavailable",
         }
     if not target.is_dir():
         return {
@@ -475,8 +555,9 @@ def get_worktree_status(
             "clean": False,
             "uncommitted_files": [],
             "branch": None,
-            "locked": False,
-            "lock_reason": "",
+            "locked": None,
+            "lock_status": "unknown",
+            "lock_reason": "worktree path unavailable",
         }
 
     branch: str | None = None
@@ -512,29 +593,10 @@ def get_worktree_status(
     except Exception:
         pass
 
-    locked = False
-    lock_reason = ""
-    try:
-        proc_main = subprocess.run(
-            ["git", "-C", str(target), "rev-parse", "--git-common-dir"],
-            capture_output=True,
-            text=True,
-            timeout=max(0.5, float(timeout_seconds)),
-            check=False,
-            **hidden_run_kwargs(),
-        )
-        if proc_main.returncode == 0 and proc_main.stdout.strip():
-            main_git = (target / proc_main.stdout.strip()).resolve()
-            main_repo = main_git.parent if main_git.name == ".git" else main_git
-            is_locked, reason = is_worktree_locked(main_repo, target, timeout=timeout_seconds)
-            locked = is_locked
-            lock_reason = reason
-        else:
-            is_locked, reason = is_worktree_locked(target.parent, target, timeout=timeout_seconds)
-            locked = is_locked
-            lock_reason = reason
-    except Exception:
-        pass
+    locked, lock_reason = is_worktree_locked(
+        target, target, timeout=max(0.5, float(timeout_seconds))
+    )
+    lock_status = "unknown" if locked is None else "locked" if locked else "unlocked"
 
     return {
         "exists": True,
@@ -542,6 +604,7 @@ def get_worktree_status(
         "uncommitted_files": uncommitted_files,
         "branch": branch,
         "locked": locked,
+        "lock_status": lock_status,
         "lock_reason": lock_reason,
     }
 

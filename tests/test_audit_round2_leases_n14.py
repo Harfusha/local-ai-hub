@@ -34,3 +34,31 @@ def test_n14_no_false_deadlock_from_orphaned_wait_edges(tmp_path: Path):
     with closing(leases._connect()) as con:
         rows = con.execute("SELECT owner, blocked_by, requested_path FROM lease_waits").fetchall()
         assert len(rows) == 0, f"Expected lease_waits to be cleaned after release, but found orphaned rows: {rows}"
+
+
+def test_n14_release_keeps_wait_edge_while_owner_has_another_overlapping_lease(tmp_path: Path):
+    leases = ScopeLeaseStore(state_dir=tmp_path)
+    root = str(tmp_path)
+
+    first = leases.claim(owner="agent-A", root=root, paths=["src"], ttl_seconds=600)
+    second = leases.claim(owner="agent-A", root=root, paths=["src"], ttl_seconds=600)
+    assert first["success"] is True
+    assert second["success"] is True
+
+    waiting = leases.claim(owner="agent-B", root=root, paths=["src/service.py"], ttl_seconds=600)
+    assert waiting["success"] is False
+    assert waiting.get("deadlock") is False
+
+    released = leases.release(owner="agent-A", lease_id=first["lease_id"])
+    assert released["success"] is True
+    with closing(leases._connect()) as con:
+        rows = con.execute(
+            "SELECT owner, blocked_by, requested_path FROM lease_waits"
+        ).fetchall()
+    assert rows == [("agent-B", "agent-A", "src/service.py")]
+
+    released_last = leases.release(owner="agent-A", lease_id=second["lease_id"])
+    assert released_last["success"] is True
+    with closing(leases._connect()) as con:
+        rows = con.execute("SELECT owner, blocked_by, requested_path FROM lease_waits").fetchall()
+    assert rows == []

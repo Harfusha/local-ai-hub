@@ -843,12 +843,6 @@ class EmbeddingModel:
         priority: int = 3,
         wait_timeout_seconds: float | None = None,
     ) -> dict[str, Any]:
-        from .opencode_boundary import generation_denial
-
-        if texts:
-            denied = generation_denial()
-            if denied is not None:
-                return denied
         self._execution_local.snapshot = None
         self._execution_local.ollama_gpu_fenced = False
         backend = getattr(self, "backend", "")

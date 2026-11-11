@@ -1790,23 +1790,29 @@ class SwarmPubSub:
             messages = []
             for event in page["events"]:
                 if isinstance(event, dict):
+                    event_timestamp = float(event.get("created_at") or 0.0)
+                    if event_timestamp <= since_ts:
+                        continue
                     payload = dict(event.get("payload") or {})
                     messages.append({
                         "id": str(payload.get("message_id") or event.get("event_id") or ""),
                         "topic": clean_topic,
                         "sender": str(payload.get("sender") or event.get("actor") or ""),
-                        "timestamp": float(event.get("created_at") or 0.0),
+                        "timestamp": event_timestamp,
                         "payload": payload.get("message", {}),
                         "seq": event.get("seq") or 0,
                         "sequence": event.get("seq") or 0,
                     })
                 else:
+                    event_timestamp = float(getattr(event, "created_at", 0.0))
+                    if event_timestamp <= since_ts:
+                        continue
                     payload = dict(getattr(event, "payload", {}) or {})
                     messages.append({
                         "id": str(payload.get("message_id") or getattr(event, "event_id", "")),
                         "topic": clean_topic,
                         "sender": str(payload.get("sender", getattr(event, "actor", ""))),
-                        "timestamp": float(getattr(event, "created_at", 0.0)),
+                        "timestamp": event_timestamp,
                         "payload": payload.get("message", {}),
                         "seq": getattr(event, "seq", 0),
                         "sequence": getattr(event, "seq", 0),

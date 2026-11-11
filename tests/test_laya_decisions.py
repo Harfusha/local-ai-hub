@@ -45,7 +45,7 @@ def test_decision_input_rejects_unbounded_or_aliased_content(payload):
         DecisionInput.from_mapping(payload)
 
 
-def test_context_source_evidence_accepts_only_minimal_code_only_state():
+def test_context_source_evidence_accepts_redacted_training_content_separately():
     context = ContextSourceEvidence.from_mapping(
         {
             "gap_code": "unresolved_evidence_gap",
@@ -53,6 +53,10 @@ def test_context_source_evidence_accepts_only_minimal_code_only_state():
             "freshness_codes": ["current", "current", "stale"],
             "coverage_codes": ["complete", "complete", "complete"],
             "evidence_ids": ["ev-1", "ev-2", "ev-3"],
+            "training_content": {
+                "task_input": "Find the parser for token=secret-value.",
+                "context_excerpt": "parser.py: parse_request validates input.",
+            },
         },
     )
 
@@ -63,7 +67,29 @@ def test_context_source_evidence_accepts_only_minimal_code_only_state():
         "freshness_codes": ["current", "current", "stale"],
         "coverage_codes": ["complete", "complete", "complete"],
         "evidence_ids": ["ev-1", "ev-2", "ev-3"],
+        "raw_task_input": "Find the parser for token=[REDACTED]",
+        "raw_context_excerpt": "parser.py: parse_request validates input.",
+        "training_redacted_fields": "task_input",
+        "training_missing_fields": "none",
+        "training_missing_reason": "none",
     }
+    assert context.redacted_fields == ("task_input",)
+
+
+def test_context_source_training_content_limits_are_measured_in_utf8_bytes():
+    payload = {
+        "gap_code": "unresolved_evidence_gap",
+        "source_codes": ["indexed", "artifact"],
+        "freshness_codes": ["current", "current"],
+        "coverage_codes": ["partial", "complete"],
+        "evidence_ids": ["ev-1", "ev-2"],
+        "training_content": {"task_input": "é" * 4096},
+    }
+
+    ContextSourceEvidence.from_mapping(payload)
+    payload["training_content"]["task_input"] += "é"
+    with pytest.raises(ValueError, match="too large"):
+        ContextSourceEvidence.from_mapping(payload)
 
 
 @pytest.mark.parametrize(
@@ -86,6 +112,7 @@ def test_context_source_evidence_rejects_free_text_aliases_and_invalid_codes(ove
         "freshness_codes": ["current", "stale", "unknown"],
         "coverage_codes": ["complete", "complete", "incomplete"],
         "evidence_ids": ["ev-1", "ev-2", "ev-3"],
+        "training_content": {},
     }
     payload.update(override)
 

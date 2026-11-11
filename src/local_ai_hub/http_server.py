@@ -7769,12 +7769,18 @@ class Handler(BaseHTTPRequestHandler):
                         self._send(400, {"success": False, "error": str(exc), "terminal": True, "retryable": False}); return
                 if action == "promote":
                     candidate_id = str(payload.get("candidate_id", "")).strip()
-                    approver = str(payload.get("approver", "")).strip()
+                    approval_receipt = payload.get("approval_receipt")
                     try:
-                        dec = APP.agent_learning.promote(candidate_id, approver=approver)
+                        receipt = approval_receipt if isinstance(approval_receipt, Mapping) else None
+                        dec = APP.agent_learning.promote(
+                            candidate_id,
+                            approval_receipt=receipt,
+                        )
                         self._send(200, {"success": True, "decision": dec.to_dict()}); return
                     except ApprovalRequiredError as exc:
                         self._send(403, {"success": False, "error": str(exc), "terminal": True, "retryable": False}); return
+                    except ValueError as exc:
+                        self._send(400, {"success": False, "error": str(exc), "terminal": True, "retryable": False}); return
                     except KeyError as exc:
                         self._send(404, {"success": False, "error": str(exc), "terminal": True, "retryable": False}); return
                 if action == "observe":

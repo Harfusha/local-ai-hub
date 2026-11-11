@@ -85,14 +85,14 @@
     },
     "task_b10_output_integrity": {
       "acceptance_criteria": [],
-      "blocker": null,
+      "blocker": "Audit-owned normalizer now preserves code/JSON literals and focused tests pass, but the production `_generate` call does not pass its `format` metadata to the normalizer. `services.py` is Stability-owned; handoff sent to Stability thread 01a1c762-d599-75c2-ae34-344aae056aa0 for format-mode integration and focused validation.",
       "clarifications": [],
       "depends_on": [],
       "description": "B10: normalizer.py postprocess_model_output nesmí globálně odstraňovat [DONE] ani tagy <plan> uvnitř kódu či fixture textů. Oddělit režimy zpracování pro kód, diff, JSON a obecný text.",
       "kind": "code",
-      "next_action": "",
+      "next_action": "Stability wires format-aware mode at the existing response call site and returns current source/test evidence; then re-run focused normalization tests and reconcile B10.",
       "title": "B10 — Runtime output integrity: ochrana zdrojového kódu před nežádoucí substitucí",
-      "work_status": "planned"
+      "work_status": "blocked"
     },
     "task_b11_speculative_inference_observability": {
       "acceptance_criteria": [],

@@ -557,8 +557,26 @@ class TransactionStashHook:
         if proc.returncode == 0:
             for line in proc.stdout.splitlines():
                 parts = line.strip().split()
-                if len(parts) >= 2 and parts[1].startswith(self._stash_sha):
+                if len(parts) >= 2 and parts[1] == self._stash_sha:
                     return parts[0]
+        return None
+
+    def _verified_stash_ref(self) -> str | None:
+        for _ in range(2):
+            target = self._find_stash_ref()
+            if not target:
+                return None
+            proc = subprocess.run(
+                ["git", "-C", str(self.root), "rev-parse", "--verify", f"{target}^{{commit}}"],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=15,
+                env=_clean_git_env(),
+                **hidden_run_kwargs(),
+            )
+            if proc.returncode == 0 and proc.stdout.strip() == self._stash_sha:
+                return target
         return None
 
     def restore(self) -> bool:
@@ -566,7 +584,7 @@ class TransactionStashHook:
             return False
         if not self._stash_sha:
             raise OSError("cannot identify own stash without its recorded SHA")
-        target = self._find_stash_ref()
+        target = self._verified_stash_ref()
         if not target:
             raise OSError(f"cannot find own stash with sha {self._stash_sha}")
         cmd = ["git", "-C", str(self.root), "stash", "pop"]
@@ -594,7 +612,7 @@ class TransactionStashHook:
             return False
         if not self._stash_sha:
             raise OSError("cannot identify own stash without its recorded SHA")
-        target = self._find_stash_ref()
+        target = self._verified_stash_ref()
         if not target:
             raise OSError(f"cannot find own stash with sha {self._stash_sha}")
         cmd = ["git", "-C", str(self.root), "stash", "drop"]

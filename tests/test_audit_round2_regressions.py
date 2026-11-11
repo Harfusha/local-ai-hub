@@ -21,6 +21,37 @@ from local_ai_hub.preprocess_ingest import IngestedFile, SinglePassIngestCache
 from local_ai_hub.token_router import LosslessTokenRouter
 
 
+@pytest.mark.parametrize("max_entries", [1, 17])
+@pytest.mark.parametrize("bulk", [False, True])
+def test_t2_04_sharded_lru_uses_full_non_divisible_capacity(max_entries: int, bulk: bool):
+    """N04: Shards collectively retain the configured capacity when it is not divisible."""
+    from local_ai_hub.cache import MemoryLRUCache
+
+    cache = MemoryLRUCache(max_entries=max_entries, ttl_seconds=0, shards=16)
+    base_capacity, remainder = divmod(cache.max_entries, cache.num_shards)
+    requested_per_shard = {
+        index: base_capacity + (1 if index < remainder else 0)
+        for index in range(cache.num_shards)
+    }
+    keys_per_shard = {index: [] for index in range(cache.num_shards)}
+    candidate = 0
+    while any(len(keys_per_shard[index]) < count for index, count in requested_per_shard.items()):
+        key = f"n04-key-{candidate}"
+        shard = cache._shard_idx(key)
+        if len(keys_per_shard[shard]) < requested_per_shard[shard]:
+            keys_per_shard[shard].append(key)
+        candidate += 1
+
+    entries = {key: key for keys in keys_per_shard.values() for key in keys}
+    if bulk:
+        cache.set_many(entries)
+    else:
+        for key, value in entries.items():
+            cache.set(key, value)
+
+    assert cache.stats()["entries"] == cache.max_entries
+
+
 def test_t2_01_token_router_non_float_score_fallback():
     """T2-01 (N01): Non-float or invalid score in LLM ranges does not raise ValueError."""
     text = json.dumps({"ranges": [{"start": 2, "end": 6, "score": "high"}, {"start": 8, "end": 10, "score": None}]})

@@ -45,3 +45,23 @@ MUTATING_WORDS = {
 DANGEROUS_EXES = {
     "rm", "del", "erase", "rmdir", "shutdown", "reboot", "poweroff", "mkfs", "diskpart", "format",
 }
+SHELL_INTERPRETERS = {"sh", "bash", "dash", "zsh", "fish", "cmd", "powershell", "pwsh"}
+POWERSHELL_DANGEROUS = (
+    "remove-item", "format-volume", "stop-computer", "restart-computer",
+    "stop-process", "invoke-webrequest", "invoke-restmethod", "start-bitstransfer",
+    "set-executionpolicy", "new-service", "stop-service", "rmdir /s", "del /s",
+    "-encodedcommand", " -e ", " -enc ",
+)
+POWERSHELL_MUTATING = (
+    "set-content", "add-content", "out-file", "new-item", "copy-item",
+    "move-item", "rename-item", "clear-content", "git push", "git commit",
+    "start-process", "start-service", "stop-service", "restart-service", "set-service",
+    "git add", "git merge", "git reset", "git rebase", "git checkout -b",
+    "git branch -d", "git stash", "git rm", "git clean", "git switch",
+    "git restore", "git cherry-pick", "git revert", "git tag -d",
+)
+POWERSHELL_VALIDATION_KEYWORDS = {"test", "validate", "check", "audit", "-runtests", "pester"}
+POWERSHELL_READ_PREFIXES = (
+    "get-", "select-", "measure-", "format-", "test-path", "where-",
+    "out-string", "compare-", "convertfrom-", "convertto-",
+)

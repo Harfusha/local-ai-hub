@@ -215,7 +215,11 @@ class MemoryLRUCache:
         self.max_entries = max(1, int(max_ent))
         self.ttl_seconds = max(0.0, float(ttl))
         self.num_shards = max(1, min(int(num_shards), self.max_entries))
-        self._shard_max = max(1, self.max_entries // self.num_shards)
+        shard_capacity, remainder = divmod(self.max_entries, self.num_shards)
+        self._shard_limits = [
+            shard_capacity + (1 if index < remainder else 0)
+            for index in range(self.num_shards)
+        ]
         self._locks = [threading.RLock() for _ in range(self.num_shards)]
         self._shards: list[OrderedDict[str, tuple[float, Any]]] = [OrderedDict() for _ in range(self.num_shards)]
         self._hits = [0] * self.num_shards
@@ -312,7 +316,7 @@ class MemoryLRUCache:
             items = self._shards[idx]
             items[key] = (now, value)
             items.move_to_end(key)
-            while len(items) > self._shard_max:
+            while len(items) > self._shard_limits[idx]:
                 items.popitem(last=False)
                 self._evictions[idx] += 1
 
@@ -328,7 +332,7 @@ class MemoryLRUCache:
                 for key, value in entries:
                     shard_items[key] = (now, value)
                     shard_items.move_to_end(key)
-                    while len(shard_items) > self._shard_max:
+                    while len(shard_items) > self._shard_limits[idx]:
                         shard_items.popitem(last=False)
                         self._evictions[idx] += 1
 

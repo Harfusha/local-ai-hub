@@ -16,6 +16,7 @@ import pytest
 
 from local_ai_hub.agent_events import AgentEvent, AgentStateStore
 from local_ai_hub.agent_identity import AgentScope, ScopeContext
+import local_ai_hub.agent_incidents as incident_module
 from local_ai_hub.agent_incidents import IncidentStore
 from local_ai_hub.agent_tasks import GoalContract, TaskStore
 from local_ai_hub.agent_verification import VerificationReceipt, VerificationStore
@@ -341,12 +342,147 @@ def test_t6_09_automation_open_close_does_not_hold_broker_lock(tmp_path: Path):
 # ==============================================================================
 # T6-10: Negative Knowledge Enforces Candidate Limit in SQL
 # ==============================================================================
-def test_t6_10_find_negative_knowledge_sql_limit(tmp_path: Path):
-    """C10: find_negative_knowledge must include LIMIT ? in candidate query."""
+def _insert_t6_10_incident(
+    store: IncidentStore,
+    *,
+    incident_id: str,
+    root: str,
+    signature: str,
+    message: str,
+    root_cause: str,
+    updated_at: float,
+) -> None:
+    repository_key = incident_module._incident_scope_key("repository", root)
+    with closing(sqlite3.connect(store.state_store.db_path)) as con:
+        con.execute(
+            """
+            INSERT INTO agent_incidents (
+                incident_id, operation_class, error_class, signature_hash,
+                redacted_message, state_revision, attempts, evidence_ids,
+                root_cause, verified_fix, confidence, resolved, created_at,
+                updated_at, expires_at, affected_paths, ignored, repository_key
+            ) VALUES (?, 'command', 'CommandExecutionError', ?, ?, 'rev', 1, '[]',
+                      ?, NULL, 0.0, 0, ?, ?, NULL, '[]', 0, ?)
+            """,
+            (
+                incident_id,
+                signature,
+                message,
+                root_cause,
+                updated_at,
+                updated_at,
+                repository_key,
+            ),
+        )
+        con.commit()
+
+
+def test_t6_10_find_negative_knowledge_fts_ranks_old_rows_with_sql_limit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """C10: Relevant historical incidents rank above newer noise within a SQL cap."""
     state = AgentStateStore(tmp_path / "incidents.db")
     store = IncidentStore(state)
-    results = store.find_negative_knowledge(root=str(tmp_path), query="timeout", limit=5)
-    assert isinstance(results, list)
+    store._init_table()
+    root = str(tmp_path / "repo")
+    foreign_root = str(tmp_path / "foreign")
+    _insert_t6_10_incident(
+        store,
+        incident_id="historical-relevant",
+        root=root,
+        signature="historical",
+        message="old incident",
+        root_cause="rarecalibrationword fixes the timeout",
+        updated_at=1.0,
+    )
+    for index in range(210):
+        _insert_t6_10_incident(
+            store,
+            incident_id=f"recent-{index}",
+            root=root,
+            signature=f"recent-{index}",
+            message=f"new unrelated incident {index}",
+            root_cause="unrelated compilation issue",
+            updated_at=1000.0 + index,
+        )
+    _insert_t6_10_incident(
+        store,
+        incident_id="foreign-relevant",
+        root=foreign_root,
+        signature="foreign",
+        message="foreign incident",
+        root_cause="rarecalibrationword from another repository",
+        updated_at=2000.0,
+    )
+
+    observed_queries: list[tuple[str, tuple[object, ...]]] = []
+    real_connect = incident_module.connect_sqlite
+
+    class QueryRecorder:
+        def __init__(self, connection: sqlite3.Connection):
+            self.connection = connection
+
+        def execute(self, sql: str, params: tuple[object, ...] = ()):
+            if "WITH ranked AS (" in sql:
+                observed_queries.append((sql, tuple(params)))
+            return self.connection.execute(sql, params)
+
+        def close(self) -> None:
+            self.connection.close()
+
+    monkeypatch.setattr(
+        incident_module,
+        "connect_sqlite",
+        lambda path: QueryRecorder(real_connect(path)),
+    )
+    results = store.find_negative_knowledge(
+        root=root, query='rarecalibrationword:" )', limit=5
+    )
+
+    assert [item["incident_id"] for item in results] == ["historical-relevant"]
+    assert all(item["provenance"]["repository_key"] == incident_module._incident_scope_key("repository", root) for item in results)
+    assert len(results) <= 5
+    assert observed_queries
+    sql, params = observed_queries[-1]
+    assert "MATCH" in sql.upper()
+    assert "BM25(" in sql.upper()
+    assert "LIMIT ?" in sql.upper()
+    assert params[-1] == 200
+
+
+def test_t6_10_fts_index_tracks_update_delete_and_rebuild(tmp_path: Path):
+    """C10: The FTS index follows canonical rows and rebuild restores derived state."""
+    state = AgentStateStore(tmp_path / "incidents.db")
+    store = IncidentStore(state)
+    store._init_table()
+    root = str(tmp_path / "repo")
+    _insert_t6_10_incident(
+        store,
+        incident_id="tracked",
+        root=root,
+        signature="tracked",
+        message="tracked incident",
+        root_cause="beforetoken",
+        updated_at=1.0,
+    )
+
+    assert store.find_negative_knowledge(root=root, query="beforetoken", limit=5)
+    with closing(sqlite3.connect(state.db_path)) as con:
+        con.execute("UPDATE agent_incidents SET root_cause = 'aftertoken' WHERE incident_id = 'tracked'")
+        con.commit()
+    assert store.find_negative_knowledge(root=root, query="beforetoken", limit=5) == []
+    assert [item["incident_id"] for item in store.find_negative_knowledge(root=root, query="aftertoken", limit=5)] == ["tracked"]
+
+    with closing(sqlite3.connect(state.db_path)) as con:
+        con.execute("INSERT INTO agent_incidents_fts(agent_incidents_fts) VALUES ('delete-all')")
+        con.commit()
+    reloaded = IncidentStore(state)
+    assert [item["incident_id"] for item in reloaded.find_negative_knowledge(root=root, query="aftertoken", limit=5)] == ["tracked"]
+
+    with closing(sqlite3.connect(state.db_path)) as con:
+        con.execute("DELETE FROM agent_incidents WHERE incident_id = 'tracked'")
+        con.commit()
+    assert reloaded.find_negative_knowledge(root=root, query="aftertoken", limit=5) == []
 
 
 # ==============================================================================

@@ -106,9 +106,10 @@ class SemaphoreStore:
 
                     # Prune expired holders
                     active_holders = [h for h in holders if _holder_is_active(h, now)]
-                    wait_queue = [w for w in wait_queue if w.get("owner") != owner]
 
-                    if len(active_holders) < effective_capacity:
+                    has_turn = not wait_queue or wait_queue[0].get("owner") == owner
+                    if len(active_holders) < effective_capacity and has_turn:
+                        wait_queue = [w for w in wait_queue if w.get("owner") != owner]
                         # Acquired
                         lease_id = f"sem_{uuid.uuid4().hex[:12]}"
                         new_holder = {
@@ -151,17 +152,20 @@ class SemaphoreStore:
                             "position": 0,
                         }
                     else:
-                        # Full, enqueue
-                        wait_id = f"wait_{uuid.uuid4().hex[:8]}"
-                        wait_entry = {
-                            "wait_id": wait_id,
-                            "owner": owner,
-                            "purpose": purpose,
-                            "requested_at": now,
-                        }
-                        if not any(w.get("owner") == owner for w in wait_queue):
+                        # Queue only callers that can wait; immediate failures leave no stale entry.
+                        is_queued = any(w.get("owner") == owner for w in wait_queue)
+                        if timeout > 0 and self.pubsub is not None and not is_queued:
+                            wait_entry = {
+                                "wait_id": f"wait_{uuid.uuid4().hex[:8]}",
+                                "owner": owner,
+                                "purpose": purpose,
+                                "requested_at": now,
+                            }
                             wait_queue.append(wait_entry)
-                        pos = next((i + 1 for i, w in enumerate(wait_queue) if w.get("owner") == owner), len(wait_queue))
+                        pos = next(
+                            (i + 1 for i, w in enumerate(wait_queue) if w.get("owner") == owner),
+                            len(wait_queue) + 1,
+                        )
                         con.execute(
                             """
                             INSERT INTO agent_semaphores (name, capacity, holders_json, queue_json, created_at, updated_at)
@@ -191,11 +195,48 @@ class SemaphoreStore:
                 rem = deadline - time.monotonic()
                 if rem <= 0:
                     break
-                wait_res = self.pubsub.wait_for_event(wait_topic, timeout=rem)
-                if wait_res.get("success") and not wait_res.get("timeout"):
+                next_expiry = min(
+                    (float(holder["expires_at"]) for holder in active_holders if holder.get("expires_at") is not None),
+                    default=None,
+                )
+                wait_timeout = rem
+                if next_expiry is not None:
+                    wait_timeout = min(wait_timeout, max(0.0, next_expiry - time.time()))
+                wait_res = (
+                    self.pubsub.wait_for_event(wait_topic, timeout=wait_timeout)
+                    if wait_timeout > 0
+                    else {"success": False, "timeout": True}
+                )
+                expiry_reached = next_expiry is not None and time.time() >= next_expiry
+                if (wait_res.get("success") and not wait_res.get("timeout")) or expiry_reached:
                     retry_res = self.acquire(clean_name, owner=owner, capacity=cap, ttl_seconds=ttl, purpose=purpose, timeout=0.0)
                     if retry_res.get("acquired"):
                         return retry_res
+                    active_holders = retry_res.get("active_holders", active_holders)
+
+            # A timed-out waiter cancels its queue entry.
+            with self._lock:
+                con = self._connect()
+                try:
+                    with con:
+                        row = con.execute(
+                            "SELECT queue_json FROM agent_semaphores WHERE name = ?",
+                            (clean_name,),
+                        ).fetchone()
+                        if row is not None:
+                            wait_queue = json.loads(row[0])
+                            remaining_queue = [w for w in wait_queue if w.get("owner") != owner]
+                            if len(remaining_queue) != len(wait_queue):
+                                con.execute(
+                                    "UPDATE agent_semaphores SET queue_json = ?, updated_at = ? WHERE name = ?",
+                                    (
+                                        json.dumps(remaining_queue, separators=(",", ":")),
+                                        time.time(),
+                                        clean_name,
+                                    ),
+                                )
+                finally:
+                    con.close()
 
         return {
             "success": True,
@@ -233,7 +274,7 @@ class SemaphoreStore:
                     remaining_holders = []
                     for h in holders:
                         if h.get("lease_id") == lease_id:
-                            if owner and h.get("owner") and h.get("owner") != owner:
+                            if not owner or not h.get("owner") or h.get("owner") != owner:
                                 remaining_holders.append(h)
                             else:
                                 released = True

@@ -72,3 +72,25 @@ def test_small_valid_compiled_context_keeps_exact_text_and_success():
     assert result["success"] is True
     assert result["task_context"]["text"] == context["text"]
     assert result["task_context"]["complete"] is True
+
+
+def test_context_delivery_allocates_remaining_budget_to_useful_text():
+    from local_ai_hub.context_delivery import prepare_context_delivery
+    from local_ai_hub.response_budget import json_tokens
+
+    budget = 3200
+    value = {
+        "success": True,
+        "complete": True,
+        "task_context": {
+            "success": True,
+            "complete": True,
+            "text": "useful evidence " * 12000,
+            "task_id": "task",
+        },
+    }
+
+    result = prepare_context_delivery(value, budget)
+
+    assert json_tokens(result["task_context"]["text"]) > budget // 6
+    assert json_tokens(result) <= budget

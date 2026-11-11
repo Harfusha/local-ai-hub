@@ -271,9 +271,19 @@ class BoardStore:
 
         if "active_tasks" in inc and self.services is not None and getattr(self.services, "task_store", None):
             try:
-                active = self.services.task_store.list_tasks(status=None, limit=5)
+                from .agent_tasks import _canonical_repository_root, _task_scope_root
+
+                requested_root = _canonical_repository_root(root) if root else ""
+                active = self.services.task_store.list_tasks(status=None, limit=100)
                 active_items = []
                 for t in active:
+                    if not requested_root:
+                        continue
+                    try:
+                        if _task_scope_root(t) != requested_root:
+                            continue
+                    except (AttributeError, TypeError, ValueError, RuntimeError):
+                        continue
                     td = t.to_dict() if hasattr(t, "to_dict") else (t if isinstance(t, dict) else {})
                     st = td.get("status")
                     if st in {"planned", "in_progress", "ready"}:
@@ -283,6 +293,8 @@ class BoardStore:
                             "status": st,
                             "phase": td.get("checkpoint", {}).get("phase", "") if isinstance(td.get("checkpoint"), dict) else "",
                         })
+                        if len(active_items) >= 5:
+                            break
                 briefing["active_tasks"] = active_items
             except Exception as exc:
                 logger.warning("session_briefing active_tasks failed: %s", exc)

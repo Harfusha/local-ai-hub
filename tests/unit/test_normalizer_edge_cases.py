@@ -38,6 +38,32 @@ def test_postprocess_model_output_preserves_runtime_markers_inside_fenced_code()
     assert thinking is None
 
 
+def test_postprocess_model_output_preserves_plan_tag_literals_in_unfenced_code() -> None:
+    raw = (
+        'EXPECTED = "<plan>keep this literal</plan>"\n'
+        'FIXTURE = """\n[DONE]\n"""\n'
+        'assert response == "[DONE]"\n'
+        'assert closing == "</think>"'
+    )
+    cleaned, thinking = postprocess_model_output(raw, role="code")
+    assert cleaned == raw
+    assert thinking is None
+
+
+def test_postprocess_model_output_extracts_leading_plan_in_code_role() -> None:
+    raw = "<plan>internal reasoning</plan>\nvalue = 1"
+    cleaned, thinking = postprocess_model_output(raw, role="code")
+    assert cleaned == "value = 1"
+    assert thinking == "internal reasoning"
+
+
+def test_postprocess_model_output_preserves_json_payload_literals() -> None:
+    raw = '{"message":"<plan>literal</plan>","marker":"[DONE]"}'
+    cleaned, thinking = postprocess_model_output(raw, role="json")
+    assert cleaned == raw
+    assert thinking is None
+
+
 def test_postprocess_patch_starts_at_hunk_header_when_preamble_present() -> None:
     diff_text = "Here is the fix for your issue:\n@@ -1,3 +1,3 @@\n-foo\n+bar\n baz"
     cleaned = postprocess_patch(diff_text)

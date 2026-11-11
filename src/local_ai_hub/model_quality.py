@@ -266,15 +266,20 @@ def _receipt_id(receipt: Mapping[str, Any]) -> str | None:
     return str(value) if value else None
 
 
-def _reproducible_receipt(receipt: Any) -> bool:
+def _reproducible_receipt(receipt: Any, candidate: Mapping[str, Any] | None = None) -> bool:
     if not isinstance(receipt, Mapping) or not _receipt_id(receipt):
         return False
-    if receipt.get("reproducible") is True:
-        return True
-    eval_hash = receipt.get("evaluation_hash")
-    suite_ver = receipt.get("suite_version")
-    case_ids = receipt.get("case_ids")
-    return bool(eval_hash and (suite_ver or case_ids))
+    required_fields = ("model_digest", "suite_version", "dataset_hash", "run_id", "evaluator_id")
+    if any(not isinstance(receipt.get(field), str) or not receipt[field].strip() for field in required_fields):
+        return False
+    metadata = candidate.get("metadata") if isinstance(candidate, Mapping) else None
+    expected_digest = candidate.get("model_digest") if isinstance(candidate, Mapping) else None
+    if not expected_digest and isinstance(metadata, Mapping):
+        expected_digest = metadata.get("model_digest")
+    if isinstance(expected_digest, str) and expected_digest.strip():
+        if receipt["model_digest"].strip() != expected_digest.strip():
+            return False
+    return True
 
 
 def promote_candidate(
@@ -296,7 +301,7 @@ def promote_candidate(
             "metrics": dict(metrics) if isinstance(metrics, Mapping) else {},
         }
     receipt = receipt or payload.get("receipt")
-    if not _reproducible_receipt(receipt):
+    if not _reproducible_receipt(receipt, payload):
         return {
             "status": REJECTED,
             "reason": "evaluation_receipt_required",

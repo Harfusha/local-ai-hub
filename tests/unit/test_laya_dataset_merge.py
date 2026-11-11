@@ -15,6 +15,10 @@ def _row(label: str = "allow", state: str = "The user asks to save this setting.
         "expected": {"intent": label},
     }
     digest = hashlib.sha256(json.dumps(base, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    target_sha256 = hashlib.sha256(
+        json.dumps(base["expected"], sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    reviewer_hashes = [hashlib.sha256(f"reviewer-{index}".encode()).hexdigest() for index in range(4)]
     return {
         "id": f"candidate-{digest[:16]}",
         "group_id": f"group-{digest[16:32]}",
@@ -25,6 +29,20 @@ def _row(label: str = "allow", state: str = "The user asks to save this setting.
             "data_class": "local_scoped",
             "candidate_id": f"candidate-{digest[:16]}",
             "candidate_sha256": digest,
+            "repository_scope_sha256": "a" * 64,
+            "task_id": "task-merge",
+            "session_id": "session-merge",
+            "evidence_ids": ["ev-verified-1"],
+            "label_provenance": {
+                "status": "verified",
+                "method": "blind_double_annotation",
+                "rubric_version": "laya-source-label-v1",
+                "target_sha256": target_sha256,
+                "annotation_identity_sha256": sorted(reviewer_hashes[:2]),
+                "agreement": True,
+                "adjudicator_identity_sha256": reviewer_hashes[2],
+                "verification_identity_sha256": reviewer_hashes[3],
+            },
         },
     }
 
@@ -122,6 +140,45 @@ def test_merge_rejects_unexpected_row_shape(tmp_path):
 def test_validate_row_rejects_non_finite_json_numbers():
     with pytest.raises(ValueError, match="Out of range float values"):
         _validate_row({**_row(), "questions": {"intent": {"score": float("nan")}}})
+
+
+@pytest.mark.parametrize("mutation, message", [
+    ("missing", "verified label provenance"),
+    ("pending", "status must be verified"),
+    ("wrong_target", "target labels"),
+    ("duplicate_annotators", "two distinct annotator identity hashes"),
+    ("overlapping_adjudicator", "adjudicator must be independent"),
+    ("overlapping_verifier", "verification reviewer must be independent"),
+])
+def test_validate_row_requires_verified_label_provenance(mutation, message):
+    row = _row()
+    proof = row["provenance"]["label_provenance"]
+    if mutation == "missing":
+        row["provenance"].pop("label_provenance")
+    elif mutation == "pending":
+        proof["status"] = "pending"
+    elif mutation == "wrong_target":
+        proof["target_sha256"] = "0" * 64
+    elif mutation == "duplicate_annotators":
+        proof["annotation_identity_sha256"][1] = proof["annotation_identity_sha256"][0]
+    elif mutation == "overlapping_adjudicator":
+        proof["adjudicator_identity_sha256"] = proof["annotation_identity_sha256"][0]
+    else:
+        proof["verification_identity_sha256"] = proof["adjudicator_identity_sha256"]
+
+    with pytest.raises(ValueError, match=message):
+        _validate_row(row)
+
+
+@pytest.mark.parametrize("field", [
+    "repository_scope_sha256", "task_id", "session_id", "evidence_ids",
+])
+def test_validate_row_requires_scoped_evidence_provenance(field):
+    row = _row()
+    row["provenance"].pop(field)
+
+    with pytest.raises(ValueError, match=f"provenance.{field}"):
+        _validate_row(row)
 
 
 @pytest.mark.parametrize("changes", [

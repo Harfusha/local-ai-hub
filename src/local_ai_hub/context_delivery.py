@@ -135,12 +135,9 @@ def prepare_context_delivery(value: dict[str, Any], budget: int) -> dict[str, An
     # Dynamically allocate text budget from remaining room after accounting for metadata.
     saved_text = context.get("text", "")
     context["text"] = ""
-    envelope_tokens = json_tokens(result)
-    context["text"] = saved_text
     margin = 64
-    text_budget = max(32, int(budget) - envelope_tokens - margin)
-    if json_tokens(context["text"]) > text_budget:
-        context["text"] = _prefix(context["text"], text_budget)
+    text_budget = max(0, int(budget) - json_tokens(result) - margin)
+    if json_tokens(saved_text) > text_budget:
         context.update({"success": False, "complete": False, "partial": True, "truncated": True})
         result.update({"success": False, "complete": False, "partial": True,
                        "terminal": True, "retryable": False, "context_truncated": True})
@@ -151,4 +148,8 @@ def prepare_context_delivery(value: dict[str, Any], budget: int) -> dict[str, An
             result["error"] = "compiled context exceeds inline budget; its artifact is unavailable"
             result["next_action"] = "request_smaller_context"
         context["next_action"] = result["next_action"]
+        text_budget = max(0, int(budget) - json_tokens(result) - margin)
+        context["text"] = _prefix(saved_text, text_budget)
+    else:
+        context["text"] = saved_text
     return result

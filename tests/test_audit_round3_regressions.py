@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import time
 import multiprocessing
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -14,7 +15,7 @@ from local_ai_hub.agent_blackboard import BlackboardSection, merge_sections
 from local_ai_hub.agent_board import BoardStore
 from local_ai_hub.agent_events import AgentEvent, AgentStateStore, SwarmPubSub
 from local_ai_hub.agent_semaphores import SemaphoreStore
-from local_ai_hub.agent_tasks import GoalContract, ScopeContext, TaskStore
+from local_ai_hub.agent_tasks import GoalContract, ScopeContext, TaskCheckpoint, TaskStore
 from local_ai_hub.source_slice import read_source_slice
 from local_ai_hub.swarm import execute_swarm_dag
 
@@ -48,7 +49,23 @@ def test_t3_02_session_briefing_handles_taskstate_objects(tmp_path: Path):
 
     contract = GoalContract(goal="Audit Round 3 test task", acceptance_criteria=("tested",))
     context = ScopeContext(task_id="t3_task")
-    task_store.create(contract=contract, context=context)
+    task = task_store.create(contract=contract, context=context)
+    repo_a = tmp_path / "repo-a"
+    repo_b = tmp_path / "repo-b"
+    repo_a.mkdir()
+    repo_b.mkdir()
+    local_task = replace(task, checkpoint=TaskCheckpoint(state_data={
+        "_agent_task_scope": {"version": 2, "repo_root": str(repo_a)},
+    }))
+    foreign_task = replace(
+        task,
+        task_id="foreign_task",
+        contract=GoalContract(goal="Foreign repository task", acceptance_criteria=("tested",)),
+        checkpoint=TaskCheckpoint(state_data={
+            "_agent_task_scope": {"version": 2, "repo_root": str(repo_b)},
+        }),
+    )
+    task_store.list_tasks = MagicMock(return_value=[foreign_task, task, local_task])
 
     services = MagicMock()
     services.task_store = task_store
@@ -59,9 +76,10 @@ def test_t3_02_session_briefing_handles_taskstate_objects(tmp_path: Path):
     services.plan_list = MagicMock(return_value={"plans": []})
 
     board_store = BoardStore(db_path=tmp_path / "board.sqlite3", services=services)
-    briefing = board_store.session_briefing(include=["active_tasks"], root=str(tmp_path))
-    assert len(briefing["active_tasks"]) >= 1
+    briefing = board_store.session_briefing(include=["active_tasks"], root=str(repo_a))
+    assert [item["task_id"] for item in briefing["active_tasks"]] == [local_task.task_id]
     assert briefing["active_tasks"][0]["goal"] == "Audit Round 3 test task"
+    assert board_store.session_briefing(include=["active_tasks"])["active_tasks"] == []
 
 
 def test_t3_03_semaphore_release_checks_owner(tmp_path: Path):
@@ -86,6 +104,19 @@ def test_t3_03_semaphore_release_checks_owner(tmp_path: Path):
     # Attempt release with matching owner
     rel_real = sem_store.release("exclusive_res", lease_id=lease_id, owner="agent-real")
     assert rel_real["released"] is True
+
+
+def test_t11_semaphore_release_requires_owner(tmp_path: Path):
+    db_path = tmp_path / "semaphores.sqlite3"
+    sem_store = SemaphoreStore(db_path=db_path)
+    acq = sem_store.acquire("exclusive_res", owner="agent-real", ttl_seconds=60)
+    assert acq["acquired"] is True
+
+    rel_missing = sem_store.release("exclusive_res", lease_id=acq["lease_id"])
+
+    assert rel_missing["released"] is False
+    status = sem_store.status("exclusive_res")
+    assert len(status["semaphore"]["holders"]) == 1
 
 
 def test_t3_04_blackboard_merge_does_not_lower_cas_version():
@@ -219,3 +250,18 @@ def test_t3_09_blackboard_merge_skips_mismatched_section_payload(tmp_path: Path)
     sec = store.get("board-1", "architecture")
     assert sec.get("success") is False
     assert "not found" in sec.get("error", "")
+
+
+def test_t3_11_swarm_dag_requires_explicit_success_for_dict_result(tmp_path: Path):
+    """T09: A dictionary callback result without an explicit success key must fail."""
+    steps = [
+        {
+            "id": "step1",
+            "fn": lambda: {"status": "completed"},
+        }
+    ]
+
+    result = execute_swarm_dag(steps=steps, worktree_path=str(tmp_path))
+
+    assert result["success"] is False
+    assert result["failed_steps"] == ["step1"]

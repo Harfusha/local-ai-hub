@@ -237,12 +237,22 @@ class ContextLedger:
         with self._lock:
             previous_key = self._compiled_by_scope.get(scope_key)
             previous = self._compiled.get(previous_key) if previous_key else None
-            if (
+            reusable = bool(
                 previous
                 and previous.get("digest") == digest
                 and previous.get("artifact_id")
                 and float(previous.get("fresh_until") or 0.0) > time.time()
-            ):
+            )
+            if reusable and artifact_store is not None:
+                get_artifact = getattr(artifact_store, "get", None)
+                if callable(get_artifact):
+                    artifact_check = get_artifact(
+                        str(previous["artifact_id"]), offset=0, max_chars=1,
+                    )
+                    reusable = isinstance(artifact_check, dict) and artifact_check.get("success") is True
+                else:
+                    reusable = False
+            if reusable:
                 artifact_id = str(previous["artifact_id"])
                 fresh_until = float(previous["fresh_until"])
             elif artifact_store is not None:

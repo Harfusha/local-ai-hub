@@ -64,6 +64,31 @@ def normalize_changed_paths(
     return sorted(normalized)
 
 
+def path_coverage_metadata(requested_paths_count: int, accepted_paths_count: int) -> dict[str, Any]:
+    omitted_paths_count = max(0, requested_paths_count - accepted_paths_count)
+    return {
+        "requested_paths_count": requested_paths_count,
+        "accepted_paths_count": accepted_paths_count,
+        "truncated": omitted_paths_count > 0,
+        "omitted_paths_count": omitted_paths_count,
+    }
+
+
+def apply_path_coverage(result: dict[str, Any], args: dict[str, Any], paths: list[str]) -> dict[str, Any]:
+    requested = args.get("requested_paths_count")
+    if isinstance(requested, bool) or not isinstance(requested, int) or requested < len(paths):
+        requested = len(paths)
+    metadata = path_coverage_metadata(requested, len(paths))
+    # Queue metadata identifies an actual max_paths cap. Direct service calls have no cap.
+    metadata["truncated"] = args.get("truncated") is True and metadata["truncated"]
+    if not metadata["truncated"]:
+        metadata["omitted_paths_count"] = 0
+    result.update(metadata)
+    if metadata["truncated"]:
+        result["partial"] = True
+    return result
+
+
 class SpeculativeLintQueue:
     """Opt-in debounce/cancellation facade over durable async jobs."""
 
@@ -101,7 +126,10 @@ class SpeculativeLintQueue:
                 raise ValueError("changed paths must be a list or set")
             normalized_root = str(Path(root).expanduser().resolve(strict=False))
             ordered_paths = sorted(paths) if isinstance(paths, (set, frozenset)) else paths
-            normalized_paths = normalize_changed_paths(normalized_root, list(ordered_paths)[: self.max_paths])
+            requested_paths = normalize_changed_paths(normalized_root, list(ordered_paths))
+            selected_paths = list(ordered_paths)[: self.max_paths]
+            normalized_paths = normalize_changed_paths(normalized_root, selected_paths)
+            coverage = path_coverage_metadata(len(requested_paths), len(normalized_paths))
         except (TypeError, ValueError, OSError, RuntimeError, OverflowError) as exc:
             return {"success": False, "error": f"invalid root or changed paths: {exc}",
                     "terminal": True, "retryable": False}
@@ -112,7 +140,7 @@ class SpeculativeLintQueue:
                 self.async_jobs.cancel(previous)
             result = self.async_jobs.submit(
                 "speculative_lint",
-                {"root": normalized_root, "paths": normalized_paths, "command": str(command or "")[:4000]},
+                {"root": normalized_root, "paths": normalized_paths, "command": str(command or "")[:4000], **coverage},
                 dispatch_delay_seconds=self.debounce_seconds,
             )
             if result.get("job_id"):
@@ -120,7 +148,7 @@ class SpeculativeLintQueue:
                 self._root_jobs.move_to_end(key)
                 while len(self._root_jobs) > self.max_tracked_roots:
                     self._root_jobs.popitem(last=False)
-        result.update({"read_only": True, "auto_fix": False, "paths": normalized_paths, "debounce_seconds": self.debounce_seconds})
+        result.update({"read_only": True, "auto_fix": False, "paths": normalized_paths, "debounce_seconds": self.debounce_seconds, **coverage})
         return result
 
     def status(self, job_id: str) -> dict[str, Any]:

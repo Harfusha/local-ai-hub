@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from unittest.mock import MagicMock
+import pytest
 from local_ai_hub.token_router import LosslessTokenRouter
 
 
@@ -47,3 +48,23 @@ def test_n12_token_router_merges_overlapping_llm_ranges():
     # Second range 40..50
     assert normalized[1][0] == 40
     assert normalized[1][1] == 50
+
+
+@pytest.mark.parametrize("score", ["high", None, float("nan"), float("inf"), -0.01, 1.01])
+def test_n01_token_router_rejects_invalid_llm_scores(score):
+    response = json.dumps({"ranges": [{"start": 2, "end": 4, "score": score}]})
+    parsed = LosslessTokenRouter._parse_ranges(response, max_line=10, max_ranges=8, context_lines=0)
+    assert parsed == []
+
+    services = MagicMock()
+    services._generate.return_value = {"success": True, "text": response}
+    router = LosslessTokenRouter(
+        config={"lossless_router": {"enabled": True}, "models": {"fast_code": "test-fast"}},
+        services=services,
+    )
+    unique_path = f"test-{type(score).__name__}-{str(score)}.py"
+    result = router.route_text("alpha payload\nbeta payload\ngamma", "payload", path=unique_path, force_local=True)
+
+    assert result["success"] is True
+    assert result["local_selector_used"] is False
+    assert router.fallbacks == 1

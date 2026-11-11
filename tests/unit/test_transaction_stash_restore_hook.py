@@ -120,6 +120,55 @@ def test_stash_hook_refuses_to_mutate_foreign_stash_without_own_sha(
     assert _git(repo, "status", "--porcelain") == ""
 
 
+@pytest.mark.parametrize("operation", ["restore", "drop"])
+def test_stash_hook_follows_own_sha_when_stash_stack_shifts(
+    tmp_path: Path, monkeypatch, operation: str
+) -> None:
+    repo = _init_repo(tmp_path / "repo")
+    (repo / "file1.txt").write_text("own dirty\n", encoding="utf-8")
+    hook = TransactionStashHook(repo, message="owned stash")
+    assert hook.save() is True
+    own_sha = hook._stash_sha
+    assert own_sha
+
+    original_run = subprocess.run
+    injected = False
+    foreign_sha: str | None = None
+
+    def insert_foreign_stash_before_mutation(command, *args, **kwargs):
+        nonlocal injected, foreign_sha
+        if not injected and "rev-parse" in command and any(
+            str(part).startswith("stash@{") for part in command
+        ):
+            (repo / "file1.txt").write_text("foreign dirty\n", encoding="utf-8")
+            original_run(
+                ["git", "-C", str(repo), "stash", "push", "--include-untracked", "-m", "foreign stash"],
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            foreign_sha = original_run(
+                ["git", "-C", str(repo), "rev-parse", "refs/stash"],
+                capture_output=True,
+                text=True,
+                check=True,
+            ).stdout.strip()
+            injected = True
+        return original_run(command, *args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", insert_foreign_stash_before_mutation)
+    assert getattr(hook, operation)() is True
+    assert injected is True
+
+    remaining_shas = _git(repo, "stash", "list", "--format=%H").splitlines()
+    assert remaining_shas == [foreign_sha]
+    assert own_sha not in remaining_shas
+    if operation == "restore":
+        assert (repo / "file1.txt").read_text(encoding="utf-8") == "own dirty\n"
+    else:
+        assert (repo / "file1.txt").read_text(encoding="utf-8") == "initial content\n"
+
+
 def test_stash_transaction_guard_auto_restores_on_exception(tmp_path: Path) -> None:
     repo = _init_repo(tmp_path / "repo")
     (repo / "file1.txt").write_text("dirty before transaction\n", encoding="utf-8")

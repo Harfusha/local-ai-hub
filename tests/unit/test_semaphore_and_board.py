@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import multiprocessing
 import threading
 import time
 from pathlib import Path
@@ -10,6 +11,21 @@ import pytest
 from local_ai_hub.agent_board import BoardStore
 from local_ai_hub.agent_events import SwarmPubSub
 from local_ai_hub.agent_semaphores import SemaphoreStore
+
+
+def _semaphore_process_acquire(
+    db_path: str,
+    owner: str,
+    start_event: Any,
+    ready_queue: Any,
+    result_queue: Any,
+) -> None:
+    ready_queue.put(owner)
+    if not start_event.wait(timeout=5.0):
+        result_queue.put({"owner": owner, "error": "start barrier timed out"})
+        return
+    result = SemaphoreStore(db_path).acquire("process_slot", owner=owner, capacity=1)
+    result_queue.put({"owner": owner, "acquired": result["acquired"], "lease_id": result.get("lease_id")})
 
 
 def test_semaphore_basic_acquire_release(tmp_path: Path) -> None:
@@ -46,7 +62,7 @@ def test_semaphore_basic_acquire_release(tmp_path: Path) -> None:
     assert len(sem["active_holders"]) == 2
 
     # 5. Release slot 1
-    rel1 = store.release("unity_slot", lease_id_1)
+    rel1 = store.release("unity_slot", lease_id_1, owner="agent-1")
     assert rel1["success"] is True
     assert rel1["released"] is True
 
@@ -57,8 +73,8 @@ def test_semaphore_basic_acquire_release(tmp_path: Path) -> None:
     assert res4["lease_id"] != ""
 
     # Clean release remaining
-    store.release("unity_slot", lease_id_2)
-    store.release("unity_slot", res4["lease_id"])
+    store.release("unity_slot", lease_id_2, owner="agent-2")
+    store.release("unity_slot", res4["lease_id"], owner="agent-3")
 
     st2 = store.status("unity_slot")
     assert st2["semaphores"]["unity_slot"]["active_count"] == 0
@@ -87,7 +103,7 @@ def test_semaphore_wait_and_wakeup(tmp_path: Path) -> None:
     time.sleep(0.1)
 
     # Release worker 1's lease
-    rel = store.release("gpu_slot", lease_1)
+    rel = store.release("gpu_slot", lease_1, owner="worker-1")
     assert rel["released"] is True
 
     # Wait for thread to finish
@@ -98,7 +114,7 @@ def test_semaphore_wait_and_wakeup(tmp_path: Path) -> None:
     assert worker_2_result.get("acquired") is True
     assert worker_2_result.get("lease_id") != ""
 
-    store.release("gpu_slot", worker_2_result["lease_id"])
+    store.release("gpu_slot", worker_2_result["lease_id"], owner="worker-2")
 
 
 def test_semaphore_ttl_expiration(tmp_path: Path) -> None:
@@ -119,7 +135,166 @@ def test_semaphore_ttl_expiration(tmp_path: Path) -> None:
     # After expiry, second agent can acquire
     res_ok = store.acquire("temp_slot", owner="second-agent", capacity=1, timeout=0.0)
     assert res_ok["acquired"] is True
-    store.release("temp_slot", res_ok["lease_id"])
+    store.release("temp_slot", res_ok["lease_id"], owner="second-agent")
+
+
+def test_semaphore_single_capacity_is_process_safe(tmp_path: Path) -> None:
+    db_path = tmp_path / "semaphores_process_race.sqlite"
+    store = SemaphoreStore(db_path)
+    store.status("process_slot")
+
+    context = multiprocessing.get_context("spawn")
+    start_event = context.Event()
+    ready_queue = context.Queue()
+    result_queue = context.Queue()
+    workers = [
+        context.Process(
+            target=_semaphore_process_acquire,
+            args=(str(db_path), f"worker-{index}", start_event, ready_queue, result_queue),
+        )
+        for index in range(2)
+    ]
+    try:
+        for process in workers:
+            process.start()
+        assert {ready_queue.get(timeout=5.0) for _ in workers} == {"worker-0", "worker-1"}
+        start_event.set()
+        for process in workers:
+            process.join(timeout=8.0)
+        assert all(not process.is_alive() for process in workers)
+        assert all(process.exitcode == 0 for process in workers)
+
+        outcomes = [result_queue.get(timeout=2.0) for _ in workers]
+        assert all("error" not in outcome for outcome in outcomes)
+        acquired = [outcome for outcome in outcomes if outcome["acquired"]]
+        assert len(acquired) == 1
+        winner = acquired[0]
+        assert store.release("process_slot", winner["lease_id"], owner=winner["owner"])["released"] is True
+    finally:
+        for process in workers:
+            if process.is_alive():
+                process.terminate()
+            process.join(timeout=1.0)
+        ready_queue.close()
+        result_queue.close()
+
+
+def test_semaphore_waiter_wakes_when_holder_ttl_expires(tmp_path: Path) -> None:
+    pubsub = SwarmPubSub()
+    store = SemaphoreStore(tmp_path / "semaphores_ttl_wait.sqlite", pubsub=pubsub)
+    held = store.acquire("ttl_wait_slot", owner="worker-1", ttl_seconds=0.15)
+    assert held["acquired"] is True
+
+    waiting = threading.Event()
+    original_wait = pubsub.wait_for_event
+
+    def observe_wait(
+        topic: str,
+        timeout: float = 60.0,
+        filter_payload: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        waiting.set()
+        return original_wait(topic, timeout=timeout, filter_payload=filter_payload)
+
+    pubsub.wait_for_event = observe_wait
+    result: dict[str, Any] = {}
+
+    def waiter() -> None:
+        result.update(store.acquire("ttl_wait_slot", owner="worker-2", timeout=1.0))
+
+    thread = threading.Thread(target=waiter)
+    thread.start()
+    assert waiting.wait(timeout=0.5)
+    thread.join(timeout=0.5)
+    if thread.is_alive():
+        thread.join(timeout=1.0)
+
+    assert not thread.is_alive()
+    assert result.get("success") is True
+    assert result.get("acquired") is True
+    store.release("ttl_wait_slot", result["lease_id"], owner="worker-2")
+
+
+@pytest.mark.parametrize("timeout", [0.0, 0.05])
+def test_semaphore_non_acquired_call_does_not_leave_stale_queue(
+    tmp_path: Path,
+    timeout: float,
+) -> None:
+    store = SemaphoreStore(tmp_path / "semaphores_stale_wait.sqlite", pubsub=SwarmPubSub())
+    held = store.acquire("stale_wait_slot", owner="worker-1")
+
+    result = store.acquire("stale_wait_slot", owner="worker-2", timeout=timeout)
+
+    assert result["acquired"] is False
+    assert store.status("stale_wait_slot")["semaphore"]["queue_length"] == 0
+    store.release("stale_wait_slot", held["lease_id"], owner="worker-1")
+
+
+def test_semaphore_wait_queue_preserves_fifo_against_new_acquirer(tmp_path: Path) -> None:
+    class ControlledPubSub:
+        def __init__(self) -> None:
+            self.waiting = {"waiter-1": threading.Event(), "waiter-2": threading.Event()}
+            self.wake = {"waiter-1": threading.Event(), "waiter-2": threading.Event()}
+
+        def wait_for_event(self, topic: str, timeout: float = 60.0) -> dict[str, Any]:
+            owner = threading.current_thread().name
+            self.waiting[owner].set()
+            if self.wake[owner].wait(timeout):
+                return {"success": True, "timeout": False}
+            return {"success": False, "timeout": True}
+
+        def publish(self, topic: str, payload: dict[str, Any], sender: str = "") -> dict[str, Any]:
+            return {"success": True}
+
+    pubsub = ControlledPubSub()
+    store = SemaphoreStore(tmp_path / "semaphores_fifo.sqlite", pubsub=pubsub)
+    held = store.acquire("fifo_slot", owner="holder")
+    results: dict[str, dict[str, Any]] = {}
+
+    def wait(owner: str) -> None:
+        results[owner] = store.acquire("fifo_slot", owner=owner, timeout=3.0)
+
+    first = threading.Thread(target=wait, args=("waiter-1",), name="waiter-1")
+    second = threading.Thread(target=wait, args=("waiter-2",), name="waiter-2")
+    newcomer_result: dict[str, Any] = {}
+    first.start()
+    try:
+        assert pubsub.waiting["waiter-1"].wait(timeout=1.0)
+        second.start()
+        assert pubsub.waiting["waiter-2"].wait(timeout=1.0)
+        queue = store.status("fifo_slot")["semaphore"]["queue"]
+        assert [entry["owner"] for entry in queue] == ["waiter-1", "waiter-2"]
+
+        assert store.release("fifo_slot", held["lease_id"], owner="holder")["released"] is True
+        newcomer_result = store.acquire("fifo_slot", owner="newcomer", timeout=0.0)
+        assert newcomer_result["acquired"] is False
+        assert [entry["owner"] for entry in store.status("fifo_slot")["semaphore"]["queue"]] == [
+            "waiter-1",
+            "waiter-2",
+        ]
+
+        pubsub.wake["waiter-1"].set()
+        first.join(timeout=1.0)
+        assert not first.is_alive()
+        assert results["waiter-1"]["acquired"] is True
+        assert store.release("fifo_slot", results["waiter-1"]["lease_id"], owner="waiter-1")["released"] is True
+
+        pubsub.wake["waiter-2"].set()
+        second.join(timeout=1.0)
+        assert not second.is_alive()
+        assert results["waiter-2"]["acquired"] is True
+        assert store.release("fifo_slot", results["waiter-2"]["lease_id"], owner="waiter-2")["released"] is True
+    finally:
+        for owner in pubsub.wake:
+            pubsub.wake[owner].set()
+        for thread in (first, second):
+            if thread.ident is not None:
+                thread.join(timeout=1.0)
+        if newcomer_result.get("acquired"):
+            store.release("fifo_slot", newcomer_result["lease_id"], owner="newcomer")
+        for owner, result in results.items():
+            if result.get("acquired"):
+                store.release("fifo_slot", result["lease_id"], owner=owner)
 
 
 def test_wait_for_event_pubsub() -> None:

@@ -80,6 +80,49 @@ def test_consistency_request_preserves_project_config_digest_identity() -> None:
     assert first.to_dict() != second.to_dict()
 
 
+def test_completion_audit_marks_non_boolean_pass_receipt_invalid() -> None:
+    guard = AgentConsistencyGuard()
+
+    audit = guard.completion_audit(
+        criteria=["focused tests pass"],
+        receipts=[{
+            "criterion": "focused tests pass",
+            "passed": "false",
+            "repository_revision": "current-revision",
+            "receipt_id": "receipt-string-bool",
+        }],
+        current_revision="current-revision",
+    )
+
+    assert audit["criteria"]["focused tests pass"]["status"] == "invalid_receipt"
+    assert audit["current_revision_receipt_coverage"]["covered"] == 0
+
+    for passed, expected in ((True, "satisfied"), (False, "unsatisfied")):
+        valid_audit = guard.completion_audit(
+            criteria=["focused tests pass"],
+            receipts=[{
+                "criterion": "focused tests pass",
+                "passed": passed,
+                "repository_revision": "current-revision",
+            }],
+            current_revision="current-revision",
+        )
+        assert valid_audit["criteria"]["focused tests pass"]["status"] == expected
+
+
+def test_completion_audit_marks_missing_pass_field_invalid() -> None:
+    audit = AgentConsistencyGuard().completion_audit(
+        criteria=["focused tests pass"],
+        receipts=[{
+            "criterion": "focused tests pass",
+            "repository_revision": "current-revision",
+        }],
+        current_revision="current-revision",
+    )
+
+    assert audit["criteria"]["focused tests pass"]["status"] == "invalid_receipt"
+
+
 def test_consistency_request_drops_malformed_project_config_digest() -> None:
     request = ConsistencyRequest(root="/repo", project_config_digest="../private")
 
@@ -334,7 +377,7 @@ def test_local_model_evidence_cannot_form_contract_mapping(repository: Path):
     mappings, warnings = guard.build_contract_mappings(_request(repository), evidence)
 
     assert mappings == ()
-    assert warnings == ()
+    assert any(warning.code == "insufficient_evidence" for warning in warnings)
 
 
 def test_contract_mapping_ignores_tests_and_python_client_as_frontend(repository: Path):
@@ -347,7 +390,7 @@ def test_contract_mapping_ignores_tests_and_python_client_as_frontend(repository
     mappings, warnings = guard.build_contract_mappings(_request(repository), evidence)
 
     assert mappings == ()
-    assert warnings == ()
+    assert any(warning.code == "insufficient_evidence" for warning in warnings)
 
 
 def test_guard_bounds_evidence_generator_without_exhausting_it(repository: Path):

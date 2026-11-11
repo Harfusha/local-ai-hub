@@ -204,6 +204,30 @@ def test_runtime_adapter_evaluates_standalone_typed_decision_with_redacted_train
     assert "secret-value" not in body
 
 
+def test_idle_timeout_starts_after_laya_outcome_recorder_finishes(tmp_path):
+    now = [0.0]
+    shared_lifecycle = LayaSessionLifecycle(
+        600, close_session=lambda session: session.close(), clock=lambda: now[0]
+    )
+    model = adapter(tmp_path, lambda _path, *, device, expected_sha256: FakeAgent(device))
+    request, evidence = request_and_evidence()
+
+    def record_outcome(_request, _evidence, _outcome):
+        now[0] = 500.0
+        assert shared_lifecycle.poll_idle_unload(now=700.0) == "busy"
+
+    result = model.evaluate_context_source(
+        request,
+        evidence,
+        session_lifecycle=shared_lifecycle,
+        outcome_recorder=record_outcome,
+    )
+
+    assert result.runtime is not None
+    assert shared_lifecycle.poll_idle_unload(now=1099.0) == "not_idle"
+    assert shared_lifecycle.poll_idle_unload(now=1100.0) == "unloaded"
+
+
 def test_runtime_adapter_binds_provider_close_before_shared_session_use(tmp_path):
     holder = {}
 
@@ -351,7 +375,7 @@ def test_adapter_rejects_advisory_mode_before_loading(tmp_path):
     assert calls == []
 
 
-def test_context_source_uses_only_typed_codes_and_returns_unverified_runtime(tmp_path):
+def test_context_source_uses_redacted_training_content_and_returns_unverified_runtime(tmp_path):
     holder = {}
 
     def load(_path, *, device, expected_sha256):
@@ -361,12 +385,21 @@ def test_context_source_uses_only_typed_codes_and_returns_unverified_runtime(tmp
 
     model = adapter(tmp_path, load)
     request, evidence = request_and_evidence()
+    evidence = replace(
+        evidence,
+        training_content={
+            "task_input": "Find parser behavior for token=secret-value",
+            "context_excerpt": "parser.py checks the requested route",
+        },
+    )
     result = model.evaluate_context_source(request, evidence, session_lifecycle=lifecycle())
     assert result.decision.suggestion == "artifact"
     assert holder["args"] == ("cuda:0", HASHES)
     state, questions = holder["agent"].model.seen
     assert "ev-artifact" in state["body"]
-    assert "source text" not in state["body"]
+    assert "Find parser behavior for token=[REDACTED]" in state["body"]
+    assert "parser.py checks the requested route" in state["body"]
+    assert "secret-value" not in state["body"]
     assert questions["source"]["type"] == "choice"
     assert set(questions["source"]["criteria"]) == {"indexed", "artifact"}
     assert result.runtime.execution_verification == "NOT_VERIFIED"

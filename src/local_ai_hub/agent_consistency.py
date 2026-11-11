@@ -47,6 +47,17 @@ _METRIC_KEYS = (
 _IDENTIFIER = re.compile(r"\b[A-Z][A-Z0-9_]{2,}\b")
 _PUBLIC_SYMBOL = re.compile(r"^\+\s*(?:export\s+)?(?:async\s+)?(?:def|class|function|const|let|type|interface)\s+([A-Za-z_]\w*)")
 _HTTP_ENDPOINT = re.compile(r"\b(GET|POST|PUT|PATCH|DELETE)\s+([/A-Za-z0-9_{}:$.-]+)")
+_OPENAPI_OPERATION_ID = re.compile(
+    r"(?i)\boperation[_ ]?id\s*[:=]\s*[\"']?([A-Za-z_][A-Za-z0-9_.-]*)"
+)
+_DTO_TYPE_DECLARATION = re.compile(
+    r"\b(?:type|interface|class|struct|record)\s+([A-Z][A-Za-z0-9_]*)\b"
+)
+_TYPE_REFERENCE = re.compile(r"\b[A-Z][A-Za-z0-9_]*\b")
+_IMPORT_MODULE = re.compile(
+    r"(?m)\bfrom\s+(?:[\"']([^\"']+)[\"']|([A-Za-z_][\w./]*))\s+import"
+    r"|\bimport\s+(?:type\s+)?(?:[^;\n]*?\s+from\s*)?[\"']([^\"']+)[\"']"
+)
 _FIELD = re.compile(r"\b([A-Za-z_]\w*)\s*:\s*([A-Za-z_][\w<>\[\]| ]*)(?=[,;}\n]|$)")
 _MEMORY_SECRET_RE = re.compile(r"(?i)\b(api[_-]?key|token|password|secret|credential)\s*([=:])\s*[^\s,;]+")
 _MEMORY_AUTH_RE = re.compile(
@@ -1392,16 +1403,27 @@ class AgentConsistencyGuard:
         back = [item for item in items if not self._is_frontend(item) and not self._is_test(item)]
         tests = [str(item.get("path")) for item in items if self._is_test(item)]
         if not back or not front:
-            return (), ()
-        b, f = back[0], front[0]
-        braw, fraw = self._raw(b), self._raw(f)
+            return (), (self._insufficient_contract_evidence(items),)
+        linked_pair = None
+        for backend_item in back:
+            for frontend_item in front:
+                backend_raw, frontend_raw = self._raw(backend_item), self._raw(frontend_item)
+                association = self._contract_association(
+                    backend_item,
+                    frontend_item,
+                    backend_raw,
+                    frontend_raw,
+                )
+                if association is not None:
+                    linked_pair = (backend_item, frontend_item, backend_raw, frontend_raw, association)
+                    break
+            if linked_pair is not None:
+                break
+        if linked_pair is None:
+            return (), (self._insufficient_contract_evidence(items),)
+        b, f, braw, fraw, (association_kind, association_value) = linked_pair
         be_id, fe_id = self._evidence_id(b), self._evidence_id(f)
-        endpoint_match = _HTTP_ENDPOINT.search(braw + "\n" + fraw)
-        endpoint = endpoint_match.group(2) if endpoint_match else ""
-        b_stem = PurePosixPath(str(b.get("path", ""))).stem.lower()
-        f_stem = PurePosixPath(str(f.get("path", ""))).stem.lower()
-        if not endpoint and (b_stem not in f_stem and f_stem not in b_stem):
-            return (), ()
+        endpoint = association_value if association_kind == "endpoint" else ""
         bfields = tuple(sorted(set(name for name, _ in _FIELD.findall(braw))))
         ffields = tuple(sorted(set(name for name, _ in _FIELD.findall(fraw))))
         berr = tuple(sorted(set(_IDENTIFIER.findall(braw))))
@@ -1409,7 +1431,16 @@ class AgentConsistencyGuard:
         mappings: list[ContractMapping] = []
         warnings: list[GuardWarning] = []
         pair_ids = (be_id, fe_id)
-        mappings.append(ContractMapping("endpoint", endpoint, str(b.get("path", "")), str(f.get("path", "")), evidence_ids=pair_ids, test_paths=tuple(tests)))
+        mappings.append(
+            ContractMapping(
+                f"association_{association_kind}",
+                association_value,
+                str(b.get("path", "")),
+                str(f.get("path", "")),
+                evidence_ids=pair_ids,
+                test_paths=tuple(tests),
+            )
+        )
         missing = tuple(sorted(set(bfields) - set(ffields)))
         nullable_backend = {name for name, typ in _FIELD.findall(braw) if "null" in typ or "None" in typ}
         nullable_frontend = {name for name, typ in _FIELD.findall(fraw) if "null" in typ or "undefined" in typ or "?" in typ}
@@ -1434,6 +1465,61 @@ class AgentConsistencyGuard:
             self.record_metric("warning", severity=warning.severity)
         return tuple(mappings[:_MAX_ITEMS]), tuple(warnings[:_MAX_ITEMS])
 
+    def _insufficient_contract_evidence(self, items: list[Mapping[str, Any]]) -> GuardWarning:
+        evidence_ids = tuple(self._evidence_id(item) for item in items if self._evidence_id(item))
+        paths = tuple(str(item.get("path", "")) for item in items if item.get("path"))
+        return GuardWarning(
+            "info",
+            "insufficient_evidence",
+            "no concrete frontend/backend API contract link was found in bounded evidence",
+            evidence_ids,
+            paths,
+            "provide shared method and endpoint, operation ID, DTO type, or explicit import evidence",
+        )
+
+    @staticmethod
+    def _contract_association(
+        backend_item: Mapping[str, Any],
+        frontend_item: Mapping[str, Any],
+        backend_raw: str,
+        frontend_raw: str,
+    ) -> tuple[str, str] | None:
+        backend_routes = set(_HTTP_ENDPOINT.findall(backend_raw))
+        frontend_routes = set(_HTTP_ENDPOINT.findall(frontend_raw))
+        shared_routes = sorted(backend_routes.intersection(frontend_routes))
+        if shared_routes:
+            method, endpoint = shared_routes[0]
+            return "endpoint", f"{method} {endpoint}"
+
+        backend_operations = set(_OPENAPI_OPERATION_ID.findall(backend_raw))
+        frontend_operations = set(_OPENAPI_OPERATION_ID.findall(frontend_raw))
+        shared_operations = sorted(backend_operations.intersection(frontend_operations))
+        if shared_operations:
+            return "operation_id", shared_operations[0]
+
+        backend_types = set(_DTO_TYPE_DECLARATION.findall(backend_raw))
+        frontend_types = set(_DTO_TYPE_DECLARATION.findall(frontend_raw))
+        shared_types = sorted(backend_types.intersection(frontend_types))
+        if shared_types:
+            return "dto", shared_types[0]
+
+        backend_referenced = set(_TYPE_REFERENCE.findall(backend_raw))
+        frontend_referenced = set(_TYPE_REFERENCE.findall(frontend_raw))
+        linked_types = sorted(
+            (backend_types.intersection(frontend_referenced))
+            | (frontend_types.intersection(backend_referenced))
+        )
+        if linked_types:
+            return "dto", linked_types[0]
+
+        backend_stem = PurePosixPath(str(backend_item.get("path", ""))).stem.casefold()
+        for match in _IMPORT_MODULE.finditer(frontend_raw):
+            module = next((group for group in match.groups() if group), "")
+            module = module.replace("\\", "/").casefold().removesuffix(".py").removesuffix(".ts")
+            if backend_stem and backend_stem in {part for part in module.split("/") if part not in {".", ".."}}:
+                return "import", module
+        return None
+
     @staticmethod
     def _is_backend(item: Mapping[str, Any]) -> bool:
         path = str(item.get("path", "")).lower()
@@ -1444,7 +1530,17 @@ class AgentConsistencyGuard:
         path = str(item.get("path", "")).replace("\\", "/").lower()
         parts = {part for part in path.split("/") if part}
         suffix = Path(path).suffix
-        return bool(parts.intersection({"frontend", "web", "ui", "components"}) or suffix in {".ts", ".tsx", ".jsx", ".vue", ".svelte"})
+        frontend_dirs = {"frontend", "web", "ui", "components"}
+        backend_dirs = {"backend", "server", "api", "routes", "controllers", "handlers"}
+        if parts.intersection(frontend_dirs):
+            return True
+        if parts.intersection(backend_dirs):
+            return False
+        if suffix in {".jsx", ".vue", ".svelte", ".tsx"}:
+            return True
+        return suffix == ".ts" and bool(
+            re.search(r"(?i)\b(?:fetch\s*\(|axios\.|use[A-Z][A-Za-z0-9_]*\s*\()", _text(item.get("text") or item.get("content"), 24000))
+        )
 
     @staticmethod
     def _is_test(item: Mapping[str, Any]) -> bool:
@@ -1525,7 +1621,15 @@ class AgentConsistencyGuard:
             except Exception:
                 pass
 
-    def check_drift(self, request: ConsistencyRequest, contract: GoalContract, changed_paths: Iterable[str], diff: Mapping[str, Any] | str | None) -> tuple[GuardWarning, ...]:
+    def check_drift(
+        self,
+        request: ConsistencyRequest,
+        contract: GoalContract,
+        changed_paths: Iterable[str],
+        diff: Mapping[str, Any] | str | None,
+        *,
+        reuse_candidates: Iterable[ReuseCandidate] | None = None,
+    ) -> tuple[GuardWarning, ...]:
         warnings: list[GuardWarning] = []
         if isinstance(diff, str):
             return ()
@@ -1573,7 +1677,11 @@ class AgentConsistencyGuard:
         diff_fingerprint = f"{supplied_hash}:{content_hash}" if supplied_hash else content_hash
         synthetic_drift_id = self._synthetic_drift_evidence_id(request, tuple(paths), revision, diff_fingerprint)
         drift_trace_ids = (synthetic_drift_id,)
-        candidates = self.find_reuse_candidates(request, contract)
+        candidates = (
+            tuple(reuse_candidates)
+            if reuse_candidates is not None
+            else self.find_reuse_candidates(request, contract)
+        )
         candidate_ids = {item.candidate_id for item in candidates}
         decisions = diff_data.get("reuse_decisions") or ()
         bounded_evidence = _bounded_sequence(diff_data.get("evidence") or (), _MAX_ITEMS)
@@ -1697,6 +1805,19 @@ class AgentConsistencyGuard:
                     return False
         return True
 
+    @classmethod
+    def diff_analysis_status(cls, diff: Any) -> str:
+        if cls._valid_diff_mapping(diff):
+            return "complete"
+        if isinstance(diff, str):
+            return "partial" if diff.strip() else "unavailable"
+        if isinstance(diff, Mapping):
+            if diff.get("success") is True or diff.get("truncated") is True or diff.get("incomplete") is True:
+                return "partial"
+            if diff.get("diff") or diff.get("changed_paths") or diff.get("changed_files"):
+                return "partial"
+        return "unavailable"
+
     def _deterministic_evidence_ids(self, evidence: Iterable[Mapping[str, Any]]) -> tuple[str, ...]:
         ids: list[str] = []
         for item in _bounded_sequence(evidence, _MAX_ITEMS):
@@ -1748,13 +1869,14 @@ class AgentConsistencyGuard:
             receipt_ids = tuple(dict.fromkeys(_text(field(item, "receipt_id"), 200) for item in matched if field(item, "receipt_id")))[:24]
             current = [item for item in matched if not revision or _text(field(item, "repository_revision"), 200) == revision]
             passed = any(field(item, "passed", False) is True for item in current)
+            invalid_receipt = any(type(field(item, "passed", None)) is not bool for item in current)
             stale = bool(matched and not current)
             if stale:
                 stale_criteria.append(criterion)
             if passed:
                 covered += 1
             criterion_audit[criterion] = {
-                "status": "satisfied" if passed else "stale" if stale else "unsatisfied",
+                "status": "satisfied" if passed else "stale" if stale else "invalid_receipt" if invalid_receipt else "unsatisfied",
                 "evidence_ids": list(evidence_ids),
                 "receipt_ids": list(receipt_ids),
                 "current_revision": bool(current),

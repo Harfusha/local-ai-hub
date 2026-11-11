@@ -55,9 +55,14 @@ their own evidence, labels, baseline, and approval gates pass.
 
 - Use only examples from the scoped candidate lifecycle. Keep the input to the
   minimum fields needed by the chosen decision category.
-- Exclude full transcripts, prompts, source files, private conversations,
+- For the current `context_source` pilot, retain the task query and relevant
+  retrieved excerpts only when they materially improve the training example.
+  Bound each field to 8 KiB and combined raw content to 16 KiB; redact
+  recognized credential, token, and password patterns and record redacted or
+  unavailable fields. Keep authorized evidence IDs and source provenance.
+  Exclude full transcripts, full source files, unrelated conversations,
   credentials, and unnecessary personal data. Redact or exclude an example if
-  its minimum useful input cannot be shared within the approved scope.
+  its minimum useful input cannot be retained within this approved scope.
 - Keep candidate text out of telemetry, ordinary diagnostics export, and model
   logs. Persist candidates only in the configured `server.state_dir`, using an
   existing state/artifact mechanism with explicit retention and deletion. Never

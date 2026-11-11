@@ -12,7 +12,7 @@ import uuid
 from contextlib import closing
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 from .agent_events import AgentEvent, AgentStateStore
 from .agent_memory import ApprovalRequiredError
@@ -59,6 +59,48 @@ class CandidateStatus(str, Enum):
     PROMOTED = "promoted"
     ROLLED_BACK = "rolled_back"
     REJECTED = "rejected"
+
+
+_CANDIDATE_STATUS_TRANSITIONS: Mapping[CandidateStatus, frozenset[CandidateStatus]] = {
+    CandidateStatus.CANDIDATE: frozenset(
+        {CandidateStatus.REPLAY_PASSED, CandidateStatus.ROLLED_BACK, CandidateStatus.REJECTED}
+    ),
+    CandidateStatus.REPLAY_PASSED: frozenset(
+        {CandidateStatus.SHADOW_PASSED, CandidateStatus.ROLLED_BACK, CandidateStatus.REJECTED}
+    ),
+    CandidateStatus.SHADOW_PASSED: frozenset(
+        {CandidateStatus.CANARY_PASSED, CandidateStatus.ROLLED_BACK, CandidateStatus.REJECTED}
+    ),
+    CandidateStatus.CANARY_PASSED: frozenset(
+        {CandidateStatus.APPROVED, CandidateStatus.ROLLED_BACK, CandidateStatus.REJECTED}
+    ),
+    CandidateStatus.APPROVED: frozenset({CandidateStatus.ROLLED_BACK, CandidateStatus.REJECTED}),
+    CandidateStatus.PROMOTED: frozenset({CandidateStatus.ROLLED_BACK}),
+    CandidateStatus.ROLLED_BACK: frozenset(),
+    CandidateStatus.REJECTED: frozenset(),
+}
+
+
+def validate_candidate_transition(
+    current_status: CandidateStatus,
+    new_status: CandidateStatus,
+) -> None:
+    """Reject every status change outside the explicit candidate lifecycle."""
+    if not isinstance(current_status, CandidateStatus):
+        raise TypeError("current_status must be a CandidateStatus value")
+    if not isinstance(new_status, CandidateStatus):
+        raise TypeError("new_status must be a CandidateStatus value")
+    if current_status in (CandidateStatus.ROLLED_BACK, CandidateStatus.REJECTED):
+        raise ValueError(
+            f"Cannot advance candidate in terminal status '{current_status.value}'; invalid transition"
+        )
+    if new_status == CandidateStatus.PROMOTED:
+        raise ValueError("Direct transition to PROMOTED is prohibited; use promote() with approval")
+    allowed = _CANDIDATE_STATUS_TRANSITIONS[current_status]
+    if new_status not in allowed:
+        raise ValueError(
+            f"Invalid candidate status transition '{current_status.value}' -> '{new_status.value}'"
+        )
 
 
 @dataclass(frozen=True)
@@ -336,8 +378,14 @@ class ImprovementCandidate:
 
 
 class LearningStore:
-    def __init__(self, state_store: AgentStateStore) -> None:
+    def __init__(
+        self,
+        state_store: AgentStateStore,
+        *,
+        approval_verifier: Callable[[ImprovementCandidate, Mapping[str, Any]], str | None] | None = None,
+    ) -> None:
         self.state_store = state_store
+        self._approval_verifier = approval_verifier
         self._lock = threading.RLock()
         self._initialized = False
         self._init_table()
@@ -380,18 +428,17 @@ class LearningStore:
             idempotency_key=f"cand_create_{candidate.candidate_id}",
             actor="agent",
         )
-        self.state_store.append(event)
-        self._save(candidate)
-        return candidate
+        return self._append_event_and_project(event, candidate)
 
     def advance(self, candidate_id: str, new_status: CandidateStatus) -> ImprovementCandidate:
         current = self.get(candidate_id)
         if not current:
             raise KeyError(f"Candidate {candidate_id} not found")
-        if current.status in (CandidateStatus.ROLLED_BACK, CandidateStatus.REJECTED):
-            raise ValueError(f"Cannot advance candidate in terminal status '{current.status.value}'")
-        if new_status == CandidateStatus.PROMOTED:
-            raise ValueError("Direct advance to PROMOTED is prohibited; use promote() with approval")
+        if not isinstance(new_status, CandidateStatus):
+            raise TypeError("new_status must be a CandidateStatus value")
+        if current.status is new_status:
+            return current
+        validate_candidate_transition(current.status, new_status)
 
         updated = ImprovementCandidate(
             candidate_id=current.candidate_id,
@@ -412,21 +459,42 @@ class LearningStore:
             idempotency_key=f"adv_{candidate_id}_{new_status.value}",
             actor="agent",
         )
-        self.state_store.append(event)
-        self._save(updated)
-        return updated
+        return self._append_event_and_project(event, updated)
 
-    def promote(self, candidate_id: str, *, approver: str) -> PromotionDecision:
+    def promote(
+        self,
+        candidate_id: str,
+        *,
+        approval_receipt: Mapping[str, Any] | None = None,
+        approver: str | None = None,
+    ) -> PromotionDecision:
         current = self.get(candidate_id)
         if not current:
             raise KeyError(f"Candidate {candidate_id} not found")
+        if current.status is CandidateStatus.PROMOTED:
+            return PromotionDecision(
+                candidate_id=candidate_id,
+                promoted=True,
+                approver=current.approver,
+                version=current.candidate_version,
+            )
         if current.status in (CandidateStatus.ROLLED_BACK, CandidateStatus.REJECTED):
             raise ValueError(f"Cannot promote candidate in terminal status '{current.status.value}'")
+        if current.status is not CandidateStatus.APPROVED:
+            raise ValueError("Candidate must reach APPROVED before promotion")
 
-        if approver != "user":
+        if not isinstance(approval_receipt, Mapping) or isinstance(approval_receipt, bool):
             raise ApprovalRequiredError(
-                "governed learning promotion strictly requires explicit human user approval"
+                "governed learning promotion requires an authoritative approval receipt"
             )
+        if self._approval_verifier is None:
+            raise ApprovalRequiredError("no authoritative approval receipt verifier is configured")
+        verified_approver = self._approval_verifier(current, approval_receipt)
+        if not isinstance(verified_approver, str) or not verified_approver.strip():
+            raise ApprovalRequiredError("approval receipt is invalid for this candidate promotion")
+        if approver is not None and approver != verified_approver:
+            raise ApprovalRequiredError("approver does not match the authoritative approval receipt")
+        verified_approver = verified_approver.strip()
 
         promoted = ImprovementCandidate(
             candidate_id=current.candidate_id,
@@ -436,23 +504,22 @@ class LearningStore:
             status=CandidateStatus.PROMOTED,
             slo_thresholds=current.slo_thresholds,
             metrics=current.metrics,
-            approver=approver,
+            approver=verified_approver,
             created_at=current.created_at,
             updated_at=time.time(),
         )
         event = AgentEvent.create(
             stream_id=f"learning:{candidate_id}",
             kind="learning.promoted",
-            payload={"approver": approver, "version": promoted.candidate_version},
+            payload={"approver": verified_approver, "version": promoted.candidate_version},
             idempotency_key=f"prom_{candidate_id}",
-            actor=approver,
+            actor=verified_approver,
         )
-        self.state_store.append(event)
-        self._save(promoted)
+        promoted = self._append_event_and_project(event, promoted)
         return PromotionDecision(
             candidate_id=candidate_id,
             promoted=True,
-            approver=approver,
+            approver=verified_approver,
             version=promoted.candidate_version,
         )
 
@@ -485,17 +552,61 @@ class LearningStore:
 
         min_success = current.slo_thresholds.get("min_success_rate")
         if min_success is not None:
-            current.metrics["slo_obs_total"] = int(current.metrics.get("slo_obs_total", 0)) + 1
-            if observation.success:
-                current.metrics["slo_obs_success"] = int(current.metrics.get("slo_obs_success", 0)) + 1
-            obs_total = current.metrics["slo_obs_total"]
-            obs_success = int(current.metrics.get("slo_obs_success", 0))
-            min_samples = int(current.slo_thresholds.get("min_samples", 3))
-            rate = obs_success / obs_total
-            if obs_total >= min_samples and rate < min_success:
+            min_samples_raw = current.slo_thresholds.get("min_samples", 3)
+            window_size_raw = current.slo_thresholds.get("window_size")
+            if (
+                not math.isfinite(min_samples_raw)
+                or not float(min_samples_raw).is_integer()
+                or min_samples_raw < 1
+            ):
+                raise ValueError("min_samples must be a positive integer")
+            min_samples = int(min_samples_raw)
+            if window_size_raw is None:
+                window_size = max(10, min_samples)
+            elif (
+                not math.isfinite(window_size_raw)
+                or not float(window_size_raw).is_integer()
+                or window_size_raw < 1
+            ):
+                raise ValueError("window_size must be a positive integer")
+            else:
+                window_size = int(window_size_raw)
+            if window_size > 64:
+                raise ValueError("window_size cannot exceed 64 observations")
+            if window_size < min_samples:
+                raise ValueError("window_size must be greater than or equal to min_samples")
+
+            bit_count = max(1, (window_size + 31) // 32)
+            window_bits = 0
+            for index in range(bit_count):
+                word = current.metrics.get(f"slo_window_bits_{index}", 0.0)
+                if not math.isfinite(word) or not word.is_integer() or not 0 <= word <= 0xFFFFFFFF:
+                    raise ValueError("stored SLO window bits are invalid")
+                window_bits |= int(word) << (32 * index)
+            mask = (1 << window_size) - 1
+            window_bits = ((window_bits << 1) | int(observation.is_successful())) & mask
+            previous_count = current.metrics.get("slo_window_count", 0.0)
+            if not math.isfinite(previous_count) or not previous_count.is_integer() or previous_count < 0:
+                raise ValueError("stored SLO window count is invalid")
+            window_count = min(
+                int(previous_count) + 1,
+                window_size,
+            )
+            success_count = window_bits.bit_count()
+            failure_count = window_count - success_count
+            current.metrics["slo_window_count"] = float(window_count)
+            current.metrics["slo_window_success_count"] = float(success_count)
+            current.metrics["slo_window_failure_count"] = float(failure_count)
+            for index in range(bit_count):
+                current.metrics[f"slo_window_bits_{index}"] = float(
+                    (window_bits >> (32 * index)) & 0xFFFFFFFF
+                )
+            rate = success_count / window_count
+            if window_count >= min_samples and rate < min_success:
                 return self._rollback(
                     current,
-                    f"success rate {rate:.2f} ({obs_success}/{obs_total}) breached min_success_rate SLO {min_success:.2f}",
+                    f"success rate {rate:.2f} ({success_count}/{window_count}; "
+                    f"{failure_count} failures in window) breached min_success_rate SLO {min_success:.2f}",
                 )
             self._save(current)
 
@@ -521,8 +632,7 @@ class LearningStore:
             idempotency_key=f"rb_{candidate.candidate_id}_{int(time.time())}",
             actor="system",
         )
-        self.state_store.append(event)
-        self._save(rolled_back)
+        self._append_event_and_project(event, rolled_back)
         return RollbackTrigger(
             candidate_id=candidate.candidate_id,
             action="rollback",
@@ -610,32 +720,7 @@ class LearningStore:
             con = connect_sqlite(self.state_store.db_path, isolation_level=None)
             try:
                 con.execute("BEGIN IMMEDIATE")
-                con.execute(
-                    """
-                    INSERT INTO agent_learning_candidates (
-                        candidate_id, name, baseline_version, candidate_version,
-                        status, slo_thresholds, metrics, approver, created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    ON CONFLICT(candidate_id) DO UPDATE SET
-                        status = excluded.status,
-                        slo_thresholds = excluded.slo_thresholds,
-                        metrics = excluded.metrics,
-                        approver = excluded.approver,
-                        updated_at = excluded.updated_at
-                    """,
-                    (
-                        candidate.candidate_id,
-                        candidate.name,
-                        candidate.baseline_version,
-                        candidate.candidate_version,
-                        candidate.status.value,
-                        json_dumps(candidate.slo_thresholds),
-                        json_dumps(candidate.metrics),
-                        candidate.approver,
-                        candidate.created_at,
-                        candidate.updated_at,
-                    ),
-                )
+                self._write_projection_in_transaction(con, candidate)
                 con.execute("COMMIT")
             except Exception:
                 try:
@@ -650,6 +735,98 @@ class LearningStore:
                 con.close()
 
         retry_busy(_do_save, retries=5, base_delay_seconds=0.02)
+
+    def _append_event_and_project(
+        self,
+        event: AgentEvent,
+        candidate: ImprovementCandidate,
+    ) -> ImprovementCandidate:
+        """Commit a learning event and its query projection as one durable change."""
+        if not self.state_store.enabled:
+            return candidate
+        self._init_table()
+
+        def _persist() -> ImprovementCandidate:
+            con = connect_sqlite(self.state_store.db_path, isolation_level=None)
+            try:
+                con.execute("BEGIN IMMEDIATE")
+                appended = self.state_store.append_in_transaction(
+                    con,
+                    event,
+                    strict_idempotency=True,
+                )
+                if appended.error or appended.event is None:
+                    raise RuntimeError(appended.error or "learning event append returned no persisted event")
+                existing = con.execute(
+                    """
+                    SELECT candidate_id, name, baseline_version, candidate_version, status,
+                           slo_thresholds, metrics, approver, created_at, updated_at
+                    FROM agent_learning_candidates WHERE candidate_id = ?
+                    """,
+                    (candidate.candidate_id,),
+                ).fetchone()
+                if appended.duplicate:
+                    persisted = self._row_to_candidate(existing) if existing is not None else None
+                    if persisted is None or (
+                        persisted.candidate_id != candidate.candidate_id
+                        or persisted.name != candidate.name
+                        or persisted.baseline_version != candidate.baseline_version
+                        or persisted.candidate_version != candidate.candidate_version
+                        or persisted.status is not candidate.status
+                        or persisted.slo_thresholds != candidate.slo_thresholds
+                        or persisted.metrics != candidate.metrics
+                        or persisted.approver != candidate.approver
+                        or persisted.created_at != candidate.created_at
+                    ):
+                        raise sqlite3.IntegrityError(
+                            "learning event idempotency conflicts with candidate projection"
+                        )
+                else:
+                    self._write_projection_in_transaction(con, candidate)
+                con.execute("COMMIT")
+                return persisted if appended.duplicate else candidate
+            except Exception:
+                try:
+                    con.execute("ROLLBACK")
+                except sqlite3.Error as rollback_error:
+                    LOGGER.warning(
+                        "learning transaction rollback failed error_type=%s",
+                        type(rollback_error).__name__,
+                    )
+                raise
+            finally:
+                con.close()
+
+        return retry_busy(_persist, retries=5, base_delay_seconds=0.02)
+
+    @staticmethod
+    def _write_projection_in_transaction(con: Any, candidate: ImprovementCandidate) -> None:
+        con.execute(
+            """
+            INSERT INTO agent_learning_candidates (
+                candidate_id, name, baseline_version, candidate_version,
+                status, slo_thresholds, metrics, approver, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(candidate_id) DO UPDATE SET
+                status = excluded.status,
+                slo_thresholds = excluded.slo_thresholds,
+                metrics = excluded.metrics,
+                approver = excluded.approver,
+                updated_at = excluded.updated_at
+            """,
+            (
+                candidate.candidate_id,
+                candidate.name,
+                candidate.baseline_version,
+                candidate.candidate_version,
+                candidate.status.value,
+                json_dumps(candidate.slo_thresholds),
+                json_dumps(candidate.metrics),
+                candidate.approver,
+                candidate.created_at,
+                candidate.updated_at,
+            ),
+        )
 
     def _row_to_candidate(self, row: tuple[Any, ...]) -> ImprovementCandidate:
         (

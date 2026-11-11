@@ -87,6 +87,48 @@ def _validate_row(row: Any) -> None:
         raise ValueError("candidate provenance ID does not match row ID")
     if provenance.get("candidate_sha256") != row["source_sha256"]:
         raise ValueError("candidate provenance hash does not match source_sha256")
+    if any(isinstance(key, str) and "consent" in key.casefold() for key in provenance):
+        raise ValueError("retired consent provenance fields are not accepted")
+    provenance_fields = {
+        "source", "data_class", "candidate_id", "candidate_sha256",
+        "repository_scope_sha256", "task_id", "session_id", "evidence_ids",
+        "label_provenance",
+    }
+    if "label_provenance" not in provenance:
+        raise ValueError("candidate provenance requires verified label provenance")
+    for field in ("repository_scope_sha256", "task_id", "session_id", "evidence_ids"):
+        if field not in provenance:
+            raise ValueError(f"candidate provenance.{field} is required")
+    if set(provenance) != provenance_fields:
+        raise ValueError("candidate provenance fields are incomplete or unexpected")
+    repository_scope_sha256 = provenance["repository_scope_sha256"]
+    if (not isinstance(repository_scope_sha256, str)
+            or not re.fullmatch(r"[0-9a-f]{64}", repository_scope_sha256)):
+        raise ValueError("candidate provenance.repository_scope_sha256 must be a lowercase SHA-256")
+    if any(not isinstance(provenance[field], str) or not provenance[field].strip()
+           for field in ("task_id", "session_id")):
+        raise ValueError("candidate provenance task_id and session_id must be non-empty strings")
+    evidence_ids = provenance["evidence_ids"]
+    if (not isinstance(evidence_ids, list) or not evidence_ids
+            or any(not isinstance(item, str) or not item.strip() for item in evidence_ids)
+            or len(set(evidence_ids)) != len(evidence_ids)):
+        raise ValueError("candidate provenance.evidence_ids must contain unique non-empty IDs")
+    label_provenance = provenance["label_provenance"]
+    if not isinstance(label_provenance, dict):
+        raise ValueError("candidate provenance requires verified label provenance")
+    expected_label_fields = {
+        "status", "method", "rubric_version", "target_sha256",
+        "annotation_identity_sha256", "agreement", "adjudicator_identity_sha256",
+        "verification_identity_sha256",
+    }
+    if set(label_provenance) != expected_label_fields:
+        raise ValueError("label provenance fields are incomplete or unexpected")
+    if label_provenance.get("status") != "verified":
+        raise ValueError("label_provenance.status must be verified")
+    if label_provenance.get("method") != "blind_double_annotation":
+        raise ValueError("Laya training rows require blind double annotation")
+    if not isinstance(label_provenance.get("rubric_version"), str) or not label_provenance["rubric_version"].strip():
+        raise ValueError("label_provenance.rubric_version must be a non-empty string")
     if not isinstance(row["state"], str) or not isinstance(row["questions"], dict):
         raise ValueError("state must be text and questions must be an object")
     if not row["questions"] or any(not isinstance(key, str) or not isinstance(value, dict) for key, value in row["questions"].items()):
@@ -97,6 +139,24 @@ def _validate_row(row: Any) -> None:
     question_id, label = next(iter(expected.items()))
     if not isinstance(question_id, str) or question_id not in row["questions"] or not isinstance(label, str):
         raise ValueError("expected must label a known question with a string")
+    target_sha256 = hashlib.sha256(_canonical_json(expected).encode("utf-8")).hexdigest()
+    if label_provenance.get("target_sha256") != target_sha256:
+        raise ValueError("label_provenance.target_sha256 does not match target labels")
+    annotators = label_provenance.get("annotation_identity_sha256")
+    if (not isinstance(annotators, list) or len(annotators) != 2
+            or any(not isinstance(item, str) or not re.fullmatch(r"[0-9a-f]{64}", item) for item in annotators)
+            or len(set(annotators)) != 2):
+        raise ValueError("blind double annotation needs two distinct annotator identity hashes")
+    if not isinstance(label_provenance.get("agreement"), bool):
+        raise ValueError("label_provenance.agreement must be boolean")
+    adjudicator = label_provenance.get("adjudicator_identity_sha256")
+    if (not isinstance(adjudicator, str) or not re.fullmatch(r"[0-9a-f]{64}", adjudicator)
+            or adjudicator in annotators):
+        raise ValueError("label adjudicator must be independent of both annotators")
+    verifier = label_provenance.get("verification_identity_sha256")
+    if (not isinstance(verifier, str) or not re.fullmatch(r"[0-9a-f]{64}", verifier)
+            or verifier in set(annotators) | {adjudicator}):
+        raise ValueError("label verification reviewer must be independent")
     _canonical_json(row)
 
 

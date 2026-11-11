@@ -52,7 +52,7 @@ from .router import ModelRouter, review_diff_complexity
 from .sqlite_support import connect_sqlite
 from .adoption_metrics import AdoptionMetricsStore
 from .state_paths import configured_state_dir
-from .speculative_lint import normalize_changed_paths
+from .speculative_lint import apply_path_coverage, normalize_changed_paths
 from .lint_daemon import RuffDaemonPool, OwnedBiomeDaemonPool
 from .async_jobs import capture_job_cancellation, current_job_should_stop
 from .telemetry import TelemetryStore
@@ -2654,7 +2654,7 @@ class LocalAIServices:
                 should_stop=current_job_should_stop,
             )
             result.update({"paths": paths, "command": command})
-            return result
+            return apply_path_coverage(result, args, paths)
         if biome_daemon:
             daemon_timeout = args["timeout"] if "timeout" in args else lint_config.get("timeout_seconds", 120)
             if (isinstance(daemon_timeout, bool) or not isinstance(daemon_timeout, (int, float))
@@ -2668,7 +2668,7 @@ class LocalAIServices:
                 should_stop=current_job_should_stop,
             )
             result.update({"paths": paths, "command": command})
-            return result
+            return apply_path_coverage(result, args, paths)
         result = self.commands.run(
             command,
             str(Path(root).expanduser().resolve(strict=False)),
@@ -2682,7 +2682,7 @@ class LocalAIServices:
         result.update({"daemon_mode": False, "transport": "one_shot"})
         if biome_executable and not custom:
             result["provider"] = "biome"
-        return result
+        return apply_path_coverage(result, args, paths)
 
     def close_lint_daemons(self) -> None:
         self._lint_daemons.close()
@@ -6626,9 +6626,18 @@ class LocalAIServices:
             diff = self.repo_tools.git_diff(request.root, base=request.base, staged=request.staged, max_tokens=request.token_budget)
             if since_hash and isinstance(diff, dict):
                 diff = {**diff, "diff_sha256": since_hash}
-        except Exception:
-            pass
-        drift_warnings = guard.check_drift(request, contract, changed_paths, diff)
+        except Exception as exc:
+            diff = {"success": False, "paths_complete": False, "error": type(exc).__name__}
+        if diff is None:
+            diff = {"success": False, "paths_complete": False, "error": "diff_unavailable"}
+        analysis_status = guard.diff_analysis_status(diff)
+        drift_warnings = guard.check_drift(
+            request,
+            contract,
+            changed_paths,
+            diff,
+            reuse_candidates=candidates,
+        )
         warnings = tuple(dict.fromkeys((*preload_warnings, *mapping_warnings, *drift_warnings)))[:24]
         boundary = any(item.requires_approval or item.severity.lower() in {"boundary", "high", "high-risk"} for item in warnings)
         stop_code = self._guard_stop_code(request, boundary)
@@ -6647,6 +6656,7 @@ class LocalAIServices:
                 "stop_code": stop_code,
                 "error": f"guarded context stopped: {stop_code}",
                 "warnings": warning_payload[:24],
+                "analysis_status": analysis_status,
                 "repo_revision": revision,
                 "changed_paths": list(changed_paths),
                 "task_status": "",
@@ -6735,6 +6745,7 @@ class LocalAIServices:
             "reuse": pack_data["reuse_candidates"],
             "reuse_candidates": pack_data["reuse_candidates"],
             "mappings": pack_data["mappings"],
+            "analysis_status": analysis_status,
             "warnings": [*pack_data["warnings"], *list(model_warnings)][:24],
             "evidence_ids": list(dict.fromkeys(item.get("evidence_id", "") for item in evidence if item.get("evidence_id")))[:24],
             "warning_ids": list(dict.fromkeys(

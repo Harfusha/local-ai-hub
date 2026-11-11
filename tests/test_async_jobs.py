@@ -35,6 +35,35 @@ def test_rag_index_job_persists_workspace_and_coalesces_duplicate_submission(tmp
         assert json.loads(stored["payload_json"])["workspace"] == "workspace-1"
     finally:
             manager.close()
+
+
+def test_rag_index_gpu_reservation_denial_is_known_failure_not_unknown(tmp_path):
+    manager, _scheduler = _manager(tmp_path)
+
+    def executor(action, _payload):
+        assert action == "rag_index"
+        return {
+            "success": False,
+            "error": "GPU admission is unavailable",
+            "error_code": "gpu_reserved",
+            "retryable": True,
+        }
+
+    manager.executor = executor
+    try:
+        submitted = manager.submit("rag_index", {"root": "C:/project", "workspace": "workspace-1"})
+        status = _wait_for_terminal(manager, submitted["job_id"], "failed")
+
+        assert status["attempts"] == 1
+        assert status["progress_percent"] < 99
+        assert status["outcome_unknown"] is not True
+        result = manager.result(submitted["job_id"])
+        assert result["retryable"] is False
+        assert result["terminal"] is True
+        stored = json.loads(manager._row(submitted["job_id"])["result_json"])
+        assert stored["error_code"] == "gpu_reserved"
+    finally:
+        manager.close()
 from local_ai_hub.debug_traces import DebugTraceStore
 
 

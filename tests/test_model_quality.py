@@ -204,8 +204,12 @@ def test_registry_requires_reproducible_receipt_for_promotion():
         metrics,
         receipt={
             "receipt_id": "receipt-1",
-            "evaluation_hash": "sha256:case-suite",
+            "model_digest": "sha256:model",
             "suite_version": "1",
+            "dataset_hash": "sha256:dataset",
+            "run_id": "run-1",
+            "evaluator_id": "quality-evaluator-v1",
+            "evaluation_hash": "sha256:case-suite",
         },
     )
 
@@ -213,6 +217,64 @@ def test_registry_requires_reproducible_receipt_for_promotion():
     assert missing_receipt["reason"] == "evaluation_receipt_required"
     assert promoted["status"] == "champion"
     assert promoted["receipt_id"] == "receipt-1"
+
+
+def test_registry_requires_model_bound_evaluation_receipt():
+    metrics = {
+        "grounded_rate": 1.0,
+        "schema_pass_rate": 1.0,
+        "abstention_accuracy": 1.0,
+        "hallucinated_path_rate": 0.0,
+        "false_positive_rate": 0.0,
+    }
+    weak_receipts = [
+        {"receipt_id": "bare-hash", "evaluation_hash": "sha256:evaluation"},
+        {
+            "receipt_id": "self-asserted",
+            "reproducible": True,
+            "evaluation_hash": "sha256:evaluation",
+        },
+        {
+            "receipt_id": "missing-evaluator",
+            "model_digest": "sha256:model",
+            "suite_version": "suite-v1",
+            "dataset_hash": "sha256:dataset",
+            "run_id": "run-1",
+        },
+    ]
+
+    for receipt in weak_receipts:
+        result = promote_candidate(metrics, receipt=receipt)
+        assert result["status"] == "rejected"
+        assert result["reason"] == "evaluation_receipt_required"
+
+    valid = promote_candidate(
+        {**metrics, "candidate_id": "candidate-1", "metadata": {"model_digest": "sha256:model"}},
+        receipt={
+            "receipt_id": "bound-run",
+            "model_digest": "sha256:model",
+            "suite_version": "suite-v1",
+            "dataset_hash": "sha256:dataset",
+            "run_id": "run-1",
+            "evaluator_id": "quality-evaluator-v1",
+        },
+    )
+    mismatched = promote_candidate(
+        {**metrics, "candidate_id": "candidate-2", "metadata": {"model_digest": "sha256:other-model"}},
+        receipt={
+            "receipt_id": "wrong-model",
+            "model_digest": "sha256:model",
+            "suite_version": "suite-v1",
+            "dataset_hash": "sha256:dataset",
+            "run_id": "run-2",
+            "evaluator_id": "quality-evaluator-v1",
+        },
+    )
+
+    assert valid["status"] == "champion"
+    assert valid["receipt_id"] == "bound-run"
+    assert mismatched["status"] == "rejected"
+    assert mismatched["reason"] == "evaluation_receipt_required"
 
 
 def test_registry_exposes_candidate_champion_and_rejected_states():
@@ -227,7 +289,15 @@ def test_registry_exposes_candidate_champion_and_rejected_states():
             "hallucinated_path_rate": 0.0,
             "false_positive_rate": 0.0,
         },
-        receipt={"receipt_id": "receipt-a", "evaluation_hash": "sha256:a", "suite_version": "1"},
+        receipt={
+            "receipt_id": "receipt-a",
+            "model_digest": "sha256:model-a",
+            "suite_version": "1",
+            "dataset_hash": "sha256:dataset",
+            "run_id": "run-a",
+            "evaluator_id": "quality-evaluator-v1",
+            "evaluation_hash": "sha256:a",
+        },
     )
     rejected = registry.register_candidate("model-b", {"grounded_rate": 0.1})
 

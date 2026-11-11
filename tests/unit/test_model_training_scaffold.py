@@ -664,3 +664,20 @@ def test_laya_dataset_rejects_retired_consent_fields(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="retired consent fields"):
         validate_laya_dataset_pair(train, evaluation)
+
+    train_row["provenance"].pop("consent_receipt_id")
+    evaluation_row["provenance"].pop("consent_receipt_id")
+    _write_jsonl(train, [train_row])
+    _write_jsonl(evaluation, [evaluation_row])
+    assert validate_laya_dataset_pair(train, evaluation)["group_overlap"] == []
+
+    train_row["provenance"]["per_example_consented"] = False
+    _write_jsonl(train, [train_row])
+    with pytest.raises(ValueError, match="retired consent fields"):
+        validate_laya_dataset_pair(train, evaluation)
+
+    train_row["provenance"].pop("per_example_consented")
+    train_row["consent_receipt_id"] = "receipt-reused"
+    _write_jsonl(train, [train_row])
+    with pytest.raises(ValueError, match="retired consent fields"):
+        validate_laya_dataset_pair(train, evaluation)

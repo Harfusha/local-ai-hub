@@ -284,6 +284,8 @@ def _validate_laya_row(row: Any, *, source: Path, line_number: int) -> None:
     label = f"{source}:{line_number}"
     if not isinstance(row, dict):
         raise ValueError(f"{label}: row must be a JSON object")
+    if any(isinstance(key, str) and "consent" in key.casefold() for key in row):
+        raise ValueError(f"{label}: retired consent fields are not accepted")
     for key in ("id", "group_id"):
         if not isinstance(row.get(key), str) or not row[key].strip():
             raise ValueError(f"{label}: {key} must be a non-empty string")
@@ -307,6 +309,8 @@ def _validate_laya_row(row: Any, *, source: Path, line_number: int) -> None:
         raise ValueError(f"{label}: source_sha256 must be a 64-character lowercase SHA-256")
     _validate_laya_label_provenance(row.get("provenance"), targets, label=label)
     provenance = row["provenance"]
+    if any(isinstance(key, str) and "consent" in key.casefold() for key in provenance):
+        raise ValueError(f"{label}: retired consent fields are not accepted")
     if provenance.get("data_class") == "local_scoped":
         if provenance.get("candidate_id") != row["id"]:
             raise ValueError(f"{label}: candidate_id does not match row id")

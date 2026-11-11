@@ -80,8 +80,8 @@ def test_ordinary_context_capture_queues_without_per_example_consent(tmp_path):
         validate_source_provenance=lambda *_args, **_kwargs: True,
     )
     observed = {}
-    app.evaluate_laya_context_source = lambda operation, *, root: observed.update(
-        operation=operation, root=root
+    app.evaluate_laya_context_source = lambda operation, *, root, baseline=None: observed.update(
+        operation=operation, root=root, baseline=baseline
     ) or {"status": "captured"}
 
     class ImmediateExecutor:
@@ -95,7 +95,7 @@ def test_ordinary_context_capture_queues_without_per_example_consent(tmp_path):
 
     app._status_dependency_executor = ImmediateExecutor()
     app._laya_capture_inflight = threading.Lock()
-    request = SimpleNamespace(root=str(tmp_path), task_id="task-1", session_id="session-1")
+    request = SimpleNamespace(root=str(tmp_path), task_id="task-1", session_id="session-1", query="Find parser behavior")
     result = {
         "success": True,
         "stale": False,
@@ -110,11 +110,12 @@ def test_ordinary_context_capture_queues_without_per_example_consent(tmp_path):
                 "coverage": {"complete": False, "candidate_count": 1},
             },
         },
+        "query": "Find parser behavior",
         "evidence": [
-            {"path": "indexed.py", "content_hash": "a" * 64, "text": "indexed"},
+            {"path": "indexed.py", "content_hash": "a" * 64, "text": "parse_request checks the route"},
             {
                 "path": "rag.py", "content_hash": "b" * 64,
-                "semantic": True, "evidence_id": "ev-rag",
+                "semantic": True, "evidence_id": "ev-rag", "text": "RAG record: parser handles route selection",
             },
         ],
     }
@@ -128,6 +129,15 @@ def test_ordinary_context_capture_queues_without_per_example_consent(tmp_path):
     operation = observed["args"][0]
     assert operation["session_id"] == "session-1"
     assert set(operation) == {"action", "task_id", "session_id", "evidence"}
+    assert operation["evidence"]["training_content"] == {
+        "task_input": "Find parser behavior",
+        "context_excerpt": "indexed: parse_request checks the route\nrag: RAG record: parser handles route selection",
+    }
+    assert observed["kwargs"]["baseline"] == {
+        "method": "retrieval_rank_order",
+        "suggestion": "indexed",
+        "evidence_id": "ev-indexed",
+    }
 
 
 def test_laya_runtime_decision_uses_existing_metadata_telemetry():
@@ -148,6 +158,38 @@ def test_laya_runtime_decision_uses_existing_metadata_telemetry():
         metadata,
         {"repository_id": "repo-1", "task_id": "task-1", "session_id": "session-1"},
     )]
+
+
+def test_laya_runtime_decision_telemetry_failure_is_logged_without_raising():
+    app = LocalAIApp.__new__(LocalAIApp)
+    warnings = []
+
+    def fail_recording(*_args, **_kwargs):
+        raise RuntimeError("telemetry unavailable")
+
+    app.telemetry = SimpleNamespace(record_laya_decision=fail_recording)
+    app.logger = SimpleNamespace(warning=lambda *args: warnings.append(args))
+    request = SimpleNamespace(
+        repository_id="repo-1", task_id="task-1", session_id="session-1"
+    )
+    decision = SimpleNamespace(metadata=lambda: {"decision_id": "laya-1"})
+
+    assert app._record_laya_runtime_decision(request, decision) is False
+    assert warnings == [("Laya decision telemetry failed: %s", "RuntimeError")]
+
+
+def test_laya_runtime_decision_telemetry_rejection_is_logged_without_raising():
+    app = LocalAIApp.__new__(LocalAIApp)
+    warnings = []
+    app.telemetry = SimpleNamespace(record_laya_decision=lambda *_args, **_kwargs: False)
+    app.logger = SimpleNamespace(warning=lambda *args: warnings.append(args))
+    request = SimpleNamespace(
+        repository_id="repo-1", task_id="task-1", session_id="session-1"
+    )
+    decision = SimpleNamespace(metadata=lambda: {"decision_id": "laya-1"})
+
+    assert app._record_laya_runtime_decision(request, decision) is False
+    assert warnings == [("Laya decision telemetry was not recorded",)]
 
 
 def _evidence_item(root, name, text, sources):

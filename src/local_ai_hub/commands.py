@@ -40,9 +40,12 @@ from .command_policy import (
     PURE_VALIDATORS,
     READ_FILTERS,
     READ_ONLY,
+    SHELL_INTERPRETERS,
     VALIDATORS,
     VOLATILE_READS,
 )
+from .command_git import classify_git_command
+from .command_powershell import classify_powershell_command
 MultiplexEvent = _command_streams.MultiplexEvent
 StreamMultiplexer = _command_streams.StreamMultiplexer
 from .cache import SQLiteCache, TieredCache, stable_hash
@@ -4703,45 +4706,12 @@ class CommandBroker:
         extra_allowed = set(str(x).strip().lower() for x in cfg.get("extra_allowed_tools", []))
         # Keep shell interpreters inside command classification; allowlisting a
         # shell must not grant arbitrary script execution before safety checks.
-        shell_interpreters = {"sh", "bash", "dash", "zsh", "fish", "cmd", "powershell", "pwsh"}
-        if exe_base in extra_allowed and exe_base not in shell_interpreters:
+        if exe_base in extra_allowed and exe_base not in SHELL_INTERPRETERS:
             return {"class": "validation", "cacheable": True, "allowed": True, "replay_safe": False, "reason": f"user-whitelisted tool: {exe_base}"}
 
         # PowerShell commands or script blocks
         if self._is_powershell_command(command_text) or exe_base in {"pwsh", "powershell"}:
-            cmd_lower = command_text.lower()
-            ps_dangerous = (
-                "remove-item", "format-volume", "stop-computer", "restart-computer",
-                "stop-process", "invoke-webrequest", "invoke-restmethod", "start-bitstransfer",
-                "set-executionpolicy", "new-service", "stop-service", "rmdir /s", "del /s",
-                "-encodedcommand", " -e ", " -enc ",
-            )
-            if any(d in cmd_lower for d in ps_dangerous):
-                return {"class": "dangerous", "cacheable": False, "allowed": False, "reason": "dangerous or network powershell command"}
-
-            ps_mutating = (
-                "set-content", "add-content", "out-file", "new-item", "copy-item",
-                "move-item", "rename-item", "clear-content", "git push", "git commit",
-                "start-process", "start-service", "stop-service", "restart-service", "set-service",
-                "git add", "git merge", "git reset", "git rebase", "git checkout -b",
-                "git branch -d", "git stash", "git rm", "git clean", "git switch",
-                "git restore", "git cherry-pick", "git revert", "git tag -d",
-            )
-            if any(m in cmd_lower for m in ps_mutating):
-                return {"class": "mutating", "cacheable": False, "allowed": bool(cfg.get("allow_mutating", False)), "reason": "mutating powershell command"}
-
-            validation_keywords = {"test", "validate", "check", "audit", "-runtests", "pester"}
-            if any(w in cmd_lower for w in validation_keywords):
-                return {"class": "validation", "cacheable": False, "allowed": bool(cfg.get("allow_validation", True)), "replay_safe": True, "reason": "powershell validation command"}
-            if any(w in cmd_lower for w in extra_allowed):
-                return {"class": "validation", "cacheable": False, "allowed": bool(cfg.get("allow_validation", True)), "replay_safe": False, "reason": "user-whitelisted powershell tool"}
-
-            ps_read_prefixes = ("get-", "select-", "measure-", "format-", "test-path", "where-", "out-string", "compare-", "convertfrom-", "convertto-")
-            first_word = command_text.strip().split()[0].lower() if command_text.strip() else ""
-            if any(first_word.startswith(p) or f" {p}" in cmd_lower for p in ps_read_prefixes):
-                return {"class": "read", "cacheable": False, "allowed": bool(cfg.get("allow_read", True)), "reason": "powershell read command"}
-
-            return {"class": "unknown", "cacheable": False, "allowed": False, "reason": "unrecognized powershell command"}
+            return classify_powershell_command(command_text, cfg, extra_allowed)
 
         # Reject dangerous shell subshells in raw non-powershell commands
         unquoted = re.sub(r'("[^"]*"|\'[^\']*\')', '', command_text) if not structured else ""
@@ -4749,65 +4719,7 @@ class CommandBroker:
             return {"class": "unknown", "cacheable": False, "allowed": False, "reason": "shell subshells are not accepted"}
 
         if exe_base == "git":
-            unsafe_git_flags = {"--paginate", "--exec-path", "--config-env"}
-            if any(flag in unsafe_git_flags or flag.startswith(("--exec-path=", "--config-env=", "--upload-pack=", "--receive-pack=")) for flag in lower):
-                return {"class": "unknown", "cacheable": False, "allowed": False, "reason": "git flags may execute a pager or external program"}
-            for idx, arg in enumerate(tokens[1:], 1):
-                if arg == "-c" and idx < len(tokens) - 1:
-                    config_pair = tokens[idx + 1].lower()
-                    if any(config_pair.startswith(bad) for bad in ("core.pager", "pager.", "alias.", "core.fsmonitor", "core.sshcommand")):
-                        return {"class": "unknown", "cacheable": False, "allowed": False, "reason": "git -c config may execute arbitrary commands"}
-
-            skip_next = False
-            sub = ""
-            sub_idx = 0
-            for idx, token in enumerate(tokens[1:], 1):
-                if skip_next:
-                    skip_next = False
-                    continue
-                if token in {"-C", "-c", "--git-dir", "--work-tree", "--namespace", "--no-optional-locks", "--no-pager"}:
-                    if token in {"-C", "-c", "--git-dir", "--work-tree", "--namespace"}:
-                        skip_next = True
-                    continue
-                if token.startswith("-"):
-                    continue
-                sub = token.lower()
-                sub_idx = idx
-                break
-
-            if not sub:
-                return {"class": "read", "cacheable": True, "allowed": bool(cfg.get("allow_read", True)), "reason": "read-only git"}
-
-            git_read_subs = {
-                "status", "diff", "show", "log", "grep", "ls-files", "rev-parse",
-                "branch", "tag", "describe", "blame", "remote", "cat-file", "check-ignore",
-                "check-attr", "merge-base", "shortlog", "ls-tree", "var", "reflog",
-                "version", "whatchanged", "for-each-ref", "show-ref", "rev-list", "diff-tree",
-                "hash-object", "check-ref-format", "name-rev", "count-objects", "ls-remote",
-                "verify-pack", "verify-commit", "verify-tag",
-            }
-            if sub in git_read_subs:
-                return {"class": "read", "cacheable": True, "allowed": bool(cfg.get("allow_read", True)), "reason": f"read-only git {sub}"}
-
-            if sub == "stash":
-                stash_args = [t.lower() for t in tokens[sub_idx + 1:] if not t.startswith("-")]
-                stash_sub = stash_args[0] if stash_args else "list"
-                if stash_sub in {"list", "show"}:
-                    return {"class": "read", "cacheable": True, "allowed": bool(cfg.get("allow_read", True)), "reason": f"read-only git stash {stash_sub}"}
-
-            if sub == "worktree":
-                wt_args = [t.lower() for t in tokens[sub_idx + 1:] if not t.startswith("-")]
-                wt_sub = wt_args[0] if wt_args else "list"
-                if wt_sub in {"list"}:
-                    return {"class": "read", "cacheable": True, "allowed": bool(cfg.get("allow_read", True)), "reason": f"read-only git worktree {wt_sub}"}
-
-            if sub == "config":
-                config_args = [t.lower() for t in tokens[sub_idx + 1:]]
-                read_flags = {"--get", "--get-all", "--get-regexp", "-l", "--list", "--show-origin", "--show-scope"}
-                if any(rf in config_args for rf in read_flags):
-                    return {"class": "read", "cacheable": True, "allowed": bool(cfg.get("allow_read", True)), "reason": "read-only git config"}
-
-            return {"class": "mutating", "cacheable": False, "allowed": bool(cfg.get("allow_mutating", False)), "reason": f"git {sub} may mutate"}
+            return classify_git_command(tokens, lower, cfg)
 
         if exe_base in self.READ_ONLY and exe_base != "git":
             if exe_base in {"rg", "ripgrep"} and any(flag == "--pre" or flag.startswith("--pre=") for flag in lower):

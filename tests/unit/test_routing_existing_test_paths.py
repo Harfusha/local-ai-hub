@@ -56,3 +56,11 @@ def test_empty_affected_paths_stays_empty():
     assert selected.selected_tests == ()
     assert selected.flaky_candidates == ()
     assert selected.synthetic_passes == ()
+
+
+def test_foreign_language_sources_do_not_fall_back_to_python_test_paths():
+    selected = RoutingEngine().select_tests(_change(("src/feature.cs", "src/widget.java", "src/core.cpp")))
+
+    assert selected.selected_tests == ()
+    assert selected.flaky_candidates == ()
+    assert selected.synthetic_passes == ()

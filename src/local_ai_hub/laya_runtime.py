@@ -451,9 +451,16 @@ class LayaRuntimeAdapter:
 
     @staticmethod
     def _input(evidence: ContextSourceEvidence) -> tuple[dict[str, str], dict[str, dict[str, Any]]]:
-        payload = evidence.model_input()
-        # Only typed codes and opaque evidence IDs reach the model. No task,
-        # repository, source text, prompt, or transcript is serialized here.
+        payload = {
+            key: value for key, value in evidence.model_input().items()
+            if key not in {
+                "training_redacted_fields",
+                "training_missing_fields",
+                "training_missing_reason",
+            }
+        }
+        # Raw fields have already passed the bounded DecisionInput redactor.
+        # Identity, filesystem paths, and unrelated conversation data stay out.
         state = {"body": json.dumps(payload, sort_keys=True, separators=(",", ":"))}
         options = evidence.decision_options
         criteria = {option: _SOURCE_DESCRIPTIONS[option] for option in options}
@@ -553,42 +560,42 @@ class LayaRuntimeAdapter:
             with session_lifecycle.inference_session(self._load) as model:
                 state, questions = self._decision_input(request, decision_input)
                 result = model.predict(state, questions)
-            elapsed = max(0.0, (self._clock() - started) * 1000.0)
-            if not math.isfinite(elapsed):
-                elapsed = 0.0
-            decision = self._decode(request, result)
-            selected = self._selected_device
-            if selected is None:
-                raise RuntimeError("selected Laya device metadata is unavailable")
-            runtime = LayaRuntimeMetadata(
-                model_id="convaiinnovations/laya-multilingual",
-                revision=self.revision,
-                provider=selected.provider,
-                runtime_version=selected.runtime_version,
-                device=selected.device,
-                device_class=selected.device_class,
-                device_name=selected.device_name,
-                parameter_device=selected.device,
-                execution_verification="NOT_VERIFIED",
-                quality_status="NOT_EVALUATED",
-                latency_ms=elapsed,
-                input_tokens=self._tokens(result, "input_tokens") if isinstance(result, Mapping) else None,
-                output_tokens=self._tokens(result, "output_tokens") if isinstance(result, Mapping) else None,
-                fallback_reason=("EARLIER_DEVICE_UNAVAILABLE" if self._failed_devices else None),
-            )
-            outcome = LayaRuntimeOutcome(decision=decision, runtime=runtime)
-            if outcome_recorder is not None:
-                try:
-                    outcome_recorder(request, evidence, outcome)
-                    outcome = LayaRuntimeOutcome(
-                        decision=decision, runtime=runtime, capture_status="captured"
-                    )
-                except Exception:
-                    # Shadow capture is observational: storage trouble cannot alter the decision.
-                    outcome = LayaRuntimeOutcome(
-                        decision=decision, runtime=runtime, capture_status="failed"
-                    )
-            return outcome
+                elapsed = max(0.0, (self._clock() - started) * 1000.0)
+                if not math.isfinite(elapsed):
+                    elapsed = 0.0
+                decision = self._decode(request, result)
+                selected = self._selected_device
+                if selected is None:
+                    raise RuntimeError("selected Laya device metadata is unavailable")
+                runtime = LayaRuntimeMetadata(
+                    model_id="convaiinnovations/laya-multilingual",
+                    revision=self.revision,
+                    provider=selected.provider,
+                    runtime_version=selected.runtime_version,
+                    device=selected.device,
+                    device_class=selected.device_class,
+                    device_name=selected.device_name,
+                    parameter_device=selected.device,
+                    execution_verification="NOT_VERIFIED",
+                    quality_status="NOT_EVALUATED",
+                    latency_ms=elapsed,
+                    input_tokens=self._tokens(result, "input_tokens") if isinstance(result, Mapping) else None,
+                    output_tokens=self._tokens(result, "output_tokens") if isinstance(result, Mapping) else None,
+                    fallback_reason=("EARLIER_DEVICE_UNAVAILABLE" if self._failed_devices else None),
+                )
+                outcome = LayaRuntimeOutcome(decision=decision, runtime=runtime)
+                if outcome_recorder is not None:
+                    try:
+                        outcome_recorder(request, decision_input, outcome)
+                        outcome = LayaRuntimeOutcome(
+                            decision=decision, runtime=runtime, capture_status="captured"
+                        )
+                    except Exception:
+                        # Shadow capture is observational: storage trouble cannot alter the decision.
+                        outcome = LayaRuntimeOutcome(
+                            decision=decision, runtime=runtime, capture_status="failed"
+                        )
+                return outcome
         except Exception:
             reason = "MODEL_UNAVAILABLE"
             failed = DecisionResult(

@@ -2481,7 +2481,13 @@ class LocalAIApp:
     def __exit__(self, _exc_type: Any, _exc: Any, _tb: Any) -> None:
         self.close()
 
-    def evaluate_laya_context_source(self, operation: Any, *, root: str) -> dict[str, Any]:
+    def evaluate_laya_context_source(
+        self,
+        operation: Any,
+        *,
+        root: str,
+        baseline: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
         """Run one typed shadow decision and capture its actual runtime outcome."""
         if type(operation) is not dict or set(operation) != {
             "action", "task_id", "session_id", "evidence",
@@ -2569,6 +2575,7 @@ class LocalAIApp:
                 root=canonical_root,
                 task_store=self.agent_tasks,
                 evidence_store=self.evidence,
+                baseline=baseline,
             ))
 
         outcome = adapter.evaluate_context_source(
@@ -2720,10 +2727,10 @@ class LocalAIApp:
                 session_id=request.session_id,
             )
         except Exception as exc:
-            logger.warning("Laya decision telemetry failed: %s", type(exc).__name__)
+            self.logger.warning("Laya decision telemetry failed: %s", type(exc).__name__)
             return False
         if recorded is not True:
-            logger.warning("Laya decision telemetry was not recorded")
+            self.logger.warning("Laya decision telemetry was not recorded")
             return False
         return True
 
@@ -2878,6 +2885,41 @@ class LocalAIApp:
             "coverage_codes": coverage,
             "evidence_ids": [source_rows[source_code]["evidence_id"] for source_code, _ in sources],
         }
+        def bounded_laya_text(value: str, limit: int) -> str:
+            raw = value.replace("\x00", "").strip().encode("utf-8", errors="replace")[:limit]
+            return raw.decode("utf-8", errors="ignore").strip()
+
+        task_input = getattr(request, "query", "")
+        training_content: dict[str, str] = {}
+        if isinstance(task_input, str) and task_input.strip():
+            bounded_input = bounded_laya_text(task_input, 8192)
+            if bounded_input:
+                training_content["task_input"] = bounded_input
+        excerpts: list[str] = []
+        remaining_bytes = 8192
+        for source_code, source_entry in sources:
+            source_text = source_entry["row"].get("text")
+            if not isinstance(source_text, str) or not source_text.strip() or remaining_bytes <= 0:
+                continue
+            prefix = f"{source_code}: "
+            prefix_bytes = len(prefix.encode("utf-8"))
+            if prefix_bytes >= remaining_bytes:
+                continue
+            excerpt = bounded_laya_text(source_text, remaining_bytes - prefix_bytes)
+            if not excerpt:
+                continue
+            rendered = prefix + excerpt
+            excerpts.append(rendered)
+            remaining_bytes -= len(rendered.encode("utf-8")) + 1
+        if excerpts:
+            training_content["context_excerpt"] = "\n".join(excerpts)
+        if training_content:
+            evidence["training_content"] = training_content
+        baseline = {
+            "method": "retrieval_rank_order",
+            "suggestion": sources[0][0],
+            "evidence_id": source_rows[sources[0][0]]["evidence_id"],
+        }
         operation = {
             "action": "evaluate_context_source",
             "task_id": task_id,
@@ -2897,7 +2939,10 @@ class LocalAIApp:
             return {"status": "skipped", "reason": "capture_in_flight"}
         try:
             future = executor.submit(
-                self.evaluate_laya_context_source, operation, root=canonical_root
+                self.evaluate_laya_context_source,
+                operation,
+                root=canonical_root,
+                baseline=baseline,
             )
         except Exception as exc:
             inflight.release()

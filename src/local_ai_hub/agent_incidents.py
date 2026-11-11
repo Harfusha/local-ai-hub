@@ -36,6 +36,16 @@ def _incident_scope_key(kind: str, value: Any) -> str:
     return digest
 
 
+def _incident_search_terms(query: str, *, limit: int = 32) -> list[str]:
+    """Return bounded Unicode word tokens shared by FTS and lexical filtering."""
+    return list(dict.fromkeys(re.findall(r"[^\W_]+", query.casefold(), flags=re.UNICODE)))[:limit]
+
+
+def _incident_fts_expression(terms: Collection[str]) -> str:
+    """Build an FTS5 OR query from tokens, never from raw caller syntax."""
+    return " OR ".join(f'"{term}"' for term in terms)
+
+
 @dataclass(frozen=True)
 class IncidentFingerprint:
     error_class: str
@@ -553,6 +563,7 @@ class IncidentStore:
         self.state_store = state_store
         self._lock = threading.RLock()
         self._initialized = False
+        self._fts_available = False
         self.webhook_urls: list[str] = []
         self._webhook_lock = threading.Lock()
         self._init_table()
@@ -598,7 +609,9 @@ class IncidentStore:
             if self._initialized or not self.state_store.enabled:
                 return
             self.state_store._ensure_schema()
+            fts_available = False
             def _setup() -> None:
+                nonlocal fts_available
                 # Snapshot drift from another initializer is a transient busy
                 # result and belongs inside the existing bounded retry budget.
                 self.state_store._preflight_schema_read_only()
@@ -654,9 +667,98 @@ class IncidentStore:
                             ON agent_incidents (repository_key, ignored, updated_at DESC);
                             """
                         )
+                        fts_present = con.execute(
+                            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'agent_incidents_fts'"
+                        ).fetchone() is not None
+                        trigger_names = {
+                            str(row[0])
+                            for row in con.execute(
+                                "SELECT name FROM sqlite_master WHERE type = 'trigger' "
+                                "AND name IN (?, ?, ?)",
+                                (
+                                    "trg_agent_incidents_fts_insert",
+                                    "trg_agent_incidents_fts_update",
+                                    "trg_agent_incidents_fts_delete",
+                                ),
+                            )
+                        }
+                        try:
+                            con.execute(
+                                """
+                                CREATE VIRTUAL TABLE IF NOT EXISTS agent_incidents_fts USING fts5(
+                                    operation_class, error_class, redacted_message,
+                                    root_cause, verified_fix, affected_paths,
+                                    content = 'agent_incidents', content_rowid = 'rowid'
+                                );
+                                """
+                            )
+                            fts_available = True
+                        except sqlite3.OperationalError as exc:
+                            if "no such module: fts5" not in str(exc).casefold():
+                                raise
+                            fts_available = False
+                        if fts_available:
+                            con.execute(
+                                """
+                                CREATE TRIGGER IF NOT EXISTS trg_agent_incidents_fts_insert
+                                AFTER INSERT ON agent_incidents BEGIN
+                                    INSERT INTO agent_incidents_fts (
+                                        rowid, operation_class, error_class, redacted_message,
+                                        root_cause, verified_fix, affected_paths
+                                    ) VALUES (
+                                        new.rowid, new.operation_class, new.error_class,
+                                        new.redacted_message, new.root_cause,
+                                        new.verified_fix, new.affected_paths
+                                    );
+                                END;
+                                """
+                            )
+                            con.execute(
+                                """
+                                CREATE TRIGGER IF NOT EXISTS trg_agent_incidents_fts_update
+                                AFTER UPDATE ON agent_incidents BEGIN
+                                    INSERT INTO agent_incidents_fts (
+                                        agent_incidents_fts, rowid, operation_class, error_class,
+                                        redacted_message, root_cause, verified_fix, affected_paths
+                                    ) VALUES (
+                                        'delete', old.rowid, old.operation_class, old.error_class,
+                                        old.redacted_message, old.root_cause,
+                                        old.verified_fix, old.affected_paths
+                                    );
+                                    INSERT INTO agent_incidents_fts (
+                                        rowid, operation_class, error_class, redacted_message,
+                                        root_cause, verified_fix, affected_paths
+                                    ) VALUES (
+                                        new.rowid, new.operation_class, new.error_class,
+                                        new.redacted_message, new.root_cause,
+                                        new.verified_fix, new.affected_paths
+                                    );
+                                END;
+                                """
+                            )
+                            con.execute(
+                                """
+                                CREATE TRIGGER IF NOT EXISTS trg_agent_incidents_fts_delete
+                                AFTER DELETE ON agent_incidents BEGIN
+                                    INSERT INTO agent_incidents_fts (
+                                        agent_incidents_fts, rowid, operation_class, error_class,
+                                        redacted_message, root_cause, verified_fix, affected_paths
+                                    ) VALUES (
+                                        'delete', old.rowid, old.operation_class, old.error_class,
+                                        old.redacted_message, old.root_cause,
+                                        old.verified_fix, old.affected_paths
+                                    );
+                                END;
+                                """
+                            )
+                            if not fts_present or len(trigger_names) != 3:
+                                con.execute(
+                                    "INSERT INTO agent_incidents_fts(agent_incidents_fts) VALUES ('rebuild')"
+                                )
                 finally:
                     con.close()
             retry_busy(_setup, retries=5, base_delay_seconds=0.02)
+            self._fts_available = fts_available
             self._initialized = True
 
     def capture(self, outcome: ToolOutcome) -> IncidentRecord | None:
@@ -1355,31 +1457,74 @@ class IncidentStore:
         scope_params = (repository_key,)
         con = connect_sqlite(self.state_store.db_path)
         try:
-            cur = con.execute(
-                """
-                WITH ranked AS (
-                    SELECT incident_id, operation_class, error_class, signature_hash, redacted_message,
-                           state_revision, root_cause, verified_fix, confidence,
-                           SUM(attempts) OVER (PARTITION BY operation_class, error_class, signature_hash) AS attempts,
-                           updated_at, affected_paths, ignored, expires_at, repository_key, resolved,
-                           ROW_NUMBER() OVER (
-                               PARTITION BY operation_class, error_class, signature_hash, repository_key
-                               ORDER BY updated_at DESC, incident_id DESC
-                           ) AS row_num
-                    FROM agent_incidents
-                    WHERE repository_key = ?
+            search_terms = _incident_search_terms(query)
+            candidate_limit = max(200, limit * 10)
+            if self._fts_available and search_terms:
+                cur = con.execute(
+                    """
+                    WITH ranked AS (
+                        SELECT rowid AS row_id, incident_id, operation_class, error_class,
+                               signature_hash, redacted_message, state_revision, root_cause,
+                               verified_fix, confidence,
+                               SUM(attempts) OVER (
+                                   PARTITION BY operation_class, error_class, signature_hash
+                               ) AS attempts,
+                               updated_at, affected_paths, ignored, expires_at,
+                               repository_key, resolved,
+                               ROW_NUMBER() OVER (
+                                   PARTITION BY operation_class, error_class, signature_hash, repository_key
+                                   ORDER BY updated_at DESC, incident_id DESC
+                               ) AS row_num
+                        FROM agent_incidents
+                        WHERE repository_key = ?
+                    )
+                    SELECT ranked.incident_id, ranked.operation_class, ranked.error_class,
+                           ranked.redacted_message, ranked.state_revision, ranked.root_cause,
+                           ranked.verified_fix, ranked.confidence, ranked.attempts,
+                           ranked.updated_at, ranked.affected_paths, ranked.repository_key,
+                           ranked.resolved
+                    FROM ranked
+                    JOIN agent_incidents_fts ON agent_incidents_fts.rowid = ranked.row_id
+                    WHERE agent_incidents_fts MATCH ?
+                      AND ranked.ignored = 0 AND ranked.row_num = 1
+                      AND (ranked.expires_at IS NULL OR ranked.expires_at > ?)
+                    ORDER BY bm25(agent_incidents_fts, 1.0, 2.0, 1.0, 4.0, 4.0, 2.0),
+                             ranked.updated_at DESC, ranked.incident_id DESC
+                    LIMIT ?
+                    """,
+                    (
+                        *scope_params,
+                        _incident_fts_expression(search_terms),
+                        time.time(),
+                        candidate_limit,
+                    ),
                 )
-                SELECT incident_id, operation_class, error_class, redacted_message, state_revision,
-                       root_cause, verified_fix, confidence, attempts, updated_at, affected_paths,
-                       repository_key, resolved
-                FROM ranked
-                WHERE ignored = 0 AND row_num = 1
-                  AND (expires_at IS NULL OR expires_at > ?)
-                ORDER BY updated_at DESC
-                LIMIT ?
-                """,
-                (*scope_params, time.time(), max(200, limit * 10)),
-            )
+            else:
+                cur = con.execute(
+                    """
+                    WITH ranked AS (
+                        SELECT incident_id, operation_class, error_class, signature_hash, redacted_message,
+                               state_revision, root_cause, verified_fix, confidence,
+                               SUM(attempts) OVER (PARTITION BY operation_class, error_class, signature_hash) AS attempts,
+                               updated_at, affected_paths, ignored, expires_at, repository_key, resolved,
+                               ROW_NUMBER() OVER (
+                                   PARTITION BY operation_class, error_class, signature_hash, repository_key
+                                   ORDER BY updated_at DESC, incident_id DESC
+                               ) AS row_num
+                        FROM agent_incidents
+                        WHERE repository_key = ?
+                    )
+                    SELECT incident_id, operation_class, error_class, redacted_message, state_revision,
+                           root_cause, verified_fix, confidence, attempts, updated_at, affected_paths,
+                           repository_key, resolved
+                    FROM ranked
+                    WHERE ignored = 0 AND row_num = 1
+                      AND (expires_at IS NULL OR expires_at > ?)
+                    ORDER BY updated_at DESC
+                    LIMIT ?
+                    """,
+                    (*scope_params, time.time(), candidate_limit),
+                )
             q_norm = query.strip().lower()
             results: list[dict[str, Any]] = []
             for r in cur.fetchall():
@@ -1393,7 +1538,7 @@ class IncidentStore:
                 aff = str(r[10] or "") if len(r) > 10 else ""
                 if q_norm:
                     _STOPWORDS = {"python", "python3", "pytest", "tests", "test", "pip", "node", "npm", "pnpm", "yarn", "cargo", "bash", "sh", "run", "exec", "status", "list", "true", "false", "none"}
-                    q_words = [w for w in q_norm.replace("/", " ").replace("\\", " ").replace(".", " ").split() if len(w) >= 3 and w not in _STOPWORDS]
+                    q_words = [word for word in search_terms if len(word) >= 3 and word not in _STOPWORDS]
                     matched = (
                         q_norm in rc.lower() or q_norm in fix.lower() or q_norm in suggested_fix.lower() or q_norm in msg.lower() or q_norm in err_cls.lower() or
                         (bool(q_words) and any(w in rc.lower() or w in fix.lower() or w in suggested_fix.lower() or w in msg.lower() or w in aff.lower() for w in q_words))

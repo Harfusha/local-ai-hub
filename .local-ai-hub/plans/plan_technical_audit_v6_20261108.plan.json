@@ -58,12 +58,12 @@
         "Show no validation-quality regression and identify measurable token or time savings, or report neutral/negative results without retaining unsupported 80–95% claims.",
         "Record evidence-bound results under docs/agent-evaluation/ and reconcile docs/TOKEN_ECONOMY.md."
       ],
-      "blocker": "A fresh pair ran against a content-hashed 306-file scoped runtime snapshot and passed independent tests. The scope does not prove all runtime inputs are included; installed package contents and external services were not hashed. Repeated tool-result accounting is a partial offline estimate, not a complete count.",
+      "blocker": "The 2026-11-09 306-file pair report is verified at SHA f5534317a2d33c4759397742e7961ab821a1e68354b24296333535bb38752ed0. Native and Hub transcripts confirm the exact synthetic task and separate disposable roots; final pytest runs passed 22 and 23 tests after one failed attempt each. The Hub transcript confirms two repo calls; measured pair showed +23,089 input tokens and +11,375 ms with Hub. However, the report says package contents were not hashed at A/B execution time; later RECORD hashes are post-run, and exact run-bound environment fingerprint remains unavailable. Different test suites mean equivalent validation coverage is unproven. TOKEN_ECONOMY now records the negative measured delta and limits.",
       "clarifications": [],
       "depends_on": [],
       "description": "Run identical end-to-end coding tasks against a modern native-efficiency agent with and without Local AI Hub, using isolated roots and Hub state. Compare cloud input/output and repeated tool-result tokens, tool calls, duration, validation success, and follow-up repairs. Preserve honest neutral/negative results and revise unsupported savings claims.",
       "kind": "analysis",
-      "next_action": "Review full runtime/environment coverage and reproducibility of the new pair; compute defensible repeated-result accounting from retained events. Verify the new report and close P1-5 only when its exact environment and accounting criteria are met.",
+      "next_action": "Keep P1-5 open and report the 306-file pair as a bounded, negative observation. Close only if exact run-bound environment provenance and comparable validation-quality evidence already exist in the retained artifacts; do not rerun or bypass native host policy without explicit authorization.",
       "title": "P1-5: Provést A/B evaluaci reálné úspory tokenů a latence Hubu",
       "work_phase": "verification",
       "work_status": "in_progress"
@@ -103,15 +103,15 @@
         "Benchmark measures TTFT, throughput, VRAM under load for available installed models across verified 8k, 16k and 32k contexts; unavailable 4B model recorded as limitation.",
         "Scheduler memory bounds prevent VRAM OOM on 16GB GPU during concurrent desktop usage."
       ],
-      "blocker": null,
+      "blocker": "Report docs/agent-evaluation/round1-p1-6-gpu-benchmark-2026-11-09.md (SHA e9d707bdeb035a9afd24a6d9b6044ff73f500c87a03d2121de86e94d2db98790) verifies 3B/9B 8k/16k/32k prefill and only short same-/cross-model samples; it explicitly does not prove criterion #2, OOM prevention on 16GB during concurrent desktop use. scheduler.py SHA bebfeb213c460fd3151cbd01de986d777cc1b981a53b81bce3fb3fd853fa18b2, _admission lines 636-760, budgets min(total, available + reclaimable), with no explicit desktop-growth reserve there. vram_balancer.py SHA 9de2313ce621f42df5da1cb9a110988a3b12a66c0b018508bd79fbf9430e6fa6, lines 330-479, derives headroom/pressure from telemetry and scales context; no explicit desktop-growth reserve in inspected path. This is a source-level gap, not proof other guards are absent. Latest Stability thread reports GPU reservation unknown/manual intervention required and Hub gpu_admission_state outcome_unknown; prior free/available, inference_active, and preparing_model snapshots conflict. No safe stress window. 4B absence is documented, no pull authorized.",
       "clarifications": [],
       "depends_on": [],
-      "description": "P1-6 live acceptance verified for installed models: 3B and 9B long-prefill at 8k/16k/32k; independent 128-token 9B decode; simultaneous same-model and cross-model 9B+3B short requests at 8k. All measured requests returned verified loaded contexts and nominal pressure; concurrent pair peaked at 6,607,077,376 device-wide VRAM bytes, with 7,311 MiB reported available. Targeted scheduler/VRAM suites had 95+36 passes before the full-suite run. GPU reservation was free after the live work. qwen3.5:4b-nvfp4 was absent and no pull was authorized. Evidence proves these bounded observed cases only; it does not claim a general zero-OOM guarantee, sustained rate, or process-attributed VRAM.",
+      "description": "Observed 3B/9B context and short concurrency benchmark results are recorded in the linked report. This evidence satisfies the measured installed-model coverage/4B limitation criterion only within the tested samples; it does not establish the separate 16GB concurrent-desktop OOM-prevention acceptance criterion.",
       "kind": "analysis",
-      "next_action": "",
+      "next_action": "Stability owner to reconcile reservation/outcome and trace whole admission path for enforced desktop-growth bounds. If absent, implement under Stability ownership; then run an approved concurrent-desktop admission stress gate, retaining context, TTFT, throughput, VRAM, and reservation receipts. Keep P1-6 open until criterion #2 is evidenced; do not pull 4B.",
       "title": "P1-6: Zátěžové testy GPU admission a model routingu",
       "work_phase": "verification",
-      "work_status": "completed"
+      "work_status": "in_progress"
     },
     "task_p1_query_classification": {
       "acceptance_criteria": [
@@ -153,7 +153,7 @@
       "depends_on": [],
       "description": "Gradually decompose oversized modules (commands.py ~10.8k lines, services.py ~9.8k lines, mcp_server.py ~7.4k lines, code_index.py ~5.1k lines) into cohesive submodules",
       "kind": "code",
-      "next_action": "Command policy extraction verified by 47 passed, 1 skipped; compileall, pyflakes, selftest and diff check pass. Continue extracting the next cohesive broker subsystem.",
+      "next_action": "Extracted the Git classifier to command_git.py with behavior-preserving tests; focused policy, PowerShell, and replay-policy suite passes 46 tests. Continue reviewing one bounded _classify_single branch at a time; full gates remain deferred to a stable shared snapshot.",
       "title": "P2-3: Postupně rozdělit velké moduly",
       "work_phase": "verification",
       "work_status": "in_progress"
@@ -166,15 +166,15 @@
         "Tokenless OpenCode workflow uses separate provider nonce credential, including cleanup and uncertainty handling.",
         "Focused tests and static checks pass; live model E2E remains independently gated on healthy scheduler readiness and installed model availability."
       ],
-      "blocker": "The previous provider-start result remains unconfirmed. A separate full-suite pytest PID 51944 is running in the shared checkout, so live model E2E waits to avoid interference; the GPU availability observation is transient, not a reservation.",
+      "blocker": "Excluded from current goal by explicit objective; this is scope deferral, not a technical resolution.",
       "clarifications": [],
       "depends_on": [],
-      "description": "Complete OpenCode runtime validation and remove the Hub API bearer-token system across the single-owner installation, as approved by the operator. Enforce loopback-only access and preserve command, capability, root, approval, lease, rate-limit and audit controls; retain only the separate nonce-scoped OpenCode provider credential.",
+      "description": "Historical P2-1 finding retained but cancelled for current goal scope. Preserve codex/opencode-extraction; do not integrate or run runtime E2E here.",
       "kind": "code",
-      "next_action": "After the current full suite finishes, verify fresh GPU readiness and installed-model availability, then perform one authorized nonce-scoped OpenCode E2E in the disposable root, checking an edit and confirmed shutdown. Sanitized launcher diagnostics and regressions are implemented: launcher/provider suite 28 passed, updated launcher suite 11 passed, fake-backend integration suite 20 passed; UPDATE_PROMPT now agrees with INSTALL_PROMPT on tokenless Hub.",
+      "next_action": "No OpenCode E2E or branch integration in this goal. Revisit only under a separately authorized OpenCode task.",
       "title": "P2-1: Dokončit OpenCode E2E integraci",
       "work_phase": "verification",
-      "work_status": "in_progress"
+      "work_status": "cancelled"
     },
     "task_p2_sqlite_factory": {
       "acceptance_criteria": [

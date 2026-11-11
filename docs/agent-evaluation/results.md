@@ -5571,3 +5571,248 @@ The focused files `tests/unit/test_structural_search_confinement.py`, `tests/tes
 - GPT-6 Luna Low chat `01a1c754-32a9-7302-964f-9b623c877b56` read the bounded required skill preflight, then made one completed `reachability_dead_code` call with exact alpha fixture root, `limit=1`, and `response_profile="compact"`; no other endpoint/tools or retries. Full `read_thread` confirms a single final answer and the call arguments/status.
 - The agent reports `req_c0d5bcfff673`, 15 total symbols, 4 reachable, 7 dead, 4 ambiguous, `complete=false`, internal truncation true, response-budget truncation false, and one returned row per list. Those output values remain agent-reported/NOT_VERIFIED because raw MCP payload is not visible to the host transcript. Totals match the fixture's expected partition, but the result does not prove exact symbol/path correctness or runtime coverage.
 - **Assessment: protocol PASS; endpoint content PARTIAL/NOT_VERIFIED.** No files changed and no tests/install/restart/full suite ran.
+
+### Round 52 — CASE134 five-action source/live retest (2026-11-11)
+
+- Projectless isolated GPT-6 Luna Low chat `01a1c7c0-e2b1-7753-9dfd-08319c997000` completed CASE134. Full `read_thread` shows exactly four Hub tool-call markers: one `local_ai_status`, then source reads at `operation_contracts.py:178–182`, `183–183`, and `237–238`; each source call carried `expected_file_sha256=519d965243ff715e839bd18fabe85be9b1a575d1cef1c2c6599a8a8863292d2a` and `max_chars=1200`. No target action, work order, shell, CUA, edit, test, install or restart ran.
+- `read_thread` confirms the calls and arguments, but did not expose their raw result payloads or complete live enum metadata. The final answer reports all five source actions declared and correctly classifies live exposure as `NOT_VERIFIED`, with `metadata_complete=no`, `enum_contains_action=unknown`, `metadata_evidence=agent-reported/NOT_VERIFIED`, and `evidence_status=INCOMPLETE`. Source artifact request IDs were `NOT_RETURNED`; source SHA is verified independently at current checkout. Status request ID `req_3b49187fbbf6` and capability values remain agent-reported because raw status payload is absent.
+- **Assessment: protocol/argument-count PASS; CASE134 PARTIAL.** This isolated run proves only the source declarations and the limits of host-visible evidence. It does not prove session exposure, action execution, gate decisions, or removal. GPT-6 Luna Low availability was confirmed by successful isolated chat creation and completion.
+
+### Round 53 — CASE131 impact and call-graph practical pass (2026-11-11)
+
+- Projectless isolated GPT-6 Luna Low chat `01a1c7c5-4bb3-7902-a3ca-0f7e597d24e4` completed exactly two `local_ai_repo` calls in required order: `refactor_impact`, then `call_graph`. Full `read_thread` confirms exact roots/queries/paths, the ordered standalone markers, both completed calls, one final answer, and no extra Hub calls, CUA, tests, writes, installs or restart.
+- Harness lacked two pre-indexed project roots and isolated state, plus the required collision fixtures. Cross-project, multi-module ambiguity and duplicate-definition branches remain NOT_RUN.
+- `refactor_impact` response is agent-reported/NOT_VERIFIED: request `req_562065918f0f`; `coverage.complete=false`, `index_available=true`, `freshness.status=not_checked`, `truncated=false`, `stale=NOT_RETURNED`, `risk_level=UNKNOWN`, `observed_risk_level=LOW`. The model reports zero callers despite known `load_project` at `consumer.py:5`; this is INCONSISTENT/NOT_VERIFIED. Do not accept a local-only impact conclusion.
+- `call_graph` response is agent-reported/NOT_VERIFIED: request `req_5a821e320a5d`; `coverage.complete=false`, `index_available=NOT_RETURNED`, `freshness.status=not_checked`, `truncated=true`, `stale=false`. It reports `load_project` at `src/demo_core/consumer.py:5`, matching the known caller, plus callees `rstrip` and `replace` at `src/demo_core/paths.py:3`. Incomplete coverage, unchecked freshness and truncation keep content NOT_VERIFIED.
+- **Assessment: protocol PASS; CASE131 PARTIAL.** Host transcript exposes calls/arguments/status, not raw MCP payload. No content PASS or broad test evidence. Cross-project/collision branches need the prepared indexed fixtures and isolated Hub state.
+
+### Round 54 — CASE132 readiness branch protocol retest (2026-11-11)
+
+- Projectless GPT-6 Luna Low chat `01a1c7c7-7ee5-7371-9420-f996dd4cf297` made one `local_ai_status(detail="brief", response_profile="compact")` call and produced two `phase=final_answer` messages. First was JSON with booleans encoded as strings; second was an unrelated “What should I start?” prompt. **FAIL/INVALID_CHAT_SCOPE and schema.**
+- The assistant reports status request `req_2177abad3de0`, `success=true`, model `qwen2.5-coder:3b`, `hardware_profile=high`, `gpu_admission_state=outcome_unknown`, and code generation unavailable behind `local_code_generation`. Host transcript has no raw MCP result; these values remain agent-reported/NOT_VERIFIED. Generation API/content were not called or evaluated.
+
+### Round 55 — CASE132 single-final readiness retest (2026-11-11)
+
+- Projectless GPT-6 Luna Low chat `01a1c7c8-70b8-74f1-a2f1-cffd269c558f` made one exact `local_ai_status(detail="brief", response_profile="compact")` call and emitted one final JSON. **Protocol PASS; schema FAIL:** `success` and `available` were strings (`"true"`/`"false"`), not JSON booleans. The model reports request `req_058d882476d9`, `gpu_admission_state=available`, and `feature_gate=local_code_generation`; raw response is hidden, so values remain agent-reported/NOT_VERIFIED. Generation was not called.
+
+### Round 56 — CASE132 typed readiness retest (2026-11-11)
+
+- Projectless GPT-6 Luna Low chat `01a1c7c8-fdc6-7ed3-ba6b-a36a7ce23c79` made one exact status call; full `read_thread` shows two duplicate final events. Both contain malformed JSON: the `success` and `available` keys lack values/colons. **FAIL for finalization and schema.** No generation call or other tool ran.
+- The final reports request `req_b857d8473f1f`, `success=true`, model `qwen2.5-coder:3b`, `hardware_profile=high`, `gpu_admission_state=preparing_model`, and `feature_gate=local_code_generation`. Raw response is hidden; all values remain agent-reported/NOT_VERIFIED. Generation remains NOT_RUN. Do not accept either response as a complete readiness receipt.
+- **CASE132 readiness branch remains open.** Three isolated retests confirm the single-call route and show persistent final/schema failures. Any further retest needs a strict one-final host transcript and valid JSON; no generation action is authorized here.
+
+### Round 57 — CASE134 source/live retest (2026-11-11)
+
+- Projectless isolated GPT-6 Luna Low chat `01a1c965-ee4d-7500-8be7-1cfc9b003cc7` called `local_ai_status` once, then made one `local_ai_artifact(source)` call for `operation_contracts.py:178–182`, pinned to SHA-256 `519d965243ff715e839bd18fabe85be9b1a575d1cef1c2c6599a8a8863292d2a`. `read_thread` confirms arguments and completed markers, but exposes no raw Hub outputs. No later source ranges ran; the agent final reports it stopped after a revision-change condition, which is NOT_VERIFIED from available transcript.
+- Chat invoked four CUA tool calls while checking metadata: two `cua.getState()`, one `completion_summary`, and one failed `cua.getApp('Codex')`. This violates CASE134's no-CUA scope. It made no target action, work order, edit, test, install, or restart.
+- Full live enums were not host-visible. Final classified all five live actions `NOT_VERIFIED`; source-dependent rows `NOT_RUN`; raw status fields, source output, and request IDs unavailable from host transcript. The current source SHA independently matches the pin, but this does not recover the missing source payload.
+- **Assessment: INVALID_CHAT_SCOPE / PARTIAL.** Do not use this run to claim source declaration, live exposure, action functionality, or removal. Clean Round 58 below is now the latest protocol-valid attempt; its evidence is limited to host-visible markers and arguments.
+
+### Round 58 — CASE134 source/live bounded retest (2026-11-11)
+
+- Projectless isolated GPT-6 Luna Low chat `01a1c9ca-1e5a-71f2-9dc6-f7f49c934808` made exactly four Hub calls: one `local_ai_status` and three `local_ai_artifact(source)` reads. `read_thread` verifies the status arguments and source ranges `operation_contracts.py:178–182`, `183–183`, and `237–238`, each pinned to SHA-256 `519d965243ff715e839bd18fabe85be9b1a575d1cef1c2c6599a8a8863292d2a` with `max_chars=1200`. All four tool markers completed. No target action, work order, CUA, browser, edit, test, install, or restart ran. Raw MCP result payloads and complete live action enums are absent from the host transcript.
+- Independent current-source reads confirm the same SHA and declaration: `work.bounded_submission` lists `local_ai_work.submit` and `.continue` with `minimum_profile=high`, `feature_gate=bounded_local_work`, `quality_gate=implementation_case_and_overall_gate`, and `unavailable_reason=requires_high_profile_task_qualification_and_explicit_permissions`; `_REPO_ACTIONS` lists `delegate`, `solve`, and `review_diff`. This proves source declaration only. Source-call request IDs were NOT_RETURNED.
+- The final table correctly set all five rows to `metadata_complete=no`, `enum_contains_action=unknown`, `live_status=NOT_VERIFIED`, `metadata_evidence=agent-reported/NOT_VERIFIED`, `source_declares_action=yes`, and `source_status=DECLARED`. It omitted the required `evidence_status` column. The status snapshot omitted `hardware_profile`; source reads lacked host-visible request IDs. Status request `req_9ca225bf07fe` and its capability fields are agent-reported/NOT_VERIFIED.
+- Agent-reported status values: `semantic_analysis=false` / `enabled_by_operator` / `disabled_in_mcp_adapter` / `balanced` / `local_semantic_analysis` / `not_checked`; `cross_file_design=false` / same state and reason / `medium` / `local_semantic_analysis` / `not_checked`; `repository_review=false` / same state and reason / `balanced` / `local_semantic_analysis` / `not_checked`; `bounded_local_work=true` / `enabled_by_operator` / `task_quality_and_explicit_permissions_required` / `high` / `bounded_local_work` / `not_checked`. Hardware profile: NOT_RETURNED.
+- **Assessment: protocol and call-count PASS; output-contract PARTIAL; CASE134 PARTIAL.** This run supports source declaration and exact call protocol only. It does not establish session exposure, action functionality, applied gates, or product removal.
+
+### Round 59 — CASE135 reachability output-limit retest (2026-11-11)
+
+- Projectless isolated GPT-6 Luna Low chat `01a1c9cf-957d-7ff2-8681-490e8f2426d4` completed the bounded skill preflight and made one exact `local_ai_repo` call: `reachability_dead_code`, fixture root `docs/agent-evaluation/fixtures/alpha`, `limit=1`, `response_profile=compact`. The host transcript also records one failed `mcp__cua_repl.js` call (`await nodeRepl.emitImage;`) before the Hub call, violating the explicit no-CUA scope. One final answer followed; no other Hub call, edit, test, install, or restart occurred.
+- The Hub marker completed, but raw MCP output is absent from the host transcript. Agent-reported request `req_330bcf06c1e4` reports `success=true`, `total_symbols=15`, `reachable_symbols_count=4`, `unreachable_symbols_count=7`, `ambiguous_symbols_count=4`, `complete=false`, `truncated=true`, `response_budget.truncated=false`, and one item per symbol list: `post_task` at `src/demo_api/routes.py:4` and `checkpoint_task` at `src/demo_api/routes.py:9`. The model verified `4+7+4=15` and distinguished operation truncation from response-budget truncation. These values and fixture correctness remain agent-reported/NOT_VERIFIED.
+- Final omitted the expected `status_code`, `terminal`, `retryable`, and `error` fields rather than marking them `NOT_RETURNED`. It also did not independently verify expected fixture values. **Assessment: FAIL/INVALID_CHAT_SCOPE; content PARTIAL/NOT_VERIFIED.** Do not count as CASE135 PASS or endpoint acceptance. Do not retry in this chat; the prompt already forbids CUA and calls exactly one Hub action.
+
+### CASE133 source revalidation — 2026-11-11
+
+- Current `deterministic.py` SHA-256 `dcd997cb0d972f4dd8d3648795c225399d4feb63d31e83962a0d325d102dcbbb` computes each candidate as `candidate.relative_to(p_root).as_posix()` before passing `rel` to `_is_test_file`; the fixture ancestor name is therefore outside the classifier input.
+- Current regression file SHA-256 `94757407c98a6acf26cf6d6ba8fe6b2f967cad6a96d6669831209735c56f03d5`. Re-ran `python -m pytest -q tests/test_deterministic_dead_code_precompute.py --tb=short`: **4 passed in 0.63s**.
+- This verifies current source and focused tests only. No installed-server/runtime retest, full suite, install, or restart occurred; CASE133 runtime acceptance remains **NOT VERIFIED**.
+
+### Round 60 — CASE134 isolated five-action retest (2026-11-11)
+
+- Isolated project chat `01a1c9e9-6070-7e22-b8a4-47f85f372ae4` used GPT-6 Luna Low. Host transcript confirms one `local_ai_status(detail="brief")` call (`req_a04d546135b3`) and one `local_ai_artifact(source)` call for `operation_contracts.py:178–182`, with canonical line fields, `max_chars=1200`, and expected SHA-256 `519d965243ff715e839bd18fabe85be9b1a575d1cef1c2c6599a8a8863292d2a`. The source tool marker completed, but raw response is absent from `read_thread`; the final reports `source revision changed; restart pagination`. The scenario forbids retry, so remaining slices stopped and all source-dependent rows are NOT_RUN. Source error is agent-reported/NOT_VERIFIED.
+- The transcript contains no raw complete `local_ai_repo` or `local_ai_work` schema. Live enum status remains NOT_VERIFIED; model-only tool metadata is not HOST_VISIBLE evidence. No target action, CUA, edit, test, install, or restart ran.
+- Agent-reported status snapshot: `hardware_profile=high`; `semantic_analysis=false`, `cross_file_design=false`, and `repository_review=false` with `state=enabled_by_operator`, `reason=disabled_in_mcp_adapter`, `feature_gate=local_semantic_analysis`, `provider_readiness=not_checked`; minimum profiles `balanced`, `medium`, `balanced`. `bounded_local_work=true`, `state=enabled_by_operator`, `reason=task_quality_and_explicit_permissions_required`, `minimum_profile=high`, `feature_gate=bounded_local_work`, `provider_readiness=not_checked`. All values remain agent-reported/NOT_VERIFIED; status request ID is `req_a04d546135b3`.
+- **Assessment: protocol/call order PASS; source result PARTIAL; CASE134 PARTIAL / NOT VERIFIED.** No conclusion about source declarations, live action exposure, current gates, functionality, or product removal.
+
+### Round 61 — CASE132 readiness retest (2026-11-11)
+
+- Isolated GPT-6 Luna Low chat `01a1c9ee-383d-7012-88a4-759c1673bcbc` completed the bounded skill preflight, then made one exact `local_ai_status(detail="brief", response_profile="compact")` call. Host transcript confirms call arguments and one final; no retry, generation, repo action, CUA, test, write, install, or restart occurred.
+- Agent-reported status: request `req_651e3825e6fe`, `success=true`, `active_model=qwen2.5-coder:3b`, `hardware_profile=high`, `gpu_admission_state=available`; `code_generation.available=false`, `state=enabled_by_operator`, `reason=disabled_in_mcp_adapter`, `feature_gate=local_code_generation`, `provider_readiness=not_checked`. Raw Hub payload is absent from `read_thread`; values are NOT_VERIFIED.
+- Final JSON is invalid: `success` and `capabilities.code_generation.available` lack colons and values. No status-code or transport fields were returned in the final. Agent reports generation GATED/NOT_RUN from the explicit feature gate; no generated content was evaluated. Harness fixture, patches, and test target were not supplied.
+- **Assessment: one-call protocol PASS; final schema FAIL; readiness branch PARTIAL / NOT_VERIFIED; CASE132 remains NOT_VERIFIED.** Do not retry this chat or infer endpoint content quality.
+
+### Round 62 — CASE134 isolated source/schema retest (2026-11-11)
+
+- Projectless isolated GPT-6 Luna Low chat `01a1ca14-2e83-7371-89f9-1a90ce319d1c`, turn `01a1ca14-2f49-7542-9c65-f51ed9b7658f`. Host `read_thread` transcript shows exactly four completed Hub calls in order: one `local_ai_status` call with default arguments, then `local_ai_artifact(source)` for `operation_contracts.py` lines 178–182, 183–183, and 237–238. All source calls used canonical `line_start`/`line_end`, `max_chars=1200`, and expected SHA-256 `519d965243ff715e839bd18fabe85be9b1a575d1cef1c2c6599a8a8863292d2a`. No target action, work order, CUA, file edit, test, install, or restart ran; one final answer followed.
+- Host transcript does not contain raw status or source payloads, source request IDs, or complete `local_ai_repo`/`local_ai_work` enums. Thus child-reported `source_declares_action=yes` rows and status request `req_ba5cdbad67d6` remain agent-reported/NOT_VERIFIED. Live exposure remains `metadata_complete=no`, `enum_contains_action=unknown`, `live_status=NOT_VERIFIED`; no removal inference.
+- **Assessment: protocol and four-call limit PASS; source/status payload evidence incomplete; CASE134 PARTIAL / NOT VERIFIED.** The isolated model was available and ran the scenario, but acceptance requires host-visible enum and returned source/status evidence. No same-chat retry.
+
+### Round 63 — Round 3 T12 semaphore TTL waiter regression (2026-11-11)
+
+- Current checkout `master` at `5131e2b1f4658887e44c12ea15ed2c23e98e3d17`; scoped changes sit in a dirty shared working tree. Source SHA-256 `dd934125816a9fee9cf04d3906366050641cc87971e4bf46809c7f0f6c0f9409`, test SHA-256 `36f4cc63ea966adf85f4326c7b60142102fe384a9135ade2caa798b15c86f4c7`.
+- T12 source showed `SemaphoreStore.acquire()` waiting for the caller's full remaining timeout and retrying only on a non-timeout pubsub event. TTL expiry publishes no release event. New regression `test_semaphore_waiter_wakes_when_holder_ttl_expires` failed before the fix: waiter returned `acquired=false` after holder TTL elapsed.
+- Fix bounds the pubsub wait by the nearest active holder expiry, retries acquisition at that boundary, and refreshes active holders after unsuccessful retries. Diff SHA-256: source `830031b9d41460dd4f9f322ae2aad2194cb96986c397d59ed057a7be51e0a9c1`; test `72bd2e1491edd7116ab4b1acc09da765d3c8b146d0b1dd6c8e3b16203e3d5881`.
+- Final bounded command: `.\.venv\Scripts\python.exe -m pytest -q tests/unit/test_semaphore_and_board.py::test_semaphore_waiter_wakes_when_holder_ttl_expires tests/unit/test_semaphore_and_board.py::test_semaphore_wait_and_wakeup tests/unit/test_semaphore_and_board.py::test_semaphore_ttl_expiration tests/unit/test_semaphore_optional_ttl.py -k semaphore --tb=short` — **9 passed in 6.84s**.
+- **Assessment: T12 source fix and focused tests verified on this working-tree snapshot.** No full suite, compileall, pyflakes, selftest, release check, runtime restart, or shared-runtime validation ran; Round 3 remains open.
+
+### Round 64 — Round 3 T01 separate-process semaphore coverage (2026-11-11)
+
+- Current source SHA-256 `dd934125816a9fee9cf04d3906366050641cc87971e4bf46809c7f0f6c0f9409` already contains `BEGIN IMMEDIATE` for slot acquisition. Added `test_semaphore_single_capacity_is_process_safe`: two spawned processes use separate `SemaphoreStore` instances, synchronize at a start barrier, then race for capacity one; exactly one must acquire.
+- Test SHA-256 `fb4ff5ed0311d8232c593ceB7a43bbef4867c0161f56d7bb5d47f21631214e66`; test diff SHA-256 `4e1f554357cb7d5f130f405c6fb2ce9a21d358e26c18d2f7ab70ab3bbdbdd8c1`. Current source diff remains T12-only, SHA-256 `830031b9d41460dd4f9f322ae2aad2194cb96986c397d59ed057a7be51e0a9c1`.
+- Combined bounded semaphore run, including T01 cross-process and T12 TTL waiter cases: **10 passed in 7.82s**.
+- **Assessment: T01 concurrency invariant and T12 TTL wakeup verified by focused tests on this working-tree snapshot.** No broad suite or runtime stress proof; Round 3 remains open.
+
+### Round 65 — Round 3 T02 semaphore FIFO and stale queue fix (2026-11-11)
+
+- T02 red reproduced three failures: non-acquired calls at timeout `0.0` and `0.05` left queue entries; a new caller acquired a freed slot ahead of two queued waiters. Fix now grants free capacity only to an empty queue or its head, queues only callers with an active wait, and removes a waiter's entry after timeout.
+- Source SHA-256 `1e6704031b07b2d9cba92e64409a92f44aff4cb1b1fe22aa147f1563ef53999a`; test SHA-256 `1991596e1df80f9c7e1b0630b8a7945effc2e5868b18c3572cd7b6c8e6b7b2a3`; source diff SHA-256 `d61e0a7b0dc6298bec2033df9a75305bc548af97fdaf39df66338c28a9e383e5` (T12 and T02 source changes together).
+- Final bounded command: `.\.venv\Scripts\python.exe -m pytest -q tests/unit/test_semaphore_and_board.py tests/unit/test_semaphore_optional_ttl.py -k 'semaphore or wait_for_event' --tb=short` — **19 passed in 8.05s**. Includes T01 spawned-process race, T02 FIFO/cleanup, T12 TTL expiry, and existing wait/TTL cases.
+- **Assessment: T01/T02/T12 source behavior verified by focused tests on this working-tree snapshot.** No broad suite, live runtime stress, compileall, pyflakes, selftest, or release check ran; Round 3 remains open.
+
+### Round 66 — Round 3 T03 CAS version and T04 merge-event replay (2026-11-11)
+
+- Current `agent_blackboard.py` SHA-256 `f8e279c8d0308c24570c46f3733b9b3e217a21c9a802d4040bf1e7e710783bda` keeps the maximum CAS version when vector clocks dominate and appends merge events with strict idempotency. No source change was needed in this continuation.
+- Added T03 cases where the remote clock dominates while local and remote CAS versions differ in both directions; added T04 durable replay coverage proving the same remote merge succeeds twice and persists only one `blackboard.merged` event. Test file SHA-256 `7cb9fb316767e60544c3fda156d2f112ae7e1b4c8f22ae8761e53be163757bad`.
+- Focused command `.\.venv\Scripts\python.exe -m pytest -q tests/test_agent_blackboard_crdt.py --tb=short` — **10 passed in 0.51s**. The three new test cases alone passed **4/4**.
+- **Assessment: T03/T04 focused regression evidence verified on this working-tree snapshot.** Round 3 remains open; other accepted findings, stable-snapshot broad checks, and live runtime evidence remain outstanding.
+
+### Round 67 — Round 3 T11 semaphore release owner gate (2026-11-11)
+
+- T11 red regression reproduced that `SemaphoreStore.release()` released a held lease when `owner` was omitted. Release now requires a non-empty owner matching the stored holder. Existing wrong-owner rejection remains covered; unit test callers now provide the owner they acquired with.
+- Current `agent_semaphores.py` SHA-256 `35b23d55c6d3be86aed7d1ba8618bfef8d403a4cdda6fec883cc694c719ee301`; audit regression file SHA-256 `31bd590e6ea38b5956ba2e0598e729f92cf3bd81a9096c097555423bd8576b9b`; semaphore unit test file SHA-256 `4d6f9c0ec20fcf49d4b57c322dab49ca8dcb9a860c84f71c960a34c757bfaf40`.
+- Combined focused command `.\.venv\Scripts\python.exe -m pytest -q tests/test_audit_round3_regressions.py tests/unit/test_run_affected_language_filter.py --tb=short` — **29 passed in 1.36s**. The updated T10 case failed before the fix and passes with the scope filter.
+- **Assessment: T11 owner check verified by focused tests on this working-tree snapshot.** Round 3 remains open; no broad suite, shared runtime, or cross-process authorization proof was run.
+
+### Round 68 — Round 3 T10 session briefing scope check (2026-11-11)
+
+- The T10 regression confirms `TaskState` objects appear in `active_tasks`; focused command `.\.venv\Scripts\python.exe -m pytest -q tests/test_audit_round3_regressions.py::test_t3_02_session_briefing_handles_taskstate_objects --tb=short` — **1 passed in 0.39s**.
+- Current `BoardStore.session_briefing()` converts task objects with `to_dict()`, but calls `list_tasks(status=None, limit=5)` without root/repository filtering. The TaskStore list API has no root parameter. The original T10 report includes repository binding, so this is **PARTIAL / OPEN**, not accepted as fixed.
+- Current source SHA-256 `ae08d981d94c5f8ec03857a4dae3d531c40da86a261f5d6ca206128cc612fb85`; audit regression file SHA-256 `31bd590e6ea38b5956ba2e0598e729f92cf3bd81a9096c097555423bd8576b9b`.
+- **Next:** trace canonical task repository scope and add a root-isolation regression before changing briefing behavior.
+
+### Round 69 — Round 3 T08 affected-test command generation (2026-11-11)
+
+- Cargo now maps direct `tests/*.rs` files to `cargo test --test <target>`; source files that do not identify a Cargo target produce unfiltered `cargo test` rather than treating a filename as a test-name filter. Go test files map to their package directories, with root-level tests using `go test .`. The .NET builder retains its `FullyQualifiedName~<stem>` filter.
+- Added regressions for Cargo targets, multiple targets, non-target Rust sources, Go package directories, multiple Go packages, root package, and Windows-separated paths; the .NET filter format is covered.
+- Focused command `.\.venv\Scripts\python.exe -m pytest -q tests/unit/test_run_affected_language_filter.py --tb=short` — **17 passed in 0.53s**.
+- **Assessment: T08 command-builder syntax behavior verified on this working-tree snapshot.** No Rust, Go, or .NET runner was invoked; this is not execution evidence. Round 3 remains open.
+
+### Round 70 — Round 3 T10 repository-scoped session briefing (2026-11-11)
+
+- Red regression reproduced cross-repository leakage: `session_briefing(root=repo-a)` returned a task bound to `repo-b` and an unscoped task before the local task.
+- `BoardStore.session_briefing()` now canonicalizes the requested root and filters TaskState results with the server-managed `_task_scope_root()` identity. Missing roots, unscoped tasks, and invalid/foreign task scopes fail closed. It scans up to 100 recent tasks and returns at most five matching active tasks.
+- Combined focused command `.\.venv\Scripts\python.exe -m pytest -q tests/test_audit_round3_regressions.py tests/unit/test_run_affected_language_filter.py --tb=short` — **29 passed in 1.36s**. The updated T10 case failed before the fix and passes with the scope filter.
+- **Assessment: T10 root-isolation behavior verified for the focused fixture on this working-tree snapshot.** Round 3 remains open; no broad suite or runtime acceptance was run.
+
+### Round 71 — Round 3 T15 durable PubSub timestamp filter (2026-11-11)
+
+- Red regression showed `poll(since_timestamp=first_timestamp, after_seq=0)` returned both an old and a new message when durable storage was enabled; the same test passed for the ephemeral queue.
+- Durable conversion now drops events whose `created_at` is less than or equal to the validated `since_timestamp`, for both mapping and `AgentEvent` rows. Sequence cursor and retention-gap metadata remain unchanged.
+- Focused command `.\.venv\Scripts\python.exe -m pytest -q tests/test_agent_events.py tests/unit/test_coord_board_pubsub_canonical_inputs.py tests/unit/test_pubsub_filter_presence.py --tb=short` — **103 passed in 10.08s**.
+- Current source SHA-256 `db140ebf4b84e7e4959c7956663b65b92778fba216fe64d89c4eb9d88d3efd36`; regression file SHA-256 `4ec88cf4676fc9d00deb3c720086897abd0fab1220d6db8eae38a8d15f06a503`.
+- **Assessment: T15 timestamp filtering verified by focused durable and ephemeral cases on this working-tree snapshot.** Round 3 remains open; broad suite and runtime acceptance are not established.
+
+### Round 72 — Round 3 T18 empty source validation (2026-11-11)
+
+- Red regression reproduced that `read_source_slice()` returned success for `line_start=1` on a zero-byte source, because the bounds check treated an empty file as if it had one line.
+- The bounds check now compares the requested start directly with `total_lines`; the empty file therefore fails with `line_start exceeds the source line count`.
+- Focused command `.\.venv\Scripts\python.exe -m pytest -q tests/unit/test_source_slice_mcp_contract.py tests/test_source_slice_root_hint.py --tb=short` — **13 passed, 1 skipped**. The skip is the existing symlink test; this host does not permit test symlinks.
+- **Assessment: T18 empty-file line validation verified by the focused regression on this working-tree snapshot.** Round 3 remains open; broad suite and runtime acceptance are not established.
+
+### Round 73 — Round 3 T16 tool capability fallback marker (2026-11-11)
+
+- Current `ToolAwareLocalAgent.run()` treats an unavailable `/api/show` capability result as `tool_fallback=True`, sends no tool schemas, and exposes both `tool_capability` and `tool_fallback` in either successful response path. The one-second `/api/show` timeout returns unknown capability on exception.
+- Added a source-contract regression to `tests/unit/test_single_owner_tool_agent.py`; focused command `.\.venv\Scripts\python.exe -m pytest -q tests/unit/test_single_owner_tool_agent.py --tb=short` — **3 passed in 0.38s**.
+- **Assessment: T16 source-level fallback/degradation marker verified.** This does not exercise a live runtime timeout or model response; runtime behavior remains unverified. Round 3 remains open.
+
+### Round 74 — Round 3 T20 PHP runner adapter and T21 selection completeness (2026-11-11)
+
+- PHP test discovery now recognizes PHPUnit from `composer.json`/`phpunit.xml`, Pest from `composer.json`/`Pest.php`, and conventional `ExampleTest.php`, `test.php`, and `_test.php` paths. Focused commands use `vendor/bin/phpunit <file>` or `vendor/bin/pest <file>`.
+- T20 regressions reproduced `framework="unknown"` for PHPUnit and Pest Composer fixtures before the adapter. Four cases now cover Composer and XML/config detection, `*Test.php`, and command generation; focused suite `.\.venv\Scripts\python.exe -m pytest -q tests/unit/test_run_affected_language_filter.py --tb=short` — **21 passed in 1.01s**.
+- T21 mixed-runner case now asserts that excluding an incompatible JavaScript test sets `requires_multiple_runners=true` and `selection_complete=false`; focused case **1 passed**, included in the 21-test suite.
+- **Assessment: T20 discovery/command generation and T21 incomplete-selection reporting verified by focused Python tests.** PHP, PHPUnit, and Pest binaries were not invoked; broad suite remains gated on a stable shared snapshot.
+- Tightened the PHP name boundary so `src/contest.php` is not classified as a test, and excluded `tests/Pest.php` from target files while retaining it as framework evidence; the final rerun above includes both fixtures.
+
+### Round 75 — CASE134 isolated live-schema/source audit (2026-11-11)
+
+- Ran isolated project chat `01a1ca69-7130-79f3-a2f6-ff7f7b456c44` with GPT-6 Luna Low. Full `read_thread` confirms exactly four Hub calls: one `local_ai_status` and three `local_ai_artifact.source`; canonical ranges, expected source SHA, and ordered markers match the contract. No target action was called.
+- Current `operation_contracts.py` SHA `519d965243ff715e839bd18fabe85be9b1a575d1cef1c2c6599a8a8863292d2a` declares `local_ai_work.submit/continue` under `work.bounded_submission` with the high-profile, implementation-case/overall-quality, and `bounded_local_work` gates; `_REPO_ACTIONS` declares `local_ai_repo.delegate/solve/review_diff`. These are source declarations only.
+- The host transcript contains call arguments/status markers but no raw MCP outputs or complete live enums. The final table correctly leaves all five live actions `NOT_VERIFIED` and evidence `INCOMPLETE`; it omits the returned `hardware_profile` and status capability values. **Assessment: protocol/call-count PASS; content acceptance PARTIAL, overall NOT VERIFIED.** No product-removal inference.
+
+### Round 76 — Round 5 B10 runtime output integrity (2026-11-11)
+
+- Red reproduction: `postprocess_model_output(..., role="code")` removed `<plan>keep this literal</plan>` from an unfenced source string and deleted a standalone `[DONE]` line inside a triple-quoted fixture. Before implementation, structured-role regressions reported **2 failed, 1 passed**.
+- Normalizer now treats code/JSON/diff and code-producing roles as structured payloads: extracts reasoning tags only at the response prefix, strips orphaned reasoning tags/runtime markers only at the response tail, preserves embedded literals, and skips JSON fence/newline repair. Diff remains on the separate `postprocess_patch` path. Current source SHA `4514ab05ce759ccaf24930e7c56fafbcd5f3fad2ae8038323ba08d20c9798f78`; regression test SHA `6c7f6497be3310727487dc9480b78890a4d83b311f300a0517cb654bc2d49c65`.
+- Focused command `.\\.venv\\Scripts\\python.exe -m pytest -q tests/unit/test_normalizer_edge_cases.py tests/unit/test_normalizer_hardening_wave17.py --tb=short` — **15 passed in 0.59s**. `local_ai_repo.git_diff` returned retryable 503; no native fallback. Exact edited source slices and the focused tests were inspected.
+- **Assessment: normalizer source/test slice verified; B10 remains blocked for end-to-end JSON format wiring.** `services._generate` has a `format` input but calls the normalizer with `role` only. This Stability-owned call site was not edited; integration and focused validation were handed to Stability thread `01a1c762-d599-75c2-ae34-344aae056aa0`. No runtime model or broad-suite test was run.
+
+### Round 77 — Round 2 N01 TokenRouter invalid-score fallback (2026-11-11)
+
+- Current `_parse_ranges` converted malformed scores to `1.0` and clamped out-of-range values. Six new cases for a string, null, NaN, infinity, and scores below/above `[0, 1]` reproduced the defect: **6 failed, 2 passed** before the fix.
+- The parser now skips invalid score entries. When no valid ranges remain, `route_text` keeps its deterministic baseline; the new parameterized test verifies six invalid values through that fallback path. Current source SHA `619bdc8176c322d46c1a7966f6deb4518161a72509aa89a766a1710c588e8695`; focused test SHA `a5660768bcc123d6a6d71dfb594889d9ac25ee7d30c50aff34aa141ca1e03f9d`.
+- The same focused run also verifies N12's existing safeguards: `_normalize_ranges` merges overlaps and enforces `max_output_lines`; its large-range and overlap tests passed. This remains source/test evidence, not a live selector run.
+- Focused command `.\.venv\Scripts\python.exe -m pytest -q tests/test_audit_round2_token_router_n12.py tests/unit/test_token_router_hardening_wave19.py tests/unit/test_single_owner_token_router.py tests/unit/test_token_router_config.py --tb=short` — **24 passed in 1.27s**. `local_ai_repo.git_diff` reviewed both exact files. The indexed impact action returned a workspace-wide heuristic over the shared dirty tree and is not treated as a precise dependency map; no qualified semantic review action is exposed.
+- **Assessment: N01 source and focused-test fix verified.** No live model evaluation or broad suite was run. Round 2 N02–N24 remain unreconciled and the overall round stays open.
+
+### Round 78 — Round 2 N04 small sharded LRU capacity (2026-11-11)
+
+- Current `MemoryLRUCache` bounds shard count to `max_entries`, sets each shard limit to `max(1, max_entries // num_shards)`, and evicts in both `set` and `set_many`. For a positive capacity, the summed per-shard bound cannot exceed the declared maximum.
+- Added a focused regression with `max_entries=3`, `shards=16`, and 100 keys. It checks the total bound through both `set_many` and repeated `set`. Current source SHA `075d49424cbc4e2c1188e2b4ac96e6cc42affc8cf8e300f5563e2a5e37b094e4`; test SHA `a50836850e178342d53f738281d14d53b0a790ca17e4e4f29b35758d857ab6b1`.
+- Focused command `.\.venv\Scripts\python.exe -m pytest -q tests/unit/test_cache_batching_and_locking.py -k 'memory_batching or memory_lru_small_capacity' --tb=short` — **3 passed, 6 deselected in 0.41s**. No production source change was needed. The `affected_tests` index returned an incomplete, workspace-wide fallback (`selection_complete=false`); it was not treated as a dependency map.
+- **Assessment: N04 current source and small-capacity regression verified.** No broad suite was run. Round 2 remains open for N02–N03, N05–N11, and N13–N24.
+
+### Round 79 — Round 2 N22 literal LIKE wildcards (2026-11-11)
+
+- The audit finding's source description is stale: current `MemoryStore.find()` escapes backslash, `%`, and `_`, and declares `ESCAPE '\\'` for both LIKE expressions. The indexed source line is 1815; the source file has no working-tree diff.
+- Added a parameterized regression ensuring `%` and `_` each match literally, not as SQL wildcards. Focused command `.\\.venv\\Scripts\\python.exe -m pytest -q tests/test_agent_memory.py --tb=short` — **57 passed in 17.85s**. This verifies the current source behavior; no production change was needed.
+- **Assessment: N22 source and focused module verified; original finding already fixed in current HEAD, with missing regression coverage now added.** Round 2 remains open for other unreconciled findings.
+
+### Round 80 — Round 2 N23 language-aware test path selection (2026-11-11)
+
+- Red reproduction: `.cs`, `.java`, and `.cpp` source paths each produced a nonexistent `tests/test_<name>.py` target. The new regression failed before the fix.
+- Python test-path inference now applies only to `.py`; already-supported TypeScript, JavaScript, Go, and Rust mappings remain intact. Unsupported extensions are skipped rather than assigned a Python test. Source SHA `b2419eedd97b26aed04550e4ff5cc2f9bfbb81e52b0a239d50744e274608d958`; regression test SHA `b41386fdbed616ee66b956d3fb5111e4934095e3d9394c05934779c6bc579dd9`.
+- Focused command `.\\.venv\\Scripts\\python.exe -m pytest -q tests/unit/test_routing_existing_test_paths.py tests/unit/test_agent_routing_edge_cases.py tests/test_agent_routing.py --tb=short` — **13 passed in 0.87s**.
+- **Assessment: N23 fixed and verified by focused routing tests.** No broad suite was run; Round 2 remains open.
+
+### Round 81 — Round 2 N02/N03 graph traversal bounds (2026-11-11)
+
+- Current `MemoryStore.traverse_graph()` uses bounded breadth-first traversal, not a recursive CTE. It caps visited nodes, stops expanding when `max_nodes` is reached, and selects returned edges only when both endpoints are among returned nodes. Source SHA `274a2294e46a35f79ff0d07990b28339a9aa770e0f0a240b3067bf6af69bcdbf`.
+- Existing `test_traverse_graph_bounds_selects_by_node_limit` checks the SELECT budget against `max_nodes + 1`. Added a bounded two-node graph regression asserting returned edges remain inside the node set. Focused command `.\\.venv\\Scripts\\python.exe -m pytest -q tests/unit/test_memory_graph_cte.py --tb=short` — **3 passed in 0.67s**. Test SHA `9c41ee83d6efee5554a7bd04a8fa0957281738c1e63745e24e482c736a1e322d`.
+- **Assessment: N02 and N03 current source/test behavior verified; original findings are stale against current HEAD.** No production source change was needed; Round 2 remains open.
+
+### Round 82 — Round 2 N16 context artifact reuse (2026-11-11)
+
+- Red reproduction: after compiling identical context, deleting its backing artifact, and compiling again, the ledger reused the stale pointer without checking the artifact. The new test failed before the fix.
+- `ContextLedger.compile()` now checks the stored digest, pointer freshness, and artifact existence with a bounded `get(offset=0, max_chars=1)` before reuse. A missing artifact triggers a fresh `put`; valid identical context does not write again. Source SHA `5b82f4b6e4404efc67bba86059f6720234e8c5f9c2a3a4d9aac764731eb39dfd`; test SHA `c6a53d4a9c48d21218c2c498c4c75cf119d91f10393b8c0a06633d617eacf709`.
+- Focused command `.\\.venv\\Scripts\\python.exe -m pytest -q tests/test_context_ledger.py tests/unit/test_context_ledger_edge_cases.py tests/unit/test_single_owner_context_ledger.py --tb=short` — **16 passed in 2.69s**.
+- **Assessment: N16 fixed and verified.** No broad suite was run; Round 2 remains open.
+
+### Round 83 — Round 2 N17 context text budget (2026-11-11)
+
+- Red reproduction: a 3,200-token response budget returned 3,214 tokens because truncation metadata was added after the envelope budget was calculated. The direct budget regression failed before the fix.
+- Text is now capped after truncation metadata is included in the envelope calculation. The regression verifies that useful text receives more than one-sixth of the budget while the complete serialized result stays at or below 3,200 tokens. Source SHA `1d475d829b9bb70f2a85e525685cced65b0cfe9f807badcccdd668ac02758f0e`; test SHA `fa699b7ecbe4608b04311926118ec5dffd40895ff0ebb84abaf65e545cc70f68`.
+- Focused command `.\\.venv\\Scripts\\python.exe -m pytest -q tests/test_audit_context_delivery_remediation.py --tb=short` — **10 passed in 1.43s**.
+- Adjacent `tests/test_context_delivery.py` run: **22 failed, 37 passed**; failures report `services.py` calling `_Guard.check_drift(reuse_candidates=...)` while that test stub rejects the argument. No `services.py` change was made; this is outside N17 acceptance.
+- **Assessment: N17 fixed and verified by direct envelope-budget tests.** Shared service-stub failures remain separate; Round 2 remains open.
+
+### Round 84 — Round 2 N14 lease wait-edge cleanup (2026-11-11)
+
+- Red reproduction: owner A acquired two leases for `src`; owner B waited on `src/service.py`; releasing only one A lease deleted B's still-valid wait edge. The new regression failed before the fix.
+- `ScopeLeaseStore._release_matching()` now checks each affected wait edge against the blocker's remaining active leases using `_overlap()` and the root's case-sensitivity policy. It keeps the edge while any active blocker overlaps the requested path, then removes it after the final blocker is released. No runtime schema alteration or lease-table migration was added. Source SHA `ff2dadb2a7ad1db57e47b554c14ef2069644c4e6b085370b0652c0c9df604799`; test SHA `1dc493667787c412ed75ee45e8be39eb7959aa35a49baa62123c6ed1912a2847`.
+- Focused command `.\\.venv\\Scripts\\python.exe -m pytest -q tests/test_audit_round2_leases_n14.py --tb=short` — **2 passed in 0.58s**. Adjacent command `.\\.venv\\Scripts\\python.exe -m pytest -q tests/test_lease_atomic_deadlock.py --tb=short` — **2 passed in 0.47s**.
+- **Assessment: N14 fixed and verified by focused source/tests.** Round 2 remains open; broad validation still waits for a stable shared-checkout snapshot.
+
+### Round 85 — Round 2 N13/N15 current-source reconciliation (2026-11-11)
+
+- N13: current `agent_entity_relations` schema and `record_relation()` contain no repository identity; `record_relation()` also accepts no repository root or coordination ID. Existing relation rows therefore cannot be safely assigned to a project. `find_relations()` now conjuncts `source_entity` and `target_entity`; focused test `tests/test_audit_round2_graph_n02_n03_n13.py::test_n13_find_relations_supports_simultaneous_source_and_target` — **1 passed in 0.41s**. Namespace isolation remains open; no schema change was made.
+- N15: `save_spec_and_plan()` routes both candidate files through `_save_targets_pinned()` under one storage lock. `read_plan_file()` performs a bounded file read without acquiring that lock. Existing save-success coverage does not prove a concurrent reader sees a consistent spec/plan pair. Keep N15 open; no runtime change or test was made.
+- Source SHA `agent_memory.py` `274a2294e46a35f79ff0d07990b28339a9aa770e0f0a240b3067bf6af69bcdbf`; N13 test SHA `7d7c351bd41a8df9203a39d68f852be4a2dcf0d578a8b3a58f5acb9b0eb19cba`; N15 storage SHA `3203678b6926624b425d32dea5f1c8a786cfda93b0ff3974c6f3e4ea1e9515b5`.
+- **Assessment: N13 partial; N15 open.** Round 2 and overall audit remain open.
+
+### Round 86 — Round 2 N04 sharded LRU capacity (2026-11-11)
+
+- `MemoryLRUCache` now distributes the remainder across per-shard capacities. Both `set()` and `set_many()` retain the full configured capacity without exceeding it.
+- The regression first failed before the source change (`16` entries retained for a configured capacity of `17`); after the fix, `tests/test_audit_round2_regressions.py::test_t2_04_sharded_lru_uses_full_non_divisible_capacity` passed **4/4** across capacities 1/17 and both insertion APIs.
+- Source SHA `E9DB1CC0C375ECC8FD3B7BDDE311247537B04806CCCD353763FA9BE7155AFB65`; test SHA `CA4B77BC32AA7C2B90DA03B3346698B6382E0B25C7BC27385060BF04E176FE59`.
+- **Assessment: N04 fixed and focused-verification passed.** Round 2 and overall goal remain open; full validation is still deferred until a stable shared-checkout snapshot.

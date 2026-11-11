@@ -26,8 +26,20 @@ UNCLOSED_TAG_RE = re.compile(
     rf"<(?P<tag>{GENERIC_TAG_NAMES})>(?P<content>.*?)\Z",
     re.DOTALL | re.IGNORECASE,
 )
+STRUCTURED_TAG_PREFIX_RE = re.compile(
+    rf"\A\s*<(?P<tag>{GENERIC_TAG_NAMES})>(?P<content>.*?)</(?P=tag)>\s*",
+    re.DOTALL | re.IGNORECASE,
+)
+STRUCTURED_UNCLOSED_TAG_PREFIX_RE = re.compile(
+    rf"\A\s*<(?P<tag>{GENERIC_TAG_NAMES})>(?P<content>.*?)\Z",
+    re.DOTALL | re.IGNORECASE,
+)
 ORPHANED_CLOSE_TAG_RE = re.compile(
     rf"</(?:{GENERIC_TAG_NAMES})>",
+    re.IGNORECASE,
+)
+TRAILING_ORPHANED_CLOSE_TAG_RE = re.compile(
+    rf"</(?:{GENERIC_TAG_NAMES})>\s*\Z",
     re.IGNORECASE,
 )
 
@@ -37,6 +49,14 @@ STOP_TOKENS_RE = re.compile(
     r"(?:<\|im_end\|>|<\|endoftext\|>|<\|im_start\|>|<\|fim_prefix\|>|<\|fim_suffix\|>|<\|fim_middle\|>|</s>|<\|eot_id\|>|<\|end_of_text\|>|(?:\n|\A)\[DONE\](?:\n|\Z))",
     re.IGNORECASE,
 )
+TRAILING_STOP_TOKENS_RE = re.compile(
+    r"(?:<\|im_end\|>|<\|endoftext\|>|<\|im_start\|>|<\|fim_prefix\|>|<\|fim_suffix\|>|<\|fim_middle\|>|</s>|<\|eot_id\|>|<\|end_of_text\|>|(?:\n|\A)\[DONE\](?:\n|\Z))\s*\Z",
+    re.IGNORECASE,
+)
+
+STRUCTURED_OUTPUT_ROLES = {
+    "code", "patch", "diff", "json", "solve", "complete_code", "generate_tests", "scaffold",
+}
 
 
 def _mask_fenced_code(text: str) -> tuple[str, dict[str, str]]:
@@ -231,20 +251,34 @@ def postprocess_model_output(
     if not text:
         return "", None
 
+    role_lower = str(role or "general").lower()
+    preserve_structured_payload = role_lower in STRUCTURED_OUTPUT_ROLES
     raw = str(text).replace("\r\n", "\n").replace("\r", "\n")
     raw, fenced_code = _mask_fenced_code(raw)
     
     # 1. Extract generic thinking tags regardless of model architecture
     thinking_parts: list[str] = []
-    for match in GENERIC_TAG_RE.finditer(raw):
-        content = match.group("content").strip()
-        if content:
-            thinking_parts.append(content)
-    
-    cleaned = GENERIC_TAG_RE.sub("", raw).strip()
+    if preserve_structured_payload:
+        while match := STRUCTURED_TAG_PREFIX_RE.match(raw):
+            content = match.group("content").strip()
+            if content:
+                thinking_parts.append(content)
+            raw = raw[match.end() :]
+        cleaned = raw.strip()
+    else:
+        for match in GENERIC_TAG_RE.finditer(raw):
+            content = match.group("content").strip()
+            if content:
+                thinking_parts.append(content)
+
+        cleaned = GENERIC_TAG_RE.sub("", raw).strip()
 
     # Handle unclosed thinking tags (e.g. truncated output / stream interruption)
-    unclosed_match = UNCLOSED_TAG_RE.search(cleaned)
+    unclosed_match = (
+        STRUCTURED_UNCLOSED_TAG_PREFIX_RE.match(cleaned)
+        if preserve_structured_payload
+        else UNCLOSED_TAG_RE.search(cleaned)
+    )
     if unclosed_match:
         content = unclosed_match.group("content").strip()
         if content:
@@ -252,7 +286,10 @@ def postprocess_model_output(
         cleaned = cleaned[:unclosed_match.start()].strip()
 
     # Strip orphaned closing tags
-    cleaned = ORPHANED_CLOSE_TAG_RE.sub("", cleaned).strip()
+    if preserve_structured_payload:
+        cleaned = TRAILING_ORPHANED_CLOSE_TAG_RE.sub("", cleaned).rstrip()
+    else:
+        cleaned = ORPHANED_CLOSE_TAG_RE.sub("", cleaned).strip()
 
     thinking: str | None = "\n\n".join(thinking_parts) if thinking_parts else None
 
@@ -261,11 +298,13 @@ def postprocess_model_output(
     while cleaned and unicodedata.category(cleaned[0]) == "Cf":
         cleaned = cleaned[1:]
 
-    # 2. Strip runtime stop tokens
-    cleaned = STOP_TOKENS_RE.sub("", cleaned).strip()
+    # 2. Preserve stop-token-shaped payloads in structured content; strip only a trailing runtime marker.
+    if preserve_structured_payload:
+        cleaned = TRAILING_STOP_TOKENS_RE.sub("", cleaned).rstrip()
+    else:
+        cleaned = STOP_TOKENS_RE.sub("", cleaned).strip()
 
     # 3. Structural and conversational preamble/postamble removal for technical roles
-    role_lower = str(role or "general").lower()
     is_technical_role = (
         role_lower in {"code", "review", "patch", "critic", "second-opinion", "fast", "smart", "drafter", "explorer", "reasoning", "general"}
         or "qwen-" in role_lower
@@ -277,14 +316,15 @@ def postprocess_model_output(
         cleaned = CONVERSATIONAL_POSTAMBLE_RE.sub("", cleaned).strip()
 
     # 4. Universal Markdown fence balance repair
-    if repair_fences:
+    if repair_fences and role_lower != "json":
         for fence in ("```", "~~~"):
             fence_count = cleaned.count(fence)
             if fence_count % 2 != 0:
                 cleaned = cleaned + f"\n{fence}"
 
     # 5. Deduplicate excessive consecutive newlines
-    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
+    if role_lower != "json":
+        cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
 
     for placeholder, code in fenced_code.items():
         cleaned = cleaned.replace(placeholder, code)

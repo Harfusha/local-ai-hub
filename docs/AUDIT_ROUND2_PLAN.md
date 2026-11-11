@@ -36,11 +36,11 @@
    - Vložit mezi `_parse_ranges()` a `_render()` validační a normalizační vrstvu.
    - Vynutit `rendered_lines <= max_output_lines`, sloučit překryvy a odstranit duplicity.
 3. **N02 & N03 — Oprava SQL dotazů v `AgentMemory.traverse_graph`:**
-   - N02: Vracet pouze hrany, jejichž zdroj i cíl leží v `bounded_nodes` (uzavřený podgraf).
-   - N03: Pevně omezit hloubku rekurze a zavést výpočetní limit zpracovaných řádků s `truncated=true`.
+   - Ověřeno v HEAD: BFS omezuje navštívené uzly přes `max_nodes`; edge SQL vrací jen hrany s oběma konci v seznamu uzlů. Starý popis rekurzivního CTE neplatí.
+   - N02 regresní test pokrývá uzavřený podgraf při limitu 2; existující N03 test kontroluje počet SELECTů proti `max_nodes + 1`. Round 81: 3 passed.
 4. **N14 — Vyčištění čekacích hran v `ScopeLeaseStore`:**
-   - Vázat wait-for hrany na konkrétní `lease_id`.
-   - Ignorovat neaktivní zámky při detekci deadlocku, eliminovat falešné detekce cyklů.
+   - Hotovo v Round 84: při uvolnění ponechat wait hranu, pokud stejný vlastník stále drží aktivní lease překrývající `requested_path`; odstranit ji až po zániku posledního blockeru. Použít `_overlap` včetně pravidel pro case-insensitive Windows cesty, bez změny schématu.
+   - Regrese pro duplicitní lease nejprve selhala a po opravě prošla; `tests/test_audit_round2_leases_n14.py` 2 passed a `tests/test_lease_atomic_deadlock.py` 2 passed.
 5. **N20 — Zpřesnění klasifikace chyb GPU v `Scheduler`:**
    - Rozlišovat čistě dokončené úlohy s aplikační chybou od skutečného systémového selhání GPU.
    - Nastavovat `_internal_gpu_uncertain` pouze při ztrátě kontroly nad procesem.
@@ -67,11 +67,11 @@
 1. **N10 — Relevance-first vektorový výběr v Agent Memory:**
    - Nahradit prostý `ORDER BY created_at DESC LIMIT 500` relevančním výběrem (batch scan nebo hybridní ranking).
 2. **N16 — Eliminace zbytečných zápisů do ArtifactStore:**
-   - V `ContextLedger.compile()` ověřit digest a existenci artefaktu před voláním `artifact_store.put()`.
+   - Hotovo: `compile()` ověřuje digest, čerstvost pointeru a existenci artefaktu přes jednoznakový `get()` před reuse; `put()` zavolá jen pro nový/změněný nebo chybějící artefakt. Regrese ověřena v Round 82 (16 passed).
 3. **N17 — Dynamické přidělování rozpočtu pro text v Context Delivery:**
-   - Nahradit fixní dělení `budget // 6` dynamickým výpočtem volného místa po odečtení metadat.
+   - Hotovo: výpočet textového rozpočtu zahrnuje také metadata přidaná při truncation. Regresní test potvrzuje více než šestinu rozpočtu pro užitečný text a celkový limit 3,200 tokenů (Round 83, 10 passed).
 4. **N22 — Escapování wildcardů v `MemoryStore.find()`:**
-   - Ošetřit znaky `%` a `_` v uživatelských dotazech.
+   - Ověřeno v current HEAD: `find()` escapuje `\\`, `%` a `_` před LIKE a používá `ESCAPE`. Doplněn parametrizovaný regresní test pro doslovné `%` a `_`; `tests/test_agent_memory.py`: 57 passed (Round 79).
 
 ---
 
@@ -79,15 +79,15 @@
 *Cíl: Dokončení izolace projektů a začištění drobných implementačních nedostatků.*
 
 1. **N13 — Namespace repozitáře pro entity grafu a oprava filtrů:**
-   - Doplnit `repository_id` do tabulky vztahů.
-   - Opravit vyhodnocení dotazů s oběma filtry (`source_entity` i `target_entity`).
+   - Aktuální `find_relations()` už skládá `source_entity` a `target_entity` jako AND; cílený test prošel 1/1.
+   - Namespace zůstává otevřený: tabulka ani `record_relation()` neukládají repository provenance a starým řádkům nelze bezpečně přiřadit vlastníka. Neprovádět migraci bez explicitního kontraktu pro nové zápisy a legacy data.
 2. **N15 — Atomická publikace dvojice Spec & Plan:**
-   - Zavést společný manifest revize nebo atomickou kontrolu při čtení obou souborů.
+   - Otevřeno: `save_spec_and_plan()` drží storage lock přes zápis obou souborů, ale `read_plan_file()` lock nezískává. Bez společného reader API není doloženo atomické čtení dvojice.
 3. **N04, N08, N21, N23:**
-   - N04: Dynamický přepočet kapacit shardů pro malé LRU cache.
+   - N04: Hotovo — limity shardů rozdělí celý `max_entries` včetně zbytku, takže součet kapacit odpovídá konfiguraci. Parametrizovaná regrese pro kapacitu 1/17 a `set`/`set_many`: 4 passed (Round 86).
    - N08: Výpočet kompenzovaného skóre přepnutí modelu ve scheduleru.
    - N21: Odmítnutí ukládání nadrozměrných položek do ingest cache.
-   - N23: Jazykové adaptéry pro generování cest k testům v routing engine.
+   - N23: Hotovo — Python cesta se odvozuje jen pro `.py`; cizí nepodporované přípony se přeskočí. `.cs`, `.java`, `.cpp` pokryty regresním testem (Round 80).
 
 ---
 

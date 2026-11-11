@@ -133,23 +133,17 @@ def test_validate_current_many_hashes_shared_source_once(tmp_path: Path, monkeyp
         ],
     )
     evidence_ids = [item["evidence_id"] for item in stored]
-    hash_count = 0
-    original_hash = getattr(store, "_hash_source_file", None)
+    source_checks = 0
+    original_verify = store._verify_source_rows
 
-    def count_hashes(path: Path) -> str:
-        nonlocal hash_count
-        hash_count += 1
-        if callable(original_hash):
-            return original_hash(path)
-        digest = hashlib.sha256()
-        with path.open("rb") as source:
-            while chunk := source.read(65536):
-                digest.update(chunk)
-        return digest.hexdigest()
+    def count_source_checks(root: str, path: str, rows) -> dict[str, bool]:
+        nonlocal source_checks
+        source_checks += 1
+        return original_verify(root, path, rows)
 
-    monkeypatch.setattr(store, "_hash_source_file", count_hashes, raising=False)
+    monkeypatch.setattr(store, "_verify_source_rows", count_source_checks)
     assert store.validate_current_many(evidence_ids) is True
-    assert hash_count == 1
+    assert source_checks == 1
 
     src.write_text("first = 1\nsecond = 3\n", encoding="utf-8")
     assert store.validate_current_many(evidence_ids) is False

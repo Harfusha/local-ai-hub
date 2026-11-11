@@ -11,8 +11,8 @@
 | ID | Subsystém / Soubor | Zjištění | Úroveň jistoty | Priorita |
 |----|--------------------|----------|----------------|----------|
 | **N01** | `token_router.py` | Nevalidní skóre od LLM může vyhodit výjimku místo fallbacku | Chyba v kódu | **P1** |
-| **N02** | `agent_memory.py` | Graph traversal vrací hrany mimo množinu vrácených uzlů | Chyba v kódu / SQL | **P1** |
-| **N03** | `agent_memory.py` | Omezení `max_nodes` neomezuje výpočetní práci rekurzivního CTE | Architektonické riziko | **P1** |
+| **N02** | `agent_memory.py` | Aktuální edge dotaz vyžaduje oba konce hrany mezi vrácenými uzly; regresní test přidán v Round 81. | Zdroj/test ověřeny; nález již opraven v HEAD | **P1** |
+| **N03** | `agent_memory.py` | Aktuální průchod používá bounded BFS, ne rekurzivní CTE; `max_nodes` omezuje rozšířené uzly a SELECT rozpočet kontroluje test. | Zdroj/test ověřeny; původní popis je zastaralý | **P1** |
 | **N04** | `cache.py` | Malá sharded LRU může překročit deklarovanou kapacitu | Chyba v kódu | **P2** |
 | **N05** | `async_jobs.py` | Samostatné vlákno pro každou přijatou úlohu bez centrálního poolu | Architektonické riziko | **P1** |
 | **N06** | `async_jobs.py` | Finalizace drží SQLite write transaction přes diskové a cizí operace | Architektonické riziko | **P1** |
@@ -25,14 +25,14 @@
 | **N13** | `agent_memory.py` | Graf entit nemá repository namespace a ignoruje kombinaci filtrů | Chyba v kódu | **P1** |
 | **N14** | `leases.py` | V persistentních lease závislostech mohou zůstat neplatné čekací hrany | Chyba v kódu | **P1** |
 | **N15** | `repo_plan/storage.py` | Uložení více souborů plánu není atomické pro souběžné čtenáře | Architektonické riziko | **P2** |
-| **N16** | `context_ledger.py` | Reuse kontextu zbytečně přepisuje existující artefakt v DB před porovnáním | Architektonické riziko | **P2** |
-| **N17** | `context_delivery.py` | Context delivery rezervuje pro užitečný text pouze šestinu rozpočtu | Optimalizační hypotéza | **P2** |
+| **N16** | `context_ledger.py` | Před reuse ověřuje digest, čerstvost i dostupnost artefaktu; chybějící artefakt se obnoví, identický živý zápis se neopakuje (Round 82). | Opraveno a ověřeno | **P2** |
+| **N17** | `context_delivery.py` | Dynamicky přiděluje zbytek po metadatech; truncation metadata se započítají před výpočtem textu a výsledek nepřekročí rozpočet (Round 83). | Opraveno a ověřeno; sousední service test failures odděleny | **P2** |
 | **N18** | `services.py` | `repository_revision` není vždy součástí semantic scope identity | Chyba v kódu | **P1** |
 | **N19** | `semantic_cache.py` | Sémantická cache není verzovaná podle embeddingového prostoru | Architektonické riziko | **P1** |
 | **N20** | `scheduler.py` | Běžná chyba modelového volání může označit celý GPU runtime za nejistý | Architektonické riziko | **P1** |
 | **N21** | `preprocess_ingest.py` | `_evict_if_needed()` dovoluje ponechat jediný soubor větší než `max_bytes` | Chyba v kódu | **P3** |
-| **N22** | `agent_memory.py` | `MemoryStore.find()` skládá LIKE pomocí `f"%{query}%"` bez escapování `%` a `_` | Chyba v kódu | **P3** |
-| **N23** | `agent_routing.py` | `RoutingEngine.select_tests()` generuje Python cestu i pro cizí jazyky | Nedodělek | **P3** |
+| **N22** | `agent_memory.py` | Původně hlášeno jako neescapované LIKE; aktuální zdroj escapuje `\\`, `%` a `_` (ř. 1815). Regresní testy doplněny v Round 79. | Zdroj/test ověřeny; nález již opraven v HEAD | **P3** |
+| **N23** | `agent_routing.py` | Python fallback se použije jen pro `.py`; nepodporované přípony se přeskočí. Testy ověřují `.cs`, `.java` a `.cpp` bez falešné Python cesty (Round 80). | Opraveno a ověřeno | **P3** |
 | **N24** | `preprocess_ingest.py` | `SinglePassIngestCache.invalidate()` maže položky pouze podle relativní cesty | Chyba v kódu | **P3** |
 
 ---
@@ -285,3 +285,15 @@
 - **Mechanismus:** Metoda `invalidate(rel_path)` odstraňuje záznam bez znalosti kořene repozitáře.
 - **Dopad:** Po implementaci opravy N11 by neúplná invalidace smazala záznamy napříč všemi projekty se stejnou relativní cestou.
 - **Oprava:** Vyžadovat v `invalidate()` plnou identitu včetně kořene repozitáře.
+
+### N14 — Ověření aktuálního chování (Round 84, 2026-11-11)
+
+Uvolnění jednoho lease zachová čekací hranu, pokud stejný vlastník stále drží jiný aktivní lease překrývající `requested_path`. Hrana se odstraní po uvolnění posledního překrývajícího lease. Porovnání používá `_overlap()` a pravidla citlivosti na velikost písmen podle kořene; změna schématu nebyla potřeba. Regresní test nejprve selhal a po opravě N14 testy prošly **2/2**, navazující deadlock test **2/2**. Podrobnosti a SHA jsou v Round 84 v `docs/agent-evaluation/results.md`.
+
+### N13/N15 — aktuální stav (Round 85, 2026-11-11)
+
+N13: filtry source+target už fungují společně; projektová izolace zůstává nevyřešená, protože tabulka i API zápisu postrádají repository provenance a staré vztahy nelze bezpečně přiřadit. N15: writer drží lock při zápisu obou souborů, ale `read_plan_file()` jej nezískává; atomické čtení dvojice není doloženo. Viz Round 85 v `docs/agent-evaluation/results.md`.
+
+### N04 — LRU cache kapacita (Round 86, 2026-11-11)
+
+`MemoryLRUCache` rozděluje zbytek `max_entries` mezi shardy; `set()` i `set_many()` zachovávají plnou nakonfigurovanou kapacitu. Test pokryl kapacitu 1 a nedělitelnou kapacitu 17: **4 passed**. N05–N11, N13, N15, N18–N21 a N24 zůstávají podle vlastnictví a chybějících důkazů otevřené.

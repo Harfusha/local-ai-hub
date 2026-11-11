@@ -36,6 +36,20 @@ def test_memory_batching_applies_per_shard_lru_bounds() -> None:
     assert cache.evictions > 0
 
 
+def test_memory_lru_small_capacity_never_exceeds_declared_bound() -> None:
+    cache = MemoryLRUCache(max_entries=3, shards=16)
+    items = {f"small-key-{index}": index for index in range(100)}
+
+    cache.set_many(items)
+    assert cache.num_shards <= cache.max_entries
+    assert len(cache._items) <= cache.max_entries
+
+    cache.clear()
+    for key, value in items.items():
+        cache.set(key, value)
+    assert len(cache._items) <= cache.max_entries
+
+
 def test_sqlite_set_many_round_trips_none_and_prunes_to_bound(tmp_path: Path) -> None:
     cache = SQLiteCache(tmp_path / "cache.sqlite", "batch", max_entries=50)
     first = {"none": None, **{f"key-{index}": {"index": index} for index in range(29)}}

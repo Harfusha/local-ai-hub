@@ -1753,11 +1753,25 @@ class RAGStore:
         current_meta: dict[str, tuple[Path, int, int]] = {}
         metadata_scanned = 0
         discovery_errors: set[str] = set()
+
+        def report_progress(percent: float, stage: str) -> None:
+            if _identity_retry:
+                percent = 55.0 + min(100.0, max(0.0, percent)) * 0.4
+                stage = f"identity retry: {stage}"
+            try:
+                from .async_jobs import report_job_progress
+            except ImportError:
+                return
+            report_job_progress(percent, stage)
+
+        report_progress(5.0, "scanning files")
         for path in self._iter_files(
             root_path, project_context,
             discovery_errors if embedding_space_changed else None,
         ):
             metadata_scanned += 1
+            if metadata_scanned == 1 or metadata_scanned % 25 == 0:
+                report_progress(5.0, f"scanning files ({metadata_scanned} found)")
             try:
                 stat = path.stat()
                 rel = str(path.relative_to(root_path)).replace("\\", "/")
@@ -1768,6 +1782,7 @@ class RAGStore:
                     discovery_errors.add(rel)
                 continue
 
+        report_progress(15.0, f"file discovery complete ({metadata_scanned} found)")
         current_paths = set(current_meta)
         old_paths = set(old_files)
         discovery_error_hides_old_file = any(
@@ -1796,7 +1811,13 @@ class RAGStore:
         read_uncertain_paths: set[str] = set()
         skipped = 0
         read_files = 0
-        for rel, (_path, mtime_ns, size) in current_meta.items():
+        total_metadata_files = max(1, len(current_meta))
+        for file_index, (rel, (_path, mtime_ns, size)) in enumerate(current_meta.items(), 1):
+            if file_index == 1 or file_index % 25 == 0 or file_index == len(current_meta):
+                report_progress(
+                    15.0 + 20.0 * file_index / total_metadata_files,
+                    f"checking file metadata ({file_index}/{len(current_meta)})",
+                )
             old = old_files.get(rel)
             if (
                 old and old["mtime_ns"] == mtime_ns and old["size"] == size
@@ -1858,7 +1879,12 @@ class RAGStore:
         max_hamming = int(rag_cfg.get("near_duplicate_max_hamming", 4))
         near_duplicates_skipped = 0
 
-        for rel in changed_paths:
+        total_changed_files = max(1, len(changed_paths))
+        for file_index, rel in enumerate(changed_paths, 1):
+            report_progress(
+                35.0 + 15.0 * (file_index - 1) / total_changed_files,
+                f"reading changed files ({file_index - 1}/{len(changed_paths)})",
+            )
             path, mtime_ns, size = current_meta[rel]
             try:
                 raw = verified_raw_by_path.pop(rel, None)
@@ -1905,6 +1931,7 @@ class RAGStore:
                 else:
                     reused_chunks += 1
 
+        report_progress(50.0, f"changed-file chunks prepared ({len(changed_paths)} files)")
         self._publish_workspace_read_uncertainty(workspace, read_uncertain_paths)
         if embedding_space_changed and any(p in old_files for p in read_uncertain_paths):
             return {
@@ -1950,8 +1977,13 @@ class RAGStore:
 
         if changed_indices:
             observed_embedding_space: str | None = None
+            total_embedding_chunks = len(changed_indices)
             for offset in range(0, len(changed_indices), _INDEX_EMBED_BATCH_SIZE):
                 batch_indices = changed_indices[offset:offset + _INDEX_EMBED_BATCH_SIZE]
+                report_progress(
+                    55.0 + 30.0 * offset / total_embedding_chunks,
+                    f"embedding chunks ({offset}/{total_embedding_chunks})",
+                )
                 batch_texts = [str(changed_records[idx]["text"]) for idx in batch_indices]
                 try:
                     vectors_result = self.services.embed(batch_texts, priority=2, query=False)
@@ -1984,6 +2016,13 @@ class RAGStore:
                     for duplicate_idx in pending_by_hash[str(changed_records[idx]["hash"])]:
                         changed_records[duplicate_idx]["embedding"] = embedding
                         changed_records[duplicate_idx]["embedding_space"] = batch_space
+                completed_embeddings = offset + len(batch_indices)
+                report_progress(
+                    55.0 + 30.0 * completed_embeddings / total_embedding_chunks,
+                    f"embedding chunks ({completed_embeddings}/{total_embedding_chunks})",
+                )
+        else:
+            report_progress(85.0, "embedding complete (0 new chunks)")
 
         chunker_version_publishable = (
             not chunker_version_changed
@@ -2055,6 +2094,7 @@ class RAGStore:
                     self._bump_workspace_index_generation(con, workspace)
                 con.commit()
 
+        report_progress(90.0, "publishing index")
         retry_busy(
             publish,
             retries=self._sqlite_write_retries,
@@ -2069,6 +2109,7 @@ class RAGStore:
                 "SELECT COUNT(*) FROM files WHERE workspace=?", (workspace,)
             ).fetchone()[0]
 
+        report_progress(95.0, "index published")
         return {
             "success": True,
             "workspace": workspace,
