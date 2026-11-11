@@ -790,6 +790,10 @@ class LayaCandidateStore:
             with closing(self._connect(task_store)) as con:
                 rows = con.execute(query, args).fetchall()
             return {"success": True, "count": len(rows), "candidates": [dict(row) for row in rows]}
+        if action == "review_challenge":
+            return self._review_challenge(
+                operation, scope=scope, root=canonical_root, task_store=task_store
+            )
         if action in {"label", "verify", "reject", "delete"}:
             return self._transition(operation, action=action, scope=scope, root=canonical_root, task_store=task_store)
         if action == "prepare_splits":
@@ -1228,10 +1232,86 @@ class LayaCandidateStore:
         except Exception:
             return False
 
+    def _review_challenge(
+        self,
+        operation: Any,
+        *,
+        scope: str,
+        root: str,
+        task_store: Any,
+    ) -> dict[str, Any]:
+        if type(operation) is not dict:
+            raise ValueError("review_challenge fields invalid")
+        review_action = operation.get("review_action")
+        fields = (
+            {"action", "candidate_id", "review_action", "role", "reviewer_fingerprint", "target"}
+            if review_action == "label"
+            else {"action", "candidate_id", "review_action", "role", "reviewer_fingerprint"}
+        )
+        op = _strict_object(operation, fields, "review_challenge")
+        candidate_id = _identity(op["candidate_id"], "candidate_id")
+        role = op["role"]
+        fingerprint = op["reviewer_fingerprint"]
+        if type(fingerprint) is not str or fingerprint not in self._reviewer_keys:
+            raise ValueError("authenticated human reviewer provenance is unavailable")
+        with closing(self._connect(task_store)) as con:
+            row = con.execute(
+                "SELECT candidate_id,task_id,session_id,content_hash,candidate_json,status "
+                "FROM laya_candidates WHERE repository_scope=? AND candidate_id=?",
+                (scope, candidate_id),
+            ).fetchone()
+        if row is None:
+            raise ValueError("candidate not found in authorized repository scope")
+        task = self._find_task(task_store, root, str(row["task_id"]))
+        if self._session_for_task(task) != row["session_id"]:
+            raise ValueError("candidate session identity no longer matches its task")
+        candidate = json.loads(row["candidate_json"])
+        if review_action == "label":
+            if row["status"] not in {"pending", "reviewed", "ambiguous"}:
+                raise ValueError("candidate cannot be labeled in current state")
+            if role not in {"annotation", "adjudication"}:
+                raise ValueError("review challenge role is invalid")
+            target = _identity(op["target"], "review target")
+            if target not in candidate["questions"][candidate["category"]]["criteria"]:
+                raise ValueError("review target is not an allowed option")
+            label_targets_sha256 = None
+        elif review_action == "verify":
+            if row["status"] != "reviewed" or role != "verification":
+                raise ValueError("verify challenge requires a reviewed candidate and verification role")
+            targets = candidate.get("targets")
+            target = targets.get(candidate["category"]) if isinstance(targets, dict) else None
+            if type(target) is not str:
+                raise ValueError("reviewed candidate has no valid target")
+            label_targets_sha256 = hashlib.sha256(
+                _canonical_json(targets).encode("utf-8")
+            ).hexdigest()
+        else:
+            raise ValueError("review_action must be label or verify")
+        message = self._review_message(
+            action=review_action,
+            role=role,
+            target=target,
+            reviewer_fingerprint=fingerprint,
+            candidate_id=candidate_id,
+            content_hash=str(row["content_hash"]),
+            scope=scope,
+            task_id=str(row["task_id"]),
+            session_id=str(row["session_id"]),
+            label_targets_sha256=label_targets_sha256,
+        )
+        return {
+            "success": True,
+            "candidate_id": candidate_id,
+            "review_action": review_action,
+            "role": role,
+            "reviewer_fingerprint": fingerprint,
+            "challenge_b64": base64.b64encode(message).decode("ascii"),
+        }
+
     def _transition(self, operation: dict[str, Any], *, action: str, scope: str, root: str, task_store: Any) -> dict[str, Any]:
         fields = {
             "label": {"action", "candidate_id", "annotations", "adjudication"},
-            "verify": {"action", "candidate_id", "reviewer_ref"},
+            "verify": {"action", "candidate_id", "proof"} if not callable(self._reviewer_authenticator) else {"action", "candidate_id", "reviewer_ref"},
             "reject": {"action", "candidate_id", "status", "reason_code"},
             "delete": {"action", "candidate_id"},
         }[action]
@@ -1252,33 +1332,63 @@ class LayaCandidateStore:
                 annotations = op["annotations"]
                 if type(annotations) is not list or len(annotations) != 2:
                     con.rollback(); raise ValueError("two independent annotations are required")
+                proof_mode = not callable(self._reviewer_authenticator)
                 parsed = []
                 for item in annotations:
-                    item = _strict_object(item, {"annotator_ref", "target"}, "annotation")
-                    annotator = _identity(item["annotator_ref"], "annotator_ref")
+                    item = _strict_object(
+                        item,
+                        {"target", "proof"} if proof_mode else {"annotator_ref", "target"},
+                        "annotation",
+                    )
                     target = _identity(item["target"], "annotation target")
                     if target not in candidate["questions"][candidate["category"]]["criteria"]:
                         con.rollback(); raise ValueError("annotation target is not an allowed option")
-                    parsed.append({"annotator_ref": annotator, "target": target})
+                    if proof_mode:
+                        proof = _strict_object(item["proof"], {"reviewer_fingerprint", "signature"}, "review proof")
+                        annotator = proof["reviewer_fingerprint"]
+                    else:
+                        proof = None
+                        annotator = _identity(item["annotator_ref"], "annotator_ref")
+                    parsed.append({"annotator_ref": annotator, "target": target, **({"proof": proof} if proof_mode else {})})
                 if parsed[0]["annotator_ref"] == parsed[1]["annotator_ref"]:
                     con.rollback(); raise ValueError("independent annotators must differ")
-                adjudication = _strict_object(op["adjudication"], {"reviewer_ref", "target"}, "adjudication")
-                reviewer = _identity(adjudication["reviewer_ref"], "adjudicator_ref")
+                adjudication = _strict_object(
+                    op["adjudication"],
+                    {"target", "proof"} if proof_mode else {"reviewer_ref", "target"},
+                    "adjudication",
+                )
                 target = _identity(adjudication["target"], "adjudication target")
+                if proof_mode:
+                    proof = _strict_object(adjudication["proof"], {"reviewer_fingerprint", "signature"}, "review proof")
+                    reviewer = proof["reviewer_fingerprint"]
+                else:
+                    proof = None
+                    reviewer = _identity(adjudication["reviewer_ref"], "adjudicator_ref")
                 if reviewer in {parsed[0]["annotator_ref"], parsed[1]["annotator_ref"]}:
                     con.rollback(); raise ValueError("adjudicator must be independent")
                 if target not in candidate["questions"][candidate["category"]]["criteria"]:
                     con.rollback(); raise ValueError("adjudication target is not an allowed option")
-                if any(
-                    not self._authenticated_human_reviewer(reviewer_ref, root, row["task_id"])
-                    for reviewer_ref in (
-                        parsed[0]["annotator_ref"],
-                        parsed[1]["annotator_ref"],
-                        reviewer,
+                if proof_mode:
+                    for annotation in parsed:
+                        challenge = self._review_message(
+                            action="label", role="annotation", target=annotation["target"],
+                            reviewer_fingerprint=annotation["annotator_ref"], candidate_id=candidate_id,
+                            content_hash=str(row["content_hash"]), scope=scope,
+                            task_id=str(row["task_id"]), session_id=str(row["session_id"]),
+                        )
+                        self._verify_review_proof(annotation["proof"], challenge)
+                    challenge = self._review_message(
+                        action="label", role="adjudication", target=target,
+                        reviewer_fingerprint=reviewer, candidate_id=candidate_id,
+                        content_hash=str(row["content_hash"]), scope=scope,
+                        task_id=str(row["task_id"]), session_id=str(row["session_id"]),
                     )
+                    self._verify_review_proof(proof, challenge)
+                elif any(
+                    not self._authenticated_human_reviewer(reviewer_ref, root, row["task_id"])
+                    for reviewer_ref in (parsed[0]["annotator_ref"], parsed[1]["annotator_ref"], reviewer)
                 ):
-                    con.rollback()
-                    raise ValueError("authenticated human reviewer provenance is unavailable")
+                    con.rollback(); raise ValueError("authenticated human reviewer provenance is unavailable")
                 candidate["targets"] = {candidate["category"]: target}
                 candidate["label_provenance"] = {
                     "rubric_version": _LABEL_RUBRIC_VERSION,
@@ -1291,13 +1401,30 @@ class LayaCandidateStore:
             elif action == "verify":
                 if current != "reviewed":
                     con.rollback(); raise ValueError("verify requires a reviewed candidate")
-                reviewer = _identity(op["reviewer_ref"], "reviewer_ref")
+                proof_mode = not callable(self._reviewer_authenticator)
+                if proof_mode:
+                    proof = _strict_object(op["proof"], {"reviewer_fingerprint", "signature"}, "review proof")
+                    reviewer = proof["reviewer_fingerprint"]
+                else:
+                    proof = None
+                    reviewer = _identity(op["reviewer_ref"], "reviewer_ref")
                 provenance = candidate.get("label_provenance", {})
                 annotators = {item["annotator_ref"] for item in provenance.get("annotations", [])}
                 adjudicator = provenance.get("adjudication", {}).get("reviewer_ref")
                 if reviewer in annotators or reviewer == adjudicator:
                     con.rollback(); raise ValueError("verification reviewer must be independent")
-                if not self._authenticated_human_reviewer(reviewer, root, row["task_id"]):
+                if proof_mode:
+                    label_targets = candidate.get("targets")
+                    target = label_targets.get(candidate["category"]) if isinstance(label_targets, dict) else None
+                    challenge = self._review_message(
+                        action="verify", role="verification", target=target,
+                        reviewer_fingerprint=reviewer, candidate_id=candidate_id,
+                        content_hash=str(row["content_hash"]), scope=scope,
+                        task_id=str(row["task_id"]), session_id=str(row["session_id"]),
+                        label_targets_sha256=hashlib.sha256(_canonical_json(label_targets).encode("utf-8")).hexdigest(),
+                    )
+                    self._verify_review_proof(proof, challenge)
+                elif not self._authenticated_human_reviewer(reviewer, root, row["task_id"]):
                     con.rollback()
                     raise ValueError("authenticated human reviewer provenance is unavailable")
                 candidate["label_status"] = "verified"
