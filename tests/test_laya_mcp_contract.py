@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -100,16 +101,51 @@ def test_mcp_curate_dataset_forwards_nested_laya_operation(monkeypatch, tmp_path
     assert "mode" not in payload["laya_operation"]
 
 
+def test_mcp_curate_dataset_forwards_scoped_candidate_get(monkeypatch, tmp_path):
+    calls = []
+    monkeypatch.setattr(mcp_server.FEATURES, "coord", True)
+
+    def post(path, payload, *, timeout):
+        calls.append((path, payload, timeout))
+        return {"success": True, "candidate": {"state": "bounded review input"}}
+
+    monkeypatch.setattr(mcp_server, "CLIENT", SimpleNamespace(post=post))
+    operation = {"action": "get", "candidate_id": "laya-example"}
+
+    result = mcp_server.local_ai_coord(
+        action="curate_dataset",
+        root=str(tmp_path),
+        laya_operation=operation,
+    )
+
+    assert result["success"] is True, result
+    assert len(calls) == 1
+    path, payload, _timeout = calls[0]
+    assert path == "/api/agent-state/tasks"
+    assert payload["action"] == "curate_dataset"
+    assert payload["laya_operation"] == operation
+
+
 @pytest.mark.parametrize(
     "action, expected_diagnostic",
     [
         ("evaluate_decision", False),
         ("evaluate_context_source", False),
+        ("list", False),
+        ("get", False),
+        ("label", False),
+        ("verify", False),
+        ("reject", False),
+        ("delete", False),
+        ("prepare_splits", False),
+        ("export", False),
+        ("capture", True),
+        ("capture_batch", True),
         ("candidate_list", True),
         ("train_export", True),
     ],
 )
-def test_only_laya_evaluation_operations_bypass_diagnostic_gate(action, expected_diagnostic):
+def test_laya_runtime_and_scoped_curation_bypass_diagnostic_gate(action, expected_diagnostic):
     laya_operation = {"action": action}
     mcp_arguments = {"action": "curate_dataset", "laya_operation": laya_operation}
     http_payload = {"action": "curate_dataset", "laya_operation": laya_operation}
@@ -126,7 +162,7 @@ def test_laya_http_wire_accepts_typed_shape_and_rejects_extra_nested_fields(monk
         {"action": "curate_dataset", "root": str(tmp_path), "laya_operation": operation},
     )
     assert valid_status == 503
-    assert valid_body["error"] == "Laya shadow runtime is disabled"
+    assert valid_body["error"] == "Laya shadow checkpoint is not configured"
 
     malformed = _decision_operation()
     malformed["decision"]["caller_mode"] = "advisory"
@@ -146,3 +182,32 @@ def test_laya_http_wire_accepts_typed_shape_and_rejects_extra_nested_fields(monk
     )
     assert invalid_mode_status == 400
     assert invalid_mode_body["error"] == "Laya decision fields invalid"
+
+
+def test_laya_runtime_adapter_uses_shared_scheduler_for_capacity(monkeypatch):
+    from local_ai_hub import laya_runtime
+
+    scheduler = object()
+    captured = {}
+
+    class Adapter:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    monkeypatch.setattr(laya_runtime, "LayaRuntimeAdapter", Adapter)
+    monkeypatch.setattr(laya_runtime, "discover_torch_devices", lambda: ())
+
+    app = LocalAIApp.__new__(LocalAIApp)
+    app._laya_runtime_adapter_lock = threading.Lock()
+    app._laya_runtime_adapter = None
+    app.scheduler = scheduler
+
+    result = app._get_laya_runtime_adapter(
+        {"allow_cpu": True},
+        checkpoint_path="checkpoint",
+        revision="revision",
+        expected_sha256={},
+    )
+
+    assert isinstance(result, Adapter)
+    assert captured["capacity_manager"] is scheduler

@@ -25,15 +25,24 @@ def test_ordinary_context_shadow_operation_omits_per_example_consent(tmp_path):
 
     class ImmediateExecutor:
         def submit(self, callback, *args, **kwargs):
-            observed["args"] = args
-            observed["kwargs"] = kwargs
             future = Future()
-            future.set_result({"candidate": {"candidate_id": "candidate-1"}})
+            try:
+                future.set_result(callback(*args, **kwargs))
+            except BaseException as exc:
+                future.set_exception(exc)
             return future
 
     app._status_dependency_executor = ImmediateExecutor()
-    app._laya_capture_inflight = threading.Lock()
-    app.evaluate_laya_context_source = lambda operation, *, root: {"candidate": {"candidate_id": "candidate-1"}}
+    app._laya_capture_lock = threading.Lock()
+    app._laya_capture_queue = []
+    app._laya_capture_draining = False
+    app.logger = SimpleNamespace(warning=lambda *args: observed.setdefault("warnings", []).append(args))
+
+    def evaluate(operation, *, root, baseline=None):
+        observed["operation"] = operation
+        return {"candidate": {"candidate_id": "candidate-1"}}
+
+    app.evaluate_laya_context_source = evaluate
     request = SimpleNamespace(
         root=str(tmp_path), task_id="task-1", session_id="session-1"
     )
@@ -65,7 +74,9 @@ def test_ordinary_context_shadow_operation_omits_per_example_consent(tmp_path):
     queued = app.capture_laya_context_source_from_context(request, result)
 
     assert queued == {"status": "queued"}
-    operation = observed["args"][0]
+    operation = observed["operation"]
+    assert app._laya_capture_queue == []
+    assert app._laya_capture_draining is False
     assert operation["action"] == "evaluate_context_source"
     assert operation["task_id"] == "task-1"
     assert operation["session_id"] == "session-1"

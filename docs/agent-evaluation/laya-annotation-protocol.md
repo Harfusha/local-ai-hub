@@ -1,12 +1,17 @@
-# Laya Annotation and Evaluation Protocol (Draft)
+# Laya Annotation and Evaluation Protocol
 
-**Status:** Laya shadow inference is integrated with eligible ordinary Hub
-context requests when a pinned local checkpoint is configured. Capture stores
-only actual runtime outcomes scoped to repository/task/session and validated
-evidence provenance. Per-example consent and receipt IDs are not required or
-stored. Laya output remains separate from deterministic Hub behavior and human
-labels. Training and benchmark runs remain off until requested after practical
-collection and review.
+**Status:** The Hub Laya service remains available for the Hub process lifetime.
+Eligible ordinary context requests queue bounded shadow evaluation when a useful
+unresolved gap has at least two authorized sources and verified evidence IDs,
+independent of the retired `laya.runtime.enabled` gate. The pinned provider is
+loaded on demand and held through work plus the 600-second idle window after the
+latest completed request. Capture stores only actual runtime outcomes in the
+existing local Agent State store, scoped to repository/task/session with
+revalidatable evidence provenance. Useful bounded task input and retrieved
+excerpts may be retained after recognized-secret redaction. Per-example consent
+or receipt IDs are not required. Laya outputs, deterministic outcomes and human
+labels remain separate. Training, benchmarking, card generation and rollout
+remain deferred until separately requested and safely approved.
 
 Existing-card export reads only selected eligible, non-deterministic cards and
 source text already stored in the Hub index. It needs no per-example consent
@@ -15,11 +20,14 @@ manifest, makes no model calls, and generates no cards.
 ## Approved `context_source` pilot
 
 - Trigger: an unresolved evidence gap with at least two authorized sources.
-- Minimal input: `gap_code=unresolved_evidence_gap`, two to four unique
+- Typed decision state: `gap_code=unresolved_evidence_gap`, two to four unique
   `source_codes` from `indexed`, `artifact`, `memory`, or `rag`, aligned
   `freshness_codes` (`current`, `stale`, `unknown`) and `coverage_codes`
   (`complete`, `partial`, `incomplete`, `unknown`), plus one evidence ID
-  per source in the same order. No task or source text.
+  per source in the same order. For useful training examples, the ordinary
+  request hook may also pass the task query and bounded retrieved excerpts when
+  materially useful. These optional text fields are redacted and stored
+  separately from the typed codes; see Candidate handling for limits.
 - Current deterministic retrieval order is the baseline.
 - Two independent blinded annotators label each candidate. A separate
   adjudicator resolves disagreements.
@@ -133,28 +141,30 @@ and target binding; it cannot authenticate reviewer identity.
 
 ## Candidate lifecycle and export
 
-Use existing `local_ai_coord(action="curate_dataset")` with `laya_operation`.
-The retired `include_laya_candidates` and caller-authored JSONL import fields are
-not accepted. Candidate rows and metadata events live in the existing
-`server.state_dir/agent_state.sqlite` database; no separate candidate database,
-public endpoint, telemetry field, or exporter is used. Ordinary task export
-omits candidate text. The existing support ZIP strips candidate tables and
-linked Laya capture traces from disposable snapshots. Synthetic archive tests
-verify the exclusion, metadata-only report, and manifest counts. Candidate
-JSONL requires an authorized repository, verified snapshot, and separate
-  local export. This verifies the code path, not data quality or label quality.
+Use existing `local_ai_coord(action="curate_dataset")` with `laya_operation`,
+or the root-authorized HTTP `POST /api/agent-state/tasks` `curate_dataset`
+action. The retired `include_laya_candidates` and caller-authored JSONL import
+fields are not accepted. Candidate rows and metadata events live in the existing
+`server.state_dir/agent_state.sqlite` database. No separate candidate database
+or telemetry payload is used. Ordinary task export omits candidate text. The
+existing support ZIP strips candidate tables and linked Laya capture traces from
+disposable snapshots. Candidate JSONL requires an authorized repository,
+verified snapshot, and separate local export. This verifies the code path, not
+data quality or label quality.
 
 - `capture` requires a task and matching session resolved under the authorized
   repository root, authorized evidence provenance, a closed typed candidate,
   and server-derived group identity.
   The server derives the group ID. Do not supply caller-authored group IDs.
-- `capture_batch` accepts 1–100 examples for the same scoped task/session; every
-  row uses a closed typed candidate. It validates the full batch before one
-  transaction, deduplicates exact inputs and returns IDs/status only.
-- Capture only the minimal state, category, allowed options, language,
-  preprocessing identity, and authorized evidence IDs required by the approved
-  decision. Never include transcripts, prompts, source files, or evidence
-  contents. The candidate is not reconstructed from telemetry or task text.
+- `capture_batch` is unavailable. Only a real per-decision Laya runtime callback
+  may create a candidate.
+- Capture the minimum decision state, category, allowed options, language,
+  preprocessing identity, and authorized evidence IDs. For context-source
+  examples, the approved specification also permits the task query and relevant
+  retrieved excerpts when they materially improve training value; redact
+  recognized credentials, bound each raw field to 8 KiB and combined raw text
+  to 16 KiB, and exclude unrelated private content. Never reconstruct a
+  candidate from telemetry or unrelated conversation history.
 - Preserve the caller's option order. Laya `choice.criteria` is an ordered
   mapping whose position changes the model's output classes; freeze it with
   the category and rubric before collecting or labeling examples.
@@ -162,11 +172,18 @@ JSONL requires an authorized repository, verified snapshot, and separate
   timestamps; it does not return candidate text. Candidate payloads stay out of
   telemetry and ordinary diagnostics. Explicit `delete` removes the payload
   while retaining metadata-only audit events.
+- `get` reads one candidate by ID under the caller's authorized repository
+  root, confirms its task still belongs to that root, and returns its bounded
+  review payload. It strips workflow status, `model_output`, targets, label
+  status, and label provenance so annotators do not see Laya's answer or earlier
+  human labels.
 - `label` requires two distinct annotators and a separate adjudicator, all with
-  allowed option values. `verify` requires a reviewer distinct from all three.
-  Capture, labeling, and verification do not prove that
-  references are real people or that review was blind; provenance is
-  caller-attested until independently checked.
+  allowed option values. `verify` requires a reviewer distinct from all three
+  and an installed server-side reviewer authenticator. Opaque reviewer IDs alone
+  cannot set `verified`. The current Hub app has no authenticator configured, so
+  labels remain `reviewed` and local candidate export rejects them until a real
+  authenticated human-review path is integrated. Legacy caller-attested
+  verification records are not accepted for export.
 - Reject and delete remain explicit scoped operations. `prepare_splits` snapshots
   verified candidates into deterministic 80/10/10 train/calibration/test
   groups. It joins matching task or session groups and merges state strings
@@ -196,12 +213,13 @@ JSONL requires an authorized repository, verified snapshot, and separate
   member contains training rows only. Never use it for pooled calibration or
   evaluation; those require a separate held-out split.
 - The operator approved a `context_source` pilot only for an unresolved evidence
-  gap with at least two authorized sources. Inputs contain only gap/source/
-  freshness/coverage codes and evidence IDs; never task or source text. Compare
-  with deterministic retrieval; success requires one fewer retrieval roundtrip
-  with no factual loss. Runtime outputs may be collected only when an explicit
-  scoped callback is attached to an actual runtime call. No production examples
-  have been collected. Synthetic tests do not prove data quality.
+  gap with at least two authorized sources. Inputs contain typed gap/source/
+  freshness/coverage codes and verified evidence IDs; the task query and
+  relevant retrieved excerpts may also be retained when materially useful,
+  subject to the redaction and size limits above. Compare with deterministic
+  retrieval; success requires one fewer retrieval roundtrip with no factual
+  loss. Runtime outputs may be collected only from the actual runtime callback.
+  Synthetic tests do not prove data quality.
 - Near-duplicate grouping is deterministic heuristic protection, not semantic
   proof. Independent provenance validation, retention expiry, split
   sufficiency thresholds, paired baselines, and quality evaluation remain
@@ -211,7 +229,8 @@ JSONL requires an authorized repository, verified snapshot, and separate
 
 No Hub-specific category has independent labeled examples, a deterministic
 paired baseline, or a sealed group-safe holdout. The `context_source` pilot
-remains scoped to authorized roots and minimal typed metadata. The state_dir-backed
+remains scoped to authorized roots, typed metadata, verified evidence IDs, and
+minimum necessary redacted raw context when useful. The state_dir-backed
 candidate lifecycle is infrastructure only: it does not prove label quality or utility.
 Synthetic tests verify support-ZIP exclusion and truthful manifests, not
 production-data quality. Independent labels, a deterministic baseline, and

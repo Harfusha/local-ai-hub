@@ -50,7 +50,7 @@ def test_cuda_reranker_marks_shared_reservation_active_until_call_returns(tmp_pa
         record = store.read()
         assert record is not None
         assert record["state"] == "active"
-        assert store.reserve("b" * 64, owner="second-reranker") is None
+        assert store.reserve("b" * 64, owner_vram_budget_bytes=16 * 1024**3, owner="second-reranker") is None
     finally:
         finish.set()
         worker.join(2)

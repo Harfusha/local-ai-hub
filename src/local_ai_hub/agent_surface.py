@@ -20,11 +20,19 @@ DIAGNOSTIC_MCP_ACTIONS = {
 }
 
 _LAYA_EVALUATION_ACTIONS = frozenset({"evaluate_decision", "evaluate_context_source"})
+_LAYA_CURATION_ACTIONS = frozenset({
+    "list", "get", "label", "verify", "reject", "delete", "prepare_splits", "export",
+})
 
 
 def _is_laya_evaluation(payload: Mapping[str, Any]) -> bool:
     operation = payload.get("laya_operation")
     return isinstance(operation, Mapping) and operation.get("action") in _LAYA_EVALUATION_ACTIONS
+
+
+def _is_laya_curation(payload: Mapping[str, Any]) -> bool:
+    operation = payload.get("laya_operation")
+    return isinstance(operation, Mapping) and operation.get("action") in _LAYA_CURATION_ACTIONS
 
 # These operations inspect or experiment with the Hub itself. Repository code
 # diagnostics, review/security findings, model inventory and aggregate dashboard
@@ -68,7 +76,7 @@ def diagnostic_mcp_operation(tool: str, arguments: Mapping[str, Any]) -> bool:
     ):
         return True
     if tool == "local_ai_coord" and action == "curate_dataset":
-        return not _is_laya_evaluation(arguments)
+        return not (_is_laya_evaluation(arguments) or _is_laya_curation(arguments))
     if action in DIAGNOSTIC_MCP_ACTIONS.get(tool, ()):
         return True
     if tool == "local_ai_task" and action == "submit":
@@ -101,7 +109,9 @@ def diagnostic_http_operation(method: str, path: str, payload: Mapping[str, Any]
         job_action = job_action.strip().lower().replace("-", "_") if isinstance(job_action, str) else ""
         return job_action in DIAGNOSTIC_MCP_ACTIONS["local_ai_task"]
     if method == "POST" and path == "/api/agent-state/tasks":
-        return action == "curate_dataset" and not _is_laya_evaluation(payload)
+        return action == "curate_dataset" and not (
+            _is_laya_evaluation(payload) or _is_laya_curation(payload)
+        )
     return False
 
 

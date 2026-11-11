@@ -18,6 +18,29 @@ from typing import Any, Callable, Iterator
 
 
 _DIGEST_RE = re.compile(r"^[0-9a-f]{64}$")
+
+
+def conservative_gpu_capacity_budget_bytes() -> int | None:
+    """Return a telemetry-backed full-device owner cap, or fail closed."""
+    try:
+        from .gpu_monitor import get_gpu_telemetry
+
+        telemetry = get_gpu_telemetry()
+    except Exception:
+        return None
+    if not isinstance(telemetry, dict) or telemetry.get("available") is not True:
+        return None
+    total_mb = telemetry.get("vram_total_mb")
+    if isinstance(total_mb, bool) or not isinstance(total_mb, (int, float)) or not math.isfinite(total_mb) or total_mb <= 0:
+        total_mb = telemetry.get("unified_memory_mb")
+    if isinstance(total_mb, bool) or not isinstance(total_mb, (int, float)) or not math.isfinite(total_mb) or total_mb <= 0:
+        return None
+    return int(total_mb * 1024 * 1024)
+
+
+def _validate_capacity_bytes(value: Any, name: str) -> None:
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise ValueError(f"{name} must be a positive integer")
 _LOCKS: dict[str, threading.RLock] = {}
 _LOCKS_GUARD = threading.Lock()
 
@@ -42,6 +65,7 @@ class ExternalGpuReservationStore:
             raise ValueError("ttl_seconds must be positive")
         self.path = Path(path)
         self.metadata_path = self.path.with_name(self.path.name + ".lease.json")
+        self.capacity_leases_path = self.path.with_name(self.path.name + ".capacity.json")
         self.lock_path = self.path.with_name(self.path.name + ".lock")
         self.audit_path = self.path.with_name(self.path.name + ".audit.jsonl")
         self.operator_release_path = self.path.with_name(self.path.name + ".operator-release.json")
@@ -70,7 +94,8 @@ class ExternalGpuReservationStore:
             record = self._read_unlocked()
             if record is None:
                 reaped = self._reap_expired_legacy_fence_unlocked()
-            elif record["expires_at"] <= self._clock():
+            elif (record["expires_at"] <= self._clock()
+                  and not self._has_capacity_lease_for_generation_unlocked(record["generation"])):
                 reaped = self._remove_unlocked(record["generation"])
                 record = None if reaped else self._read_unlocked()
             else:
@@ -166,7 +191,8 @@ class ExternalGpuReservationStore:
                 self._remove_unlocked(record["generation"])
             elif record is None:
                 self._reap_expired_legacy_fence_unlocked()
-            if self.path.exists() or self.metadata_path.exists():
+            if (self.path.exists() or self.metadata_path.exists()
+                    or self.capacity_leases_path.exists() or self.capacity_leases_path.is_symlink()):
                 return False
             try:
                 self._write_digest_exclusive(digest)
@@ -224,6 +250,9 @@ class ExternalGpuReservationStore:
                     return False
                 if not hmac.compare_digest(current, digest):
                     return False
+                capacity = self._read_capacity_leases_unlocked()
+                if capacity is None or capacity["leases"]:
+                    return False
                 try:
                     self.path.unlink()
                     return True
@@ -235,11 +264,17 @@ class ExternalGpuReservationStore:
                     time.sleep(0.01)
             return False
 
-    def reserve(self, token_digest: str, *, owner: str) -> dict[str, Any] | None:
+    def reserve(
+        self, token_digest: str, *, owner: str, owner_vram_budget_bytes: int,
+    ) -> dict[str, Any] | None:
         _validate_digest(token_digest)
         if not isinstance(owner, str) or not owner.strip() or len(owner) > 256:
             raise ValueError("owner must be a non-empty bounded string")
+        _validate_capacity_bytes(owner_vram_budget_bytes, "owner_vram_budget_bytes")
         with self._locked():
+            capacity = self._read_capacity_leases_unlocked()
+            if capacity is None or capacity["leases"]:
+                return None
             current = self._read_unlocked()
             if current is not None:
                 if current["expires_at"] > self._clock():
@@ -261,6 +296,7 @@ class ExternalGpuReservationStore:
                 "updated_at": self._clock(),
                 "expires_at": self._clock() + self.ttl_seconds,
             }
+            record["owner_vram_budget_bytes"] = owner_vram_budget_bytes
             try:
                 self._write_digest_exclusive(token_digest)
                 if not self._write_metadata(record):
@@ -269,6 +305,168 @@ class ExternalGpuReservationStore:
                 # A digest without metadata is intentionally left fail-closed.
                 return None
             return dict(record)
+
+    def acquire_capacity_lease(
+        self,
+        *,
+        owner: str,
+        requested_bytes: int,
+        total_bytes: int,
+        available_bytes: int,
+        expected_reservation_generation: str | None = None,
+        expected_internal_digest: str | None = None,
+    ) -> dict[str, Any] | None:
+        """Atomically reserve residency budget without unloading another model."""
+        if not isinstance(owner, str) or not owner.strip() or len(owner) > 256:
+            raise ValueError("owner must be a non-empty bounded string")
+        _validate_capacity_bytes(requested_bytes, "requested_bytes")
+        _validate_capacity_bytes(total_bytes, "total_bytes")
+        if (isinstance(available_bytes, bool) or not isinstance(available_bytes, int)
+                or available_bytes < 0 or available_bytes > total_bytes):
+            raise ValueError("available_bytes must be a non-negative integer no greater than total_bytes")
+        if expected_reservation_generation is not None and (
+                not isinstance(expected_reservation_generation, str) or not expected_reservation_generation):
+            raise ValueError("expected_reservation_generation must be a non-empty string or None")
+        if expected_internal_digest is not None:
+            _validate_digest(expected_internal_digest)
+
+        with self._locked():
+            reservation = self._read_unlocked()
+            if (reservation is not None and reservation["expires_at"] <= self._clock()
+                    and not self._has_capacity_lease_for_generation_unlocked(reservation["generation"])):
+                if not self._remove_unlocked(reservation["generation"]):
+                    return None
+                reservation = None
+            if expected_internal_digest is not None:
+                if (reservation is not None or self.metadata_path.exists()
+                        or self.metadata_path.is_symlink()
+                        or self._read_internal_digest_unlocked() != expected_internal_digest):
+                    return None
+                reservation_generation = f"internal:{expected_internal_digest}"
+            else:
+                if reservation is None and (
+                        self.path.exists() or self.path.is_symlink()
+                        or self.metadata_path.exists() or self.metadata_path.is_symlink()):
+                    return None
+                reservation_generation = reservation.get("generation") if reservation else None
+            if expected_reservation_generation is not None and reservation_generation != expected_reservation_generation:
+                return None
+
+            capacity = self._read_capacity_leases_unlocked()
+            if capacity is None or available_bytes < requested_bytes:
+                return None
+            if any(item["reservation_generation"] != reservation_generation
+                   for item in capacity["leases"]):
+                return None
+            lease_total = sum(item["requested_bytes"] for item in capacity["leases"])
+            if lease_total + requested_bytes > total_bytes:
+                return None
+            lease = {
+                "lease_id": uuid.uuid4().hex,
+                "generation": uuid.uuid4().hex,
+                "owner": owner.strip(),
+                "requested_bytes": requested_bytes,
+                "reservation_generation": reservation_generation,
+                "created_at": self._clock(),
+            }
+            if len(capacity["leases"]) >= 64:
+                return None
+            if not self._write_capacity_leases({
+                "schema_version": 1,
+                "leases": [*capacity["leases"], lease],
+            }):
+                return None
+            return dict(lease)
+
+    def release_capacity_lease(self, lease_id: str, owner: str, generation: str) -> bool:
+        if not isinstance(lease_id, str) or not lease_id:
+            return False
+        if not isinstance(owner, str) or not owner.strip():
+            return False
+        if not isinstance(generation, str) or not generation:
+            return False
+        with self._locked():
+            capacity = self._read_capacity_leases_unlocked()
+            if capacity is None:
+                return False
+            leases = capacity["leases"]
+            matched = [item for item in leases if (
+                item["lease_id"] == lease_id
+                and item["owner"] == owner
+                and item["generation"] == generation
+            )]
+            if len(matched) != 1:
+                return False
+            remaining = [item for item in leases if item not in matched]
+            return self._write_capacity_leases({"schema_version": 1, "leases": remaining})
+
+    def has_capacity_lease(self) -> bool:
+        """Fail closed for malformed ledgers and report active residency claims."""
+        with self._locked():
+            capacity = self._read_capacity_leases_unlocked()
+            if capacity is None:
+                return self.capacity_leases_path.exists() or self.capacity_leases_path.is_symlink()
+            return bool(capacity["leases"])
+
+    def capacity_snapshot(self, *, expected_internal_digest: str | None = None) -> dict[str, Any] | None:
+        """Return validated reservation and lease accounting under the file lock."""
+        if expected_internal_digest is not None:
+            _validate_digest(expected_internal_digest)
+        with self._locked():
+            reservation = self._read_unlocked()
+            if (reservation is not None and reservation["expires_at"] <= self._clock()
+                    and not self._has_capacity_lease_for_generation_unlocked(reservation["generation"])):
+                if not self._remove_unlocked(reservation["generation"]):
+                    return None
+                reservation = None
+            internal_fence_digest = None
+            if expected_internal_digest is not None:
+                if (reservation is not None or self.metadata_path.exists()
+                        or self.metadata_path.is_symlink()
+                        or self._read_internal_digest_unlocked() != expected_internal_digest):
+                    return None
+                internal_fence_digest = expected_internal_digest
+            elif reservation is None and (
+                    self.path.exists() or self.path.is_symlink()
+                    or self.metadata_path.exists() or self.metadata_path.is_symlink()):
+                return None
+            leases = self._read_capacity_leases_unlocked()
+            if leases is None:
+                return None
+            reservation_generation = (
+                reservation.get("generation") if reservation is not None
+                else f"internal:{internal_fence_digest}" if internal_fence_digest is not None
+                else None
+            )
+            if any(item["reservation_generation"] != reservation_generation for item in leases["leases"]):
+                return None
+            snapshot = {
+                "reservation": dict(reservation) if reservation is not None else None,
+                "leases": [dict(item) for item in leases["leases"]],
+            }
+            if internal_fence_digest is not None:
+                snapshot["internal_fence_digest"] = internal_fence_digest
+            return snapshot
+
+    def _read_internal_digest_unlocked(self) -> str | None:
+        if self.path.is_symlink() or self.metadata_path.exists() or self.metadata_path.is_symlink():
+            return None
+        try:
+            with self.path.open("rb") as stream:
+                before = os.fstat(stream.fileno())
+                if not stat.S_ISREG(before.st_mode) or before.st_size != 64:
+                    return None
+                raw_digest = stream.read(65)
+                after = os.fstat(stream.fileno())
+            current = self.path.stat(follow_symlinks=False)
+            if (not os.path.samestat(before, after) or not os.path.samestat(after, current)
+                    or len(raw_digest) != 64):
+                return None
+            digest = raw_digest.decode("ascii")
+            _validate_digest(digest)
+            return digest
+        except (OSError, UnicodeDecodeError, ValueError):
+            return None
 
     def renew(self, token_digest: str, generation: str, *, state: str = "idle") -> bool:
         _validate_digest(token_digest)
@@ -357,6 +555,8 @@ class ExternalGpuReservationStore:
                 record = self._read_metadata_unlocked()
                 metadata_orphan = record is not None
             if record is None or record["generation"] != generation:
+                return False
+            if self._has_capacity_lease_for_generation_unlocked(generation):
                 return False
             expired = record["expires_at"] <= self._clock()
             dead_owner_release = (
@@ -540,11 +740,83 @@ class ExternalGpuReservationStore:
         if (not isinstance(record.get("generation"), str) or not record["generation"]
                 or not isinstance(record.get("owner"), str)
                 or record.get("state") not in {"idle", "active"}
+                or ("owner_vram_budget_bytes" in record
+                    and (isinstance(record.get("owner_vram_budget_bytes"), bool)
+                         or not isinstance(record.get("owner_vram_budget_bytes"), int)
+                         or record["owner_vram_budget_bytes"] <= 0))
                 or any(isinstance(record.get(key), bool) or not isinstance(record.get(key), (int, float))
                        or not math.isfinite(record[key])
                        for key in ("created_at", "updated_at", "expires_at"))):
             return None
         return record
+
+    def _read_capacity_leases_unlocked(self) -> dict[str, Any] | None:
+        if self.capacity_leases_path.is_symlink():
+            return None
+        try:
+            with self.capacity_leases_path.open("rb") as stream:
+                raw_bytes = stream.read(32_769)
+            if len(raw_bytes) > 32_768:
+                return None
+            payload = json.loads(raw_bytes.decode("utf-8"))
+        except FileNotFoundError:
+            return {"schema_version": 1, "leases": []}
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            return None
+        if (not isinstance(payload, dict) or payload.get("schema_version") != 1
+                or not isinstance(payload.get("leases"), list) or len(payload["leases"]) > 64):
+            return None
+        lease_ids: set[str] = set()
+        generations: set[str] = set()
+        for lease in payload["leases"]:
+            if (not isinstance(lease, dict)
+                    or not isinstance(lease.get("lease_id"), str) or not lease["lease_id"]
+                    or not isinstance(lease.get("generation"), str) or not lease["generation"]
+                    or not isinstance(lease.get("owner"), str) or not lease["owner"].strip()
+                    or isinstance(lease.get("requested_bytes"), bool)
+                    or not isinstance(lease.get("requested_bytes"), int) or lease["requested_bytes"] <= 0
+                    or (lease.get("reservation_generation") is not None
+                        and (not isinstance(lease.get("reservation_generation"), str)
+                             or not lease["reservation_generation"]))
+                    or isinstance(lease.get("created_at"), bool)
+                    or not isinstance(lease.get("created_at"), (int, float))
+                    or not math.isfinite(lease["created_at"])):
+                return None
+            if lease["lease_id"] in lease_ids or lease["generation"] in generations:
+                return None
+            lease_ids.add(lease["lease_id"])
+            generations.add(lease["generation"])
+        return payload
+
+    def _write_capacity_leases(self, payload: dict[str, Any]) -> bool:
+        if self.capacity_leases_path.is_symlink():
+            return False
+        if not payload["leases"]:
+            try:
+                self.capacity_leases_path.unlink(missing_ok=True)
+                return True
+            except OSError:
+                return False
+        fd, temp_name = tempfile.mkstemp(
+            prefix=self.capacity_leases_path.name + ".", suffix=".tmp", dir=self.capacity_leases_path.parent,
+        )
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as stream:
+                json.dump(payload, stream, separators=(",", ":"), sort_keys=True)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temp_name, self.capacity_leases_path)
+            return True
+        except OSError:
+            with contextlib.suppress(OSError):
+                os.unlink(temp_name)
+            return False
+
+    def _has_capacity_lease_for_generation_unlocked(self, generation: str) -> bool:
+        capacity = self._read_capacity_leases_unlocked()
+        if capacity is None:
+            return self.capacity_leases_path.exists() or self.capacity_leases_path.is_symlink()
+        return any(item.get("reservation_generation") == generation for item in capacity["leases"])
 
     def _matches(self, record: dict[str, Any] | None, token_digest: str, generation: str) -> bool:
         return bool(
@@ -556,7 +828,8 @@ class ExternalGpuReservationStore:
 
     def _remove_unlocked(self, generation: str) -> bool:
         record = self._read_unlocked()
-        if record is None or record.get("generation") != generation:
+        if (record is None or record.get("generation") != generation
+                or self._has_capacity_lease_for_generation_unlocked(generation)):
             return False
         for attempt in range(6):
             try:
@@ -638,7 +911,8 @@ class ExternalGpuReservationStore:
 
     @contextlib.contextmanager
     def _locked(self) -> Iterator[None]:
-        if (self.path.is_symlink() or self.metadata_path.is_symlink() or self.lock_path.is_symlink()
+        if (self.path.is_symlink() or self.metadata_path.is_symlink() or self.capacity_leases_path.is_symlink()
+                or self.lock_path.is_symlink()
                 or self.operator_release_path.is_symlink()):
             raise OSError("reservation paths cannot be symlinks")
         key = str(self.lock_path.resolve())

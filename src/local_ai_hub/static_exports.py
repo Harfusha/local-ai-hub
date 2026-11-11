@@ -108,9 +108,62 @@ def named_export_status(source: str, language: str, name: str, *, container: str
         lexical_source = re.sub(r"\s*([.\\])\s*", r"\1", lexical_source)
         if not re.search(rf"\b(?:class|interface|enum|trait|struct|record)\s+{re.escape(name)}\b", lexical_source):
             return False, "type_declaration_not_found"
-        pattern = r"\bnamespace\s+([A-Za-z_][\w.\\]*)"
-        namespaces = set(re.findall(pattern, lexical_source))
-        if container and container not in namespaces:
+        tokens = [
+            match.group()
+            for match in _TOKENS.finditer(source)
+            if not match.group().startswith(("//", "/*", "'", '"', "\u0060"))
+        ]
+        namespace_scopes: dict[int, str] = {}
+        file_namespace = ""
+        pending_namespace: str | None = None
+        depth = 0
+        type_namespace_mismatch = False
+        index = 0
+        while index < len(tokens):
+            token = tokens[index]
+            if token == "namespace":
+                end = index + 1
+                while end < len(tokens) and tokens[end] not in {"{", ";"}:
+                    end += 1
+                if end >= len(tokens):
+                    return False, "invalid_namespace_declaration"
+                declared = "".join(tokens[index + 1 : end])
+                if tokens[end] == "{":
+                    pending_namespace = declared
+                else:
+                    file_namespace = declared
+                    namespace_scopes.clear()
+                index = end
+                continue
+            if token == "{":
+                depth += 1
+                if pending_namespace is not None:
+                    parent_depth = max(namespace_scopes, default=-1)
+                    parent = namespace_scopes.get(parent_depth, file_namespace)
+                    namespace_scopes[depth] = ".".join(
+                        part for part in (parent, pending_namespace) if part
+                    )
+                    pending_namespace = None
+            elif token == "}":
+                namespace_scopes.pop(depth, None)
+                depth = max(0, depth - 1)
+            elif token in {"class", "interface", "enum", "trait", "struct", "record"}:
+                if index + 1 < len(tokens) and tokens[index + 1] == name:
+                    active_depth = max(namespace_scopes, default=0)
+                    declared_namespace = namespace_scopes.get(
+                        active_depth, file_namespace
+                    )
+                    normalized_container = re.sub(
+                        r"\s*([.\\])\s*", r"\1", container.strip()
+                    )
+                    if depth != active_depth:
+                        type_namespace_mismatch = True
+                    elif not container or declared_namespace == normalized_container:
+                        return True, "indexed_namespace_type"
+                    else:
+                        type_namespace_mismatch = True
+            index += 1
+        if type_namespace_mismatch:
             return False, "nested_type_not_importable_by_namespace"
-        return True, "indexed_namespace_type"
+        return False, "type_declaration_not_found"
     return False, "export_language_unsupported"

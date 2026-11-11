@@ -35,7 +35,7 @@ def test_cpu_fallback_runs_while_external_gpu_owner_keeps_reservation(tmp_path):
                             'cache': {'embeddings': False}})
     model._model, model.active_backend, model.active_device = CpuModel(), 'sentence-transformers', 'cpu'
     store = ExternalGpuReservationStore(tmp_path / 'external-gpu-reservation')
-    record = store.reserve('a' * 64, owner='other-work')
+    record = store.reserve('a' * 64, owner_vram_budget_bytes=16 * 1024**3, owner='other-work')
     model._gpu_reservation_store = store
     model._gpu_reservation_path = store.path
 

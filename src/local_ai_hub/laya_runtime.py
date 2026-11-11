@@ -1,11 +1,13 @@
-"""Local runtime adapter for the metadata-only Laya context-source pilot.
+"""Local adapter for Laya shadow decisions and scoped training capture.
 
-LocalAIApp schedules this adapter after eligible ordinary context retrieval when
-the runtime is enabled and a pinned checkpoint is configured. It accepts only
-typed codes and authorized evidence IDs, captures actual outcomes through the
-scoped recorder, and never changes Hub decisions, trains, downloads, or executes
-tools. Inference runs only when this installation explicitly enables its pinned
-checkpoint in runtime configuration.
+LocalAIApp keeps the Laya service available for its lifetime and schedules
+eligible shadow evaluation after ordinary context retrieval. The provider is
+loaded on demand from the pinned local checkpoint, then retained for the
+configured idle window after the latest completed Laya request. Decisions use
+typed signals and authorized evidence IDs, with separately bounded and redacted
+task/context text when useful for `context_source`. Actual outcomes are captured
+through the scoped recorder. The adapter never changes Hub decisions, trains,
+downloads, or executes tools.
 """
 
 from __future__ import annotations
@@ -15,6 +17,7 @@ import importlib.metadata
 import inspect
 import json
 import math
+import os
 import re
 import threading
 import time
@@ -236,6 +239,8 @@ class LayaRuntimeAdapter:
         device_candidates: Sequence[DeviceCandidate],
         evaluation_mode: bool = False,
         loader: Callable[..., Any] | None = None,
+        capacity_manager: Any | None = None,
+        capacity_request_bytes: int | None = None,
         clock: Callable[[], float] = time.perf_counter,
     ) -> None:
         self.checkpoint_path = Path(checkpoint_path)
@@ -266,12 +271,36 @@ class LayaRuntimeAdapter:
             raise ValueError("evaluation_mode must be a boolean")
         self.evaluation_mode = evaluation_mode
         self._loader = loader
+        if capacity_manager is not None and not callable(
+            getattr(capacity_manager, "acquire_gpu_capacity_lease", None)
+        ):
+            raise TypeError("capacity_manager must expose acquire_gpu_capacity_lease")
+        if capacity_manager is not None and not callable(
+            getattr(capacity_manager, "release_gpu_capacity_lease", None)
+        ):
+            raise TypeError("capacity_manager must expose release_gpu_capacity_lease")
+        if capacity_request_bytes is not None and (
+            isinstance(capacity_request_bytes, bool)
+            or not isinstance(capacity_request_bytes, int)
+            or capacity_request_bytes <= 0
+        ):
+            raise ValueError("capacity_request_bytes must be a positive integer")
+        self._capacity_manager = capacity_manager
+        self._capacity_request_bytes = capacity_request_bytes
+        self._capacity_owner = f"laya-runtime:{os.getpid()}:{revision}"
+        self._capacity_lease: dict[str, str] | None = None
+        self._capacity_lease_release_pending = False
+        self._capacity_provider_cleanup_unconfirmed = False
         self._clock = clock
         self._selected_device: DeviceCandidate | None = None
         self._failed_devices: set[tuple[str, str]] = set()
         self._call_lock = threading.Lock()
 
     def _load(self) -> Any:
+        if self._capacity_provider_cleanup_unconfirmed:
+            raise _LayaCleanupUnconfirmed(
+                "previous Laya provider cleanup remains unconfirmed; refusing a second load"
+            )
         path = self.checkpoint_path.resolve(strict=True)
         required = ("rl_agent_config.json", "model.safetensors", "tokenizer/tokenizer.json")
         if not path.is_dir() or any(not (path / item).is_file() for item in required):
@@ -304,7 +333,39 @@ class LayaRuntimeAdapter:
         errors: list[str] = []
         for selected in candidates:
             model = None
+            capacity_lease = None
             try:
+                if selected.device_class == "dgpu" and self._capacity_manager is not None:
+                    if self._capacity_lease is not None:
+                        if not self._release_capacity_lease(self._capacity_lease):
+                            self._capacity_lease_release_pending = True
+                            raise _LayaCleanupUnconfirmed(
+                                "previous GPU capacity lease release is pending"
+                            )
+                        self._capacity_lease = None
+                        self._capacity_lease_release_pending = False
+                    requested_bytes = self._capacity_request_bytes
+                    if requested_bytes is None:
+                        # Reserve three times the pinned weight artifact, with a
+                        # 2 GiB floor for provider context and inference workspace.
+                        weight_bytes = (path / "model.safetensors").stat().st_size
+                        requested_bytes = max(2 * 1024**3, weight_bytes * 3)
+                    capacity_lease = self._capacity_manager.acquire_gpu_capacity_lease(
+                        self._capacity_owner, requested_bytes
+                    )
+                    if not isinstance(capacity_lease, Mapping) or capacity_lease.get("state") != "admitted":
+                        reason = (
+                            capacity_lease.get("reason", "gpu_capacity_rejected")
+                            if isinstance(capacity_lease, Mapping)
+                            else "gpu_capacity_rejected"
+                        )
+                        capacity_lease = None
+                        raise LayaRuntimeUnavailable(str(reason))
+                    if not all(
+                        isinstance(capacity_lease.get(key), str) and capacity_lease[key]
+                        for key in ("lease_id", "generation")
+                    ):
+                        raise _LayaCleanupUnconfirmed("GPU capacity lease identity is invalid")
                 if loader is None:
                     model, agent = self._load_router_session(laya_module, path, selected)
                     actual_device = self._parameter_device(agent)
@@ -318,6 +379,12 @@ class LayaRuntimeAdapter:
                 if actual_device != selected.device:
                     raise RuntimeError("device mismatch")
             except _LayaCleanupUnconfirmed:
+                if capacity_lease is not None:
+                    self._capacity_lease = {
+                        key: str(capacity_lease[key])
+                        for key in ("lease_id", "generation")
+                    }
+                    self._capacity_provider_cleanup_unconfirmed = True
                 raise
             except Exception as exc:
                 self._failed_devices.add((selected.provider, selected.device))
@@ -333,7 +400,16 @@ class LayaRuntimeAdapter:
                         raise _LayaCleanupUnconfirmed(
                             "provider cleanup after load failure was unconfirmed; refusing device fallback"
                         ) from exc
+                if capacity_lease is not None and not self._release_capacity_lease(capacity_lease):
+                    raise _LayaCleanupUnconfirmed(
+                        "GPU capacity lease release after failed load was unconfirmed"
+                    ) from exc
                 continue
+            self._capacity_lease = (
+                {key: str(capacity_lease[key]) for key in ("lease_id", "generation")}
+                if capacity_lease is not None
+                else None
+            )
             self._selected_device = DeviceCandidate(
                 provider=selected.provider,
                 device=selected.device,
@@ -442,12 +518,33 @@ class LayaRuntimeAdapter:
             raise RuntimeError("Laya parameter device is unavailable")
         return str(device)
 
+    def _release_capacity_lease(self, lease: Mapping[str, Any]) -> bool:
+        manager = self._capacity_manager
+        release = getattr(manager, "release_gpu_capacity_lease", None)
+        if not callable(release):
+            return False
+        return release(lease.get("lease_id"), self._capacity_owner, lease.get("generation")) is True
+
     @staticmethod
     def _close(model: Any) -> bool:
         close = getattr(model, "close", None)
         if not callable(close):
             return False
         return close() is True
+
+    def _close_with_capacity(self, model: Any) -> bool:
+        if not self._close(model):
+            return False
+        lease = self._capacity_lease
+        if lease is not None:
+            if not self._release_capacity_lease(lease):
+                # Provider unload is confirmed, so lifecycle may drop this
+                # session. Keep the lease accounted until a later release retry.
+                self._capacity_lease_release_pending = True
+                return True
+            self._capacity_lease = None
+            self._capacity_lease_release_pending = False
+        return True
 
     @staticmethod
     def _input(evidence: ContextSourceEvidence) -> tuple[dict[str, str], dict[str, dict[str, Any]]]:
@@ -556,7 +653,7 @@ class LayaRuntimeAdapter:
                 bind_close_session = getattr(session_lifecycle, "bind_close_session", None)
                 if not callable(bind_close_session):
                     raise RuntimeError("provider close callback unavailable")
-                bind_close_session(self._close)
+                bind_close_session(self._close_with_capacity)
             with session_lifecycle.inference_session(self._load) as model:
                 state, questions = self._decision_input(request, decision_input)
                 result = model.predict(state, questions)

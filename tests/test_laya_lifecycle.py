@@ -223,9 +223,42 @@ def test_shutdown_racing_with_load_closes_late_session_before_finishing():
 
 
 @pytest.mark.parametrize("value", [0, 600, 86400, 1.5])
-def test_idle_unload_setting_accepts_documented_range(value):
+def test_lifecycle_timeout_validator_accepts_finite_controller_values(value):
     assert validate_idle_unload_seconds(value) == value
-    validate_config({"laya": {"idle_unload_seconds": value}})
+
+
+def test_config_accepts_the_fixed_ten_minute_laya_timeout():
+    validate_config({"laya": {"idle_unload_seconds": 600}})
+
+
+def test_configured_laya_checkpoint_is_valid_even_when_legacy_enabled_is_false(tmp_path):
+    checkpoint = tmp_path / "pinned-revision"
+    validate_config({"laya": {"idle_unload_seconds": 600, "runtime": {
+        "enabled": False,
+        "checkpoint_path": str(checkpoint),
+        "revision": checkpoint.name,
+        "expected_sha256": {"weights.safetensors": "a" * 64},
+    }}})
+
+
+def test_config_allows_service_without_a_checkpoint():
+    validate_config({"laya": {"idle_unload_seconds": 600, "runtime": {
+        "checkpoint_path": "", "revision": "", "expected_sha256": {},
+    }}})
+
+
+def test_partial_laya_checkpoint_is_rejected_without_legacy_enabled_gate(tmp_path):
+    with pytest.raises(ConfigError, match="laya.runtime requires revision"):
+        validate_config({"laya": {"idle_unload_seconds": 600, "runtime": {
+            "enabled": False,
+            "checkpoint_path": str(tmp_path / "pinned-revision"),
+        }}})
+
+
+@pytest.mark.parametrize("value", [0, 1.5, 599, 601, 86400])
+def test_config_rejects_non_ten_minute_laya_timeouts(value):
+    with pytest.raises(ConfigError, match="laya.idle_unload_seconds"):
+        validate_config({"laya": {"idle_unload_seconds": value}})
 
 
 @pytest.mark.parametrize("value", [-1, 86401, 10**400, float("nan"), float("inf"), float("-inf"), True, "600"])

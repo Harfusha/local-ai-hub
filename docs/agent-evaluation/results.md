@@ -5816,3 +5816,126 @@ The focused files `tests/unit/test_structural_search_confinement.py`, `tests/tes
 - The regression first failed before the source change (`16` entries retained for a configured capacity of `17`); after the fix, `tests/test_audit_round2_regressions.py::test_t2_04_sharded_lru_uses_full_non_divisible_capacity` passed **4/4** across capacities 1/17 and both insertion APIs.
 - Source SHA `E9DB1CC0C375ECC8FD3B7BDDE311247537B04806CCCD353763FA9BE7155AFB65`; test SHA `CA4B77BC32AA7C2B90DA03B3346698B6382E0B25C7BC27385060BF04E176FE59`.
 - **Assessment: N04 fixed and focused-verification passed.** Round 2 and overall goal remain open; full validation is still deferred until a stable shared-checkout snapshot.
+
+### Round 87 — Round 6 C10 query-local FTS ranking (2026-11-11)
+
+- Replaced the persistent external-content FTS table and triggers with a connection-local temporary FTS5 table built from latest eligible canonical incidents for the requested repository. No persistent derived schema objects are created. The SQL query uses FTS MATCH, BM25 ranking, deterministic timestamp/ID tie-breaking, and a bound candidate LIMIT.
+- Red test reproduced the historical-relevance miss: one failed, one passed. After the fix, the older relevant row beat 210 newer unrelated rows; a foreign-root match stayed excluded; punctuation remained safe; the result count stayed within the API limit. A lifecycle test confirmed updates and deletes change the next query, and fresh AgentStateStore reload works without persistent FTS objects.
+- Focused command `python -m pytest -q tests/test_agent_incidents.py tests/test_audit_round6_regressions.py::test_t6_10_find_negative_knowledge_fts_ranks_old_rows_with_sql_limit tests/test_audit_round6_regressions.py::test_t6_10_query_local_fts_tracks_update_delete_without_persistent_schema` — **8 passed in 3.39s**. `git diff --check` passed (Git reported only expected LF-to-CRLF conversion warnings).
+- Source SHA `BD392A3A228E11F7713E55D2E856AEED2061F9130983CAEDF1D3E3585C4555DB`; regression test SHA `F5AC173BDD18BFF929073B70B80A167021E101793D6FBE7DB607CF21A537A47D`.
+- This covers fresh test databases. The operational AgentStateStore database was not read or modified. If prior persistent FTS objects exist there, startup preflight may reject them; offline cleanup remains Stability-owned. C10 source/tests are verified, but Round 6's bundled C08/C09/C11/C13/C14 remain open.
+
+## Round 88 — Round 1 P2-3 Python `-m` classifier extraction
+
+- Moved only Python module command classification from `CommandBroker._classify_single` into `src/local_ai_hub/command_python.py`. `python -c` analysis and all other command families remain in the broker.
+- Red: five helper contract cases failed with `ModuleNotFoundError: No module named 'local_ai_hub.command_python'`.
+- Green: `python -m pytest -q tests/test_command_replay_policy.py --tb=short` — **40 passed in 4.78s**.
+- `python -m pyflakes src/local_ai_hub/command_python.py src/local_ai_hub/commands.py tests/test_command_replay_policy.py` — passed. `git diff --check -- src/local_ai_hub/commands.py tests/test_command_replay_policy.py` — passed with expected LF-to-CRLF warning.
+- SHA256: `commands.py` `CDC8213353979FDC9FCDA2633A6EC47E861778466EA70BA73680F33DB8205D34`; `command_python.py` `62AE71A5D789D9225FB5EE46D819BCA86C3233C14B65D3307B30F7E33D77CDF1`; `test_command_replay_policy.py` `84ED9335E3D69CAA2F96BA8D7360D1717EA2FA06F9CADCBCA0D2A82CEC5CC5F2`.
+- Scope: one structural P2-3 slice. Semantic `local_ai_task.review` and `local_ai_repo.solve` were absent from the live action enums. Broad test and release gates remain unrun until the shared tree stabilizes.
+
+### Round 89 — Round 2 N15 paired plan reads (2026-11-11)
+
+- Reconciles the stale Round 85 N15 assessment. `PlanStorage.read_plan_file()` now reads under the storage lock, and `read_spec_and_plan()` reads the spec and plan while holding the same lock. Direct reads that bypass this API remain outside the consistency contract.
+- Focused concurrency regressions passed: `python -m pytest -q tests/test_repo_plan_storage.py::test_read_plan_file_waits_for_storage_transaction tests/test_repo_plan_storage.py::test_read_spec_and_plan_observes_one_storage_transaction` — **2 passed in 0.81s**.
+- Full focused file: `python -m pytest -q tests/test_repo_plan_storage.py` — **12 passed in 0.90s**.
+- Source SHA `storage.py` `d76f39394cbd4d27760cbf9888443c8a4e104cb013e47fe6c28bec10361548d5`; test SHA `test_repo_plan_storage.py` `30a6a35f87b7e9e4b3753a86f8a3db170cb10d4e6f6d2b89e1a05aadcfa57dad`.
+- **Assessment: N15 focused-verification passed.** This does not close Round 2 or overall audit; broad validation remains deferred until the shared tree stabilizes.
+
+### Round 90 — Round 1 P2-3 Python AST call-chain helper (2026-11-11)
+
+- Moved the pure nested `_get_call_chain(ast_node)` helper from `CommandBroker._classify_single` into `src/local_ai_hub/command_python.py`; `commands.py` imports it and retains the same two call sites in the Python `-c` safety analyzer. Behavior and policy are unchanged.
+- Test-first red: four cases failed because the helper was not exported by `command_python.py`. Green: the four call-chain contract cases passed.
+- Focused classifier suites: `python -m pytest -q tests/test_command_replay_policy.py tests/test_command_build_classification.py --tb=short` — **71 passed in 3.09s**. Targeted pyflakes passed; `python -m py_compile src/local_ai_hub/command_python.py src/local_ai_hub/commands.py` passed; `git diff --check -- src/local_ai_hub/commands.py tests/test_command_replay_policy.py` passed.
+- SHA256: `commands.py` `51c00908480b60f998f866dea2947c2fc67eec1b06bb74e5452e209fcd463aa1`; `command_python.py` `88310f32cbd4218f239222e2678830ef525e1876c1fc462e5c8e42f322130f37`; `test_command_replay_policy.py` `434052a71cb5cb62de2a25e5051bfc8d1b346e01ba91f73ffd8b3abaa7d1a62f`.
+- **Assessment: one more P2-3 slice verified.** P2-3 remains in progress; Python `-c` classification remains inside `commands.py`. Round 1 and overall audit remain open; broad gates stay deferred on the dirty shared checkout.
+
+### Round 91 — Round 1 P2-3 Python AST literal helper (2026-11-11)
+
+- Moved the pure recursive `_literal_only(ast_node)` helper from the nested Python `-c` safety analyzer into `src/local_ai_hub/command_python.py`; `commands.py` retains the same analyzer call sites and classification rules.
+- Test-first red: eight literal/compound/unpacking/name/call cases failed because `_literal_only` was absent from the helper module. Green: those eight cases plus the earlier four `_get_call_chain` cases passed (**12 passed**).
+- Current focused classifier suites: `python -m pytest -q tests/test_command_replay_policy.py tests/test_command_build_classification.py --tb=short` — **79 passed in 4.56s**. Targeted pyflakes, py_compile, and diff-check passed.
+- SHA256: `commands.py` `3577a22ffdb77001ba0b9d20660f3e33ea08028062f84c3cdc91be36208c39f8`; `command_python.py` `fe65febcf6749e2d796878882bebd3412e1b9f3ee82be4396e4bc41c7285124f`; `test_command_replay_policy.py` `c9c994880456a230a37a8302cc82db614ebbaf63ed47edccb46b4358624f878e`.
+- **Assessment: second bounded P2-3 helper verified.** P2-3 remains in progress; broader Python `-c` safety analysis and overall audits remain open. Full gates remain deferred on the shared dirty checkout.
+
+### Round 92 — Round 1 P2-3 Python inline safety policy extraction (2026-11-11)
+
+- Extracted the mutually dependent nested `_is_safe_call` and `_safe_inline_value` AST policy into `PythonInlineCodeSafety` in `src/local_ai_hub/command_python.py`. `commands.py` constructs it with the same mutable safe-name sets, preserving the analyzer's five-pass safe-value updates and classification behavior.
+- Test-first red: 15 `python_inline_safety` cases failed while the class was absent. Green: all 15 passed after extraction.
+- Focused classifier suites: `python -m pytest -q tests/test_command_replay_policy.py tests/test_command_build_classification.py --tb=short` — **94 passed in 4.00s**. Targeted pyflakes, py_compile, and diff-check passed.
+- SHA256: `commands.py` `1bd6f5307a8832432a2f433dd789ee486ce0be3222aabbc54be727507170ab8f`; `command_python.py` `d081a8f3a0670d52444fd51a8b6335e0d3bfa294eee227b1ba870e045c91cfce`; `test_command_replay_policy.py` `1a3d5878041c6f2f213d3461af4e79830b005210d5f39b25626e2d11baada144`.
+- **Assessment: one coupled Python `-c` safety unit verified.** P2-3 and broader audits remain open; the shared checkout is dirty, and broad gates remain deferred.
+
+### Round 93 — Round 1 P2-3 safe-value propagation extraction (2026-11-11)
+
+- Moved the bounded five-pass safe-value propagation loop from `CommandBroker._classify_single` into `PythonInlineCodeSafety.propagate_safe_values`. Assignment, annotated assignment, named-expression, and for/async-for targets retain the previous classification rules; only simple name targets propagate.
+- Test-first red: four new helper cases failed before implementation. Green: four focused cases passed; the classifier pair `python -m pytest -q tests/test_command_replay_policy.py tests/test_command_build_classification.py --tb=short` passed **98 in 2.93s**. Targeted pyflakes, py_compile and diff-check passed.
+- SHA256: `commands.py` `8b980ca02039219326586b5142abf5130c63b2e7e5d43dd5c0aaea24a88e9a17`; `command_python.py` `ef853ccac8d4d46a59baefee2b44c80403d563828b0f1ec4444b748719d9df26`; `test_command_replay_policy.py` `977a5979b64df983ec28ce8d853265a42c76f8a7a93fd11cf783a5221650d5c3`.
+- **Assessment: this P2-3 slice verified.** No full-suite/release validation; shared checkout remains dirty.
+
+### CASE134 — isolated GPT-6 Luna Low run (2026-11-11)
+
+- Thread `01a1cbcd-1970-7cf1-8ef4-1dd63d8e8eb9`; exactly four Hub markers observed in `read_thread`: one `local_ai_status`, then three `local_ai_artifact(action=source)` reads at operation-contract lines 178–182, 183, and 237–238, each with the same supplied SHA-256 `519d965243ff715e839bd18fabe85be9b1a575d1cef1c2c6599a8a8863292d2a`. No target action was called.
+- The thread returned **PARTIAL**. It reports source declaration for all five tested actions, but `read_thread` contains no raw enum or source/status payloads; source request IDs were not returned. Thus `metadata_complete=no`, all live statuses are `NOT_VERIFIED`, and the source/capability claims remain agent-reported. Status snapshot request ID reported by the thread: `req_923aa5b754c5`; `hardware_profile=high`. Do not infer action removal, current runtime gates, or endpoint behavior.
+
+### CASE131 — isolated impact and call graph run (2026-11-11)
+
+- Thread `01a1cbda-3df2-7ab2-9821-3678cc96201c`; exactly two ordered Hub calls, both completed: `refactor_impact` on fixture `docs/agent-evaluation/fixtures/alpha` for `demo_core.paths::normalize_path` at `src/demo_core/paths.py`, then `call_graph` for the same symbol with `limit=5`, `depth=1`.
+- Transcript confirms action names and arguments, but contains no raw tool payloads. Values below remain agent-reported and **NOT_VERIFIED**: impact `coverage.complete=false`, `freshness.status=not_checked`, `risk_level=UNKNOWN` despite `observed_risk_level=LOW`, zero callers; graph reports `load_project` in `src/demo_core/consumer.py`, but is incomplete and truncated. The mismatch means **PARTIAL / INCONSISTENT**; no local-only impact conclusion.
+- Cross-project, suffix-collision and duplicate-definition branches were **NOT RUN** because required fixtures were absent. A failed unsupported-qualification attempt was executed and is not counted as NOT RUN. No product action-removal inference.
+
+### CASE135 — isolated reachability output-limit run (2026-11-11)
+
+- Thread `01a1cbd7-6c33-79a1-b9ae-e132948b578d`; one completed Hub call: `reachability_dead_code(root="C:\\Users\\Adam\\.local-ai-hub\\docs\\agent-evaluation\\fixtures\\alpha", limit=1, response_profile="compact")`.
+- Transcript confirms call protocol and arguments, not raw payload. Agent-reported totals **NOT_VERIFIED**: 15 symbols = 4 reachable + 7 dead + 4 ambiguous; `complete=false`, internal `truncated=true`, `response_budget.truncated=false`; one unreachable and one ambiguous example. Treat as protocol PASS only; endpoint data and case acceptance remain **NOT_VERIFIED**. No retry.
+
+### P2-3 Python `-c` classifier extraction — 2026-11-11
+
+Extracted `classify_python_inline_code` from `CommandBroker._classify_single` into `command_python.py`; broker still delegates at the same branch. Six test-first policy cases failed before implementation (missing helper), then passed. Focused classifier pair (`test_command_replay_policy.py` and `test_command_build_classification.py`): **104 passed in 2.97s**. Targeted pyflakes, py_compile, and `git diff --check` passed. Source SHA256: `commands.py` `a60525b5c775d2a9060d859e2e14e1b7f12828d396213646ac06ea9c7f143937`; `command_python.py` `a99ea5d6d4a4deae4f8c7a82b9e04a73f6d36b20bf80589a5223e1d885323405`; test `43d9b4ce2d7e5ec78b13affa75ea0537c79affad690be5574e7082830443f50b`. P2-3 remains in progress; broader gates deferred on this dirty shared checkout.
+
+### Round 96 — Python script command classifier and CASE132 full-prompt status (2026-11-11)
+
+- Extracted the Python script-invocation classifier from `CommandBroker._classify_single` into `classify_python_script_command` in `command_python.py`; the broker delegates at the same branch. Eight direct policy cases failed before the helper existed, then passed after extraction. The focused classifier pair passed **112 in 3.82s**. Targeted pyflakes, py_compile and diff-check passed.
+- SHA256: `commands.py` `6342d21875f88be321f2da124af4837bf98e3f92dd4a18c8d0138d71b112d324`; `command_python.py` `4eece165ad8057c3106379a16ed8b312a307773f2d14e6bd4c6f3d884e75528a`; `test_command_replay_policy.py` `0ea660fa835f9d3563e48014e23b922ec968e87dd6fc71f625eff081c8b20fe4`.
+- CASE132 current prompt SHA `f31cc55453f6eb8c8c319b7aa000b7bcd5e0236ab339d2ed5a5ec8348a361cff`. Full prompt remains **NOT RUN / NOT VERIFIED**: it requires harness-supplied complete live enum, fixture source/root, exact known-good LF diff, structurally corrupt diff and at most one exact test target; it also requires all six action branches to complete. Current indexed inventory returned no `*CASE132*` or `*case*132*` file paths, no `*patch*fixture*` path, and only `tests/unit/test_validate_patch_windows_transport.py` for `*validate_patch*`. No complete enum, manifest, current disposable fixture or target was supplied in this session. Earlier tests and live `validate_patch` calls remain branch-level historical evidence only; they do not satisfy the current full prompt. No CASE132 action or test was run this turn.
+
+### Round 97 — C11 named exports focused recheck (2026-11-11)
+
+- Current static_exports.py source SHA256 5fb85ca388ce47cd34c53b8e17eda6213921aa5fe3c1b22faa19fa7c6979c7ed; tests/test_static_exports.py SHA256 9c3c28eaf2676429d1242e46f86912618acb474ea891baba610868c58762fcce.
+- Fresh checks: `python -m pytest -q tests/test_static_exports.py --tb=short` — **11 passed in 0.38s**; `python -m pytest -q tests/test_audit_round6_regressions.py::test_t6_11_static_exports_php_csharp_requires_declaration --tb=short` — **1 passed in 0.37s**; targeted pyflakes exited 0.
+- C11 acceptance (PHP/C# validator verifies requested type declaration and namespace/access) now has current source, direct unit cases and T6-11 regression evidence. Round 6 combined task stays open for separately owned C08/C09/C13 integration and remaining C14 scope; no shared-runtime owner work performed.
+
+### Round 98 — shared hubctl classifier extraction (2026-11-11)
+
+- Added `classify_hubctl_command` to `command_python.py`; Python-script and native `hubctl` classifier branches now share one policy implementation. Seven direct cases cover tasks mutation/read, status, generate, lifecycle mutation, unknown, and empty input; three broker tests verify native routing. Existing script classifier cases remain covered.
+- Test-first: seven helper cases first failed because the shared helper did not exist. Focused `python -m pytest -q tests/test_command_replay_policy.py` then passed **102 tests in 13.81s**. Targeted `py_compile`, pyflakes, and `git diff --check` passed; diff-check reported only LF-to-CRLF normalization for the test file.
+- SHA256: `commands.py` `a853bcf1b8883d9324ee93b3500b9e0e670ad2ed7c1ab4ba699835a73bda2e34`; `command_python.py` `cd78cf9d46103fcb601a1a63f2c8c68fd94ae6c276d083692c399c7dc9a8ae3a`; `test_command_replay_policy.py` `7a81fbd120e422b3472eb90baf626d57c14a9ec3532c5540c14e83d399ba2822`.
+- Scope is one focused P2-3 refactor. P2-3 remains in progress; full test/release gates are still deferred on the dirty shared checkout.
+
+### Round 99 — CASE134 live-schema and source-slice retest (2026-11-11)
+
+- First isolated GPT-6 Luna Low iteration 01a1cc17-6ef5-7961-a07e-6491c5854745 ran one local_ai_status and three source calls, but read_thread shows the artifact calls used start_line/end_line despite the prompt clarification. Raw results and artifact request IDs are absent. Exclude its source claims; protocol FAIL. No target actions ran.
+- Second iteration 01a1cc19-c058-7f41-bd8c-a2301c36c3ec called local_ai_status once (req_4574be2d0e02) and then stopped without any source call. Source rows are NOT_RUN; premature stop, protocol FAIL. No target actions ran.
+- Prompt now explicitly requires all three source reads after a successful status even if enum metadata is not host-visible, and names canonical line_start/line_end arguments. Updated prompt SHA-256: 5d2c883d2d26bb7b49ada9e2fca10787a0f62b51c7f0545e4fffdf1a102098c4.
+- Third iteration 01a1cc1b-eae7-72e3-9f71-b4c85f1099fe used GPT-6 Luna Low and made exactly four Hub calls in order: one status plus source slices 178–182, 183–183 and 237–238. read_thread confirms canonical line_start/line_end, exact root/path, expected SHA-256 519d965243ff715e839bd18fabe85be9b1a575d1cef1c2c6599a8a8863292d2a, and no calls to the five target actions. Status request ID req_e409a863efb5 is agent-reported; raw status and source payloads are absent. The final reports hardware_profile=high, all four capability rows, and source declaration of all five actions with the specified work gates. Artifact request IDs are NOT_RETURNED; source values remain agent-reported/NOT_VERIFIED. Live enums remain NOT_VERIFIED under the host-visible evidence rule.
+- CASE134 remains PARTIAL; acceptance NOT VERIFIED. Protocol and argument shape pass in the third iteration, but raw source/status payloads and host-visible full enums are missing. No product-removal inference.
+
+### Round 100 — CASE135 direct endpoint observation (2026-11-11)
+
+- Called `local_ai_repo.reachability_dead_code` once with exact fixture root `C:\\Users\\Adam\\.local-ai-hub\\docs\\agent-evaluation\\fixtures\\alpha`, `limit=1`, `response_profile=compact`; request ID `req_4031a94abc97`.
+- Raw result: `success=true`, `total_symbols=15`, `reachable_symbols_count=4`, `dead_code_count=7`, `ambiguous_symbols_count=4`, `unreachable_symbols_count=7`; returned one unreachable symbol (`src/demo_api/routes.py:4 post_task`) and one ambiguous symbol (`src/demo_api/routes.py:9 checkpoint_task`). `complete=false`, domain `truncated=true`, response-budget `truncated=false`; warning says duplicate symbol names were excluded from reachable/dead counts.
+- This verifies endpoint output for this exact fixture call. CASE135 isolated transcript remains prompt/chat protocol evidence only; overall prompt acceptance stays NOT VERIFIED because its raw output and transport fields were not retained. No product-wide coverage inference.
+
+### Round 101 — CASE131 direct impact and call-graph observations (2026-11-11)
+
+- Replayed the exact isolated-chat arguments in the coordinating chat as direct endpoint observations; this is not a new isolated prompt pass.
+- `refactor_impact` request `req_3f6d7fc64410`: root alpha, path `src/demo_core/paths.py`, query `demo_core.paths::normalize_path`, minimal profile. Raw response: success, index_available=true, callers_count=0, impacted_files_count=0, coverage.complete=false because index freshness was not checked, freshness.status=not_checked, risk_level=UNKNOWN, observed_risk_level=LOW.
+- `call_graph` request `req_3b1caf2fdf19`: same root/query, limit=5, depth=1, minimal profile. Raw response includes known caller `load_project` at `src/demo_core/consumer.py:5` and callees `replace`/`rstrip` at `src/demo_core/paths.py:3`. Coverage is incomplete: callers report unresolved qualified-symbol scope and unsupported PHP; callees report unsupported PHP. Freshness is not_checked, partial=true, top-level truncated=true, response-budget truncated=false, stale=false.
+- Source check (`deterministic.py` SHA `9145d9eef555d88f7bbc02e5f400f3fe4843c93a67861b5bc04819f70798fb2e`, lines 4313–4390) shows `refactor_impact` reads only indexed `edges`/`refs`; it returns `freshness=not_checked`, `coverage.complete=false`, and `risk_level=UNKNOWN`. The zero-caller result therefore cannot establish no callers. Direct `call_graph` found `load_project`; its scan is also incomplete. CASE131 prompt acceptance stays NOT VERIFIED: coordinating-chat replay is not a compliant isolated prompt pass. Cross-project and collision-fixture branches remain NOT_RUN.
+
+### Round 102 — CASE132 direct readiness-gate observation (2026-11-11)
+
+- Called `local_ai_status` once with `detail=brief`, `response_profile=compact`, no response-token override; request ID `req_ae618f26ab52`.
+- Raw response: `success=true`, Hub online, version 6.0.0, active model `qwen2.5-coder:3b`, hardware profile high, GPU admission available, VRAM nominal.
+- Capability row `code_generation`: `available=false`, `state=enabled_by_operator`, `reason=disabled_in_mcp_adapter`, feature gate `local_code_generation`, provider readiness `not_checked`. This verifies the readiness response and adapter exposure only; it does not prove generation quality or provider readiness.
+- Generation stayed GATED/NOT_RUN. No generation call ran because the capability was unavailable; CASE132 full prompt acceptance stays NOT VERIFIED because the isolated raw result and required harness/fixture inputs are absent.

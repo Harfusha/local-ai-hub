@@ -79,6 +79,77 @@ def test_compound_validation_replays_only_when_every_part_is_explicitly_safe(tmp
 
 
 @pytest.mark.parametrize(
+    ("tokens", "cfg", "expected"),
+    [
+        (
+            ["python", "-m", "pytest", "-q"],
+            {"allow_validation": True},
+            {
+                "class": "validation",
+                "cacheable": True,
+                "allowed": True,
+                "replay_safe": True,
+                "reason": "python -m pytest validation",
+            },
+        ),
+        (
+            ["python", "-m", "pip", "list"],
+            {"allow_read": True},
+            {
+                "class": "read",
+                "cacheable": True,
+                "allowed": True,
+                "reason": "python -m pip list",
+            },
+        ),
+        (
+            ["python", "-m", "pip", "install", "sample"],
+            {"allow_mutating": False},
+            {
+                "class": "mutating",
+                "cacheable": False,
+                "allowed": False,
+                "reason": "python -m pip install changes environment",
+            },
+        ),
+        (
+            ["python", "-m", "black", "--check", "src"],
+            {"allow_validation": True},
+            {
+                "class": "validation",
+                "cacheable": True,
+                "allowed": True,
+                "replay_safe": True,
+                "reason": "python -m black validation",
+            },
+        ),
+        (
+            ["python", "-m", "black", "src"],
+            {"allow_mutating": False},
+            {
+                "class": "mutating",
+                "cacheable": False,
+                "allowed": False,
+                "reason": "python -m black format without --check",
+            },
+        ),
+    ],
+)
+def test_python_module_classifier_helper_preserves_contract(tokens, cfg, expected):
+    from local_ai_hub.command_python import classify_python_module_command
+
+    lower = [token.lower() for token in tokens]
+    assert classify_python_module_command(tokens, lower, cfg) == expected
+
+
+def test_python_module_classifier_helper_ignores_non_module_commands():
+    from local_ai_hub.command_python import classify_python_module_command
+
+    tokens = ["python", "tools/check_contracts.py"]
+    assert classify_python_module_command(tokens, [token.lower() for token in tokens], {}) is None
+
+
+@pytest.mark.parametrize(
     ("command", "expected_class"),
     [
         ('powershell -NoProfile -Command "Remove-Item -LiteralPath x"', "dangerous"),
@@ -244,3 +315,429 @@ def test_user_whitelisted_validation_is_explicitly_unsafe(tmp_path, monkeypatch,
     assert result["repair_skipped"] is True
     assert result["outcome_unknown"] is True
     assert executions == [command]
+
+
+@pytest.mark.parametrize(
+    ("exe_base", "lower", "expected"),
+    [
+        (
+            "rg",
+            ["--pre=python", "needle"],
+            {
+                "class": "unknown",
+                "cacheable": False,
+                "allowed": False,
+                "reason": "ripgrep preprocessor may execute arbitrary programs",
+            },
+        ),
+        (
+            "rg",
+            ["--pre", "python", "needle"],
+            {
+                "class": "unknown",
+                "cacheable": False,
+                "allowed": False,
+                "reason": "ripgrep preprocessor may execute arbitrary programs",
+            },
+        ),
+        (
+            "find",
+            [".", "-exec", "python", "-c", "print(1)", ";"],
+            {
+                "class": "unknown",
+                "cacheable": False,
+                "allowed": False,
+                "reason": "find execution flags are not allowed",
+            },
+        ),
+        (
+            "rg",
+            ["-n", "needle", "src"],
+            {"class": "read", "cacheable": True, "allowed": True, "reason": "rg read command"},
+        ),
+        (
+            "tasklist",
+            [],
+            {"class": "read", "cacheable": False, "allowed": True, "reason": "tasklist read command"},
+        ),
+    ],
+)
+def test_read_only_classifier_helper_preserves_policy(exe_base, lower, expected):
+    from local_ai_hub.command_policy import READ_ONLY, VOLATILE_READS
+    from local_ai_hub.command_read import classify_read_only_command
+
+    assert classify_read_only_command(
+        exe_base,
+        lower,
+        {"allow_read": True},
+        read_only=READ_ONLY,
+        volatile_reads=VOLATILE_READS,
+    ) == expected
+
+
+def test_read_only_classifier_helper_ignores_non_read_commands():
+    from local_ai_hub.command_policy import READ_ONLY, VOLATILE_READS
+    from local_ai_hub.command_read import classify_read_only_command
+
+    assert classify_read_only_command(
+        "python",
+        [],
+        {},
+        read_only=READ_ONLY,
+        volatile_reads=VOLATILE_READS,
+    ) is None
+
+
+def test_broker_keeps_execution_options_blocked_for_read_tools(tmp_path):
+    broker = _broker(tmp_path)
+
+    ripgrep = broker.classify("rg --pre=python needle")
+    find = broker.classify(["find", ".", "-exec", "python", "-c", "print(1)", ";"])
+
+    assert (ripgrep["class"], ripgrep["allowed"], ripgrep["cacheable"]) == ("unknown", False, False)
+    assert ripgrep["reason"] == "ripgrep preprocessor may execute arbitrary programs"
+    assert (find["class"], find["allowed"], find["cacheable"]) == ("unknown", False, False)
+    assert find["reason"] == "find execution flags are not allowed"
+
+
+@pytest.mark.parametrize(
+    ("expression", "expected"),
+    [
+        ("write", ("write",)),
+        ("sys.stdout.write", ("sys", "stdout", "write")),
+        ("obj._private", None),
+        ("items[0].method", None),
+    ],
+)
+def test_python_call_chain_helper_preserves_safe_attribute_rules(expression, expected):
+    import ast
+
+    from local_ai_hub.command_python import _get_call_chain
+
+    node = ast.parse(expression, mode="eval").body
+    assert _get_call_chain(node) == expected
+
+
+@pytest.mark.parametrize(
+    ("expression", "expected"),
+    [
+        ("1", True),
+        ("-2", True),
+        ("1 + 2", True),
+        ("[1, (2,), {3}]", True),
+        ("{'a': 1}", True),
+        ("{**data}", False),
+        ("name", False),
+        ("open('x')", False),
+    ],
+)
+def test_python_literal_only_helper_classifies_literal_ast(expression, expected):
+    import ast
+
+    from local_ai_hub.command_python import _literal_only
+
+    node = ast.parse(expression, mode="eval").body
+    assert _literal_only(node) is expected
+
+
+def _python_inline_safety(**overrides):
+    from local_ai_hub.command_python import PythonInlineCodeSafety
+
+    options = {
+        "safe_builtin_calls": {"len"},
+        "shadowed_names": set(),
+        "defined_function_names": {"defined"},
+        "safe_module_calls": {("math", "sqrt")},
+        "func_param_names": set(),
+        "safe_method_names": {"count"},
+        "safe_module_names": {"math"},
+        "safe_value_names": {"safe_name"},
+    }
+    options.update(overrides)
+    return PythonInlineCodeSafety(**options)
+
+
+@pytest.mark.parametrize(
+    ("expression", "expected"),
+    [
+        ("len([1])", True),
+        ("defined('x')", True),
+        ("math.sqrt(1)", True),
+        ("open('x')", False),
+        ("safe_name.count('x')", True),
+        ("math.count('x')", False),
+        ("obj._private()", False),
+    ],
+)
+def test_python_inline_safety_classifies_calls(expression, expected):
+    import ast
+
+    safety = _python_inline_safety()
+    node = ast.parse(expression, mode="eval").body
+    assert safety.is_safe_call(node) is expected
+
+
+@pytest.mark.parametrize(
+    ("expression", "expected"),
+    [
+        ("-2", True),
+        ("safe_name", True),
+        ("unknown_name", False),
+        ("[safe_name, {'x': len([1])}]", True),
+        ("math.sqrt(unknown_name)", False),
+        ("safe_name.count('x')", True),
+        ("math.count('x')", False),
+        ("{**payload}", False),
+    ],
+)
+def test_python_inline_safety_classifies_recursive_values(expression, expected):
+    import ast
+
+    safety = _python_inline_safety()
+    node = ast.parse(expression, mode="eval").body
+    assert safety.is_safe_inline_value(node) is expected
+
+
+def test_python_inline_safety_propagates_safe_values_through_assignments():
+    import ast
+
+    tree = ast.parse("final = middle + 1\nmiddle = source + 1\nsource = len([1])")
+    safe_values = set()
+    safety = _python_inline_safety(safe_value_names=safe_values)
+
+    safety.propagate_safe_values(tree)
+
+    assert safe_values == {"source", "middle", "final"}
+
+
+def test_python_inline_safety_propagates_annotated_and_named_assignments():
+    import ast
+
+    tree = ast.parse("value: int = len([1])\n(alias := value)")
+    safe_values = set()
+    safety = _python_inline_safety(safe_value_names=safe_values)
+
+    safety.propagate_safe_values(tree)
+
+    assert safe_values == {"value", "alias"}
+
+
+def test_python_inline_safety_propagates_loop_targets_but_not_destructuring():
+    import ast
+
+    tree = ast.parse("for item in [1]:\n    pass\n(left, right) = [1, 2]")
+    safe_values = set()
+    safety = _python_inline_safety(safe_value_names=safe_values)
+
+    safety.propagate_safe_values(tree)
+
+    assert safe_values == {"item"}
+
+
+def test_python_inline_safety_keeps_five_pass_propagation_limit():
+    import ast
+
+    tree = ast.parse(
+        "a = b\nb = c\nc = d\nd = e\ne = f\nf = g\ng = len([1])"
+    )
+    safe_values = set()
+    safety = _python_inline_safety(safe_value_names=safe_values)
+
+    safety.propagate_safe_values(tree)
+
+    assert safe_values == {"g", "f", "e", "d", "c"}
+
+
+@pytest.mark.parametrize(
+    ("source", "cfg", "expected"),
+    [
+        (
+            "assert len([1]) == 1",
+            {"allow_validation": True},
+            {
+                "class": "validation",
+                "cacheable": True,
+                "allowed": True,
+                "replay_safe": True,
+                "reason": "python inline validation",
+            },
+        ),
+        (
+            "print(1)",
+            {"allow_read": False},
+            {
+                "class": "read",
+                "cacheable": True,
+                "allowed": False,
+                "reason": "python inline read",
+            },
+        ),
+        (
+            "open('x')",
+            {"allow_unknown": False},
+            {
+                "class": "unknown",
+                "cacheable": False,
+                "allowed": False,
+                "reason": "python -c inline code may mutate: open",
+            },
+        ),
+        (
+            "os.system('echo nope')",
+            {},
+            {
+                "class": "dangerous",
+                "cacheable": False,
+                "allowed": False,
+                "reason": "python -c inline code contains potentially dangerous call",
+            },
+        ),
+        (
+            "import requests",
+            {},
+            {
+                "class": "unknown",
+                "cacheable": False,
+                "allowed": False,
+                "reason": "python -c inline code imports module with unknown side effects",
+            },
+        ),
+        (
+            "if",
+            {"allow_unknown": True},
+            {
+                "class": "unknown",
+                "cacheable": False,
+                "allowed": True,
+                "reason": "python -c inline code contains invalid syntax",
+            },
+        ),
+    ],
+)
+def test_python_inline_classifier_helper_preserves_policy(source, cfg, expected):
+    from local_ai_hub.command_python import classify_python_inline_code
+
+    assert classify_python_inline_code(source, cfg) == expected
+
+
+@pytest.mark.parametrize(
+    ("tokens", "lower", "cfg", "expected"),
+    [
+        (
+            ["python", "tools/check_contracts.py"],
+            ["python", "tools/check_contracts.py"],
+            {"allow_validation": False},
+            {
+                "class": "validation",
+                "cacheable": True,
+                "allowed": False,
+                "replay_safe": True,
+                "reason": "python validation script",
+            },
+        ),
+        (
+            ["python", "./tools/surface_inventory.py", "--check"],
+            ["python", "./tools/surface_inventory.py", "--check"],
+            {},
+            {
+                "class": "validation",
+                "cacheable": True,
+                "allowed": True,
+                "replay_safe": True,
+                "reason": "python validation script",
+            },
+        ),
+        (
+            ["python", "hubctl.py", "tasks", "--fail"],
+            ["python", "hubctl.py", "tasks", "--fail"],
+            {},
+            {
+                "class": "mutating",
+                "cacheable": False,
+                "allowed": False,
+                "reason": "hubctl tasks status mutation",
+            },
+        ),
+        (
+            ["python", "hubctl.py", "status"],
+            ["python", "hubctl.py", "status"],
+            {},
+            {
+                "class": "validation",
+                "cacheable": True,
+                "allowed": True,
+                "replay_safe": True,
+                "reason": "hubctl status status check",
+            },
+        ),
+        (
+            ["python", "setup.py", "--help"],
+            ["python", "setup.py", "--help"],
+            {},
+            {
+                "class": "build",
+                "cacheable": True,
+                "allowed": True,
+                "reason": "setup.py generate dynamic artifacts",
+            },
+        ),
+        (
+            ["python", "scripts/generate_docs.py"],
+            ["python", "scripts/generate_docs.py"],
+            {},
+            {
+                "class": "build",
+                "cacheable": True,
+                "allowed": True,
+                "reason": "python build/generate script",
+            },
+        ),
+        (
+            ["python", "custom.py"],
+            ["python", "custom.py"],
+            {},
+            {
+                "class": "mutating",
+                "cacheable": False,
+                "allowed": False,
+                "replay_safe": False,
+                "reason": "unclassified Python script may have side effects",
+            },
+        ),
+        (["python"], ["python"], {}, None),
+    ],
+)
+def test_python_script_classifier_helper_preserves_policy(tokens, lower, cfg, expected):
+    from local_ai_hub.command_python import classify_python_script_command
+
+    assert classify_python_script_command(tokens, lower, cfg) == expected
+
+
+@pytest.mark.parametrize(
+    ("subcommands", "lower", "cfg", "expected"),
+    [
+        (["tasks", "--fail"], ["tasks", "--fail"], {}, {"class": "mutating", "cacheable": False, "allowed": False, "reason": "hubctl tasks status mutation"}),
+        (["tasks"], ["tasks"], {"allow_validation": False}, {"class": "validation", "cacheable": True, "allowed": False, "replay_safe": True, "reason": "hubctl tasks status check"}),
+        (["status"], ["status"], {}, {"class": "validation", "cacheable": True, "allowed": True, "replay_safe": True, "reason": "hubctl status status check"}),
+        (["generate"], ["generate"], {"allow_build": False}, {"class": "build", "cacheable": True, "allowed": False, "reason": "hubctl generate dynamic artifacts"}),
+        (["restart"], ["restart"], {"allow_mutating": True}, {"class": "mutating", "cacheable": False, "allowed": True, "reason": "hubctl restart service lifecycle mutation"}),
+        (["unknown"], ["unknown"], {}, None),
+        ([], [], {}, None),
+    ],
+)
+def test_hubctl_classifier_helper_preserves_policy(subcommands, lower, cfg, expected):
+    from local_ai_hub.command_python import classify_hubctl_command
+
+    assert classify_hubctl_command(subcommands, lower, cfg) == expected
+
+
+@pytest.mark.parametrize(
+    ("command", "expected_class"),
+    [
+        ("hubctl tasks --fail", "mutating"),
+        ("hubctl status", "validation"),
+        ("hubctl generate", "build"),
+    ],
+)
+def test_native_hubctl_commands_use_shared_classifier(tmp_path, command, expected_class):
+    assert _broker(tmp_path).classify(command)["class"] == expected_class

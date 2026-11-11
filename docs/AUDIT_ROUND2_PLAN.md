@@ -82,7 +82,7 @@
    - Aktuální `find_relations()` už skládá `source_entity` a `target_entity` jako AND; cílený test prošel 1/1.
    - Namespace zůstává otevřený: tabulka ani `record_relation()` neukládají repository provenance a starým řádkům nelze bezpečně přiřadit vlastníka. Neprovádět migraci bez explicitního kontraktu pro nové zápisy a legacy data.
 2. **N15 — Atomická publikace dvojice Spec & Plan:**
-   - Otevřeno: `save_spec_and_plan()` drží storage lock přes zápis obou souborů, ale `read_plan_file()` lock nezískává. Bez společného reader API není doloženo atomické čtení dvojice.
+   - Hotovo (2026-11-11): `read_plan_file()` používá storage lock a nové `read_spec_and_plan()` načítá specifikaci i plán pod jedním lockem. Souběhová regrese ověřila nový pár po dokončení zápisu; `tests/test_repo_plan_storage.py`: 12 passed. Přímé čtení souborů mimo API není součástí kontraktu.
 3. **N04, N08, N21, N23:**
    - N04: Hotovo — limity shardů rozdělí celý `max_entries` včetně zbytku, takže součet kapacit odpovídá konfiguraci. Parametrizovaná regrese pro kapacitu 1/17 a `set`/`set_many`: 4 passed (Round 86).
    - N08: Výpočet kompenzovaného skóre přepnutí modelu ve scheduleru.

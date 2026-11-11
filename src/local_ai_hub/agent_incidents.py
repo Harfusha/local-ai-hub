@@ -563,7 +563,6 @@ class IncidentStore:
         self.state_store = state_store
         self._lock = threading.RLock()
         self._initialized = False
-        self._fts_available = False
         self.webhook_urls: list[str] = []
         self._webhook_lock = threading.Lock()
         self._init_table()
@@ -609,9 +608,8 @@ class IncidentStore:
             if self._initialized or not self.state_store.enabled:
                 return
             self.state_store._ensure_schema()
-            fts_available = False
+
             def _setup() -> None:
-                nonlocal fts_available
                 # Snapshot drift from another initializer is a transient busy
                 # result and belongs inside the existing bounded retry budget.
                 self.state_store._preflight_schema_read_only()
@@ -667,98 +665,10 @@ class IncidentStore:
                             ON agent_incidents (repository_key, ignored, updated_at DESC);
                             """
                         )
-                        fts_present = con.execute(
-                            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'agent_incidents_fts'"
-                        ).fetchone() is not None
-                        trigger_names = {
-                            str(row[0])
-                            for row in con.execute(
-                                "SELECT name FROM sqlite_master WHERE type = 'trigger' "
-                                "AND name IN (?, ?, ?)",
-                                (
-                                    "trg_agent_incidents_fts_insert",
-                                    "trg_agent_incidents_fts_update",
-                                    "trg_agent_incidents_fts_delete",
-                                ),
-                            )
-                        }
-                        try:
-                            con.execute(
-                                """
-                                CREATE VIRTUAL TABLE IF NOT EXISTS agent_incidents_fts USING fts5(
-                                    operation_class, error_class, redacted_message,
-                                    root_cause, verified_fix, affected_paths,
-                                    content = 'agent_incidents', content_rowid = 'rowid'
-                                );
-                                """
-                            )
-                            fts_available = True
-                        except sqlite3.OperationalError as exc:
-                            if "no such module: fts5" not in str(exc).casefold():
-                                raise
-                            fts_available = False
-                        if fts_available:
-                            con.execute(
-                                """
-                                CREATE TRIGGER IF NOT EXISTS trg_agent_incidents_fts_insert
-                                AFTER INSERT ON agent_incidents BEGIN
-                                    INSERT INTO agent_incidents_fts (
-                                        rowid, operation_class, error_class, redacted_message,
-                                        root_cause, verified_fix, affected_paths
-                                    ) VALUES (
-                                        new.rowid, new.operation_class, new.error_class,
-                                        new.redacted_message, new.root_cause,
-                                        new.verified_fix, new.affected_paths
-                                    );
-                                END;
-                                """
-                            )
-                            con.execute(
-                                """
-                                CREATE TRIGGER IF NOT EXISTS trg_agent_incidents_fts_update
-                                AFTER UPDATE ON agent_incidents BEGIN
-                                    INSERT INTO agent_incidents_fts (
-                                        agent_incidents_fts, rowid, operation_class, error_class,
-                                        redacted_message, root_cause, verified_fix, affected_paths
-                                    ) VALUES (
-                                        'delete', old.rowid, old.operation_class, old.error_class,
-                                        old.redacted_message, old.root_cause,
-                                        old.verified_fix, old.affected_paths
-                                    );
-                                    INSERT INTO agent_incidents_fts (
-                                        rowid, operation_class, error_class, redacted_message,
-                                        root_cause, verified_fix, affected_paths
-                                    ) VALUES (
-                                        new.rowid, new.operation_class, new.error_class,
-                                        new.redacted_message, new.root_cause,
-                                        new.verified_fix, new.affected_paths
-                                    );
-                                END;
-                                """
-                            )
-                            con.execute(
-                                """
-                                CREATE TRIGGER IF NOT EXISTS trg_agent_incidents_fts_delete
-                                AFTER DELETE ON agent_incidents BEGIN
-                                    INSERT INTO agent_incidents_fts (
-                                        agent_incidents_fts, rowid, operation_class, error_class,
-                                        redacted_message, root_cause, verified_fix, affected_paths
-                                    ) VALUES (
-                                        'delete', old.rowid, old.operation_class, old.error_class,
-                                        old.redacted_message, old.root_cause,
-                                        old.verified_fix, old.affected_paths
-                                    );
-                                END;
-                                """
-                            )
-                            if not fts_present or len(trigger_names) != 3:
-                                con.execute(
-                                    "INSERT INTO agent_incidents_fts(agent_incidents_fts) VALUES ('rebuild')"
-                                )
+                        # FTS index is temporary and built by find_negative_knowledge.
                 finally:
                     con.close()
             retry_busy(_setup, retries=5, base_delay_seconds=0.02)
-            self._fts_available = fts_available
             self._initialized = True
 
     def capture(self, outcome: ToolOutcome) -> IncidentRecord | None:
@@ -1459,7 +1369,46 @@ class IncidentStore:
         try:
             search_terms = _incident_search_terms(query)
             candidate_limit = max(200, limit * 10)
-            if self._fts_available and search_terms:
+            fts_available = False
+            if search_terms:
+                try:
+                    con.execute(
+                        """
+                        CREATE VIRTUAL TABLE temp.agent_incidents_query_fts USING fts5(
+                            operation_class, error_class, redacted_message,
+                            root_cause, verified_fix, affected_paths
+                        )
+                        """
+                    )
+                    con.execute(
+                        """
+                        INSERT INTO temp.agent_incidents_query_fts (
+                            rowid, operation_class, error_class, redacted_message,
+                            root_cause, verified_fix, affected_paths
+                        )
+                        SELECT rowid, operation_class, error_class, redacted_message,
+                               root_cause, verified_fix, affected_paths
+                        FROM (
+                            SELECT rowid, operation_class, error_class, signature_hash,
+                                   redacted_message, root_cause, verified_fix, affected_paths,
+                                   ignored, expires_at,
+                                   ROW_NUMBER() OVER (
+                                       PARTITION BY operation_class, error_class, signature_hash, repository_key
+                                       ORDER BY updated_at DESC, incident_id DESC
+                                   ) AS row_num
+                            FROM agent_incidents
+                            WHERE repository_key = ?
+                        )
+                        WHERE ignored = 0 AND row_num = 1
+                          AND (expires_at IS NULL OR expires_at > ?)
+                        """,
+                        (*scope_params, time.time()),
+                    )
+                    fts_available = True
+                except sqlite3.OperationalError as exc:
+                    if "no such module: fts5" not in str(exc).casefold():
+                        raise
+            if fts_available:
                 cur = con.execute(
                     """
                     WITH ranked AS (
@@ -1484,11 +1433,12 @@ class IncidentStore:
                            ranked.updated_at, ranked.affected_paths, ranked.repository_key,
                            ranked.resolved
                     FROM ranked
-                    JOIN agent_incidents_fts ON agent_incidents_fts.rowid = ranked.row_id
-                    WHERE agent_incidents_fts MATCH ?
+                    JOIN temp.agent_incidents_query_fts AS agent_incidents_query_fts
+                      ON agent_incidents_query_fts.rowid = ranked.row_id
+                    WHERE agent_incidents_query_fts MATCH ?
                       AND ranked.ignored = 0 AND ranked.row_num = 1
                       AND (ranked.expires_at IS NULL OR ranked.expires_at > ?)
-                    ORDER BY bm25(agent_incidents_fts, 1.0, 2.0, 1.0, 4.0, 4.0, 2.0),
+                    ORDER BY bm25(agent_incidents_query_fts, 1.0, 2.0, 1.0, 4.0, 4.0, 2.0),
                              ranked.updated_at DESC, ranked.incident_id DESC
                     LIMIT ?
                     """,

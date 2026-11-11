@@ -80,3 +80,98 @@ The Hub repository search returned a terminal response-budget error. Plan-list f
 - A new full `python -m pytest -q` attempt was cancelled at 44% after Laya source/test files changed during execution. Several failures appeared before cancellation. It is not a final or stable-candidate result; repeat only after active shared Laya leases end.
 - P1-5 remains NOT VERIFIED: the native matched control arm was denied by host policy. Do not bypass that denial. Keep Round 2 closed.
 - OpenCode support remains out of scope in this checkout; extraction is separate.
+
+## Update — 2026-11-11 (Round 1 P2-3)
+
+- Extracted only the Python `-m` classifier branch from `CommandBroker._classify_single` into `src/local_ai_hub/command_python.py`. The broker delegates that branch; `python -c` analysis and other command families remain in `commands.py`.
+- Test-first evidence: five new helper cases failed before implementation because `command_python.py` did not exist. After extraction, `python -m pytest -q tests/test_command_replay_policy.py --tb=short` passed **40 tests** in 4.78s.
+- Targeted `python -m pyflakes src/local_ai_hub/command_python.py src/local_ai_hub/commands.py tests/test_command_replay_policy.py` and `git diff --check` passed. Git emitted its expected LF-to-CRLF warning for the edited test.
+- Current file SHA256: `commands.py` `CDC8213353979FDC9FCDA2633A6EC47E861778466EA70BA73680F33DB8205D34`; `command_python.py` `62AE71A5D789D9225FB5EE46D819BCA86C3233C14B65D3307B30F7E33D77CDF1`; `test_command_replay_policy.py` `84ED9335E3D69CAA2F96BA8D7360D1717EA2FA06F9CADCBCA0D2A82CEC5CC5F2`.
+- This verifies one structural slice only. P2-3 remains in progress. Current `master` HEAD is `d35c30786f067405ef14c279b597c4d2b2de1982`; shared tree remains dirty, including concurrent Laya edits. No full suite or release check was run.
+- The live schema omits `local_ai_repo.solve` and `local_ai_task.review`; no semantic review was available. Continue one classifier branch at a time.
+
+## Update — 2026-11-11 (Round 1 P2-3 AST call-chain helper)
+
+- Moved nested `_get_call_chain` from `CommandBroker._classify_single` to `command_python.py`; two production call sites remain in the same inline Python safety analyzer.
+- Four test-first cases failed on the missing helper, then passed after extraction. `tests/test_command_replay_policy.py` + `tests/test_command_build_classification.py`: **71 passed in 3.09s**. Targeted pyflakes, py_compile and diff-check passed.
+- Current SHA256: `commands.py` `51c00908480b60f998f866dea2947c2fc67eec1b06bb74e5452e209fcd463aa1`; `command_python.py` `88310f32cbd4218f239222e2678830ef525e1876c1fc462e5c8e42f322130f37`; `test_command_replay_policy.py` `434052a71cb5cb62de2a25e5051bfc8d1b346e01ba91f73ffd8b3abaa7d1a62f`.
+- P2-3 remains in progress. Shared checkout remains dirty; broad gates were not run.
+
+## Update — 2026-11-11 (Round 1 P2-3 Python AST literal helper)
+
+- Moved the pure recursive `_literal_only` AST helper from `CommandBroker._classify_single` into `command_python.py`; the analyzer retains its original calls and rules.
+- Eight test-first cases failed on the missing helper, then passed. Together with `_get_call_chain`, focused tests passed **12**; the full targeted classifier pair passed **79 in 4.56s**. Pyflakes, py_compile and diff-check passed.
+- Current SHA256: `commands.py` `3577a22ffdb77001ba0b9d20660f3e33ea08028062f84c3cdc91be36208c39f8`; `command_python.py` `fe65febcf6749e2d796878882bebd3412e1b9f3ee82be4396e4bc41c7285124f`; `test_command_replay_policy.py` `c9c994880456a230a37a8302cc82db614ebbaf63ed47edccb46b4358624f878e`.
+- P2-3 remains open; shared checkout dirty, broad gates not run.
+
+## Update — 2026-11-11 (Round 1 P2-3 Python inline safety policy)
+
+- Extracted coupled `_is_safe_call` and `_safe_inline_value` AST policy into `PythonInlineCodeSafety`; retained shared mutable safe-name set identities so the five-pass analysis remains unchanged.
+- Test-first: 15 cases failed before implementation, then passed. Focused classifier pair: **94 passed in 4.00s**; pyflakes, py_compile and diff-check passed.
+- Current SHA256: `commands.py` `1bd6f5307a8832432a2f433dd789ee486ce0be3222aabbc54be727507170ab8f`; `command_python.py` `d081a8f3a0670d52444fd51a8b6335e0d3bfa294eee227b1ba870e045c91cfce`; `test_command_replay_policy.py` `1a3d5878041c6f2f213d3461af4e79830b005210d5f39b25626e2d11baada144`.
+- P2-3 remains in progress. Shared checkout remains dirty; whole-suite/release gates stay deferred.
+
+## Update — 2026-11-11 (Round 1 P2-3 safe-value propagation)
+
+- Moved the existing five-pass AST safe-value propagation loop into `PythonInlineCodeSafety`; assignment, annotated, named-expression and for/async-for targets preserve old handling.
+- Four test-first cases failed before implementation; the focused classifier pair passed **98 in 2.93s** afterward. Pyflakes, py_compile and diff-check passed.
+- SHA256: `commands.py` `8b980ca02039219326586b5142abf5130c63b2e7e5d43dd5c0aaea24a88e9a17`; `command_python.py` `ef853ccac8d4d46a59baefee2b44c80403d563828b0f1ec4444b748719d9df26`; `test_command_replay_policy.py` `977a5979b64df983ec28ce8d853265a42c76f8a7a93fd11cf783a5221650d5c3`.
+- P2-3 stays open. CASE134 used four calls and completed PARTIAL/NOT_VERIFIED because host-visible raw schema and tool outputs are absent. Broad gates remain deferred.
+
+
+## Update — 2026-11-11 Round 94: practical evals and Stability handoff
+
+- CASE131: isolated thread `01a1cbda-3df2-7ab2-9821-3678cc96201c`, two ordered completed calls. `refactor_impact` and `call_graph` used alpha fixture and `demo_core.paths::normalize_path`; second call used limit 5 and depth 1. Raw MCP payloads are absent. Agent-reported impact and graph outputs conflict on callers and remain **PARTIAL / INCONSISTENT / NOT_VERIFIED**. Cross-project, suffix-collision and duplicate-definition branches remain **NOT RUN** because fixtures were absent.
+- CASE135: isolated thread `01a1cbd7-6c33-79a1-b9ae-e132948b578d`, one completed `reachability_dead_code` call with alpha fixture and `limit=1`. Transcript confirms protocol and arguments only; raw payload absent. Agent-reported counts remain **NOT_VERIFIED**; protocol only PASS.
+- C08/C09/C13 handoff sent to the identified active Stability thread `01a1c762-d599-75c2-ae34-344aae056aa0` (title `Read pasted goal instructions`). It includes source paths, current gaps and requested ownership/validation acknowledgement. No Stability-owned code or tests edited; acknowledgment pending.
+- Latest results addendum SHA256: `3a185535570579efbe777bf7fcb311749199783402fba045987fa69098a53d98`. Focused P2-3 evidence remains 98 classifier tests passed, plus pyflakes, py_compile and diff-check. No full suite/release checks run; shared checkout remains dirty.
+
+## Update — 2026-11-11 Round 95: Python `-c` classifier extraction
+
+- Extracted `classify_python_inline_code` into `command_python.py`; `CommandBroker` delegates from the same Python interpreter branch.
+- Added six direct policy cases. Test-first: all six failed on the absent helper, then passed after extraction. Focused classifier pair: **104 passed in 2.97s**; targeted pyflakes, py_compile and diff-check passed.
+- SHA256: `commands.py` `a60525b5c775d2a9060d859e2e14e1b7f12828d396213646ac06ea9c7f143937`; `command_python.py` `a99ea5d6d4a4deae4f8c7a82b9e04a73f6d36b20bf80589a5223e1d885323405`; test `43d9b4ce2d7e5ec78b13affa75ea0537c79affad690be5574e7082830443f50b`.
+- P2-3 remains in progress. Tree remains dirty; broad gates and acceptance remain open.
+
+## Update — 2026-11-11 Round 96: script classifier and CASE132 gate
+
+- Extracted Python script invocation classification into `classify_python_script_command`; eight direct policy cases failed before implementation and passed after. Focused classifier pair: **112 passed in 3.82s**. Targeted pyflakes, py_compile and diff-check passed.
+- SHA256: `commands.py` `6342d21875f88be321f2da124af4837bf98e3f92dd4a18c8d0138d71b112d324`; `command_python.py` `4eece165ad8057c3106379a16ed8b312a307773f2d14e6bd4c6f3d884e75528a`; test `0ea660fa835f9d3563e48014e23b922ec968e87dd6fc71f625eff081c8b20fe4`.
+- CASE132 full prompt remains **NOT RUN / NOT VERIFIED**: complete enum, fixture/manifest inputs, exact patch branches and test target were not supplied. Current path search found no CASE132-named fixture/manifest; earlier branch-level evidence does not satisfy the prompt-wide six-action gate. No case action was run.
+- Shared tree remains dirty. P1-5/P1-6, Stability integration and broad gates remain open.
+
+## Update — 2026-11-11 Round 97: C11 verification
+
+- Rechecked C11 static PHP/C# named-export validation against current source/test hashes. tests/test_static_exports.py: **11 passed in 0.38s**; direct T6-11 regression: **1 passed in 0.37s**; targeted pyflakes passed.
+- C11 focused acceptance evidence is current. C08/C09/C13 remain with Stability; P1-5/P1-6 and whole-round gates stay open.
+
+## Update — 2026-11-11 Round 98: shared hubctl classifier
+
+- Added `classify_hubctl_command` to `command_python.py`; both Python-script and native `hubctl` paths use the same policy function. Added seven direct policy cases and three native broker integration cases.
+- Test-first helper checks initially failed because the shared helper did not exist. After extraction, the helper cases passed; the full focused `tests/test_command_replay_policy.py` run passed **102 tests in 13.81s**. Targeted `py_compile`, pyflakes, and `git diff --check` passed; diff-check emitted only a line-ending normalization warning for the test file.
+- SHA256: `commands.py` `a853bcf1b8883d9324ee93b3500b9e0e670ad2ed7c1ab4ba699835a73bda2e34`; `command_python.py` `cd78cf9d46103fcb601a1a63f2c8c68fd94ae6c276d083692c399c7dc9a8ae3a`; test `7a81fbd120e422b3472eb90baf626d57c14a9ec3532c5540c14e83d399ba2822`.
+- P2-3 remains in progress. C08/C09/C13 remain with Stability; P1-5/P1-6 and broad gates remain open pending required evidence and a stable shared snapshot.
+
+## Update — 2026-11-11 Round 99: CASE134 retest
+
+- Two initial isolated retries were non-passing: one used start_line/end_line; one stopped after the status call. The prompt now explicitly requires canonical line_start/line_end and continuing all source reads after a successful status.
+- Latest GPT-6 Luna Low chat 01a1cc1b-eae7-72e3-9f71-b4c85f1099fe confirms one status plus three correctly bounded source calls, exact root/path/SHA and no target actions. Raw source/status payloads and artifact request IDs are absent; live enums are not host-visible.
+- CASE134 remains PARTIAL / NOT VERIFIED. Prompt SHA 5d2c883d2d26bb7b49ada9e2fca10787a0f62b51c7f0545e4fffdf1a102098c4. C08/C09/C13 remain with Stability; P1-5/P1-6 and broad gates remain open.
+
+## Update — 2026-11-11 Round 100: CASE135 endpoint output
+
+- Direct call `req_4031a94abc97`: `reachability_dead_code`, fixture `docs/agent-evaluation/fixtures/alpha`, `limit=1`, compact profile. Raw output reports 15 total symbols, 4 reachable, 7 dead, 4 ambiguous; one unreachable symbol returned, `complete=false`, domain `truncated=true`, transport truncation false.
+- This is direct endpoint evidence for the fixture. CASE135 isolated transcript still lacks raw payload; overall prompt acceptance remains NOT VERIFIED. P1-5/P1-6 and broad gates remain open.
+
+## Update — 2026-11-11 Round 101: CASE131 direct endpoint output
+
+- Replayed the exact `refactor_impact` and `call_graph` arguments from the existing isolated transcript in the coordinating chat. This is direct endpoint evidence, not a new isolated prompt pass.
+- `refactor_impact` request `req_3f6d7fc64410` returned zero callers and `risk_level=UNKNOWN`; coverage is incomplete because freshness was not checked.
+- `call_graph` request `req_3b1caf2fdf19` found `load_project` at `src/demo_core/consumer.py:5`, but coverage remains incomplete because qualified-symbol scope is unresolved and PHP is unsupported. Freshness is not_checked; top-level truncated=true while response-budget truncated=false.
+- CASE131 overall prompt acceptance stays NOT VERIFIED. Cross-project and collision-fixture branches remain NOT_RUN.
+
+## Update — 2026-11-11 Round 102: CASE132 readiness gate
+
+- Direct `local_ai_status` request `req_ae618f26ab52` used `detail=brief`, compact profile, no token cap. Hub online, model `qwen2.5-coder:3b`, GPU admission available, VRAM nominal.
+- `capabilities.code_generation.available=false`, reason `disabled_in_mcp_adapter`; provider readiness is `not_checked`. This is a readiness/adapter exposure result, not generation proof.
+- Generation stayed GATED/NOT_RUN; full CASE132 prompt acceptance remains NOT VERIFIED because harness inputs and isolated raw evidence are missing.

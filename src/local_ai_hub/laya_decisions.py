@@ -185,7 +185,7 @@ class ContextSourceEvidence:
 
     @classmethod
     def from_mapping(cls, value: Mapping[str, Any]) -> "ContextSourceEvidence":
-        """Validate the approved code-only shape without inferring authorization."""
+        """Validate typed signals and optional bounded training text without inferring authorization."""
         fields = {"gap_code", "source_codes", "freshness_codes", "coverage_codes", "evidence_ids"}
         if type(value) is not dict or set(value) not in (fields, fields | {"training_content"}):
             raise ValueError("context source evidence fields invalid")

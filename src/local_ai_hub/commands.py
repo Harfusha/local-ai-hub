@@ -45,7 +45,16 @@ from .command_policy import (
     VOLATILE_READS,
 )
 from .command_git import classify_git_command
+from .command_python import (
+    classify_hubctl_command,
+    classify_python_inline_code,
+    classify_python_module_command,
+    classify_python_script_command,
+)
+from .command_build import classify_build_command
 from .command_powershell import classify_powershell_command
+from .command_read import classify_read_only_command
+from .trace_utils import cluster_stack_traces, deduplicate_stack_traces
 MultiplexEvent = _command_streams.MultiplexEvent
 StreamMultiplexer = _command_streams.StreamMultiplexer
 from .cache import SQLiteCache, TieredCache, stable_hash
@@ -2730,114 +2739,6 @@ def patch_dry_run(
         allow_whitespace_fallback=allow_whitespace_fallback,
     )
 
-_TRACEBACK_RE = re.compile(
-    r"(Traceback\s*(?:\(most recent call last\))?:\s*\n"
-    r"(?:[ \t]+File\s+[^\n]+\n(?:[ \t]+[^\n]+\n)*)+"
-    r"(?:[a-zA-Z_][a-zA-Z0-9_.]*(?::[^\n]*)?))",
-    re.MULTILINE,
-)
-
-
-def cluster_stack_traces(text: str) -> dict[str, Any]:
-    """Find and group repetitive stack traces into clusters."""
-    if not isinstance(text, str) or not text:
-        return {"total_traces": 0, "clusters": [], "unique_clusters": 0}
-
-    matches = list(_TRACEBACK_RE.finditer(text))
-    if not matches:
-        return {"total_traces": 0, "clusters": [], "unique_clusters": 0}
-
-    cluster_map: dict[str, dict[str, Any]] = {}
-    for match in matches:
-        tb_text = match.group(1).rstrip()
-        lines = tb_text.splitlines()
-        exception_line = lines[-1].strip() if lines else "Error"
-        if ":" in exception_line:
-            exc_type, exc_msg = exception_line.split(":", 1)
-            exc_type = exc_type.strip()
-            exc_msg = exc_msg.strip()
-        else:
-            exc_type = exception_line.strip()
-            exc_msg = ""
-
-        norm_frames: list[str] = []
-        for line in lines[1:-1]:
-            if "File " in line and "in " in line:
-                norm_frames.append(re.sub(r", line \d+,", ",", line.strip()))
-        signature = "\n".join(norm_frames + [exception_line])
-
-        if signature not in cluster_map:
-            cluster_map[signature] = {
-                "signature": signature,
-                "exception_type": exc_type,
-                "exception_message": exc_msg,
-                "count": 0,
-                "representative": tb_text,
-                "occurrences": [],
-            }
-        cluster_map[signature]["count"] += 1
-        cluster_map[signature]["occurrences"].append((match.start(), match.end()))
-
-    clusters = list(cluster_map.values())
-    return {
-        "total_traces": len(matches),
-        "clusters": clusters,
-        "unique_clusters": len(clusters),
-    }
-
-
-def deduplicate_stack_traces(
-    text: str,
-    max_repeats: int = 1,
-) -> tuple[str, dict[str, Any]]:
-    """Deduplicate repetitive stack traces, keeping first max_repeats occurrences per cluster."""
-    if not isinstance(text, str) or not text:
-        return text, {
-            "clusters": [],
-            "total_traces": 0,
-            "total_collapsed": 0,
-            "chars_saved": 0,
-            "unique_clusters": 0,
-        }
-
-    clustered = cluster_stack_traces(text)
-    clusters = clustered["clusters"]
-    total_traces = clustered["total_traces"]
-
-    if total_traces <= 1 or not any(c["count"] > max_repeats for c in clusters):
-        return text, {
-            "clusters": clusters,
-            "total_traces": total_traces,
-            "total_collapsed": 0,
-            "chars_saved": 0,
-            "unique_clusters": len(clusters),
-        }
-
-    to_replace: list[tuple[int, int, str]] = []
-    total_collapsed = 0
-    for idx, cluster in enumerate(clusters):
-        count = cluster["count"]
-        if count > max_repeats:
-            for start, end in cluster["occurrences"][max_repeats:]:
-                replacement = f"[... identical stack trace omitted (cluster #{idx + 1}, repeated {count} times) ...]"
-                to_replace.append((start, end, replacement))
-                total_collapsed += 1
-
-    to_replace.sort(key=lambda item: item[0], reverse=True)
-    compacted = text
-    for start, end, replacement in to_replace:
-        compacted = compacted[:start] + replacement + compacted[end:]
-
-    chars_saved = max(0, len(text) - len(compacted))
-    return compacted, {
-        "clusters": clusters,
-        "total_traces": total_traces,
-        "total_collapsed": total_collapsed,
-        "chars_saved": chars_saved,
-        "unique_clusters": len(clusters),
-    }
-
-
 def _invocation_error(reason: str, error: str) -> dict[str, Any]:
     return {
         "safe": False,
@@ -4721,43 +4622,20 @@ class CommandBroker:
         if exe_base == "git":
             return classify_git_command(tokens, lower, cfg)
 
-        if exe_base in self.READ_ONLY and exe_base != "git":
-            if exe_base in {"rg", "ripgrep"} and any(flag == "--pre" or flag.startswith("--pre=") for flag in lower):
-                return {"class": "unknown", "cacheable": False, "allowed": False, "reason": "ripgrep preprocessor may execute arbitrary programs"}
-            if exe_base == "find" and any(flag in {"-exec", "-execdir", "-ok", "-okdir", "-delete"} for flag in lower):
-                return {"class": "unknown", "cacheable": False, "allowed": False, "reason": "find execution flags are not allowed"}
-            return {"class": "read", "cacheable": exe_base not in self.VOLATILE_READS, "allowed": bool(cfg.get("allow_read", True)), "reason": f"{exe_base} read command"}
+        read_only_result = classify_read_only_command(
+            exe_base,
+            lower,
+            cfg,
+            read_only=self.READ_ONLY,
+            volatile_reads=self.VOLATILE_READS,
+        )
+        if read_only_result is not None:
+            return read_only_result
 
         if self._is_python_interpreter_name(exe_base):
-            dash_m = None
-            for idx, arg in enumerate(tokens[1:], 1):
-                if arg == "-m" and idx < len(tokens) - 1:
-                    dash_m = tokens[idx + 1].lower()
-                    break
-            if dash_m is not None:
-                validation_modules = {
-                    "pytest", "ruff", "mypy", "unittest", "flake8", "compileall", "pyflakes",
-                    "pylint", "bandit", "coverage", "tox", "nox", "pre_commit", "pre-commit",
-                }
-                if dash_m in validation_modules:
-                    return {"class": "validation", "cacheable": True, "allowed": bool(cfg.get("allow_validation", True)), "replay_safe": True, "reason": f"python -m {dash_m} validation"}
-                if dash_m in {"build", "wheel", "setuptools", "flit"}:
-                    return {"class": "build", "cacheable": True, "allowed": bool(cfg.get("allow_build", True)), "reason": f"python -m {dash_m} packaging"}
-                if dash_m in {"local_ai_hub", "local_ai_hub.generator"}:
-                    return {"class": "build", "cacheable": True, "allowed": bool(cfg.get("allow_build", True)), "reason": f"python -m {dash_m} dynamic artifacts generator"}
-                if dash_m == "pip":
-                    pip_sub = [t.lower() for t in tokens[idx + 2:] if not t.startswith("-")]
-                    pip_action = pip_sub[0] if pip_sub else ""
-                    if pip_action in {"list", "show", "check"} or any(flag in lower for flag in {"--version", "-v"}):
-                        return {"class": "read", "cacheable": True, "allowed": bool(cfg.get("allow_read", True)), "reason": f"python -m pip {pip_action or 'info'}"}
-                    if pip_action in {"install", "uninstall", "download"}:
-                        return {"class": "mutating", "cacheable": False, "allowed": bool(cfg.get("allow_mutating", False)), "reason": f"python -m pip {pip_action} changes environment"}
-                if dash_m in {"json.tool", "platform", "sysconfig", "site", "venv", "pydoc"}:
-                    return {"class": "read", "cacheable": True, "allowed": bool(cfg.get("allow_read", True)), "reason": f"python -m {dash_m} inspection"}
-                if dash_m in {"black", "isort"}:
-                    if any(f in lower for f in {"--check", "--diff"}):
-                        return {"class": "validation", "cacheable": True, "allowed": bool(cfg.get("allow_validation", True)), "replay_safe": True, "reason": f"python -m {dash_m} validation"}
-                    return {"class": "mutating", "cacheable": False, "allowed": bool(cfg.get("allow_mutating", False)), "reason": f"python -m {dash_m} format without --check"}
+            python_module_result = classify_python_module_command(tokens, lower, cfg)
+            if python_module_result is not None:
+                return python_module_result
 
             dash_c = None
             for idx, arg in enumerate(tokens[1:], 1):
@@ -4765,344 +4643,16 @@ class CommandBroker:
                     dash_c = tokens[idx + 1]
                     break
             if dash_c is not None:
-                _DANGEROUS_INLINE = (
-                    "os.system(", "os.popen(", "subprocess.", "exec(", "eval(", "__import__(",
-                    "importlib.", "ctypes.", "shutil.rmtree", "shutil.move", "os.remove(",
-                    "shutil.copy", "os.unlink(", "os.rmdir(", "os.open(", "socket.", "pty.",
-                )
-                dash_c_lower = dash_c.lower()
-                if any(pat in dash_c_lower for pat in _DANGEROUS_INLINE):
-                    return {"class": "dangerous", "cacheable": False, "allowed": False, "reason": "python -c inline code contains potentially dangerous call"}
+                return classify_python_inline_code(dash_c, cfg)
 
-                is_validation = False
-                try:
-                    tree = ast.parse(dash_c)
-
-                    def _literal_only(node: ast.AST) -> bool:
-                        if isinstance(node, ast.Constant):
-                            return True
-                        if isinstance(node, ast.UnaryOp):
-                            return _literal_only(node.operand)
-                        if isinstance(node, ast.BinOp):
-                            return _literal_only(node.left) and _literal_only(node.right)
-                        if isinstance(node, (ast.List, ast.Tuple, ast.Set)):
-                            return all(_literal_only(item) for item in node.elts)
-                        if isinstance(node, ast.Dict):
-                            return all(
-                                key is not None and _literal_only(key) and _literal_only(value)
-                                for key, value in zip(node.keys, node.values)
-                            )
-                        return False
-
-                    safe_std_modules = {"sys", "os", "time", "json", "math", "re", "pathlib", "hashlib", "threading"}
-                    safe_module_names: set[str] = set()
-                    literal_bound_names: set[str] = set()
-                    unsafe_bound_names: set[str] = set()
-                    shadowed_names: set[str] = set()
-                    defined_function_names: set[str] = set()
-                    func_param_names: set[str] = set()
-                    for candidate in ast.walk(tree):
-                        if isinstance(candidate, ast.Import):
-                            safe_module_names.update(
-                                alias.asname or alias.name.split(".", 1)[0]
-                                for alias in candidate.names
-                                if alias.name.split(".", 1)[0] in safe_std_modules
-                            )
-                        elif isinstance(candidate, ast.ImportFrom):
-                            mod = (candidate.module or "").split(".", 1)[0]
-                            if mod in safe_std_modules:
-                                safe_module_names.update(
-                                    alias.asname or alias.name
-                                    for alias in candidate.names
-                                )
-                        elif isinstance(candidate, ast.Name) and isinstance(candidate.ctx, ast.Store):
-                            shadowed_names.add(candidate.id)
-                        elif isinstance(candidate, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                            shadowed_names.add(candidate.name)
-                            defined_function_names.add(candidate.name)
-                            for a in candidate.args.args:
-                                func_param_names.add(a.arg)
-                        elif isinstance(candidate, ast.ClassDef):
-                            shadowed_names.add(candidate.name)
-
-                        targets: list[ast.AST] = []
-                        value: ast.AST | None = None
-                        if isinstance(candidate, ast.Assign):
-                            targets, value = candidate.targets, candidate.value
-                        elif isinstance(candidate, ast.AnnAssign):
-                            targets, value = [candidate.target], candidate.value
-                        elif isinstance(candidate, ast.NamedExpr):
-                            targets, value = [candidate.target], candidate.value
-                        elif isinstance(candidate, ast.AugAssign):
-                            targets = [candidate.target]
-                        target_names = {
-                            target.id for target in targets if isinstance(target, ast.Name)
-                        }
-                        shadowed_names.update(target_names)
-                        if value is not None:
-                            if _literal_only(value):
-                                literal_bound_names.update(target_names)
-                            else:
-                                unsafe_bound_names.update(target_names)
-                        elif target_names:
-                            unsafe_bound_names.update(target_names)
-
-                    safe_value_names = (literal_bound_names - unsafe_bound_names) | safe_module_names | defined_function_names | func_param_names
-
-                    safe_builtin_exceptions = {
-                        "BaseException", "Exception", "ValueError", "TypeError", "KeyError",
-                        "IndexError", "RuntimeError", "AssertionError", "AttributeError",
-                        "FileNotFoundError", "OSError", "ZeroDivisionError", "NotImplementedError",
-                        "StopIteration", "LookupError", "ArithmeticError", "NameError",
-                        "PermissionError", "TimeoutError", "UnicodeDecodeError", "UnicodeEncodeError",
-                    }
-                    safe_builtin_calls = {
-                        "abs", "all", "any", "bool", "dict", "enumerate", "float", "int",
-                        "len", "list", "max", "min", "print", "range", "repr", "round",
-                        "set", "sorted", "str", "sum", "tuple", "zip",
-                        *safe_builtin_exceptions,
-                    }
-
-                    safe_method_names = {
-                        "get", "strip", "lstrip", "rstrip", "lower", "upper", "split",
-                        "rsplit", "replace", "startswith", "endswith", "join", "encode",
-                        "decode", "count", "find", "index", "format",
-                        "start", "join", "is_alive", "wait", "set", "clear", "is_set",
-                        "write", "flush", "read", "hex", "digest", "hexdigest",
-                    }
-                    safe_module_calls = {
-                        ("sys", "stdout", "write"),
-                        ("sys", "stdout", "flush"),
-                        ("sys", "stderr", "write"),
-                        ("sys", "stderr", "flush"),
-                        ("sys", "stdout", "buffer", "write"),
-                        ("sys", "stdout", "buffer", "flush"),
-                        ("sys", "stderr", "buffer", "write"),
-                        ("sys", "stderr", "buffer", "flush"),
-                        ("sys", "exit"),
-                        ("os", "getenv"),
-                        ("os", "getcwd"),
-                        ("os", "environ", "get"),
-                        ("hashlib", "sha256"),
-                        ("hashlib", "sha1"),
-                        ("hashlib", "md5"),
-                        ("hashlib", "new"),
-                        ("time", "sleep"),
-                        ("time", "time"),
-                        ("time", "monotonic"),
-                        ("time", "perf_counter"),
-                        ("json", "dumps"),
-                        ("json", "loads"),
-                        ("threading", "Thread"),
-                        ("threading", "Lock"),
-                        ("threading", "RLock"),
-                        ("threading", "Event"),
-                        ("threading", "Semaphore"),
-                        ("threading", "current_thread"),
-                    }
-
-                    def _get_call_chain(func_node: ast.AST) -> tuple[str, ...] | None:
-                        parts = []
-                        curr = func_node
-                        while isinstance(curr, ast.Attribute):
-                            if curr.attr.startswith("_"):
-                                return None
-                            parts.append(curr.attr)
-                            curr = curr.value
-                        if isinstance(curr, ast.Name):
-                            parts.append(curr.id)
-                            return tuple(reversed(parts))
-                        return None
-
-                    def _is_safe_call(call_node: ast.Call) -> bool:
-                        if isinstance(call_node.func, ast.Name):
-                            func_name_id = call_node.func.id
-                            if func_name_id in safe_builtin_calls and func_name_id not in shadowed_names:
-                                return True
-                            if func_name_id in defined_function_names:
-                                return True
-                        elif isinstance(call_node.func, ast.Attribute):
-                            chain = _get_call_chain(call_node.func)
-                            if chain and chain in safe_module_calls and chain[0] not in shadowed_names and chain[0] not in func_param_names:
-                                return True
-                            if call_node.func.attr in safe_method_names and not call_node.func.attr.startswith("_"):
-                                if chain and chain[0] in safe_module_names:
-                                    return False
-                                if _safe_inline_value(call_node.func.value):
-                                    return True
-                        return False
-
-                    def _safe_inline_value(node: ast.AST) -> bool:
-                        if _literal_only(node):
-                            return True
-                        if isinstance(node, ast.Name):
-                            return node.id in safe_value_names
-                        if isinstance(node, ast.UnaryOp):
-                            return _safe_inline_value(node.operand)
-                        if isinstance(node, ast.BinOp):
-                            return _safe_inline_value(node.left) and _safe_inline_value(node.right)
-                        if isinstance(node, ast.BoolOp):
-                            return all(_safe_inline_value(val) for val in node.values)
-                        if isinstance(node, ast.Compare):
-                            return _safe_inline_value(node.left) and all(_safe_inline_value(comp) for comp in node.comparators)
-                        if isinstance(node, ast.IfExp):
-                            return _safe_inline_value(node.test) and _safe_inline_value(node.body) and _safe_inline_value(node.orelse)
-                        if isinstance(node, (ast.List, ast.Tuple, ast.Set)):
-                            return all(_safe_inline_value(item) for item in node.elts)
-                        if isinstance(node, ast.Dict):
-                            return all(
-                                key is not None and _safe_inline_value(key) and _safe_inline_value(val)
-                                for key, val in zip(node.keys, node.values)
-                            )
-                        if isinstance(node, ast.Subscript):
-                            return _safe_inline_value(node.value) and _safe_inline_value(node.slice)
-                        if isinstance(node, ast.Call):
-                            return _is_safe_call(node) and all(_safe_inline_value(a) for a in node.args) and all(_safe_inline_value(k.value) for k in node.keywords)
-                        if isinstance(node, ast.Attribute):
-                            chain = _get_call_chain(node)
-                            if chain and chain[0] in safe_module_names:
-                                return True
-                            if _safe_inline_value(node.value) and not node.attr.startswith("_"):
-                                return True
-                        return False
-
-                    for _ in range(5):
-                        added = 0
-                        for candidate in ast.walk(tree):
-                            targets: list[ast.AST] = []
-                            value: ast.AST | None = None
-                            if isinstance(candidate, ast.Assign):
-                                targets, value = candidate.targets, candidate.value
-                            elif isinstance(candidate, ast.AnnAssign):
-                                targets, value = [candidate.target], candidate.value
-                            elif isinstance(candidate, ast.NamedExpr):
-                                targets, value = [candidate.target], candidate.value
-                            elif isinstance(candidate, (ast.For, ast.AsyncFor)):
-                                targets = [candidate.target]
-                                value = candidate.iter
-                            if value is not None and _safe_inline_value(value):
-                                for target in targets:
-                                    if isinstance(target, ast.Name) and target.id not in safe_value_names:
-                                        safe_value_names.add(target.id)
-                                        added += 1
-                        if not added:
-                            break
-
-                    for node in ast.walk(tree):
-                        if isinstance(node, ast.Call):
-                            func_name = ""
-                            if isinstance(node.func, ast.Name):
-                                func_name = node.func.id
-                            elif isinstance(node.func, ast.Attribute):
-                                func_name = node.func.attr
-                            if func_name in {"exec", "eval", "compile"}:
-                                return {"class": "dangerous", "cacheable": False, "allowed": False, "reason": f"python -c inline code contains dangerous call: {func_name}"}
-                            if func_name in {"open", "remove", "unlink", "rmdir", "mkdir", "makedirs", "rename", "replace", "system", "popen", "spawn", "kill"}:
-                                return {"class": "unknown", "cacheable": False, "allowed": bool(cfg.get("allow_unknown", False)), "reason": f"python -c inline code may mutate: {func_name}"}
-                            if func_name in {"write_text", "write_bytes", "touch"}:
-                                return {"class": "unknown", "cacheable": False, "allowed": bool(cfg.get("allow_unknown", False)), "reason": f"python -c inline code may mutate files: {func_name}"}
-                            if (
-                                not _is_safe_call(node)
-                                or not all(_safe_inline_value(arg) for arg in node.args)
-                                or not all(_safe_inline_value(keyword.value) for keyword in node.keywords)
-                            ):
-                                return {"class": "unknown", "cacheable": False, "allowed": bool(cfg.get("allow_unknown", False)), "reason": f"python -c inline code has unverified call: {func_name or 'dynamic'}"}
-                        elif isinstance(node, ast.Import):
-                            if any(alias.name.split(".", 1)[0] not in safe_std_modules for alias in node.names):
-                                return {"class": "unknown", "cacheable": False, "allowed": bool(cfg.get("allow_unknown", False)), "reason": "python -c inline code imports module with unknown side effects"}
-                        elif isinstance(node, ast.ImportFrom):
-                            mod = (node.module or "").split(".", 1)[0]
-                            if mod not in safe_std_modules:
-                                return {"class": "unknown", "cacheable": False, "allowed": bool(cfg.get("allow_unknown", False)), "reason": "python -c inline code imports module with unknown side effects"}
-                        elif isinstance(node, (ast.Assert, ast.Raise)):
-                            is_validation = True
-
-                except SyntaxError:
-                    return {"class": "unknown", "cacheable": False, "allowed": bool(cfg.get("allow_unknown", False)), "reason": "python -c inline code contains invalid syntax"}
-
-                if not is_validation:
-                    tokens_in_code = set(re.findall(r"\b\w+\b", dash_c_lower))
-                    validation_keywords = {"test", "validate", "check", "audit", "doctor", "selftest", "report", "assert"}
-                    if validation_keywords & tokens_in_code:
-                        is_validation = True
-
-                if is_validation:
-                    return {"class": "validation", "cacheable": True, "allowed": bool(cfg.get("allow_validation", True)), "replay_safe": True, "reason": "python inline validation"}
-                return {"class": "read", "cacheable": True, "allowed": bool(cfg.get("allow_read", True)), "reason": "python inline read"}
-
-            non_flag_args = [t for t in tokens[1:] if not t.startswith("-")]
-            if non_flag_args:
-                script_name = Path(non_flag_args[0].replace("\\", "/")).name.lower()
-                sub_args = [t.lower() for t in non_flag_args[1:]]
-                if script_name in {"hubctl.py", "hubctl"}:
-                    sub = sub_args[0] if sub_args else ""
-                    if sub == "tasks":
-                        is_mutating = any(t in lower for t in {"--complete", "--fail"})
-                        if is_mutating:
-                            return {"class": "mutating", "cacheable": False, "allowed": bool(cfg.get("allow_mutating", False)), "reason": "hubctl tasks status mutation"}
-                        return {"class": "validation", "cacheable": True, "allowed": bool(cfg.get("allow_validation", True)), "replay_safe": True, "reason": "hubctl tasks status check"}
-                    if sub in {"status", "service-status", "agent-state", "dashboard", "watch", "memory", "doctor", "logs"}:
-                        return {"class": "validation", "cacheable": True, "allowed": bool(cfg.get("allow_validation", True)), "replay_safe": True, "reason": f"hubctl {sub} status check"}
-                    if sub == "generate":
-                        return {"class": "build", "cacheable": True, "allowed": bool(cfg.get("allow_build", True)), "reason": "hubctl generate dynamic artifacts"}
-                    if sub in {"start", "stop", "restart", "cleanup"}:
-                        return {"class": "mutating", "cacheable": False, "allowed": bool(cfg.get("allow_mutating", False)), "reason": f"hubctl {sub} service lifecycle mutation"}
-                if script_name in {"setup.py", "setup"}:
-                    if any(t in lower for t in {"--generate-only", "--help", "-h"}):
-                        return {"class": "build", "cacheable": True, "allowed": bool(cfg.get("allow_build", True)), "reason": "setup.py generate dynamic artifacts"}
-                script_path = non_flag_args[0].replace("\\", "/").lower()
-                is_builtin_tool = (
-                    script_path.startswith("tools/")
-                    or script_path.startswith("./tools/")
-                    or script_path.startswith("src/")
-                )
-                is_read_only_surface_inventory_check = (
-                    script_name == "surface_inventory.py"
-                    and is_builtin_tool
-                    and "--check" in lower
-                    and "--write-doc" not in lower
-                )
-                is_validation_script = (
-                    script_name in {
-                        "doctor.py",
-                        "selftest.py",
-                        "telemetry_report.py",
-                        "benchmark.py",
-                        "show_summary.py",
-                        "release_check.py",
-                        "check_contracts.py",
-                    }
-                    or is_read_only_surface_inventory_check
-                    or (
-                        is_builtin_tool
-                        and any(k in script_name for k in ("test", "validate", "check", "audit", "verify", "lint"))
-                    )
-                )
-                if is_validation_script:
-                    return {"class": "validation", "cacheable": True, "allowed": bool(cfg.get("allow_validation", True)), "replay_safe": True, "reason": "python validation script"}
-                if any(f in script_name for f in ("generate", "build", "compile", "bundle")):
-                    return {"class": "build", "cacheable": True, "allowed": bool(cfg.get("allow_build", True)), "reason": "python build/generate script"}
-                return {
-                    "class": "mutating",
-                    "cacheable": False,
-                    "allowed": bool(cfg.get("allow_mutating", False)),
-                    "replay_safe": False,
-                    "reason": "unclassified Python script may have side effects",
-                }
+            python_script_result = classify_python_script_command(tokens, lower, cfg)
+            if python_script_result is not None:
+                return python_script_result
 
         if exe_base == "hubctl":
-            sub = lower[0] if lower else ""
-            if sub == "tasks":
-                is_mutating = any(t in lower for t in {"--complete", "--fail"})
-                if is_mutating:
-                    return {"class": "mutating", "cacheable": False, "allowed": bool(cfg.get("allow_mutating", False)), "reason": "hubctl tasks status mutation"}
-                return {"class": "validation", "cacheable": True, "allowed": bool(cfg.get("allow_validation", True)), "replay_safe": True, "reason": "hubctl tasks status check"}
-            if sub in {"status", "service-status", "agent-state", "dashboard", "watch", "memory", "doctor", "logs"}:
-                return {"class": "validation", "cacheable": True, "allowed": bool(cfg.get("allow_validation", True)), "replay_safe": True, "reason": f"hubctl {sub} status check"}
-            if sub == "generate":
-                return {"class": "build", "cacheable": True, "allowed": bool(cfg.get("allow_build", True)), "reason": "hubctl generate dynamic artifacts"}
-            if sub in {"start", "stop", "restart", "cleanup"}:
-                return {"class": "mutating", "cacheable": False, "allowed": bool(cfg.get("allow_mutating", False)), "reason": f"hubctl {sub} service lifecycle mutation"}
+            hubctl_result = classify_hubctl_command(lower, lower, cfg)
+            if hubctl_result is not None:
+                return hubctl_result
 
         if exe_base == "php" and lower:
             php_target = ntpath.basename(lower[0].replace("/", "\\"))
@@ -5117,84 +4667,16 @@ class CommandBroker:
         if exe_base in self.PURE_VALIDATORS or any(name in exe_base for name in ("phpunit", "phpstan", "pytest", "pest", "flake8", "pylint", "shellcheck", "yamllint")):
             return {"class": "validation", "cacheable": True, "allowed": bool(cfg.get("allow_validation", True)), "replay_safe": True, "reason": f"{exe_base} validation tool"}
 
-        positional_verbs = [t.lower() for t in tokens[1:] if not t.startswith(("-", "/"))]
-        primary_verb = positional_verbs[0] if positional_verbs else ""
-
-        if exe_base == "dotnet":
-            flag_info = {"--info", "--version", "--list-sdks", "--list-runtimes", "--help", "-h", "-v"}
-            if any(f in lower for f in flag_info) and not any(v in lower for v in ("build", "test", "run", "clean", "publish")):
-                return {"class": "read", "cacheable": True, "allowed": bool(cfg.get("allow_read", True)), "reason": "read-only dotnet inspection"}
-            if primary_verb in {"test", "vstest"}:
-                return {"class": "validation", "cacheable": True, "allowed": bool(cfg.get("allow_validation", True)), "replay_safe": True, "reason": "dotnet test"}
-            if primary_verb in {"build", "compile", "pack", "restore", "clean", "run", "msbuild"}:
-                return {"class": "build", "cacheable": True, "allowed": bool(cfg.get("allow_build", True)), "reason": f"dotnet {primary_verb}"}
-            if primary_verb == "format":
-                if any(f in lower for f in {"--verify-no-changes", "--check"}):
-                    return {"class": "validation", "cacheable": True, "allowed": bool(cfg.get("allow_validation", True)), "replay_safe": True, "reason": "dotnet format check"}
-                return {"class": "mutating", "cacheable": False, "allowed": bool(cfg.get("allow_mutating", False)), "reason": "dotnet format changes source without --verify-no-changes"}
-
-        package_tools = {"npm", "pnpm", "yarn", "bun"}
-        if exe_base in package_tools:
-            mutating = {"install", "i", "add", "remove", "rm", "uninstall", "update", "upgrade", "publish", "link", "unlink", "pack", "version"}
-            if primary_verb in mutating:
-                return {"class": "mutating", "cacheable": False, "allowed": bool(cfg.get("allow_mutating", False)), "reason": f"{exe_base} {primary_verb} changes dependencies or publishes artifacts"}
-            script = ""
-            if primary_verb in {"run", "run-script"} and len(positional_verbs) > 1:
-                script = positional_verbs[1]
-            elif primary_verb:
-                script = primary_verb
-            safe_validation = {"test", "lint", "check", "typecheck", "type-check", "analyse", "analyze", "audit"}
-            safe_build = {"build", "compile"}
-            if script in safe_validation:
-                return {"class": "validation", "cacheable": True, "allowed": bool(cfg.get("allow_validation", True)), "replay_safe": True, "reason": f"{exe_base} safe validation script"}
-            if script in safe_build:
-                return {"class": "build", "cacheable": True, "allowed": bool(cfg.get("allow_build", True)), "reason": f"{exe_base} safe build script"}
-            return {"class": "unknown", "cacheable": False, "allowed": bool(cfg.get("allow_unknown", False)), "reason": f"{exe_base} script is not in the safe validation/build allowlist"}
-
-        if exe_base == "composer":
-            if primary_verb in {"install", "update", "upgrade", "remove", "require", "create-project", "dump-autoload", "global"}:
-                return {"class": "mutating", "cacheable": False, "allowed": bool(cfg.get("allow_mutating", False)), "reason": f"composer {primary_verb} may change dependencies or generated files"}
-            if primary_verb in {"validate", "audit", "test", "phpunit", "phpstan", "analyse", "analyze", "check"}:
-                return {"class": "validation", "cacheable": True, "allowed": bool(cfg.get("allow_validation", True)), "replay_safe": True, "reason": "composer validation command"}
-            return {"class": "unknown", "cacheable": False, "allowed": bool(cfg.get("allow_unknown", False)), "reason": "composer command is not in the safe validation allowlist"}
-
-        if exe_base == "make":
-            if any(v in {"clean", "install", "uninstall", "deploy", "publish", "release"} for v in positional_verbs):
-                return {"class": "mutating", "cacheable": False, "allowed": bool(cfg.get("allow_mutating", False)), "reason": "make target may mutate or deploy"}
-            safe_validation = {"test", "tests", "check", "lint", "validate", "verify", "typecheck"}
-            safe_build = {"build", "compile", "all"}
-            if positional_verbs and all(v in safe_validation for v in positional_verbs):
-                return {"class": "validation", "cacheable": True, "allowed": bool(cfg.get("allow_validation", True)), "replay_safe": True, "reason": "make validation target"}
-            if positional_verbs and all(v in safe_build for v in positional_verbs):
-                return {"class": "build", "cacheable": True, "allowed": bool(cfg.get("allow_build", True)), "reason": "make build target"}
-            return {"class": "unknown", "cacheable": False, "allowed": bool(cfg.get("allow_unknown", False)), "reason": "make target is not in the safe validation/build allowlist"}
-
-        if exe_base == "cargo":
-            if primary_verb in {"fmt"} and "--check" not in lower:
-                return {"class": "mutating", "cacheable": False, "allowed": bool(cfg.get("allow_mutating", False)), "reason": "cargo fmt changes source without --check"}
-            if primary_verb in {"test", "check", "clippy", "bench"} or (primary_verb == "fmt" and "--check" in lower):
-                return {"class": "validation", "cacheable": True, "allowed": bool(cfg.get("allow_validation", True)), "replay_safe": True, "reason": "cargo validation command"}
-            if primary_verb == "build":
-                return {"class": "build", "cacheable": True, "allowed": bool(cfg.get("allow_build", True)), "reason": "cargo build"}
-            return {"class": "unknown", "cacheable": False, "allowed": bool(cfg.get("allow_unknown", False)), "reason": "cargo command is not in the safe validation/build allowlist"}
-
-        if exe_base in {"go", "mvn", "mvnw", "gradle", "gradlew", "gradlew.bat", "cmake", "ctest"}:
-            if any(v in self.MUTATING_WORDS or v in {"tidy", "publish", "deploy", "release"} for v in positional_verbs):
-                return {"class": "mutating", "cacheable": False, "allowed": bool(cfg.get("allow_mutating", False)), "reason": f"{exe_base} command may mutate project or publish artifacts"}
-            validation_words = {"test", "tests", "check", "verify", "lint", "vet", "clippy", "ctest"}
-            build_words = {"build", "compile", "package", "assemble"}
-            if exe_base == "ctest" or any(v in validation_words for v in positional_verbs):
-                return {"class": "validation", "cacheable": True, "allowed": bool(cfg.get("allow_validation", True)), "replay_safe": True, "reason": f"{exe_base} validation command"}
-            if exe_base == "cmake" or any(v in build_words for v in positional_verbs):
-                return {"class": "build", "cacheable": True, "allowed": bool(cfg.get("allow_build", True)), "reason": f"{exe_base} build command"}
-            return {"class": "unknown", "cacheable": False, "allowed": bool(cfg.get("allow_unknown", False)), "reason": f"{exe_base} command is not in the safe validation/build allowlist"}
-
-        if exe_base in self.VALIDATORS:
-            if primary_verb in self.MUTATING_WORDS:
-                return {"class": "mutating", "cacheable": False, "allowed": bool(cfg.get("allow_mutating", False)), "reason": f"mutating verb {primary_verb}"}
-            if any(x in positional_verbs for x in ("build", "compile")):
-                return {"class": "build", "cacheable": True, "allowed": bool(cfg.get("allow_build", True)), "reason": "build command"}
-            return {"class": "validation", "cacheable": True, "allowed": bool(cfg.get("allow_validation", True)), "replay_safe": True, "reason": "validation/test command"}
+        build_result = classify_build_command(
+            exe_base,
+            tokens,
+            lower,
+            cfg,
+            mutating_words=self.MUTATING_WORDS,
+            validators=self.VALIDATORS,
+        )
+        if build_result is not None:
+            return build_result
 
         return {"class": "unknown", "cacheable": False, "allowed": bool(cfg.get("allow_unknown", False)), "reason": "command not in safe broker allowlist"}
 

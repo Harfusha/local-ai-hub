@@ -1,11 +1,14 @@
 import json
 import hashlib
 import sqlite3
+import base64
 from contextlib import closing
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 import local_ai_hub.laya_candidates as candidates_module
 from local_ai_hub.agent_events import AgentStateStore
@@ -31,7 +34,10 @@ def candidate_env(tmp_path, monkeypatch):
     )
     task_store = SimpleNamespace(list_tasks=lambda **_kwargs: [task], state_store=state_store)
     monkeypatch.setattr(candidates_module, "_task_matches_scope", lambda *_args: True)
-    return repo, state, task_store, LayaCandidateStore(state)
+    return repo, state, task_store, LayaCandidateStore(
+        state,
+        reviewer_authenticator=lambda _reviewer_ref, _root, _task_id: True,
+    )
 
 
 def _capture(*, state="A short approved state", **changes):
@@ -95,7 +101,7 @@ def test_context_source_candidate_persists_only_redacted_raw_training_content():
     assert candidate["state"]["raw_context_excerpt"] == "router.py maps the request"
 
 
-def test_verified_label_export_requires_and_preserves_rubric_version():
+def test_label_export_requires_authenticated_human_provenance():
     candidate = {
         "label_status": "verified",
         "label_provenance": {
@@ -110,11 +116,7 @@ def test_verified_label_export_requires_and_preserves_rubric_version():
     }
     targets = {"context_source": "indexed"}
 
-    provenance = candidates_module._export_label_provenance(candidate, targets)
-    assert provenance["rubric_version"] == "laya-source-label-v1"
-
-    candidate["label_provenance"].pop("rubric_version")
-    with pytest.raises(ValueError, match="label rubric version"):
+    with pytest.raises(ValueError, match="authenticated human-review provenance"):
         candidates_module._export_label_provenance(candidate, targets)
 
 
@@ -223,7 +225,7 @@ def test_runtime_outcome_records_server_derived_baseline_for_typed_category(cand
         evidence_store=_evidence_store(),
         baseline={
             "method": "agent_os_completion_gate",
-            "suggestion": "missing_verification",
+            "suggestion": "not_ready",
             "evidence_id": evidence_id,
         },
     )
@@ -237,13 +239,13 @@ def test_runtime_outcome_records_server_derived_baseline_for_typed_category(cand
     assert event["baseline"] == {
         "status": "recorded",
         "method": "agent_os_completion_gate",
-        "suggestion": "missing_verification",
+        "suggestion": "not_ready",
         "evidence_id": evidence_id,
     }
 
     invalid_baseline = {
         "method": "agent_os_completion_gate",
-        "suggestion": "missing_verification",
+        "suggestion": "not_ready",
         "evidence_id": "E" + "d" * 20,
     }
     with pytest.raises(ValueError, match="request evidence ID"):
@@ -581,6 +583,61 @@ def test_capture_deduplicates_exact_inputs_and_list_omits_candidate_text(candida
     assert "A short approved state" not in json.dumps(listed)
 
 
+def test_get_returns_review_material_without_laya_output_or_human_labels(candidate_env):
+    repo, _state, task_store, store = candidate_env
+    captured = store.handle(_capture(), root=str(repo), task_store=task_store)
+    store.handle({
+        "action": "label",
+        "candidate_id": captured["candidate_id"],
+        "annotations": [
+            {"annotator_ref": "annotator-a", "target": "fast"},
+            {"annotator_ref": "annotator-b", "target": "smart"},
+        ],
+        "adjudication": {"reviewer_ref": "adjudicator-c", "target": "fast"},
+    }, root=str(repo), task_store=task_store)
+    with closing(sqlite3.connect(store.path)) as con:
+        candidate = json.loads(con.execute(
+            "SELECT candidate_json FROM laya_candidates WHERE candidate_id=?",
+            (captured["candidate_id"],),
+        ).fetchone()[0])
+        candidate["model_output"] = {"target": "background", "private_marker": "laya-secret"}
+        con.execute(
+            "UPDATE laya_candidates SET candidate_json=? WHERE candidate_id=?",
+            (json.dumps(candidate), captured["candidate_id"]),
+        )
+        con.commit()
+
+    reviewed = store.handle(
+        {"action": "get", "candidate_id": captured["candidate_id"]},
+        root=str(repo),
+        task_store=task_store,
+    )
+
+    assert reviewed["success"] is True
+    assert "status" not in reviewed
+    assert reviewed["candidate"]["state"] == "A short approved state"
+    assert "model_output" not in reviewed["candidate"]
+    assert "targets" not in reviewed["candidate"]
+    assert "label_status" not in reviewed["candidate"]
+    assert "label_provenance" not in reviewed["candidate"]
+    assert "laya-secret" not in json.dumps(reviewed)
+    assert "annotator-a" not in json.dumps(reviewed)
+
+
+def test_get_candidate_is_bound_to_authorized_repository_scope(candidate_env, tmp_path):
+    repo, _state, task_store, store = candidate_env
+    captured = store.handle(_capture(), root=str(repo), task_store=task_store)
+    other_repo = tmp_path / "other"
+    other_repo.mkdir()
+
+    with pytest.raises(ValueError, match="not found in authorized repository scope"):
+        store.handle(
+            {"action": "get", "candidate_id": captured["candidate_id"]},
+            root=str(other_repo),
+            task_store=task_store,
+        )
+
+
 def test_capture_preserves_laya_choice_option_order_in_persisted_question(candidate_env):
     repo, _state, task_store, store = candidate_env
     operation = _capture()
@@ -616,7 +673,7 @@ def test_capture_batch_is_unavailable(candidate_env):
     assert store.handle({"action": "list"}, root=str(repo), task_store=task_store)["count"] == 0
 
 
-def test_label_verify_and_split_snapshot_require_independent_review(candidate_env):
+def test_label_verify_requires_authenticated_human_provenance(candidate_env):
     repo, _state, task_store, store = candidate_env
     captured = store.handle(_capture(), root=str(repo), task_store=task_store)
     cid = captured["candidate_id"]
@@ -633,15 +690,121 @@ def test_label_verify_and_split_snapshot_require_independent_review(candidate_en
     assert reviewed["status"] == "reviewed"
     with pytest.raises(ValueError, match="independent"):
         store.handle({"action": "verify", "candidate_id": cid, "reviewer_ref": "reviewer-a"}, root=str(repo), task_store=task_store)
-    verified = store.handle({"action": "verify", "candidate_id": cid, "reviewer_ref": "reviewer-d"}, root=str(repo), task_store=task_store)
-    assert verified["status"] == "verified"
+    unauthenticated_store = LayaCandidateStore(_state)
+    with pytest.raises(ValueError, match="authenticated human reviewer provenance"):
+        unauthenticated_store.handle({"action": "verify", "candidate_id": cid, "reviewer_ref": "reviewer-d"}, root=str(repo), task_store=task_store)
 
     snapshot = store.handle({"action": "prepare_splits"}, root=str(repo), task_store=task_store)
     assert snapshot["sufficiency_status"] == "INSUFFICIENT DATA"
-    repeated = store.handle({"action": "prepare_splits"}, root=str(repo), task_store=task_store)
-    assert repeated["snapshot_id"] == snapshot["snapshot_id"]
-    assert repeated["reused"] is True
-    assert store.handle({"action": "list", "status": "verified"}, root=str(repo), task_store=task_store)["count"] == 1
+    assert snapshot["candidate_count"] == 0
+    assert snapshot["snapshot_id"] is None
+    assert store.handle({"action": "list", "status": "verified"}, root=str(repo), task_store=task_store)["count"] == 0
+
+
+def test_configured_ed25519_keys_authenticate_candidate_bound_reviews(tmp_path, monkeypatch):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    state = tmp_path / "state"
+    state_store = AgentStateStore(state / "agent_state.sqlite", enabled=True)
+    task = SimpleNamespace(task_id="task-1", context=SimpleNamespace(session_id="session-1"))
+    task_store = SimpleNamespace(list_tasks=lambda **_kwargs: [task], state_store=state_store)
+    monkeypatch.setattr(candidates_module, "_task_matches_scope", lambda *_args: True)
+    private_keys = [Ed25519PrivateKey.generate() for _ in range(4)]
+    public_lines = [
+        key.public_key().public_bytes(
+            serialization.Encoding.OpenSSH,
+            serialization.PublicFormat.OpenSSH,
+        ).decode("ascii")
+        for key in private_keys
+    ]
+    store = LayaCandidateStore(state, reviewer_public_keys=public_lines)
+    captured = store.handle(_capture(), root=str(repo), task_store=task_store)
+    candidate_id = captured["candidate_id"]
+
+    def proof(key, fingerprint, role, target):
+        challenge = store.handle({
+            "action": "review_challenge",
+            "candidate_id": candidate_id,
+            "review_action": "label",
+            "role": role,
+            "target": target,
+            "reviewer_fingerprint": fingerprint,
+        }, root=str(repo), task_store=task_store)
+        signature = key.sign(base64.b64decode(challenge["challenge_b64"], validate=True))
+        return {"reviewer_fingerprint": fingerprint, "signature": base64.b64encode(signature).decode("ascii")}
+
+    fingerprints = [store.reviewer_fingerprint(line) for line in public_lines]
+    labels = {
+        "action": "label",
+        "candidate_id": candidate_id,
+        "annotations": [
+            {"target": "fast", "proof": proof(private_keys[0], fingerprints[0], "annotation", "fast")},
+            {"target": "fast", "proof": proof(private_keys[1], fingerprints[1], "annotation", "fast")},
+        ],
+        "adjudication": {
+            "target": "fast",
+            "proof": proof(private_keys[2], fingerprints[2], "adjudication", "fast"),
+        },
+    }
+    assert store.handle(labels, root=str(repo), task_store=task_store)["status"] == "reviewed"
+
+    verify_challenge = store.handle({
+        "action": "review_challenge",
+        "candidate_id": candidate_id,
+        "review_action": "verify",
+        "role": "verification",
+        "reviewer_fingerprint": fingerprints[3],
+    }, root=str(repo), task_store=task_store)
+    verify_proof = {
+        "reviewer_fingerprint": fingerprints[3],
+        "signature": base64.b64encode(
+            private_keys[3].sign(base64.b64decode(verify_challenge["challenge_b64"], validate=True))
+        ).decode("ascii"),
+    }
+    assert store.handle(
+        {"action": "verify", "candidate_id": candidate_id, "proof": verify_proof},
+        root=str(repo), task_store=task_store,
+    )["status"] == "verified"
+
+    altered = dict(labels)
+    altered["annotations"] = [dict(item) for item in labels["annotations"]]
+    altered["annotations"][0]["target"] = "smart"
+    with pytest.raises(ValueError, match="authenticated human reviewer provenance"):
+        store.handle(altered, root=str(repo), task_store=task_store)
+
+
+def test_label_requires_authentication_for_every_annotator_and_adjudicator(candidate_env):
+    repo, state, task_store, store = candidate_env
+    captured = store.handle(_capture(), root=str(repo), task_store=task_store)
+    candidate_id = captured["candidate_id"]
+    authenticated = {"annotator-a", "annotator-b", "adjudicator"}
+
+    def authenticate(reviewer_ref, _root, _task_id):
+        return reviewer_ref in authenticated
+
+    unauthenticated_store = LayaCandidateStore(state)
+    labels = {
+        "action": "label",
+        "candidate_id": candidate_id,
+        "annotations": [
+            {"annotator_ref": "annotator-a", "target": "fast"},
+            {"annotator_ref": "annotator-b", "target": "fast"},
+        ],
+        "adjudication": {"reviewer_ref": "adjudicator", "target": "fast"},
+    }
+    with pytest.raises(ValueError, match="authenticated human reviewer provenance"):
+        unauthenticated_store.handle(labels, root=str(repo), task_store=task_store)
+
+    rejecting_store = LayaCandidateStore(
+        state,
+        reviewer_authenticator=lambda reviewer_ref, root, task_id: authenticate(
+            reviewer_ref, root, task_id
+        ) and reviewer_ref != "annotator-b",
+    )
+    with pytest.raises(ValueError, match="authenticated human reviewer provenance"):
+        rejecting_store.handle(labels, root=str(repo), task_store=task_store)
+
+    assert store.handle({"action": "list", "status": "pending"}, root=str(repo), task_store=task_store)["count"] == 1
 
 
 def test_split_preparation_without_verified_candidates_reports_insufficient_data(candidate_env):

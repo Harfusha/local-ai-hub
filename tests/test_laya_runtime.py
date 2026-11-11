@@ -1,4 +1,5 @@
 import importlib
+import os
 import threading
 from dataclasses import replace
 from pathlib import Path
@@ -147,7 +148,10 @@ def candidate(device, device_class="dgpu", *, quality_passed=None):
     )
 
 
-def adapter(tmp_path, loader, *, devices=None, evaluation_mode=True):
+def adapter(
+    tmp_path, loader, *, devices=None, evaluation_mode=True,
+    capacity_manager=None, capacity_request_bytes=None,
+):
     return LayaRuntimeAdapter(
         checkpoint_path=make_checkpoint(tmp_path),
         revision=REVISION,
@@ -155,6 +159,8 @@ def adapter(tmp_path, loader, *, devices=None, evaluation_mode=True):
         device_candidates=devices or [candidate("cuda:0")],
         evaluation_mode=evaluation_mode,
         loader=loader,
+        capacity_manager=capacity_manager,
+        capacity_request_bytes=capacity_request_bytes,
     )
 
 
@@ -520,3 +526,119 @@ def test_preloaded_router_cleanup_failure_stops_device_fallback(tmp_path, monkey
     else:
         raise AssertionError("adapter must stop when preloaded Router cleanup is unconfirmed")
     assert len(routers) == 1
+
+
+class FakeCapacityManager:
+    def __init__(self, *, admitted=True, release_result=True, events=None):
+        self.admitted = admitted
+        self.release_result = release_result
+        self.events = events if events is not None else []
+        self.releases = []
+
+    def acquire_gpu_capacity_lease(self, owner, requested_bytes):
+        self.events.append(("acquire", owner, requested_bytes))
+        if not self.admitted:
+            return {"state": "rejected", "reason": "insufficient_capacity"}
+        return {"state": "admitted", "lease_id": "lease-1", "generation": "generation-1"}
+
+    def release_gpu_capacity_lease(self, lease_id, owner, generation):
+        self.releases.append((lease_id, owner, generation))
+        self.events.append(("release", lease_id, owner, generation))
+        return self.release_result
+
+
+def test_gpu_capacity_lease_spans_model_residency_until_confirmed_idle_unload(tmp_path):
+    now = [0.0]
+    events = []
+    capacity = FakeCapacityManager(events=events)
+
+    def load(_path, *, device, expected_sha256):
+        events.append(("load", device))
+        return FakeAgent(device)
+
+    model = adapter(
+        tmp_path, load, capacity_manager=capacity, capacity_request_bytes=2 * 1024**3
+    )
+    shared = LayaSessionLifecycle(
+        600, close_session=model._close_with_capacity, clock=lambda: now[0]
+    )
+    request, evidence = request_and_evidence()
+
+    result = model.evaluate_context_source(request, evidence, session_lifecycle=shared)
+
+    assert result.decision.suggestion == "artifact"
+    assert [item[0] for item in events] == ["acquire", "load"]
+    assert capacity.releases == []
+    assert shared.poll_idle_unload(now=now[0] + 599.999) == "not_idle"
+    assert capacity.releases == []
+    assert shared.poll_idle_unload(now=now[0] + 600) == "unloaded"
+    assert len(capacity.releases) == 1
+    lease_id, owner, generation = capacity.releases[0]
+    assert (lease_id, generation) == ("lease-1", "generation-1")
+    assert owner.startswith(f"laya-runtime:{os.getpid()}:")
+
+
+def test_gpu_capacity_rejection_happens_before_provider_load(tmp_path):
+    events = []
+    capacity = FakeCapacityManager(admitted=False, events=events)
+
+    def load(_path, *, device, expected_sha256):
+        events.append(("load", device))
+        return FakeAgent(device)
+
+    model = adapter(
+        tmp_path, load, capacity_manager=capacity, capacity_request_bytes=2 * 1024**3
+    )
+    request, evidence = request_and_evidence()
+
+    result = model.evaluate_context_source(request, evidence, session_lifecycle=lifecycle())
+
+    assert result.decision.status is DecisionStatus.ERROR
+    assert events and events[0][0] == "acquire"
+    assert not any(item[0] == "load" for item in events)
+    assert capacity.releases == []
+
+
+def test_failed_gpu_capacity_release_records_pending_after_confirmed_provider_unload(tmp_path):
+    now = [0.0]
+    capacity = FakeCapacityManager(release_result=False)
+    model = adapter(
+        tmp_path,
+        lambda _path, *, device, expected_sha256: FakeAgent(device),
+        capacity_manager=capacity,
+        capacity_request_bytes=2 * 1024**3,
+    )
+    shared = LayaSessionLifecycle(1, close_session=model._close_with_capacity, clock=lambda: now[0])
+    request, evidence = request_and_evidence()
+    result = model.evaluate_context_source(request, evidence, session_lifecycle=shared)
+
+    assert result.decision.suggestion == "artifact"
+    assert shared.poll_idle_unload(now=2) == "unloaded"
+    assert shared.status["available"] is False
+    assert len(capacity.releases) == 1
+    assert model._capacity_lease_release_pending is True
+
+
+def test_laya_retries_pending_capacity_release_before_reacquiring(tmp_path):
+    now = [0.0]
+    capacity = FakeCapacityManager(release_result=False)
+    model = adapter(
+        tmp_path,
+        lambda _path, *, device, expected_sha256: FakeAgent(device),
+        capacity_manager=capacity,
+        capacity_request_bytes=2 * 1024**3,
+    )
+    shared = LayaSessionLifecycle(1, close_session=model._close_with_capacity, clock=lambda: now[0])
+    request, evidence = request_and_evidence()
+
+    first = model.evaluate_context_source(request, evidence, session_lifecycle=shared)
+    assert first.decision.suggestion == "artifact"
+    assert shared.poll_idle_unload(now=2) == "unloaded"
+    assert model._capacity_lease_release_pending is True
+
+    capacity.release_result = True
+    second = model.evaluate_context_source(request, evidence, session_lifecycle=shared)
+
+    assert second.decision.suggestion == "artifact"
+    assert [event[0] for event in capacity.events] == ["acquire", "release", "release", "acquire"]
+    assert model._capacity_lease_release_pending is False

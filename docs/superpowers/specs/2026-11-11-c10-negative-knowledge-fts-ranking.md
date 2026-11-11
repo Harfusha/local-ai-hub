@@ -6,19 +6,19 @@ Complete the accepted Round 6 C10 criterion: `IncidentStore.find_negative_knowle
 
 ## Design
 
-- `agent_incidents` remains canonical. Add a derived FTS5 external-content index over operation, error, redacted message, root cause, verified fix, and affected paths.
-- Keep the index synchronized through insert, update, and delete triggers. Rebuild it from canonical rows during the store's one-time schema initialization; do not alter or discard incident rows.
-- Keep repository, ignored, expiration, and latest-signature filters in SQL. Join FTS candidates only to the latest record within the requested repository.
-- Tokenize user query terms into safely quoted FTS terms. Rank with BM25, then `updated_at DESC` and incident ID for deterministic ties. Keep the existing bounded candidate cap as a bound parameter, and return no more than the caller's validated `limit`.
-- Preserve a bounded recent/lexical fallback only when the SQLite build lacks FTS5; do not report that fallback as FTS-verified behavior.
+- `agent_incidents` remains canonical. Build a connection-local temporary FTS5 index from the latest eligible incidents in the requested repository for each query.
+- Do not add persistent tables, triggers, or columns. AgentStateStore preflight rejects unknown persistent schema objects; cleanup of any existing derived objects is an offline owner task.
+- Include operation, error, redacted message, root cause, verified fix, and affected paths in the temporary index. Keep repository, ignored, expiry, and latest-signature filters in SQL while building it.
+- Tokenize caller text into safely quoted FTS terms. Rank with BM25, then `updated_at DESC` and incident ID for deterministic ties. Apply the existing candidate cap as a bound SQL parameter and return no more than caller limit.
+- Rebuild the temporary index on each call so canonical insert, update, and delete changes are visible immediately. Use bounded recent/lexical fallback only when SQLite lacks FTS5; never report fallback as FTS-verified.
 
 ## Acceptance
 
 1. A relevant older incident outranks newer unrelated incidents within the same repository.
-2. The SQL query uses a bound candidate limit and the API returns at most `limit` items.
-3. Capture, resolve/update, and deletion keep the derived index current; rebuilding restores it from existing rows.
-4. Results remain repository-scoped, query punctuation is safe, and current limit validation remains enforced.
-5. Focused tests pass. Broad suites remain gated on the stable shared-checkout window.
+2. SQL applies a bound candidate limit after FTS matching; API returns at most caller limit.
+3. Canonical updates and deletes affect the next call; no persistent FTS object is created.
+4. Results remain repository-scoped, query punctuation is safe, and existing limit validation remains enforced.
+5. Focused tests pass. Broad suites remain gated on a stable shared-checkout window.
 
 ## Out of scope
 

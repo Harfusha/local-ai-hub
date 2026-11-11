@@ -1,5 +1,7 @@
 """Unit tests for repo plan storage, 9-step atomic save protocol, and crash recovery."""
 
+import threading
+
 import pytest
 
 from local_ai_hub.repo_plan import (
@@ -169,6 +171,89 @@ def test_multi_file_save_spec_and_plan(temp_workspace):
     assert (tmp_path / spec_path).read_text(encoding="utf-8") == spec_content
     loaded_plan, _ = storage.read_plan_file(plan_path)
     assert loaded_plan["id"] == "plan_feature"
+
+
+def test_read_plan_file_waits_for_storage_transaction(temp_workspace):
+    _, storage = temp_workspace
+    plan_path = ".local-ai-hub/plans/locked.plan.json"
+    storage.save_plan_file(plan_path, create_sample_plan_dict(plan_id="plan_locked"))
+
+    started = threading.Event()
+    finished = threading.Event()
+    result = []
+
+    def read_plan():
+        started.set()
+        result.append(storage.read_plan_file(plan_path))
+        finished.set()
+
+    reader = threading.Thread(target=read_plan)
+    with storage._lock_storage():
+        reader.start()
+        started_ok = started.wait(timeout=1)
+        blocked = not finished.wait(timeout=0.05)
+
+    reader.join(timeout=1)
+    assert started_ok
+    assert blocked
+    assert not reader.is_alive()
+    assert result[0][0]["id"] == "plan_locked"
+
+
+def test_read_spec_and_plan_observes_one_storage_transaction(temp_workspace):
+    tmp_path, storage = temp_workspace
+    spec_path = "docs/superpowers/specs/locked.md"
+    plan_path = ".local-ai-hub/plans/locked-pair.plan.json"
+    initial_plan = create_sample_plan_dict(plan_id="plan_locked_pair", title="Before")
+    initial = storage.save_spec_and_plan(spec_path, "spec before", plan_path, initial_plan)
+    updated_plan = create_sample_plan_dict(plan_id="plan_locked_pair", title="After")
+
+    spec_written = threading.Event()
+    finish_write = threading.Event()
+    reader_started = threading.Event()
+    reader_finished = threading.Event()
+    reader_result = []
+    errors = []
+
+    def write_pair():
+        try:
+            with storage._lock_storage():
+                (tmp_path / spec_path).write_text("spec after", encoding="utf-8")
+                spec_written.set()
+                if not finish_write.wait(timeout=1):
+                    raise TimeoutError("Test did not release paired writer")
+                storage.save_plan_file(plan_path, updated_plan, expected_revision=initial["plan_revision"])
+        except BaseException as exc:
+            errors.append(exc)
+
+    def read_pair():
+        reader_started.set()
+        try:
+            reader_result.append(storage.read_spec_and_plan(spec_path, plan_path))
+        except BaseException as exc:
+            errors.append(exc)
+        finally:
+            reader_finished.set()
+
+    writer = threading.Thread(target=write_pair)
+    writer.start()
+    spec_written_ok = spec_written.wait(timeout=1)
+    reader = threading.Thread(target=read_pair)
+    reader.start()
+    reader_started_ok = reader_started.wait(timeout=1)
+    blocked = not reader_finished.wait(timeout=0.05)
+    finish_write.set()
+    writer.join(timeout=1)
+    reader.join(timeout=1)
+
+    assert spec_written_ok
+    assert reader_started_ok
+    assert blocked
+    assert not writer.is_alive()
+    assert not reader.is_alive()
+    assert not errors
+    assert reader_result[0]["spec_content"] == "spec after"
+    assert reader_result[0]["plan"]["title"] == "After"
 
 
 def test_recovery_of_intents(temp_workspace):

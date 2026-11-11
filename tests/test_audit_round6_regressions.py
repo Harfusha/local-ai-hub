@@ -450,11 +450,10 @@ def test_t6_10_find_negative_knowledge_fts_ranks_old_rows_with_sql_limit(
     assert params[-1] == 200
 
 
-def test_t6_10_fts_index_tracks_update_delete_and_rebuild(tmp_path: Path):
-    """C10: The FTS index follows canonical rows and rebuild restores derived state."""
+def test_t6_10_query_local_fts_tracks_update_delete_without_persistent_schema(tmp_path: Path):
+    """C10: Query-local FTS sees canonical changes and leaves the main schema unchanged."""
     state = AgentStateStore(tmp_path / "incidents.db")
     store = IncidentStore(state)
-    store._init_table()
     root = str(tmp_path / "repo")
     _insert_t6_10_incident(
         store,
@@ -466,7 +465,7 @@ def test_t6_10_fts_index_tracks_update_delete_and_rebuild(tmp_path: Path):
         updated_at=1.0,
     )
 
-    assert store.find_negative_knowledge(root=root, query="beforetoken", limit=5)
+    assert [item["incident_id"] for item in store.find_negative_knowledge(root=root, query="beforetoken", limit=5)] == ["tracked"]
     with closing(sqlite3.connect(state.db_path)) as con:
         con.execute("UPDATE agent_incidents SET root_cause = 'aftertoken' WHERE incident_id = 'tracked'")
         con.commit()
@@ -474,14 +473,19 @@ def test_t6_10_fts_index_tracks_update_delete_and_rebuild(tmp_path: Path):
     assert [item["incident_id"] for item in store.find_negative_knowledge(root=root, query="aftertoken", limit=5)] == ["tracked"]
 
     with closing(sqlite3.connect(state.db_path)) as con:
-        con.execute("INSERT INTO agent_incidents_fts(agent_incidents_fts) VALUES ('delete-all')")
-        con.commit()
-    reloaded = IncidentStore(state)
-    assert [item["incident_id"] for item in reloaded.find_negative_knowledge(root=root, query="aftertoken", limit=5)] == ["tracked"]
-
-    with closing(sqlite3.connect(state.db_path)) as con:
         con.execute("DELETE FROM agent_incidents WHERE incident_id = 'tracked'")
         con.commit()
+    assert store.find_negative_knowledge(root=root, query="aftertoken", limit=5) == []
+
+    with closing(sqlite3.connect(state.db_path)) as con:
+        assert con.execute(
+            "SELECT name FROM sqlite_master WHERE name = 'agent_incidents_fts'"
+        ).fetchone() is None
+        assert con.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'trigger' "
+            "AND name LIKE 'trg_agent_incidents_fts_%'"
+        ).fetchone() is None
+    reloaded = IncidentStore(AgentStateStore(state.db_path))
     assert reloaded.find_negative_knowledge(root=root, query="aftertoken", limit=5) == []
 
 
@@ -577,11 +581,26 @@ def test_t6_13_task_search_backfill_fast_path(tmp_path: Path):
 # ==============================================================================
 def test_t6_14_benchmark_persist_atomic(tmp_path: Path):
     """C14: _persist_record writes atomically to temporary file and renames."""
+    from concurrent.futures import ThreadPoolExecutor
+
     benchmarks_path = tmp_path / "benchmarks.json"
     runner = HardwareBenchmarkRunner(benchmarks_path=benchmarks_path)
 
     runner._persist_record({"model": "test", "tokens_per_second": 50.0})
+
+    # All calls share one runner and its file lock, as concurrent benchmark
+    # requests do. Distinct records must survive the read/append/replace cycle.
+    records = [
+        {"model": f"parallel-{index}", "tokens_per_second": float(index)}
+        for index in range(24)
+    ]
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        list(executor.map(runner._persist_record, records))
+
     assert benchmarks_path.exists()
     data = json.loads(benchmarks_path.read_text(encoding="utf-8"))
-    assert len(data) == 1
+    assert len(data) == 25
     assert data[0]["model"] == "test"
+    assert {record["model"] for record in data[1:]} == {
+        record["model"] for record in records
+    }

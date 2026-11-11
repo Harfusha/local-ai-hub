@@ -218,28 +218,28 @@ def validate_config(data: dict[str, Any]) -> None:
     _number(scheduler, "max_caller_wait_timeout_seconds", minimum=1, maximum=86400)
 
     laya = data.get("laya", {})
-    _number(laya, "idle_unload_seconds", minimum=0, maximum=86400, label="laya.idle_unload_seconds")
+    _number(laya, "idle_unload_seconds", minimum=600, maximum=600, label="laya.idle_unload_seconds")
     idle_unload_seconds = laya.get("idle_unload_seconds") if isinstance(laya, dict) else None
     if isinstance(idle_unload_seconds, (int, float)) and not isinstance(idle_unload_seconds, bool) and not math.isfinite(float(idle_unload_seconds)):
         raise ConfigError("laya.idle_unload_seconds must be finite")
     laya_runtime = laya.get("runtime", {}) if isinstance(laya, dict) else {}
     if not isinstance(laya_runtime, dict):
         raise ConfigError("laya.runtime must be a table")
-    runtime_enabled = laya_runtime.get("enabled", False)
     allow_laya_cpu = laya_runtime.get("allow_cpu", False)
-    if type(runtime_enabled) is not bool or type(allow_laya_cpu) is not bool:
-        raise ConfigError("laya.runtime enabled and allow_cpu must be booleans")
-    if runtime_enabled:
-        checkpoint_path = laya_runtime.get("checkpoint_path")
-        revision = laya_runtime.get("revision")
-        expected_hashes = laya_runtime.get("expected_sha256")
+    if type(allow_laya_cpu) is not bool:
+        raise ConfigError("laya.runtime allow_cpu must be a boolean")
+    checkpoint_path = laya_runtime.get("checkpoint_path", "")
+    revision = laya_runtime.get("revision", "")
+    expected_hashes = laya_runtime.get("expected_sha256", {})
+    checkpoint_configured = checkpoint_path != "" or revision != "" or expected_hashes != {}
+    if checkpoint_configured:
         if (not isinstance(checkpoint_path, str) or not checkpoint_path
                 or not Path(checkpoint_path).is_absolute()):
-            raise ConfigError("enabled laya.runtime requires an absolute checkpoint_path")
+            raise ConfigError("laya.runtime requires an absolute checkpoint_path")
         if (not isinstance(revision, str) or not revision or Path(checkpoint_path).name != revision):
-            raise ConfigError("enabled laya.runtime requires revision matching the checkpoint directory")
+            raise ConfigError("laya.runtime requires revision matching the checkpoint directory")
         if not isinstance(expected_hashes, dict) or not expected_hashes:
-            raise ConfigError("enabled laya.runtime requires expected_sha256 hashes")
+            raise ConfigError("laya.runtime requires expected_sha256 hashes")
         for filename, digest in expected_hashes.items():
             if (not isinstance(filename, str) or Path(filename).is_absolute()
                     or ".." in Path(filename).parts or not isinstance(digest, str)

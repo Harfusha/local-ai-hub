@@ -43,12 +43,12 @@
         "Confirmed terminal external requests release reservation immediately",
         "No unrelated repository worktree changes are overwritten"
       ],
-      "blocker": "Runtime verification remains blocked by unresolved GPU ownership/admission. Stability thread checks req_5b8d8d8e56f8 and req_bed27cdc28b3 reported gpu_admission_state=outcome_unknown and reservation=unknown/manual_intervention_required; Laya-side req_82791a29d948 and req_f941d8ffd84d reported available/free at another observation. These conflict across observations, so no stable window is established. Runtime, async jobs and GPU diagnostics belong to Stability. No restart, release, stress test or model action by this audit.",
+      "blocker": "Runtime verification remains blocked by unresolved GPU ownership/admission. Earlier Stability requests req_5b8d8d8e56f8 and req_bed27cdc28b3 reported gpu_admission_state=outcome_unknown and reservation=unknown/manual_intervention_required; Laya-side req_82791a29d948 and req_f941d8ffd84d reported available/free at another observation. Latest candidate-thread turn 01a1cc55-0991-7453-ac15-27220a2a6d92 is host-visible through read_thread: command output reports Hub v6.0.0 PID 22608 with qwen2.5-coder:3b; `ollama ps` reports qwen2.5-coder:3b at 2.3 GB/100% GPU with a five-minute lease; `nvidia-smi` reports 16,303 MiB total, 7,965 MiB used, 8,031 MiB free, 0% utilization, while WDDM process memory is N/A. Hub reservation remained free/absent in the latest coordination snapshot. Prior MCP status reported active_model=null; loaded Hub revision remains unverified because source mtimes postdate process start. This proves a live external GPU model, not safe Laya capacity or reservation correctness. Stability ownership of the candidate thread is still unconfirmed. Runtime, async jobs and GPU diagnostics belong to Stability. No restart, release, stress test or model action by this audit.",
       "clarifications": [],
       "depends_on": [],
       "description": "Fix all GPU outcome-unknown and stale reservation causes. Keep active inference fenced with TTL-aware heartbeats; recover inactive expired uncertainty; avoid reserving GPU before external inference begins and release after confirmed terminal completion.",
       "kind": "code",
-      "next_action": "Stability owner reconciles admission and reservation with same-window evidence, confirms exact runtime revision and safe window, then provides focused runtime verification. Until then keep C04 in progress; review only source evidence without changing Stability-owned code.",
+      "next_action": "Stability owner must confirm thread ownership, reconcile model/PID/VRAM/reservation and loaded code revision in one bounded observation, then provide a safe focused runtime window. Keep C04 in progress; do not perform runtime, GPU, restart or async actions here.",
       "title": "P0-A: GPU lease lifecycle, unnecessary reservations, and stale outcome recovery",
       "work_status": "in_progress"
     },
@@ -75,12 +75,12 @@
         "Task search backfill kontroluje digest před rekurzivním trigram parse",
         "Benchmark persist_record je atomický pod zámkem souboru"
       ],
-      "blocker": null,
+      "blocker": "C08/C09/C13 owner handoff remains unaccepted. Searched archived history (2,046 Codex and 2,235 ChatGPT chats); no Stability destination was established. Agent OS task_list(owner=\"Stability\") returned no tasks (req_063145ad30cd). Candidate 01a1bb82-3af1-7690-8436-fea6ea9b7b1b, \"Oprav příčiny gpu_outcome_unknown\", reports that the correct Stability chat is unavailable. Earlier target 01a1c762-d599-75c2-ae34-344aae056aa0 has no title/history proof of Stability ownership. C13 source confirms digest calculation precedes unchanged-document comparison and regression does not assert parser skip. Do not edit shared Runtime/AgentTaskStore files without confirmed owner.",
       "clarifications": [],
       "depends_on": [],
-      "description": "P2 fixes C08/C09/C10/C11/C13/C14. C10 design: docs/superpowers/specs/2026-11-11-c10-negative-knowledge-fts-ranking.md; query-local FTS avoids adding main-database schema objects rejected by AgentStateStore preflight.",
+      "description": "P2 C08/C09/C10/C11/C13/C14. C10 query-local FTS5 is implemented and focused-verified: 8 passed; source SHA BD392A3A228E11F7713E55D2E856AEED2061F9130983CAEDF1D3E3585C4555DB; test SHA F5AC173BDD18BFF929073B70B80A167021E101793D6FBE7DB607CF21A537A47D. Spec: docs/superpowers/specs/2026-11-11-c10-negative-knowledge-fts-ranking.md. Stability owner reports a stable copy of agent_state.sqlite3 with WAL/SHM sidecars contains no persistent FTS objects and no agent_incidents table; no cleanup needed on that copy. Live operational DB was not modified, so its state remains unverified. C11 focused follow-up (2026-11-11): current static_exports.py named_export_status source SHA 5fb85ca388ce47cd34c53b8e17eda6213921aa5fe3c1b22faa19fa7c6979c7ed; tests/test_static_exports.py SHA 9c3c28eaf2676429d1242e46f86912618acb474ea891baba610868c58762fcce. Helper regressions reject cross-namespace and nested types; both original failure modes were observed RED before fix. Focused run `python -m pytest -q tests/test_static_exports.py tests/test_audit_round6_regressions.py::test_t6_11_static_exports_php_csharp_requires_declaration` passed 12 tests (2026-11-11 0.48s). Integration fixture invokes production DeterministicEngine.resolve_imports with isolated SQLite/index stubs and verifies invalid nested types produce no import. Caller source SHA 9145d9eef555d88f7bbc02e5f400f3fe4843c93a67861b5bc04819f70798fb2e. Targeted `python -m pyflakes src/local_ai_hub/static_exports.py tests/test_static_exports.py` passed. C13 source SHA ff1e3d6fdf90ce921fa6a1a30c90ec49d0cd4c804ccf59b14f3658f521f42027 computes `_search_grams(fields)` before the unchanged-document comparison; its regression does not assert parser skip. Shared AgentTaskStore startup path requires Stability ownership/handoff. C14 (2026-11-11): benchmark.py SHA 881996c71751ea0004458aadf1967f53c3311e12c70472458f672b0c00baaa51 uses a per-runner lock around read/append/temp-write/os.replace. app.py SHA 7cc572dbfd894e4f5b34b37f046423b30c9bd305d6effdc011ac1cbfa888302e constructs one production runner at state_dir/benchmarks.json. Regression file SHA 73a960c73661a3a69787b0aa0740e6453ee4d4d81ea56b653a8356e0eaf73c1c passed `python -m pytest -q tests/test_audit_round6_regressions.py::test_t6_14_benchmark_persist_atomic --tb=short` (1 passed), preserving 24 concurrent writes through that runner. Cross-process shared-state-dir behavior is outside the verified lifecycle.",
       "kind": "code",
-      "next_action": "Implement query-local temporary FTS5 over the selected repository's canonical latest incident rows, rank with BM25 and SQL LIMIT, and prove updates/deletes are visible on the next call without persistent schema changes. Then reconcile C08/C09/C11/C13/C14 individually; C04/C12 remain Stability-owned.",
+      "next_action": "Continue independent Round 2-5 and practical eval reconciliation. Keep C08/C09/C13 source untouched until a Stability-owned destination and acknowledgment are verified. Then review current diff and focused evidence for each acceptance criterion. Broad gates await a stable shared snapshot.",
       "title": "P2: Optimalizace a opravy stability (C08-C11, C13-C14)",
       "work_status": "in_progress"
     },
@@ -102,14 +102,15 @@
         "Všech 14 testů T6-01 až T6-14 v test_audit_round6_regressions.py prochází",
         "Existující testovací sada nevykazuje žádné regrese"
       ],
-      "blocker": null,
+      "blocker": "Full pytest and release gates remain NOT RUN because the shared checkout is changing and Stability has unresolved runtime/admission discrepancies. Do not infer suite-wide pass from focused T6 tests.",
       "clarifications": [],
       "depends_on": [],
-      "description": "Vytvořit a spustit sadu regresních testů T6-01 až T6-14 pokrývající všechny nálezy šestého kola auditu",
+      "description": "The targeted T6-01 through T6-14 regression matrix exists and focused fixes have scoped passing evidence. Full-suite regression acceptance remains open; no stable shared snapshot/window yet.",
       "kind": "code",
-      "next_action": "",
+      "next_action": "After accepted fixes settle and Stability confirms a stable shared snapshot/window, run the required broad gates once. Until then retain the focused evidence and keep broad acceptance open.",
       "title": "Regresní testovací matice T6-01 až T6-14",
-      "work_status": "completed"
+      "work_phase": "verification",
+      "work_status": "in_progress"
     }
   },
   "title": "Audit Round 6: Opravy a regresní testy (commit 2176b0e)"

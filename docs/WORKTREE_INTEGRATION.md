@@ -24,6 +24,12 @@
 - **Continuation on master:** If deferred work is still required, continue it as a small, explicit item based on current `master`; do not keep developing on a stale source checkout. Create a fresh worktree only if isolation is still necessary.
 - **Safe de-registration:** Remove an active worktree registration only after checking that its contents, unique commits, dirty files, and stashes have recoverable disposition. Age, detached HEAD, or a branch name is not sufficient evidence that work is disposable.
 
+## Repository Plan Artifacts
+
+- Durable project plans use stable, project-specific IDs and remain tracked under `.local-ai-hub/plans/`. Never ignore the whole plans directory.
+- Validation-only plan IDs use the explicit lowercase prefixes `plan_smoke_` or `plan_ephemeral_`; keep these plans temporary and promote useful requirements/results into the existing durable plan.
+- Archive or remove transient plans through the supported project-plan interface after their validation purpose ends. Do not use transient IDs for durable project work.
+
 ## Evidence and Communication Standards
 
 - **Standard Git tooling:** Do not create ZIPs, custom handoff bundles, repository-wide fingerprints, per-file hash manifests, or cascades of SHA checks for routine integration. Use ordinary Git status, diff, log, show, and the exact test output needed to decide.

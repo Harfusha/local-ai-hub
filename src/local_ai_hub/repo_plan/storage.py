@@ -548,6 +548,55 @@ class RepoPlanStorage:
 
         Raises RepoPlanValidationError if invalid, FileNotFoundError if missing.
         """
+        self._ensure_intents_dir()
+        with self._lock_storage():
+            return self._read_plan_file_unlocked(rel_path)
+
+    def read_spec_and_plan(self, spec_rel_path: str, plan_rel_path: str) -> dict[str, Any]:
+        """Read a specification and plan from one consistent storage snapshot."""
+        self._ensure_intents_dir()
+        with self._lock_storage():
+            spec_content, spec_revision = self._read_spec_file_unlocked(spec_rel_path)
+            plan, plan_revision = self._read_plan_file_unlocked(plan_rel_path)
+        return {
+            "spec_content": spec_content,
+            "spec_revision": spec_revision,
+            "plan": plan,
+            "plan_revision": plan_revision,
+        }
+
+    def _read_spec_file_unlocked(self, rel_path: str) -> tuple[str, str]:
+        validate_repo_path(rel_path, repo_root=self.repo_root)
+        full_path = self.repo_root / rel_path
+        if not full_path.exists():
+            raise FileNotFoundError(f"Specification file not found: {rel_path}")
+
+        if os.name != "nt":
+            with self._target_directory(full_path.parent, create=False) as parent_fd:
+                descriptor = os.open(
+                    full_path.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent_fd
+                )
+            try:
+                if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+                    raise RepoPlanValidationError("Specification file must be a regular file")
+                with os.fdopen(descriptor, "rb") as stream:
+                    descriptor = None
+                    raw_bytes = stream.read(MAX_PLAN_FILE_BYTES + 1)
+            finally:
+                if descriptor is not None:
+                    os.close(descriptor)
+        else:
+            with full_path.open("rb") as stream:
+                raw_bytes = stream.read(MAX_PLAN_FILE_BYTES + 1)
+        if len(raw_bytes) > MAX_PLAN_FILE_BYTES:
+            raise RepoPlanValidationError("Specification file exceeds maximum size")
+        try:
+            content = raw_bytes.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise RepoPlanValidationError("Specification file must be valid UTF-8") from exc
+        return content, compute_bytes_sha256(raw_bytes)
+
+    def _read_plan_file_unlocked(self, rel_path: str) -> tuple[dict[str, Any], str]:
         validate_repo_path(rel_path, repo_root=self.repo_root)
         full_path = self.repo_root / rel_path
         if not full_path.exists():

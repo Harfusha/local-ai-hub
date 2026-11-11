@@ -294,6 +294,10 @@ Uvolnění jednoho lease zachová čekací hranu, pokud stejný vlastník stále
 
 N13: filtry source+target už fungují společně; projektová izolace zůstává nevyřešená, protože tabulka i API zápisu postrádají repository provenance a staré vztahy nelze bezpečně přiřadit. N15: writer drží lock při zápisu obou souborů, ale `read_plan_file()` jej nezískává; atomické čtení dvojice není doloženo. Viz Round 85 v `docs/agent-evaluation/results.md`.
 
+### N15 — aktuální stav (2026-11-11)
+
+`read_plan_file()` nyní sdílí storage lock. Nové `read_spec_and_plan()` načte obsah i revizi specifikace a plán i jeho revizi pod jedním lockem. Regresní souběhový test ověřil, že čtenář počká na zápis dvojice a vrátí novou specifikaci s novým plánem. `tests/test_repo_plan_storage.py`: **12 passed**. Čtenáři dvojice mají používat toto API; přímé čtení souborů mimo něj kontrakt nepokrývá.
+
 ### N04 — LRU cache kapacita (Round 86, 2026-11-11)
 
 `MemoryLRUCache` rozděluje zbytek `max_entries` mezi shardy; `set()` i `set_many()` zachovávají plnou nakonfigurovanou kapacitu. Test pokryl kapacitu 1 a nedělitelnou kapacitu 17: **4 passed**. N05–N11, N13, N15, N18–N21 a N24 zůstávají podle vlastnictví a chybějících důkazů otevřené.

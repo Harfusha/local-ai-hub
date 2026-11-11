@@ -55,7 +55,7 @@ from .async_jobs import AsyncJobManager
 from .speculative_lint import SpeculativeLintQueue
 from .debug_traces import DebugTraceStore
 from .agent_events import AgentStateStore
-from .agent_tasks import TaskStore, TaskStatus
+from .agent_tasks import CompletionGateError, TaskStore, TaskStatus
 from .laya_candidates import LayaCandidateStore
 from .laya_lifecycle import DEFAULT_IDLE_UNLOAD_SECONDS, LayaSessionLifecycle
 from .agent_identity import AgentScope
@@ -511,11 +511,12 @@ class LocalAIApp:
         )
         self.agent_tasks = TaskStore(self.agent_state)
         self.laya_candidates = LayaCandidateStore(state_dir)
-        laya_cfg = self.config.get("laya", {})
-        self.laya_lifecycle = LayaSessionLifecycle(
-            laya_cfg.get("idle_unload_seconds", DEFAULT_IDLE_UNLOAD_SECONDS)
-        )
-        self._laya_capture_inflight = threading.Lock()
+        self.laya_lifecycle = LayaSessionLifecycle(DEFAULT_IDLE_UNLOAD_SECONDS)
+        self._laya_runtime_adapter_lock = threading.Lock()
+        self._laya_runtime_adapter = None
+        self._laya_capture_lock = threading.Lock()
+        self._laya_capture_queue: list[tuple[dict[str, Any], str, dict[str, Any]]] = []
+        self._laya_capture_draining = False
         self.scheduler.add_idle_maintenance_callback(self.laya_lifecycle.poll_idle_unload)
         from .automation_service import create_automation_broker
         self.automation = create_automation_broker(self.config, self.artifacts)
@@ -2481,6 +2482,34 @@ class LocalAIApp:
     def __exit__(self, _exc_type: Any, _exc: Any, _tb: Any) -> None:
         self.close()
 
+    def _get_laya_runtime_adapter(
+        self,
+        runtime_cfg: Mapping[str, Any],
+        *,
+        checkpoint_path: str,
+        revision: str,
+        expected_sha256: Mapping[str, str],
+    ) -> Any:
+        """Create and publish one adapter for the shared Laya session lifecycle."""
+        with self._laya_runtime_adapter_lock:
+            adapter = self._laya_runtime_adapter
+            if adapter is None:
+                from .laya_runtime import LayaRuntimeAdapter, discover_torch_devices
+
+                devices = discover_torch_devices()
+                if runtime_cfg.get("allow_cpu", False) is not True:
+                    devices = tuple(device for device in devices if device.device_class != "cpu")
+                adapter = LayaRuntimeAdapter(
+                    checkpoint_path=checkpoint_path,
+                    revision=revision,
+                    expected_sha256=expected_sha256,
+                    device_candidates=devices,
+                    capacity_manager=self.scheduler,
+                    evaluation_mode=True,
+                )
+                self._laya_runtime_adapter = adapter
+            return adapter
+
     def evaluate_laya_context_source(
         self,
         operation: Any,
@@ -2497,8 +2526,9 @@ class LocalAIApp:
             raise ValueError("unsupported Laya runtime action")
         laya_cfg = self.config.get("laya", {})
         runtime_cfg = laya_cfg.get("runtime", {}) if isinstance(laya_cfg, dict) else {}
-        if not isinstance(runtime_cfg, dict) or runtime_cfg.get("enabled") is not True:
-            raise RuntimeError("Laya shadow runtime is disabled")
+        # Keep the service route available; the model itself loads lazily below.
+        if not isinstance(runtime_cfg, dict):
+            runtime_cfg = {}
         checkpoint_path = runtime_cfg.get("checkpoint_path")
         revision = runtime_cfg.get("revision")
         expected_sha256 = runtime_cfg.get("expected_sha256")
@@ -2512,7 +2542,6 @@ class LocalAIApp:
             raise RuntimeError("laya.runtime.allow_cpu must be a boolean")
 
         from .laya_decisions import ContextSourceEvidence, DecisionCategory, DecisionMode, DecisionRequest
-        from .laya_runtime import LayaRuntimeAdapter, discover_torch_devices
         from .project_config import resolve_project_context
 
         canonical_root = str(Path(root).resolve(strict=True))
@@ -2551,19 +2580,12 @@ class LocalAIApp:
             candidate, evidence_store=self.evidence, canonical_root=canonical_root
         )
 
-        adapter = getattr(self, "_laya_runtime_adapter", None)
-        if adapter is None:
-            devices = discover_torch_devices()
-            if runtime_cfg.get("allow_cpu", False) is not True:
-                devices = tuple(device for device in devices if device.device_class != "cpu")
-            adapter = LayaRuntimeAdapter(
-                checkpoint_path=checkpoint_path,
-                revision=revision,
-                expected_sha256=expected_sha256,
-                device_candidates=devices,
-                evaluation_mode=True,
-            )
-            self._laya_runtime_adapter = adapter
+        adapter = self._get_laya_runtime_adapter(
+            runtime_cfg,
+            checkpoint_path=checkpoint_path,
+            revision=revision,
+            expected_sha256=expected_sha256,
+        )
 
         captured: dict[str, Any] = {}
 
@@ -2615,13 +2637,13 @@ class LocalAIApp:
             raise ValueError("Laya decision input fields invalid")
 
         from .laya_decisions import DecisionCategory, DecisionInput, DecisionMode, DecisionRequest
-        from .laya_runtime import LayaRuntimeAdapter, discover_torch_devices
         from .project_config import resolve_project_context
 
         laya_cfg = self.config.get("laya", {})
         runtime_cfg = laya_cfg.get("runtime", {}) if isinstance(laya_cfg, dict) else {}
-        if not isinstance(runtime_cfg, dict) or runtime_cfg.get("enabled") is not True:
-            raise RuntimeError("Laya shadow runtime is disabled")
+        # Keep the service route available; the model itself loads lazily below.
+        if not isinstance(runtime_cfg, dict):
+            runtime_cfg = {}
         checkpoint_path = runtime_cfg.get("checkpoint_path")
         revision = runtime_cfg.get("revision")
         expected_sha256 = runtime_cfg.get("expected_sha256")
@@ -2667,20 +2689,14 @@ class LocalAIApp:
         self.laya_candidates._validate_context_source_evidence(
             candidate, evidence_store=self.evidence, canonical_root=canonical_root
         )
+        baseline = self._derive_laya_decision_baseline(request, task)
 
-        adapter = getattr(self, "_laya_runtime_adapter", None)
-        if adapter is None:
-            devices = discover_torch_devices()
-            if runtime_cfg.get("allow_cpu", False) is not True:
-                devices = tuple(device for device in devices if device.device_class != "cpu")
-            adapter = LayaRuntimeAdapter(
-                checkpoint_path=checkpoint_path,
-                revision=revision,
-                expected_sha256=expected_sha256,
-                device_candidates=devices,
-                evaluation_mode=True,
-            )
-            self._laya_runtime_adapter = adapter
+        adapter = self._get_laya_runtime_adapter(
+            runtime_cfg,
+            checkpoint_path=checkpoint_path,
+            revision=revision,
+            expected_sha256=expected_sha256,
+        )
 
         captured: dict[str, Any] = {}
 
@@ -2692,6 +2708,7 @@ class LocalAIApp:
                 root=canonical_root,
                 task_store=self.agent_tasks,
                 evidence_store=self.evidence,
+                baseline=baseline,
             ))
 
         outcome = adapter.evaluate_decision(
@@ -2715,6 +2732,33 @@ class LocalAIApp:
             },
             "runtime": vars(outcome.runtime) if outcome.runtime is not None else None,
             "candidate": {key: captured[key] for key in ("candidate_id", "duplicate", "status", "runtime_output_recorded") if key in captured},
+        }
+
+    def _derive_laya_decision_baseline(self, request: Any, task: Any) -> dict[str, str] | None:
+        """Derive the completion-gap baseline from the authoritative Agent OS gate."""
+        from .laya_decisions import DecisionCategory
+
+        if request.category is not DecisionCategory.COMPLETION_GAP or not request.evidence_ids:
+            return None
+        checkpoint = getattr(task, "checkpoint", None)
+        task_evidence_ids = getattr(checkpoint, "evidence_ids", ())
+        evidence_id = next(
+            (item for item in request.evidence_ids if item in task_evidence_ids),
+            None,
+        )
+        task_id = getattr(task, "task_id", None)
+        if not isinstance(evidence_id, str) or not isinstance(task_id, str) or not task_id:
+            return None
+        try:
+            self.agent_tasks.validate_completion(task_id)
+        except CompletionGateError:
+            suggestion = "not_ready"
+        else:
+            suggestion = "ready"
+        return {
+            "method": "agent_os_completion_gate",
+            "suggestion": suggestion,
+            "evidence_id": evidence_id,
         }
 
     def _record_laya_runtime_decision(self, request: Any, decision: Any) -> bool:
@@ -2742,9 +2786,9 @@ class LocalAIApp:
         error_type: str = "",
     ) -> bool:
         """Persist typed capture lifecycle metadata without request content."""
-        statuses = {"disabled", "skipped", "queued", "captured", "failed"}
+        statuses = {"skipped", "queued", "captured", "failed"}
         reasons = {
-            "runtime_disabled", "context_unavailable", "task_identity_unavailable",
+            "context_unavailable", "task_identity_unavailable",
             "task_scope_unavailable", "session_identity_mismatch",
             "retrieval_provenance_unavailable", "backend_states_unavailable",
             "fewer_than_two_verified_sources", "no_unresolved_evidence_gap",
@@ -2786,9 +2830,7 @@ class LocalAIApp:
             raise
         status = observation.get("status") if isinstance(observation, dict) else "failed"
         reason = observation.get("reason") if isinstance(observation, dict) else "outcome_not_captured"
-        if status == "disabled":
-            reason = "runtime_disabled"
-        elif status == "queued":
+        if status == "queued":
             reason = "queued"
         elif not isinstance(reason, str):
             reason = "unspecified"
@@ -2802,9 +2844,6 @@ class LocalAIApp:
         result: Any,
     ) -> dict[str, Any]:
         """Collect one real, incomplete context decision in shadow mode only."""
-        runtime_cfg = self.config.get("laya", {}).get("runtime", {})
-        if not isinstance(runtime_cfg, dict) or runtime_cfg.get("enabled") is not True:
-            return {"status": "disabled"}
         if not isinstance(result, dict) or result.get("success") is not True:
             return {"status": "skipped", "reason": "context_unavailable"}
         task_id = str(getattr(request, "task_id", "") or "").strip()
@@ -2927,60 +2966,97 @@ class LocalAIApp:
             "evidence": evidence,
         }
         executor = getattr(self, "_status_dependency_executor", None)
-        inflight = getattr(self, "_laya_capture_inflight", None)
+        capture_lock = getattr(self, "_laya_capture_lock", None)
+        capture_queue = getattr(self, "_laya_capture_queue", None)
         shutdown = getattr(self, "_shutdown", None)
-        if not callable(getattr(executor, "submit", None)) or not callable(
-            getattr(inflight, "acquire", None)
+        if (
+            not callable(getattr(executor, "submit", None))
+            or not callable(getattr(capture_lock, "acquire", None))
+            or not isinstance(capture_queue, list)
         ):
             return {"status": "skipped", "reason": "capture_executor_unavailable"}
         if shutdown is not None and shutdown.is_set():
             return {"status": "skipped", "reason": "hub_shutdown"}
-        if not inflight.acquire(blocking=False):
-            return {"status": "skipped", "reason": "capture_in_flight"}
-        try:
-            future = executor.submit(
-                self.evaluate_laya_context_source,
-                operation,
-                root=canonical_root,
-                baseline=baseline,
-            )
-        except Exception as exc:
-            inflight.release()
-            # Laya is observational; a model or capture failure cannot block context delivery.
-            return {"status": "skipped", "reason": "capture_queue_unavailable"}
-
+        dispatch = False
+        with capture_lock:
+            if shutdown is not None and shutdown.is_set():
+                return {"status": "skipped", "reason": "hub_shutdown"}
+            if len(capture_queue) >= 16:
+                return {"status": "skipped", "reason": "capture_queue_unavailable"}
+            capture_queue.append((operation, canonical_root, baseline))
+            if not getattr(self, "_laya_capture_draining", False):
+                self._laya_capture_draining = True
+                dispatch = True
         self._record_laya_capture_observation("queued", "queued")
 
-        def observe_capture(completed: Any) -> None:
+        if not dispatch:
+            return {"status": "queued"}
+        try:
+            future = executor.submit(self._drain_laya_capture_queue)
+        except Exception:
+            with capture_lock:
+                discarded = len(capture_queue)
+                capture_queue.clear()
+                self._laya_capture_draining = False
+            for _ in range(max(0, discarded - 1)):
+                self._record_laya_capture_observation("skipped", "capture_queue_unavailable")
+            return {"status": "skipped", "reason": "capture_queue_unavailable"}
+
+        def observe_dispatch(completed: Any) -> None:
             try:
                 error = completed.exception()
-                if error is not None:
-                    self._record_laya_capture_observation(
-                        "failed", "runtime_error", error_type=type(error).__name__
-                    )
-                    self.logger.warning("Laya shadow capture failed: %s", type(error).__name__)
+            except Exception as exc:
+                error = exc
+            if error is None:
+                return
+            with capture_lock:
+                discarded = len(capture_queue)
+                capture_queue.clear()
+                self._laya_capture_draining = False
+            reason = "hub_shutdown" if shutdown is not None and shutdown.is_set() else "capture_queue_unavailable"
+            for _ in range(discarded):
+                self._record_laya_capture_observation("skipped", reason, error_type=type(error).__name__)
+            self.logger.warning("Laya capture queue stopped: %s", type(error).__name__)
+
+        future.add_done_callback(observe_dispatch)
+        return {"status": "queued"}
+
+    def _drain_laya_capture_queue(self) -> None:
+        """Run eligible shadow captures serially from a bounded in-memory queue."""
+        capture_lock = self._laya_capture_lock
+        capture_queue = self._laya_capture_queue
+        shutdown = getattr(self, "_shutdown", None)
+        while True:
+            with capture_lock:
+                if shutdown is not None and shutdown.is_set():
+                    discarded = len(capture_queue)
+                    capture_queue.clear()
+                    self._laya_capture_draining = False
+                    operation = None
+                elif capture_queue:
+                    operation = capture_queue.pop(0)
+                    discarded = 0
                 else:
-                    result = completed.result()
-                    candidate = result.get("candidate") if isinstance(result, dict) else None
-                    if not isinstance(candidate, dict) or not candidate:
-                        self._record_laya_capture_observation(
-                            "failed", "outcome_not_captured"
-                        )
-                        self.logger.warning("Laya shadow outcome was not captured")
-                    else:
-                        self._record_laya_capture_observation(
-                            "captured", "runtime_outcome"
-                        )
+                    self._laya_capture_draining = False
+                    return
+            if operation is None:
+                for _ in range(discarded):
+                    self._record_laya_capture_observation("skipped", "hub_shutdown")
+                return
+            request, root, baseline = operation
+            try:
+                result = self.evaluate_laya_context_source(request, root=root, baseline=baseline)
+                candidate = result.get("candidate") if isinstance(result, dict) else None
+                if isinstance(candidate, dict) and candidate:
+                    self._record_laya_capture_observation("captured", "runtime_outcome")
+                else:
+                    self._record_laya_capture_observation("failed", "outcome_not_captured")
+                    self.logger.warning("Laya shadow outcome was not captured")
             except Exception as exc:
                 self._record_laya_capture_observation(
                     "failed", "runtime_error", error_type=type(exc).__name__
                 )
-                self.logger.warning("Laya shadow capture result unavailable: %s", type(exc).__name__)
-            finally:
-                inflight.release()
-
-        future.add_done_callback(observe_capture)
-        return {"status": "queued"}
+                self.logger.warning("Laya shadow capture failed: %s", type(exc).__name__)
 
     def close(self, *, timeout: float = 5.0) -> None:
         """Stop admission, then wait boundedly for owned component cleanup.

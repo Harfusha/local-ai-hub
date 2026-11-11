@@ -22,7 +22,7 @@ def test_status_does_not_mix_absent_record_with_a_new_owner(tmp_path, monkeypatc
     def interleaved_read():
         record = old_read()
         assert record is None
-        store.reserve('a' * 64, owner='new-owner')
+        store.reserve('a' * 64, owner_vram_budget_bytes=16 * 1024**3, owner='new-owner')
         return record
 
     monkeypatch.setattr(store, 'read', interleaved_read)
@@ -60,7 +60,7 @@ def test_status_snapshot_and_competing_reservation_are_serialized(tmp_path, monk
 
         def reserve():
             attempted.set()
-            return store.reserve('b' * 64, owner='new-owner')
+            return store.reserve('b' * 64, owner_vram_budget_bytes=16 * 1024**3, owner='new-owner')
 
         reserve_future = pool.submit(reserve)
         assert attempted.wait(5)
@@ -74,7 +74,7 @@ def test_status_snapshot_and_competing_reservation_are_serialized(tmp_path, monk
 
 def test_scheduler_gpu_check_reads_store_under_one_cross_process_lock(tmp_path, monkeypatch):
     store = ExternalGpuReservationStore(tmp_path / 'gpu')
-    store.reserve('c' * 64, owner='another-scheduler')
+    store.reserve('c' * 64, owner_vram_budget_bytes=16 * 1024**3, owner='another-scheduler')
     scheduler = _scheduler(store)
     scheduler._external_gpu_path = store.path
 

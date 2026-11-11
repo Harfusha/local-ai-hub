@@ -22,7 +22,7 @@ def _digest(token: str) -> str:
 def test_default_reservation_ttl_is_bounded_and_idle_state(tmp_path):
     store = ExternalGpuReservationStore(tmp_path / "external-gpu-reservation", clock=lambda: 100.0)
 
-    lease = store.reserve(_digest("owner-token"), owner="external-session")
+    lease = store.reserve(_digest("owner-token"), owner_vram_budget_bytes=16 * 1024**3, owner="external-session")
 
     assert lease is not None
     assert lease["schema_version"] == 1
@@ -40,7 +40,7 @@ def test_reserve_reaps_expired_legacy_fence_before_new_owner_claims(tmp_path):
     store = ExternalGpuReservationStore(path, ttl_seconds=10, clock=lambda: now[0])
     now[0] = 111.0
 
-    replacement = store.reserve(_digest("new-owner"), owner="new-owner")
+    replacement = store.reserve(_digest("new-owner"), owner_vram_budget_bytes=16 * 1024**3, owner="new-owner")
 
     assert replacement is not None
     assert replacement["owner"] == "new-owner"
@@ -75,12 +75,12 @@ def test_idle_expiration_reaps_before_new_owner_reserves(tmp_path):
     now = [100.0]
     path = tmp_path / "external-gpu-reservation"
     first = ExternalGpuReservationStore(path, ttl_seconds=10, clock=lambda: now[0])
-    old = first.reserve(_digest("first-token"), owner="first")
+    old = first.reserve(_digest("first-token"), owner_vram_budget_bytes=16 * 1024**3, owner="first")
     assert old is not None
 
     now[0] = 111.0
     second = ExternalGpuReservationStore(path, ttl_seconds=10, clock=lambda: now[0])
-    replacement = second.reserve(_digest("second-token"), owner="second")
+    replacement = second.reserve(_digest("second-token"), owner_vram_budget_bytes=16 * 1024**3, owner="second")
 
     assert replacement is not None
     assert replacement["generation"] != old["generation"]
@@ -96,7 +96,7 @@ def test_active_lease_heartbeat_prevents_expiry_until_owner_finishes(tmp_path, m
         return now[0]
 
     store = ExternalGpuReservationStore(path, ttl_seconds=0.12, clock=clock)
-    lease = store.reserve(_digest("long-running-owner"), owner="embedding:123:456")
+    lease = store.reserve(_digest("long-running-owner"), owner_vram_budget_bytes=16 * 1024**3, owner="embedding:123:456")
     assert lease is not None
     assert store.renew(_digest("long-running-owner"), lease["generation"], state="active")
     initial_expiry = store.read()["expires_at"]
@@ -154,7 +154,7 @@ def test_consented_release_current_removes_active_reservation_without_owner_prob
 
     path = tmp_path / "external-gpu-reservation"
     store = ExternalGpuReservationStore(path, ttl_seconds=900, clock=lambda: 100.0)
-    lease = store.reserve(_digest("active-owner"), owner="embedding:424242:17")
+    lease = store.reserve(_digest("active-owner"), owner_vram_budget_bytes=16 * 1024**3, owner="embedding:424242:17")
     assert lease is not None
 
     def unexpected_owner_probe(_pid):
@@ -195,7 +195,7 @@ def test_consented_release_current_clears_unknown_legacy_fence_and_audits(tmp_pa
 def test_consented_release_current_rejects_malformed_metadata(tmp_path):
     path = tmp_path / "external-gpu-reservation"
     store = ExternalGpuReservationStore(path, ttl_seconds=900)
-    active = store.reserve(_digest("active-owner"), owner="embedding:123:456")
+    active = store.reserve(_digest("active-owner"), owner_vram_budget_bytes=16 * 1024**3, owner="embedding:123:456")
 
     assert active is not None
     assert store.read() == active
@@ -213,7 +213,7 @@ def test_expired_active_reservation_reaps_before_new_owner_reserves(tmp_path):
     now = [100.0]
     path = tmp_path / "external-gpu-reservation"
     store = ExternalGpuReservationStore(path, ttl_seconds=10, clock=lambda: now[0])
-    lease = store.reserve(_digest("active-token"), owner="active-owner")
+    lease = store.reserve(_digest("active-token"), owner_vram_budget_bytes=16 * 1024**3, owner="active-owner")
     assert lease is not None
     assert store.renew(_digest("active-token"), lease["generation"], state="active")
 
@@ -221,7 +221,7 @@ def test_expired_active_reservation_reaps_before_new_owner_reserves(tmp_path):
     other = ExternalGpuReservationStore(path, ttl_seconds=10, clock=lambda: now[0])
     assert other.reap_expired()
     assert other.read() is None
-    replacement = other.reserve(_digest("other-token"), owner="other")
+    replacement = other.reserve(_digest("other-token"), owner_vram_budget_bytes=16 * 1024**3, owner="other")
     assert replacement is not None
     assert replacement["generation"] != lease["generation"]
     assert replacement["owner"] == "other"
@@ -231,7 +231,7 @@ def test_expired_active_reservation_allows_internal_gpu_claim(tmp_path):
     now = [100.0]
     path = tmp_path / "external-gpu-reservation"
     external = ExternalGpuReservationStore(path, ttl_seconds=10, clock=lambda: now[0])
-    lease = external.reserve(_digest("active-token"), owner="active-owner")
+    lease = external.reserve(_digest("active-token"), owner_vram_budget_bytes=16 * 1024**3, owner="active-owner")
     assert lease is not None
     assert external.renew(_digest("active-token"), lease["generation"], state="active")
 
@@ -247,7 +247,7 @@ def test_expired_active_reservation_allows_internal_gpu_claim(tmp_path):
 def test_owner_renewal_extends_lease_without_changing_generation(tmp_path):
     now = [100.0]
     store = ExternalGpuReservationStore(tmp_path / "external-gpu-reservation", ttl_seconds=10, clock=lambda: now[0])
-    lease = store.reserve(_digest("owner-token"), owner="session")
+    lease = store.reserve(_digest("owner-token"), owner_vram_budget_bytes=16 * 1024**3, owner="session")
     assert lease is not None
     now[0] = 105.0
 
@@ -262,7 +262,7 @@ def test_consent_release_requires_expired_idle_generation_and_audit_reason(tmp_p
     now = [100.0]
     path = tmp_path / "external-gpu-reservation"
     owner = ExternalGpuReservationStore(path, ttl_seconds=10, clock=lambda: now[0])
-    lease = owner.reserve(_digest("owner-token"), owner="session")
+    lease = owner.reserve(_digest("owner-token"), owner_vram_budget_bytes=16 * 1024**3, owner="session")
     assert lease is not None
     other = ExternalGpuReservationStore(path, ttl_seconds=10, clock=lambda: now[0])
 
@@ -280,7 +280,7 @@ def test_consent_release_allows_confirmed_dead_embedding_owner(tmp_path, monkeyp
     store = ExternalGpuReservationStore(
         tmp_path / "external-gpu-reservation", ttl_seconds=60, clock=lambda: 100.0
     )
-    lease = store.reserve(_digest("embedding-token"), owner="embedding:12345:67890")
+    lease = store.reserve(_digest("embedding-token"), owner_vram_budget_bytes=16 * 1024**3, owner="embedding:12345:67890")
     assert lease is not None
     monkeypatch.setattr("local_ai_hub.process_utils.process_is_alive", lambda pid: False)
 
@@ -301,7 +301,7 @@ def test_consent_release_recovers_metadata_orphan_after_partial_cleanup(tmp_path
     store = ExternalGpuReservationStore(
         tmp_path / "external-gpu-reservation", ttl_seconds=10, clock=lambda: now[0]
     )
-    lease = store.reserve(_digest("owner-token"), owner="session")
+    lease = store.reserve(_digest("owner-token"), owner_vram_budget_bytes=16 * 1024**3, owner="session")
     assert lease is not None
     now[0] = 111.0
 
@@ -333,7 +333,7 @@ def test_reserve_does_not_replace_metadata_orphan_after_cleanup_failure(tmp_path
     store = ExternalGpuReservationStore(
         tmp_path / "external-gpu-reservation", ttl_seconds=10, clock=lambda: now[0]
     )
-    old_lease = store.reserve(_digest("old-owner-token"), owner="old-session")
+    old_lease = store.reserve(_digest("old-owner-token"), owner_vram_budget_bytes=16 * 1024**3, owner="old-session")
     assert old_lease is not None
     now[0] = 111.0
 
@@ -347,7 +347,7 @@ def test_reserve_does_not_replace_metadata_orphan_after_cleanup_failure(tmp_path
         return original_unlink(path, *args, **kwargs)
 
     monkeypatch.setattr(Path, "unlink", fail_metadata_unlink_once)
-    assert store.reserve(_digest("new-owner-token"), owner="new-session") is None
+    assert store.reserve(_digest("new-owner-token"), owner_vram_budget_bytes=16 * 1024**3, owner="new-session") is None
     assert not store.path.exists()
     assert store.metadata_path.exists()
     assert store.read() is None
@@ -359,7 +359,7 @@ def test_reserve_does_not_replace_metadata_orphan_after_cleanup_failure(tmp_path
     )
     assert not store.path.exists()
     assert not store.metadata_path.exists()
-    assert store.reserve(_digest("new-owner-token"), owner="new-session") is not None
+    assert store.reserve(_digest("new-owner-token"), owner_vram_budget_bytes=16 * 1024**3, owner="new-session") is not None
 
 
 def test_reserve_keeps_expired_generation_when_digest_cleanup_fails(tmp_path, monkeypatch):
@@ -367,7 +367,7 @@ def test_reserve_keeps_expired_generation_when_digest_cleanup_fails(tmp_path, mo
     store = ExternalGpuReservationStore(
         tmp_path / "external-gpu-reservation", ttl_seconds=10, clock=lambda: now[0]
     )
-    old_lease = store.reserve(_digest("old-owner-token"), owner="old-session")
+    old_lease = store.reserve(_digest("old-owner-token"), owner_vram_budget_bytes=16 * 1024**3, owner="old-session")
     assert old_lease is not None
     now[0] = 111.0
 
@@ -379,7 +379,7 @@ def test_reserve_keeps_expired_generation_when_digest_cleanup_fails(tmp_path, mo
         return original_unlink(path, *args, **kwargs)
 
     monkeypatch.setattr(Path, "unlink", fail_digest_unlink)
-    assert store.reserve(_digest("new-owner-token"), owner="new-session") is None
+    assert store.reserve(_digest("new-owner-token"), owner_vram_budget_bytes=16 * 1024**3, owner="new-session") is None
     assert store.path.exists()
     assert store.metadata_path.exists()
     assert store.read()["generation"] == old_lease["generation"]
@@ -391,7 +391,7 @@ def test_reserve_keeps_expired_generation_when_digest_cleanup_fails(tmp_path, mo
     )
     assert not store.path.exists()
     assert not store.metadata_path.exists()
-    assert store.reserve(_digest("new-owner-token"), owner="new-session") is not None
+    assert store.reserve(_digest("new-owner-token"), owner_vram_budget_bytes=16 * 1024**3, owner="new-session") is not None
 
 
 def test_expired_release_retries_transient_metadata_sharing_violation(tmp_path, monkeypatch):
@@ -399,7 +399,7 @@ def test_expired_release_retries_transient_metadata_sharing_violation(tmp_path, 
     store = ExternalGpuReservationStore(
         tmp_path / "external-gpu-reservation", ttl_seconds=10, clock=lambda: now[0]
     )
-    lease = store.reserve(_digest("owner-token"), owner="session")
+    lease = store.reserve(_digest("owner-token"), owner_vram_budget_bytes=16 * 1024**3, owner="session")
     assert lease is not None
     now[0] = 111.0
 
@@ -420,7 +420,7 @@ def test_expired_release_retries_transient_metadata_sharing_violation(tmp_path, 
     assert attempts == 1
     assert not store.path.exists()
     assert not store.metadata_path.exists()
-    assert store.reserve(_digest("new-owner-token"), owner="new-session") is not None
+    assert store.reserve(_digest("new-owner-token"), owner_vram_budget_bytes=16 * 1024**3, owner="new-session") is not None
 
 
 def test_consent_release_recovers_metadata_orphan_after_unlink_failure(tmp_path, monkeypatch):
@@ -428,7 +428,7 @@ def test_consent_release_recovers_metadata_orphan_after_unlink_failure(tmp_path,
     store = ExternalGpuReservationStore(
         tmp_path / "external-gpu-reservation", ttl_seconds=10, clock=lambda: now[0]
     )
-    lease = store.reserve(_digest("owner-token"), owner="session")
+    lease = store.reserve(_digest("owner-token"), owner_vram_budget_bytes=16 * 1024**3, owner="session")
     assert lease is not None
     now[0] = 111.0
 
@@ -463,7 +463,7 @@ def test_consent_release_keeps_malformed_metadata_orphan_fail_closed(tmp_path):
     store = ExternalGpuReservationStore(
         tmp_path / "external-gpu-reservation", ttl_seconds=10, clock=lambda: now[0]
     )
-    lease = store.reserve(_digest("owner-token"), owner="session")
+    lease = store.reserve(_digest("owner-token"), owner_vram_budget_bytes=16 * 1024**3, owner="session")
     assert lease is not None
     store.path.unlink()
     store.metadata_path.write_text("{malformed", encoding="utf-8")
@@ -479,7 +479,7 @@ def test_consent_release_of_active_lease_waits_for_expiry(tmp_path):
     now = [100.0]
     path = tmp_path / "external-gpu-reservation"
     owner = ExternalGpuReservationStore(path, ttl_seconds=10, clock=lambda: now[0])
-    lease = owner.reserve(_digest("owner-token"), owner="session")
+    lease = owner.reserve(_digest("owner-token"), owner_vram_budget_bytes=16 * 1024**3, owner="session")
     assert lease is not None
     assert owner.renew(_digest("owner-token"), lease["generation"], state="active")
     other = ExternalGpuReservationStore(path, ttl_seconds=10, clock=lambda: now[0])
@@ -495,7 +495,7 @@ def test_consent_release_removes_active_reservation_when_owner_process_is_gone(t
     now = [100.0]
     path = tmp_path / "external-gpu-reservation"
     store = ExternalGpuReservationStore(path, ttl_seconds=900, clock=lambda: now[0])
-    lease = store.reserve(_digest("owner-token"), owner="reranker:424242:17")
+    lease = store.reserve(_digest("owner-token"), owner_vram_budget_bytes=16 * 1024**3, owner="reranker:424242:17")
     assert lease is not None
     assert store.renew(_digest("owner-token"), lease["generation"], state="active")
     monkeypatch.setattr("local_ai_hub.process_utils.process_is_alive", lambda pid: False)
@@ -510,7 +510,7 @@ def test_consent_release_removes_active_embedding_reservation_when_owner_process
     now = [100.0]
     path = tmp_path / "external-gpu-reservation"
     store = ExternalGpuReservationStore(path, ttl_seconds=900, clock=lambda: now[0])
-    lease = store.reserve(_digest("embedding-owner-token"), owner="embedding:424242:17")
+    lease = store.reserve(_digest("embedding-owner-token"), owner_vram_budget_bytes=16 * 1024**3, owner="embedding:424242:17")
     assert lease is not None
     assert store.renew(_digest("embedding-owner-token"), lease["generation"], state="active")
     monkeypatch.setattr("local_ai_hub.process_utils.process_is_alive", lambda pid: False)
@@ -523,7 +523,7 @@ def test_consent_release_removes_active_embedding_reservation_when_owner_process
 
 def test_consent_release_keeps_unknown_owner_type_fail_closed(tmp_path, monkeypatch):
     store = ExternalGpuReservationStore(tmp_path / "external-gpu-reservation", ttl_seconds=900, clock=lambda: 100.0)
-    lease = store.reserve(_digest("unknown-owner-token"), owner="unknown-worker:424242:17")
+    lease = store.reserve(_digest("unknown-owner-token"), owner_vram_budget_bytes=16 * 1024**3, owner="unknown-worker:424242:17")
     assert lease is not None
     assert store.renew(_digest("unknown-owner-token"), lease["generation"], state="active")
     monkeypatch.setattr("local_ai_hub.process_utils.process_is_alive", lambda pid: False)
@@ -538,7 +538,7 @@ def test_consent_release_keeps_active_reservation_when_process_liveness_is_unkno
     now = [100.0]
     path = tmp_path / "external-gpu-reservation"
     store = ExternalGpuReservationStore(path, ttl_seconds=900, clock=lambda: now[0])
-    lease = store.reserve(_digest("owner-token"), owner="reranker:424242:17")
+    lease = store.reserve(_digest("owner-token"), owner_vram_budget_bytes=16 * 1024**3, owner="reranker:424242:17")
     assert lease is not None
     assert store.renew(_digest("owner-token"), lease["generation"], state="active")
     monkeypatch.setattr("local_ai_hub.process_utils.process_is_alive", lambda pid: None)
@@ -555,7 +555,7 @@ def test_legacy_digest_record_stays_fail_closed(tmp_path):
     store = ExternalGpuReservationStore(path, ttl_seconds=10, clock=lambda: 10000.0)
 
     assert store.read() is None
-    assert store.reserve(_digest("new-token"), owner="new") is None
+    assert store.reserve(_digest("new-token"), owner_vram_budget_bytes=16 * 1024**3, owner="new") is None
     assert path.read_text(encoding="ascii") == _digest("old-token")
 
 
@@ -565,7 +565,7 @@ def test_corrupt_metadata_is_not_reaped_or_replaced(tmp_path):
     store = ExternalGpuReservationStore(path, ttl_seconds=10, clock=lambda: 10000.0)
 
     assert store.read() is None
-    assert store.reserve(_digest("new-token"), owner="new") is None
+    assert store.reserve(_digest("new-token"), owner_vram_budget_bytes=16 * 1024**3, owner="new") is None
     assert path.read_text(encoding="ascii") == "not-a-reservation"
 
 
@@ -573,9 +573,9 @@ def test_internal_and_external_claims_share_one_atomic_fence(tmp_path):
     path = tmp_path / "external-gpu-reservation"
     store = ExternalGpuReservationStore(path, ttl_seconds=10, clock=lambda: 100.0)
     assert store.claim_internal(_digest("internal"))
-    assert store.reserve(_digest("external"), owner="external") is None
+    assert store.reserve(_digest("external"), owner_vram_budget_bytes=16 * 1024**3, owner="external") is None
     assert store.release_internal(_digest("internal"))
-    assert store.reserve(_digest("external"), owner="external") is not None
+    assert store.reserve(_digest("external"), owner_vram_budget_bytes=16 * 1024**3, owner="external") is not None
 
 
 def test_internal_release_retries_windows_sharing_violation(tmp_path, monkeypatch):
@@ -608,7 +608,7 @@ def test_competing_external_reservations_have_one_winner(tmp_path):
     path = tmp_path / "external-gpu-reservation"
     stores = [ExternalGpuReservationStore(path) for _ in range(12)]
     with ThreadPoolExecutor(max_workers=len(stores)) as pool:
-        results = list(pool.map(lambda pair: pair[1].reserve(_digest(f"token-{pair[0]}"), owner=f"owner-{pair[0]}"), enumerate(stores)))
+        results = list(pool.map(lambda pair: pair[1].reserve(_digest(f"token-{pair[0]}"), owner_vram_budget_bytes=16 * 1024**3, owner=f"owner-{pair[0]}"), enumerate(stores)))
     assert sum(result is not None for result in results) == 1
 
 

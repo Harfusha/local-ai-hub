@@ -7,57 +7,77 @@
   "spec_refs": [],
   "tasks": {
     "task_audit_loops": {
-      "acceptance_criteria": [],
+      "acceptance_criteria": [
+        "Aktuální working tree má přesný inventář while True pod src a počet je sladěn s plánem.",
+        "Každá smyčka je klasifikována jako časově omezené čekání, konečný průchod/EOF, řízený životní cyklus workeru, nebo otevřené riziko.",
+        "Otevřená rizika mají konkrétní vlastníka/cestu a další akci; neprovádět změny v souborech pod aktivní agentní prací."
+      ],
       "blocker": null,
       "clarifications": [],
       "depends_on": [],
-      "description": "Prověřit 83 while True smyček v src a doplnit deadline/timeout pojistky.",
+      "description": "Klasifikovat aktuálních 80 AST výskytů `while True` v src; předat rizika a potřebné deadline/timeout opravy.",
       "kind": "code",
-      "next_action": "",
-      "title": "Prověrka 83 smyček while True",
-      "work_status": "planned"
+      "next_action": "Audit dokončen: aktuální inventář obsahuje 80 while True v 38 souborech src; všechny jsou klasifikované. 76 mají bezpečný deadline/cancel, konečný EOF/limit/pokus nebo řízený worker/daemon lifecycle. Čtyři follow-up rizika s vlastníkem a akcí: tiered_ollama.py:188 — Hub runtime maintainer; omezit lock wait nebo doložit bounded volající. mcp_http.py:48 — HTTP MCP maintainer; ověřit ASGI read timeout a doplnit deadline, pokud chybí. laya_lifecycle.py:103 — aktivní `Zmapovat integraci Laya`; doložit bounded load/close a probuzení při shutdown, jinak přidat timeout. reranker.py:323 — retrieval/reranker maintainer; ověřit caller budget a doplnit timeout/cancel, pokud chybí nadřazený bound. Zdrojový kód se neměnil.",
+      "title": "Prověrka 80 smyček while True",
+      "work_status": "completed"
     },
     "task_logging": {
-      "acceptance_criteria": [],
+      "acceptance_criteria": [
+        "Všechny print() volání pod src jsou inventarizována a klasifikována.",
+        "CLI a strojový stdout protokol zůstávají nedotčené; žádný produkční diagnostický print() nevyžaduje migraci."
+      ],
       "blocker": null,
       "clarifications": [],
       "depends_on": [],
       "description": "Nahradit print() v produkčních/knihovních modulech src logováním.",
       "kind": "code",
-      "next_action": "",
+      "next_action": "Audit dokončen: všech 29 print() v src jsou záměrné CLI výstupy nebo host-hook stdout protokol. Neprovádět převod na logger; zachovat rozhraní.",
       "title": "Nahradit print logováním",
-      "work_status": "planned"
+      "work_status": "completed"
     },
     "task_plan_rules": {
-      "acceptance_criteria": [],
+      "acceptance_criteria": [
+        "Dokumentace rozlišuje trvalé trackované plány a dočasné validační plány s prefixy plan_smoke_ / plan_ephemeral_.",
+        ".local-ai-hub/.gitignore ignoruje ephemeral plan JSON, aniž ignoruje celou složku plans/.",
+        "git check-ignore ověřil smoke, ephemeral a tmp vzory; běžný plan_feature_release.plan.json nebyl ignorován."
+      ],
       "blocker": null,
       "clarifications": [],
       "depends_on": [],
       "description": "Nastavit pravidla správy plánů a .gitignore pro ephemeral/smoke plány.",
       "kind": "code",
-      "next_action": "",
+      "next_action": "Dokončeno. Existující smoke/tmp/temp ignore pravidla zachována; přidáno `plans/*ephemeral*.plan.json` do `.local-ai-hub/.gitignore` a pravidla trvalých versus transientních ID do `docs/WORKTREE_INTEGRATION.md`. Cílený `git check-ignore --no-index -v` vypsal smoke/ephemeral/tmp vzory a nevypsal běžný projektový plán. Kořenový `.gitignore` zůstal beze změny; žádné cizí dirty soubory upraveny.",
       "title": "Pravidla správy generovaných plánů",
-      "work_status": "planned"
+      "work_status": "completed"
     },
     "task_sqlite_unify": {
-      "acceptance_criteria": [],
+      "acceptance_criteria": [
+        "connect_sqlite podporuje read_only, uri a wal; ověřeno aktuálním zdrojem sqlite_support.py:104-116 a navazující implementací.",
+        "V src/local_ai_hub není přímé SQLite connect mimo sqlite_support.py; omezený rg inventář našel pouze sqlite_support.py:152.",
+        "Cílený test `python -m pytest -q tests/test_sqlite_support.py` prošel: 5 passed."
+      ],
       "blocker": null,
       "clarifications": [],
       "depends_on": [],
       "description": "Rozšířit connect_sqlite v sqlite_support.py o read_only, uri, wal a aplikovat na všech 32 přímých volání v src.",
       "kind": "code",
-      "next_action": "",
+      "next_action": "Dokončeno na aktuálním pracovním stromě. Implementace již splňuje rozsah: connect_sqlite má read_only/uri/wal a přímé připojení je pouze v centrální továrně. Ověření: rg nad src/local_ai_hub našlo jen sqlite_support.py:152; tests/test_sqlite_support.py: 5 passed. Zdrojové soubory nebyly měněny. Globální Hub AST index byl limitován 400 soubory, proto byl pro inventář src použit bounded rg fallback.",
       "title": "Sjednotit SQLite připojení přes továrnu",
-      "work_status": "planned"
+      "work_status": "completed"
     },
     "task_test_suite": {
-      "acceptance_criteria": [],
+      "acceptance_criteria": [
+        "Slow marker je registrován v pyproject.toml.",
+        "Jen testy s měřenou nebo explicitně doloženou vysokou dobou/resource náročností jsou označeny slow; nedotčené agentní testy se nepřepisují.",
+        "Dokumentovaný rychlý příkaz vynechá slow testy a plný příkaz je stále zahrne.",
+        "Ověření doloží vybraný rychlý i plný režim."
+      ],
       "blocker": null,
       "clarifications": [],
       "depends_on": [],
       "description": "Zavést pytest marker slow v pyproject.toml a označit pomalé testy.",
       "kind": "code",
-      "next_action": "",
+      "next_action": "Částečně splněno: `pyproject.toml` už pod `[tool.pytest.ini_options]` registruje `slow` i `integration`; soubor je čistý. Globální Hub AST dotaz nenašel `pytest.mark.slow`, ale byl označen truncated/file_limit/read_error, takže úplnost není prokázaná. Zbývá změřit dobu testů nebo doložit náročnost, označit jen čisté neagentní testy a ověřit rychlý i plný příkaz. Laya a několik dalších testů jsou dirty u aktivních agentů; nedotýkat se jich.",
       "title": "Pomalé testy a rychlá testovací sada",
       "work_status": "planned"
     },

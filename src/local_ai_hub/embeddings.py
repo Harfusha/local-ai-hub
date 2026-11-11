@@ -761,9 +761,15 @@ class EmbeddingModel:
             return None
         digest = hashlib.sha256(os.urandom(32)).hexdigest()
         try:
+            from .external_gpu_reservation import conservative_gpu_capacity_budget_bytes
+
+            owner_budget = conservative_gpu_capacity_budget_bytes()
+            if owner_budget is None:
+                return False
             record = store.reserve(
                 digest,
                 owner=f"embedding:{os.getpid()}:{threading.get_ident()}",
+                owner_vram_budget_bytes=owner_budget,
             )
             generation = record.get("generation") if isinstance(record, dict) else None
             if not isinstance(generation, str) or not generation:

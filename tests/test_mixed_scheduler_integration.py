@@ -176,8 +176,13 @@ def test_scheduler_timeout_reports_gpu_reservation_wait_reason(tmp_path):
     scheduler = AffinityScheduler(runtime, config)
     token = None
     try:
-        token = scheduler.reserve_external_gpu()
+        token = scheduler.reserve_external_gpu(
+            owner="legacy-test-external-session", owner_vram_budget_bytes=1,
+        )
         assert token
+        reservation = scheduler._external_gpu_store.read()
+        reservation.pop("owner_vram_budget_bytes")
+        assert scheduler._external_gpu_store._write_metadata(reservation)
         scheduler_state = scheduler.status()
         assert scheduler_state["gpu_admission_state"] == "external_reservation"
         assert token not in repr(scheduler_state)
@@ -193,6 +198,255 @@ def test_scheduler_timeout_reports_gpu_reservation_wait_reason(tmp_path):
         scheduler.close()
 
 
+@pytest.mark.parametrize("request_gib, completes", [(4, True), (9, False)])
+def test_scheduler_dispatch_coadmits_around_resident_capacity_lease(tmp_path, request_gib, completes):
+    config = {
+        "server": {"state_dir": str(tmp_path), "ollama_url": "http://127.0.0.1:11434"},
+        "ollama": {"enabled": True},
+        "scheduler": {"model_vram_estimates_bytes": {"candidate": request_gib * 1024**3}},
+    }
+    runtime = OllamaRuntime(config)
+    runtime.loaded_models = lambda: []
+    unloaded = []
+    runtime.unload_model = lambda *args, **kwargs: unloaded.append((args, kwargs)) or True
+    runtime.vram_balancer = SimpleNamespace(status=lambda force=False: {
+        "available": True, "vram_total_mb": 16 * 1024, "vram_available_mb": 8 * 1024,
+        "pressure_level": "nominal", "context_budget_factor": 1.0,
+    })
+    scheduler = AffinityScheduler(runtime, config)
+    store = scheduler._external_gpu_store
+    reservation = store.reserve(
+        "a" * 64, owner="test-external-owner", owner_vram_budget_bytes=4 * 1024**3,
+    )
+    assert reservation is not None
+    resident_result = scheduler.acquire_gpu_capacity_lease("laya:resident-model", 4 * 1024**3)
+    assert resident_result["state"] == "admitted"
+    resident = {key: value for key, value in resident_result.items() if key != "state"}
+    with scheduler._cond:
+        scheduler._active_model = "candidate" if completes else None
+        scheduler._model_vram_bytes["candidate"] = request_gib * 1024**3
+    called = threading.Event()
+    try:
+        if completes:
+            result = scheduler.submit(
+                "candidate", source="capacity-test",
+                execute=lambda: (called.set() or {"success": True}), wait_timeout=2,
+            )
+            assert result["success"] is True
+            assert called.is_set()
+            snapshot = store.capacity_snapshot()
+            assert [item["lease_id"] for item in snapshot["leases"]] == [resident["lease_id"]]
+        else:
+            with pytest.raises(SchedulerTimeoutError) as caught:
+                scheduler.submit(
+                    "candidate", source="capacity-test", execute=lambda: {"success": True},
+                    wait_timeout=0.05,
+                )
+            assert caught.value.state == "pending"
+            assert caught.value.wait_reason == "gpu-capacity"
+            assert unloaded == []
+            assert store.read()["generation"] == reservation["generation"]
+            assert store.capacity_snapshot()["leases"] == [resident]
+    finally:
+        scheduler.close()
+
+
+def test_scheduler_admission_uses_measured_free_capacity_not_reservation_budget(tmp_path):
+    config = {
+        "server": {"state_dir": str(tmp_path), "ollama_url": "http://127.0.0.1:11434"},
+        "ollama": {"enabled": True},
+        "scheduler": {"model_vram_estimates_bytes": {"candidate": 4 * 1024**3}},
+    }
+    runtime = OllamaRuntime(config)
+    runtime.vram_balancer = SimpleNamespace(status=lambda force=False: {
+        "available": True, "vram_total_mb": 16 * 1024, "vram_available_mb": 8 * 1024,
+        "pressure_level": "nominal", "context_budget_factor": 1.0,
+    })
+    scheduler = AffinityScheduler(runtime, config)
+    reservation = scheduler._external_gpu_store.reserve(
+        "a" * 64, owner="test-external-owner", owner_vram_budget_bytes=16 * 1024**3,
+    )
+    try:
+        admission = scheduler._admission(background=False, model="candidate")
+        assert reservation is not None
+        assert admission["state"] == "accepted"
+        assert admission["vram_admission"] == "admitted"
+        assert admission["vram_admission_budget_bytes"] == 8 * 1024**3
+    finally:
+        scheduler.close()
+
+
+def test_laya_capacity_lease_coadmits_legacy_reservation_from_measured_free_vram(tmp_path):
+    config = {
+        "server": {"state_dir": str(tmp_path), "ollama_url": "http://127.0.0.1:11434"},
+        "ollama": {"enabled": True},
+    }
+    runtime = OllamaRuntime(config)
+    runtime.vram_balancer = SimpleNamespace(status=lambda force=False: {
+        "available": True, "vram_total_mb": 16 * 1024, "vram_available_mb": 8 * 1024,
+        "pressure_level": "nominal", "context_budget_factor": 1.0,
+    })
+    scheduler = AffinityScheduler(runtime, config)
+    store = scheduler._external_gpu_store
+    reservation = store.reserve(
+        "b" * 64, owner="legacy-external-owner", owner_vram_budget_bytes=16 * 1024**3,
+    )
+    legacy_record = store.read()
+    legacy_record.pop("owner_vram_budget_bytes")
+    assert store._write_metadata(legacy_record)
+    try:
+        lease = scheduler.acquire_gpu_capacity_lease("laya:resident-model", 4 * 1024**3)
+        assert reservation is not None
+        assert lease["state"] == "admitted"
+        assert lease["reservation_generation"] == reservation["generation"]
+        assert scheduler._capacity_sharing_active()
+    finally:
+        scheduler.close()
+
+
+def test_internal_digest_reservation_is_not_shared_capacity(tmp_path):
+    config = {
+        "server": {"state_dir": str(tmp_path), "ollama_url": "http://127.0.0.1:11434"},
+        "ollama": {"enabled": True},
+    }
+    runtime = OllamaRuntime(config)
+    runtime.vram_balancer = SimpleNamespace(status=lambda force=False: {
+        "available": True, "vram_total_mb": 16 * 1024, "vram_available_mb": 8 * 1024,
+        "pressure_level": "nominal", "context_budget_factor": 1.0,
+    })
+    scheduler = AffinityScheduler(runtime, config)
+    try:
+        assert scheduler._claim_internal_gpu()
+        assert scheduler._external_gpu_store.capacity_snapshot() is None
+        assert not scheduler._capacity_sharing_active()
+    finally:
+        scheduler.close()
+
+
+def test_laya_capacity_lease_coadmits_during_owned_internal_digest(tmp_path):
+    config = {
+        "server": {"state_dir": str(tmp_path), "ollama_url": "http://127.0.0.1:11434"},
+        "ollama": {"enabled": True},
+    }
+    runtime = OllamaRuntime(config)
+    runtime.vram_balancer = SimpleNamespace(status=lambda force=False: {
+        "available": True, "vram_total_mb": 16 * 1024, "vram_available_mb": 8 * 1024,
+        "pressure_level": "nominal", "context_budget_factor": 1.0,
+    })
+    scheduler = AffinityScheduler(runtime, config)
+    lease = None
+    try:
+        assert scheduler._claim_internal_gpu()
+        digest = scheduler._internal_gpu_digest
+        lease = scheduler.acquire_gpu_capacity_lease("laya:resident-model", 4 * 1024**3)
+        assert digest
+        assert lease["state"] == "admitted"
+        snapshot = scheduler._external_gpu_store.capacity_snapshot(expected_internal_digest=digest)
+        assert snapshot is not None
+        assert snapshot["leases"] == [{key: value for key, value in lease.items() if key != "state"}]
+        assert scheduler._internal_gpu_digest == digest
+        assert scheduler._capacity_sharing_active()
+        with scheduler._cond:
+            assert not scheduler._release_internal_gpu()
+        assert scheduler._internal_gpu_digest == digest
+        assert scheduler.release_gpu_capacity_lease(
+            lease["lease_id"], lease["owner"], lease["generation"],
+        )
+        lease = None
+        with scheduler._cond:
+            assert scheduler._release_internal_gpu()
+        assert scheduler._internal_gpu_digest is None
+    finally:
+        if lease and lease.get("state") == "admitted":
+            scheduler.release_gpu_capacity_lease(lease["lease_id"], lease["owner"], lease["generation"])
+        with scheduler._cond:
+            scheduler._release_internal_gpu()
+        scheduler.close()
+
+
+def test_scheduler_switch_preserves_other_resident_when_shared_capacity_fits(tmp_path):
+    config = {
+        "server": {"state_dir": str(tmp_path), "ollama_url": "http://127.0.0.1:11434"},
+        "ollama": {"enabled": True},
+        "scheduler": {"model_vram_estimates_bytes": {"candidate": 4 * 1024**3}},
+    }
+    runtime = OllamaRuntime(config)
+    residents = {"laya-model"}
+    prepare_calls = []
+    unload_calls = []
+    runtime.loaded_models = lambda: list(residents)
+    runtime.prepare_model = lambda model, **kwargs: (prepare_calls.append((model, kwargs)) or residents.add(model) or [])
+    runtime.unload_model = lambda *args, **kwargs: unload_calls.append((args, kwargs)) or True
+    runtime.vram_balancer = SimpleNamespace(status=lambda force=False: {
+        "available": True, "vram_total_mb": 16 * 1024, "vram_available_mb": 8 * 1024,
+        "pressure_level": "nominal", "context_budget_factor": 1.0,
+    })
+    scheduler = AffinityScheduler(runtime, config)
+    scheduler._observe_model_vram_bytes = lambda *args, **kwargs: None
+    store = scheduler._external_gpu_store
+    resident_result = scheduler.acquire_gpu_capacity_lease("laya:resident-model", 4 * 1024**3)
+    assert resident_result["state"] == "admitted"
+    resident = {key: value for key, value in resident_result.items() if key != "state"}
+    try:
+        result = scheduler.submit(
+            "candidate", source="capacity-switch-test",
+            execute=lambda: {"success": True}, wait_timeout=2,
+        )
+        assert result["success"] is True
+        assert prepare_calls and prepare_calls[0][1]["unload_others"] is False
+        assert "laya-model" in residents and "candidate" in residents
+        assert unload_calls == []
+        assert store.capacity_snapshot()["leases"] == [resident]
+        assert scheduler.release_gpu_capacity_lease(
+            resident["lease_id"], resident["owner"], resident["generation"],
+        )
+    finally:
+        scheduler.close()
+
+
+def test_capacity_deferred_model_does_not_block_admitted_active_model_job(tmp_path):
+    config = {
+        "server": {"state_dir": str(tmp_path), "ollama_url": "http://127.0.0.1:11434"},
+        "ollama": {"enabled": True},
+    }
+    runtime = OllamaRuntime(config)
+    runtime.vram_balancer = SimpleNamespace(status=lambda force=False: {
+        "available": True, "vram_total_mb": 16 * 1024, "vram_available_mb": 8 * 1024,
+        "pressure_level": "nominal", "context_budget_factor": 1.0,
+    })
+    scheduler = AffinityScheduler(runtime, config)
+    store = scheduler._external_gpu_store
+    resident = scheduler.acquire_gpu_capacity_lease("laya:resident-model", 4 * 1024**3)
+    assert resident["state"] == "admitted"
+    called = threading.Event()
+    deferred = Job(
+        id=1, model="too-large", source="capacity-test", priority=10,
+        execute=lambda: {"success": True},
+    )
+    admitted = Job(
+        id=2, model="resident", source="capacity-test", priority=5,
+        execute=lambda: (called.set() or {"success": True}),
+    )
+    with scheduler._cond:
+        scheduler._gpu_prepare_in_progress = True
+        scheduler._active_model = "resident"
+        scheduler._model_vram_bytes["too-large"] = 9 * 1024**3
+        scheduler._pending.extend([deferred, admitted])
+        scheduler._job_id = 2
+        scheduler._gpu_prepare_in_progress = False
+        scheduler._cond.notify_all()
+    try:
+        assert admitted.done.wait(2)
+        assert called.is_set()
+        assert not deferred.done.is_set()
+        assert deferred.gpu_capacity_lease is None
+        assert [item["lease_id"] for item in store.capacity_snapshot()["leases"]] == [
+            resident["lease_id"],
+        ]
+    finally:
+        scheduler.close()
+
+
 def test_authorized_store_release_clears_scheduler_owned_fence(tmp_path):
     config = {
         "server": {"state_dir": str(tmp_path), "ollama_url": "http://127.0.0.1:11434"},
@@ -200,7 +454,7 @@ def test_authorized_store_release_clears_scheduler_owned_fence(tmp_path):
     }
     scheduler = AffinityScheduler(OllamaRuntime(config), config)
     try:
-        token = scheduler.reserve_external_gpu()
+        token = scheduler.reserve_external_gpu(owner="release-test", owner_vram_budget_bytes=1)
         assert token
         store = scheduler._external_gpu_store
         assert store is not None
@@ -220,7 +474,7 @@ def test_authorized_scheduler_release_uses_live_store_and_syncs_admission(tmp_pa
     }
     scheduler = AffinityScheduler(OllamaRuntime(config), config)
     try:
-        token = scheduler.reserve_external_gpu()
+        token = scheduler.reserve_external_gpu(owner="release-test", owner_vram_budget_bytes=1)
         assert token
         result = scheduler.gpu_reservation_operation(
             action="release_authorized",
@@ -242,7 +496,7 @@ def test_authorized_release_clears_reservation_fence_with_queued_waiter(tmp_path
     monkeypatch.setattr(AffinityScheduler, "_dispatch_loop", lambda _scheduler: None)
     scheduler = AffinityScheduler(OllamaRuntime(config), config)
     try:
-        token = scheduler.reserve_external_gpu()
+        token = scheduler.reserve_external_gpu(owner="release-test", owner_vram_budget_bytes=1)
         assert token
         with scheduler._cond:
             scheduler._pending.append(Job(

@@ -110,6 +110,7 @@ class Job:
     fairness_wait_ms: float = 0.0
     fairness_checked_at: float | None = None
     model_switch_receipt: dict[str, Any] | None = None
+    gpu_capacity_lease: dict[str, Any] | None = None
 
 
 class QueueFullError(RuntimeError):
@@ -642,6 +643,7 @@ class AffinityScheduler:
         resource = self._resource_status()
         pressure = str(resource.get("pressure_level", "nominal") or "nominal").lower()
         vram_fields: dict[str, int] = {}
+        shared_capacity_enforced = False
         total_mb = resource.get("vram_total_mb")
         available_mb = resource.get("vram_available_mb")
         valid_total = (
@@ -669,6 +671,26 @@ class AffinityScheduler:
                 "vram_budget_bytes": int(round(float(total_mb) * 1024 * 1024)),
                 "vram_available_bytes": int(round(min(float(total_mb), float(available_mb)) * 1024 * 1024)),
             }
+            store = getattr(self, "_external_gpu_store", None)
+            if store is not None:
+                internal = self._owned_internal_gpu_digest()
+                try:
+                    snapshot = store.capacity_snapshot(expected_internal_digest=internal) if internal else store.capacity_snapshot()
+                except OSError:
+                    snapshot = None
+                if snapshot is None:
+                    return {
+                        "state": "rejected", "reason": "gpu_capacity_unknown",
+                        "queue_age_ms": 0, "retryable": True,
+                        "vram_admission": "unknown", "vram_estimate_source": "unknown",
+                    }
+                reservation = snapshot["reservation"]
+                shared_capacity_enforced = bool(reservation is not None or snapshot["leases"])
+                lease_total = sum(item["requested_bytes"] for item in snapshot["leases"])
+                shared_capacity = max(0, vram_fields["vram_budget_bytes"] - lease_total)
+                vram_fields["vram_admission_budget_bytes"] = min(
+                    vram_fields["vram_available_bytes"], shared_capacity,
+                )
         model_key = str(model or "").strip().casefold()
         active_key = str(getattr(self, "_active_model", None) or "").strip().casefold()
         can_defer_switch = bool(
@@ -695,7 +717,7 @@ class AffinityScheduler:
                     # unloading is guaranteed to return to the device.
                     reclaimable = active_size
             admission_budget = min(
-                vram_fields["vram_budget_bytes"],
+                vram_fields.get("vram_admission_budget_bytes", vram_fields["vram_budget_bytes"]),
                 vram_fields["vram_available_bytes"] + reclaimable,
             )
             if model_key == active_key and model_key:
@@ -719,7 +741,7 @@ class AffinityScheduler:
                 if incremental_required <= admission_budget:
                     vram_admission_state = "admitted"
                 else:
-                    vram_admission_state = "deferred" if can_defer_switch else "rejected"
+                    vram_admission_state = "deferred" if (can_defer_switch or shared_capacity_enforced) else "rejected"
         factor = resource.get("context_budget_factor", 1.0)
         try:
             factor = max(0.0, min(1.0, float(factor)))
@@ -749,7 +771,10 @@ class AffinityScheduler:
             return result
         if vram_admission_state == "deferred":
             result = {
-                "state": "degraded", "reason": "vram_admission_deferred_until_unload",
+                "state": "degraded", "reason": (
+                    "gpu_capacity_deferred" if shared_capacity_enforced
+                    else "vram_admission_deferred_until_unload"
+                ),
                 "pressure_level": pressure, "context_budget_factor": factor,
                 "queue_age_ms": 0, "retryable": True, **vram_fields,
             }
@@ -1177,12 +1202,110 @@ class AffinityScheduler:
             owned = None
         return current != owned if owned else bool(current)
 
+    def _external_gpu_blocks_scheduler(self) -> bool:
+        """Legacy or unreadable ownership remains exclusive; budgeted sharing is admitted per job."""
+        internal = getattr(self, "_internal_gpu_digest", None)
+        path = getattr(self, "_external_gpu_path", None)
+        if internal and path is not None and _read_external_reservation(path) == internal:
+            return False
+        store = getattr(self, "_external_gpu_store", None)
+        if store is None:
+            return self._external_gpu_reserved()
+        try:
+            snapshot = store.capacity_snapshot()
+        except OSError:
+            return True
+        if snapshot is None:
+            return True
+        reservation = snapshot["reservation"]
+        if reservation is None:
+            return False
+        budget = reservation.get("owner_vram_budget_bytes")
+        return isinstance(budget, bool) or not isinstance(budget, int) or budget <= 0
+
+    def _owned_internal_gpu_digest(self) -> str | None:
+        digest = getattr(self, "_internal_gpu_digest", None)
+        path = getattr(self, "_external_gpu_path", None)
+        if isinstance(digest, str) and path is not None and _read_external_reservation(path) == digest:
+            return digest
+        return None
+
+    def _capacity_sharing_active(self) -> bool:
+        internal = self._owned_internal_gpu_digest()
+        if internal:
+            # This legacy digest-only fence is owned by this scheduler. The
+            # capacity store exposes only explicitly generation-bound leases.
+            store = getattr(self, "_external_gpu_store", None)
+            if store is None:
+                return False
+            try:
+                snapshot = store.capacity_snapshot(expected_internal_digest=internal)
+            except OSError:
+                return True
+            return snapshot is None or bool(snapshot["leases"])
+        store = getattr(self, "_external_gpu_store", None)
+        if store is None:
+            return False
+        try:
+            snapshot = store.capacity_snapshot()
+        except OSError:
+            return True
+        if snapshot is None:
+            return True
+        return bool(snapshot["reservation"] is not None or snapshot["leases"])
+
+    def _claim_job_capacity(self, job: Job) -> bool:
+        store = getattr(self, "_external_gpu_store", None)
+        if store is None or not self._capacity_sharing_active():
+            return True
+        if job.gpu_capacity_lease is not None:
+            return True
+        admission = self._admission(background=job.background, model=job.model)
+        if (admission.get("state") not in {"accepted", "degraded"}
+                or admission.get("vram_admission") != "admitted"):
+            job.admission = admission
+            return False
+        required = admission.get("vram_incremental_required_bytes")
+        if not isinstance(required, int) or isinstance(required, bool):
+            return False
+        job.admission = admission
+        if required == 0:
+            return True
+        total = admission.get("vram_budget_bytes")
+        available = admission.get("vram_available_bytes")
+        if not isinstance(total, int) or not isinstance(available, int):
+            return False
+        internal = self._owned_internal_gpu_digest()
+        snapshot = store.capacity_snapshot(expected_internal_digest=internal) if internal else store.capacity_snapshot()
+        if snapshot is None:
+            return False
+        reservation = snapshot["reservation"]
+        try:
+            lease = store.acquire_capacity_lease(
+                owner=f"scheduler-job:{job.id}",
+                requested_bytes=required,
+                total_bytes=total,
+                available_bytes=available,
+                expected_reservation_generation=(
+                    reservation["generation"] if reservation is not None else None
+                ),
+                expected_internal_digest=internal,
+            )
+        except (OSError, ValueError):
+            return False
+        if lease is None:
+            return False
+        job.gpu_capacity_lease = lease
+        return True
+
     def _claim_internal_gpu(self) -> bool:
         """Atomically exclude external sessions while internal GPU work is active."""
         import secrets
 
         if getattr(self, "_internal_gpu_uncertain", False):
             return False
+        if self._capacity_sharing_active():
+            return not self._external_gpu_blocks_scheduler()
         path = getattr(self, "_external_gpu_path", None)
         if path is None:
             return True
@@ -1258,15 +1381,18 @@ class AffinityScheduler:
         store = getattr(self, "_external_gpu_store", None)
         if store is not None:
             heartbeat_stop = getattr(self, "_internal_gpu_heartbeat_stop", None)
-            if heartbeat_stop is not None:
-                heartbeat_stop.set()
-                self._internal_gpu_heartbeat_stop = None
             if not store.release_internal(digest):
                 if path is not None and not path.exists():
+                    if heartbeat_stop is not None:
+                        heartbeat_stop.set()
+                        self._internal_gpu_heartbeat_stop = None
                     self._internal_gpu_digest = None
                     self._cond.notify_all()
                     return True
                 return False
+            if heartbeat_stop is not None:
+                heartbeat_stop.set()
+                self._internal_gpu_heartbeat_stop = None
             self._internal_gpu_digest = None
             self._cond.notify_all()
             return True
@@ -1293,7 +1419,7 @@ class AffinityScheduler:
         """
         with self._cond:
             now = time.monotonic()
-            if self._external_gpu_reserved():
+            if self._external_gpu_reserved() or self._capacity_sharing_active():
                 return False
             if self._background_gpu_lease:
                 return True
@@ -1343,7 +1469,8 @@ class AffinityScheduler:
                 # scheduler lock. A request that arrived meanwhile invalidates lease.
                 now = time.monotonic()
                 clean = (
-                    inventory_safe and not self._external_gpu_reserved() and not self._pending and self._inflight == 0
+                    inventory_safe and not self._external_gpu_reserved() and not self._capacity_sharing_active()
+                    and not self._pending and self._inflight == 0
                     and now - self._last_foreground_activity >= max(0.0, float(min_idle_seconds))
                 )
                 if clean:
@@ -1359,13 +1486,18 @@ class AffinityScheduler:
                 self._cond.notify_all()
                 return bool(clean)
 
-    def reserve_external_gpu(self) -> str | None:
+    def reserve_external_gpu(self, owner: str, *, owner_vram_budget_bytes: int) -> str | None:
         """Reserve an idle scheduler for a future coordinated external session.
 
         The caller must hold the returned capability until all external inference
         has stopped. Process restart preserves the fence in the configured state dir.
         """
         import secrets
+
+        if not isinstance(owner, str) or not owner.strip():
+            raise ValueError("owner must be a non-empty execution identity")
+        if isinstance(owner_vram_budget_bytes, bool) or not isinstance(owner_vram_budget_bytes, int) or owner_vram_budget_bytes <= 0:
+            raise ValueError("owner_vram_budget_bytes must be a positive integer")
 
         with self._cond:
             if (not self._running or not self._external_gpu_path or self._external_gpu_reserved() or self._internal_gpu_digest or self._background_gpu_lease
@@ -1375,7 +1507,9 @@ class AffinityScheduler:
             digest = hashlib.sha256(token.encode("ascii")).hexdigest()
             store = getattr(self, "_external_gpu_store", None)
             if store is not None:
-                record = store.reserve(digest, owner=f"hub-pid:{os.getpid()}")
+                record = store.reserve(
+                    digest, owner=owner.strip(), owner_vram_budget_bytes=owner_vram_budget_bytes,
+                )
                 if record is None:
                     return None
                 self._external_gpu_token = digest
@@ -1403,6 +1537,55 @@ class AffinityScheduler:
             self._external_gpu_expiry_monotonic = time.monotonic() + 900.0
             self._cond.notify_all()
             return token
+
+    def acquire_gpu_capacity_lease(self, owner: str, requested_bytes: int) -> dict[str, Any]:
+        """Reserve measured GPU capacity for a resident model or inference request."""
+        store = getattr(self, "_external_gpu_store", None)
+        if store is None:
+            return {"state": "rejected", "reason": "gpu_capacity_store_unavailable"}
+        if not isinstance(owner, str) or not owner.strip():
+            raise ValueError("owner must be a non-empty execution identity")
+        if isinstance(requested_bytes, bool) or not isinstance(requested_bytes, int) or requested_bytes <= 0:
+            raise ValueError("requested_bytes must be a positive integer")
+        resource = self._resource_status()
+        total_mb = resource.get("vram_total_mb")
+        available_mb = resource.get("vram_available_mb")
+        if (resource.get("available") is not True
+                or isinstance(total_mb, bool) or not isinstance(total_mb, (int, float))
+                or not math.isfinite(total_mb) or total_mb <= 0
+                or isinstance(available_mb, bool) or not isinstance(available_mb, (int, float))
+                or not math.isfinite(available_mb) or available_mb < 0):
+            return {"state": "rejected", "reason": "vram_telemetry_unavailable"}
+        total_bytes = int(round(float(total_mb) * 1024 * 1024))
+        available_bytes = int(round(min(float(total_mb), float(available_mb)) * 1024 * 1024))
+        try:
+            internal = self._owned_internal_gpu_digest()
+            snapshot = store.capacity_snapshot(expected_internal_digest=internal) if internal else store.capacity_snapshot()
+            if snapshot is None:
+                return {"state": "rejected", "reason": "gpu_capacity_unknown"}
+            reservation = snapshot["reservation"]
+            lease = store.acquire_capacity_lease(
+                owner=owner.strip(), requested_bytes=requested_bytes,
+                total_bytes=total_bytes, available_bytes=available_bytes,
+                expected_reservation_generation=(
+                    reservation["generation"] if reservation is not None else None
+                ),
+                expected_internal_digest=internal,
+            )
+        except (OSError, ValueError):
+            return {"state": "rejected", "reason": "gpu_capacity_unknown"}
+        if lease is None:
+            return {"state": "rejected", "reason": "insufficient_capacity"}
+        return {"state": "admitted", **lease}
+
+    def release_gpu_capacity_lease(self, lease_id: str, owner: str, generation: str) -> bool:
+        store = getattr(self, "_external_gpu_store", None)
+        if store is None:
+            return False
+        try:
+            return store.release_capacity_lease(lease_id, owner, generation)
+        except OSError:
+            return False
 
     def release_external_gpu(self, token: str) -> bool:
         import secrets
@@ -1505,12 +1688,12 @@ class AffinityScheduler:
         """True when background work should yield before starting another micro-step."""
         with self._cond:
             foreground_inflight = self._inflight - self._inflight_background
-            return bool(self._external_gpu_reserved() or foreground_inflight > 0 or any(not j.background for j in self._pending) or self._switching)
+            return bool(self._external_gpu_reserved() or self._capacity_sharing_active() or foreground_inflight > 0 or any(not j.background for j in self._pending) or self._switching)
 
     def background_allowed(self, *, require_switch_idle: bool = False) -> bool:
         with self._cond:
             now = time.monotonic()
-            if self._external_gpu_reserved() or self._inflight - self._inflight_background > 0 or any(not j.background for j in self._pending):
+            if self._external_gpu_reserved() or self._capacity_sharing_active() or self._inflight - self._inflight_background > 0 or any(not j.background for j in self._pending):
                 return False
             grace = self.background_switch_grace if require_switch_idle else self.background_idle_grace
             return now - self._last_foreground_activity >= grace
@@ -1541,6 +1724,7 @@ class AffinityScheduler:
         """Caller holds _cond; reserve residency before releasing that lock."""
         if (not self._running or self.idle_timeout_seconds <= 0 or self._switching
                 or self._pending or self._inflight or self._background_gpu_lease or self._external_gpu_reserved()
+                or self._capacity_sharing_active()
                 or not self._active_model or self._idle_owned_model != self._active_model
                 or now - self._last_model_activity < self.idle_timeout_seconds):
             return None
@@ -1591,7 +1775,7 @@ class AffinityScheduler:
                     if (self._internal_gpu_digest and not self._pending and not self._inflight
                             and not self._switching and not self._background_gpu_lease):
                         self._release_internal_gpu()
-                    if self._external_gpu_reserved():
+                    if self._external_gpu_blocks_scheduler():
                         self._cond.wait(timeout=0.10)
                         continue
                     idle_unload = self._claim_idle_unload(now)
@@ -1606,6 +1790,10 @@ class AffinityScheduler:
                         continue
                     if eligible and self._active_model is None and self._inflight == 0:
                         target_switch = self._choose_initial_model(eligible, now)
+                        if target_switch and self._capacity_sharing_active():
+                            target_jobs = [job for job in eligible if job.model == target_switch]
+                            if not any(self._claim_job_capacity(job) for job in target_jobs):
+                                target_switch = None
                         if target_switch:
                             self._switching = True
                             self._gpu_prepare_in_progress = True
@@ -1613,16 +1801,27 @@ class AffinityScheduler:
                             break
 
                     if eligible and self._active_model is not None:
-                        if self._should_switch(now, eligible):
-                            if self._inflight == 0:
-                                target_switch = self._choose_next_model(eligible, exclude=self._active_model, now=now)
-                                if target_switch:
-                                    self._switching = True
-                                    self._gpu_prepare_in_progress = True
-                                    self._switch_not_started = False
+                        if self._should_switch(now, eligible) and self._inflight == 0:
+                            target_switch = self._choose_next_model(
+                                eligible, exclude=self._active_model, now=now,
+                            )
+                            if target_switch and self._capacity_sharing_active():
+                                target_jobs = [job for job in eligible if job.model == target_switch]
+                                if not any(self._claim_job_capacity(job) for job in target_jobs):
+                                    target_switch = None
+                            if target_switch:
+                                self._switching = True
+                                self._gpu_prepare_in_progress = True
+                                self._switch_not_started = False
+                                break
+                        if self._inflight < self._active_parallel_limit():
+                            selected = None
+                            for candidate in eligible:
+                                if candidate.model != self._active_model:
+                                    continue
+                                if self._claim_job_capacity(candidate):
+                                    selected = candidate
                                     break
-                        elif self._inflight < self._active_parallel_limit():
-                            selected = self._choose_job_for_active_model(now, eligible)
                             if selected is not None:
                                 self._pending.remove(selected)
                                 selected.dispatched_at = time.monotonic()
@@ -1659,6 +1858,10 @@ class AffinityScheduler:
                             self._mark_internal_gpu_uncertain_locked()
                         for job in [j for j in self._pending if j.model == target_switch]:
                             self._pending.remove(job)
+                            if job.gpu_capacity_lease is not None and bool(getattr(exc, "operation_not_started", False)):
+                                lease = job.gpu_capacity_lease
+                                if self.release_gpu_capacity_lease(lease["lease_id"], lease["owner"], lease["generation"]):
+                                    job.gpu_capacity_lease = None
                             job.error = f"model preparation failed: {type(exc).__name__}"
                             job.finished_at = time.monotonic()
                             job.done.set()
@@ -1673,6 +1876,10 @@ class AffinityScheduler:
                     self._executor.submit(self._run_job, selected)
                 except Exception as exc:
                     with self._cond:
+                        lease = selected.gpu_capacity_lease
+                        if lease is not None:
+                            if self.release_gpu_capacity_lease(lease["lease_id"], lease["owner"], lease["generation"]):
+                                selected.gpu_capacity_lease = None
                         self._inflight = max(0, self._inflight - 1)
                         self._inflight_jobs.pop(selected.id, None)
                         if selected.background:
@@ -1692,7 +1899,7 @@ class AffinityScheduler:
         try:
             loaded = set(self.runtime.loaded_models())
         except Exception:
-            pass
+            loaded = set()
         ordered = sorted(jobs, key=lambda j: (-j.priority, j.created_at))
         top_priority = ordered[0].priority if ordered else 0
         for job in ordered:
@@ -1842,16 +2049,21 @@ class AffinityScheduler:
                     should_stop=should_stop,
                     deadline=deadline,
                 )
-                prepare_kwargs: dict[str, Any] = {"unload_others": self.unload_others}
+                shared_capacity = self._capacity_sharing_active()
+                prepare_kwargs: dict[str, Any] = {
+                    "unload_others": self.unload_others and not shared_capacity,
+                }
                 active_model = str(getattr(self, "_active_model", None) or "").strip()
                 required_check = getattr(self.runtime, "requires_post_unload_admission", None)
-                requires_admission = bool(required_check(target)) if callable(required_check) else False
+                requires_admission = (
+                    bool(required_check(target)) if callable(required_check) and not shared_capacity else False
+                )
                 supports_admission = self._supports_post_unload_admission(target)
                 if requires_admission and not supports_admission:
                     raise RuntimeError("required post-unload VRAM admission is unavailable")
                 if (
                     supports_admission and (requires_admission or (
-                        bool(getattr(self, "unload_others", False)) and active_model
+                        bool(prepare_kwargs["unload_others"]) and active_model
                         and active_model.casefold() != target.strip().casefold()
                     ))
                 ):
@@ -1991,7 +2203,8 @@ class AffinityScheduler:
     def prewarm(self, model: str) -> bool:
         """Warm one model only while completely idle; never delays queued user work."""
         with self._cond:
-            if self._pending or self._inflight or self._switching or self._background_gpu_lease or self._external_gpu_reserved():
+            if (self._pending or self._inflight or self._switching or self._background_gpu_lease
+                    or self._external_gpu_reserved() or self._capacity_sharing_active()):
                 return False
             if self._active_model == model:
                 return True
@@ -2097,6 +2310,15 @@ class AffinityScheduler:
                     job.gpu_outcome_unknown = True
                     if isinstance(job.result, dict) and not job.error:
                         job.result.update(success=False, outcome_unknown=True, terminal=True, retryable=False)
+                if job.gpu_capacity_lease is not None and (not uncertain or clean_cancel):
+                    lease = job.gpu_capacity_lease
+                    released = self.release_gpu_capacity_lease(
+                        lease["lease_id"], lease["owner"], lease["generation"],
+                    )
+                    if released:
+                        job.gpu_capacity_lease = None
+                    else:
+                        result.update(success=False, cleanup_unconfirmed=True, terminal=True, retryable=False)
                 reprepare = (not uncertain and result.get("success") is False
                              and result.get("operation_not_started") is True
                              and result.get("error_code") == "model_preparation_required")
@@ -2129,8 +2351,10 @@ class AffinityScheduler:
     def _job_public(self, job: Job, now: float, *, state: str, position: int = 0) -> dict[str, Any]:
         wait_ms = max(0, int(((job.started_at or now) - job.created_at) * 1000))
         service_ms = max(0, int((now - job.started_at) * 1000)) if job.started_at and state == "running" else 0
-        if state == "queued" and self._external_gpu_reserved():
+        if state == "queued" and self._external_gpu_blocks_scheduler():
             wait_reason = "gpu-reservation"
+        elif state == "queued" and job.admission.get("reason") == "gpu_capacity_deferred":
+            wait_reason = "gpu-capacity"
         elif job.background:
             wait_reason = "background-idle"
         elif self._switching and job.model != self._active_model:
@@ -2159,7 +2383,7 @@ class AffinityScheduler:
             external_reserved = self._external_gpu_reserved()
             if self._internal_gpu_uncertain:
                 gpu_admission_state = "outcome_unknown"
-            elif external_reserved:
+            elif self._external_gpu_blocks_scheduler():
                 gpu_admission_state = "external_reservation"
             elif self._background_gpu_lease:
                 gpu_admission_state = "background_lease"
