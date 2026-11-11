@@ -78,9 +78,9 @@
       "blocker": null,
       "clarifications": [],
       "depends_on": [],
-      "description": "P2 fixes C08/C09/C10/C11/C13/C14. C10 design: docs/superpowers/specs/2026-11-11-c10-negative-knowledge-fts-ranking.md.",
+      "description": "P2 fixes C08/C09/C10/C11/C13/C14. C10 design: docs/superpowers/specs/2026-11-11-c10-negative-knowledge-fts-ranking.md; query-local FTS avoids adding main-database schema objects rejected by AgentStateStore preflight.",
       "kind": "code",
-      "next_action": "Implement approved C10 design: derived FTS5 external-content index with triggers/rebuild, repository-scoped BM25 SQL ranking and parameterized candidate cap; test relevance, bounds, and index lifecycle. C08/C09/C11/C13/C14 still need individual reconciliation; C04/C12 stay with Stability.",
+      "next_action": "Implement query-local temporary FTS5 over the selected repository's canonical latest incident rows, rank with BM25 and SQL LIMIT, and prove updates/deletes are visible on the next call without persistent schema changes. Then reconcile C08/C09/C11/C13/C14 individually; C04/C12 remain Stability-owned.",
       "title": "P2: Optimalizace a opravy stability (C08-C11, C13-C14)",
       "work_status": "in_progress"
     },
