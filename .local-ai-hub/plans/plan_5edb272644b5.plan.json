@@ -75,12 +75,12 @@
         "Laya output stays shadow-only and does not change retrieval, routing, permissions, task state, receipts, or tool execution.",
         "No synthetic inference, model download/install, training, benchmark, advisory activation, or card generation in this work."
       ],
-      "blocker": "Candidate inventory remains 0. Stability reports qwen2.5-coder:7b inference_active, moderate VRAM pressure, and an internal reservation; safe Laya co-admission, running checkpoint/hash/provider, and source revision remain unverified.",
+      "blocker": "Candidate inventory remains 0. Current `hubctl status` reports Active=None, while Stability reports qwen2.5-coder:7b inference_active, moderate VRAM pressure, and an internal reservation. No safe Laya window, current Laya checkpoint/provider/hash, or running source revision is verified.",
       "clarifications": [],
       "depends_on": [],
       "description": "On each eligible successful ordinary context request, queue bounded shadow capture when an unresolved evidence gap remains and at least two authorized sources have verified evidence IDs; do this regardless of legacy laya.runtime.enabled. Resolve the pinned checkpoint on request, and keep provider/device-capacity failures isolated with metadata-only telemetry. Capture typed gap/source/freshness/coverage signals, verified evidence IDs, deterministic retrieval baseline, useful redacted task query/retrieved excerpts within the approved bounds, actual Laya output/runtime metrics, failures, and later observable downstream outcomes. No synthetic requests or candidate data.",
       "kind": "code",
-      "next_action": "After Stability confirms a safe runtime window, wait for a real eligible request and inspect capture telemetry plus the stored candidate's verified provenance. Do not synthesize traffic, repeatedly probe the Hub, or claim live capture.",
+      "next_action": "After Stability reconciles the live snapshots and confirms a safe window, wait for a real eligible request and inspect capture telemetry plus stored candidate provenance. Do not synthesize traffic, repeatedly probe the Hub, or claim live capture.",
       "title": "Ověřit přirozeně zachycené context_source výsledky",
       "work_status": "in_progress"
     },
@@ -118,12 +118,12 @@
         "Verify checkpoint presence/hash and installed compatible provider before claiming runtime availability; configuration alone is insufficient.",
         "Do not install/download models or drivers, change CPU fallback, run synthetic inference, train, benchmark, or roll out."
       ],
-      "blocker": "Stability reports the Hub running qwen2.5-coder:7b with inference_active, moderate VRAM pressure, and an internal GPU reservation. Laya coexistence/capacity is unproven; no safe runtime window or current Laya checkpoint/provider/source revision is verified.",
+      "blocker": "Current views conflict: `hubctl status` reports PID 22608 online with Active=None; Stability reports qwen2.5-coder:7b inference_active, moderate VRAM pressure, and an internal GPU reservation. Laya coexistence/capacity is unproven; its checkpoint/provider/source revision is not verified.",
       "clarifications": [],
       "depends_on": [],
       "description": "Hub Laya API/service remains available for the lifetime of the Hub process, independent of whether a Laya model is resident. Do not preload at Hub startup. On the first Laya request, lazily load the explicitly pinned local checkpoint; retain the provider session while work is in flight and until 600 seconds after the most recently completed Laya request, resetting the idle deadline after every completion. Another model identity or external GPU reservation alone must not reject Laya, prevent its load, or prevent idle close. Stability source audit confirms dGPU admission uses an atomic capacity lease against fresh measured free VRAM; a valid external reservation alone is not a rejection, while unknown telemetry, invalid/foreign fence, stale reservation generation, and insufficient capacity fail closed. Stability reports 34 focused capacity/co-admission tests passed, including legacy reservation, owned scheduler digest, and fail-closed cases. Never evict, preempt, unload, or reconfigure another model; preserve reservation owner identity, limits, hardware profile, and CPU fallback.",
       "kind": "code",
-      "next_action": "Stability to establish safe co-admission and provide read-only checkpoint/hash/provider plus running source revision. Do not preload, infer, restart, alter GPU policy, or change another model.",
+      "next_action": "Stability to reconcile live model/admission observations and establish safe co-admission; then provide read-only Laya checkpoint/hash/provider and running source revision. No preload, inference, restart, GPU-policy change, or modification of another model.",
       "title": "Udržet Laya službu trvale dostupnou s lazy load",
       "work_status": "in_progress"
     },

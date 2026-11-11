@@ -13,6 +13,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 import local_ai_hub.laya_candidates as candidates_module
 from local_ai_hub.agent_events import AgentStateStore
 from local_ai_hub.config import ConfigError, validate_config
+from local_ai_hub.laya_dataset_merge import _validate_row
 from local_ai_hub.laya_candidates import LayaCandidateStore
 from local_ai_hub.laya_decisions import (
     ContextSourceEvidence,
@@ -852,7 +853,7 @@ def test_group_and_near_duplicate_safe_splits_keep_test_labels_out_of_train_expo
             state = "The compiler reports a missing symbol in this source module near line twelve."
         else:
             digest = hashlib.sha256(f"case-{i}".encode()).hexdigest()
-            state = f"scenario {i} unique issue reference {digest}"
+            state = {"scenario_code": f"case_{i}", "source_digest": digest}
         candidates.append(_capture_and_verify(store, repo, task_store, task_id, session_id, state, i))
 
     # Same task/session group must remain whole even when examples differ.
@@ -887,6 +888,10 @@ def test_group_and_near_duplicate_safe_splits_keep_test_labels_out_of_train_expo
         root=str(repo), task_store=task_store,
     )
     zip_rows = [json.loads(line) for line in zip_payload.decode("utf-8").splitlines()]
+    assert all(isinstance(row["state"], str) for row in zip_rows)
+    assert any(row["state"].startswith('{"scenario_code":') for row in zip_rows)
+    for row in zip_rows:
+        _validate_row(row)
     assert len(zip_rows) == snapshot["split_counts"]["train"]
     assert all(set(row) == {"id", "group_id", "source_sha256", "state", "questions", "expected", "provenance"} for row in zip_rows)
     assert all(row["provenance"]["data_class"] == "local_scoped" for row in zip_rows)
@@ -898,10 +903,14 @@ def test_group_and_near_duplicate_safe_splits_keep_test_labels_out_of_train_expo
     }, root=str(repo), task_store=task_store)
     assert exported["count"] == snapshot["split_counts"]["train"]
     export_rows = [json.loads(line) for line in Path(exported["output_path"]).read_text(encoding="utf-8").splitlines()]
+    assert all(isinstance(row["state"], str) for row in export_rows)
     assert all(row["provenance"]["data_class"] == "local_scoped" for row in export_rows)
     assert all("per_example_consented" not in row["provenance"] for row in export_rows)
     train_states = {
-        json.loads(candidate_json)["state"]
+        (
+            state if isinstance(state := json.loads(candidate_json)["state"], str)
+            else json.dumps(state, ensure_ascii=False, separators=(",", ":"))
+        )
         for _task_id, _session_id, split_name, candidate_json, _candidate_id in assignments if split_name == "train"
     }
     assert {row["state"] for row in export_rows} == train_states

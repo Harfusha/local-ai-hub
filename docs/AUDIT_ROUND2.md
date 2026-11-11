@@ -300,7 +300,7 @@ N13: filtry source+target už fungují společně; projektová izolace zůstáv�
 
 ### N04 — LRU cache kapacita (Round 86, 2026-11-11)
 
-`MemoryLRUCache` rozděluje zbytek `max_entries` mezi shardy; `set()` i `set_many()` zachovávají plnou nakonfigurovanou kapacitu. Test pokryl kapacitu 1 a nedělitelnou kapacitu 17: **4 passed**. N05–N11, N13, N15 a N18–N20 zůstávají podle vlastnictví a chybějících důkazů otevřené. N21 je ověřen v Round 99; N24 je opraven a cíleně ověřen níže.
+`MemoryLRUCache` rozděluje zbytek `max_entries` mezi shardy; `set()` i `set_many()` zachovávají plnou nakonfigurovanou kapacitu. Test pokryl kapacitu 1 a nedělitelnou kapacitu 17: **4 passed**. N05–N11, N13 a N18–N20 zůstávají podle vlastnictví a chybějících důkazů otevřené. N21 je ověřen v Round 99; N24 je opraven a cíleně ověřen níže.
 
 ### N24 — aktuální stav (Round 99, 2026-11-11)
 

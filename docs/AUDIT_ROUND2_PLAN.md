@@ -86,7 +86,7 @@
 3. **N04, N08, N21, N23:**
    - N04: Hotovo — limity shardů rozdělí celý `max_entries` včetně zbytku, takže součet kapacit odpovídá konfiguraci. Parametrizovaná regrese pro kapacitu 1/17 a `set`/`set_many`: 4 passed (Round 86).
    - N08: Výpočet kompenzovaného skóre přepnutí modelu ve scheduleru.
-   - N21: Odmítnutí ukládání nadrozměrných položek do ingest cache.
+   - N21: Ověřeno (Round 99): `put()` odmítá položku větší než `max_bytes` před cache mutací. `test_evict_if_needed_does_not_keep_single_oversized_item` prošel v cíleném ingest běhu (**18 passed**).
    - N23: Hotovo — Python cesta se odvozuje jen pro `.py`; cizí nepodporované přípony se přeskočí. `.cs`, `.java`, `.cpp` pokryty regresním testem (Round 80).
 
 ---

@@ -1,6 +1,6 @@
 # Audit and evaluation status — 2026-11-11
 
-Scope: accepted Local AI Hub audits 1–6 and the practical agent-evaluation prompt audit. This is a status snapshot, not a release or runtime acceptance. Snapshot before this status edit: `master` HEAD `e1b41a1642e450184e31ffa85198415431a51f5d`; `repo_state` `req_992bb3070b09`; `git_status` `req_9c764db4c711` shows 5 modified, 0 untracked, 0 staged. Shared tree remains dirty.
+Scope: accepted Local AI Hub audits 1–6 and the practical agent-evaluation prompt audit. This is a status snapshot, not a release or runtime acceptance. Snapshot before final status edit: `master` HEAD `c3734f4717379b014f16c46ef512ebec2805719f`; `repo_state` `req_3477e0a5edca`; `git_status` `req_a6f82946bc8c` shows 4 modified, 0 untracked, 0 staged. Shared tree remains dirty.
 
 ## Technical audit
 
@@ -162,4 +162,5 @@ The run used exactly four Hub calls: one status and three source reads, with no 
 ## Latest follow-up — Round 99
 
 - Round 2 N24 rootless invalidation is now rejected: `SinglePassIngestCache.invalidate(rel_path)` requires `root` for relative paths. RED: 2 expected failures, 1 pass. GREEN: `tests/test_audit_round2_preprocess_ingest.py` plus `tests/test_preprocess_single_pass_ingest.py`: **18 passed in 1.57s**. Source SHA `7a9a8c9849bb9339bbc26900749a946a179919b229977a2db163e157bfee7ec1`; regression SHA `c0613bdc481b055aeb328ad45d7a7addd203524a5f0b9484ba7382a9b2b48684`; caller-test SHA `cc1f382f44bd0a08890b6e71411182e0ab31447886454db9e4e8e70fb478213e`.
-- Current observed snapshot before this status edit: `master` HEAD `e1b41a1642e450184e31ffa85198415431a51f5d`; `repo_state` `req_992bb3070b09` and `git_status` `req_9c764db4c711` show a dirty shared tree (5 modified, 0 untracked, 0 staged). Broad suite and release checks remain NOT RUN. Stability destination remains unconfirmed; C08/C09/C13 untouched.
+- The same focused command also passed the existing N21 regression `test_evict_if_needed_does_not_keep_single_oversized_item`; current `put()` rejects oversized strings and `IngestedFile` objects before cache mutation. N21 required no source edit in Round 99.
+- Current observed snapshot before final status edit: `master` HEAD `c3734f4717379b014f16c46ef512ebec2805719f`; `repo_state` `req_3477e0a5edca` and `git_status` `req_a6f82946bc8c` show a dirty shared tree (4 modified, 0 untracked, 0 staged). Broad suite and release checks remain NOT RUN. Stability destination remains unconfirmed; C08/C09/C13 untouched.
