@@ -5947,3 +5947,9 @@ Extracted `classify_python_inline_code` from `CommandBroker._classify_single` in
 - RED: `python -m pytest -q tests/test_audit_round2_preprocess_ingest.py -k invalidate --tb=short` failed as expected: **2 failed, 1 passed, 2 deselected**, both missing-root cases reported `DID NOT RAISE`.
 - GREEN: `python -m pytest -q tests/test_audit_round2_preprocess_ingest.py tests/test_preprocess_single_pass_ingest.py --tb=short`: **18 passed in 1.57s**.
 - Current source SHA `7a9a8c9849bb9339bbc26900749a946a179919b229977a2db163e157bfee7ec1`; audit regression SHA `c0613bdc481b055aeb328ad45d7a7addd203524a5f0b9484ba7382a9b2b48684`; single-pass test SHA `cc1f382f44bd0a08890b6e71411182e0ab31447886454db9e4e8e70fb478213e`. HEAD at validation: `b4e882f6049fc2793cf05b1bc7c3772adf475228`. Full suite and release gates remain **NOT RUN**.
+
+### Round 2 N21 — oversized ingest-cache entries (verified 2026-11-11)
+
+- Existing `put()` checks encoded text size and `IngestedFile.size_bytes` against `max_bytes` before cache mutation, so individually oversized entries do not evict valid entries or exceed the byte limit.
+- Existing regression `test_evict_if_needed_does_not_keep_single_oversized_item` ran in the same focused 18-test command above and passed. No N21 source change was needed in this follow-up; current source SHA `7a9a8c9849bb9339bbc26900749a946a179919b229977a2db163e157bfee7ec1`, test SHA `c0613bdc481b055aeb328ad45d7a7addd203524a5f0b9484ba7382a9b2b48684`.
+- This verifies oversized-entry rejection; it does not establish the full Round 2 suite.

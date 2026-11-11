@@ -75,12 +75,12 @@
         "Laya output stays shadow-only and does not change retrieval, routing, permissions, task state, receipts, or tool execution.",
         "No synthetic inference, model download/install, training, benchmark, advisory activation, or card generation in this work."
       ],
-      "blocker": "Candidate inventory is 0. Direct MCP reports qwen2.5-coder:3b active, GPU admission available, reservation free. Stability's hubctl status reports PID 22608 with qwen2.5-coder:3b on RTX 5070 Ti, while its MCP active_model snapshot conflicted earlier. Running Laya checkpoint/hash/provider/source revision and safe capacity remain NOT VERIFIED. Production human reviewer authentication, labels, and export remain NOT VERIFIED.",
+      "blocker": "Candidate inventory remains 0. Stability reports qwen2.5-coder:7b inference_active, moderate VRAM pressure, and an internal reservation; safe Laya co-admission, running checkpoint/hash/provider, and source revision remain unverified.",
       "clarifications": [],
       "depends_on": [],
       "description": "On each eligible successful ordinary context request, queue bounded shadow capture when an unresolved evidence gap remains and at least two authorized sources have verified evidence IDs; do this regardless of legacy laya.runtime.enabled. Resolve the pinned checkpoint on request, and keep provider/device-capacity failures isolated with metadata-only telemetry. Capture typed gap/source/freshness/coverage signals, verified evidence IDs, deterministic retrieval baseline, useful redacted task query/retrieved excerpts within the approved bounds, actual Laya output/runtime metrics, failures, and later observable downstream outcomes. No synthetic requests or candidate data.",
       "kind": "code",
-      "next_action": "Stability to provide read-only effective Laya checkpoint/hash/provider and running source revision, and reconcile status views. Then wait for a real eligible request and verify metadata capture plus stored candidate provenance; do not fabricate traffic or restart.",
+      "next_action": "After Stability confirms a safe runtime window, wait for a real eligible request and inspect capture telemetry plus the stored candidate's verified provenance. Do not synthesize traffic, repeatedly probe the Hub, or claim live capture.",
       "title": "Ověřit přirozeně zachycené context_source výsledky",
       "work_status": "in_progress"
     },
@@ -136,7 +136,7 @@
         "Capture stays local, scoped, redacted, revalidatable, deletable; verified labels and group-safe exports keep validation/test out of training.",
         "MCP/API, category gates, privacy, lifecycle, failure isolation, and datasets have current evidence; live model/provider claims remain separate."
       ],
-      "blocker": "No production reviewer public keys or naturally captured candidates/labels are configured. Focused source tests pass, but live label verification and group-safe dataset export remain NOT VERIFIED.",
+      "blocker": "No production reviewer keys or natural candidates/labels; live labeling/export NOT VERIFIED.",
       "clarifications": [
         {
           "adoption": "adopted",
@@ -157,7 +157,7 @@
       "depends_on": [],
       "description": "Single-owner Laya integration. Typed decisions use existing MCP and root-authorized HTTP surfaces with server-bound identity and evidence. Keep Laya shadow-only and deterministic Hub behavior authoritative. Audit eligible natural capture, provenance, lifecycle, human labels, and group-safe export. Load lazily on the first Laya request, keep loaded while requests run, and unload 600 seconds after the latest request completes. A GPU reservation or another loaded model alone does not block a request. Never evict, preempt, unload, or reconfigure another model. Preserve configured hardware profile and CPU fallback; return explicit unavailable only on true provider/device capacity failure. Collect useful raw task input and relevant excerpts with redaction when they materially aid training. No installs, training, benchmark, synthetic inference, cards, or rollout.",
       "kind": "code",
-      "next_action": "Continue the full Laya flow audit: consent gates, natural capture and metadata provenance, reviewer isolation, group-safe export, and lifecycle. Await a safe Stability runtime window for genuine capture; do not fabricate data.",
+      "next_action": "Continue full Laya audit and implementation: inspect natural capture telemetry/provenance, residual consent conditions through merge/export, and lifecycle. Wait for Stability to establish safe Laya co-admission before any live observation; no inference or restart.",
       "title": "Rozšířit Laya: MCP/API, relevantní rozhodovací body a tréninková data",
       "work_phase": "implementation",
       "work_status": "in_progress"
