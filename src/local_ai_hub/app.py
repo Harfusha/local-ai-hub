@@ -79,6 +79,7 @@ from .status_executor import StatusDependencyExecutor
 
 
 _STATUS_DEPENDENCY_TIMEOUT_SECONDS = 0.25
+_STATUS_RUNTIME_ONLINE_TIMEOUT_SECONDS = 2.0
 _STATUS_TELEMETRY_SUMMARY_TIMEOUT_SECONDS = 1.0
 _STATUS_OLLAMA_PROFILE_TIMEOUT_SECONDS = 1.0
 _STATUS_PREPROCESSING_STATUS_TIMEOUT_SECONDS = 2.0
@@ -91,6 +92,8 @@ def _status_dependency_timeout_seconds(key: str) -> float:
     timeout = float(_STATUS_DEPENDENCY_TIMEOUT_SECONDS)
     if key == "telemetry.summary":
         timeout = max(timeout, float(_STATUS_TELEMETRY_SUMMARY_TIMEOUT_SECONDS))
+    elif key == "runtime.online":
+        timeout = max(timeout, float(_STATUS_RUNTIME_ONLINE_TIMEOUT_SECONDS))
     elif key == "ollama_profile":
         timeout = max(timeout, float(_STATUS_OLLAMA_PROFILE_TIMEOUT_SECONDS))
     elif key in {"preprocessing.status", "preprocessing.stats", "background_gpu"}:
@@ -1219,7 +1222,7 @@ class LocalAIApp:
 
         def dependency(key, callback, fallback, diagnostic=None):
             dependency_deadline = deadline
-            if key in {"telemetry.summary", "scheduler"}:
+            if key in {"telemetry.summary", "scheduler", "runtime.online"}:
                 dependency_deadline = time.monotonic() + _status_dependency_timeout_seconds(key)
             return _status_dependency(
                 callback,
@@ -1294,9 +1297,8 @@ class LocalAIApp:
                 }
                 return value
 
-            # Start the scheduler before the runtime probe. Both are core
-            # health dependencies and share the request deadline; a slow
-            # runtime must not prevent the scheduler result from being ready.
+            # Start the scheduler before the runtime probe so its bounded
+            # status work proceeds independently of the runtime's own budget.
             scheduler_diagnostic: dict[str, Any] = {}
             scheduler_deadline = time.monotonic() + _status_dependency_timeout_seconds("scheduler")
             scheduler_handle = _schedule_status_dependency(
