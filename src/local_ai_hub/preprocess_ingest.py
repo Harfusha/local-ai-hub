@@ -73,6 +73,8 @@ class SinglePassIngestCache:
             return None
 
     def invalidate(self, rel_path: str | None = None, root: str | None = None) -> None:
+        if rel_path is not None and not root:
+            raise ValueError("root is required when invalidating a relative path")
         with self._lock:
             if rel_path is None and root is None:
                 self._cache.clear()

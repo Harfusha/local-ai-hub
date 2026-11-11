@@ -225,6 +225,13 @@ def validate_config(data: dict[str, Any]) -> None:
     laya_runtime = laya.get("runtime", {}) if isinstance(laya, dict) else {}
     if not isinstance(laya_runtime, dict):
         raise ConfigError("laya.runtime must be a table")
+    laya_reviewers = laya.get("reviewers", {}) if isinstance(laya, dict) else {}
+    if not isinstance(laya_reviewers, dict):
+        raise ConfigError("laya.reviewers must be a table")
+    reviewer_public_keys = laya_reviewers.get("public_keys", [])
+    if (type(reviewer_public_keys) is not list
+            or any(type(key) is not str or not key.strip() for key in reviewer_public_keys)):
+        raise ConfigError("laya.reviewers.public_keys must be a list of OpenSSH public-key strings")
     allow_laya_cpu = laya_runtime.get("allow_cpu", False)
     if type(allow_laya_cpu) is not bool:
         raise ConfigError("laya.runtime allow_cpu must be a boolean")

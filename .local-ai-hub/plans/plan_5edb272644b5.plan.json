@@ -118,12 +118,12 @@
         "Verify checkpoint presence/hash and installed compatible provider before claiming runtime availability; configuration alone is insufficient.",
         "Do not install/download models or drivers, change CPU fallback, run synthetic inference, train, benchmark, or roll out."
       ],
-      "blocker": "Fresh direct Hub MCP snapshot reports active_model=null, gpu_admission_state=available and no reservation; Stability reports a valid internal scheduler GPU fence but its owning task is unknown, so runtime work is paused. These observations conflict. The Laya checkpoint/hash/provider and running source revision are not verified; do not infer free capacity or issue a restart/inference.",
+      "blocker": "Stability reports the Hub running qwen2.5-coder:7b with inference_active, moderate VRAM pressure, and an internal GPU reservation. Laya coexistence/capacity is unproven; no safe runtime window or current Laya checkpoint/provider/source revision is verified.",
       "clarifications": [],
       "depends_on": [],
       "description": "Hub Laya API/service remains available for the lifetime of the Hub process, independent of whether a Laya model is resident. Do not preload at Hub startup. On the first Laya request, lazily load the explicitly pinned local checkpoint; retain the provider session while work is in flight and until 600 seconds after the most recently completed Laya request, resetting the idle deadline after every completion. Another model identity or external GPU reservation alone must not reject Laya, prevent its load, or prevent idle close. Stability source audit confirms dGPU admission uses an atomic capacity lease against fresh measured free VRAM; a valid external reservation alone is not a rejection, while unknown telemetry, invalid/foreign fence, stale reservation generation, and insufficient capacity fail closed. Stability reports 34 focused capacity/co-admission tests passed, including legacy reservation, owned scheduler digest, and fail-closed cases. Never evict, preempt, unload, or reconfigure another model; preserve reservation owner identity, limits, hardware profile, and CPU fallback.",
       "kind": "code",
-      "next_action": "Stability must reconcile the conflicting admission observations and identify the internal fence owner; then read-only verify the running Laya checkpoint/hash/provider and source revision. All 10 targeted Laya test modules pass 195 tests. Observe a genuine eligible request naturally only after safe runtime availability is established.",
+      "next_action": "Stability to establish safe co-admission and provide read-only checkpoint/hash/provider plus running source revision. Do not preload, infer, restart, alter GPU policy, or change another model.",
       "title": "Udržet Laya službu trvale dostupnou s lazy load",
       "work_status": "in_progress"
     },
@@ -136,7 +136,7 @@
         "Capture stays local, scoped, redacted, revalidatable, deletable; verified labels and group-safe exports keep validation/test out of training.",
         "MCP/API, category gates, privacy, lifecycle, failure isolation, and datasets have current evidence; live model/provider claims remain separate."
       ],
-      "blocker": "No runtime proof of lazy load, 600-second expiry, or behavior under reservation/model contention; Stability owns runtime/GPU and service operations.",
+      "blocker": "No production reviewer public keys or naturally captured candidates/labels are configured. Focused source tests pass, but live label verification and group-safe dataset export remain NOT VERIFIED.",
       "clarifications": [
         {
           "adoption": "adopted",
@@ -157,7 +157,7 @@
       "depends_on": [],
       "description": "Single-owner Laya integration. Typed decisions use existing MCP and root-authorized HTTP surfaces with server-bound identity and evidence. Keep Laya shadow-only and deterministic Hub behavior authoritative. Audit eligible natural capture, provenance, lifecycle, human labels, and group-safe export. Load lazily on the first Laya request, keep loaded while requests run, and unload 600 seconds after the latest request completes. A GPU reservation or another loaded model alone does not block a request. Never evict, preempt, unload, or reconfigure another model. Preserve configured hardware profile and CPU fallback; return explicit unavailable only on true provider/device capacity failure. Collect useful raw task input and relevant excerpts with redaction when they materially aid training. No installs, training, benchmark, synthetic inference, cards, or rollout.",
       "kind": "code",
-      "next_action": "Preserve the active plan contract: Hub-owned Laya service remains available for the Hub process lifetime; lazy-load on first Laya request; retain the model until 600 seconds after the most recently completed request. Do not gate logical availability on another model identity or GPU reservation alone; retain physical capacity and scheduler safety checks. Runtime loading remains unverified pending Stability-owned safe window.",
+      "next_action": "Continue the full Laya flow audit: consent gates, natural capture and metadata provenance, reviewer isolation, group-safe export, and lifecycle. Await a safe Stability runtime window for genuine capture; do not fabricate data.",
       "title": "Rozšířit Laya: MCP/API, relevantní rozhodovací body a tréninková data",
       "work_phase": "implementation",
       "work_status": "in_progress"

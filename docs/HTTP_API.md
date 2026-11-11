@@ -4,6 +4,8 @@
 
 `POST /api/agent-state/context` may trigger Laya shadow capture on eligible successful retrieval. No consent or receipt fields are accepted or required. Eligibility requires an unresolved evidence gap, at least two authorized sources, and verified evidence IDs. The server sends only typed codes and evidence IDs to Laya, then stores actual runtime outcomes as locally scoped pending candidates. Inference uses the existing bounded background executor with at most one automatic Laya capture queued or running; the context response does not wait for or expose the Laya result. Runtime failures do not change ordinary context delivery.
 
+`POST /api/agent-state/tasks` with `action="curate_dataset"` and nested `laya_operation` is the existing root-bound MCP/HTTP surface for candidate review. `review_challenge` returns base64 canonical challenge bytes. Sign the decoded bytes using the matching configured Ed25519 private key and submit its fingerprint and base64 signature in `label` or `verify`. The challenge binds the candidate hash, repository scope, task/session, rubric, action, role, target, and reviewer fingerprint. Production accepts identities derived from configured OpenSSH public-key fingerprints, never caller names. Keep keys private; four different key fingerprints are required for two annotations, adjudication, and verification. This curation path does not require the detailed-diagnostics dashboard toggle.
+
 `POST /api/diagnostics/export` requires the operator to enable detailed diagnostics in the dashboard. When disabled, it returns HTTP 409 with `error_code=detailed_diagnostics_disabled` before collecting or exporting data.
 
 `POST /api/search` skips exact total counting by default to keep repository

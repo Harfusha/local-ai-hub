@@ -513,7 +513,13 @@ class LocalAIApp:
             max_payload_bytes=int(agent_state_cfg.get("max_payload_bytes", 65536)),
         )
         self.agent_tasks = TaskStore(self.agent_state)
-        self.laya_candidates = LayaCandidateStore(state_dir)
+        laya_cfg = self.config.get("laya", {})
+        reviewer_cfg = laya_cfg.get("reviewers", {}) if isinstance(laya_cfg, dict) else {}
+        reviewer_public_keys = reviewer_cfg.get("public_keys", []) if isinstance(reviewer_cfg, dict) else []
+        self.laya_candidates = LayaCandidateStore(
+            state_dir,
+            reviewer_public_keys=reviewer_public_keys,
+        )
         self.laya_lifecycle = LayaSessionLifecycle(DEFAULT_IDLE_UNLOAD_SECONDS)
         self._laya_runtime_adapter_lock = threading.Lock()
         self._laya_runtime_adapter = None

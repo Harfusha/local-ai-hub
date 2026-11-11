@@ -32,6 +32,15 @@ The optional `laya-runtime` extra pins `laya==0.4.31` and `vegaml==0.16.1`. Laya
 
 The normal Hub status response includes `laya_runtime` lifecycle metadata, and the existing diagnostics ZIP includes the same metadata at `laya/report.json.runtime`. These fields report session availability, whether provider close is configured, in-flight calls, timeout and close errors. `runtime_verification` remains `NOT_VERIFIED` until a connected provider independently verifies placement and release; these status fields do not claim device support or reclaimed memory.
 
+### Human review keys
+
+`[laya.reviewers].public_keys` accepts a list of OpenSSH `ssh-ed25519` public-key lines. The Hub derives reviewer identity from each key's SHA-256 fingerprint; caller-supplied reviewer names are not accepted by the production path. Keep private keys with their reviewers. The existing `laya_operation` MCP/HTTP surface returns a base64 review challenge bound to the candidate content hash, repository scope, task/session, rubric, action, role, target, and reviewer fingerprint. Sign the decoded challenge bytes with the matching Ed25519 private key and submit the base64 signature as the review proof. Configure four distinct public keys for the two annotations, adjudication, and independent verification. With no configured keys, label and verification operations fail closed.
+
+```toml
+[laya.reviewers]
+public_keys = [] # Add one "ssh-ed25519 <base64> <comment>" line per reviewer.
+```
+
 ## Code intelligence
 
 `[code_intelligence]` controls Serena enablement, command, query/index deadlines, failure threshold, maximum persistent sessions and session idle TTL. `direct_agent_mcp=false` is recommended because the hub exposes Serena through the compact MCP surface.

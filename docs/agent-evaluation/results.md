@@ -5939,3 +5939,11 @@ Extracted `classify_python_inline_code` from `CommandBroker._classify_single` in
 - Raw response: `success=true`, Hub online, version 6.0.0, active model `qwen2.5-coder:3b`, hardware profile high, GPU admission available, VRAM nominal.
 - Capability row `code_generation`: `available=false`, `state=enabled_by_operator`, `reason=disabled_in_mcp_adapter`, feature gate `local_code_generation`, provider readiness `not_checked`. This verifies the readiness response and adapter exposure only; it does not prove generation quality or provider readiness.
 - Generation stayed GATED/NOT_RUN. No generation call ran because the capability was unavailable; CASE132 full prompt acceptance stays NOT VERIFIED because the isolated raw result and required harness/fixture inputs are absent.
+
+### Round 2 N24 — root-bound ingest-cache invalidation (2026-11-11)
+
+- Root cause: `SinglePassIngestCache.invalidate(rel_path)` removed matching keys across every repository when no root was supplied. The current `ProjectPreprocessor` watcher already passes `root`.
+- Changed `invalidate()` to reject a relative path when `root` is missing or empty, before locking or mutation. Added coverage that both projects retain their entries after rejection and that root-qualified invalidation removes only the named project's entry. Updated the existing single-pass test to pass its root.
+- RED: `python -m pytest -q tests/test_audit_round2_preprocess_ingest.py -k invalidate --tb=short` failed as expected: **2 failed, 1 passed, 2 deselected**, both missing-root cases reported `DID NOT RAISE`.
+- GREEN: `python -m pytest -q tests/test_audit_round2_preprocess_ingest.py tests/test_preprocess_single_pass_ingest.py --tb=short`: **18 passed in 1.57s**.
+- Current source SHA `7a9a8c9849bb9339bbc26900749a946a179919b229977a2db163e157bfee7ec1`; audit regression SHA `c0613bdc481b055aeb328ad45d7a7addd203524a5f0b9484ba7382a9b2b48684`; single-pass test SHA `cc1f382f44bd0a08890b6e71411182e0ab31447886454db9e4e8e70fb478213e`. HEAD at validation: `b4e882f6049fc2793cf05b1bc7c3772adf475228`. Full suite and release gates remain **NOT RUN**.

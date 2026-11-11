@@ -26,7 +26,7 @@ def test_single_pass_ingest_caches_and_avoids_repeated_reads(tmp_path: Path):
     assert ingested1 is ingested2
 
     # Invalidate and re-read
-    cache.invalidate("hello.py")
+    cache.invalidate("hello.py", root=str(tmp_path))
     tools.invalidate_snapshot(f)
     ingested3 = cache.get_or_ingest(tmp_path, "hello.py", tools)
     assert ingested3.text == "x = 999"

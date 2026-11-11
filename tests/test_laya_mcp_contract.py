@@ -24,11 +24,13 @@ def _decision_operation() -> dict[str, object]:
     }
 
 
-def _http_post_via_handler(monkeypatch, tmp_path, payload):
+def _http_post_via_handler(monkeypatch, tmp_path, payload, *, app_overrides=None):
     app = LocalAIApp.__new__(LocalAIApp)
     app.config = {"laya": {"runtime": {"enabled": False}}}
     app.recovery = None
     app.agent_tasks = SimpleNamespace(state_store=SimpleNamespace(enabled=True))
+    for name, value in (app_overrides or {}).items():
+        setattr(app, name, value)
     monkeypatch.setattr(http_server, "APP", app)
     monkeypatch.setattr(http_server, "_http_mode_gate_error", lambda *_args: None)
 
@@ -99,6 +101,67 @@ def test_mcp_curate_dataset_forwards_nested_laya_operation(monkeypatch, tmp_path
     assert payload["action"] == "curate_dataset"
     assert payload["laya_operation"] == operation
     assert "mode" not in payload["laya_operation"]
+
+    challenge_operation = {
+        "action": "review_challenge",
+        "candidate_id": "laya-candidate-1",
+        "review_action": "label",
+        "role": "annotation",
+        "target": "fast",
+        "reviewer_fingerprint": "SHA256:public-key-fingerprint",
+    }
+    challenge_result = mcp_server.local_ai_coord(
+        action="curate_dataset",
+        root=str(tmp_path),
+        laya_operation=challenge_operation,
+    )
+    assert challenge_result["success"] is True
+    task_calls = [call for call in calls if call[0] == "/api/agent-state/tasks"]
+    assert task_calls[-1][1]["laya_operation"] == challenge_operation
+
+
+def test_laya_reviewer_challenge_uses_existing_non_diagnostic_curation_surface():
+    assert diagnostic_mcp_operation(
+        "local_ai_coord",
+        {
+            "action": "curate_dataset",
+            "root": "C:/repo",
+            "laya_operation": {"action": "review_challenge"},
+        },
+    ) is False
+
+
+def test_http_curate_dataset_forwards_laya_reviewer_challenge(monkeypatch, tmp_path):
+    calls = []
+    laya_candidates = SimpleNamespace(
+        handle=lambda operation, **kwargs: calls.append((operation, kwargs)) or {"success": True, "challenge_b64": "YQ=="}
+    )
+    operation = {
+        "action": "review_challenge",
+        "candidate_id": "laya-candidate-1",
+        "review_action": "label",
+        "role": "annotation",
+        "target": "fast",
+        "reviewer_fingerprint": "SHA256:public-key-fingerprint",
+    }
+    response = _http_post_via_handler(
+        monkeypatch,
+        tmp_path,
+        {"action": "curate_dataset", "root": str(tmp_path), "laya_operation": operation},
+        app_overrides={"laya_candidates": laya_candidates, "evidence": object()},
+    )
+    assert response == (200, {"success": True, "challenge_b64": "YQ=="}), response
+    assert len(calls) == 1
+    assert calls[0][0] == operation
+    assert calls[0][1]["root"] == str(tmp_path)
+    assert diagnostic_http_operation(
+        "POST",
+        "/api/agent-state/tasks",
+        {
+            "action": "curate_dataset",
+            "laya_operation": {"action": "review_challenge"},
+        },
+    ) is False
 
 
 def test_mcp_curate_dataset_forwards_scoped_candidate_get(monkeypatch, tmp_path):

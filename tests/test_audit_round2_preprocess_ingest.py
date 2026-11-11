@@ -3,6 +3,8 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SRC = REPO_ROOT / "src"
 if str(SRC) not in sys.path:
@@ -46,7 +48,8 @@ def test_evict_if_needed_does_not_keep_single_oversized_item(tmp_path):
     assert cache._total_bytes == 0
 
 
-def test_invalidate_without_root_clears_matching_rel_paths_across_roots(tmp_path):
+@pytest.mark.parametrize("root", [None, ""])
+def test_invalidate_relative_path_requires_nonempty_root(tmp_path, root):
     project_a = tmp_path / "project_a"
     project_b = tmp_path / "project_b"
     project_a.mkdir()
@@ -61,11 +64,29 @@ def test_invalidate_without_root_clears_matching_rel_paths_across_roots(tmp_path
     cache.get_or_ingest(project_a, "common.py", tools)
     cache.get_or_ingest(project_b, "common.py", tools)
 
+    with pytest.raises(ValueError, match="root is required"):
+        cache.invalidate("common.py", root=root)
+
     assert cache.has("common.py", root=str(project_a)) is True
     assert cache.has("common.py", root=str(project_b)) is True
 
-    # Invalidate by relative path only
-    cache.invalidate("common.py")
+
+def test_invalidate_relative_path_is_scoped_to_root(tmp_path):
+    project_a = tmp_path / "project_a"
+    project_b = tmp_path / "project_b"
+    project_a.mkdir()
+    project_b.mkdir()
+
+    (project_a / "common.py").write_text("A = 1\n", encoding="utf-8")
+    (project_b / "common.py").write_text("B = 2\n", encoding="utf-8")
+
+    tools = RepositoryTools({})
+    cache = SinglePassIngestCache(max_entries=10)
+
+    cache.get_or_ingest(project_a, "common.py", tools)
+    cache.get_or_ingest(project_b, "common.py", tools)
+
+    cache.invalidate("common.py", root=str(project_a))
 
     assert cache.has("common.py", root=str(project_a)) is False
-    assert cache.has("common.py", root=str(project_b)) is False
+    assert cache.has("common.py", root=str(project_b)) is True

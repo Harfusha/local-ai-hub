@@ -12,6 +12,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 import local_ai_hub.laya_candidates as candidates_module
 from local_ai_hub.agent_events import AgentStateStore
+from local_ai_hub.config import ConfigError, validate_config
 from local_ai_hub.laya_candidates import LayaCandidateStore
 from local_ai_hub.laya_decisions import (
     ContextSourceEvidence,
@@ -99,6 +100,14 @@ def test_context_source_candidate_persists_only_redacted_raw_training_content():
 
     assert candidate["state"]["raw_task_input"] == "Find route for token=[REDACTED]"
     assert candidate["state"]["raw_context_excerpt"] == "router.py maps the request"
+
+
+def test_laya_reviewer_public_key_config_is_typed_and_optional():
+    validate_config({"laya": {"reviewers": {"public_keys": []}}})
+    with pytest.raises(ConfigError, match="list of OpenSSH public-key strings"):
+        validate_config({"laya": {"reviewers": {"public_keys": "ssh-ed25519 key"}}})
+    with pytest.raises(ConfigError, match="list of OpenSSH public-key strings"):
+        validate_config({"laya": {"reviewers": {"public_keys": [""]}}})
 
 
 def test_label_export_requires_authenticated_human_provenance():
@@ -746,6 +755,11 @@ def test_configured_ed25519_keys_authenticate_candidate_bound_reviews(tmp_path, 
             "proof": proof(private_keys[2], fingerprints[2], "adjudication", "fast"),
         },
     }
+    altered = dict(labels)
+    altered["annotations"] = [dict(item) for item in labels["annotations"]]
+    altered["annotations"][0]["target"] = "smart"
+    with pytest.raises(ValueError, match="authenticated human reviewer provenance"):
+        store.handle(altered, root=str(repo), task_store=task_store)
     assert store.handle(labels, root=str(repo), task_store=task_store)["status"] == "reviewed"
 
     verify_challenge = store.handle({
@@ -766,11 +780,6 @@ def test_configured_ed25519_keys_authenticate_candidate_bound_reviews(tmp_path, 
         root=str(repo), task_store=task_store,
     )["status"] == "verified"
 
-    altered = dict(labels)
-    altered["annotations"] = [dict(item) for item in labels["annotations"]]
-    altered["annotations"][0]["target"] = "smart"
-    with pytest.raises(ValueError, match="authenticated human reviewer provenance"):
-        store.handle(altered, root=str(repo), task_store=task_store)
 
 
 def test_label_requires_authentication_for_every_annotator_and_adjudicator(candidate_env):

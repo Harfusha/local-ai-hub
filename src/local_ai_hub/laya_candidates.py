@@ -18,7 +18,7 @@ from contextlib import closing
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
-from cryptography.exceptions import InvalidSignature
+from cryptography.exceptions import InvalidSignature, UnsupportedAlgorithm
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
@@ -227,7 +227,7 @@ class LayaCandidateStore:
             fingerprint = self.reviewer_fingerprint(line)
             try:
                 key = serialization.load_ssh_public_key(line.encode("ascii"))
-            except (ValueError, UnicodeEncodeError) as exc:
+            except (ValueError, UnicodeEncodeError, UnsupportedAlgorithm) as exc:
                 raise ValueError("invalid Laya reviewer OpenSSH public key") from exc
             if not isinstance(key, Ed25519PublicKey):
                 raise ValueError("Laya reviewer keys must use Ed25519")
@@ -1252,6 +1252,8 @@ class LayaCandidateStore:
         candidate_id = _identity(op["candidate_id"], "candidate_id")
         role = op["role"]
         fingerprint = op["reviewer_fingerprint"]
+        if type(role) is not str:
+            raise ValueError("review challenge role is invalid")
         if type(fingerprint) is not str or fingerprint not in self._reviewer_keys:
             raise ValueError("authenticated human reviewer provenance is unavailable")
         with closing(self._connect(task_store)) as con:
@@ -1309,6 +1311,16 @@ class LayaCandidateStore:
         }
 
     def _transition(self, operation: dict[str, Any], *, action: str, scope: str, root: str, task_store: Any) -> dict[str, Any]:
+        if not callable(self._reviewer_authenticator):
+            if action == "verify" and "proof" not in operation:
+                raise ValueError("authenticated human reviewer provenance is unavailable")
+            if action == "label" and (
+                not isinstance(operation.get("annotations"), list)
+                or any(type(item) is not dict or "proof" not in item for item in operation["annotations"])
+                or type(operation.get("adjudication")) is not dict
+                or "proof" not in operation["adjudication"]
+            ):
+                raise ValueError("authenticated human reviewer provenance is unavailable")
         fields = {
             "label": {"action", "candidate_id", "annotations", "adjudication"},
             "verify": {"action", "candidate_id", "proof"} if not callable(self._reviewer_authenticator) else {"action", "candidate_id", "reviewer_ref"},
@@ -1334,7 +1346,10 @@ class LayaCandidateStore:
                     con.rollback(); raise ValueError("two independent annotations are required")
                 proof_mode = not callable(self._reviewer_authenticator)
                 parsed = []
+                annotation_proofs = []
                 for item in annotations:
+                    if proof_mode and type(item) is dict and "proof" not in item:
+                        con.rollback(); raise ValueError("authenticated human reviewer provenance is unavailable")
                     item = _strict_object(
                         item,
                         {"target", "proof"} if proof_mode else {"annotator_ref", "target"},
@@ -1346,10 +1361,12 @@ class LayaCandidateStore:
                     if proof_mode:
                         proof = _strict_object(item["proof"], {"reviewer_fingerprint", "signature"}, "review proof")
                         annotator = proof["reviewer_fingerprint"]
+                        if type(annotator) is not str or annotator not in self._reviewer_keys:
+                            con.rollback(); raise ValueError("authenticated human reviewer provenance is unavailable")
+                        annotation_proofs.append(proof)
                     else:
-                        proof = None
                         annotator = _identity(item["annotator_ref"], "annotator_ref")
-                    parsed.append({"annotator_ref": annotator, "target": target, **({"proof": proof} if proof_mode else {})})
+                    parsed.append({"annotator_ref": annotator, "target": target})
                 if parsed[0]["annotator_ref"] == parsed[1]["annotator_ref"]:
                     con.rollback(); raise ValueError("independent annotators must differ")
                 adjudication = _strict_object(
@@ -1361,6 +1378,8 @@ class LayaCandidateStore:
                 if proof_mode:
                     proof = _strict_object(adjudication["proof"], {"reviewer_fingerprint", "signature"}, "review proof")
                     reviewer = proof["reviewer_fingerprint"]
+                    if type(reviewer) is not str or reviewer not in self._reviewer_keys:
+                        con.rollback(); raise ValueError("authenticated human reviewer provenance is unavailable")
                 else:
                     proof = None
                     reviewer = _identity(adjudication["reviewer_ref"], "adjudicator_ref")
@@ -1369,14 +1388,17 @@ class LayaCandidateStore:
                 if target not in candidate["questions"][candidate["category"]]["criteria"]:
                     con.rollback(); raise ValueError("adjudication target is not an allowed option")
                 if proof_mode:
-                    for annotation in parsed:
+                    for annotation, proof_item in zip(parsed, annotation_proofs, strict=True):
                         challenge = self._review_message(
                             action="label", role="annotation", target=annotation["target"],
                             reviewer_fingerprint=annotation["annotator_ref"], candidate_id=candidate_id,
                             content_hash=str(row["content_hash"]), scope=scope,
                             task_id=str(row["task_id"]), session_id=str(row["session_id"]),
                         )
-                        self._verify_review_proof(annotation["proof"], challenge)
+                        self._verify_review_proof(proof_item, challenge)
+                        annotation["proof_sha256"] = hashlib.sha256(
+                            base64.b64decode(proof_item["signature"], validate=True)
+                        ).hexdigest()
                     challenge = self._review_message(
                         action="label", role="adjudication", target=target,
                         reviewer_fingerprint=reviewer, candidate_id=candidate_id,
@@ -1384,6 +1406,9 @@ class LayaCandidateStore:
                         task_id=str(row["task_id"]), session_id=str(row["session_id"]),
                     )
                     self._verify_review_proof(proof, challenge)
+                    adjudication_proof_sha256 = hashlib.sha256(
+                        base64.b64decode(proof["signature"], validate=True)
+                    ).hexdigest()
                 elif any(
                     not self._authenticated_human_reviewer(reviewer_ref, root, row["task_id"])
                     for reviewer_ref in (parsed[0]["annotator_ref"], parsed[1]["annotator_ref"], reviewer)
@@ -1393,7 +1418,11 @@ class LayaCandidateStore:
                 candidate["label_provenance"] = {
                     "rubric_version": _LABEL_RUBRIC_VERSION,
                     "annotations": parsed,
-                    "adjudication": {"reviewer_ref": reviewer, "target": target},
+                    "adjudication": {
+                        "reviewer_ref": reviewer,
+                        "target": target,
+                        **({"proof_sha256": adjudication_proof_sha256} if proof_mode else {}),
+                    },
                 }
                 candidate["label_status"] = "reviewed"
                 new_status = "reviewed"
@@ -1403,8 +1432,12 @@ class LayaCandidateStore:
                     con.rollback(); raise ValueError("verify requires a reviewed candidate")
                 proof_mode = not callable(self._reviewer_authenticator)
                 if proof_mode:
+                    if "proof" not in op:
+                        con.rollback(); raise ValueError("authenticated human reviewer provenance is unavailable")
                     proof = _strict_object(op["proof"], {"reviewer_fingerprint", "signature"}, "review proof")
                     reviewer = proof["reviewer_fingerprint"]
+                    if type(reviewer) is not str or reviewer not in self._reviewer_keys:
+                        con.rollback(); raise ValueError("authenticated human reviewer provenance is unavailable")
                 else:
                     proof = None
                     reviewer = _identity(op["reviewer_ref"], "reviewer_ref")
@@ -1424,6 +1457,9 @@ class LayaCandidateStore:
                         label_targets_sha256=hashlib.sha256(_canonical_json(label_targets).encode("utf-8")).hexdigest(),
                     )
                     self._verify_review_proof(proof, challenge)
+                    verification_proof_sha256 = hashlib.sha256(
+                        base64.b64decode(proof["signature"], validate=True)
+                    ).hexdigest()
                 elif not self._authenticated_human_reviewer(reviewer, root, row["task_id"]):
                     con.rollback()
                     raise ValueError("authenticated human reviewer provenance is unavailable")
@@ -1431,6 +1467,7 @@ class LayaCandidateStore:
                 candidate["label_provenance"]["verification"] = {
                     "reviewer_ref": reviewer,
                     "method": "authenticated_human_review",
+                    **({"proof_sha256": verification_proof_sha256} if proof_mode else {}),
                 }
                 new_status = "verified"
                 details = {"reviewer_ref": reviewer, "method": "authenticated_human_review"}

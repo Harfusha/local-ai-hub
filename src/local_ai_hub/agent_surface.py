@@ -21,7 +21,7 @@ DIAGNOSTIC_MCP_ACTIONS = {
 
 _LAYA_EVALUATION_ACTIONS = frozenset({"evaluate_decision", "evaluate_context_source"})
 _LAYA_CURATION_ACTIONS = frozenset({
-    "list", "get", "label", "verify", "reject", "delete", "prepare_splits", "export",
+    "list", "get", "review_challenge", "label", "verify", "reject", "delete", "prepare_splits", "export",
 })
 
 

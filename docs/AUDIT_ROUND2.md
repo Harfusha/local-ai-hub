@@ -300,4 +300,8 @@ N13: filtry source+target už fungují společně; projektová izolace zůstáv�
 
 ### N04 — LRU cache kapacita (Round 86, 2026-11-11)
 
-`MemoryLRUCache` rozděluje zbytek `max_entries` mezi shardy; `set()` i `set_many()` zachovávají plnou nakonfigurovanou kapacitu. Test pokryl kapacitu 1 a nedělitelnou kapacitu 17: **4 passed**. N05–N11, N13, N15, N18–N21 a N24 zůstávají podle vlastnictví a chybějících důkazů otevřené.
+`MemoryLRUCache` rozděluje zbytek `max_entries` mezi shardy; `set()` i `set_many()` zachovávají plnou nakonfigurovanou kapacitu. Test pokryl kapacitu 1 a nedělitelnou kapacitu 17: **4 passed**. N05–N11, N13, N15 a N18–N21 zůstávají podle vlastnictví a chybějících důkazů otevřené. N24 je opraven a cíleně ověřen níže.
+
+### N24 — aktuální stav (Round 99, 2026-11-11)
+
+`SinglePassIngestCache.invalidate(rel_path)` nyní vyžaduje neprázdný `root`; jinak vyvolá `ValueError` před zámkem a mutací. Root-qualified invalidace smaže jen odpovídající repository key. Produkční watcher call-site již předává root. Test-first důkaz: chybějící/empty-root testy nejprve selhaly (**2 failed, 1 passed, 2 deselected**); po opravě oba cílené testovací soubory prošly (**18 passed in 1.57s**). SHA zdroje a testů jsou v `docs/agent-evaluation/results.md`. Plná sada zůstává mimo tento důkaz.
