@@ -12,6 +12,7 @@ from contextlib import closing
 from pathlib import Path
 
 from local_ai_hub.agent_events import AgentEvent, AgentStateStore
+from local_ai_hub.agent_memory import MemoryStore
 from local_ai_hub import rag as rag_module
 from local_ai_hub.rag import RAGStore, _fragment_hash
 
@@ -72,6 +73,144 @@ def test_hybrid_rag_search_combines_fts_and_vector(tmp_path):
     top = search_res["results"][0]
     assert "auth.py" in top["path"]
     assert search_res.get("hybrid") is True
+
+
+def test_graphrag_search_excludes_relations_from_other_repositories(tmp_path):
+    store = _store(tmp_path)
+    root = tmp_path / "scoped-project"
+    root.mkdir()
+    (root / "auth.py").write_text(
+        "def authenticate_user():\n    return True\n", encoding="utf-8"
+    )
+    assert store.index_step(str(root), max_files=10)["success"] is True
+
+    from local_ai_hub.project_config import resolve_project_context
+
+    state_dir = tmp_path / "state"
+    repository_id = resolve_project_context(root, state_dir).coordination_id
+    state_db = state_dir / "agent_state.sqlite"
+    with closing(sqlite3.connect(state_db)) as connection, connection:
+        connection.execute(
+            """
+            CREATE TABLE agent_entity_relations (
+                relation_id TEXT PRIMARY KEY,
+                source_entity TEXT NOT NULL,
+                relation TEXT NOT NULL,
+                target_entity TEXT NOT NULL,
+                weight REAL NOT NULL,
+                metadata TEXT NOT NULL,
+                created_at REAL NOT NULL,
+                updated_at REAL NOT NULL
+            )
+            """
+        )
+        connection.executemany(
+            """
+            INSERT INTO agent_entity_relations (
+                relation_id, source_entity, relation, target_entity, weight,
+                metadata, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    "foreign",
+                    "authenticate_user",
+                    "defines",
+                    "foreign_secret",
+                    1.0,
+                    json.dumps({
+                        "scope": "repository",
+                        "provenance": {"repository_id": "another-repository"},
+                    }),
+                    1.0,
+                    1.0,
+                ),
+                (
+                    "local",
+                    "authenticate_user",
+                    "defines",
+                    "local_contract",
+                    1.0,
+                    json.dumps({
+                        "scope": "repository",
+                        "provenance": {"repository_id": repository_id},
+                    }),
+                    1.0,
+                    1.0,
+                ),
+                (
+                    "global",
+                    "authenticate_user",
+                    "defines",
+                    "global_concept",
+                    1.0,
+                    json.dumps({"scope": "global", "scope_id": ""}),
+                    1.0,
+                    1.0,
+                ),
+                (
+                    "legacy",
+                    "authenticate_user",
+                    "defines",
+                    "unscoped_legacy_relation",
+                    1.0,
+                    json.dumps({}),
+                    1.0,
+                    1.0,
+                ),
+                (
+                    "retired-tenant",
+                    "authenticate_user",
+                    "defines",
+                    "tenant_relation",
+                    1.0,
+                    json.dumps({"scope": "global", "tenant": "retired"}),
+                    1.0,
+                    1.0,
+                ),
+            ],
+        )
+
+    workspace = store.workspace_id(str(root))
+    store.require_workspace_root(workspace=workspace, root=str(root))
+    result = store.search(
+        "authenticate_user",
+        workspace=workspace,
+        top_k=5,
+        use_reranker=False,
+    )
+    assert result["success"] is True
+    relations = result["results"][0].get("graph_relations", [])
+    assert {relation["target"] for relation in relations} == {
+        "local_contract",
+        "global_concept",
+    }
+
+
+def test_memory_auto_links_persist_scope_provenance():
+    from types import SimpleNamespace
+
+    linked = []
+    store = object.__new__(MemoryStore)
+    store.record_relation = lambda **kwargs: linked.append(kwargs)
+    record = SimpleNamespace(
+        record_id="record-1",
+        key="authenticate_user",
+        value="local memory value",
+        scope="repository",
+        scope_id="repo-A",
+        provenance={"repository_id": "repo-A"},
+        confidence=1.0,
+    )
+
+    MemoryStore._auto_link_record(store, record)
+
+    assert linked
+    assert all(item["metadata"]["scope"] == "repository" for item in linked)
+    assert all(
+        item["metadata"]["provenance"]["repository_id"] == "repo-A"
+        for item in linked
+    )
 
 
 def test_workspace_chunk_presence_is_indexed_and_fast_to_check(tmp_path):

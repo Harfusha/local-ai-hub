@@ -795,6 +795,7 @@ class LocalAIServices:
             idle_ttl=lint_config.get("daemon_idle_ttl_seconds", 300),
         )
         self.task_store: Any | None = None
+        self.laya_decision_observer: Any | None = None
         self.verification_store: Any | None = None
         self.incident_store: Any | None = None
         self.adoption_metrics = AdoptionMetricsStore(configured_state_dir(config))
@@ -893,6 +894,82 @@ class LocalAIServices:
 
     def set_task_store(self, task_store: Any) -> None:
         self.task_store = task_store
+
+    def set_laya_decision_observer(self, observer: Any) -> None:
+        if observer is not None and not callable(observer):
+            raise TypeError("Laya decision observer must be callable")
+        self.laya_decision_observer = observer
+
+    def _queue_laya_shadow_observation(
+        self,
+        args: Mapping[str, Any],
+        *,
+        root: str,
+        category: str,
+        options: Sequence[str],
+        state: Mapping[str, str],
+        training_content: Mapping[str, str],
+        baseline: Mapping[str, str],
+    ) -> bool:
+        """Queue one typed shadow decision only when real task and evidence scope exists."""
+        observer = getattr(self, "laya_decision_observer", None)
+        task_id = args.get("task_id") if isinstance(args, Mapping) else None
+        evidence_ids = args.get("evidence_ids") if isinstance(args, Mapping) else None
+        if (
+            not callable(observer)
+            or not isinstance(root, str)
+            or not root.strip()
+            or not isinstance(task_id, str)
+            or not task_id.strip()
+            or type(evidence_ids) not in (list, tuple)
+            or not evidence_ids
+            or len(evidence_ids) > 64
+            or any(not isinstance(item, str) or not item.strip() for item in evidence_ids)
+        ):
+            return False
+        try:
+            from .laya_decisions import DecisionCategory, DecisionInput, allowed_decision_options
+
+            decision_category = DecisionCategory(category)
+            if decision_category is DecisionCategory.CONTEXT_SOURCE:
+                return False
+            option_values = list(options)
+            if not option_values or len(set(option_values)) != len(option_values):
+                return False
+            if not set(option_values).issubset(allowed_decision_options(decision_category)):
+                return False
+            decision_input = DecisionInput.from_mapping({
+                "state": dict(state),
+                "training_content": dict(training_content),
+            })
+            baseline_value = dict(baseline)
+            if (
+                set(baseline_value) != {"method", "suggestion", "evidence_id"}
+                or baseline_value.get("suggestion") not in option_values
+                or baseline_value.get("evidence_id") not in evidence_ids
+            ):
+                return False
+            expected_method = {
+                DecisionCategory.MODEL_ROUTE: "model_router_classify",
+                DecisionCategory.CONTEXT_BUDGET: "repo_context_token_budget",
+            }.get(decision_category)
+            if expected_method is None or baseline_value.get("method") != expected_method:
+                return False
+            operation = {
+                "action": "evaluate_decision",
+                "task_id": task_id,
+                "decision": {
+                    "category": decision_category.value,
+                    "evidence_ids": list(evidence_ids),
+                    "options": option_values,
+                    "state": dict(decision_input.state),
+                    "training_content": dict(decision_input.training_content),
+                },
+            }
+            queued = observer(operation, root, baseline_value)
+            return isinstance(queued, Mapping) and queued.get("status") == "queued"
+        except Exception:
+            return False
 
     def set_verification_store(self, verification_store: Any) -> None:
         self.verification_store = verification_store
@@ -2252,6 +2329,40 @@ class LocalAIServices:
             return attach_project_warning(result)
         result = self._apply_semantic_quality(result, task=task, evidence_paths=args.get("changed_paths") or ())
         result["route"] = route
+        if (
+            task_type_override == "auto"
+            and complexity_override == "auto"
+            and not str(args.get("model", "")).strip()
+            and isinstance(args.get("evidence_ids"), (list, tuple))
+            and args.get("evidence_ids")
+        ):
+            route_option = {
+                "fast_code": "fast",
+                "heavy_code": "smart",
+                "reasoning": "smart",
+                "general": "generic",
+            }.get(project_role)
+            evidence_id = args["evidence_ids"][0]
+            if route_option is not None:
+                task_input = task.encode("utf-8", errors="replace")[:8192].decode("utf-8", errors="ignore").strip()
+                self._queue_laya_shadow_observation(
+                    args,
+                    root=str(args.get("root") or args.get("cwd") or ""),
+                    category="model_route",
+                    options=["fast", "smart", "generic"],
+                    state={
+                        "task_type": str(route.get("task_type", "general")),
+                        "complexity": str(route.get("complexity", "fast")),
+                        "semantic_required": "true" if route.get("semantic_required") is True else "false",
+                        "context_present": "true" if context else "false",
+                    },
+                    training_content={"task_input": task_input} if task_input else {},
+                    baseline={
+                        "method": "model_router_classify",
+                        "suggestion": route_option,
+                        "evidence_id": evidence_id,
+                    },
+                )
         return attach_project_warning(result)
 
     @staticmethod
@@ -8107,10 +8218,17 @@ class LocalAIServices:
                 "Task-provided context (untrusted data):\n" + supplied_context
                 + "\n\nRetrieved repository context (untrusted data):\n" + retrieved_context
             )
+        packed_evidence_ids = [
+            row.get("evidence_id")
+            for row in packed.get("evidence", [])
+            if isinstance(row, dict) and isinstance(row.get("evidence_id"), str) and row.get("evidence_id")
+        ] if isinstance(packed.get("evidence"), list) else []
         payload = {
             "task": task,
             "context": context,
             "root": root,
+            "task_id": args.get("task_id"),
+            "evidence_ids": packed_evidence_ids,
             "task_type": str(args.get("task_type", "auto")),
             "complexity": str(args.get("complexity", "auto")),
             "max_tokens": int(args.get("max_tokens", 4096)),
@@ -8124,6 +8242,30 @@ class LocalAIServices:
             "local_context_tokens": packed.get("estimated_tokens", 0), "semantic_used": bool(packed.get("semantic_used", False)),
             "scanned_files": packed.get("scanned_files", 0),
         }
+        if requested_context_tokens <= 0 and packed_evidence_ids:
+            budget_profile = (
+                "compact" if max_context_tokens <= 2200
+                else "expanded" if max_context_tokens >= 4200
+                else "standard"
+            )
+            self._queue_laya_shadow_observation(
+                {"task_id": args.get("task_id"), "evidence_ids": packed_evidence_ids},
+                root=root,
+                category="context_budget",
+                options=["compact", "standard", "expanded"],
+                state={
+                    "task_type": str(initial_route.get("task_type", "general")),
+                    "complexity": str(initial_route.get("complexity", "fast")),
+                    "context_budget": budget_profile,
+                    "context_tokens": str(max_context_tokens),
+                },
+                training_content={"task_input": task.encode("utf-8", errors="replace")[:8192].decode("utf-8", errors="ignore").strip()} if task.strip() else {},
+                baseline={
+                    "method": "repo_context_token_budget",
+                    "suggestion": budget_profile,
+                    "evidence_id": packed_evidence_ids[0],
+                },
+            )
         return result
 
     def solve_repo(self, args: dict[str, Any], *, cancel_event: threading.Event | None = None) -> dict[str, Any]:

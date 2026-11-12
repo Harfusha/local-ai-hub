@@ -40,6 +40,7 @@ _TOKENIZER_SHA256 = "609d8f4c067cd3950f88594c5a802616cea245823836ef5848ee4fc40aa
 _MAX_STATE_BYTES = 16 * 1024
 _MAX_CANDIDATE_BYTES = 64 * 1024
 _MAX_CAPTURE_BATCH_SIZE = 100
+_MAX_RUNTIME_OUTPUT_HISTORY_PAGE_SIZE = 10
 _RUNTIME_CAPTURE_TOKEN = object()
 _RUNTIME_BASELINE_METHODS = {
     DecisionCategory.COMPLETION_GAP: "agent_os_completion_gate",
@@ -762,6 +763,80 @@ class LayaCandidateStore:
             if type(model_reviews) is not list:
                 raise ValueError("stored model review history is invalid")
             return {"success": True, "candidate_id": candidate_id, "model_reviews": model_reviews}
+        if action == "runtime_output_history":
+            allowed = {"action", "candidate_id", "after_event_id", "limit"}
+            if type(operation) is not dict or set(operation) - allowed or not {"action", "candidate_id"} <= set(operation):
+                raise ValueError("runtime_output_history fields invalid")
+            op = operation
+            candidate_id = _identity(op["candidate_id"], "candidate_id")
+            after_event_id = op.get("after_event_id")
+            if after_event_id is not None:
+                after_event_id = _identity(after_event_id, "after_event_id")
+            limit = op.get("limit", 5)
+            if type(limit) is not int or not 1 <= limit <= _MAX_RUNTIME_OUTPUT_HISTORY_PAGE_SIZE:
+                raise ValueError("runtime output history limit invalid")
+            with self._lock, closing(self._connect(task_store)) as con:
+                candidate_row = con.execute(
+                    "SELECT task_id,session_id,content_hash,candidate_json FROM laya_candidates "
+                    "WHERE repository_scope=? AND candidate_id=?",
+                    (scope, candidate_id),
+                ).fetchone()
+                if candidate_row is None:
+                    raise ValueError("candidate not found in authorized repository scope")
+                task = self._find_task(task_store, canonical_root, candidate_row["task_id"])
+                if self._session_for_task(task) != candidate_row["session_id"]:
+                    raise ValueError("candidate session identity no longer matches its task")
+                if hashlib.sha256(candidate_row["candidate_json"].encode("utf-8")).hexdigest() != candidate_row["content_hash"]:
+                    raise ValueError("candidate content hash mismatch")
+                cursor = None
+                if after_event_id is not None:
+                    cursor = con.execute(
+                        "SELECT event_id,created_at FROM laya_candidate_events "
+                        "WHERE repository_scope=? AND candidate_id=? AND task_id=? "
+                        "AND action IN ('runtime_output','completion_outcome') AND event_id=?",
+                        (scope, candidate_id, candidate_row["task_id"], after_event_id),
+                    ).fetchone()
+                    if cursor is None:
+                        raise ValueError("runtime history cursor is outside the authorized candidate scope")
+                query = (
+                    "SELECT event_id,action,metadata_json,created_at FROM laya_candidate_events "
+                    "WHERE repository_scope=? AND candidate_id=? AND task_id=? "
+                    "AND action IN ('runtime_output','completion_outcome')"
+                )
+                params: tuple[Any, ...] = (scope, candidate_id, candidate_row["task_id"])
+                if cursor is not None:
+                    query += " AND (created_at>? OR (created_at=? AND event_id>?))"
+                    params += (cursor["created_at"], cursor["created_at"], cursor["event_id"])
+                query += " ORDER BY created_at,event_id LIMIT ?"
+                rows = con.execute(query, (*params, limit + 1)).fetchall()
+            has_more = len(rows) > limit
+            events = []
+            for row in rows[:limit]:
+                event_id = _identity(row["event_id"], "event_id")
+                if type(row["created_at"]) not in (int, float) or not math.isfinite(row["created_at"]):
+                    raise ValueError("runtime history timestamp is invalid")
+                raw_metadata = row["metadata_json"]
+                if not isinstance(raw_metadata, str) or len(raw_metadata.encode("utf-8")) > 16 * 1024:
+                    raise ValueError("runtime output history event is too large")
+                try:
+                    metadata = json.loads(raw_metadata)
+                except (json.JSONDecodeError, UnicodeError) as exc:
+                    raise ValueError("runtime output history event is invalid") from exc
+                if type(metadata) is not dict:
+                    raise ValueError("runtime output history event is invalid")
+                events.append({
+                    "event_id": event_id,
+                    "event_type": str(row["action"]),
+                    "created_at": float(row["created_at"]),
+                    "metadata": metadata,
+                })
+            return {
+                "success": True,
+                "candidate_id": candidate_id,
+                "events": events,
+                "has_more": has_more,
+                "next_event_id": events[-1]["event_id"] if has_more and events else None,
+            }
         if action == "list":
             allowed = {"action", "task_id", "status"}
             if set(operation) - allowed or "action" not in operation:
@@ -1025,6 +1100,66 @@ class LayaCandidateStore:
             self._event(con, candidate_id, scope, task_id, "runtime_output", runtime_record, now)
             con.commit()
         return {**captured, "runtime_output_recorded": True}
+
+    def record_completion_outcome(self, operation: Any, *, root: str, task_store: Any) -> dict[str, Any]:
+        """Attach a typed Agent OS completion-gate outcome to existing scoped candidates."""
+        if type(operation) is not dict or set(operation) != {"task_id", "session_id", "outcome"}:
+            raise ValueError("completion outcome fields are invalid")
+        canonical_root = _canonical_repository_root(root)
+        task_id = _identity(operation["task_id"], "task_id")
+        session_id = _identity(operation["session_id"], "session_id")
+        task = self._find_task(task_store, canonical_root, task_id)
+        if self._session_for_task(task) != session_id:
+            raise ValueError("completion outcome session identity does not match its scoped task")
+
+        raw_outcome = operation["outcome"]
+        fields = {"status", "reason_code", "duration_ms", "repository_revision", "mutation_generation"}
+        if type(raw_outcome) is not dict or set(raw_outcome) != fields:
+            raise ValueError("completion outcome metadata fields are invalid")
+        status_reason = {
+            "passed": "completion_gate_passed",
+            "rejected": "completion_gate_rejected",
+            "waived": "operator_waiver",
+        }
+        status = raw_outcome["status"]
+        if not isinstance(status, str) or status not in status_reason:
+            raise ValueError("completion outcome status is invalid")
+        if raw_outcome["reason_code"] != status_reason[status]:
+            raise ValueError("completion outcome reason does not match status")
+        duration_ms = raw_outcome["duration_ms"]
+        if type(duration_ms) not in (int, float) or not math.isfinite(duration_ms) or duration_ms < 0:
+            raise ValueError("completion outcome duration is invalid")
+        repository_revision = raw_outcome["repository_revision"]
+        if not isinstance(repository_revision, str) or len(repository_revision) > 128:
+            raise ValueError("completion outcome repository revision is invalid")
+        mutation_generation = raw_outcome["mutation_generation"]
+        if type(mutation_generation) is not int or mutation_generation < 0:
+            raise ValueError("completion outcome mutation generation is invalid")
+        outcome = {
+            "status": status,
+            "reason_code": status_reason[status],
+            "duration_ms": float(duration_ms),
+            "repository_revision": repository_revision,
+            "mutation_generation": mutation_generation,
+        }
+        _canonical_json(outcome)
+
+        scope = self._repo_scope(canonical_root)
+        now = time.time()
+        with self._lock, closing(self._connect(task_store)) as con:
+            con.execute("BEGIN IMMEDIATE")
+            rows = con.execute(
+                "SELECT candidate_id,content_hash,candidate_json FROM laya_candidates "
+                "WHERE repository_scope=? AND task_id=? AND session_id=? ORDER BY created_at,candidate_id",
+                (scope, task_id, session_id),
+            ).fetchall()
+            for row in rows:
+                candidate_json = row["candidate_json"]
+                if hashlib.sha256(candidate_json.encode("utf-8")).hexdigest() != row["content_hash"]:
+                    raise ValueError("completion candidate content hash mismatch")
+                self._event(con, row["candidate_id"], scope, task_id, "completion_outcome", outcome, now)
+            con.commit()
+        return {"success": True, "candidate_count": len(rows), "event_count": len(rows)}
 
     def export_train_payload(self, operation: Any, *, root: str, task_store: Any) -> bytes:
         """Build an explicit, scope-checked upstream training JSONL payload in memory."""

@@ -1,5 +1,13 @@
 # Generic Agent Installation & Integration Prompt for Local AI Hub
 
+## Deterministic installer
+
+Run `install.ps1` or `./install.sh` in a terminal for the interactive wizard. It remembers the last profile and component choices. Use `--non-interactive` for automation. Omit `--profile` to let setup detect hardware. The wizard selects supported agent integrations and optional runtimes; local NLP and OpenVINO dependencies are installed only when the configured backends or detected hardware need them. Ollama downloads cover configured code, reasoning, general, enabled vision, subagent, and Ollama embedding models; managed llama.cpp downloads its pinned default GGUF when selected. Sentence Transformers and OpenVINO preloads follow the configured Hugging Face download policy. Custom GGUF, external providers, and Laya checkpoints need their documented/manual steps. Review `setup-report.json` in the install directory for ready, skipped, unavailable, and failed components, then follow [INSTALLER_RECOVERY.md](INSTALLER_RECOVERY.md) for recovery instructions and the copyable manual prompt. On bootstrap failure, the platform wrapper links to that guide. Use `--full-reinstall` only when requested; confirm the exact configured state path. Full reinstall removes Hub state, model cache, `.venv`, and managed `tool-envs`, while preserving config and agent settings. The wrapper resolves the current clean source revision when `--expected-revision` is omitted.
+
+Runtime extras include Tree-sitter AST support, performance packages, profiling tools and optional Laya runtime dependencies. One-run skip flags include `--skip-ast-index`, `--skip-performance`, `--skip-profiling` and `--skip-laya-runtime`; these override saved choices without changing them. Development test tools remain outside the Hub service environment.
+
+Selected Cursor, Windsurf and VS Code/Copilot clients receive native global instructions and skills; see [INSTALLER_RECOVERY.md](INSTALLER_RECOVERY.md) for their file locations and manual fallback.
+
 `local_ai_repo(action="api_spec")` returns the endpoint inventory and count, and reports `paths_omitted=true` when its duplicate OpenAPI paths map is omitted. Full OpenAPI paths remain available from the HTTP API. Explicit MCP response budgets below 512 tokens reject; if endpoint evidence cannot fit, request a larger budget.
 
 Generated MCP descriptions list only actions enabled by the active configuration and profile. Treat the returned tool schema as authoritative; do not recommend or call an action omitted from it.

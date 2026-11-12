@@ -571,6 +571,7 @@ class RAGStore:
         self.db_path = state_dir / "rag.sqlite3"
         self._workspace_locks: dict[str, threading.RLock] = {}
         self._workspace_locks_guard = threading.Lock()
+        self._workspace_repository_ids: dict[str, str] = {}
         self._index_lock = threading.RLock()
         self._index_flights_lock = threading.Lock()
         self._index_flights: dict[tuple[str, str], dict[str, Any]] = {}
@@ -1220,6 +1221,30 @@ class RAGStore:
     def _workspace_root_identity_key(workspace: str) -> str:
         return "workspace_root_identity:" + stable_hash({"workspace": workspace})
 
+    def _set_workspace_repository_id(self, workspace: str, repository_id: str) -> None:
+        guard = getattr(self, "_workspace_locks_guard", None)
+        if guard is None:
+            guard = threading.Lock()
+            self._workspace_locks_guard = guard
+        cache = getattr(self, "_workspace_repository_ids", None)
+        if cache is None:
+            cache = {}
+            self._workspace_repository_ids = cache
+        with guard:
+            if repository_id:
+                cache[workspace] = repository_id
+            else:
+                cache.pop(workspace, None)
+
+    def _get_workspace_repository_id(self, workspace: str) -> str:
+        guard = getattr(self, "_workspace_locks_guard", None)
+        cache = getattr(self, "_workspace_repository_ids", None)
+        if guard is None or not isinstance(cache, dict):
+            return ""
+        with guard:
+            value = cache.get(workspace, "")
+        return value if isinstance(value, str) else ""
+
     def require_workspace_root(self, *, workspace: str, root: str) -> None:
         """Require an exact repository/workspace binding before workspace access.
 
@@ -1251,6 +1276,20 @@ class RAGStore:
 
         expected_identity = self._project_root_identity(resolved)
         root_key = self._workspace_root_identity_key(workspace)
+        repository_id = ""
+        try:
+            project_context = self.project_context(resolved)
+            candidate_id = getattr(project_context, "coordination_id", "")
+            if (
+                isinstance(candidate_id, str)
+                and candidate_id
+                and candidate_id == candidate_id.strip()
+                and "\x00" not in candidate_id
+            ):
+                repository_id = candidate_id
+        except Exception:
+            repository_id = ""
+
         with closing(self._connect()) as con:
             bound = con.execute(
                 "SELECT value FROM rag_meta WHERE key=?", (root_key,)
@@ -1258,6 +1297,7 @@ class RAGStore:
             if bound is not None:
                 if str(bound[0]) != expected_identity:
                     raise ValueError("RAG workspace is already bound to a different repository root")
+                self._set_workspace_repository_id(workspace, repository_id)
                 return
             has_files = con.execute(
                 "SELECT 1 FROM files WHERE workspace=? LIMIT 1", (workspace,)
@@ -1269,6 +1309,7 @@ class RAGStore:
             raise ValueError(
                 "populated RAG workspace has no repository binding; explicit offline rebuild required"
             )
+        self._set_workspace_repository_id(workspace, "")
 
     @staticmethod
     def _workspace_project_config_key(
@@ -3692,9 +3733,10 @@ class RAGStore:
 
         graphrag_enriched = False
         try:
+            repository_id = self._get_workspace_repository_id(workspace)
             state_dir = Path(self.config.get("server", {}).get("state_dir", "state")).resolve()
             state_db = state_dir / "agent_state.sqlite"
-            if state_db.is_file():
+            if repository_id and state_db.is_file():
                 con_state = connect_sqlite(state_db)
                 try:
                     cur_rel = con_state.cursor()
@@ -3706,8 +3748,27 @@ class RAGStore:
                         matched_rels: list[dict[str, Any]] = []
                         for w in list(words)[:15]:
                             rows_rel = cur_rel.execute(
-                                "SELECT source_entity, relation, target_entity, weight FROM agent_entity_relations WHERE source_entity = ? OR target_entity = ? LIMIT 5",
-                                (w, w),
+                                """
+                                SELECT source_entity, relation, target_entity, weight
+                                FROM agent_entity_relations
+                                WHERE (source_entity = ? OR target_entity = ?)
+                                  AND CASE WHEN json_valid(metadata) THEN
+                                    CASE
+                                      WHEN json_type(metadata, '$.tenant') IS NOT NULL
+                                        OR json_type(metadata, '$.tenant_key') IS NOT NULL
+                                        OR json_type(metadata, '$.provenance.tenant') IS NOT NULL
+                                        OR json_type(metadata, '$.provenance.tenant_key') IS NOT NULL
+                                      THEN 0
+                                      WHEN json_extract(metadata, '$.scope') = 'global' THEN 1
+                                      WHEN json_extract(metadata, '$.scope') = 'repository'
+                                        AND json_extract(metadata, '$.provenance.repository_id') = ?
+                                      THEN 1
+                                      ELSE 0
+                                    END
+                                  ELSE 0 END = 1
+                                LIMIT 5
+                                """,
+                                (w, w, repository_id),
                             ).fetchall()
                             for r_row in rows_rel:
                                 matched_rels.append({

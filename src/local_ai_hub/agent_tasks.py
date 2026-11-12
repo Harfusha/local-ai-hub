@@ -609,6 +609,7 @@ class TaskStore:
         self.memory_store: Any | None = None
         self.memory_context_compiler: Any | None = None
         self.incident_store: Any | None = None
+        self._laya_completion_observer: Any | None = None
         self._memory_lookup_slots = threading.BoundedSemaphore(1)
         self._memory_lookup_queue: queue.Queue[Any] = queue.Queue(maxsize=1)
         self._memory_lookup_worker: threading.Thread | None = None
@@ -618,6 +619,43 @@ class TaskStore:
         self._idle_worktree_cursor: tuple[float, str] = (0.0, "")
         self._initialized = False
         self._init_projection_table()
+
+    def set_laya_completion_observer(self, observer: Any | None) -> None:
+        """Install a best-effort observer for typed completion-gate outcomes."""
+        if observer is not None and not callable(observer):
+            raise TypeError("Laya completion observer must be callable")
+        self._laya_completion_observer = observer
+
+    def _observe_laya_completion(
+        self,
+        task: TaskState,
+        *,
+        repository_root: str | Path,
+        status: str,
+        reason_code: str,
+        started_at: float,
+        repository_revision: str,
+        mutation_generation: int,
+    ) -> None:
+        observer = getattr(self, "_laya_completion_observer", None)
+        if not callable(observer):
+            return
+        operation = {
+            "task_id": task.task_id,
+            "session_id": str(getattr(task.context, "session_id", "") or ""),
+            "outcome": {
+                "status": status,
+                "reason_code": reason_code,
+                "duration_ms": max(0.0, (time.monotonic() - started_at) * 1000.0),
+                "repository_revision": repository_revision,
+                "mutation_generation": mutation_generation,
+            },
+        }
+        try:
+            observer(operation=operation, root=str(repository_root or ""))
+        except Exception:
+            # Laya is observational; its capture path cannot affect the gate.
+            return
 
 
 
@@ -2226,6 +2264,7 @@ class TaskStore:
         return task
 
     def _verify_completion(self, task: TaskState, *, current_revision: str = "", _waive_receipts: bool = False) -> None:
+        completion_started_at = time.monotonic()
         if "_pending_fenced_work" in task.checkpoint.state_data:
             raise CompletionGateError("Cannot transition to COMPLETED: fenced work mutation is pending")
         memory_audit_validator = getattr(self, "_validate_memory_audit", None)
@@ -2334,7 +2373,25 @@ class TaskStore:
         complete = result.get("complete", False) if isinstance(result, Mapping) else getattr(result, "complete", False)
         if complete is not True:
             if _waive_receipts and complete is False:
+                self._observe_laya_completion(
+                    task,
+                    repository_root=repo_root,
+                    status="waived",
+                    reason_code="operator_waiver",
+                    started_at=completion_started_at,
+                    repository_revision=repository_revision,
+                    mutation_generation=mutation_generation,
+                )
                 return
+            self._observe_laya_completion(
+                task,
+                repository_root=repo_root,
+                status="rejected",
+                reason_code="completion_gate_rejected",
+                started_at=completion_started_at,
+                repository_revision=repository_revision,
+                mutation_generation=mutation_generation,
+            )
             unsatisfied = (
                 result.get("unsatisfied_criteria", ())
                 if isinstance(result, Mapping)
@@ -2358,6 +2415,15 @@ class TaskStore:
             raise CompletionGateError(
                 "Cannot transition to COMPLETED: " + ("; ".join(invalid) or f"verification evaluator rejected completion{suffix}")
             )
+        self._observe_laya_completion(
+            task,
+            repository_root=repo_root,
+            status="passed",
+            reason_code="completion_gate_passed",
+            started_at=completion_started_at,
+            repository_revision=repository_revision,
+            mutation_generation=mutation_generation,
+        )
 
     def transition(
         self,

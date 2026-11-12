@@ -1,0 +1,91 @@
+{
+  "default_target_ref": "refs/heads/master",
+  "description": "Implement interactive install/update/reinstall, remembered choices, optional-component detection, configured model provisioning, agent setup, typed full-data deletion, ordered offline migration, and manual-action reporting. Design: docs/superpowers/specs/2026-11-12-deterministic-installer-design.md.",
+  "id": "plan_39c6482fb93b",
+  "lifecycle": "completed",
+  "schema_version": 1,
+  "spec_refs": [],
+  "tasks": {
+    "task_full_reinstall": {
+      "acceptance_criteria": [
+        "Preview exact resolved Hub paths before mutation and require exact-path confirmation.",
+        "Confirm the managed runtime stops before deletion.",
+        "Remove Hub state, .venv, tool-envs, and Hub model cache while preserving installed config, agent configuration, and installer choices."
+      ],
+      "blocker": null,
+      "clarifications": [],
+      "depends_on": [],
+      "description": "Preview exact paths, stop runtime, require exact-path confirmation, remove only Hub-owned state, service/tool virtual environments, and model cache, then reinstall.",
+      "kind": "code",
+      "next_action": "Full reinstall now includes Hub-managed tool-envs; recovery guide and canonical install/update prompts agree. Python AST and git whitespace checks pass; deletion behavior not runtime-tested.",
+      "title": "Safe full reinstall and data cleanup",
+      "work_status": "completed"
+    },
+    "task_installer_wizard": {
+      "acceptance_criteria": [
+        "Profile and optional-component choices persist across runs; explicit flags override them only for that run.",
+        "MCP, skills and generated instructions can be selected independently for Codex, Claude, Gemini, Cursor, Windsurf and VS Code/Copilot.",
+        "Use documented per-agent global instruction and skill paths; merge only Local AI Hub owned content, back up overwritten files, and preserve unrelated settings.",
+        "Install the shared ~/.agents/skills tree only when a selected agent consumes that standard; disabled Cursor/Windsurf integrations must not receive Hub skills indirectly.",
+        "Disabling global agent setup preserves remembered per-agent choices.",
+        "Unsupported vendor interfaces or file conflicts produce an actionable manual report instead of guessing paths."
+      ],
+      "blocker": null,
+      "clarifications": [],
+      "depends_on": [],
+      "description": "Finish interactive install/update/repair choices and deterministic integration for each selected agent. Configure MCP, skills and always-on global instructions in each currently supported client format, preserving unrelated files and rendering unsupported host steps in setup-report.json.",
+      "kind": "code",
+      "next_action": "Static source audit confirms remembered profile/component choices, per-agent MCP/skills/instruction toggles, safe full reinstall choice, and conditional Intel OpenVINO setup. OpenVINO NPU filtering fixed. Runtime downloads and live client reload remain unverified.",
+      "title": "Interactive installer and remembered choices",
+      "work_status": "completed"
+    },
+    "task_recovery_docs": {
+      "acceptance_criteria": [
+        "Setup report separates selected, installed, failed and not-detected components.",
+        "Missing optional CLI tools and failed dependencies link to the recovery guide.",
+        "The report warns that newly installed commands may need a new terminal to appear on PATH.",
+        "Failure reports are written for core runtime, migration, full reinstall, install payload, model provisioning, service registration, Hub restart and required agent dependencies.",
+        "Agent configuration exceptions are reported as failed or partial instead of escaping without a report.",
+        "Setup report records exact configured Ollama models as requested, ready, skipped, and unavailable.",
+        "A selected managed llama.cpp runtime or configured model that is not ready creates an actionable manual action.",
+        "Bootstrap Python/venv failures print the maintained recovery-guide path."
+      ],
+      "blocker": null,
+      "clarifications": [],
+      "depends_on": [],
+      "description": "Report installed, skipped and failed components with actionable recovery steps; include post-install detection for Token Economy dependencies, wrappers and optional CLI tools.",
+      "kind": "code",
+      "next_action": "Static source audit confirms distinct selected/installed/model/manual-action fields, exact Ollama model outcomes, staged failure reports, and recovery-guide links. Added PATH reload guidance. Runtime/report generation remains unverified.",
+      "title": "Installer report and manual recovery guide",
+      "work_status": "completed"
+    },
+    "task_state_migration": {
+      "acceptance_criteria": [
+        "Migrations are registered as consecutive N-to-N+1 steps and applied oldest first after full-chain preflight.",
+        "Each migration uses a verified backup and staged state; a failed conversion preserves original state.",
+        "If migration application fails after payload swap, the installer transaction restores the prior code payload.",
+        "Unknown, corrupt, unversioned nonempty, or newer state is refused before code replacement."
+      ],
+      "blocker": null,
+      "clarifications": [],
+      "depends_on": [],
+      "description": "Inspect historical state formats; implement only verified backup-protected N-to-N+1 converters. Refuse unsupported versions without editing state.",
+      "kind": "code",
+      "next_action": "Incremental N-to-N+1 framework is ready, with full-chain preflight, verified backup, staged conversion, verification after each step, and payload rollback. Registry stays empty because no verified older state schema exists; add migrations only alongside a documented schema change.",
+      "title": "Ordered offline state migration framework",
+      "work_status": "completed"
+    },
+    "task_validation": {
+      "acceptance_criteria": [],
+      "blocker": null,
+      "clarifications": [],
+      "depends_on": [],
+      "description": "Review changed paths, check syntax and shell/PowerShell parsing, inspect diff, and record actual unverified migration limits.",
+      "kind": "code",
+      "next_action": "PowerShell and bash bootstrap parsing, Python AST parsing, and git diff whitespace checks pass. No runtime install, downloads, model provisioning, or agent reload was run; acceptance for those remains unverified.",
+      "title": "Targeted installer validation and plan closeout",
+      "work_status": "completed"
+    }
+  },
+  "title": "Deterministic Local AI Hub installer"
+}

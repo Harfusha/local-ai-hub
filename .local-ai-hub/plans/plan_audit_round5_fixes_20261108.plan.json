@@ -34,9 +34,9 @@
       "depends_on": [],
       "description": "B02: ModelExecutionPolicy._is_small_model() používá podřetězec '3b', což chybně klasifikuje 13B/23B/33B jako malé modely. Opravit parsing velikosti modelu a VRAM admission pravidla.",
       "kind": "code",
-      "next_action": "No source change required: current parser already has the digit-aware boundary. Added regression tests in tests/unit/test_model_lifecycle_and_policy_edge_cases.py. Focused suite passed 5/5.",
+      "next_action": "Fresh combined targeted validation at HEAD 409bed4a6a73fd66175ad339c399f4277ed0ed99: one `py -3.11 -m pytest -q` run across nine scoped test modules completed 80 passed in 3.94s. This task's named test files were included; relevant current source/test SHA-256 values are recorded below. This is focused evidence only; broad gates remain deferred. Source src/local_ai_hub/model_policy.py ec1af2cb3cf1fd018e45712edd71db13a99bc989196a438ab5bae243f528e19c; test tests/unit/test_model_lifecycle_and_policy_edge_cases.py 495b4bbf8fa3287470d7c136403ee6cfc6b177d069031d729af473a3b034aad5.",
       "title": "B02 — Model memory policy: přesná klasifikace velikosti modelu",
-      "work_status": "completed"
+      "work_status": "done"
     },
     "task_b03_php_psr4_discovery": {
       "acceptance_criteria": [
@@ -48,9 +48,9 @@
       "depends_on": [],
       "description": "B03: code_index_demand.py rozšířit PHP větev o parsování composer.json autoload.psr-4 / autoload-dev.psr-4 a regex/AST analýzu 'use Namespace\\\\Class;' včetně aliasů 'as ...'.",
       "kind": "code",
-      "next_action": "Verified: B03 focused tests passed (2 passed, 7 deselected); tests/unit/test_code_index_demand.py passed 9/9 after making the EvidenceStore metadata fixture create its strict existing root and source files.",
+      "next_action": "Fresh combined targeted validation at HEAD 409bed4a6a73fd66175ad339c399f4277ed0ed99: one `py -3.11 -m pytest -q` run across nine scoped test modules completed 80 passed in 3.94s. This task's named test files were included; relevant current source/test SHA-256 values are recorded below. This is focused evidence only; broad gates remain deferred. Source src/local_ai_hub/code_index_demand.py 66d78f11f64a44ad587bf17e52537a1cd8998b7cdfc9c4b4a69b6e46710c7447; test tests/unit/test_code_index_demand.py 03ea5d634f97da1391bbad26e49c33f56c3a89f2e8084b2258b50d5fd0121ef4.",
       "title": "B03 — PHP dependency resolver: podpora Composer PSR-4 use imports",
-      "work_status": "completed"
+      "work_status": "done"
     },
     "task_b04_b05_unified_language_registry": {
       "acceptance_criteria": [
@@ -63,9 +63,9 @@
       "depends_on": [],
       "description": "B04+B05: retrieval.py doplnit .php, .rb, .vue, .svelte do _SOURCE_SUFFIXES. Doplnit explicitní intent=source_analysis parametr a deterministické signály (přípony, cesty, symboly) pro source-first režim nezávisle na jazyku dotazu.",
       "kind": "code",
-      "next_action": "Focused evidence: source suffix tier tests cover .php/.rb/.vue/.svelte; explicit source_analysis intent and language-independent source path/qualified-symbol signals enable source-first priority; documentation-only query preserves input ranking. tests/unit/test_retrieval_fusion_canonical_paths.py passed 25/25.",
+      "next_action": "Fresh combined targeted validation at HEAD 409bed4a6a73fd66175ad339c399f4277ed0ed99: one `py -3.11 -m pytest -q` run across nine scoped test modules completed 80 passed in 3.94s. This task's named test files were included; relevant current source/test SHA-256 values are recorded below. This is focused evidence only; broad gates remain deferred. Source src/local_ai_hub/retrieval.py 95384930fbdc56102f4cea90e451c562b6d308cef597594651c71d991b8bbcb2; test tests/unit/test_retrieval_fusion_canonical_paths.py 3ea66f3957f79dbd1085dec4337bdc78c162337cd7e01b7a3af2adcd0521981d.",
       "title": "B04+B05 — Unified language registry a multilingvální source-context detekce",
-      "work_status": "completed"
+      "work_status": "done"
     },
     "task_b06_b07_b18_import_resolvers": {
       "acceptance_criteria": [
@@ -78,9 +78,9 @@
       "depends_on": [],
       "description": "B06+B07+B18: code_index_demand.py opravit TS NodeNext .js->.ts resoluci, Rust vnořené moduly (parent/stem/mod.rs i parent/stem.rs) a Go přesnou shodu imp == module_name pro root package.",
       "kind": "code",
-      "next_action": "Focused evidence: NodeNext prefers the unique indexed .ts/.tsx counterpart over generated .js; Rust parent/stem.rs and parent/stem/mod.rs layouts resolve; exact Go module-root import returns root package file only. Combined focused suites passed 17/17.",
+      "next_action": "Fresh combined targeted validation at HEAD 409bed4a6a73fd66175ad339c399f4277ed0ed99: one `py -3.11 -m pytest -q` run across nine scoped test modules completed 80 passed in 3.94s. This task's named test files were included; relevant current source/test SHA-256 values are recorded below. This is focused evidence only; broad gates remain deferred. Source src/local_ai_hub/code_index_demand.py 66d78f11f64a44ad587bf17e52537a1cd8998b7cdfc9c4b4a69b6e46710c7447; tests tests/unit/test_code_index_demand.py 03ea5d634f97da1391bbad26e49c33f56c3a89f2e8084b2258b50d5fd0121ef4 and tests/test_code_index_polyglot_demand.py 4081c6123242abc7365a7b1ce7b956812361b24e6cfc4e9e132f484c1fb31c5c.",
       "title": "B06+B07+B18 — Import resolvery: TypeScript NodeNext, Rust nested mod a Go root package",
-      "work_status": "completed"
+      "work_status": "done"
     },
     "task_b08_b19_indexed_dependency_lookup": {
       "acceptance_criteria": [
@@ -93,9 +93,9 @@
       "depends_on": [],
       "description": "B08+B19: code_index_demand.py předpočítat index způsobilých souborů (by_dir, by_stem, by_ext) pro eliminaci O(N*M) průchodů u Go, C#, Java a C/C++. V C# odstranit slabou shodu pouhého stemu.",
       "kind": "code",
-      "next_action": "Focused evidence: shared by_dir/by_stem/by_ext/by_basename index is reused across one-hop and two-hop requests; Go and Java use direct directory/stem lookups, C includes use basename lookup, C# namespace declarations are indexed once and matched exactly. RED observed four inventory iterations for four C# seeds; GREEN focused code-index/polyglot/efficiency suites passed 21/21.",
+      "next_action": "Fresh combined targeted validation at HEAD 409bed4a6a73fd66175ad339c399f4277ed0ed99: one `py -3.11 -m pytest -q` run across nine scoped test modules completed 80 passed in 3.94s. This task's named test files were included; relevant current source/test SHA-256 values are recorded below. This is focused evidence only; broad gates remain deferred. Source src/local_ai_hub/code_index_demand.py 66d78f11f64a44ad587bf17e52537a1cd8998b7cdfc9c4b4a69b6e46710c7447; tests tests/unit/test_code_index_demand_efficiency.py d97844d792371590c415cce95d1f96ff0a5201536af019bd80413bce8d00e8b3 and tests/test_code_index_polyglot_demand.py 4081c6123242abc7365a7b1ce7b956812361b24e6cfc4e9e132f484c1fb31c5c.",
       "title": "B08+B19 — Indexed dependency lookup a přesný C# namespace matching",
-      "work_status": "completed"
+      "work_status": "done"
     },
     "task_b09_circuit_breaker_generations": {
       "acceptance_criteria": [
@@ -108,9 +108,9 @@
       "depends_on": [],
       "description": "B09: CircuitBreakerRegistry allow() musí vracet probe generation token; success()/failure() smí měnit stav pouze pro odpovídající generaci, aby opožděný probe neresetoval novější aktivní stav.",
       "kind": "code",
-      "next_action": "Focused evidence: half-open allow returns the atomically captured probe generation; late success and failure from an expired generation are ignored, and the current generation closes the breaker. The model-attempt completion callsite now forwards its captured generation. RED reproduced a bool return without a generation; GREEN `tests/unit/test_resilience_circuit_breaker.py tests/test_resilience_defaults.py` passed 20/20.",
+      "next_action": "Fresh combined targeted validation at HEAD 409bed4a6a73fd66175ad339c399f4277ed0ed99: one `py -3.11 -m pytest -q` run across nine scoped test modules completed 80 passed in 3.94s. This task's named test files were included; relevant current source/test SHA-256 values are recorded below. This is focused evidence only; broad gates remain deferred. Source src/local_ai_hub/resilience.py 4271ceae9181d9913e43282dd1e5894414ffc876bd494a363c49ee44f4eaf5a2; tests tests/unit/test_resilience_circuit_breaker.py 8e81b7f8ff196b2777b09dfb30f8e69dfa47becf09b7aff2db803e73e566886b and tests/test_resilience_defaults.py f7a7cd29229391f4ebed85637ba7668f860d731b72bf0131ee4c7ff0851372aa.",
       "title": "B09 — Circuit breaker generations: ochrana před opožděnými half-open výsledky",
-      "work_status": "completed"
+      "work_status": "done"
     },
     "task_b10_output_integrity": {
       "acceptance_criteria": [],
@@ -151,9 +151,9 @@
       "depends_on": [],
       "description": "B12: response_protocol.py project_response() doplnit závěrečný hard-cap validátor délky serializovaného JSON v bajtech/tokenech. Při překročení rozpočtu vrátit explicitní budget_rejected obálku.",
       "kind": "code",
-      "next_action": "Implemented UTF-8 serialized-byte measurement and explicit rejection metadata. RED reproduced 341 bytes against a 256-byte cap; focused response-protocol suites passed 8/8.",
+      "next_action": "Fresh combined targeted validation at HEAD 409bed4a6a73fd66175ad339c399f4277ed0ed99: one `py -3.11 -m pytest -q` run across nine scoped test modules completed 80 passed in 3.94s. This task's named test files were included; relevant current source/test SHA-256 values are recorded below. This is focused evidence only; broad gates remain deferred. Source src/local_ai_hub/response_protocol.py 801a6372b9db379c31a124100dfe26a2bef51fd9cd0ff8bdca34c51eaa4484ff; test tests/unit/test_response_protocol_edge_cases.py 74c425fdd6439e9874721af7b80b613055544de3feb2edbe7081bac09192db8c.",
       "title": "B12 — Response size contract: tvrdý limit výstupní obálky a budget_rejected",
-      "work_status": "completed"
+      "work_status": "done"
     },
     "task_b13_recovery_journal_cas": {
       "acceptance_criteria": [],
@@ -178,9 +178,9 @@
       "depends_on": [],
       "description": "B14: evaluation_quality.py paired_retrieval_delta validovat konzistenci scope napříč všemi případy, ošetřit KeyError a pro smíšené sady vracet oddělené agregáty místo chybného průměrování.",
       "kind": "code",
-      "next_action": "Mixed path_only/symbol_ast aggregation and homogeneous-shape regressions pass; malformed KeyError remains fail-closed. Focused paired-delta and audit-quality contract suites passed 7/7.",
+      "next_action": "Fresh combined targeted validation at HEAD 409bed4a6a73fd66175ad339c399f4277ed0ed99: one `py -3.11 -m pytest -q` run across nine scoped test modules completed 80 passed in 3.94s. This task's named test files were included; relevant current source/test SHA-256 values are recorded below. This is focused evidence only; broad gates remain deferred. Source src/local_ai_hub/evaluation_quality.py 3e83817dd27072b7f92c8b889a740a5e3d1639556e0a511e5d77662c3dff2afd; test tests/unit/test_evaluation_quality_paired_delta.py 091671cf69cedff4a613e4cff3168604a4e4558cc5a40c7d25b68898b2622cb4.",
       "title": "B14 — Retrieval evaluation contract: oddělení path_only a symbol_ast benchmarků",
-      "work_status": "completed"
+      "work_status": "done"
     },
     "task_b15_b16_vision_contracts": {
       "acceptance_criteria": [

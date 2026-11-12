@@ -17,12 +17,15 @@ from local_ai_hub.embeddings import EmbeddingModel  # noqa: E402
 from local_ai_hub.reranker import Reranker  # noqa: E402
 
 
-def run_prefetch_openvino(cfg: dict[str, Any]) -> dict[str, object]:
+def run_prefetch_openvino(
+    cfg: dict[str, Any], *, allow_hf_downloads: bool | None = None,
+) -> dict[str, object]:
     """Prefetch and warmup openvino models."""
     clean_cfg = dict(cfg) if isinstance(cfg, dict) else {}
-    models = clean_cfg.get("models")
-    if not isinstance(models, dict):
-        models = {}
+    raw_models = clean_cfg.get("models")
+    models = dict(raw_models) if isinstance(raw_models, dict) else {}
+    if allow_hf_downloads is not None:
+        models["allow_hf_downloads"] = allow_hf_downloads
     clean_cfg["models"] = models
 
     features = clean_cfg.get("features")
@@ -30,7 +33,10 @@ def run_prefetch_openvino(cfg: dict[str, Any]) -> dict[str, object]:
         features = {}
     clean_cfg["features"] = features
 
-    report: dict[str, object] = {"accelerators": accelerator_status(clean_cfg)}
+    report: dict[str, object] = {
+        "accelerators": accelerator_status(clean_cfg),
+        "downloads_enabled": models.get("allow_hf_downloads") is True,
+    }
 
     if str(models.get("embedding_backend", "")) == "openvino":
         embedding = EmbeddingModel(clean_cfg)
@@ -48,6 +54,10 @@ def run_prefetch_openvino(cfg: dict[str, Any]) -> dict[str, object]:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Prefetch OpenVINO accelerator models.")
     parser.add_argument("--config", help="Path to config.toml")
+    downloads = parser.add_mutually_exclusive_group()
+    downloads.add_argument("--allow-hf-downloads", dest="allow_hf_downloads", action="store_true")
+    downloads.add_argument("--no-hf-downloads", dest="allow_hf_downloads", action="store_false")
+    parser.set_defaults(allow_hf_downloads=None)
     args = parser.parse_args(argv)
 
     config_path = ROOT / "config.toml"
@@ -58,7 +68,7 @@ def main(argv: list[str] | None = None) -> int:
         config_path = Path(args.config)
 
     cfg = load_config(str(config_path) if config_path.exists() else None)
-    report = run_prefetch_openvino(cfg)
+    report = run_prefetch_openvino(cfg, allow_hf_downloads=args.allow_hf_downloads)
 
     print(json.dumps(report, indent=2, ensure_ascii=False, default=str))
     # Warmup is best-effort. CPU fallback is a valid result; setup must not become

@@ -957,12 +957,28 @@ class MemoryStore:
     def _auto_link_record(self, record: MemoryRecord, actor: str = "agent") -> None:
         """Automatically create entity relations for recorded memory items."""
         try:
+            scope = getattr(record.scope, "value", record.scope)
+            provenance = record.provenance if isinstance(record.provenance, Mapping) else {}
+            relation_metadata: dict[str, Any] = {
+                "scope": scope if isinstance(scope, str) else "",
+                "scope_id": record.scope_id,
+            }
+            repository_id = provenance.get("repository_id")
+            if (
+                scope == "repository"
+                and isinstance(repository_id, str)
+                and repository_id
+                and repository_id == repository_id.strip()
+                and "\x00" not in repository_id
+            ):
+                relation_metadata["provenance"] = {"repository_id": repository_id}
             for source, relation, target, weight in self._auto_link_specs(record):
                 self.record_relation(
                     source=source,
                     relation=relation,
                     target=target,
                     weight=weight,
+                    metadata=relation_metadata,
                     actor=actor,
                 )
         except Exception:

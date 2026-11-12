@@ -39,6 +39,25 @@ _update_transaction_module = importlib.util.module_from_spec(_update_transaction
 _update_transaction_spec.loader.exec_module(_update_transaction_module)
 replace_install_payload = _update_transaction_module.replace_install_payload
 stop_existing_runtime = _update_transaction_module.stop_existing_runtime
+_setup_wizard_spec = importlib.util.spec_from_file_location("_local_ai_hub_setup_wizard", Path(__file__).with_name("setup_wizard.py"))
+if _setup_wizard_spec is None or _setup_wizard_spec.loader is None:
+    raise ImportError("could not load sibling setup_wizard.py")
+_setup_wizard_module = importlib.util.module_from_spec(_setup_wizard_spec)
+_setup_wizard_spec.loader.exec_module(_setup_wizard_module)
+configure_setup_choices = _setup_wizard_module.configure
+apply_setup_choices = _setup_wizard_module.apply_choices
+_setup_reinstall_spec = importlib.util.spec_from_file_location("_local_ai_hub_setup_reinstall", Path(__file__).with_name("setup_reinstall.py"))
+if _setup_reinstall_spec is None or _setup_reinstall_spec.loader is None:
+    raise ImportError("could not load sibling setup_reinstall.py")
+_setup_reinstall_module = importlib.util.module_from_spec(_setup_reinstall_spec)
+_setup_reinstall_spec.loader.exec_module(_setup_reinstall_module)
+perform_full_reinstall = _setup_reinstall_module.perform_full_reinstall
+_setup_report_spec = importlib.util.spec_from_file_location("_local_ai_hub_setup_report", Path(__file__).with_name("setup_report.py"))
+if _setup_report_spec is None or _setup_report_spec.loader is None:
+    raise ImportError("could not load sibling setup_report.py")
+_setup_report_module = importlib.util.module_from_spec(_setup_report_spec)
+_setup_report_spec.loader.exec_module(_setup_report_module)
+write_setup_report = _setup_report_module.write_setup_report
 
 SOURCE_ROOT = Path(__file__).resolve().parents[1]
 # Keep the lexical path for safety checks; ``resolve()`` would erase evidence of
@@ -51,6 +70,13 @@ if str(SRC) not in sys.path:
 from local_ai_hub.config import load_config as load_hub_config  # noqa: E402
 from local_ai_hub.llama_cpp_runtime import LlamaCppManagedRuntime, llama_cpp_managed_selected  # noqa: E402
 from local_ai_hub.generator import generate_global_policy, generate_token_economy_policy, write_all_generated  # noqa: E402
+_state_migrations_spec = importlib.util.spec_from_file_location("_local_ai_hub_state_migrations", Path(__file__).with_name("state_migrations.py"))
+if _state_migrations_spec is None or _state_migrations_spec.loader is None:
+    raise ImportError("could not load sibling state_migrations.py")
+_state_migrations_module = importlib.util.module_from_spec(_state_migrations_spec)
+_state_migrations_spec.loader.exec_module(_state_migrations_module)
+run_state_migrations = _state_migrations_module.run_state_migrations
+inspect_state_migration_path = _state_migrations_module.inspect_state_migration_path
 
 MARKER_BEGIN = "# BEGIN LOCAL AI HUB MANAGED"
 MARKER_END = "# END LOCAL AI HUB MANAGED"
@@ -79,6 +105,58 @@ _DEFAULT_POLICY_CFG: dict[str, Any] = {}
 GLOBAL_POLICY = build_global_policy(_DEFAULT_POLICY_CFG)
 def log(message: str) -> None:
     print(f"[local-ai-hub] {message}")
+
+
+def write_migration_failure_report(
+    install_dir: Path,
+    state_dir: Path,
+    *,
+    stage: str,
+    error: Exception,
+    selected: dict[str, Any] | None = None,
+) -> None:
+    report = {
+        "schema_version": 1,
+        "created_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+        "status": "requires_manual_migration",
+        "install_dir": str(install_dir),
+        "state_dir": str(state_dir),
+        "selected": selected or {},
+        "migration": {"stage": stage, "error": str(error)},
+        "manual_actions": [
+            "Keep the state directory unchanged and read docs/INSTALLER_RECOVERY.md.",
+            "Use only a format-specific converter with verified preservation; do not edit state_version.json manually.",
+        ],
+        "recovery_guide": str(SOURCE_ROOT / "docs" / "INSTALLER_RECOVERY.md"),
+    }
+    try:
+        report_path = write_setup_report(install_dir, report)
+        log(f"Migration recovery report: {report_path}")
+    except Exception as report_error:
+        log(f"WARNING: could not write migration recovery report: {report_error}")
+
+
+def write_setup_failure_report(
+    install_dir: Path, state_dir: Path, *, stage: str, error: Exception | str
+) -> None:
+    report = {
+        "schema_version": 1,
+        "created_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+        "status": "failed",
+        "install_dir": str(install_dir),
+        "state_dir": str(state_dir),
+        "failure": {"stage": stage, "error": str(error)},
+        "manual_actions": [
+            f"Setup stopped during {stage}; inspect the exact error and read docs/INSTALLER_RECOVERY.md.",
+            "Preserve the configured state directory until the failed step is understood.",
+        ],
+        "recovery_guide": str(SOURCE_ROOT / "docs" / "INSTALLER_RECOVERY.md"),
+    }
+    try:
+        report_path = write_setup_report(install_dir, report)
+        log(f"Setup failure report: {report_path}")
+    except Exception as report_error:
+        log(f"WARNING: could not write setup failure report: {report_error}")
 
 
 def run(
@@ -188,7 +266,7 @@ def install_requirements(python: Path, requirement: Path, *, optional: bool = Fa
         run([str(python), "-m", "pip", "install", "--disable-pip-version-check", "--upgrade", "pip", "wheel"], timeout=300)
         run([str(python), "-m", "pip", "install", "--disable-pip-version-check", "-r", str(requirement)], timeout=1800)
         return True
-    except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
+    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
         if optional:
             log(f"WARNING: optional dependency install failed: {requirement.name}")
             return False
@@ -196,15 +274,20 @@ def install_requirements(python: Path, requirement: Path, *, optional: bool = Fa
 
 
 def copy_install_tree(
-    install_dir: Path, config_source: Path, *, before_commit: Callable[[], tuple[bool, str]] | None = None,
+    install_dir: Path, config_source: Path, *,
+    before_commit: Callable[[], tuple[bool, str]] | None = None,
+    after_swap: Callable[[], tuple[bool, str]] | None = None,
 ) -> bool:
     file_names = (
-        "requirements-core.txt", "requirements-token-economy.txt", "requirements-local-nlp.txt", "requirements-openvino.txt", "defaults.toml", "config.toml.example", "pyproject.toml",
+        "requirements-core.txt", "requirements-token-economy.txt", "requirements-local-nlp.txt", "requirements-openvino.txt",
+        "requirements-laya-runtime.txt", "requirements-ast-index.txt", "requirements-performance.txt", "requirements-profiling.txt",
+        "defaults.toml", "config.toml.example", "pyproject.toml",
         "README.md", "FEATURES.md", "AGENTS.md", "LICENSE", "CHANGELOG.md", "THIRD_PARTY.md",
         "RELEASE.json", "CONTRIBUTING.md", "SECURITY.md", "install.ps1", "install.sh",
     )
     success, detail = replace_install_payload(
-        UPDATE_SOURCE_ROOT, install_dir, config_source, file_names, before_commit=before_commit,
+        UPDATE_SOURCE_ROOT, install_dir, config_source, file_names,
+        before_commit=before_commit, after_swap=after_swap,
     )
     log(detail if success else f"ERROR: {detail}")
     return success
@@ -668,20 +751,25 @@ def configure_gemini_instance(
     include_companion: bool,
     *,
     project_root: Path | None = None,
+    agent_components: dict[str, Any] | None = None,
 ) -> None:
     """Configure a single .gemini root (skills, instructions, MCP configs, permissions, schemas)."""
     gemini_dir.mkdir(parents=True, exist_ok=True)
-    install_agent_skills(install_dir, gemini_dir / "skills", include_companion=include_companion)
-    install_agent_skills(install_dir, gemini_dir / "config" / "skills", include_companion=include_companion)
+    if _agent_component_enabled(agent_components, "gemini", "skills"):
+        install_agent_skills(install_dir, gemini_dir / "skills", include_companion=include_companion)
+        install_agent_skills(install_dir, gemini_dir / "config" / "skills", include_companion=include_companion)
 
-    if include_companion:
+    if include_companion and _agent_component_enabled(agent_components, "gemini", "skills"):
         try:
             install_superpowers_skills(gemini_dir / "skills", install_dir / ".local-ai-hub-superpowers" / ".local-ai-hub-skill-ownership.json")
         except (OSError, TimeoutError, ValueError, urllib.error.URLError) as exc:
             log(f"ERROR: Antigravity Superpowers installation failed: {exc}")
             raise RuntimeError(f"Antigravity Superpowers installation failed: {exc}") from exc
 
-    if cfg.get("tool_policy", {}).get("install_global_instructions", True):
+    if (
+        cfg.get("tool_policy", {}).get("install_global_instructions", True)
+        and _agent_component_enabled(agent_components, "gemini", "instructions")
+    ):
         doc = gemini_dir / "GEMINI.md"
         merge_global_policy(doc, backup_enabled, cfg=cfg)
         merge_token_economy_policy(doc, backup_enabled, cfg=cfg)
@@ -689,22 +777,25 @@ def configure_gemini_instance(
             merge_antigravity_skill_policy(gemini_dir / "AGENTS.md", backup_enabled)
             merge_antigravity_skill_policy((project_root or Path.cwd()) / "AGENTS.md", backup_enabled)
 
-    json_mcp_merge(gemini_dir / "settings.json", build_mcp_entries(install_dir, hub_python, serena, "gemini", cfg), backup_enabled)
-    sync_antigravity_mcp_config(
-        gemini_dir / "config" / "mcp_config.json",
-        install_dir, hub_python, serena, cfg, backup_enabled,
-    )
-    sync_antigravity_config_json(
-        gemini_dir / "config" / "config.json",
-        backup_enabled,
-    )
-    sync_antigravity_hooks_json(
-        gemini_dir / "config" / "hooks.json",
-        install_dir, hub_python, backup_enabled,
-    )
+    if _agent_component_enabled(agent_components, "gemini", "mcp"):
+        json_mcp_merge(gemini_dir / "settings.json", build_mcp_entries(install_dir, hub_python, serena, "gemini", cfg), backup_enabled)
+        sync_antigravity_mcp_config(
+            gemini_dir / "config" / "mcp_config.json",
+            install_dir, hub_python, serena, cfg, backup_enabled,
+        )
+        sync_antigravity_config_json(
+            gemini_dir / "config" / "config.json",
+            backup_enabled,
+        )
+        sync_antigravity_hooks_json(
+            gemini_dir / "config" / "hooks.json",
+            install_dir, hub_python, backup_enabled,
+        )
 
     antigravity_mcp = gemini_dir / "antigravity" / "mcp" / "local-ai"
-    if antigravity_mcp.exists() or (gemini_dir / "antigravity").exists():
+    if _agent_component_enabled(agent_components, "gemini", "mcp") and (
+        antigravity_mcp.exists() or (gemini_dir / "antigravity").exists()
+    ):
         antigravity_mcp.mkdir(parents=True, exist_ok=True)
         schemas_dir = install_dir / "generated" / "schemas"
         if schemas_dir.exists():
@@ -820,6 +911,64 @@ def merge_token_economy_policy(path: Path, backup_enabled: bool, cfg: dict[str, 
         log(f"Token economy policy installed: {path}")
 
 
+def ensure_cursor_rule_frontmatter(path: Path, backup_enabled: bool) -> bool:
+    """Ensure the Hub's dedicated Cursor rule is always active without losing its body."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    text = path.read_text(encoding="utf-8") if path.exists() else ""
+    if text and GLOBAL_POLICY_BEGIN not in text and TOKEN_ECONOMY_POLICY_BEGIN not in text:
+        return False
+    match = re.match(r"\A---\r?\n(.*?)\r?\n---(?:\r?\n|$)", text, re.DOTALL)
+    if match:
+        metadata = match.group(1)
+        if re.search(r"(?m)^alwaysApply\s*:", metadata):
+            metadata = re.sub(r"(?m)^alwaysApply\s*:.*$", "alwaysApply: true", metadata)
+        else:
+            metadata += "\nalwaysApply: true"
+        if not re.search(r"(?m)^description\s*:", metadata):
+            metadata += "\ndescription: Local AI Hub tool policy"
+        updated = f"---\n{metadata}\n---\n" + text[match.end():]
+    else:
+        updated = (
+            "---\ndescription: Local AI Hub tool policy\nalwaysApply: true\n---\n\n"
+            + text
+        )
+    if updated != text:
+        if path.exists():
+            backup(path, backup_enabled)
+        path.write_text(updated, encoding="utf-8")
+        log(f"Cursor Local AI Hub rule enabled: {path}")
+    return True
+
+
+def merge_windsurf_global_policy(path: Path, install_dir: Path, backup_enabled: bool) -> str | None:
+    """Install concise global guidance within Windsurf's documented rule-size limit."""
+    begin = "<!-- BEGIN LOCAL AI HUB WINDSURF POLICY -->"
+    end = "<!-- END LOCAL AI HUB WINDSURF POLICY -->"
+    policy = (
+        f"{begin}\n# Local AI Hub\n"
+        "Use the Local AI Hub MCP and `local-ai-orchestrator` skill for repository work. "
+        "Use only actions exposed by the active MCP schema; deterministic/indexed evidence "
+        "is authoritative for repository facts. Use native commands for builds and tests. "
+        f"Read `{(install_dir / 'generated' / 'agent-policy.md').as_posix()}` for the full configured policy.\n{end}"
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    text = path.read_text(encoding="utf-8") if path.exists() else ""
+    pattern = re.compile(re.escape(begin) + r".*?" + re.escape(end), re.DOTALL)
+    updated = pattern.sub(lambda _match: policy, text) if pattern.search(text) else (
+        text + ("" if not text or text.endswith("\n") else "\n") + "\n" + policy + "\n"
+    )
+    if len(updated) > 6000:
+        return (
+            "Windsurf global rules exceed the 6,000-character limit; its existing rule file was preserved. "
+            f"Manually add the Local AI Hub policy to {path} or shorten existing rules."
+        )
+    if updated != text:
+        backup(path, backup_enabled)
+        path.write_text(updated, encoding="utf-8")
+        log(f"Windsurf Local AI Hub rule installed: {path}")
+    return None
+
+
 def generate_autosetup_policy(skills_dir: Path) -> str:
     orch_skill = (skills_dir / "local-ai-orchestrator" / "SKILL.md").as_posix()
     tok_skill_path = skills_dir / "token-economizer" / "SKILL.md"
@@ -850,10 +999,10 @@ def merge_autosetup_policy(path: Path, backup_enabled: bool, skills_dir: Path) -
 
 def install_tool_env(install_dir: Path, name: str, package: str, executables: list[str]) -> Path | None:
     venv = install_dir / "tool-envs" / name
-    python = ensure_venv(venv)
     try:
+        python = ensure_venv(venv)
         run([str(python), "-m", "pip", "install", "--disable-pip-version-check", "--upgrade", package], timeout=1800)
-    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
         log(f"WARNING: {name} install failed ({type(exc).__name__}); Local AI Hub will continue with built-in code intelligence")
         return None
     for executable in executables:
@@ -864,11 +1013,12 @@ def install_tool_env(install_dir: Path, name: str, package: str, executables: li
     return None
 
 
-def install_token_economy_suite(install_dir: Path, hub_python: Path, *, allow_external_tools: bool = True) -> None:
+def install_token_economy_suite(
+    install_dir: Path, hub_python: Path, *, allow_external_tools: bool = True
+) -> dict[str, Any]:
     """Install token-economy python dependencies, CLI wrapper scripts, and probe external CLI tools."""
     req_file = install_dir / "requirements-token-economy.txt"
-    if req_file.is_file():
-        install_requirements(hub_python, req_file, optional=True)
+    dependencies_ok = req_file.is_file() and install_requirements(hub_python, req_file, optional=True)
 
     scripts_dir = install_dir / ".venv" / ("Scripts" if os.name == "nt" else "bin")
     if scripts_dir.is_dir():
@@ -888,8 +1038,19 @@ def install_token_economy_suite(install_dir: Path, hub_python: Path, *, allow_ex
                     pass
         persist_token_economy_path(scripts_dir)
 
+    wrapper_names = ["tokcount", "trim-run", "repo-map"]
+    if os.name == "nt":
+        wrapper_names = [f"{name}.cmd" for name in wrapper_names]
+    wrappers_ok = scripts_dir.is_dir() and all((scripts_dir / name).is_file() for name in wrapper_names)
+    status: dict[str, Any] = {
+        "dependencies": "installed" if dependencies_ok else "failed_or_missing",
+        "wrappers": "installed" if wrappers_ok else "failed_or_missing",
+        "external_tools": {},
+    }
+
     if not allow_external_tools:
-        return
+        status["external_tools"] = {"status": "not_requested"}
+        return status
 
     # Probe and attempt install for external CLI tools
     if not shutil.which("rg"):
@@ -943,6 +1104,19 @@ def install_token_economy_suite(install_dir: Path, hub_python: Path, *, allow_ex
                 run(["sudo", "apt-get", "install", "-y", "jq"], check=False, timeout=300)
         except Exception as exc:
             log(f"Optional jq install skipped: {exc}")
+
+    command_paths = {
+        "ripgrep": shutil.which("rg"),
+        "fd": shutil.which("fd") or shutil.which("fdfind"),
+        "ast_grep": shutil.which("ast-grep") or shutil.which("sg"),
+        "repomix": shutil.which("repomix"),
+        "jq": shutil.which("jq"),
+    }
+    status["external_tools"] = {
+        name: {"status": "available" if path else "not_detected_after_install", "path": path}
+        for name, path in command_paths.items()
+    }
+    return status
 
 
 def _merge_path_entry(path_value: str, entry: Path, *, windows: bool) -> str:
@@ -1118,12 +1292,7 @@ def ensure_llama_cpp_for_setup(cfg: dict[str, Any]) -> bool:
         raise RuntimeError(f"Managed llama.cpp setup failed: {exc}") from exc
 
 
-def pull_ollama_models(cfg: dict[str, Any]) -> None:
-    if not cfg.get("features", {}).get("pull_models_during_setup", True) or not ollama_setup_required(cfg):
-        return
-    ollama = find_ollama_executable()
-    if not ollama:
-        return
+def pull_ollama_models(cfg: dict[str, Any]) -> dict[str, Any]:
     models: list[str] = []
     model_cfg = cfg.get("models", {})
     for key in ["background_code", "fast_code", "heavy_code", "reasoning", "general"]:
@@ -1147,11 +1316,34 @@ def pull_ollama_models(cfg: dict[str, Any]) -> None:
         model = str(model_cfg.get("embedding", "") or "")
         if model and model not in models:
             models.append(model)
+    if not ollama_setup_required(cfg):
+        return {"status": "not_selected", "requested": [], "ready": [], "skipped": [], "unavailable": []}
+    if not cfg.get("features", {}).get("pull_models_during_setup", True):
+        return {"status": "skipped", "requested": [], "ready": [], "skipped": models, "unavailable": []}
+    ollama = find_ollama_executable()
+    if not ollama:
+        log("WARNING: Ollama model downloads requested but the Ollama executable is unavailable.")
+        return {"status": "unavailable", "requested": models, "ready": [], "skipped": [], "unavailable": models}
+    ready: list[str] = []
+    unavailable: list[str] = []
     for model in models:
         try:
-            run([ollama, "pull", model], check=False, timeout=1800)
-        except Exception:
-            log(f"WARNING: model pull did not complete: {model}")
+            result = run([ollama, "pull", model], check=False, timeout=1800)
+            if result.returncode == 0:
+                ready.append(model)
+            else:
+                unavailable.append(model)
+                log(f"WARNING: model pull failed (exit={result.returncode}): {model}")
+        except Exception as exc:
+            unavailable.append(model)
+            log(f"WARNING: model pull did not complete: {model}: {exc}")
+    return {
+        "status": "unavailable" if unavailable and not ready else "partial" if unavailable else "ready",
+        "requested": models,
+        "ready": ready,
+        "skipped": [],
+        "unavailable": unavailable,
+    }
 
 
 def write_generated_agent_manifests(install_dir: Path, hub_python: Path, serena: Path | None, cfg: dict[str, Any]) -> None:
@@ -1204,6 +1396,14 @@ def _http_mcp_ready(url: str) -> bool:
                 pass
 
 
+def _agent_component_enabled(
+    selections: dict[str, Any] | None, agent: str, component: str
+) -> bool:
+    if selections is None:
+        return True
+    return bool(selections.get(f"agent_{agent}_{component}", True))
+
+
 def configure_agents(
     install_dir: Path,
     hub_python: Path,
@@ -1211,15 +1411,29 @@ def configure_agents(
     cfg: dict[str, Any],
     *,
     include_companion: bool = True,
-) -> None:
+    agent_components: dict[str, Any] | None = None,
+) -> list[str]:
+    manual_actions: list[str] = []
     codex_entries = build_codex_mcp_entries(install_dir, hub_python, serena, cfg)
     codex_entry = codex_entries.get("local-ai", {})
-    if cfg.get("agents", {}).get("codex", True) and "url" in codex_entry and not _http_mcp_ready(codex_entry["url"]):
+    if (
+        cfg.get("agents", {}).get("codex", True)
+        and _agent_component_enabled(agent_components, "codex", "mcp")
+        and "url" in codex_entry and not _http_mcp_ready(codex_entry["url"])
+    ):
         raise RuntimeError("HTTP MCP transport is not ready; Codex configuration was not changed")
     backup_enabled = bool(cfg.get("setup", {}).get("backup_existing_configs", True))
     agents_cfg = cfg.get("agents", {})
     write_all_generated(cfg, install_dir, hub_python, serena)
-    if agents_cfg.get("agent_skills_standard", True):
+    # Cursor and Windsurf discover the shared ~/.agents/skills directory too.
+    # Keep that shared tree only when every supported consumer is selected;
+    # otherwise install for selected clients in their native skill directory.
+    standard_skill_tree_enabled = agents_cfg.get("agent_skills_standard", True) and all(
+        agents_cfg.get(name, True)
+        and _agent_component_enabled(agent_components, name, "skills")
+        for name in ("codex", "cursor", "windsurf")
+    )
+    if standard_skill_tree_enabled:
         for u_home in get_user_homes():
             install_agent_skills(install_dir, u_home / ".agents" / "skills", include_companion=include_companion)
     if agents_cfg.get("codex", True):
@@ -1232,39 +1446,90 @@ def configure_agents(
                 codex_homes.append(ch)
 
         for codex_home in codex_homes:
-            install_agent_skills(install_dir, codex_home / "skills", include_companion=include_companion)
-            if cfg.get("tool_policy", {}).get("install_global_instructions", True):
+            if _agent_component_enabled(agent_components, "codex", "skills"):
+                install_agent_skills(install_dir, codex_home / "skills", include_companion=include_companion)
+            if (
+                cfg.get("tool_policy", {}).get("install_global_instructions", True)
+                and _agent_component_enabled(agent_components, "codex", "instructions")
+            ):
                 doc = codex_home / ("AGENTS.override.md" if (codex_home / "AGENTS.override.md").exists() else "AGENTS.md")
                 merge_global_policy(doc, backup_enabled, cfg=cfg)
                 merge_token_economy_policy(doc, backup_enabled, cfg=cfg)
                 merge_autosetup_policy(doc, backup_enabled, codex_home / "skills")
-            codex_mcp_merge(
-                codex_home / "config.toml", codex_entries, backup_enabled,
-                startup_timeout=int(cfg.get("client", {}).get("startup_wait_seconds", 15)) + 15,
-                tool_timeout=int(cfg.get("mcp", {}).get("host_tool_timeout_seconds", 900)),
-            )
+            if _agent_component_enabled(agent_components, "codex", "mcp"):
+                codex_mcp_merge(
+                    codex_home / "config.toml", codex_entries, backup_enabled,
+                    startup_timeout=int(cfg.get("client", {}).get("startup_wait_seconds", 15)) + 15,
+                    tool_timeout=int(cfg.get("mcp", {}).get("host_tool_timeout_seconds", 900)),
+                )
     if agents_cfg.get("claude", True):
-        install_agent_skills(install_dir, Path.home() / ".claude" / "skills", include_companion=include_companion)
-        if cfg.get("tool_policy", {}).get("install_global_instructions", True):
+        if _agent_component_enabled(agent_components, "claude", "skills"):
+            install_agent_skills(install_dir, Path.home() / ".claude" / "skills", include_companion=include_companion)
+        if (
+            cfg.get("tool_policy", {}).get("install_global_instructions", True)
+            and _agent_component_enabled(agent_components, "claude", "instructions")
+        ):
             doc = Path.home() / ".claude" / "CLAUDE.md"
             merge_global_policy(doc, backup_enabled, cfg=cfg)
             merge_token_economy_policy(doc, backup_enabled, cfg=cfg)
-        json_mcp_merge(Path.home() / ".claude.json", build_mcp_entries(install_dir, hub_python, serena, "claude", cfg), backup_enabled)
+        if _agent_component_enabled(agent_components, "claude", "mcp"):
+            json_mcp_merge(Path.home() / ".claude.json", build_mcp_entries(install_dir, hub_python, serena, "claude", cfg), backup_enabled)
     if agents_cfg.get("gemini", True):
         for u_home in get_user_homes():
             g_dir = u_home / ".gemini"
             if u_home.resolve() == Path.home().resolve() or g_dir.exists() or u_home.exists():
                 configure_gemini_instance(
-                    g_dir, install_dir, hub_python, serena, cfg, backup_enabled, include_companion
+                    g_dir, install_dir, hub_python, serena, cfg, backup_enabled, include_companion,
+                    agent_components=agent_components,
                 )
-    # Additional major MCP hosts. Their tool descriptions always carry the same
-    # tool-first policy even when the host has no global skill format.
+    # Additional MCP hosts with their documented user-level skills and rules.
     if agents_cfg.get("cursor", True):
-        json_mcp_merge(Path.home() / ".cursor" / "mcp.json", build_mcp_entries(install_dir, hub_python, serena, "cursor", cfg), backup_enabled)
+        cursor_dir = Path.home() / ".cursor"
+        if _agent_component_enabled(agent_components, "cursor", "skills") and not standard_skill_tree_enabled:
+            install_agent_skills(install_dir, cursor_dir / "skills", include_companion=include_companion)
+        if (
+            cfg.get("tool_policy", {}).get("install_global_instructions", True)
+            and _agent_component_enabled(agent_components, "cursor", "instructions")
+        ):
+            cursor_rule = cursor_dir / "rules" / "local-ai-hub.mdc"
+            if ensure_cursor_rule_frontmatter(cursor_rule, backup_enabled):
+                merge_global_policy(cursor_rule, backup_enabled, cfg=cfg)
+                merge_token_economy_policy(cursor_rule, backup_enabled, cfg=cfg)
+            else:
+                manual_actions.append(
+                    f"Cursor rule {cursor_rule} already exists without Local AI Hub markers; "
+                    "it was preserved. Move it or merge the Hub instructions manually."
+                )
+        if _agent_component_enabled(agent_components, "cursor", "mcp"):
+            json_mcp_merge(Path.home() / ".cursor" / "mcp.json", build_mcp_entries(install_dir, hub_python, serena, "cursor", cfg), backup_enabled)
     if agents_cfg.get("windsurf", True):
-        json_mcp_merge(Path.home() / ".codeium" / "windsurf" / "mcp_config.json", build_mcp_entries(install_dir, hub_python, serena, "windsurf", cfg), backup_enabled)
+        windsurf_dir = Path.home() / ".codeium" / "windsurf"
+        if _agent_component_enabled(agent_components, "windsurf", "skills") and not standard_skill_tree_enabled:
+            install_agent_skills(install_dir, windsurf_dir / "skills", include_companion=include_companion)
+        if (
+            cfg.get("tool_policy", {}).get("install_global_instructions", True)
+            and _agent_component_enabled(agent_components, "windsurf", "instructions")
+        ):
+            manual_action = merge_windsurf_global_policy(
+                windsurf_dir / "memories" / "global_rules.md", install_dir, backup_enabled
+            )
+            if manual_action:
+                manual_actions.append(manual_action)
+                log(f"Manual agent setup required: {manual_action}")
+        if _agent_component_enabled(agent_components, "windsurf", "mcp"):
+            json_mcp_merge(Path.home() / ".codeium" / "windsurf" / "mcp_config.json", build_mcp_entries(install_dir, hub_python, serena, "windsurf", cfg), backup_enabled)
     if agents_cfg.get("copilot", True):
-        vscode_mcp_merge(Path.home() / ".copilot" / "mcp-config.json", build_mcp_entries(install_dir, hub_python, serena, "copilot", cfg), backup_enabled)
+        copilot_dir = Path.home() / ".copilot"
+        if _agent_component_enabled(agent_components, "copilot", "skills"):
+            install_agent_skills(install_dir, copilot_dir / "skills", include_companion=include_companion)
+        if (
+            cfg.get("tool_policy", {}).get("install_global_instructions", True)
+            and _agent_component_enabled(agent_components, "copilot", "instructions")
+        ):
+            merge_global_policy(copilot_dir / "copilot-instructions.md", backup_enabled, cfg=cfg)
+            merge_token_economy_policy(copilot_dir / "copilot-instructions.md", backup_enabled, cfg=cfg)
+        if _agent_component_enabled(agent_components, "copilot", "mcp"):
+            vscode_mcp_merge(Path.home() / ".copilot" / "mcp-config.json", build_mcp_entries(install_dir, hub_python, serena, "copilot", cfg), backup_enabled)
 
     # Escape hatch for any MCP host/build whose config path differs from
     # the common defaults above. Users provide explicit paths, so setup never guesses
@@ -1277,6 +1542,7 @@ def configure_agents(
         if str(raw).strip():
             vscode_mcp_merge(expand(str(raw)), generic_entries, backup_enabled)
     write_generated_agent_manifests(install_dir, hub_python, serena, cfg)
+    return manual_actions
 
 
 
@@ -1306,14 +1572,23 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Install Local AI Hub")
     parser.add_argument("--config", type=Path, default=None, help="Import/replace config from this path. Without it, reruns preserve the installed config.")
     parser.add_argument("--profile", choices=["auto", "cpu", "integrated", "low", "balanced", "medium", "high", "max"])
-    parser.add_argument("--skip-model-pull", action="store_true")
+    parser.add_argument("--skip-model-pull", action="store_true", default=None)
     parser.add_argument("--skip-local-nlp-preload", action="store_true")
-    parser.add_argument("--skip-tools", action="store_true", help="Do not install Serena")
-    parser.add_argument("--skip-agent-config", action="store_true")
-    parser.add_argument("--skip-service", action="store_true")
+    parser.add_argument("--skip-laya-runtime", action="store_true", default=None)
+    parser.add_argument("--skip-ast-index", action="store_true", default=None)
+    parser.add_argument("--skip-performance", action="store_true", default=None)
+    parser.add_argument("--skip-profiling", action="store_true", default=None)
+    parser.add_argument("--skip-tools", action="store_true", default=None, help="Do not install Serena")
+    parser.add_argument("--skip-agent-config", action="store_true", default=None)
+    parser.add_argument("--skip-service", action="store_true", default=None)
     parser.add_argument("--skip-ollama-install", action="store_true")
-    parser.add_argument("--skip-token-economy", action="store_true", help="Do not install token economy packages or probe external CLI tools")
-    parser.add_argument("--skip-companion-skills", action="store_true", help="Do not install companion skills or pinned Superpowers for Gemini/Antigravity")
+    parser.add_argument("--skip-token-economy", action="store_true", default=None, help="Do not install token economy packages or probe external CLI tools")
+    parser.add_argument("--skip-companion-skills", action="store_true", default=None, help="Do not install companion skills or pinned Superpowers for Gemini/Antigravity")
+    setup_mode = parser.add_mutually_exclusive_group()
+    setup_mode.add_argument("--interactive", dest="interactive", action="store_true", default=None, help="Show the installer wizard even when setup is scripted")
+    setup_mode.add_argument("--non-interactive", action="store_true", help="Never prompt; use explicit flags, saved choices, and safe defaults")
+    parser.add_argument("--full-reinstall", action="store_true", help="Remove the managed virtual environment, Hub state, and Hub model cache before reinstalling")
+    parser.add_argument("--confirm-full-reinstall", help="Non-interactive confirmation; must exactly equal `DELETE <resolved state directory>`")
     parser.add_argument("--generate-only", action="store_true", help="Generate dynamic skill, instructions, MCP manifests, and schemas without re-installing dependencies or service.")
     parser.add_argument("--expected-revision", help="Exact verified 40-character source commit required for install/update.")
     parser.add_argument("--host-project-root", type=Path, help="Explicit project root for isolated host-hook maintenance; skips Hub install/service/model actions.")
@@ -1372,6 +1647,7 @@ def main() -> int:
         log(f"Verified clean source commit: {verified_revision}")
 
     config_source, cfg, install_dir = select_config_source(args.config)
+    setup_choices = configure_setup_choices(args, cfg, install_dir, argv=sys.argv[1:])
     include_companion = not args.skip_companion_skills and bool(cfg.get("setup", {}).get("install_companion_skills", True))
     if args.generate_only:
         hub_python = venv_python(install_dir / ".venv")
@@ -1381,7 +1657,12 @@ def main() -> int:
         if install_dir.resolve() != SOURCE_ROOT.resolve():
             write_all_generated(cfg, install_dir, hub_python)
         if not args.skip_agent_config and bool(cfg.get("setup", {}).get("install_agent_configs", True)):
-            configure_agents(install_dir, hub_python, None, cfg, include_companion=include_companion)
+            for manual_action in configure_agents(
+                install_dir, hub_python, None, cfg,
+                include_companion=include_companion,
+                agent_components=setup_choices,
+            ):
+                log(f"Manual agent setup required: {manual_action}")
         log("Skill, agent instructions, and MCP artifacts successfully generated.")
         return 0
 
@@ -1391,13 +1672,79 @@ def main() -> int:
     # normal idempotent setup behavior for this installation target.
     old_python = venv_python(install_dir / ".venv")
     old_service = install_dir / "tools" / "service.py"
+    runtime_stop_result: list[tuple[bool, str] | None] = [None]
 
     def stop_before_commit() -> tuple[bool, str]:
-        return stop_existing_runtime(install_dir, old_python, old_service, run)
+        if runtime_stop_result[0] is None:
+            runtime_stop_result[0] = stop_existing_runtime(install_dir, old_python, old_service, run)
+        return runtime_stop_result[0]
 
-    if not copy_install_tree(install_dir, config_source, before_commit=stop_before_commit):
-        log("Setup incomplete: install transaction did not commit; runtime setup and service start skipped.")
+    if args.full_reinstall:
+        state_dir = expand(str(cfg.get("server", {}).get("state_dir", install_dir / "state")))
+        try:
+            removed = perform_full_reinstall(
+                install_dir,
+                state_dir,
+                SOURCE_ROOT,
+                home=Path.home(),
+                stop_runtime=stop_before_commit,
+                interactive=not args.non_interactive and args.confirm_full_reinstall is None and sys.stdin.isatty(),
+                confirmation=args.confirm_full_reinstall,
+            )
+            log(f"Full reinstall removed Hub runtime/state paths: {', '.join(str(path) for path in removed)}")
+        except Exception as exc:
+            log(f"Full reinstall refused: {exc}")
+            write_setup_failure_report(install_dir, state_dir, stage="full_reinstall", error=exc)
+            return 1
+
+    state_dir = expand(str(cfg.get("server", {}).get("state_dir", install_dir / "state")))
+    try:
+        migration_preflight = inspect_state_migration_path(state_dir)
+        log(
+            "State migration preflight passed: "
+            f"{migration_preflight.get('status')} (version {migration_preflight.get('version')})."
+        )
+    except Exception as exc:
+        log(f"Setup/update refused before replacing installed code: state migration preflight failed: {exc}")
+        write_migration_failure_report(
+            install_dir, state_dir, stage="preflight", error=exc, selected=setup_choices
+        )
+        log(f"Recovery guide: {SOURCE_ROOT / 'docs' / 'INSTALLER_RECOVERY.md'}")
         return 1
+
+    migration_result: dict[str, Any] = {}
+    migration_error: Exception | None = None
+
+    def migrate_state_after_swap() -> tuple[bool, str]:
+        nonlocal migration_result, migration_error
+        try:
+            migration_result = run_state_migrations(state_dir)
+            return True, str(migration_result.get("status", "completed"))
+        except Exception as exc:
+            migration_error = exc
+            return False, str(exc)
+
+    if not copy_install_tree(
+        install_dir, config_source,
+        before_commit=stop_before_commit,
+        after_swap=migrate_state_after_swap,
+    ):
+        log("Setup incomplete: install transaction did not commit; runtime setup and service start skipped.")
+        if migration_error is not None:
+            write_migration_failure_report(
+                install_dir, state_dir, stage="apply", error=migration_error, selected=setup_choices
+            )
+            log(f"Recovery guide: {SOURCE_ROOT / 'docs' / 'INSTALLER_RECOVERY.md'}")
+        else:
+            write_setup_failure_report(
+                install_dir, state_dir, stage="install_payload", error="Install transaction did not commit."
+            )
+        return 1
+    log(f"State migration status: {migration_result.get('status')} (version {migration_result.get('version')}).")
+    for backup_path in migration_result.get("backups", []):
+        log(f"Verified state backup: {backup_path}")
+    for warning in migration_result.get("warnings", []):
+        log(f"WARNING: state migration cleanup: {warning}")
     installed_config = install_dir / "config.toml"
     if args.profile:
         text = installed_config.read_text(encoding="utf-8")
@@ -1413,15 +1760,29 @@ def main() -> int:
             text = text.rstrip() + f'\n\n[hardware]\nprofile = "{args.profile}"\nauto_tune = true\n'
         installed_config.write_text(text, encoding="utf-8")
     cfg = load_hub_config(str(installed_config))
+    apply_setup_choices(args, cfg, setup_choices)
+    state_dir = expand(str(cfg.get("server", {}).get("state_dir", install_dir / "state")))
     if args.skip_model_pull:
         cfg.setdefault("features", {})["pull_models_during_setup"] = False
-    hub_python = ensure_venv(install_dir / ".venv")
-    install_requirements(hub_python, install_dir / "requirements-core.txt")
-    # Register the package and console entry points inside the managed runtime.
-    # Otherwise the global CLI wrappers only work with an explicit PYTHONPATH.
-    run([str(hub_python), "-m", "pip", "install", "--disable-pip-version-check", "--no-deps", "-e", str(install_dir)], timeout=300)
+    try:
+        hub_python = ensure_venv(install_dir / ".venv")
+        install_requirements(hub_python, install_dir / "requirements-core.txt")
+        # Register the package and console entry points inside the managed runtime.
+        # Otherwise the global CLI wrappers only work with an explicit PYTHONPATH.
+        run([str(hub_python), "-m", "pip", "install", "--disable-pip-version-check", "--no-deps", "-e", str(install_dir)], timeout=300)
+    except Exception as exc:
+        log(f"Setup incomplete: core runtime installation failed: {exc}")
+        write_setup_failure_report(install_dir, state_dir, stage="core_runtime", error=exc)
+        return 1
+    token_economy_result: dict[str, Any] = {"status": "not_selected"}
     if not args.skip_token_economy:
-        install_token_economy_suite(install_dir, hub_python, allow_external_tools=True)
+        try:
+            token_economy_result = install_token_economy_suite(
+                install_dir, hub_python, allow_external_tools=True
+            )
+        except Exception as exc:
+            token_economy_result = {"status": "failed", "error": str(exc)}
+            log(f"WARNING: Token Economy setup stopped early: {exc}")
 
     serena: Path | None = None
     setup_cfg = cfg.get("setup", {})
@@ -1438,24 +1799,65 @@ def main() -> int:
         (bool(features.get("reranker", True)) and reranker_backend != "openvino")
         or (bool(features.get("rag", True)) and embedding_backend in {"sentence-transformers", "auto"})
     )
+    local_nlp_ok = False
+    local_nlp_preload_ok: bool | None = None
+    local_nlp_model_report: dict[str, Any] = {
+        "status": "not_needed" if not needs_local_nlp else "not_started",
+        "models": {},
+    }
     if needs_local_nlp and features.get("install_local_nlp_dependencies", True):
         local_nlp_ok = install_requirements(hub_python, install_dir / "requirements-local-nlp.txt", optional=True)
-        if local_nlp_ok and not args.skip_local_nlp_preload:
+        if not local_nlp_ok:
+            local_nlp_model_report["status"] = "dependencies_unavailable"
+        elif args.skip_local_nlp_preload:
+            local_nlp_model_report["status"] = "skipped"
+        else:
             try:
-                run([str(hub_python), str(install_dir / "tools" / "prefetch_local_nlp.py")], check=False, timeout=1800)
-            except Exception:
-                pass
+                preload_result = run(
+                    [
+                        str(hub_python), str(install_dir / "tools" / "prefetch_local_nlp.py"), "--json",
+                        "--allow-hf-downloads" if setup_choices.get("download_hf_models", False)
+                        else "--no-hf-downloads",
+                    ],
+                    check=False, timeout=1800, capture=True,
+                )
+                try:
+                    parsed = json.loads(preload_result.stdout or "")
+                except (json.JSONDecodeError, TypeError):
+                    parsed = None
+                if isinstance(parsed, dict):
+                    local_nlp_model_report = {
+                        "status": "ready" if parsed.get("success") is True else "unavailable",
+                        "models": {
+                            name: parsed.get(name)
+                            for name in ("embedding", "reranker")
+                        },
+                    }
+                    local_nlp_preload_ok = parsed.get("success") is True
+                else:
+                    local_nlp_model_report["status"] = "unavailable"
+                    local_nlp_preload_ok = False
+            except Exception as exc:
+                local_nlp_model_report["status"] = "unavailable"
+                local_nlp_preload_ok = False
+                log(f"WARNING: local NLP model preload failed: {exc}")
+    elif needs_local_nlp:
+        local_nlp_model_report["status"] = "disabled"
 
     hw_detected = cfg.get("_hardware", {})
     detected_gpus = hw_detected.get("gpus", []) if isinstance(hw_detected, dict) else []
     detected_npus = hw_detected.get("npus", []) if isinstance(hw_detected, dict) else []
     has_intel_gpu = any(str(g.get("vendor", "")).lower() == "intel" for g in detected_gpus if isinstance(g, dict))
-    has_npu_hw = bool(detected_npus)
+    has_intel_npu = any(
+        str(npu.get("vendor", "")).lower() == "intel"
+        for npu in detected_npus
+        if isinstance(npu, dict)
+    )
 
     needs_openvino = (
         embedding_backend == "openvino"
         or reranker_backend == "openvino"
-        or has_npu_hw
+        or has_intel_npu
         or (has_intel_gpu and cfg.get("_hardware", {}).get("profile") == "integrated")
     )
     ov_cfg = cfg.get("openvino", {})
@@ -1466,13 +1868,73 @@ def main() -> int:
         and bool(ov_cfg.get("auto_install", True))
     )
     openvino_ok = False
+    openvino_preload_ok: bool | None = None
+    openvino_model_report: dict[str, Any] = {
+        "status": "not_needed" if not needs_openvino else "not_started",
+        "models": {},
+    }
     if install_openvino:
         openvino_ok = install_requirements(hub_python, install_dir / "requirements-openvino.txt", optional=True)
-        if openvino_ok and not args.skip_local_nlp_preload:
+        if not openvino_ok:
+            openvino_model_report["status"] = "dependencies_unavailable"
+        elif args.skip_local_nlp_preload:
+            openvino_model_report["status"] = "skipped"
+        else:
             try:
-                run([str(hub_python), str(install_dir / "tools" / "prefetch_openvino.py")], check=False, timeout=1800)
-            except Exception:
-                pass
+                preload_result = run(
+                    [
+                        str(hub_python), str(install_dir / "tools" / "prefetch_openvino.py"),
+                        "--allow-hf-downloads" if setup_choices.get("download_hf_models", False)
+                        else "--no-hf-downloads",
+                    ],
+                    check=False, timeout=1800, capture=True,
+                )
+                try:
+                    parsed = json.loads(preload_result.stdout or "")
+                except (json.JSONDecodeError, TypeError):
+                    parsed = None
+                requested_models = {
+                    "embedding": embedding_backend == "openvino" and bool(features.get("rag", True)),
+                    "reranker": reranker_backend == "openvino" and bool(features.get("reranker", True)),
+                }
+                model_results: dict[str, Any] = {}
+                for name, requested in requested_models.items():
+                    if not requested:
+                        model_results[name] = {"status": "not_selected"}
+                    elif isinstance(parsed, dict) and isinstance(parsed.get(name), dict):
+                        result = parsed[name]
+                        if result.get("success") is not True:
+                            status = "unavailable"
+                        elif str(result.get("backend", "")).lower() == "openvino":
+                            status = "ready"
+                        else:
+                            status = "fallback"
+                        model_results[name] = {
+                            "status": status,
+                            "model": result.get("model"),
+                            "backend": result.get("backend"),
+                            "device": result.get("device"),
+                        }
+                    else:
+                        model_results[name] = {"status": "unavailable"}
+                attempted = [m for m in model_results.values() if m.get("status") != "not_selected"]
+                all_ready = bool(attempted) and all(m.get("status") == "ready" for m in attempted)
+                openvino_model_report = {
+                    "status": (
+                        "ready" if all_ready
+                        else "fallback" if attempted and all(m.get("status") in {"ready", "fallback"} for m in attempted)
+                        else "unavailable" if attempted
+                        else "not_selected"
+                    ),
+                    "models": model_results,
+                }
+                openvino_preload_ok = all_ready if attempted else None
+            except Exception as exc:
+                openvino_model_report["status"] = "unavailable"
+                openvino_preload_ok = False
+                log(f"WARNING: OpenVINO model preload failed: {exc}")
+    elif needs_openvino:
+        openvino_model_report["status"] = "disabled"
 
     if needs_openvino and not openvino_ok and features.get("install_local_nlp_dependencies", True):
         # CPU fallback is part of the OpenVINO reliability contract. Install its
@@ -1481,33 +1943,69 @@ def main() -> int:
         # OpenVINO install failed. Users can still disable both dependency installers.
         install_requirements(hub_python, install_dir / "requirements-local-nlp.txt", optional=True)
 
+    laya_cfg = cfg.get("laya", {}) if isinstance(cfg.get("laya", {}), dict) else {}
+    laya_runtime_cfg = laya_cfg.get("runtime", {}) if isinstance(laya_cfg.get("runtime", {}), dict) else {}
+    laya_checkpoint_path = str(laya_runtime_cfg.get("checkpoint_path", "") or "").strip()
+    laya_checkpoint_exists = bool(laya_checkpoint_path and Path(laya_checkpoint_path).is_dir())
+    laya_runtime_selected = bool(setup_choices.get("laya_runtime", False))
+    laya_runtime_ok: bool | None = None
+    if laya_runtime_selected:
+        laya_runtime_ok = install_requirements(
+            hub_python, install_dir / "requirements-laya-runtime.txt", optional=True
+        )
+
+    optional_runtime_extras: dict[str, dict[str, Any]] = {}
+    for choice, requirement in (
+        ("ast_index", "requirements-ast-index.txt"),
+        ("performance", "requirements-performance.txt"),
+        ("profiling", "requirements-profiling.txt"),
+    ):
+        selected = bool(setup_choices.get(choice, False))
+        installed = (
+            install_requirements(hub_python, install_dir / requirement, optional=True)
+            if selected else None
+        )
+        optional_runtime_extras[choice] = {
+            "selected": selected,
+            "status": "installed" if installed is True else "failed" if selected else "not_selected",
+        }
+
+    selected_agents = cfg.get("agents", {})
     if not args.skip_agent_config and bool(setup_cfg.get("install_agent_configs", True)) and include_companion:
-        codex = shutil.which("codex")
-        if codex:
-            from local_ai_hub.repo_plan.host_hooks import ensure_codex_superpowers
-            try:
-                dependency = ensure_codex_superpowers(Path(codex).absolute(), repo_root=install_dir)
-            except (OSError, ValueError) as exc:
-                dependency = {"success": False, "error": str(exc)}
-            if not dependency.get("success"):
-                log(f"Setup incomplete: Codex Superpowers dependency: {json.dumps(dependency)}")
-                return 1
-            log("Codex Superpowers dependency is installed and enabled.")
-        else:
-            log("Codex was not found on PATH; its Superpowers dependency was not checked.")
-        gemini = shutil.which("gemini")
-        if gemini:
-            from local_ai_hub.repo_plan.host_hooks import ensure_gemini_superpowers
-            try:
-                dependency = ensure_gemini_superpowers(Path(gemini).absolute(), repo_root=install_dir)
-            except (OSError, ValueError) as exc:
-                dependency = {"success": False, "error": str(exc)}
-            if not dependency.get("success"):
-                log(f"Setup incomplete: Gemini Superpowers dependency: {json.dumps(dependency)}")
-                return 1
-            log("Gemini Superpowers dependency is present; host activation still requires verification.")
-        else:
-            log("Gemini CLI was not found on PATH; its Superpowers dependency was not checked.")
+        if selected_agents.get("codex", True):
+            codex = shutil.which("codex")
+            if codex:
+                from local_ai_hub.repo_plan.host_hooks import ensure_codex_superpowers
+                try:
+                    dependency = ensure_codex_superpowers(Path(codex).absolute(), repo_root=install_dir)
+                except (OSError, ValueError) as exc:
+                    dependency = {"success": False, "error": str(exc)}
+                if not dependency.get("success"):
+                    log(f"Setup incomplete: Codex Superpowers dependency: {json.dumps(dependency)}")
+                    write_setup_failure_report(
+                        install_dir, state_dir, stage="codex_superpowers", error=dependency.get("error", "dependency setup failed")
+                    )
+                    return 1
+                log("Codex Superpowers dependency is installed and enabled.")
+            else:
+                log("Codex was not found on PATH; its Superpowers dependency was not checked.")
+        if selected_agents.get("gemini", True):
+            gemini = shutil.which("gemini")
+            if gemini:
+                from local_ai_hub.repo_plan.host_hooks import ensure_gemini_superpowers
+                try:
+                    dependency = ensure_gemini_superpowers(Path(gemini).absolute(), repo_root=install_dir)
+                except (OSError, ValueError) as exc:
+                    dependency = {"success": False, "error": str(exc)}
+                if not dependency.get("success"):
+                    log(f"Setup incomplete: Gemini Superpowers dependency: {json.dumps(dependency)}")
+                    write_setup_failure_report(
+                        install_dir, state_dir, stage="gemini_superpowers", error=dependency.get("error", "dependency setup failed")
+                    )
+                    return 1
+                log("Gemini Superpowers dependency is present; host activation still requires verification.")
+            else:
+                log("Gemini CLI was not found on PATH; its Superpowers dependency was not checked.")
 
     if os.name == "nt":
         has_nvidia = any(str(g.get("vendor", "")).lower() == "nvidia" for g in detected_gpus if isinstance(g, dict))
@@ -1524,9 +2022,15 @@ def main() -> int:
                 except Exception as exc:
                     log(f"Notice: Could not set OLLAMA_VULKAN environment variable: {exc}")
 
-    ensure_ollama_for_setup(cfg, install_dir, allow_install=not args.skip_ollama_install)
-    pull_ollama_models(cfg)
-    ensure_llama_cpp_for_setup(cfg)
+    try:
+        ollama_setup_ok = ensure_ollama_for_setup(cfg, install_dir, allow_install=not args.skip_ollama_install)
+        ollama_model_report = pull_ollama_models(cfg)
+        managed_llama_cpp_selected = llama_cpp_managed_selected(cfg)
+        managed_llama_cpp_ok = ensure_llama_cpp_for_setup(cfg)
+    except Exception as exc:
+        log(f"Setup incomplete: configured model provisioning failed: {exc}")
+        write_setup_failure_report(install_dir, state_dir, stage="model_provisioning", error=exc)
+        return 1
 
     service_required = not args.skip_service and bool(setup_cfg.get("install_service", True)) and cfg.get("headless", {}).get("enabled", True)
     service_ok = True
@@ -1535,18 +2039,33 @@ def main() -> int:
 
     if service_required and not service_ok:
         log("Setup incomplete: service registration failed. Review service-manager output, then rerun install/update with the same verified commit.")
+        write_setup_failure_report(
+            install_dir, state_dir, stage="service_registration", error="Persistent service registration failed."
+        )
         return 1
 
     try:
         run([str(hub_python), str(install_dir / "tools" / "hubctl.py"), "restart"], check=True, timeout=30)
     except Exception as exc:
         log(f"Setup incomplete: Hub restart before agent configuration failed: {exc}")
+        write_setup_failure_report(install_dir, state_dir, stage="hub_restart", error=exc)
         return 1
 
-    if not args.skip_agent_config and bool(setup_cfg.get("install_agent_configs", True)):
-        configure_agents(install_dir, hub_python, serena, cfg, include_companion=include_companion)
-    else:
-        write_generated_agent_manifests(install_dir, hub_python, serena, cfg)
+    agent_config_error: str | None = None
+    agent_config_manual_actions: list[str] = []
+    agent_config_selected = not args.skip_agent_config and bool(setup_cfg.get("install_agent_configs", True))
+    try:
+        if agent_config_selected:
+            agent_config_manual_actions = configure_agents(
+                install_dir, hub_python, serena, cfg,
+                include_companion=include_companion,
+                agent_components=setup_choices,
+            )
+        else:
+            write_generated_agent_manifests(install_dir, hub_python, serena, cfg)
+    except Exception as exc:
+        agent_config_error = str(exc)
+        log(f"WARNING: agent configuration was incomplete: {exc}")
 
     try:
         run([str(hub_python), str(install_dir / "tools" / "doctor.py")], check=False, timeout=60)
@@ -1554,6 +2073,223 @@ def main() -> int:
         log(f"WARNING: doctor could not complete: {exc}")
 
     hw = cfg.get("_hardware", {})
+    manual_actions: list[str] = []
+    manual_actions.extend(agent_config_manual_actions)
+    if needs_local_nlp and not features.get("install_local_nlp_dependencies", True):
+        manual_actions.append("Local NLP dependencies were disabled; use the installation guide if embeddings or reranking are needed.")
+    elif needs_local_nlp and not local_nlp_ok:
+        manual_actions.append("Local NLP dependency installation failed; CPU/runtime fallback may be limited.")
+    if local_nlp_preload_ok is False:
+        manual_actions.append("Hugging Face local NLP model preload failed; check network access and model cache. Enable the saved Hugging Face download choice in the installer to fetch missing models, then follow the recovery guide.")
+    elif needs_local_nlp and local_nlp_model_report.get("status") == "skipped":
+        manual_actions.append("Hugging Face model preload was skipped; see the recovery guide to download selected models later.")
+    if needs_openvino and not install_openvino:
+        manual_actions.append("OpenVINO was needed but disabled by configuration or installer choice; CPU fallback remains available.")
+    elif needs_openvino and not openvino_ok:
+        manual_actions.append("OpenVINO dependencies or model preload failed; use the Intel acceleration guide if required.")
+    if openvino_preload_ok is False:
+        manual_actions.append("OpenVINO was not the active backend for every selected model (some may have used CPU fallback); check network access, drivers, and model cache. Enable the saved Hugging Face download choice in the installer to fetch missing models, then follow the recovery guide.")
+    elif needs_openvino and openvino_model_report.get("status") == "skipped":
+        manual_actions.append("OpenVINO model preload was skipped; see the recovery guide to download selected models later.")
+    if laya_runtime_selected and laya_runtime_ok is False:
+        manual_actions.append("Laya runtime dependencies failed to install; see the Laya recovery steps in the installer guide.")
+    if laya_checkpoint_path and not laya_checkpoint_exists:
+        manual_actions.append("The configured Laya checkpoint directory is missing; provide the pinned checkpoint locally and verify its configured revision and file hashes.")
+    elif laya_checkpoint_path and not laya_runtime_selected:
+        manual_actions.append("A Laya checkpoint is configured but its optional runtime packages were not selected; enable Laya runtime in the installer wizard if this route is needed.")
+    elif laya_runtime_selected and not laya_checkpoint_path:
+        manual_actions.append("Laya runtime packages were selected, but no checkpoint is configured; inference needs an absolute checkpoint path, matching revision, and file hashes.")
+    for name, result in optional_runtime_extras.items():
+        if result["status"] == "failed":
+            manual_actions.append(f"Optional {name.replace('_', '-')} packages failed to install; see the runtime-extra recovery steps in the installation guide.")
+    if ollama_model_report["unavailable"]:
+        manual_actions.append(
+            "Ollama model downloads failed or were unavailable: "
+            + ", ".join(ollama_model_report["unavailable"])
+            + ". See the recovery guide."
+        )
+    if not args.skip_token_economy:
+        if token_economy_result.get("error"):
+            manual_actions.append(
+                f"Token Economy setup stopped early: {token_economy_result['error']}. See the recovery guide."
+            )
+        if token_economy_result.get("dependencies") != "installed":
+            manual_actions.append("Token Economy Python dependencies did not install; see the recovery guide.")
+        if token_economy_result.get("wrappers") != "installed":
+            manual_actions.append("Token Economy command wrappers were not created; see the recovery guide.")
+        else:
+            manual_actions.append(
+                "If newly installed Token Economy commands are not visible, open a new terminal to reload PATH."
+            )
+        missing_external = [
+            name for name, details in token_economy_result.get("external_tools", {}).items()
+            if isinstance(details, dict) and details.get("status") == "not_detected_after_install"
+        ]
+        if missing_external:
+            manual_actions.append(
+                "Optional CLI tools were not detected after setup (" + ", ".join(missing_external)
+                + "); reopen the terminal and follow the recovery guide if still missing."
+            )
+    if not ollama_setup_ok and ollama_setup_required(cfg):
+        manual_actions.append("Ollama setup did not complete although the configured provider requires it.")
+    if managed_llama_cpp_selected and not managed_llama_cpp_ok:
+        manual_actions.append(
+            "Managed llama.cpp or its configured model is not ready; inspect the exact error, "
+            "preserve the configured provider, and follow the llama.cpp steps in docs/INSTALLER_RECOVERY.md."
+        )
+    if not args.skip_tools and bool(setup_cfg.get("install_optional_tools", True)) and bool(cfg.get("code_intelligence", {}).get("serena_enabled", True)) and serena is None:
+        manual_actions.append("Serena installation did not complete; rerun setup or follow the external-tool guide.")
+    if not args.skip_agent_config and bool(setup_cfg.get("install_agent_configs", True)):
+        if agent_config_error:
+            manual_actions.append(
+                f"Agent MCP/skills/instruction setup failed or was partial: {agent_config_error}. Read the recovery guide."
+            )
+        else:
+            manual_actions.append("Restart configured coding agents so they reload MCP, skills, and instructions.")
+    serena_selected = (
+        not args.skip_tools
+        and bool(setup_cfg.get("install_optional_tools", True))
+        and bool(cfg.get("code_intelligence", {}).get("serena_enabled", True))
+    )
+    agent_names = ("codex", "claude", "gemini", "cursor", "windsurf", "copilot")
+    agent_component_selection = {
+        name: {
+            component: bool(
+                agent_config_selected
+                and cfg.get("agents", {}).get(name, False)
+                and setup_choices.get(f"agent_{name}_{component}", True)
+                and (
+                    component != "instructions"
+                    or cfg.get("tool_policy", {}).get("install_global_instructions", True)
+                )
+            )
+            for component in ("mcp", "skills", "instructions")
+        }
+        for name in agent_names
+    }
+    agent_component_installation = {
+        name: {
+            component: (
+                "failed_or_partial" if selected and agent_config_error
+                else "configured_with_manual_steps" if selected and agent_config_manual_actions
+                else "configured" if selected
+                else "not_selected"
+            )
+            for component, selected in components.items()
+        }
+        for name, components in agent_component_selection.items()
+    }
+    selected_components = {
+        "ollama_models": bool(
+            not args.skip_model_pull
+            and features.get("pull_models_during_setup", True)
+            and ollama_setup_required(cfg)
+        ),
+        "managed_llama_cpp": managed_llama_cpp_selected,
+        "local_nlp": bool(setup_choices.get("local_nlp")),
+        "openvino": bool(setup_choices.get("openvino")),
+        "download_hf_models": bool(setup_choices.get("download_hf_models", False)),
+        "laya_runtime": laya_runtime_selected,
+        "ast_index": bool(setup_choices.get("ast_index")),
+        "performance": bool(setup_choices.get("performance")),
+        "profiling": bool(setup_choices.get("profiling")),
+        "serena": serena_selected,
+        "token_economy": not args.skip_token_economy,
+        "agent_config": bool(
+            not args.skip_agent_config and setup_cfg.get("install_agent_configs", True)
+        ),
+        "service": bool(setup_choices.get("service")),
+        "companion_skills": bool(setup_choices.get("companion_skills")),
+        "agents": {
+            name: bool(
+                not args.skip_agent_config
+                and setup_cfg.get("install_agent_configs", True)
+                and cfg.get("agents", {}).get(name, False)
+            )
+            for name in agent_names
+        },
+        "agent_components": agent_component_selection,
+    }
+    install_report = {
+        "schema_version": 1,
+        "created_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+        "status": "completed_with_manual_steps" if manual_actions else "completed",
+        "install_dir": str(install_dir),
+        "state_dir": str(expand(str(cfg.get("server", {}).get("state_dir", install_dir / "state")))),
+        "profile": hw.get("profile", "unknown"),
+        "model_provider": cfg.get("models", {}).get("provider", "configured"),
+        "selected": selected_components,
+        "model_provisioning": {
+            "ollama_setup_ok": ollama_setup_ok,
+            "ollama_models": ollama_model_report,
+            "ollama_model_pull_failures": ollama_model_report["unavailable"],
+            "managed_llama_cpp_selected": managed_llama_cpp_selected,
+            "managed_llama_cpp_ok": managed_llama_cpp_ok,
+            "hugging_face_model_preload": local_nlp_preload_ok,
+            "hugging_face_models": local_nlp_model_report,
+            "openvino_model_preload": openvino_preload_ok,
+            "hugging_face_downloads_enabled": bool(setup_choices.get("download_hf_models", False)),
+            "openvino_models": openvino_model_report,
+            "laya_runtime_dependencies": laya_runtime_ok,
+            "laya_checkpoint": {
+                "status": "directory_present" if laya_checkpoint_exists else "missing" if laya_checkpoint_path else "not_configured",
+                "path": laya_checkpoint_path or None,
+                "revision": laya_runtime_cfg.get("revision"),
+                "integrity_check": "not_run",
+            },
+            "optional_runtime_extras": optional_runtime_extras,
+        },
+        "token_economy": token_economy_result,
+        "installed": {
+            "token_economy": (
+                "installed"
+                if token_economy_result.get("dependencies") == "installed"
+                and token_economy_result.get("wrappers") == "installed"
+                else token_economy_result.get("status", "partial")
+            ),
+            "local_nlp": "installed" if local_nlp_ok else ("not_needed" if not needs_local_nlp else "not_installed"),
+            "openvino": "installed" if openvino_ok else ("not_needed" if not needs_openvino else "not_installed"),
+            "laya_runtime": (
+                "installed" if laya_runtime_ok is True
+                else "failed" if laya_runtime_selected
+                else "not_selected"
+            ),
+            "ast_index": optional_runtime_extras["ast_index"]["status"],
+            "performance": optional_runtime_extras["performance"]["status"],
+            "profiling": optional_runtime_extras["profiling"]["status"],
+            "managed_llama_cpp": (
+                "ready" if managed_llama_cpp_selected and managed_llama_cpp_ok
+                else "failed" if managed_llama_cpp_selected
+                else "not_selected"
+            ),
+            "serena": (
+                str(serena) if serena is not None
+                else "failed" if serena_selected
+                else "not_selected"
+            ),
+            "service": (
+                "installed" if service_required and service_ok
+                else "failed" if service_required
+                else "not_selected"
+            ),
+            "agent_config": (
+                "failed_or_partial" if agent_config_error
+                else "configured" if agent_config_selected
+                else "not_selected"
+            ),
+            "agent_config_error": agent_config_error,
+            "agent_components": agent_component_installation,
+        },
+        "manual_actions": manual_actions,
+        "recovery_guide": str(SOURCE_ROOT / "docs" / "INSTALLER_RECOVERY.md"),
+    }
+    try:
+        report_path = write_setup_report(install_dir, install_report)
+        log(f"Installer report: {report_path}")
+    except OSError as exc:
+        log(f"WARNING: installer report could not be saved: {exc}")
+    if manual_actions:
+        log(f"Manual actions: {SOURCE_ROOT / 'docs' / 'INSTALLER_RECOVERY.md'}")
     log(f"Setup complete. Detected profile: {hw.get('profile', 'unknown')} ({hw.get('os', '')}/{hw.get('arch', '')}).")
     log("Restart configured agents so they reload the Local AI Hub MCP server and tool-first policy.")
     log("Dashboard: http://127.0.0.1:11435/dashboard")

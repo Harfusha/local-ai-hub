@@ -63,9 +63,33 @@ Hub evaluation and does not prove this pilot useful.
 
 ## Entry gate
 
-The approved pilot scope fixes its category, minimal fields, deterministic
-baseline, label rubric, and privacy scope. Do not enable other categories until
-their own evidence, labels, baseline, and approval gates pass.
+The approved `context_source` pilot fixes its category, minimal fields,
+deterministic baseline, label rubric, and privacy scope. `model_route` and
+`context_budget` are collection-only shadow categories until their own natural
+examples, labels, measured baselines, and approval gates pass. No advisory
+behavior is enabled by these observations.
+
+## Additional automatic shadow observations
+
+The Hub also queues two server-derived categories through the same bounded
+runtime-outcome path when a pinned local checkpoint is configured:
+
+- `model_route` follows an automatic `delegate` route after the ordinary model
+  response completes. Explicit model, task-type, or complexity overrides are
+  excluded. The baseline is the final deterministic router role mapped to
+  `fast`, `smart`, or `generic`.
+- `context_budget` follows successful repository retrieval and delegation only
+  when the caller did not set an explicit token budget. The baseline is the
+  configured fast/heavy context-token budget mapped to `compact`, `standard`,
+  or `expanded`.
+
+Both require an existing task and current root-scoped evidence IDs. The Hub
+derives repository/session identity from the authorized task and validates
+evidence provenance before queueing. The bounded raw task input is secret
+redacted and separate from typed state. These observations do not change route,
+budget, prompt, response, or deterministic behavior. They remain shadow-only;
+no category is promoted without its own paired evidence and approval. Missing
+checkpoint, scope, or evidence skips collection.
 
 ## Candidate handling
 
@@ -112,23 +136,29 @@ identifies them. It needs no per-example consent manifest and generates no cards
 Laya training/evaluation rows preserve candidate, evidence, label, and group
 provenance. Candidate rows use `provenance.data_class="local_scoped"` with
 candidate identity/hash, repository/task/session and evidence scope. Existing
-card rows remain a separate source and do not become Laya candidates. Synthetic fixtures retain an explicit
-`synthetic_non_private` fixture ID. Candidate labels need a verified record
-whose target hash matches exported labels. Blind double annotation requires two
-distinct annotators, independent adjudicator, and independent verifier.
-Deterministic labels require evidence IDs. The offline validator checks schema
-and target binding; it cannot authenticate reviewer identity.
+card rows remain a separate source and do not become Laya candidates. Synthetic
+fixtures retain an explicit `synthetic_non_private` fixture ID. Candidate labels
+need a verified record whose target hash matches exported labels. The local
+operator may confirm one target under the frozen category rubric; a capable
+local Codex/model may add a separately attributed review. Neither remote
+reviewer keys nor multiple human annotators, adjudication, or a reviewer quorum
+are required for this single-operator workflow. Deterministic labels require
+verified evidence IDs. The offline validator checks schema and target binding;
+it cannot authenticate reviewer identity or turn model review into a human
+label.
 
 ## Labeling
 
 1. Freeze the category, allowed options, rubric, and deterministic baseline
    before labeling.
-2. Have two qualified annotators label each example independently. Hide model
-   outputs and baseline answers from annotators.
-3. Send disagreements to a separate adjudicator. Retain both original labels,
-   the adjudicated label, and a reference to the adjudication record.
-4. Report agreement before adjudication. Do not call caller-supplied
-   provenance verified without checking its referenced source.
+2. The local operator reviews the candidate and authorized evidence, then
+   confirms one permitted target or leaves the example unlabeled. Preserve the
+   operator-confirmation method, rubric version, and target hash.
+3. A capable local Codex/model may submit a separate review with trusted
+   server-bound model identity, rubric, evidence, confidence, and abstention.
+   Keep that record separate from the target and human-confirmation provenance.
+4. Reject stale or unverified evidence. Never treat model output or
+   caller-supplied provenance as a human label or verified evidence.
 
 ## Paired evaluation
 
@@ -187,13 +217,19 @@ data quality or label quality.
   review payload. It strips workflow status, `model_output`, targets, label
   status, and label provenance so annotators do not see Laya's answer or earlier
   human labels.
-- `label` requires two distinct annotators and a separate adjudicator, all with
-  allowed option values. `verify` requires a reviewer distinct from all three
-  and an installed server-side reviewer authenticator. Opaque reviewer IDs alone
-  cannot set `verified`. The current Hub app has no authenticator configured, so
-  labels remain `reviewed` and local candidate export rejects them until a real
-  authenticated human-review path is integrated. Legacy caller-attested
-  verification records are not accepted for export.
+- The local operator confirms one permitted target under the versioned rubric.
+  This is the human label for the single-owner Hub; no second annotator,
+  adjudicator, SSH key, remote quorum, or separate per-example consent is
+  required. The confirmation is stored with `local_operator_confirmation`
+  provenance and a hash of the confirmed targets. Export revalidates that
+  provenance and current rubric version.
+- A capable local Codex/model may add a separate advisory review through the
+  server-configured local reviewer. The caller submits only a candidate ID;
+  the Hub binds the model identity and stores decision, confidence or abstention,
+  rubric and evidence provenance separately. Model review does not create or
+  verify the human label and cannot enter training export. Without the local
+  reviewer callback, model review fails closed without storing a result.
+- Legacy caller-attested verification records are not accepted for export.
 - Reject and delete remain explicit scoped operations. `prepare_splits` snapshots
   verified candidates into deterministic 80/10/10 train/calibration/test
   groups. It joins matching task or session groups and merges state strings

@@ -625,6 +625,38 @@ def test_laya_dataset_accepts_verified_local_scoped_rows(tmp_path: Path) -> None
         validate_laya_dataset_pair(train, evaluation)
 
 
+def test_laya_dataset_accepts_keyless_local_operator_confirmed_rows(tmp_path: Path) -> None:
+    from tools.model_training.laya_backend import validate_laya_dataset_pair
+
+    target = {"source": "indexed"}
+    proof = {
+        "status": "verified",
+        "method": "local_operator_confirmation",
+        "rubric_version": "laya-target-rubric-v1",
+        "target_sha256": _target_sha256(target),
+    }
+    train_row = _laya_row("train-1", "repo-train", provenance={
+        "data_class": "local_scoped",
+        "candidate_id": "train-1",
+        "candidate_sha256": "a" * 64,
+        "label_provenance": proof,
+    })
+    evaluation_row = _laya_row("eval-1", "repo-eval", provenance={
+        "data_class": "local_scoped",
+        "candidate_id": "eval-1",
+        "candidate_sha256": "b" * 64,
+        "label_provenance": proof,
+    })
+    train_row["source_sha256"] = "a" * 64
+    evaluation_row["source_sha256"] = "b" * 64
+    train = tmp_path / "laya-train.jsonl"
+    evaluation = tmp_path / "laya-eval.jsonl"
+    _write_jsonl(train, [train_row])
+    _write_jsonl(evaluation, [evaluation_row])
+
+    assert validate_laya_dataset_pair(train, evaluation)["group_overlap"] == []
+
+
 def test_laya_dataset_rejects_retired_consent_fields(tmp_path: Path) -> None:
     from tools.model_training.laya_backend import validate_laya_dataset_pair
 

@@ -227,6 +227,50 @@ def contract_with_criteria(*criteria: str) -> GoalContract:
     )
 
 
+def test_completion_gate_reports_typed_laya_outcome_without_changing_result(store: TaskStore):
+    task_id = "laya-completion-observer"
+    task = store.create(
+        contract_with_criteria("criterion"),
+        ScopeContext(task_id=task_id),
+        task_id=task_id,
+    )
+    store.verification_store = VerificationStore(store.state_store, task_store=store)
+    store.verification_store.completion = lambda *_args, **_kwargs: {"complete": True}
+    observed = []
+    store.set_laya_completion_observer(lambda **event: observed.append(event))
+
+    store._verify_completion(task)
+
+    assert len(observed) == 1
+    event = observed[0]
+    assert event["root"] == ""
+    assert event["operation"]["task_id"] == task_id
+    assert event["operation"]["session_id"] == ""
+    outcome = event["operation"]["outcome"]
+    assert outcome["status"] == "passed"
+    assert outcome["reason_code"] == "completion_gate_passed"
+    assert outcome["repository_revision"] == ""
+    assert outcome["mutation_generation"] == 0
+    assert isinstance(outcome["duration_ms"], float) and outcome["duration_ms"] >= 0
+
+
+def test_completion_gate_observer_failure_does_not_change_authoritative_result(store: TaskStore):
+    task = store.create(
+        contract_with_criteria("criterion"),
+        ScopeContext(task_id="laya-completion-observer-failure"),
+        task_id="laya-completion-observer-failure",
+    )
+    store.verification_store = VerificationStore(store.state_store, task_store=store)
+    store.verification_store.completion = lambda *_args, **_kwargs: {"complete": True}
+
+    def fail_observer(**_event):
+        raise RuntimeError("observer unavailable")
+
+    store.set_laya_completion_observer(fail_observer)
+
+    assert store._verify_completion(task) is None
+
+
 def test_capture_enrichment_rechecks_selective_wire_budget_before_checkpoint_commit(store, tmp_path, monkeypatch):
     task = store.create(contract_with_criteria(), task_context(), task_id="preflight-capture")
     before_seq = store.state_store.event_page(f"task:{task.task_id}")["last_seq"]

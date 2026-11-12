@@ -12,14 +12,15 @@
         "Execution recordy jsou immutable a jejich SHA256 výpočet se shoduje se čtečkou",
         "Adopce úloh funguje přes lineární evidenci předchozích autorizovaných vlastníků"
       ],
-      "blocker": null,
+      "accountable_role": "Laya",
+      "blocker": "Current Laya lease owns TaskStore implementation/tests. C05 T6-05 only hashes a manually written JSON payload and never exercises the production writer/reader or adoption. C01 T6-01 has a production-path fixture but no fresh run in this audit.",
       "clarifications": [],
       "depends_on": [],
       "description": "Proof immutability a adopce úloh bez mutace existujících artefaktů, oprava hashování execution recordů (C01, C05, T6-03, T6-04)",
       "kind": "code",
-      "next_action": "",
+      "next_action": "Laya reviews C01/C05 in its existing task; close only with current production-path evidence for artifact identity, immutable execution record hash/readback and adoption. Audit does not edit or run Laya-owned tests.",
       "title": "P0-B: Proof immutability a adopce úloh (C01, C05)",
-      "work_status": "completed"
+      "work_status": "in_progress"
     },
     "task_c02_c03_pipeline_contracts": {
       "acceptance_criteria": [
@@ -31,9 +32,9 @@
       "depends_on": [],
       "description": "Critic stage result contracts a deterministické ověřování confidence pro worker skip (C02, C03, T6-05, T6-06)",
       "kind": "code",
-      "next_action": "",
+      "next_action": "Fresh focused verification at HEAD 409bed4a6a73fd66175ad339c399f4277ed0ed99: T6-02 critic failure in quality mode and T6-03 evidence-gated worker skip both passed (2 passed in 0.80s). pipeline.py SHA-256 19d988fd8ccd51d739d97b4220e2c61f11f9311a38a47bd3c370b72e8938ed9b and test_audit_round6_regressions.py SHA-256 05a2692f1bb5d3d5460f1135561b95ed2df13e0857576dd0fde13eb720d158db matched before/after. Focused only; broad gates remain deferred.",
       "title": "P1-A: Pipeline stage contracts a confidence gate (C02, C03)",
-      "work_status": "completed"
+      "work_status": "done"
     },
     "task_c04_gpu_lease_lifecycle": {
       "acceptance_criteria": [
@@ -57,14 +58,15 @@
         "Dočasné chyby generování karet neblokují budoucí retry (oddělený stav od hotové karty)",
         "BackgroundGPUWorker validuje výstup proti JSON schema a nevrací nepravdivé success=True"
       ],
-      "blocker": null,
+      "accountable_role": "Stability",
+      "blocker": "C07 exercises the background GPU worker and C06 is coupled to background generation; Stability owns GPU/async validation. Current audit has no fresh owner-approved run.",
       "clarifications": [],
       "depends_on": [],
       "description": "Preprocessing fallback retry logika a validace schématu v background GPU (C06, C07, T6-07, T6-08)",
       "kind": "code",
-      "next_action": "",
+      "next_action": "Stability confirms current source revision/window and provides fresh focused C06/C07 evidence; keep current source claims separate from live GPU/runtime proof.",
       "title": "P1-B: Preprocessing retry a schema validace (C06, C07)",
-      "work_status": "completed"
+      "work_status": "in_progress"
     },
     "task_c08_c09_c10_c11_c13_c14_p2_fixes": {
       "acceptance_criteria": [
@@ -75,12 +77,12 @@
         "Task search backfill kontroluje digest před rekurzivním trigram parse",
         "Benchmark persist_record je atomický pod zámkem souboru"
       ],
-      "blocker": "C08/C13 remain Stability-owned/open. C09 focused source/test verified, but five HTTP integration imports were blocked by Laya-owned syntax error in laya_candidates.py. C10 focused source/tests pass, but operational DB was not modified and remains unverified. C14 cross-process atomicity is now focused-verified (RED 9/33, GREEN 2 tests). Full pytest/release gates remain NOT RUN pending stable shared snapshot/window.",
+      "blocker": "C08/C09 production changes are present; fresh focused fake-runtime tests pass, but no live backend/model invocation ran. C10 live DB remains unverified. C13 startup fast-path is not implemented and stays Stability-owned; accepted design and integration are pending. Historically designated Stability/performance chat is 01a1c762-d599-75c2-ae34-344aae056aa0, identified by coordinator chat 01a1c75d-f5d5-7e80-bbb9-92035a5c2d54. C08/C09/C13 scope was sent there (results Rounds 113/119); delivery is recorded, owner acceptance and safe validation window remain pending. Its current B13 activity does not acknowledge these items. No Stability-owned code/tests changed here. C10 live DB and full pytest/release gates remain unverified.",
       "clarifications": [],
       "depends_on": [],
-      "description": "P2 C08/C09/C10/C11/C13/C14. C10 query-local FTS5 is implemented and focused-verified: 8 passed; source SHA BD392A3A228E11F7713E55D2E856AEED2061F9130983CAEDF1D3E3585C4555DB; test SHA F5AC173BDD18BFF929073B70B80A167021E101793D6FBE7DB607CF21A537A47D. Spec: docs/superpowers/specs/2026-11-11-c10-negative-knowledge-fts-ranking.md. Stability owner reports a stable copy of agent_state.sqlite3 with WAL/SHM sidecars contains no persistent FTS objects and no agent_incidents table; no cleanup needed on that copy. Live operational DB was not modified, so its state remains unverified. C11 focused follow-up: static_exports.py named_export_status source SHA 5fb85ca388ce47cd34c53b8e17eda6213921aa5fe3c1b22faa19fa7c6979c7ed; tests/test_static_exports.py SHA 9c3c28eaf2676429d1242e46f86912618acb474ea891baba610868c58762fcce. Focused static export tests passed 12 tests; targeted pyflakes passed. C13 source computes _search_grams(fields) before unchanged-document compare; regression does not assert parser skip. Shared AgentTaskStore startup path requires Stability ownership/handoff. C14: cross-process regression added. RED reproduced loss (9/33 records retained) with four independent processes; implementation now wraps read/append/temp-write/os.replace in exclusive_file_update in addition to per-runner thread lock. GREEN: two targeted C14 tests passed. Current source SHA 21538c7d63e20448d211f2212f5a1715dc12189bb533f9e957b8765679589f19; regression file SHA f80f93db229c549cae7c1922d9e60eb8985c1fea8aecb2eeca39cf2ddbf9f3f5. Stability's C08/C13 work remains pending.",
+      "description": "P2 C08/C09/C10/C11/C13/C14. C10 query-local FTS5 is implemented and focused-verified: 8 passed; source SHA BD392A3A228E11F7713E55D2E856AEED2061F9130983CAEDF1D3E3585C4555DB; test SHA F5AC173BDD18BFF929073B70B80A167021E101793D6FBE7DB607CF21A537A47D. Spec: docs/superpowers/specs/2026-11-11-c10-negative-knowledge-fts-ranking.md. Stability owner reports a stable copy of agent_state.sqlite3 with WAL/SHM sidecars contains no persistent FTS objects and no agent_incidents table; no cleanup needed on that copy. Live operational DB was not modified, so its state remains unverified. C11 focused follow-up: static_exports.py named_export_status source SHA 5fb85ca388ce47cd34c53b8e17eda6213921aa5fe3c1b22faa19fa7c6979c7ed; tests/test_static_exports.py SHA 9c3c28eaf2676429d1242e46f86912618acb474ea891baba610868c58762fcce. Focused static export tests passed 12 tests; targeted pyflakes passed. C13 historical source computes _search_grams(fields) before unchanged-document compare; regression does not assert parser skip. Shared AgentTaskStore startup path is under Stability review after acknowledged handoff; current-source disposition pending. C14: cross-process regression added. RED reproduced loss (9/33 records retained) with four independent processes; implementation now wraps read/append/temp-write/os.replace in exclusive_file_update in addition to per-runner thread lock. GREEN: two targeted C14 tests passed. Current source SHA 21538c7d63e20448d211f2212f5a1715dc12189bb533f9e957b8765679589f19; regression file at the time of the initial run SHA f80f93db229c549cae7c1922d9e60eb8985c1fea8aecb2eeca39cf2ddbf9f3f5. Fresh rerun on current HEAD 409bed4a6a73fd66175ad339c399f4277ed0ed99 and current regression file SHA 8f1f6e98a02aab534b3283a87ea9bea565f89e1d8b95a6ecb896a6789e8de167: both single-runner and cross-process C14 tests passed (2 passed in 1.20s).\n\nFresh primary C11 verification on HEAD 409bed4a6a73fd66175ad339c399f4277ed0ed99: `python -m pytest -q tests/test_static_exports.py` passed 11 tests in 0.37s; targeted pyflakes exited 0. C08 current source `services.py` SHA 5838aaf8496a9cd2b6b955a3864b8781f2ccec28a30b64e087c55983fc43364d gates tuner observation on success. T6-08 retains the AST guard and adds a service-level `_generate` regression using fake policy, scheduler, and runtime. A synthetic failed backend response records no tuner sample; a successful Ollama-shaped response records exactly one. Fresh focused C08/C09/C14 run passed 5 tests in 2.37s on T6 file SHA 05a2692f1bb5d3d5460f1135561b95ed2df13e0857576dd0fde13eb720d158db. This is fake-runtime service evidence, not a live model/backend run. C09 current `automation.py` SHA 8726c0ff1d73c7c252936b14c1a2a30d0137f424e6023eb5df8d6fdb9b8d8d0d places backend factory and close outside the broker lock. T6-09 covers factory, explicit close, and expired-session reap; another thread acquires `broker.lock` during each cleanup path. C14 current-file single-runner and four-process tests were included in the same fresh run and passed. C13 current `agent_tasks.py` SHA ff1e3d6fdf90ce921fa6a1a30c90ec49d0cd4c804ccf59b14f3658f521f42027 still computes trigram sets before the unchanged-document skip. Stability proposed per-task searchable-fields digest metadata and transactional invalidation; implementation and accepted design remain with Stability.",
       "kind": "code",
-      "next_action": "Continue prompt matrix reconciliation and source-level review for open C10/C13/C14 integration gaps. Wait for Stability-owned C08/C13 evidence and safe window. Run broad gates only after stable shared snapshot and agreement.",
+      "next_action": "Track the existing C08/C09/C13 handoff in the historically designated Stability chat 01a1c762-d599-75c2-ae34-344aae056aa0; avoid duplicating the sent request. Wait for explicit owner acknowledgment and a safe focused validation window. Keep C08 live backend/model proof, C10 live DB, P1-5/P1-6 and broad gates open. No shared-runtime or Stability-owned edits.",
       "title": "P2: Optimalizace a opravy stability (C08-C11, C13-C14)",
       "work_phase": "verification",
       "work_status": "in_progress"
@@ -89,14 +91,15 @@
       "acceptance_criteria": [
         "Chybějící měření modelu v loaded_model_details nevede k automatickému schválení admission"
       ],
-      "blocker": null,
+      "accountable_role": "Stability",
+      "blocker": "C12 concerns GPU admission/offload; Stability owns GPU/runtime validation. No current approved runtime window or fresh owner-bound evidence is available.",
       "clarifications": [],
       "depends_on": [],
       "description": "Vyžadovat potvrzenou residency/offload telemetrii pro background GPU admission (C12, T6-09)",
       "kind": "code",
-      "next_action": "",
+      "next_action": "Stability supplies current source revision and approved bounded admission/offload evidence; do not run GPU or runtime actions in the audit.",
       "title": "P1-C: Background GPU admission offload kontrola (C12)",
-      "work_status": "completed"
+      "work_status": "in_progress"
     },
     "task_regression_test_suite_round6": {
       "acceptance_criteria": [

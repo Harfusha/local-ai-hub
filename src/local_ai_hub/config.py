@@ -438,6 +438,14 @@ def _toml_scalar(value: Any) -> str:
     raise ConfigError(f"unsupported runtime override value: {type(value).__name__}")
 
 
+def _toml_key(key: str) -> str:
+    if not isinstance(key, str) or not key:
+        raise ConfigError("runtime override keys must be non-empty strings")
+    if all(char.isascii() and (char.isalnum() or char in "_-") for char in key):
+        return key
+    return _toml_scalar(key)
+
+
 def _dump_toml_tables(data: dict[str, Any]) -> str:
     """Serialize the small dashboard runtime-override document.
 
@@ -445,17 +453,17 @@ def _dump_toml_tables(data: dict[str, Any]) -> str:
     general TOML writer; the user's primary config file is never rewritten.
     """
     lines: list[str] = []
-    def emit(table: dict[str, Any], prefix: str = "") -> None:
+    def emit(table: dict[str, Any], prefix: tuple[str, ...] = ()) -> None:
         scalars = [(k, v) for k, v in table.items() if not isinstance(v, dict)]
         children = [(k, v) for k, v in table.items() if isinstance(v, dict)]
         if prefix:
-            lines.append(f"[{prefix}]")
+            lines.append(f"[{'.'.join(_toml_key(part) for part in prefix)}]")
         for key, value in scalars:
-            lines.append(f"{key} = {_toml_scalar(value)}")
+            lines.append(f"{_toml_key(key)} = {_toml_scalar(value)}")
         if prefix and (scalars or children):
             lines.append("")
         for key, child in children:
-            emit(child, f"{prefix}.{key}" if prefix else key)
+            emit(child, (*prefix, key))
     emit(data)
     return "\n".join(lines).rstrip() + "\n" if lines else ""
 

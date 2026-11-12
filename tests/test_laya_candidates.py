@@ -313,6 +313,55 @@ def test_runtime_outcome_records_deterministic_baseline_and_unobserved_downstrea
         "reason": "shadow_only_not_user_exposed",
     }
 
+    duplicate_capture = store.capture_runtime_outcome(
+        request,
+        evidence,
+        SimpleNamespace(decision=decision, runtime=runtime),
+        root=str(repo),
+        task_store=task_store,
+        evidence_store=_evidence_store(),
+        baseline={
+            "method": "retrieval_rank_order",
+            "suggestion": "indexed",
+            "evidence_id": evidence_ids[0],
+        },
+    )
+    assert duplicate_capture["duplicate"] is True
+    assert duplicate_capture["candidate_id"] == captured["candidate_id"]
+
+    history = store.handle(
+        {"action": "runtime_output_history", "candidate_id": captured["candidate_id"], "limit": 1},
+        root=str(repo),
+        task_store=task_store,
+    )
+    assert history["success"] is True
+    assert history["has_more"] is True
+    assert history["next_event_id"] == history["events"][0]["event_id"]
+    assert len(history["events"]) == 1
+    assert history["events"][0]["metadata"] == event
+    next_page = store.handle(
+        {
+            "action": "runtime_output_history",
+            "candidate_id": captured["candidate_id"],
+            "after_event_id": history["next_event_id"],
+            "limit": 1,
+        },
+        root=str(repo),
+        task_store=task_store,
+    )
+    assert next_page["has_more"] is False
+    assert next_page["next_event_id"] is None
+    assert len(next_page["events"]) == 1
+    assert next_page["events"][0]["metadata"] == event
+
+    blind_candidate = store.handle(
+        {"action": "get", "candidate_id": captured["candidate_id"]},
+        root=str(repo),
+        task_store=task_store,
+    )["candidate"]
+    assert "model_output" not in blind_candidate
+    assert "targets" not in blind_candidate
+
 
 def test_runtime_outcome_records_server_derived_baseline_for_typed_category(candidate_env):
     repo, _state, task_store, store = candidate_env
@@ -1297,3 +1346,40 @@ def test_ssh_review_challenge_is_retired_for_local_only_review(candidate_env):
             root=str(repo),
             task_store=task_store,
         )
+
+
+def test_completion_outcome_is_scoped_and_visible_in_candidate_history(candidate_env):
+    repo, _state, task_store, store = candidate_env
+    captured = store.handle(_capture(), root=str(repo), task_store=task_store)
+
+    observed = store.record_completion_outcome(
+        {
+            "task_id": "task-1",
+            "session_id": "session-1",
+            "outcome": {
+                "status": "passed",
+                "reason_code": "completion_gate_passed",
+                "duration_ms": 12.5,
+                "repository_revision": "a" * 40,
+                "mutation_generation": 3,
+            },
+        },
+        root=str(repo),
+        task_store=task_store,
+    )
+
+    assert observed == {"success": True, "candidate_count": 1, "event_count": 1}
+    history = store.handle(
+        {"action": "runtime_output_history", "candidate_id": captured["candidate_id"]},
+        root=str(repo),
+        task_store=task_store,
+    )
+    assert history["success"] is True
+    assert history["events"][0]["event_type"] == "completion_outcome"
+    assert history["events"][0]["metadata"] == {
+        "status": "passed",
+        "reason_code": "completion_gate_passed",
+        "duration_ms": 12.5,
+        "repository_revision": "a" * 40,
+        "mutation_generation": 3,
+    }

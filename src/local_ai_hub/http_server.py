@@ -1319,6 +1319,8 @@ def _root_is_allowed(root: Path, allowed_roots: Any) -> bool:
 def _telemetry_http_outcome(status: int, data: Any, path: str = "") -> tuple[bool, str, bool]:
     """Return reliability success, safe outcome category, and error-record flag."""
     payload = data if isinstance(data, dict) else {}
+    if payload.get("outcome_unknown") is True:
+        return False, "outcome_unknown", True
     success = status < 400 and payload.get("success") is not False
     if payload.get("policy_blocked"):
         return True, "policy_block", False

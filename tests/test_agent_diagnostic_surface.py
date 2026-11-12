@@ -219,3 +219,15 @@ def test_disabled_detail_routes_do_not_read_retained_payloads(monkeypatch, path)
     else:
         assert status == 409
         assert data["error_code"] == "detailed_diagnostics_disabled"
+
+
+def test_laya_runtime_output_history_is_not_gated_as_operator_diagnostics():
+    from local_ai_hub.agent_surface import diagnostic_http_operation, diagnostic_mcp_operation
+
+    payload = {
+        "action": "curate_dataset",
+        "root": "C:/repo",
+        "laya_operation": {"action": "runtime_output_history", "candidate_id": "candidate-1"},
+    }
+    assert diagnostic_mcp_operation("local_ai_coord", payload) is False
+    assert diagnostic_http_operation("POST", "/api/agent-state/tasks", payload) is False

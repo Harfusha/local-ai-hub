@@ -107,12 +107,13 @@ def replace_install_payload(
     *,
     ignored: tuple[str, ...] = ("__pycache__", "*.pyc", ".pytest_cache"),
     before_commit: Callable[[], tuple[bool, str]] | None = None,
+    after_swap: Callable[[], tuple[bool, str]] | None = None,
 ) -> tuple[bool, str]:
     """Stage and verify payload, then swap with rollback on failure.
 
     The caller owns runtime quiescence. Production setup supplies ``before_commit``
-    to confirm a stop; direct helper callers must ensure no process is using the
-    install while targets are swapped.
+    to confirm a stop and ``after_swap`` for state migration while backups remain
+    available; a failed post-swap step rolls back the install payload.
     """
     if _has_link_component(install_dir):
         return False, f"install path contains a link or junction; update refused: {install_dir}"
@@ -202,6 +203,10 @@ def replace_install_payload(
                 moved_old.append((backup, target))
             os.replace(staged, target)
             moved_new.append((target, staged, source_digests[source], is_tree))
+        if after_swap is not None:
+            accepted, detail = after_swap()
+            if not accepted:
+                raise RuntimeError(f"post-swap step failed: {detail}")
         commit_complete = True
     except Exception as exc:
         rollback_errors: list[str] = []

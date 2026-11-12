@@ -148,16 +148,18 @@
 
 ### N11 — Kritická kolize preprocessing cache mezi projekty
 - **Soubory:** `src/local_ai_hub/preprocess_ingest.py`, `src/local_ai_hub/preprocess.py`, `src/local_ai_hub/rag.py`
-- **Mechanismus:** `SinglePassIngestCache` klíčuje data výhradně relativní cestou:
+- **Původní mechanismus (před opravou cache):** `SinglePassIngestCache` klíčovala data pouze relativní cestou:
   ```python
   normalized = rel_path.replace("\\", "/")
   ```
-  `ProjectPreprocessor` drží jednu sdílenou instanci cache napříč různými kořenovými adresáři. Pokud projekt A zaindexuje `src/config.py`, projekt B se stejnou relativní cestou obdrží cached text z projektu A.
-  V `preprocess.py` se tento cached text předává jako `content_override` do `rag.py`, který z něj přímo vytvoří RAG chunky bez nového čtení disku.
-- **Dopad:** Cizí kód a data z jednoho projektu se nekontrolovaně dostanou do sémantického indexu a RAG báze jiného projektu.
+  `ProjectPreprocessor` drží jednu sdílenou instanci cache pro více kořenů. Před root-scoped opravou mohl projekt B se stejnou relativní cestou dostat text uložený projektem A. Původní audit také zjistil, že preprocessing předával text přes `content_override` do `rag.py` bez dalšího čtení souboru.
+- **Původní dopad:** Obsah projektu A mohl proniknout do sémantického indexu projektu B.
 - **Oprava:** Změnit klíč cache na trojici `(canonical_repository_root, relative_path, source_content_hash)`. Aktualizovat metody `has`, `get`, `put`, `invalidate`, `get_or_ingest`. Odstranit všechny cesty obcházející identitu repozitáře.
+- **Následné ověření 2026-11-12 — částečné:** `SinglePassIngestCache._key()` používá kanonický kořen + relativní cestu; zdrojový hash v klíči chybí. `ProjectPreprocessor._step_lexical()` čte `ingested.content_hash` a porovnává jej s aktuálním `file_refs.content_hash`; při nesouladu přeskočí publikování a nastaví `needs_hash=1` (`preprocess.py` SHA `a07838931b8eb3e5931d53a3b78e8c0941e7a8dd3eaf86f572e6a68e78cd3dbc`). `_step_rag()` načte `content_overrides` jen z `source_index` stejného kořene, pokud hash odpovídá čekajícímu hashi, a předá je do `RAGStore.index_paths_step` (zdrojový důkaz `req_b2e3da93e86c`). Dřívější cílené testy hlásí **1 + 1 passed** pro oddělení projektů a invalidaci omezenou na kořen; aktuální SHA zdrojů/testů zůstávají `preprocess_ingest.py` `7a9a8c9849bb9339bbc26900749a946a179919b229977a2db163e157bfee7ec1` a `tests/test_audit_round2_preprocess_ingest.py` `c0613bdc481b055aeb328ad45d7a7addd203524a5f0b9484ba7382a9b2b48684`. Tyto testy nedokazují hash v klíči ani průchod bez kontaminace mezi projekty až do RAG. `rag.py` je stále dirty a patří Stability; neupravoval jsem jej. N11 zůstává částečný.
 
 ---
+
+- **N11 doplňující source follow-up — 2026-11-12:** `get_or_ingest()` vrací cache hit podle kořene + relativní cesty před čtením aktuálního snapshotu. `_step_hash()` obnoví souborový digest, ale na hash mismatch neinvaliduje `ingest_cache`; invalidace je v aktuálním zdroji navázaná na file-watcher. `_step_lexical()` správně odmítne publikovat text s jiným hashem a nastaví `needs_hash=1`, takže stale text do `source_index` nepublikuje. Pokud hash fáze zachytí změnu bez watcher eventu, další lexical krok může znovu dostat starý cache item a znovu vrátit soubor do hash fáze. Zdroj tedy ukazuje riziko neuzavřeného hash/lexical cyklu a zablokované aktualizace, ne potvrzený stale-content zápis. Důkazy: `preprocess_ingest.py` SHA `7a9a8c9849bb9339bbc26900749a946a179919b229977a2db163e157bfee7ec1`; `preprocess.py` SHA `a07838931b8eb3e5931d53a3b78e8c0941e7a8dd3eaf86f572e6a68e78cd3dbc`; structural search `req_6dd5d8c7b829`, `req_720e429a2bd9`, `req_0220dd35c494`. Neprovedl jsem změny zdrojů ani testů. Předáno Stability threadu `01a1c762-d599-75c2-ae34-344aae056aa0`; čeká na bounded regresi a vlastníkovo rozhodnutí, oprava zůstává mimo tento audit.
 
 ### N12 — Lokální model může obejít maximální délku výstupu token routeru
 - **Soubor:** `src/local_ai_hub/token_router.py`

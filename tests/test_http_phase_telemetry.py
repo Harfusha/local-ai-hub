@@ -1,6 +1,6 @@
 import pytest
 
-from local_ai_hub.http_server import Handler, RequestBodyError, _journal_outcome_success, _response_phase_latency
+from local_ai_hub.http_server import Handler, RequestBodyError, _journal_outcome_success, _response_phase_latency, _telemetry_http_outcome
 from local_ai_hub.token_accounting import finalize_tool_accounting
 
 
@@ -20,6 +20,15 @@ def test_response_phase_latency_ignores_malformed_metadata():
 
 def test_terminal_client_result_is_not_stored_as_recovery_failure():
     assert _journal_outcome_success(200, {"success": False, "terminal": True}) is True
+
+
+@pytest.mark.parametrize("reported_success", [False, True])
+def test_outcome_unknown_is_not_counted_as_http_reliability_success(reported_success):
+    assert _telemetry_http_outcome(200, {
+        "success": reported_success,
+        "terminal": True,
+        "outcome_unknown": True,
+    }) == (False, "outcome_unknown", True)
 
 
 def test_tool_accounting_accepts_current_signed_event_shape():

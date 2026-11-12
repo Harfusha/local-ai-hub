@@ -273,44 +273,197 @@ def test_t6_07_background_gpu_invalid_json_fails(tmp_path: Path):
 # ==============================================================================
 # T6-08: Autotune Ignores Errored Requests
 # ==============================================================================
-def test_t6_08_autotuner_skips_failed_results():
-    """C08: Services must not record tuner observations for failed model responses."""
+def test_t6_08_autotuner_observation_is_success_guarded():
+    """C08 source contract: tuner observation stays inside the success-only Ollama branch."""
+    import ast
+    import inspect
+    import textwrap
+
     from local_ai_hub.services import LocalAIServices
 
-    services = object.__new__(LocalAIServices)
-    tuner = MagicMock()
-    services.tuner = tuner
-    services.telemetry = MagicMock()
+    source = textwrap.dedent(inspect.getsource(LocalAIServices._generate))
+    function_nodes = ast.parse(source).body
+    assert len(function_nodes) == 1
+    function = function_nodes[0]
+    observe_calls = [
+        node for node in ast.walk(function)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "_observe_tuner_safely"
+    ]
+    assert len(observe_calls) == 1
 
-    result_fail = {"success": False, "error": "timeout"}
-    success = bool(result_fail.get("success", "error" not in result_fail))
-    assert success is False
+    guarded = []
+    for node in ast.walk(function):
+        if not isinstance(node, ast.If):
+            continue
+        contains_observation = any(
+            child is observe_calls[0]
+            for statement in node.body
+            for child in ast.walk(statement)
+        )
+        if not contains_observation:
+            continue
+        names = {child.id for child in ast.walk(node.test) if isinstance(child, ast.Name)}
+        attributes = {
+            child.attr for child in ast.walk(node.test)
+            if isinstance(child, ast.Attribute)
+        }
+        constants = {
+            child.value for child in ast.walk(node.test)
+            if isinstance(child, ast.Constant) and isinstance(child.value, str)
+        }
+        assert "success" in names
+        assert "cache_layer" in names
+        assert "tuner" in attributes
+        assert "ollama" in constants
+        assert not node.orelse
+        guarded.append(node)
+
+    assert len(guarded) == 1
+
+
+def test_t6_08_autotuner_observation_runtime_tracks_only_success(monkeypatch):
+    """C08 runtime: failed backend output skips tuner; successful output is observed."""
+    from local_ai_hub import services as services_module
+    from local_ai_hub.services import LocalAIServices
+
+    class Profile:
+        prompt_budget_tokens = 4096
+
+        @staticmethod
+        def cache_scope():
+            return {"profile": "test"}
+
+    class ModelPolicy:
+        @staticmethod
+        def profile(*_args, **_kwargs):
+            return Profile()
+
+        @staticmethod
+        def apply_payload(_model, payload, **_kwargs):
+            return payload, Profile()
+
+    class Runtime:
+        response: dict[str, Any]
+
+        def request(self, *_args):
+            return self.response
+
+    class Scheduler:
+        @staticmethod
+        def submit(_model, *, execute, **_kwargs):
+            return execute()
+
+    class Tuner:
+        def __init__(self):
+            self.observations = []
+
+        def observe(self, model, result, elapsed_ms):
+            self.observations.append((model, result, elapsed_ms))
+
+    monkeypatch.setattr(
+        services_module,
+        "_generation_cache_dispatch",
+        lambda _cache, _key, _compute, compute_inner, **_kwargs: (
+            compute_inner(), False, False
+        ),
+    )
+    runtime = Runtime()
+    tuner = Tuner()
+    service = object.__new__(LocalAIServices)
+    service.config = {
+        "server": {"request_timeout_seconds": 5},
+        "token_saving": {
+            "max_local_input_tokens": 4096,
+            "max_local_output_tokens": 128,
+            "compact_responses": False,
+        },
+        "models": {},
+        "ollama": {},
+        "resilience": {"serve_stale_on_error": False},
+    }
+    service.runtime = runtime
+    service.scheduler = Scheduler()
+    service.model_policy = ModelPolicy()
+    service._fallback_models = lambda _model: []
+    service.breakers = SimpleNamespace(
+        allow=lambda _key: SimpleNamespace(probe_generation=0),
+        success=lambda *_args, **_kwargs: None,
+        failure=lambda *_args, **_kwargs: None,
+    )
+    service.telemetry = _Noop()
+    service.artifacts = _Noop()
+    service.tuner = tuner
+    service.generation_cache = None
+    service.semantic_cache = SimpleNamespace(get=lambda *_args: (None, 0.0))
+    service.stale_generation_cache = SimpleNamespace(
+        get=lambda *_args: None,
+        set=lambda *_args: None,
+    )
+
+    def generate():
+        return service._generate(
+            "test-model",
+            "TASK: measure this request",
+            "",
+            64,
+            0.0,
+            source="delegate:reason",
+            priority=0,
+            use_cache=True,
+        )
+
+    runtime.response = {"error": "synthetic backend failure"}
+    failed = generate()
+    assert failed["success"] is False
+    assert tuner.observations == []
+
+    runtime.response = {"response": "synthetic answer", "done": True}
+    succeeded = generate()
+    assert succeeded["success"] is True
+    assert len(tuner.observations) == 1
+    model, observed_result, elapsed_ms = tuner.observations[0]
+    assert model == "test-model"
+    assert observed_result["success"] is True
+    assert elapsed_ms >= 0
 
 
 # ==============================================================================
 # T6-09: Automation Backend Locking Isolation
 # ==============================================================================
 def test_t6_09_automation_open_close_does_not_hold_broker_lock(tmp_path: Path):
-    """C09: Factory creation and backend close must execute outside broker.lock."""
+    """C09: Factory creation, expiry reap, and backend close run outside broker.lock."""
     broker_lock_during_factory = None
-    broker_lock_during_close = None
+    broker_lock_during_close = []
+
+    def another_thread_can_acquire(lock) -> bool:
+        acquired = []
+
+        def contend():
+            obtained = lock.acquire(timeout=0.2)
+            acquired.append(obtained)
+            if obtained:
+                lock.release()
+
+        thread = threading.Thread(target=contend)
+        thread.start()
+        thread.join(timeout=1.0)
+        assert not thread.is_alive()
+        assert acquired
+        return acquired[0]
 
     class SlowBackend:
         def __init__(self, broker_ref):
             nonlocal broker_lock_during_factory
             self.broker = broker_ref
-            broker_lock_during_factory = self.broker.lock.acquire(blocking=False)
-            if broker_lock_during_factory:
-                self.broker.lock.release()
+            broker_lock_during_factory = another_thread_can_acquire(self.broker.lock)
 
         def execute(self, *args, **kwargs):
             return {"status": "ok"}
 
         def close(self):
-            nonlocal broker_lock_during_close
-            broker_lock_during_close = self.broker.lock.acquire(blocking=False)
-            if broker_lock_during_close:
-                self.broker.lock.release()
+            broker_lock_during_close.append(another_thread_can_acquire(self.broker.lock))
 
     broker = None
 
@@ -329,13 +482,28 @@ def test_t6_09_automation_open_close_does_not_hold_broker_lock(tmp_path: Path):
     assert open_res["success"] is True
     assert broker_lock_during_factory is True
 
+    expired_id = open_res["automation"]["session_id"]
+    expired = broker.sessions[expired_id]
+    expired.expires = broker.clock() - 1
+    broker.reap()
+    assert broker_lock_during_close == [True]
+    assert expired_id not in broker.sessions
+
     close_res = broker.execute(
         root=str(tmp_path),
         task_id="t1",
-        request={"op": "close", "session_id": open_res["automation"]["session_id"], "session_key": open_res["automation"]["session_key"]},
+        request={"op": "open", "mode": "isolated", "url": "http://localhost:8000/"},
     )
     assert close_res["success"] is True
-    assert broker_lock_during_close is True
+    assert broker_lock_during_factory is True
+
+    closed_res = broker.execute(
+        root=str(tmp_path),
+        task_id="t1",
+        request={"op": "close", "session_id": close_res["automation"]["session_id"], "session_key": close_res["automation"]["session_key"]},
+    )
+    assert closed_res["success"] is True
+    assert broker_lock_during_close == [True, True]
     broker.close()
 
 

@@ -12,8 +12,9 @@
 *Cíl: Zajistit, aby sémantické vyhledávání, preprocessing cache a RAG nemohly míchat data mezi projekty ani vracet neplatné výsledky po změně konfigurace.*
 
 1. **N11 — Root-aware Preprocessing Ingest Cache:**
-   - Změnit klíč v `SinglePassIngestCache` na `(canonical_root, rel_path, content_hash)`.
-   - Upravit rozhraní `has()`, `get()`, `put()`, `invalidate()`, `get_or_ingest()`.
+   - Původní cíl zůstává: klíčovat ingest podle canonical root, relative path a source content hash; ověřit všechny cache API a cesty k RAG.
+   - **Částečně ověřeno 2026-11-12:** aktuální `_key()` canonicalizuje root a zahrnuje relativní cestu. `tests/test_audit_round2_preprocess_ingest.py::test_cross_project_ingest_cache_isolation` a `::test_invalidate_relative_path_is_scoped_to_root` prošly každá samostatně (1 passed; 0.36 s a 0.27 s). Source SHA `7a9a8c9849bb9339bbc26900749a946a179919b229977a2db163e157bfee7ec1`; test SHA `c0613bdc481b055aeb328ad45d7a7addd203524a5f0b9484ba7382a9b2b48684`; HEAD `409bed4a6a73fd66175ad339c399f4277ed0ed99`.
+   - **Otevřeno — source-only follow-up, 2026-11-12:** klíč zůstává canonical root + relative path bez content hash. `_step_hash()` obnoví digest, ale při mismatch neinvaliduje `ingest_cache`; file-watcher invalidace je oddělená. `_step_lexical()` hash mismatch odmítne publikovat a vrátí `needs_hash=1`, takže stale text není potvrzen jako publikovaný. Bez watcher invalidace může stale cache hit opakovat hash/lexical cyklus a blokovat index update. Důkazy: `preprocess_ingest.py` SHA `7a9a8c9849bb9339bbc26900749a946a179919b229977a2db163e157bfee7ec1`; `preprocess.py` SHA `a07838931b8eb3e5931d53a3b78e8c0941e7a8dd3eaf86f572e6a68e78cd3dbc`; structural requests `req_6dd5d8c7b829`, `req_720e429a2bd9`, `req_0220dd35c494`. No targeted regression, live server/RAG action, or end-to-end cross-project proof for this branch. Runtime and functional acceptance remain NOT_VERIFIED. Finding sent to Stability; current-owner decision and integration pending.
    - Doplnit N24 (aktualizace `invalidate()` na úplnou identitu) a N21 (odmítnutí oversized souborů).
 2. **N18 — Striktní `repository_revision` v Semantic Scope:**
    - V `services.py` vždy začlenit `repository_revision` do scope identity bez ohledu na přítomnost doplňkových digestů.

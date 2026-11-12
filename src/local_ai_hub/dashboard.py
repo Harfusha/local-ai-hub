@@ -456,6 +456,7 @@ button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-vis
       <div class="control-popover">
         <div class="tiny muted">Diagnostics</div>
         <button class="btn" id="detailedTelemetryToggle" aria-pressed="false">Detailed telemetry: Off</button>
+        <span id="detailedTelemetryStatus" class="tiny" role="status" aria-live="polite"></span>
         <span class="tiny control-notice">Capture request details for troubleshooting. Off by default.</span>
         <button class="btn ok" id="optDbBtn">Optimize databases</button>
         <button class="btn" id="doctorBtn">Run diagnostics</button>
@@ -1441,13 +1442,25 @@ function syncDetailedTelemetryToggle(enabled){
 if($('detailedTelemetryToggle'))$('detailedTelemetryToggle').onclick=async()=>{
   const enabled=!Boolean(last?.debug_traces?.enabled);
   const button=$('detailedTelemetryToggle');if(button)button.disabled=true;
+  const status=$('detailedTelemetryStatus');if(status)status.textContent='';
   try{
     const result=await post('/api/config/update',{settings:{'debug_traces.enabled':enabled}});
     if(!result?.success)throw new Error(result?.error||'Unable to update telemetry');
+    if(result.applied_live!==true){
+      syncDetailedTelemetryToggle(Boolean(last?.debug_traces?.enabled));
+      if(status)status.textContent=result.restart_required
+        ?'Setting saved, but live telemetry could not be applied. Restart required.'
+        :'Hub did not confirm live telemetry; current state unchanged.';
+      return;
+    }
     last={...last,debug_traces:{...(last?.debug_traces||{}),enabled}};
     syncDetailedTelemetryToggle(enabled);
+    if(status)status.textContent=`Detailed telemetry ${enabled?'enabled':'disabled'}.`;
     if(activeTraceData)renderTraceDetail(activeTraceData);
-  }catch(error){if($('modalLive'))$('modalLive').textContent='Telemetry setting failed: '+String(error?.message||error);}
+  }catch(error){
+    const message=typeof error?.message==='string'?error.message.trim().slice(0,240):'';
+    if(status)status.textContent=message?`Telemetry update failed: ${message}`:'Could not confirm telemetry change. Check the displayed state before retrying.';
+  }
   finally{if(button)button.disabled=false;statusPoller.refresh();}
 };
 

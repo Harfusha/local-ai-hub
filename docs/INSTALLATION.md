@@ -12,6 +12,16 @@ The Hub accepts loopback connections only and must bind to `127.0.0.1`. No Hub A
 
 ## Bootstrap & One-Command Setup
 
+Run `install.ps1` on Windows or `./install.sh` on macOS/Linux. A terminal run opens the interactive installer; previous choices are remembered. Pass `--non-interactive` for automation. Full reinstall and recovery steps are documented in [INSTALLER_RECOVERY.md](INSTALLER_RECOVERY.md).
+
+The interactive wizard can enable MCP, skills, and instructions separately for Codex, Claude Code, Gemini CLI, Cursor, Windsurf, and VS Code/Copilot. Per-agent choices are remembered alongside the component selections. When agent setup is disabled, its saved per-agent choices remain available for a later run.
+
+`setup-report.json` records Token Economy dependency and wrapper results, plus whether optional external CLI helpers were detected after setup. If a package manager updated `PATH`, open a new terminal before treating a helper as unavailable.
+
+The model section of `setup-report.json` lists configured Ollama models requested, ready, skipped by choice, or unavailable. It also records managed llama.cpp selection/readiness, per-model NLP/OpenVINO preload outcomes, and whether the configured Laya checkpoint directory is present. Setup does not hash or load the Laya model; the runtime verifies configured file hashes on first eligible inference. Laya packages install only when selected, and setup does not download the checkpoint because configuration requires a locally supplied, hash-pinned directory.
+
+Failures during core runtime installation, state migration, full reinstall, install-payload replacement, model provisioning, service registration, Hub restart, or Codex/Gemini Superpowers setup also produce a `failed` setup report with the failing stage and recovery-guide path. Agent-configuration failures are recorded as partial setup and include the error in `manual_actions`.
+
 Tell your AI assistant:
 > **"Install Local AI Hub"** *(or "Nainstaluj local ai hub", or run `install.ps1` on Windows / `./install.sh` on macOS/Linux)*
 
@@ -19,7 +29,7 @@ The bootstrap delegates to `tools/setup.py`, creates the user installation/state
 
 When `[ollama].enabled = false` (the default), setup and the supervisor do not install or start Ollama. Use `llama_cpp.mode = "on"` for the managed local server, `"auto"` for an existing loopback endpoint, or `"off"` for no llama.cpp backend. Enable Ollama only when that is the selected provider.
 
-Useful flags: `--profile cpu|integrated|low|balanced|medium|high|max`, `--skip-token-economy`, `--skip-companion-skills`, `--skip-model-pull`, `--skip-tools`, `--skip-agent-config`, and `--skip-service`. `--skip-service` skips per-user service-manager registration, but setup still restarts the Hub as a user process with `hubctl`; it does not suppress Hub startup. Rerunning setup preserves an existing installed configuration unless `--config` is explicitly supplied.
+Useful flags: `--profile cpu|integrated|low|balanced|medium|high|max`, `--skip-token-economy`, `--skip-companion-skills`, `--skip-model-pull`, `--skip-tools`, `--skip-agent-config`, `--skip-service`, `--skip-laya-runtime`, `--skip-ast-index`, `--skip-performance`, and `--skip-profiling`. Explicit skip flags affect only the current run; saved wizard choices remain unchanged. `--skip-service` skips per-user service-manager registration, but setup still restarts the Hub as a user process with `hubctl`; it does not suppress Hub startup. Rerunning setup preserves an existing installed configuration unless `--config` is explicitly supplied.
 
 Target shared runtime uses one per-user Hub install, one configured `server.state_dir`, and one user-level supervisor/daemon for all Codex chats and worktrees under that OS account. Every enabled agent uses a lightweight stdio proxy. Acceptance: clean install registers exactly one user service; update reuses or reconciles that same registration. Never install or register a daemon per agent, chat, repository, or worktree. The generated global Codex `local-ai` entry starts `python -m local_ai_hub.mcp_server` as a stdio adapter; each active Codex MCP session may own one adapter process. The adapter forwards Hub calls through `HubClient` over HTTP. It creates bounded protocol/metadata helpers, but must not create `LocalAIApp`, `HubServices`, `ProjectPreprocessor`, `CodeIndex`, `RAGStore`, or model pools. Multiple adapter processes do not prove duplicate daemons; inspect parent/command line and the OS service identity. The single per-user supervisor starts the HTTP daemon at logon/session startup. Global Codex manifests now inherit the host's project working directory; setup injects no project-root environment. Repository-scoped repo/RAG MCP actions now reject missing or `.` roots at the adapter boundary; preprocessing likewise rejects a missing absolute root. Always pass the caller's explicit project root. Release acceptance still requires installed-runtime and deployment proof for this source-level guard. Client identity/transport and operational-mode source contracts do not prove installed runtime acceptance. `HubClient` autostart is bounded and cross-process locked; a managed supervisor, live supervisor PID, or occupied port blocks another daemon launch. Generated agent command, arguments, working directory and environment remain authoritative. Project-local MCP manifests set `target_root` as `cwd`; global manifests omit `cwd` and inherit the host's project directory. A global request can pass explicit `root` when it targets another project and must preserve task context. Both MCP API and `HubClient` send that root explicitly; never infer it from `install_dir` or process cwd. Current source uses explicit repository roots and loopback-only access; retired tenant selectors reject by presence. Client preflight and source review do not establish installed-runtime acceptance. Installed lifecycle acceptance requires separate revision-bound runtime evidence. The service manager starts the daemon when the user session starts after reboot (Windows logon task, macOS LaunchAgent, or Linux user service). `--skip-service` leaves only a session process; it does not configure reboot startup.
 
@@ -53,15 +63,9 @@ When `HubClient` has no explicit `config_path`, it uses `LOCAL_AI_CONFIG` when s
 
 ### Optional Python extras
 
-Install one or more extras with `python -m pip install ".[extra-name]"`; combine names with commas, for example `python -m pip install ".[local-nlp,performance]"`. These are package dependencies from `pyproject.toml`; setup-managed tools, agent configuration, and service installation remain separate.
+The installer wizard manages selectable runtime extras: `ast-index`, `local-nlp`, `performance`, and `profiling`. It installs `token-economy`, `laya-runtime`, and `intel-accelerators` through their matching component choices and hardware/configuration checks. These packages are pinned or bounded in `pyproject.toml`; setup reports selected, failed, and skipped components.
 
-To provision every declared non-Intel extra in the active Windows Hub environment, run this from the verified installation root after setup:
-
-```powershell
-.\.venv\Scripts\python.exe -m pip install --upgrade ".[ast-index,local-nlp,token-economy,performance,profiling,dev]"
-```
-
-This includes NLP/model dependencies and development/profiling tools, so it can consume substantial disk space and may take several minutes. `intel-accelerators` is deliberately excluded; install it only for an Intel OpenVINO/SYCL setup. Sentence Transformers ONNX and DirectML are separate optional runtimes. For Windows DirectML, install the Sentence Transformers ONNX extra, then replace its CPU ONNX Runtime package with `onnxruntime-directml`; keep only one ONNX Runtime distribution installed. See the [Sentence Transformers ONNX guide](https://sbert.net/docs/sentence_transformer/usage/efficiency.html#onnx) and [ONNX Runtime DirectML installation guide](https://onnxruntime.ai/docs/install/#install-onnx-runtime-gpu-directml). AMD ROCm and Ryzen AI NPU support is limited to the exact hardware, driver and Windows versions listed by [AMD's compatibility matrix](https://rocm.docs.amd.com/projects/radeon-ryzen/en/latest/docs/compatibility/compatibilityrad/windows/windows_compatibility.html). CodeGraphContext is a separate standalone product, not a Hub extra. After dependency or source updates, fully cycle the existing per-user service (do not create a second one):
+The `dev` extra is for Local AI Hub contributors, not the installed Hub service. To add it to a development environment, run `python -m pip install ".[dev]"` from the source root. The `intel-accelerators` extra is installed only for a selected Intel OpenVINO route; drivers and vendor UI steps remain manual. Sentence Transformers ONNX and DirectML are separate optional runtimes. For Windows DirectML, install the Sentence Transformers ONNX extra, then replace its CPU ONNX Runtime package with `onnxruntime-directml`; keep only one ONNX Runtime distribution installed. See the [Sentence Transformers ONNX guide](https://sbert.net/docs/sentence_transformer/usage/efficiency.html#onnx) and [ONNX Runtime DirectML installation guide](https://onnxruntime.ai/docs/install/#install-onnx-runtime-gpu-directml). AMD ROCm and Ryzen AI NPU support is limited to the exact hardware, driver and Windows versions listed by [AMD's compatibility matrix](https://rocm.docs.amd.com/projects/radeon-ryzen/en/latest/docs/compatibility/compatibilityrad/windows/windows_compatibility.html). CodeGraphContext is a separate standalone product, not a Hub extra. After dependency or source updates, fully cycle the existing per-user service (do not create a second one):
 
 ```powershell
 python tools/service.py stop
@@ -80,9 +84,10 @@ On Windows, the preferred persistent service identity is Task Scheduler task `Lo
 | `ast-index` | `tree-sitter-language-pack` |
 | `local-nlp` | `sentence-transformers` |
 | `intel-accelerators` | `sentence-transformers[openvino]`, `openvino` |
+| `laya-runtime` | `laya`, `vegaml` (only for selected Laya inference) |
 | `token-economy` | `tiktoken`, `files-to-prompt`, `grep-ast` |
 | `performance` | `orjson`, `msgspec`, `Cython` |
-| `native` | `Cython` (SimHash native acceleration) |
+| `native` | `Cython` build dependency; also included in `performance`. The experimental native module is built separately. |
 | `profiling` | `py-spy`, `scalene` |
 | `dev` | `pytest`, `pyflakes`, `coverage[toml]`, `psutil`, `numpy`, `setuptools`, `wheel` |
 
