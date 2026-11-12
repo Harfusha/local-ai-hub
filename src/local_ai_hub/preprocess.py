@@ -22,6 +22,7 @@ from typing import Any
 # contract, prompts, or deterministic card derivation makes cached cards stale.
 PREPROCESS_ANALYZER_VERSION = "6.0.0"
 FILE_CARD_PROMPT_VERSION = "file-card-v2"
+_PROJECT_TOUCH_WRITE_TIMEOUT_SECONDS = 0.5
 from .cache import stable_hash
 from .project_config import (
     ProjectPathPolicy,
@@ -481,14 +482,22 @@ class ProjectPreprocessor:
     def _is_locked_error(exc: BaseException) -> bool:
         return is_busy_error(exc)
 
-    def _write_retry(self, operation: Any) -> Any:
+    def _write_retry(
+        self,
+        operation: Any,
+        *,
+        actor_timeout: float | None = None,
+        best_effort: bool = False,
+    ) -> Any:
         actor = getattr(self, "_write_actor", None)
         if actor is not None and actor.is_alive and not actor.is_current_thread():
             try:
-                return actor.submit(operation)
+                return actor.submit(operation, timeout=actor_timeout)
             except Exception as actor_exc:
-                if not is_busy_error(actor_exc):
+                if best_effort or not is_busy_error(actor_exc):
                     raise
+        elif best_effort:
+            raise TimeoutError("preprocessor write actor is unavailable")
 
         def attempt() -> Any:
             with self._db_lock, closing(self._connect()) as con:
@@ -1045,9 +1054,16 @@ class ProjectPreprocessor:
                 return True
             self._last_touch[resolved] = now
         try:
-            cur = self._write_retry(lambda con: con.execute("UPDATE projects SET last_requested_at=? WHERE root=?", (now, resolved)))
+            cur = self._write_retry(
+                lambda con: con.execute(
+                    "UPDATE projects SET last_requested_at=? WHERE root=?",
+                    (now, resolved),
+                ),
+                actor_timeout=_PROJECT_TOUCH_WRITE_TIMEOUT_SECONDS,
+                best_effort=True,
+            )
             return bool(getattr(cur, "rowcount", 0))
-        except sqlite3.Error as exc:
+        except (sqlite3.Error, TimeoutError) as exc:
             logger.debug("preprocessor project touch failed error_type=%s", type(exc).__name__)
             return False
 

@@ -1077,6 +1077,23 @@ class LlamaCppRuntimeTests(unittest.TestCase):
             preset = (runtime.runtime_dir / "hub.models.ini").read_text(encoding="utf-8")
             self.assertIn("device = none", preset)
 
+    def test_vision_route_requires_explicit_feature_and_model_selection(self):
+        with tempfile.TemporaryDirectory() as temp:
+            runtime = LlamaCppManagedRuntime({
+                "server": {"state_dir": temp},
+                "features": {"local_vision": True},
+                "models": {"vision": "qwen3-vl:4b"},
+                "llama_cpp": {"models": {
+                    "qwen2.5-coder:1.5b": {"served_model": "hub-qwen-15"},
+                    "qwen3-vl:4b": {"served_model": "hub-qwen-vl"},
+                }},
+            })
+
+            _port, routes = runtime._configured_routes()
+
+            self.assertIn(("hub-qwen-vl", "qwen3-vl:4b"), routes)
+            self.assertIn(("hub-qwen-15", "qwen2.5-coder:1.5b"), routes)
+
     def test_intel_start_retries_on_cpu_after_sycl_failure(self):
         with tempfile.TemporaryDirectory() as temp:
             runtime = LlamaCppManagedRuntime({

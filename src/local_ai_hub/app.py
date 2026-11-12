@@ -94,6 +94,8 @@ def _status_dependency_timeout_seconds(key: str) -> float:
         timeout = max(timeout, float(_STATUS_TELEMETRY_SUMMARY_TIMEOUT_SECONDS))
     elif key == "runtime.online":
         timeout = max(timeout, float(_STATUS_RUNTIME_ONLINE_TIMEOUT_SECONDS))
+    elif key == "agent_state":
+        timeout = max(timeout, 2.0)
     elif key == "ollama_profile":
         timeout = max(timeout, float(_STATUS_OLLAMA_PROFILE_TIMEOUT_SECONDS))
     elif key in {"preprocessing.status", "preprocessing.stats", "background_gpu"}:
@@ -1229,7 +1231,7 @@ class LocalAIApp:
 
         def dependency(key, callback, fallback, diagnostic=None):
             dependency_deadline = deadline
-            if key in {"telemetry.summary", "scheduler", "runtime.online"}:
+            if key in {"telemetry.summary", "scheduler", "runtime.online", "agent_state"}:
                 dependency_deadline = time.monotonic() + _status_dependency_timeout_seconds(key)
             return _status_dependency(
                 callback,
@@ -1372,7 +1374,7 @@ class LocalAIApp:
             for key, (callback, fallback) in status_probes.items():
                 diagnostic: dict[str, Any] = {}
                 dependency_deadline = deadline
-                if key == "telemetry.summary":
+                if key in {"telemetry.summary", "agent_state"}:
                     dependency_deadline = time.monotonic() + _status_dependency_timeout_seconds(key)
                 handle = _schedule_status_dependency(
                     callback,

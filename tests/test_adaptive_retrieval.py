@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import threading
 import time
 from pathlib import Path
@@ -705,9 +706,13 @@ def test_incomplete_evidence_receipt_fails_closed(tmp_path: Path) -> None:
 
 def test_evidence_store_persists_raw_context_pack_snippets(tmp_path: Path) -> None:
     store = EvidenceStore(tmp_path / "state")
+    source = tmp_path / "src" / "routes.py"
+    source.parent.mkdir(parents=True)
+    raw = "def route(): pass"
+    source.write_text(raw + "\n", encoding="utf-8")
     item = {
-        "path": "src/routes.py", "start_line": 4, "end_line": 4,
-        "file_sha256": "file-hash", "raw": "def route(): pass",
+        "path": "src/routes.py", "start_line": 1, "end_line": 1,
+        "file_sha256": hashlib.sha256(source.read_bytes()).hexdigest(), "raw": raw,
     }
 
     stored = store.put_many(str(tmp_path), [item])

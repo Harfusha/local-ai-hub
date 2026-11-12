@@ -114,6 +114,16 @@ class LlamaCppManagedRuntime:
         self.config = config
         server = config.get("server", {}) if isinstance(config.get("server", {}), dict) else {}
         llama = config.get("llama_cpp", {}) if isinstance(config.get("llama_cpp", {}), dict) else {}
+        features = config.get("features", {}) if isinstance(config.get("features", {}), dict) else {}
+        model_routes = config.get("models", {}) if isinstance(config.get("models", {}), dict) else {}
+        vision_model = model_routes.get("vision")
+        self.vision_model_logical = (
+            vision_model
+            if features.get("local_vision") is True
+            and isinstance(vision_model, str)
+            and vision_model.strip()
+            else None
+        )
         self.state_dir = Path(str(server.get("state_dir", "~/.local-ai-hub/state"))).expanduser().resolve()
         self.llama_config = llama
         backend = llama.get("backend", "auto")
@@ -361,7 +371,7 @@ class LlamaCppManagedRuntime:
                     continue
                 if not isinstance(entry, dict):
                     continue
-                if "vl" in str(logical).lower():
+                if "vl" in str(logical).lower() and logical != self.vision_model_logical:
                     continue
                 url = urlsplit(str(entry.get("url", "")))
                 if url.hostname in {"localhost", "127.0.0.1", "::1"}:
@@ -390,7 +400,30 @@ class LlamaCppManagedRuntime:
             logical_models = [name for name, entry in configured_models.items() if isinstance(entry, dict) and "vl" not in str(name).lower()]
             if len(logical_models) > 1:
                 raise ValueError("A custom managed model may serve only one logical model")
-        path_value = str(self.model_path.resolve()).replace("\\", "/")
+
+        model_dir = self.model_dir.resolve()
+        managed_path = self.model_path.resolve()
+
+        def asset_path(entry: dict[str, Any], filename_key: str, digest_key: str, *, default: Path | None = None) -> Path | None:
+            filename = entry.get(filename_key)
+            if filename is None:
+                return default
+            if not isinstance(filename, str) or not filename or Path(filename).name != filename or not filename.lower().endswith(".gguf"):
+                raise ValueError(f"Invalid llama.cpp managed asset filename: {filename_key}")
+            path = self.model_dir / filename
+            if path.is_symlink() or path.resolve().parent != model_dir:
+                raise ValueError(f"The configured {filename_key} must be a regular file inside the managed model directory")
+            expected = entry.get(digest_key)
+            if not isinstance(expected, str) or len(expected) != 64 or any(char not in "0123456789abcdef" for char in expected):
+                raise ValueError(f"Invalid llama.cpp managed asset digest: {digest_key}")
+            if not path.is_file():
+                raise RuntimeError(f"The configured llama.cpp asset is missing: {filename}")
+            resolved = path.resolve()
+            already_verified = resolved == managed_path and expected in {self.managed_model_sha256, MODEL_SHA256}
+            if not already_verified and self._sha256(resolved) != expected:
+                raise RuntimeError(f"The configured llama.cpp asset has the wrong SHA-256 digest: {filename}")
+            return resolved
+
         sections = ["version = 1", "", "[*]", "n-gpu-layers = 99"]
         if device is not None:
             sections.append(f"device = {device}")
@@ -405,6 +438,13 @@ class LlamaCppManagedRuntime:
             default_alias = str(configured[fast_model].get("served_model", fast_model))
         for alias, logical in aliases:
             entry = configured.get(logical, {}) if isinstance(configured, dict) else {}
+            if not isinstance(entry, dict):
+                entry = {}
+            model_path = asset_path(entry, "model_filename", "model_sha256", default=self.model_path)
+            if model_path is None:
+                raise ValueError(f"No managed llama.cpp model file is configured for {logical}")
+            path_value = str(model_path).replace("\\", "/")
+            mmproj_path = asset_path(entry, "mmproj_filename", "mmproj_sha256")
             raw_context = entry.get("context_length", 0) if isinstance(entry, dict) else 0
             try:
                 context_length = int(raw_context or 0)
@@ -415,14 +455,23 @@ class LlamaCppManagedRuntime:
             alias_contexts[alias] = context_length
             load_on_startup = alias == default_alias and self.llama_config.get("managed_with_ollama") is not True
             sections.extend([f"[{alias}]", f"model = {path_value}", f'alias = "{alias}"', f"load-on-startup = {'true' if load_on_startup else 'false'}"])
+            if mmproj_path is not None:
+                sections.append(f"mmproj = {str(mmproj_path).replace(chr(92), '/')}")
+            gpu_layers = entry.get("gpu_layers")
+            if gpu_layers is not None:
+                if type(gpu_layers) is not int or not 0 <= gpu_layers <= 999:
+                    raise ValueError(f"Invalid llama.cpp gpu_layers for {logical}")
+                sections.append(f"n-gpu-layers = {gpu_layers}")
             if context_length:
                 sections.append(f"ctx-size = {context_length}")
             sections.append("")
-            fallback = recovery_route(logical, entry)
+            fallback = None if "vl" in logical.lower() else recovery_route(logical, entry)
             if fallback is not None:
                 fallback_alias = fallback["served_model"]
-                sections.extend([f"[{fallback_alias}]", f"model = {path_value}",
-                                 "load-on-startup = false", f"ctx-size = {fallback['context_length']}", ""])
+                sections.extend([f"[{fallback_alias}]", f"model = {path_value}", "load-on-startup = false"])
+                if gpu_layers is not None:
+                    sections.append(f"n-gpu-layers = {gpu_layers}")
+                sections.extend([f"ctx-size = {fallback['context_length']}", ""])
                 recoveries[logical] = fallback
         if isinstance(configured, dict):
             for logical, entry in configured.items():

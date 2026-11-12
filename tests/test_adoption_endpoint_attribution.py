@@ -253,6 +253,7 @@ def test_second_opinion_model_override_through_mcp_and_http(tmp_path, monkeypatc
     config.write_text(f'[server]\nstate_dir = "{state.as_posix()}"\nauto_start_ollama = false\n'
         '[ollama]\nenabled = false\n[smart_ollama]\nenabled = false\n'
         '[observability]\nenabled = false\n[background_gpu]\nenabled = false\n[preprocessing]\nenabled = false\n'
+        '[hardware]\nprofile = "balanced"\n'
         '[features]\nlocal_semantic_analysis = true\n'
         '[models]\nfast_code = "qwen2.5-coder:1.5b"\nheavy_code = "qwen2.5-coder:3b"\n'
         'reasoning = "qwen2.5-coder:7b"\ngeneral = "qwen2.5-coder:1.5b"\n', encoding="utf-8")

@@ -323,6 +323,19 @@ def validate_config(data: dict[str, Any]) -> None:
             if not str(entry.get("served_model", model)).strip():
                 raise ConfigError(f"llama_cpp.models.{model}.served_model must not be empty")
             _number(entry, "context_length", minimum=512, maximum=131072)
+            for filename_key, digest_key in (("model_filename", "model_sha256"), ("mmproj_filename", "mmproj_sha256")):
+                filename = entry.get(filename_key)
+                digest = entry.get(digest_key)
+                if filename is None and digest is None:
+                    continue
+                if (not isinstance(filename, str) or not filename or Path(filename).name != filename
+                        or not filename.lower().endswith(".gguf")):
+                    raise ConfigError(f"llama_cpp.models.{model}.{filename_key} must be a .gguf filename inside the managed model directory")
+                if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
+                    raise ConfigError(f"llama_cpp.models.{model}.{digest_key} must be a lowercase SHA-256 digest")
+            gpu_layers = entry.get("gpu_layers")
+            if gpu_layers is not None and (type(gpu_layers) is not int or not 0 <= gpu_layers <= 999):
+                raise ConfigError(f"llama_cpp.models.{model}.gpu_layers must be an integer between 0 and 999")
 
     subagents = data.get("ollama_subagents", {})
     if isinstance(subagents, dict):

@@ -22,7 +22,7 @@ def _preprocessor_for_touch(write_retry):
     preprocessor._touch_lock = threading.Lock()
     preprocessor._last_touch = {}
     preprocessor._touch_debounce_seconds = 0.0
-    preprocessor._write_retry = write_retry
+    preprocessor._write_retry = lambda operation, **_kwargs: write_retry(operation)
     return preprocessor
 
 
@@ -110,6 +110,15 @@ def test_touch_if_registered_degrades_on_sqlite_error():
         raise sqlite3.OperationalError("database unavailable")
 
     preprocessor = _preprocessor_for_touch(fail_database)
+
+    assert preprocessor.touch_if_registered("C:/repo") is False
+
+
+def test_touch_if_registered_degrades_on_writer_timeout():
+    def time_out(_operation):
+        raise TimeoutError("writer actor wait expired")
+
+    preprocessor = _preprocessor_for_touch(time_out)
 
     assert preprocessor.touch_if_registered("C:/repo") is False
 
