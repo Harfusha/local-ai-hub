@@ -134,6 +134,11 @@ def prepare_context_delivery(value: dict[str, Any], budget: int) -> dict[str, An
     # The MCP wire carries both structured content and its text envelope.
     # Dynamically allocate text budget from remaining room after accounting for metadata.
     saved_text = context.get("text", "")
+    # The nested task_context is canonical. A top-level text echo duplicates the
+    # full payload and can consume the entire budget before the nested text is
+    # shortened for delivery.
+    if result.get("text") == saved_text:
+        result.pop("text", None)
     context["text"] = ""
     margin = 64
     text_budget = max(0, int(budget) - json_tokens(result) - margin)
