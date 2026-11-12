@@ -282,10 +282,42 @@ def _tree_manifest(root: Path, max_depth: int = 64) -> dict[str, _TreeEntry]:
     return manifest
 
 
-def _copy_tree(source: Path, destination: Path, max_depth: int = 64) -> None:
+def _tree_file_entry(path: Path, relative: str) -> _TreeEntry:
+    try:
+        before = os.stat(path, follow_symlinks=False)
+    except OSError as exc:
+        raise OSError(f"cannot inspect transaction input {relative}: {exc}") from exc
+    if not stat.S_ISREG(before.st_mode):
+        raise ValueError(f"unsupported file type in transaction inputs: {relative}")
+    digest = hashlib.sha256()
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        fd = os.open(path, flags)
+        with os.fdopen(fd, "rb") as stream:
+            opened = os.fstat(stream.fileno())
+            identity = (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns)
+            if (opened.st_dev, opened.st_ino, opened.st_size, opened.st_mtime_ns) != identity:
+                raise OSError(f"transaction input changed while opening: {relative}")
+            for block in iter(lambda: stream.read(1024 * 1024), b""):
+                digest.update(block)
+            after = os.fstat(stream.fileno())
+    except OSError as exc:
+        raise OSError(f"cannot read transaction input {relative}: {exc}") from exc
+    if (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns) != identity:
+        raise OSError(f"transaction input changed while reading: {relative}")
+    return _TreeEntry(
+        "file", int(before.st_mode), int(before.st_size),
+        int(before.st_mtime_ns), digest=digest.hexdigest(),
+    )
+
+
+def _copy_tree(
+    source: Path, destination: Path, max_depth: int = 64
+) -> dict[str, _TreeEntry]:
     max_depth = _snapshot_depth_limit(max_depth)
     pending = [(source, destination)]
     directory_metadata: list[tuple[Path, Path]] = []
+    manifest: dict[str, _TreeEntry] = {}
     seen_dirs: set[tuple[int, int] | Path] = set()
     source_stat = source.stat()
     if source_stat.st_ino != 0:
@@ -306,6 +338,7 @@ def _copy_tree(source: Path, destination: Path, max_depth: int = 64) -> None:
                 continue
             source_path = Path(entry.path)
             target_path = destination_dir / entry.name
+            relative = source_path.relative_to(source).as_posix()
             info = entry.stat(follow_symlinks=False)
             if entry.is_symlink():
                 link = os.readlink(source_path)
@@ -314,6 +347,11 @@ def _copy_tree(source: Path, destination: Path, max_depth: int = 64) -> None:
                     raise ValueError(f"external symlink in transaction inputs: {source_path.relative_to(source)}")
                 os.symlink(link, target_path, target_is_directory=resolved.is_dir())
                 shutil.copystat(source_path, target_path, follow_symlinks=False)
+                copied = target_path.lstat()
+                manifest[relative] = _TreeEntry(
+                    "symlink", int(copied.st_mode), int(copied.st_size),
+                    int(copied.st_mtime_ns), target=os.readlink(target_path),
+                )
             elif stat.S_ISDIR(info.st_mode):
                 dir_key = (info.st_dev, info.st_ino) if info.st_ino != 0 else source_path.resolve()
                 if dir_key in seen_dirs:
@@ -324,12 +362,19 @@ def _copy_tree(source: Path, destination: Path, max_depth: int = 64) -> None:
                 directory_metadata.append((source_path, target_path))
             elif stat.S_ISREG(info.st_mode):
                 shutil.copy2(source_path, target_path, follow_symlinks=False)
+                manifest[relative] = _tree_file_entry(target_path, relative)
             else:
                 raise ValueError(f"unsupported file type in transaction inputs: {source_path.relative_to(source)}")
     for source_dir, target_dir in sorted(
         directory_metadata, key=lambda pair: len(pair[0].parts), reverse=True
     ):
         shutil.copystat(source_dir, target_dir, follow_symlinks=False)
+        relative = target_dir.relative_to(destination).as_posix()
+        copied = target_dir.stat(follow_symlinks=False)
+        manifest[relative] = _TreeEntry(
+            "directory", int(copied.st_mode), 0, int(copied.st_mtime_ns)
+        )
+    return manifest
 
 
 def _git_path(root: Path, path: str) -> Path:
@@ -410,9 +455,12 @@ def create_private_transaction_snapshot_with_manifest(
     destination: str | Path,
     *,
     max_depth: int = 64,
+    full_verification: bool = False,
 ) -> tuple[Path, Mapping[str, _TreeEntry]]:
     """Create private checkout and return the exact source manifest it preserves."""
     max_depth = _snapshot_depth_limit(max_depth)
+    if not isinstance(full_verification, bool):
+        raise ValueError("full_verification must be a boolean")
     source_root = Path(source).expanduser().resolve(strict=True)
     if not source_root.is_dir():
         raise ValueError("transaction source must be a directory")
@@ -447,8 +495,11 @@ def create_private_transaction_snapshot_with_manifest(
         _git_output(destination_root, "config", "--local", "core.hooksPath", "/dev/null")
         _git_output(destination_root, "reset", "--mixed", source_head)
         _copy_private_index(source_root, destination_root)
-        _copy_tree(source_root, destination_root, max_depth=max_depth)
-        cloned_manifest = _tree_manifest(destination_root, max_depth=max_depth)
+        cloned_manifest = _copy_tree(source_root, destination_root, max_depth=max_depth)
+        if full_verification:
+            full_manifest = _tree_manifest(destination_root, max_depth=max_depth)
+            if full_manifest != cloned_manifest:
+                raise OSError("transaction destination changed while snapshot was being created")
         current_source_manifest = _tree_manifest(source_root, max_depth=max_depth)
         if cloned_manifest != source_manifest or current_source_manifest != source_manifest:
             raise OSError("transaction source changed while snapshot was being created")
@@ -474,10 +525,11 @@ def create_private_transaction_snapshot(
     destination: str | Path,
     *,
     max_depth: int = 64,
+    full_verification: bool = False,
 ) -> Path:
     """Copy a worktree's complete file input state into a private Git checkout."""
     transaction_root, _ = create_private_transaction_snapshot_with_manifest(
-        source, destination, max_depth=max_depth
+        source, destination, max_depth=max_depth, full_verification=full_verification
     )
     return transaction_root
 

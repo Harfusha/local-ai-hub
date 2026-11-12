@@ -129,7 +129,7 @@ def _validate_row(row: Any) -> None:
     if label_provenance.get("status") != "verified":
         raise ValueError("label_provenance.status must be verified")
     if method not in {"blind_double_annotation", "local_operator_confirmation"}:
-        raise ValueError("Laya training rows require blind double annotation")
+        raise ValueError("Laya training rows require a supported verified label provenance")
     if not isinstance(label_provenance.get("rubric_version"), str) or not label_provenance["rubric_version"].strip():
         raise ValueError("label_provenance.rubric_version must be a non-empty string")
     if not isinstance(row["state"], str) or not isinstance(row["questions"], dict):

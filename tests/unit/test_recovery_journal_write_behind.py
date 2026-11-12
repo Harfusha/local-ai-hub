@@ -305,6 +305,24 @@ def test_completion_batch_keeps_first_terminal_result_across_batches(tmp_path: P
     assert row == ("done", 200, '{"value":"first"}')
 
 
+def test_terminal_completion_replay_distinguishes_json_boolean_from_number(tmp_path: Path) -> None:
+    journal = RecoveryJournal(tmp_path / "state")
+    _claimed(journal, "request-1")
+    first = ("request-1", "done", 1.0, "same", 200, '{"value":true}', 1)
+    conflicting = ("request-1", "done", 2.0, "same", 200, '{"value":1}', 2)
+
+    journal._write_completion_batch([first])
+    with pytest.raises(ValueError, match="conflicting completion"):
+        journal._write_completion_batch([conflicting])
+    with closing(sqlite3.connect(journal.path)) as connection:
+        row = connection.execute(
+            "SELECT state,status_code,response_json FROM requests WHERE request_id=?", ("request-1",)
+        ).fetchone()
+    journal.close()
+
+    assert row == ("done", 200, '{"value":true}')
+
+
 def test_pending_replay_preserves_json_serialization_for_mixed_mapping_keys(tmp_path: Path, monkeypatch: Any) -> None:
     journal = RecoveryJournal(tmp_path / "state")
     _claimed(journal, "request-1")

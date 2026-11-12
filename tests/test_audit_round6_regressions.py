@@ -579,6 +579,28 @@ def test_t6_13_task_search_backfill_fast_path(tmp_path: Path):
 # ==============================================================================
 # T6-14: Benchmark Record Persistence is Atomic
 # ==============================================================================
+def _persist_benchmark_records_process(benchmarks_path: str, worker_id: int, count: int, start_event: Any) -> None:
+    import local_ai_hub.benchmark as benchmark_module
+
+    original_loads = benchmark_module.json.loads
+
+    def delayed_loads(value, *args, **kwargs):
+        data = original_loads(value, *args, **kwargs)
+        if isinstance(data, list):
+            time.sleep(0.01)
+        return data
+
+    benchmark_module.json.loads = delayed_loads
+    runner = HardwareBenchmarkRunner(benchmarks_path=benchmarks_path)
+    if not start_event.wait(10):
+        raise RuntimeError("benchmark writer start timed out")
+    for index in range(count):
+        runner._persist_record({
+            "model": f"process-{worker_id}-{index}",
+            "tokens_per_second": float(index),
+        })
+
+
 def test_t6_14_benchmark_persist_atomic(tmp_path: Path):
     """C14: _persist_record writes atomically to temporary file and renames."""
     from concurrent.futures import ThreadPoolExecutor
@@ -603,4 +625,49 @@ def test_t6_14_benchmark_persist_atomic(tmp_path: Path):
     assert data[0]["model"] == "test"
     assert {record["model"] for record in data[1:]} == {
         record["model"] for record in records
+    }
+
+
+def test_t6_14_benchmark_persist_atomic_across_processes(tmp_path: Path):
+    """C14: independent runner processes preserve every shared-file update."""
+    import multiprocessing
+
+    benchmarks_path = tmp_path / "benchmarks.json"
+    HardwareBenchmarkRunner(benchmarks_path=benchmarks_path)._persist_record(
+        {"model": "seed", "tokens_per_second": 0.0}
+    )
+    context = multiprocessing.get_context("spawn")
+    start_event = context.Event()
+    worker_count = 4
+    records_per_worker = 8
+    processes = [
+        context.Process(
+            target=_persist_benchmark_records_process,
+            args=(str(benchmarks_path), worker_id, records_per_worker, start_event),
+        )
+        for worker_id in range(worker_count)
+    ]
+    try:
+        for process in processes:
+            process.start()
+        start_event.set()
+        for process in processes:
+            process.join(timeout=30)
+            if process.is_alive():
+                process.terminate()
+                process.join()
+                pytest.fail("benchmark persistence worker did not finish")
+        assert [process.exitcode for process in processes] == [0] * worker_count
+    finally:
+        for process in processes:
+            if process.is_alive():
+                process.terminate()
+                process.join()
+
+    data = json.loads(benchmarks_path.read_text(encoding="utf-8"))
+    assert len(data) == 1 + worker_count * records_per_worker
+    assert {record["model"] for record in data[1:]} == {
+        f"process-{worker_id}-{index}"
+        for worker_id in range(worker_count)
+        for index in range(records_per_worker)
     }

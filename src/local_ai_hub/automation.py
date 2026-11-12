@@ -128,6 +128,8 @@ class _Session:
     fenced: bool = False
     close_requested: bool = False
     window_id: int = 0
+    backend_lifecycle_lock: Any = field(default_factory=threading.Lock)
+    backend_closed: bool = False
 
 
 class AutomationBroker:
@@ -145,10 +147,16 @@ class AutomationBroker:
         self._stop = threading.Event()
         self._reaper = None
 
+    def _close_backend(self, session: _Session) -> None:
+        if session.backend is not None:
+            with session.backend_lifecycle_lock:
+                if not session.backend_closed:
+                    session.backend.close()
+                    session.backend_closed = True
+
     def _drop(self, identity: str, session: _Session) -> None:
         session.fenced = True
-        if session.backend is not None:
-            session.backend.close()
+        self._close_backend(session)
         with self.lock:
             self.sessions.pop(identity, None)
 
@@ -216,8 +224,7 @@ class AutomationBroker:
                     return error("session_busy", "session already has an executing operation", 409)
             try:
                 if request["op"] == "close":
-                    with self.lock:
-                        self._drop(request["session_id"], session)
+                    self._drop(request["session_id"], session)
                     return {"success": True, "automation": {"closed": True}}
                 if request["op"] == "status":
                     return {"success": True, "automation": {"session_id": request["session_id"], "mode": session.mode,
@@ -228,8 +235,7 @@ class AutomationBroker:
             finally:
                 try:
                     if self.closed or session.close_requested:
-                        with self.lock:
-                            self._drop(request["session_id"], session)
+                        self._drop(request["session_id"], session)
                 finally:
                     session.lock.release()
         except (ValueError, TypeError, OSError) as exc:
@@ -337,7 +343,7 @@ class AutomationBroker:
                 result = error("automation_outcome_unknown", f"operation did not complete reliably ({type(exc).__name__}); do not replay", 504,
                                outcome_unknown=True)
             if session.fenced:
-                session.backend.close()
+                self._close_backend(session)
             session.journal[identity] = fingerprint, result
             session.expires = self.clock() + self.config.get("session_ttl_seconds", 900)
             return result
@@ -348,7 +354,9 @@ class AutomationBroker:
     def close(self) -> None:
         self._stop.set()
         pending = False
+        cancel_error = None
         to_drop = []
+        to_cancel = []
         with self.lock:
             self.closed = True
             for identity, session in list(self.sessions.items()):
@@ -359,7 +367,15 @@ class AutomationBroker:
                     pending = True
                     cancel = getattr(session.backend, "cancel", None)
                     if callable(cancel):
+                        to_cancel.append((session, cancel))
+        for session, cancel in to_cancel:
+            try:
+                with session.backend_lifecycle_lock:
+                    if not session.backend_closed:
                         cancel()
+            except Exception as exc:
+                if cancel_error is None:
+                    cancel_error = exc
         for identity, session in to_drop:
             try:
                 self._drop(identity, session)
@@ -367,5 +383,7 @@ class AutomationBroker:
                 session.lock.release()
         if self._reaper and self._reaper is not threading.current_thread():
             self._reaper.join(1)
+        if cancel_error is not None:
+            raise cancel_error
         if pending:
             raise TimeoutError("automation operations are cancelling; cleanup is still pending")

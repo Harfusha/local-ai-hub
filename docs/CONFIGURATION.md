@@ -34,7 +34,7 @@ The normal Hub status response includes `laya_runtime` lifecycle metadata, and t
 
 ### Local review
 
-Candidate review runs through the loopback-only, root-scoped Hub API/MCP surface. With no reviewer keys configured, the operator can confirm a candidate using the versioned rubric and one allowed target; no SSH keys, per-example consent receipt, or separate approval record is required. A local model review, when a capable local reviewer is available, must carry separate model identity and provenance and cannot be exported as a human-confirmed label. Remote reviewer quorum and cloud review are not used.
+Candidate review runs through the loopback-only, root-scoped Hub API/MCP surface. With no reviewer keys configured, the operator can confirm a candidate using the versioned rubric and one allowed target; no SSH keys, per-example consent receipt, or separate approval record is required. `model_review` now accepts only a candidate ID and invokes a server-configured local reviewer; callers cannot submit decisions, confidence, or model identity. Without that local reviewer, the request fails closed without storing a review. The current Hub application has not wired the reviewer callback yet, so local-model review remains unavailable until that integration is completed. Model reviews keep separate provenance and can never be exported as human-confirmed labels. Remote reviewer quorum and cloud review are not used.
 
 ## Code intelligence
 

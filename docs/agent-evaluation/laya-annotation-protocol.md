@@ -29,8 +29,16 @@ manifest, makes no model calls, and generates no cards.
   materially useful. These optional text fields are redacted and stored
   separately from the typed codes; see Candidate handling for limits.
 - Current deterministic retrieval order is the baseline.
-- Two independent blinded annotators label each candidate. A separate
-  adjudicator resolves disagreements.
+- The local operator may confirm one permitted target under the versioned
+  rubric; this is the human label for the single-owner Hub. No second annotator,
+  adjudicator, SSH reviewer key, or remote quorum is required.
+- A capable local Codex/model may add a separately attributed review only when
+  the Hub binds its identity from a trusted local invocation. `model_review`
+  accepts only a candidate ID and invokes a server-configured local reviewer;
+  callers cannot submit decisions, confidence, or model identity. Without that
+  callback, the request fails closed without storing a review. The current Hub
+  application has not wired the callback, so model review remains unavailable.
+  Model reviews never become human labels or human-confirmed export evidence.
 - Useful only when it removes one retrieval roundtrip without losing any
   required fact. Unauthorized, stale, or incomplete sources count as false
   positives. Abstain when evidence is insufficient.
@@ -78,9 +86,11 @@ their own evidence, labels, baseline, and approval gates pass.
 - Give each example a stable opaque group key for its underlying task, source,
   or conversation. Keep related examples in the same group. Do not derive a
   group key from text, paths, or other private content.
-- Preserve label source, rubric version, annotator pseudonym, adjudication
-  reference, and group key with each exported example. These
-  fields record provenance; they do not prove that a label is independent.
+- Preserve local operator-confirmation method, rubric version, target hash,
+  and group key with each exported human label. Keep any model-review record,
+  model identity, rubric, evidence, timestamp, confidence/abstention, and
+  decision separate from the target; unattested model submissions are not
+  review proof. Provenance fields record origin, not correctness.
 - Keep repository/task/session identity, evidence IDs, model output, and human
   label provenance separate. Metadata-only diagnostics omit candidate rows.
 - `laya_operation={action:"delete",candidate_id:"..."}` invalidates affected

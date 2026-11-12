@@ -1,4 +1,4 @@
-# Local AI Hub: hodnoticí klíč ke 122 aktivním promptům
+# Local AI Hub: hodnoticí klíč ke 123 aktivním promptům
 
 **Pouze pro hodnotitele. Agentům tento soubor nepředávat.**
 Aktualizováno 8. 11. 2026. Testovací infrastruktura ani fixture nejsou tímto dokumentem implementované. Výsledky běhů jsou v `results.md`.

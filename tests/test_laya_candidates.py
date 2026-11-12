@@ -1,20 +1,17 @@
 import json
 import hashlib
 import sqlite3
-import base64
 from contextlib import closing
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from cryptography.hazmat.primitives import serialization
-from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 import local_ai_hub.laya_candidates as candidates_module
 from local_ai_hub.agent_events import AgentStateStore
 from local_ai_hub.config import ConfigError, validate_config
 from local_ai_hub.laya_dataset_merge import _validate_row
-from local_ai_hub.laya_candidates import LayaCandidateStore
+from local_ai_hub.laya_candidates import LayaCandidateStore, LocalModelReviewResult
 from tools.model_training.laya_backend import _validate_laya_label_provenance
 from local_ai_hub.laya_decisions import (
     ContextSourceEvidence,
@@ -80,6 +77,74 @@ def test_capture_persists_only_real_runtime_candidate(candidate_env):
     assert "consent_receipt_id" not in candidate_json
     assert "per_example_consented" not in candidate_json
     assert consent_table is None
+
+
+def test_default_candidate_store_accepts_one_local_operator_label(candidate_env):
+    repo, state, task_store, _configured_store = candidate_env
+    store = LayaCandidateStore(state)
+    captured = store.handle(_capture(), root=str(repo), task_store=task_store)
+
+    labeled = store.handle(
+        {"action": "label", "candidate_id": captured["candidate_id"], "target": "fast"},
+        root=str(repo),
+        task_store=task_store,
+    )
+
+    assert labeled["success"] is True
+    assert labeled["status"] == "verified"
+    with closing(sqlite3.connect(store.path)) as con:
+        payload = con.execute(
+            "SELECT candidate_json FROM laya_candidates WHERE candidate_id=?",
+            (captured["candidate_id"],),
+        ).fetchone()[0]
+    candidate = json.loads(payload)
+    assert candidate["label_status"] == "verified"
+    assert candidate["label_provenance"]["method"] == "local_operator_confirmation"
+
+
+def test_unverified_export_error_does_not_imply_reviewer_quorum():
+    with pytest.raises(ValueError, match="requires a verified human label"):
+        candidates_module._export_label_provenance({"label_status": "pending"}, {})
+
+
+def test_dataset_merge_error_names_supported_label_provenance():
+    expected = {"route": "fast"}
+    expected_hash = hashlib.sha256(
+        json.dumps(expected, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    candidate_hash = "a" * 64
+    proof = {
+        "status": "verified",
+        "method": "unrecognized",
+        "rubric_version": "laya-source-label-v1",
+        "target_sha256": expected_hash,
+        "annotation_identity_sha256": ["c" * 64, "d" * 64],
+        "agreement": True,
+        "adjudicator_identity_sha256": "e" * 64,
+        "verification_identity_sha256": "f" * 64,
+    }
+    row = {
+        "id": "candidate-1",
+        "group_id": "group-1",
+        "source_sha256": candidate_hash,
+        "state": "bounded state",
+        "questions": {"route": {}},
+        "expected": expected,
+        "provenance": {
+            "source": "laya_candidate_store",
+            "data_class": "local_scoped",
+            "candidate_id": "candidate-1",
+            "candidate_sha256": candidate_hash,
+            "repository_scope_sha256": "b" * 64,
+            "task_id": "task-1",
+            "session_id": "session-1",
+            "evidence_ids": ["ev-1"],
+            "label_provenance": proof,
+        },
+    }
+
+    with pytest.raises(ValueError, match="supported verified label provenance"):
+        _validate_row(row)
 
 
 def test_context_source_candidate_persists_only_redacted_raw_training_content():
@@ -766,75 +831,9 @@ def test_label_verify_requires_authenticated_human_provenance(candidate_env):
     assert store.handle({"action": "list", "status": "verified"}, root=str(repo), task_store=task_store)["count"] == 0
 
 
-def test_configured_ed25519_keys_authenticate_candidate_bound_reviews(tmp_path, monkeypatch):
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    state = tmp_path / "state"
-    state_store = AgentStateStore(state / "agent_state.sqlite", enabled=True)
-    task = SimpleNamespace(task_id="task-1", context=SimpleNamespace(session_id="session-1"))
-    task_store = SimpleNamespace(list_tasks=lambda **_kwargs: [task], state_store=state_store)
-    monkeypatch.setattr(candidates_module, "_task_matches_scope", lambda *_args: True)
-    private_keys = [Ed25519PrivateKey.generate() for _ in range(4)]
-    public_lines = [
-        key.public_key().public_bytes(
-            serialization.Encoding.OpenSSH,
-            serialization.PublicFormat.OpenSSH,
-        ).decode("ascii")
-        for key in private_keys
-    ]
-    store = LayaCandidateStore(state, reviewer_public_keys=public_lines)
-    captured = store.handle(_capture(), root=str(repo), task_store=task_store)
-    candidate_id = captured["candidate_id"]
-
-    def proof(key, fingerprint, role, target):
-        challenge = store.handle({
-            "action": "review_challenge",
-            "candidate_id": candidate_id,
-            "review_action": "label",
-            "role": role,
-            "target": target,
-            "reviewer_fingerprint": fingerprint,
-        }, root=str(repo), task_store=task_store)
-        signature = key.sign(base64.b64decode(challenge["challenge_b64"], validate=True))
-        return {"reviewer_fingerprint": fingerprint, "signature": base64.b64encode(signature).decode("ascii")}
-
-    fingerprints = [store.reviewer_fingerprint(line) for line in public_lines]
-    labels = {
-        "action": "label",
-        "candidate_id": candidate_id,
-        "annotations": [
-            {"target": "fast", "proof": proof(private_keys[0], fingerprints[0], "annotation", "fast")},
-            {"target": "fast", "proof": proof(private_keys[1], fingerprints[1], "annotation", "fast")},
-        ],
-        "adjudication": {
-            "target": "fast",
-            "proof": proof(private_keys[2], fingerprints[2], "adjudication", "fast"),
-        },
-    }
-    altered = dict(labels)
-    altered["annotations"] = [dict(item) for item in labels["annotations"]]
-    altered["annotations"][0]["target"] = "smart"
-    with pytest.raises(ValueError, match="authenticated human reviewer provenance"):
-        store.handle(altered, root=str(repo), task_store=task_store)
-    assert store.handle(labels, root=str(repo), task_store=task_store)["status"] == "reviewed"
-
-    verify_challenge = store.handle({
-        "action": "review_challenge",
-        "candidate_id": candidate_id,
-        "review_action": "verify",
-        "role": "verification",
-        "reviewer_fingerprint": fingerprints[3],
-    }, root=str(repo), task_store=task_store)
-    verify_proof = {
-        "reviewer_fingerprint": fingerprints[3],
-        "signature": base64.b64encode(
-            private_keys[3].sign(base64.b64decode(verify_challenge["challenge_b64"], validate=True))
-        ).decode("ascii"),
-    }
-    assert store.handle(
-        {"action": "verify", "candidate_id": candidate_id, "proof": verify_proof},
-        root=str(repo), task_store=task_store,
-    )["status"] == "verified"
+def test_configured_ed25519_keys_are_rejected_for_local_only_review(tmp_path):
+    with pytest.raises(ValueError, match="SSH reviewer keys are retired"):
+        LayaCandidateStore(tmp_path, reviewer_public_keys=["ssh-ed25519 AAAA test"])
 
 
 
@@ -1035,3 +1034,266 @@ def test_candidate_operations_are_scoped_to_authorized_repository(candidate_env,
     other_repo.mkdir()
     with pytest.raises(ValueError, match="not found"):
         store.handle({"action": "verify", "candidate_id": captured["candidate_id"], "reviewer_ref": "reviewer-x"}, root=str(other_repo), task_store=task_store)
+
+
+def test_local_model_review_uses_server_bound_callback_and_stays_separate_from_operator_label(candidate_env):
+    repo, state, task_store, store = candidate_env
+    captured = store.handle(_capture(), root=str(repo), task_store=task_store)
+    with closing(sqlite3.connect(store.path)) as con:
+        initial_json = con.execute(
+            "SELECT candidate_json FROM laya_candidates WHERE candidate_id=?",
+            (captured["candidate_id"],),
+        ).fetchone()[0]
+    initial_candidate = json.loads(initial_json)
+
+    callback_inputs = []
+
+    def local_reviewer(request):
+        callback_inputs.append(request)
+        return LocalModelReviewResult(
+            decision="smart",
+            confidence=0.91,
+            provider="ollama",
+            model_id="test-reviewer",
+            model_revision="test-revision",
+            runtime_version="test-runtime",
+            device="cpu",
+        )
+
+    reviewer_store = LayaCandidateStore(
+        state,
+        reviewer_authenticator=lambda _reviewer_ref, _root, _task_id: True,
+        local_model_reviewer=local_reviewer,
+    )
+
+    reviewed = reviewer_store.handle(
+        {
+            "action": "model_review",
+            "candidate_id": captured["candidate_id"],
+        },
+        root=str(repo),
+        task_store=task_store,
+    )
+
+    assert len(callback_inputs) == 1
+    assert callback_inputs[0]["candidate_id"] == captured["candidate_id"]
+    review_candidate = callback_inputs[0]["candidate"]
+    assert review_candidate["state"] == "A short approved state"
+    assert "targets" not in review_candidate
+    assert "label_provenance" not in review_candidate
+    assert "model_reviews" not in review_candidate
+    assert reviewed["success"] is True
+    assert reviewed["status"] == "pending"
+    with closing(sqlite3.connect(store.path)) as con:
+        candidate_json, candidate_sha256 = con.execute(
+            "SELECT candidate_json,content_hash FROM laya_candidates WHERE candidate_id=?",
+            (captured["candidate_id"],),
+        ).fetchone()
+    candidate = json.loads(candidate_json)
+    model_review = candidate["model_reviews"][0]
+    assert model_review["kind"] == "local_model_review"
+    assert model_review["decision"] == "smart"
+    assert model_review["confidence"] == 0.91
+    assert model_review["reviewer_identity_status"] == "attested"
+    assert model_review["reviewer_model"] == "test-reviewer"
+    assert model_review["reviewer_revision"] == "test-revision"
+    assert model_review["provider"] == "ollama"
+    assert model_review["runtime_version"] == "test-runtime"
+    assert model_review["candidate_sha256"] == candidate_sha256
+    assert candidate.get("targets") == initial_candidate.get("targets")
+    assert candidate.get("label_provenance") == initial_candidate.get("label_provenance")
+
+    operator_store = LayaCandidateStore(state)
+    labeled = operator_store.handle(
+        {
+            "action": "label",
+            "candidate_id": captured["candidate_id"],
+            "target": "fast",
+        },
+        root=str(repo),
+        task_store=task_store,
+    )
+    assert labeled["status"] == "verified"
+    with closing(sqlite3.connect(store.path)) as con:
+        candidate_json = con.execute(
+            "SELECT candidate_json FROM laya_candidates WHERE candidate_id=?",
+            (captured["candidate_id"],),
+        ).fetchone()[0]
+    candidate = json.loads(candidate_json)
+    assert candidate["targets"] == {"model_route": "fast"}
+    assert candidate["label_provenance"]["method"] == "local_operator_confirmation"
+    assert candidate["model_reviews"][0]["decision"] == "smart"
+
+
+def test_model_review_rejects_caller_output_and_missing_local_reviewer(candidate_env):
+    repo, _state, task_store, store = candidate_env
+    captured = store.handle(_capture(), root=str(repo), task_store=task_store)
+
+    with pytest.raises(RuntimeError, match="local model reviewer is not configured"):
+        store.handle(
+            {"action": "model_review", "candidate_id": captured["candidate_id"]},
+            root=str(repo),
+            task_store=task_store,
+        )
+
+    with pytest.raises(ValueError, match="model_review fields invalid"):
+        store.handle(
+            {
+                "action": "model_review",
+                "candidate_id": captured["candidate_id"],
+                "decision": "smart",
+                "confidence": 0.99,
+                "reviewer_model": "caller-claimed-model",
+            },
+            root=str(repo),
+            task_store=task_store,
+        )
+
+
+def test_local_reviewer_cannot_mutate_candidate_options(candidate_env):
+    repo, state, task_store, store = candidate_env
+    captured = store.handle(_capture(), root=str(repo), task_store=task_store)
+
+    def mutating_reviewer(request):
+        request["candidate"]["questions"]["model_route"]["criteria"] = ["caller-added"]
+        return LocalModelReviewResult(
+            decision="caller-added",
+            confidence=0.99,
+            provider="ollama",
+            model_id="test-reviewer",
+            model_revision="test-revision",
+            runtime_version="test-runtime",
+            device="cpu",
+        )
+
+    reviewer_store = LayaCandidateStore(state, local_model_reviewer=mutating_reviewer)
+    with pytest.raises(RuntimeError, match="unsupported decision"):
+        reviewer_store.handle(
+            {"action": "model_review", "candidate_id": captured["candidate_id"]},
+            root=str(repo),
+            task_store=task_store,
+        )
+
+    history = store.handle(
+        {"action": "model_review_history", "candidate_id": captured["candidate_id"]},
+        root=str(repo),
+        task_store=task_store,
+    )
+    assert history["model_reviews"] == []
+
+
+def test_local_reviewer_rejects_nonlocal_execution(candidate_env):
+    _repo, _state, _task_store, _store = candidate_env
+    with pytest.raises(ValueError, match="local execution provenance"):
+        LocalModelReviewResult(
+            decision="smart",
+            confidence=0.91,
+            provider="remote-provider",
+            model_id="test-reviewer",
+            model_revision="test-revision",
+            runtime_version="test-runtime",
+            device="cpu",
+            is_local=False,
+        )
+
+
+def test_local_model_review_rejects_candidate_changed_during_inference(candidate_env):
+    repo, state, task_store, store = candidate_env
+    captured = store.handle(_capture(), root=str(repo), task_store=task_store)
+    operator_store = LayaCandidateStore(state)
+
+    def local_reviewer(_request):
+        operator_store.handle(
+            {
+                "action": "label",
+                "candidate_id": captured["candidate_id"],
+                "target": "fast",
+            },
+            root=str(repo),
+            task_store=task_store,
+        )
+        return LocalModelReviewResult(
+            decision="smart",
+            confidence=0.91,
+            provider="ollama",
+            model_id="test-reviewer",
+            model_revision="test-revision",
+            runtime_version="test-runtime",
+            device="cpu",
+        )
+
+    reviewer_store = LayaCandidateStore(state, local_model_reviewer=local_reviewer)
+    with pytest.raises(ValueError, match="candidate changed during local model review"):
+        reviewer_store.handle(
+            {"action": "model_review", "candidate_id": captured["candidate_id"]},
+            root=str(repo),
+            task_store=task_store,
+        )
+
+    with closing(sqlite3.connect(store.path)) as con:
+        candidate_json = con.execute(
+            "SELECT candidate_json FROM laya_candidates WHERE candidate_id=?",
+            (captured["candidate_id"],),
+        ).fetchone()[0]
+    candidate = json.loads(candidate_json)
+    assert candidate["targets"] == {"model_route": "fast"}
+    assert candidate["label_provenance"]["method"] == "local_operator_confirmation"
+    assert "model_reviews" not in candidate
+
+
+def test_model_review_history_requires_explicit_scoped_read(candidate_env):
+    repo, state, task_store, store = candidate_env
+    captured = store.handle(_capture(), root=str(repo), task_store=task_store)
+    reviewer_store = LayaCandidateStore(
+        state,
+        local_model_reviewer=lambda _request: LocalModelReviewResult(
+            decision="smart",
+            confidence=0.91,
+            provider="ollama",
+            model_id="test-reviewer",
+            model_revision="test-revision",
+            runtime_version="test-runtime",
+            device="cpu",
+        ),
+    )
+    reviewer_store.handle(
+        {
+            "action": "model_review",
+            "candidate_id": captured["candidate_id"],
+        },
+        root=str(repo),
+        task_store=task_store,
+    )
+
+    ordinary_get = store.handle(
+        {"action": "get", "candidate_id": captured["candidate_id"]},
+        root=str(repo),
+        task_store=task_store,
+    )
+    assert "model_reviews" not in ordinary_get["candidate"]
+
+    history = reviewer_store.handle(
+        {"action": "model_review_history", "candidate_id": captured["candidate_id"]},
+        root=str(repo),
+        task_store=task_store,
+    )
+    assert history["success"] is True
+    assert history["model_reviews"][0]["decision"] == "smart"
+    assert history["model_reviews"][0]["reviewer_model"] == "test-reviewer"
+
+
+def test_ssh_review_challenge_is_retired_for_local_only_review(candidate_env):
+    repo, _state, task_store, store = candidate_env
+
+    with pytest.raises(ValueError, match="SSH reviewer challenges are retired"):
+        store.handle(
+            {
+                "action": "review_challenge",
+                "candidate_id": "candidate-1",
+                "review_action": "verify",
+                "role": "verification",
+                "reviewer_fingerprint": "SHA256:remote-reviewer",
+            },
+            root=str(repo),
+            task_store=task_store,
+        )

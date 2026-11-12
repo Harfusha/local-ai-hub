@@ -208,9 +208,232 @@ def test_failed_cleanup_retains_capacity_until_cleanup_succeeds(setup):
     assert result["success"]
 
 
+def test_close_runs_backend_cleanup_without_broker_lock(setup):
+    session = opened(setup)
+    broker = setup[0]
+    backend = setup[1][0]
+    original_close = backend.close
+    lock_available_during_close = []
+
+    def close_with_lock_probe():
+        acquired = threading.Event()
+
+        def acquire_broker_lock():
+            with broker.lock:
+                acquired.set()
+
+        probe = threading.Thread(target=acquire_broker_lock)
+        probe.start()
+        lock_available_during_close.append(acquired.wait(1))
+        probe.join(1)
+        original_close()
+
+    backend.close = close_with_lock_probe
+    try:
+        result = call(setup, {"op": "close", "session_id": session["session_id"], "session_key": session["session_key"]})
+    finally:
+        backend.close = original_close
+
+    assert result["success"]
+    assert lock_available_during_close == [True]
+
+
+def test_shutdown_cancels_busy_backend_without_broker_lock(setup):
+    broker, backends = setup[0], setup[1]
+    session = opened(setup)
+    state = broker.sessions[session["session_id"]]
+    lock_held = threading.Event()
+    release_lock = threading.Event()
+    holder_done = threading.Event()
+    lock_available_during_cancel = []
+
+    def hold_session_lock():
+        with state.lock:
+            lock_held.set()
+            assert release_lock.wait(3)
+            holder_done.set()
+
+    holder = threading.Thread(target=hold_session_lock)
+    holder.start()
+    assert lock_held.wait(1)
+
+    def cancel_with_lock_probe():
+        acquired = threading.Event()
+
+        def acquire_broker_lock():
+            with broker.lock:
+                acquired.set()
+
+        probe = threading.Thread(target=acquire_broker_lock)
+        probe.start()
+        lock_available_during_cancel.append(acquired.wait(1))
+        release_lock.set()
+        probe.join(1)
+
+    backends[0].cancel = cancel_with_lock_probe
+    try:
+        with pytest.raises(TimeoutError, match="automation operations are cancelling"):
+            broker.close()
+    finally:
+        release_lock.set()
+        holder.join(1)
+
+    assert holder_done.is_set()
+    assert not holder.is_alive()
+    assert lock_available_during_cancel == [True]
+
+
+def test_shutdown_waits_for_cancel_before_backend_close(setup):
+    broker = setup[0]
+    session = opened(setup)
+    backend = setup[1][0]
+    state = broker.sessions[session["session_id"]]
+    operation_ready = threading.Event()
+    finish_operation = threading.Event()
+    drop_entered = threading.Event()
+    drop_finished = threading.Event()
+    cancel_started = threading.Event()
+    finish_cancel = threading.Event()
+    cancel_finished = threading.Event()
+    close_before_cancel = []
+    original_close = backend.close
+
+    def close_with_order_probe():
+        close_before_cancel.append(not cancel_finished.is_set())
+        original_close()
+
+    def cancel_with_gate():
+        cancel_started.set()
+        assert finish_cancel.wait(3)
+        cancel_finished.set()
+
+    backend.close = close_with_order_probe
+    backend.cancel = cancel_with_gate
+
+    def finish_active_operation():
+        with state.lock:
+            operation_ready.set()
+            assert finish_operation.wait(3)
+            drop_entered.set()
+            broker._drop(session["session_id"], state)
+            drop_finished.set()
+
+    worker = threading.Thread(target=finish_active_operation)
+    worker.start()
+    assert operation_ready.wait(1)
+    shutdown_errors = []
+
+    def shutdown():
+        try:
+            broker.close()
+        except Exception as exc:
+            shutdown_errors.append(exc)
+
+    closer = threading.Thread(target=shutdown)
+    closer.start()
+    assert cancel_started.wait(1)
+    finish_operation.set()
+    assert drop_entered.wait(1)
+    try:
+        assert not drop_finished.wait(0.1)
+    finally:
+        finish_cancel.set()
+
+    worker.join(1)
+    closer.join(2)
+    assert not worker.is_alive()
+    assert not closer.is_alive()
+    assert drop_finished.is_set()
+    assert close_before_cancel == [False]
+    assert any(isinstance(exc, TimeoutError) for exc in shutdown_errors)
+
+
+def test_shutdown_cancel_failure_releases_claimed_session_locks(setup):
+    broker = setup[0]
+    first = opened(setup)
+    second = opened(setup)
+    busy = broker.sessions[first["session_id"]]
+    idle = broker.sessions[second["session_id"]]
+    assert busy.lock.acquire(blocking=False)
+
+    def fail_cancel():
+        raise RuntimeError("cancel failed")
+
+    setup[1][0].cancel = fail_cancel
+    try:
+        with pytest.raises(RuntimeError, match="cancel failed"):
+            broker.close()
+        assert idle.backend_closed
+        assert setup[1][1].closed
+        assert idle.lock.acquire(blocking=False)
+        idle.lock.release()
+    finally:
+        busy.lock.release()
+
+
 def test_desktop_window_is_leased_to_one_session(setup):
     request = {"op": "open", "mode": "desktop", "application": "editor", "window_id": 123}
     assert call(setup, request)["success"]
     denied = call(setup, request, owner="task-two")
     assert denied["error_code"] == "window_busy"
     assert len(setup[1]) == 1
+
+
+def test_active_execute_waits_for_shutdown_cancel_before_backend_close(setup):
+    broker = setup[0]
+    session = opened(setup)
+    backend = setup[1][0]
+    backend.release = threading.Event()
+    cancel_started = threading.Event()
+    finish_cancel = threading.Event()
+    cancel_finished = threading.Event()
+    operation_finished = threading.Event()
+    close_before_cancel = []
+    original_close = backend.close
+
+    def cancel_with_gate():
+        cancel_started.set()
+        assert finish_cancel.wait(3)
+        cancel_finished.set()
+
+    def close_with_order_probe():
+        close_before_cancel.append(not cancel_finished.is_set())
+        original_close()
+
+    backend.cancel = cancel_with_gate
+    backend.close = close_with_order_probe
+    operation_result = []
+
+    def active_operation():
+        try:
+            operation_result.append(call(setup, act(session)))
+        finally:
+            operation_finished.set()
+
+    operation = threading.Thread(target=active_operation)
+    operation.start()
+    assert backend.entered.wait(1)
+
+    shutdown_errors = []
+
+    def shutdown():
+        try:
+            broker.close()
+        except Exception as exc:
+            shutdown_errors.append(exc)
+
+    closer = threading.Thread(target=shutdown)
+    closer.start()
+    assert cancel_started.wait(1)
+    backend.release.set()
+    assert not operation_finished.wait(0.1)
+    finish_cancel.set()
+    operation.join(2)
+    closer.join(2)
+
+    assert not operation.is_alive()
+    assert not closer.is_alive()
+    assert operation_result and operation_result[0]["success"]
+    assert len(shutdown_errors) == 1 and isinstance(shutdown_errors[0], TimeoutError)
+    assert close_before_cancel == [False]
+    assert backend.closed

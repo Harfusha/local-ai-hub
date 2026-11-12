@@ -544,15 +544,56 @@ class RecoveryJournal:
                 first_by_request.setdefault(completion[0], completion)
             with closing(self._connect()) as con:
                 con.execute("BEGIN IMMEDIATE")
-                con.executemany(
-                    "UPDATE requests SET state=?, updated_at=?, detail=?, status_code=?, response_json=? "
-                    "WHERE request_id=? AND state='running'",
-                    [
-                        (state, updated_at, detail, status_code, response_json, request_id)
-                        for request_id, state, updated_at, detail, status_code, response_json, _sequence
-                        in first_by_request.values()
-                    ],
-                )
+                updates: list[tuple[str, float, str, int, str, str]] = []
+                for request_id, state, updated_at, detail, status_code, response_json, _sequence in first_by_request.values():
+                    existing = con.execute(
+                        "SELECT state,detail,status_code,response_json FROM requests WHERE request_id=?",
+                        (request_id,),
+                    ).fetchone()
+                    if existing is None:
+                        raise ValueError("request row missing during completion")
+                    if str(existing[0]) == "running":
+                        updates.append((state, updated_at, detail, status_code, response_json, request_id))
+                        continue
+                    try:
+                        existing_response = (
+                            json_dumps(
+                                json.loads(str(existing[3])),
+                                ensure_ascii=False,
+                                separators=(",", ":"),
+                                sort_keys=True,
+                            )
+                            if existing[3]
+                            else ""
+                        )
+                        candidate_response = (
+                            json_dumps(
+                                json.loads(response_json),
+                                ensure_ascii=False,
+                                separators=(",", ":"),
+                                sort_keys=True,
+                            )
+                            if response_json
+                            else ""
+                        )
+                        same_response = existing_response == candidate_response
+                    except (TypeError, ValueError):
+                        same_response = False
+                    if (
+                        str(existing[0]) != state
+                        or str(existing[1] or "") != detail
+                        or int(existing[2] or 0) != status_code
+                        or not same_response
+                    ):
+                        raise ValueError("conflicting completion for request id")
+                if updates:
+                    cursor = con.executemany(
+                        "UPDATE requests SET state=?, updated_at=?, detail=?, status_code=?, response_json=? "
+                        "WHERE request_id=? AND state='running'",
+                        updates,
+                    )
+                    if cursor.rowcount != len(updates):
+                        raise ValueError("conflicting completion for request id")
                 con.commit()
 
         retry_busy(write, retries=2)

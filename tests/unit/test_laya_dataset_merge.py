@@ -142,6 +142,47 @@ def test_validate_row_rejects_non_finite_json_numbers():
         _validate_row({**_row(), "questions": {"intent": {"score": float("nan")}}})
 
 
+def test_merge_accepts_single_local_operator_confirmation(tmp_path):
+    row = _row()
+    expected = row["expected"]
+    target_sha256 = hashlib.sha256(
+        json.dumps(
+            expected,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode("utf-8")
+    ).hexdigest()
+    row["provenance"]["label_provenance"] = {
+        "status": "verified",
+        "method": "local_operator_confirmation",
+        "rubric_version": "laya-source-label-v1",
+        "target_sha256": target_sha256,
+    }
+
+    source = tmp_path / "operator-confirmed.zip"
+    duplicate_source = tmp_path / "operator-confirmed-copy.zip"
+    _archive(source, [row])
+    _archive(duplicate_source, [row])
+    output = tmp_path / "pooled"
+
+    manifest = merge_training_archives(
+        [(source, "passphrase"), (duplicate_source, "passphrase")],
+        output,
+    )
+
+    rows = [
+        json.loads(line)
+        for line in (output / "laya.train.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    assert rows == [row]
+    assert manifest["unique_rows"] == 1
+    assert manifest["duplicate_rows_removed"] == 1
+    assert manifest["training_only"] is True
+    assert manifest["evaluation_eligible"] is False
+
+
 @pytest.mark.parametrize("mutation, message", [
     ("missing", "verified label provenance"),
     ("pending", "status must be verified"),

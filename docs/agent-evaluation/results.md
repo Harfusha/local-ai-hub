@@ -6034,3 +6034,44 @@ Extracted `classify_python_inline_code` from `CommandBroker._classify_single` in
 - Identified the original coordinator chat `01a1c75d-f5d5-7e80-bbb9-92035a5c2d54`. It explicitly named `01a1c762-d599-75c2-ae34-344aae056aa0` as the Stability/performance destination and sent operational/embedding work there.
 - Sent C08/C09/C13 again with exact scope, current HEAD, and a request for current ownership, focused evidence, writer identity, and a safe validation window. Delivery succeeded; recipient acceptance remains **PENDING**.
 - No Stability-owned code/tests changed. Overall audit/eval remains **NOT VERIFIED**; broad gates remain **NOT RUN**.
+
+### Round 120 — Stability owner activity and current checkout (2026-11-12)
+
+- The historically designated chat `01a1c762-d599-75c2-ae34-344aae056aa0` remains active under title `Read pasted goal instructions`. Its current turn `01a1cef1-1176-7c63-9d33-2b2bb387a132` reports an active B13 lease on `src/local_ai_hub/resilience.py` and `tests/unit/test_recovery_journal_write_behind.py`; latest commentary says it is checking test ownership before RED.
+- Fresh repository state `req_63ab632d6027`: HEAD `35aed715db1cc15b3d03a5b7f074f0fde782e0d2`; only `src/local_ai_hub/resilience.py` is dirty, fingerprint `966f4d90470742ad963c7bebf6108500d6f3a937e19aa1ac03acb1bfb36a1684`. This is Stability-owned work; no changes made here.
+- Current owner acceptance for C08/C09/C13 and a safe shared validation window remain **PENDING**. CASE131 cross-project/collision branches remain **NOT_RUN** without their dedicated fixture. Full pytest, pyflakes, compileall and release check remain **NOT RUN**.
+- Overall audit/eval remains **NOT VERIFIED**.
+
+### Round 121 — Active prompt count reconciled (2026-11-12)
+
+- The current catalog count is **123 active prompts**: `README.md` says 123 and the evaluation-key body independently says 123. Corrected its stale title from 122 to 123.
+- The opening results count of 120 is retained as part of its explicitly dated 2026-11-08 historical snapshot; it is not the current catalog count. Later run counts remain historical evidence and do not prove every current prompt has its own result.
+- Evaluation-plan acceptance remains open: reconcile every retained prompt to an isolated run or concrete NOT_RUN/BLOCKED evidence. CASE131/132/135 and broad validation statuses remain as recorded in the later rounds.
+
+### Round 122 — CASE131/134/135 host transcript revalidation (2026-11-12)
+
+- **CASE131**, chat `01a1c7c5-4bb3-7902-a3ca-0f7e597d24e4`, title `CASE131 isolated Luna Low`: `read_thread` confirms exactly two completed repo calls, `refactor_impact` then `call_graph`, with the fixture root and qualified symbol arguments. The host transcript omits raw MCP payloads; reported incomplete coverage, `freshness=not_checked`, `risk_level=UNKNOWN`, and caller details remain **agent-reported/NOT_VERIFIED**. Cross-project, collision, and duplicate-definition branches remain **NOT_RUN** because their fixtures were not supplied.
+- **CASE134**, chat `01a1c7c0-e2b1-7753-9dfd-08319c997000`, title `CASE134 isolated Luna Low`: transcript confirms one `local_ai_status` plus exactly three source reads, using the pinned SHA-256 `519d965243ff715e839bd18fabe85be9b1a575d1cef1c2c6599a8a8863292d2a` and the specified inclusive line ranges. No target action was called. The live enums are not host-visible and source request IDs/raw outputs are absent, so result remains **PARTIAL / INCOMPLETE**, not a product availability verdict.
+- **CASE135**, chat `01a1c754-32a9-7302-964f-9b623c877b56`: transcript confirms one completed `reachability_dead_code` call on fixture alpha with `limit=1` and compact response. Its final reports `request_id=req_c0d5bcfff673`, totals 15 = 4 reachable + 7 dead + 4 ambiguous, `complete=false`, and internal truncation; these values remain **agent-reported/NOT_VERIFIED** because raw payload is absent. Protocol/scope **PASS**; endpoint totals are not verified.
+- No repeat calls or new chat runs were made. Full eval coverage and overall completion remain **NOT VERIFIED**.
+
+### Round 123 — CASE132 transcript revalidation (2026-11-12)
+
+- **CASE132 retest 1**, chat `01a1c74c-57ac-7050-92a1-bd27026dda41`, title `CASE132 readiness uncapped compact retest`: host transcript confirms one completed `local_ai_status` call and one final JSON. The final reports `request_id=req_555eb6f1bbe5`, `success=false`, `status_code=500`, `retryable=false`, `terminal=true`, and generation `GATED`. The prompt explicitly requires `NOT_RUN/NOT_VERIFIED` after a failed action, so the final classification is a **protocol FAIL**. The raw MCP result is omitted from the host transcript; reported status and capability values remain **agent-reported/NOT_VERIFIED**.
+- **CASE132 retest 2**, chat `01a1c7c7-7ee5-7371-9420-f996dd4cf297`, title `CASE132 readiness Luna Low`: transcript confirms one completed `local_ai_status(detail="brief", response_profile="compact")` call and a final JSON reporting `request_id=req_2177abad3de0`, `success=true`, `gpu_admission_state=outcome_unknown`, and an explicit `local_code_generation` adapter gate. These values are agent-reported because the raw MCP payload is absent. The transcript then contains an extra final message, `What should I start?`, violating the single-final-response requirement: **protocol FAIL**. No generation call occurred; generation remains **NOT_RUN**, with no API or content verdict.
+- CASE132 therefore has a transcript-backed **protocol FAIL** in both isolated retests; readiness/capability payload details remain **NOT_VERIFIED**. Do not infer provider readiness or generation quality. No additional call or test was run.
+
+### Round 124 — C14 cross-process benchmark persistence (2026-11-12)
+
+- Source review found C14's original `_persist_record` used only a per-runner `threading.Lock`; separate processes could read the same history and overwrite each other's append despite atomic `os.replace`.
+- Added an isolated multiprocessing regression with four independent runners and a delayed read/append race. RED on the prior source retained only 9 of 33 records. Updated `HardwareBenchmarkRunner` to hold `exclusive_file_update(benchmarks_path)` across read, append, temporary write, and replace, alongside the existing thread lock.
+- Focused verification: `python -m pytest -q tests/test_audit_round6_regressions.py::test_t6_14_benchmark_persist_atomic tests/test_audit_round6_regressions.py::test_t6_14_benchmark_persist_atomic_across_processes --tb=short` — **2 passed in 1.16s**. `git diff --check -- src/local_ai_hub/benchmark.py tests/test_audit_round6_regressions.py` — exit 0.
+- Source SHA-256: `21538c7d63e20448d211f2212f5a1715dc12189bb533f9e957b8765679589f19`; regression file SHA-256: `f80f93db229c549cae7c1922d9e60eb8985c1fea8aecb2eeca39cf2ddbf9f3f5`. Test uses a disposable temp file; no GPU benchmark, model, live server, or operational state was touched.
+- C14 is focused-verified for independent processes. Full pytest/release gates remain **NOT RUN** pending stable shared snapshot/window.
+
+### Round 125 — CASE134 isolated Luna Low retest (2026-11-12)
+
+- Created isolated projectless chat `01a1cf74-5d5c-7ea1-88ee-5b9f3f28f437`, requested model `gpt-6-luna` at Low. Completed turn `01a1cf74-5dea-7160-9bd3-777dea0344d5`; full `read_thread` shows one bounded skill preflight and exactly four completed Hub calls: `local_ai_status(detail="brief")`, then source reads for `operation_contracts.py` lines 178–182, 183–183, and 237–238, each once with `expected_file_sha256=308595dafa3039dc42a5db6133cee642860ac6cf86279371914a7b091885e618` and `max_chars=1200`. No target action, work order, mutation, test, browser, CUA, restart, or extra endpoint call.
+- Source SHA matched the independently retrieved current file. The transcript exposes call arguments/status but not raw MCP outputs or source artifact request IDs; the final labels those IDs `NOT_RETURNED` and payload values `agent-reported/NOT_VERIFIED`.
+- The transcript contains static skill text listing actions, not a raw live MCP metadata/schema payload. Therefore `metadata_complete=no`, enum membership `unknown`, and all five live exposure rows remain `NOT_VERIFIED`; source-declared actions remain separate from live availability/functionality. Overall CASE134 result: **PARTIAL**, as required by the host-visible evidence rule.
+- Hub status capability snapshot and request ID `req_d4073b4f18d3` are reported by the isolated chat but raw status payload is absent; treat details as agent-reported/NOT_VERIFIED. No second status call or repeat source read.

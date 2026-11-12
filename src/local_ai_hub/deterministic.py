@@ -4569,6 +4569,8 @@ class DeterministicEngine:
                     "staged": [],
                     "untracked_count": 0,
                     "untracked": [],
+                    "conflict_count": 0,
+                    "conflicts": [],
                 }
             
             lines = res.stdout.splitlines()
@@ -4576,6 +4578,7 @@ class DeterministicEngine:
             modified: list[str] = []
             staged: list[str] = []
             untracked: list[str] = []
+            conflicts: list[str] = []
             
             if lines and lines[0].startswith("## "):
                 branch = lines[0][3:].split("...")[0].strip()
@@ -4585,6 +4588,11 @@ class DeterministicEngine:
                 if len(ln) < 3:
                     continue
                 x, y, path = ln[0], ln[1], ln[3:].strip()
+                if (x, y) in {
+                    ("D", "D"), ("A", "U"), ("U", "D"),
+                    ("U", "A"), ("D", "U"), ("A", "A"), ("U", "U"),
+                }:
+                    conflicts.append(path)
                 if x in ("M", "A", "D", "R"):
                     staged.append(path)
                 if y in ("M", "D"):
@@ -4603,6 +4611,8 @@ class DeterministicEngine:
                 "staged": staged,
                 "untracked_count": len(untracked),
                 "untracked": untracked,
+                "conflict_count": len(conflicts),
+                "conflicts": conflicts,
             }
         except Exception as exc:
             return {"success": False, "error": str(exc), "is_git": False}

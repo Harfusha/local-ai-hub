@@ -56,6 +56,51 @@ def _make_source_repo(source: Path) -> None:
     _git(source, "commit", "--quiet", "-m", "seed")
 
 
+def test_private_snapshot_hashes_copy_without_second_destination_tree_scan(
+    tmp_path: Path, monkeypatch
+) -> None:
+    source = tmp_path / "source"
+    _make_source_repo(source)
+    original_manifest = command_transactions._tree_manifest
+    manifest_roots: list[Path] = []
+
+    def count_manifest(root: Path, max_depth: int = 64):
+        manifest_roots.append(root)
+        return original_manifest(root, max_depth=max_depth)
+
+    monkeypatch.setattr(command_transactions, "_tree_manifest", count_manifest)
+
+    snapshot, baseline = create_private_transaction_snapshot_with_manifest(
+        source, tmp_path / "transaction"
+    )
+
+    assert manifest_roots == [source.resolve(), source.resolve()]
+    assert original_manifest(snapshot) == baseline
+
+
+def test_private_snapshot_can_run_full_destination_verification(
+    tmp_path: Path, monkeypatch
+) -> None:
+    source = tmp_path / "source"
+    _make_source_repo(source)
+    original_manifest = command_transactions._tree_manifest
+    manifest_roots: list[Path] = []
+
+    def count_manifest(root: Path, max_depth: int = 64):
+        manifest_roots.append(root)
+        return original_manifest(root, max_depth=max_depth)
+
+    monkeypatch.setattr(command_transactions, "_tree_manifest", count_manifest)
+
+    baseline = original_manifest(source)
+    snapshot = create_private_transaction_snapshot(
+        source, tmp_path / "transaction", full_verification=True
+    )
+
+    assert manifest_roots == [source.resolve(), snapshot.resolve(), source.resolve()]
+    assert original_manifest(snapshot) == baseline
+
+
 def test_private_snapshot_preserves_dirty_ignored_and_untracked_inputs(tmp_path: Path) -> None:
     source = tmp_path / "source"
     _make_source_repo(source)

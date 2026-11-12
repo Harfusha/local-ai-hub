@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from .json_utils import dumps as json_dumps
+from .file_locks import exclusive_file_update
 
 import json
 import math
@@ -1302,7 +1303,7 @@ class HardwareBenchmarkRunner:
             if file_lock is None:
                 file_lock = threading.Lock()
                 self._file_lock = file_lock
-            with file_lock:
+            with file_lock, exclusive_file_update(self.benchmarks_path):
                 history: list[dict[str, Any]] = []
                 if self.benchmarks_path.exists():
                     try:
