@@ -295,7 +295,8 @@ def test_completion_batch_keeps_first_terminal_result_across_batches(tmp_path: P
     first = ("request-1", "done", 1.0, "first", 200, '{"value":"first"}', 1)
     conflicting = ("request-1", "failed", 2.0, "second", 500, '{"value":"second"}', 2)
     journal._write_completion_batch([first, conflicting])
-    journal._write_completion_batch([conflicting])
+    with pytest.raises(ValueError, match="conflicting completion"):
+        journal._write_completion_batch([conflicting])
     with closing(sqlite3.connect(journal.path)) as connection:
         row = connection.execute(
             "SELECT state,status_code,response_json FROM requests WHERE request_id=?", ("request-1",)
@@ -362,6 +363,7 @@ def test_durable_result_wins_over_late_pending_completion(tmp_path: Path, monkey
     finally:
         release.set()
         journal.close()
+    assert journal._journal_unavailable is True
 
 
 def test_saturated_queue_keeps_http_completion_nonblocking_and_fails_closed(

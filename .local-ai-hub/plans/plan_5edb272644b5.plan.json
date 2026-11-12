@@ -138,7 +138,7 @@
         "Laya stays shadow-only until category-specific measured benefit and explicit approval; deterministic behavior remains authoritative.",
         "Lazy load occurs on first request and remains resident for 600 seconds after the latest completed request without evicting other models; runtime evidence stays separate from source validation."
       ],
-      "blocker": "Local operator target confirmation works without SSH keys. The user requires review to stay local: the operator may confirm a human label, or Codex/a capable local model may add a separately attributed review. Current active MCP adapter exposes no semantic review action or trusted local model-review write path; no cloud reviewer is allowed.",
+      "blocker": "Current MCP schema exposes no local semantic review action; model-review submission lacks a trusted local reviewer identity/path.",
       "clarifications": [
         {
           "adoption": "adopted",
@@ -174,9 +174,9 @@
       "depends_on": [],
       "description": "Single-owner Laya integration. Current source changes enable root-scoped local operator target confirmation with versioned rubric and distinct provenance; model-reviewed examples cannot masquerade as human labels. Dataset merge and training validators accept the local-operator provenance shape. No SSH reviewer keys/quorum are required. Review must stay local: operator confirmation may create a human label; Codex or a capable local Hub model may submit a separate model review with its own identity/provenance. No cloud fallback. Keep Laya shadow-only and deterministic Hub behavior authoritative. Continue full MCP/API, lifecycle, capture, export and valuable integration audit.",
       "kind": "code",
-      "next_action": "Audit current HTTP and MCP dispatch and candidate lifecycle. Add a local-only, separately attributed model-review path if supported without shared runtime changes; preserve operator confirmation as the human-label path. Wait for Stability's explicit shared-path release and safe runtime window before shared/runtime edits or live capture.",
+      "next_action": "Continue source audit of the existing HTTP/MCP Laya operations; design separately attributed local Codex/model review without SSH keys or cloud. Wait for Stability's shared-path release before runtime/shared edits and live capture.",
       "title": "Rozšířit Laya: MCP/API, relevantní rozhodovací body a tréninková data",
-      "work_phase": "verification",
+      "work_phase": "implementation",
       "work_status": "in_progress"
     }
   },
