@@ -59,6 +59,11 @@ _SECRET_PATTERNS = (
     re.compile(r"(?i)\b(api[_-]?key|access[_-]?token|refresh[_-]?token|token|password|passwd|secret|authorization)(\s*[:=]\s*)([^\s,;]+)"),
     re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]+"),
     re.compile(r"\b(?:sk-[A-Za-z0-9_-]{16,}|gh[pousr]_[A-Za-z0-9]{20,}|AKIA[0-9A-Z]{16})\b"),
+    re.compile(r"(?i)\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b"),
+    re.compile(
+        r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----.*?-----END [A-Z0-9 ]*PRIVATE KEY-----",
+        re.DOTALL,
+    ),
 )
 _MAX_STATE_BYTES = 16 * 1024
 _MAX_RAW_FIELD_BYTES = 8 * 1024

@@ -29,6 +29,15 @@ class BreakerState:
     probe_generation: int = 0
 
 
+@dataclass(frozen=True)
+class CircuitBreakerAdmission:
+    allowed: bool
+    probe_generation: int | None = None
+
+    def __bool__(self) -> bool:
+        return self.allowed
+
+
 def _safe_float(val: Any, default: float, min_val: float = 0.0) -> float:
     if val is None or isinstance(val, bool):
         return default
@@ -95,7 +104,7 @@ class CircuitBreakerRegistry:
             self._states[key] = state
         return state
 
-    def allow(self, key: str) -> bool:
+    def allow(self, key: str) -> CircuitBreakerAdmission:
         key = self._clean_key(key)
         now = time.monotonic()
         with self._lock:
@@ -103,21 +112,21 @@ class CircuitBreakerRegistry:
             if state is None:
                 # Unknown resources fail closed at capacity. Never evict an
                 # open circuit or a live probe to admit a fresh resource name.
-                return False
+                return CircuitBreakerAdmission(False)
             if not state.opened_at:
-                return True
+                return CircuitBreakerAdmission(True)
             if now - state.opened_at < self.cooldown_seconds:
-                return False
+                return CircuitBreakerAdmission(False)
             if state.half_open_probe:
                 # Auto-expire stale probe after timeout (prevents permanent lockdown)
                 if now - state.half_open_probe_since > self.probe_timeout_seconds:
                     state.half_open_probe = False
                 else:
-                    return False
+                    return CircuitBreakerAdmission(False)
             state.half_open_probe = True
             state.half_open_probe_since = now
             state.probe_generation += 1
-            return True
+            return CircuitBreakerAdmission(True, state.probe_generation)
 
     def probe_generation(self, key: str) -> int:
         key = self._clean_key(key)
@@ -130,7 +139,13 @@ class CircuitBreakerRegistry:
         with self._lock:
             state = self._get_or_create_locked(key)
             if state is not None:
-                if probe_generation is not None and state.probe_generation != probe_generation:
+                if probe_generation is None and state.half_open_probe:
+                    return
+                if probe_generation is not None and (
+                    state.probe_generation != probe_generation
+                    or not state.half_open_probe
+                    or time.monotonic() - state.half_open_probe_since > self.probe_timeout_seconds
+                ):
                     return
                 self._states[key] = BreakerState()
 
@@ -140,7 +155,13 @@ class CircuitBreakerRegistry:
             state = self._get_or_create_locked(key)
             if state is None:
                 return
-            if probe_generation is not None and state.probe_generation != probe_generation:
+            if probe_generation is None and state.half_open_probe:
+                return
+            if probe_generation is not None and (
+                state.probe_generation != probe_generation
+                or not state.half_open_probe
+                or time.monotonic() - state.half_open_probe_since > self.probe_timeout_seconds
+            ):
                 return
             state.failures += 1
             state.half_open_probe = False

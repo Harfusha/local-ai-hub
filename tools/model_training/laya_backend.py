@@ -251,7 +251,15 @@ def _validate_laya_label_provenance(
         raise ValueError(f"{label}: label_provenance.target_sha256 does not match target labels")
 
     method = proof.get("method")
-    if method == "blind_double_annotation":
+    if method == "local_operator_confirmation":
+        if data_class != "local_scoped":
+            raise ValueError(f"{label}: local operator confirmation requires local_scoped data")
+        if set(proof) != {"status", "method", "rubric_version", "target_sha256"}:
+            raise ValueError(f"{label}: local operator label provenance fields are invalid")
+        rubric_version = proof.get("rubric_version")
+        if not isinstance(rubric_version, str) or not rubric_version.strip():
+            raise ValueError(f"{label}: label_provenance.rubric_version must be a non-empty string")
+    elif method == "blind_double_annotation":
         annotations = proof.get("annotation_identity_sha256")
         if (not isinstance(annotations, list) or len(annotations) != 2
                 or any(not isinstance(item, str) or not _SHA256_RE.fullmatch(item) for item in annotations)

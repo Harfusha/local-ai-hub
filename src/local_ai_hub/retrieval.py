@@ -21,6 +21,15 @@ _DOCUMENT_ACTION = re.compile(
     re.IGNORECASE,
 )
 _DOCUMENT_PATH = re.compile(r"(?:^|\s)[\w./\\-]+\.(?:md|rst|adoc)(?:$|\s)", re.IGNORECASE)
+_SOURCE_PATH = re.compile(
+    r"(?<![A-Za-z0-9_])(?:[\w.@-]+[\\/])*[\w@-]+\.(?:pyi?|js|jsx|mjs|cjs|ts|tsx|go|rs|java|cs|c|h|cpp|cc|cxx|hh|hpp|sql|php|rb|vue|svelte)(?![A-Za-z0-9_])",
+    re.IGNORECASE,
+)
+_SOURCE_SYMBOL = re.compile(
+    r"`[A-Za-z_$][\w$]*(?:(?:::|[.#])[A-Za-z_$][\w$]*)+`"
+    r"|(?<![\w$])(?:[A-Za-z_$][\w$]*\.)+[A-Za-z_$][\w$]*\s*\("
+    r"|(?<![\w$])(?:[A-Za-z_$][\w$]*::)+[A-Za-z_$][\w$]*(?![\w$])"
+)
 _SOURCE_ACTION = re.compile(
     r"\b(?:implement\w*|fix|debug|diagnos\w*|trace|audit|refactor)\b", re.IGNORECASE,
 )
@@ -48,9 +57,14 @@ def _canonical_fusion_path(value: object) -> str | None:
     return None if normalized in {"", "."} else normalized
 
 
-def is_source_context_query(query: str) -> bool:
+def is_source_context_query(query: str, *, intent: str | None = None) -> bool:
     """Recognize source work while reserving clear documentation requests."""
+    if intent == "source_analysis":
+        return True
     text = str(query or "")
+    deterministic_source_signal = bool(_SOURCE_PATH.search(text) or _SOURCE_SYMBOL.search(text))
+    if deterministic_source_signal:
+        return True
     localized_source_intent = (
         bool(_CZECH_SOURCE_ACTION.search(text))
         and bool(_CZECH_SOURCE_OBJECT.search(text))
@@ -100,7 +114,7 @@ def source_context_path_tier(path: str) -> int:
 
 
 def prioritize_source_context_paths(
-    paths: Iterable[str], query: str, *, priority_paths: Iterable[str] = (),
+    paths: Iterable[str], query: str, *, priority_paths: Iterable[str] = (), intent: str | None = None,
 ) -> list[str]:
     """Stably prioritize source paths only for source-intent queries.
 
@@ -108,7 +122,7 @@ def prioritize_source_context_paths(
     first even when they are documentation. No path is filtered from the result.
     """
     ordered = list(dict.fromkeys(str(path) for path in paths if str(path)))
-    if not is_source_context_query(query):
+    if not is_source_context_query(query, intent=intent):
         return ordered
     priorities = {str(path).replace("\\", "/").casefold() for path in priority_paths}
     ranks = {path: rank for rank, path in enumerate(ordered)}

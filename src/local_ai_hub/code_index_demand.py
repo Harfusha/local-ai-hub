@@ -74,6 +74,28 @@ def _safe_inventory_file(base: Path, path: str, repo_tools: Any) -> bool:
         return False
 
 
+def _build_eligible_path_index(eligible: set[str]) -> dict[str, Any]:
+    """Index the bounded eligible inventory once for polyglot import lookups."""
+    by_dir: dict[str, list[str]] = {}
+    by_stem: dict[str, list[str]] = {}
+    by_ext: dict[str, list[str]] = {}
+    by_basename: dict[str, list[str]] = {}
+    for path in sorted(eligible):
+        parsed = PurePosixPath(path)
+        parent = parsed.parent.as_posix()
+        by_dir.setdefault("" if parent == "." else parent, []).append(path)
+        by_stem.setdefault(parsed.stem, []).append(path)
+        by_ext.setdefault(parsed.suffix.lower(), []).append(path)
+        by_basename.setdefault(parsed.name, []).append(path)
+    return {
+        "by_dir": by_dir,
+        "by_stem": by_stem,
+        "by_ext": by_ext,
+        "by_basename": by_basename,
+        "by_csharp_namespace": None,
+    }
+
+
 def _resolve_relative_module(
     base: Path,
     seed: str,
@@ -94,6 +116,15 @@ def _resolve_relative_module(
     candidates = [target]
     if pure_target.suffix in {".js", ".jsx", ".mjs", ".cjs"}:
         stem = target[:-len(pure_target.suffix)]
+        # TypeScript NodeNext source imports commonly retain the emitted .js
+        # suffix. Prefer its TypeScript source counterpart when it is indexed,
+        # even if a generated .js file is also eligible.
+        ts_candidates = [stem + ext for ext in (".ts", ".tsx") if ext in extensions]
+        ts_matches = list(dict.fromkeys(path for path in ts_candidates if path in eligible))
+        if len(ts_matches) == 1:
+            return ts_matches[0] if _safe_inventory_file(base, ts_matches[0], repo_tools) else None
+        if len(ts_matches) > 1:
+            return None
         candidates.extend(stem + ext for ext in extensions if ext not in {".js", ".jsx", ".mjs", ".cjs"})
     elif not pure_target.suffix:
         candidates.extend(target + extension for extension in extensions)
@@ -150,7 +181,9 @@ def _python_import_candidates(seed: str, tree: ast.AST, eligible: set[str]) -> l
     return found
 
 
-def _go_import_candidates(base: Path, source: str, eligible: set[str]) -> list[str]:
+def _go_import_candidates(
+    base: Path, source: str, eligible: set[str], eligible_index: dict[str, Any] | None = None,
+) -> list[str]:
     found: list[str] = []
     module_name = ""
     go_mod = base / "go.mod"
@@ -163,6 +196,7 @@ def _go_import_candidates(base: Path, source: str, eligible: set[str]) -> list[s
         except Exception:
             module_name = ""
 
+    index = eligible_index if eligible_index is not None else _build_eligible_path_index(eligible)
     import_paths: list[str] = []
     for block in _GO_IMPORT_BLOCK.findall(source):
         import_paths.extend(_GO_STRINGS.findall(block))
@@ -172,14 +206,14 @@ def _go_import_candidates(base: Path, source: str, eligible: set[str]) -> list[s
     for imp in import_paths:
         target_dir = ""
         if module_name and imp == module_name:
-            matches = [path for path in eligible if "/" not in path and path.endswith(".go")]
+            matches = [path for path in index["by_dir"].get("", ()) if path.endswith(".go")]
             found.extend(matches)
         elif module_name and imp.startswith(module_name + "/"):
             target_dir = imp[len(module_name) + 1:].strip("/")
         elif imp.startswith("./") or imp.startswith("../"):
             target_dir = posixpath.normpath(imp)
         if target_dir:
-            matches = [path for path in eligible if path.startswith(target_dir + "/") and path.endswith(".go")]
+            matches = [path for path in index["by_dir"].get(target_dir, ()) if path.endswith(".go")]
             found.extend(matches)
     return found
 
@@ -222,8 +256,12 @@ def _rust_import_candidates(seed: str, source: str, eligible: set[str]) -> list[
     return found
 
 
-def _c_include_candidates(base: Path, seed: str, source: str, eligible: set[str], repo_tools: Any) -> list[str]:
+def _c_include_candidates(
+    base: Path, seed: str, source: str, eligible: set[str], repo_tools: Any,
+    eligible_index: dict[str, Any] | None = None,
+) -> list[str]:
     found: list[str] = []
+    index = eligible_index if eligible_index is not None else _build_eligible_path_index(eligible)
     for match in _C_INCLUDE.finditer(source):
         specifier = match.group(1)
         res = _resolve_relative_module(base, seed, "./" + specifier if not specifier.startswith((".", "/")) else specifier, eligible, repo_tools, extensions=_C_EXTENSIONS)
@@ -231,7 +269,7 @@ def _c_include_candidates(base: Path, seed: str, source: str, eligible: set[str]
             found.append(res)
             continue
         # Check direct lookup in eligible
-        for candidate in eligible:
+        for candidate in index["by_basename"].get(PurePosixPath(specifier).name, ()):
             if candidate.endswith("/" + specifier) or candidate == specifier:
                 found.append(candidate)
     return found
@@ -249,40 +287,46 @@ def _ruby_require_candidates(base: Path, seed: str, source: str, eligible: set[s
 
 def _csharp_using_candidates(
     base: Path, source: str, eligible: set[str], repo_tools: Any,
+    eligible_index: dict[str, Any] | None = None,
 ) -> list[str]:
     imported_namespaces = {match.group(1) for match in _CS_USING.finditer(source)}
     if not imported_namespaces:
         return []
+    index = eligible_index if eligible_index is not None else _build_eligible_path_index(eligible)
+    namespace_index = index.get("by_csharp_namespace")
+    if namespace_index is None:
+        namespace_index = {}
+        for candidate in index["by_ext"].get(".cs", ()):
+            if not _safe_inventory_file(base, candidate, repo_tools):
+                continue
+            target = base / Path(candidate)
+            try:
+                if repo_tools is not None:
+                    _, lines = repo_tools._read_snapshot(target)
+                    candidate_source = "\n".join(lines)
+                else:
+                    candidate_source = target.read_text(encoding="utf-8", errors="replace")
+            except (OSError, RuntimeError, UnicodeError, TypeError, ValueError, AttributeError):
+                continue
+            for match in _CS_NAMESPACE.finditer(candidate_source):
+                namespace_index.setdefault(match.group(1), []).append(candidate)
+        index["by_csharp_namespace"] = namespace_index
+    return list(dict.fromkeys(
+        candidate
+        for namespace in sorted(imported_namespaces)
+        for candidate in namespace_index.get(namespace, ())
+    ))
 
+
+def _java_import_candidates(
+    source: str, eligible: set[str], eligible_index: dict[str, Any] | None = None,
+) -> list[str]:
     found: list[str] = []
-    for candidate in sorted(eligible):
-        if PurePosixPath(candidate).suffix.lower() != ".cs":
-            continue
-        if not _safe_inventory_file(base, candidate, repo_tools):
-            continue
-        target = base / Path(candidate)
-        try:
-            if repo_tools is not None:
-                _, lines = repo_tools._read_snapshot(target)
-                candidate_source = "\n".join(lines)
-            else:
-                candidate_source = target.read_text(encoding="utf-8", errors="replace")
-        except (OSError, RuntimeError, UnicodeError, TypeError, ValueError, AttributeError):
-            continue
-        declared_namespaces = {
-            match.group(1) for match in _CS_NAMESPACE.finditer(candidate_source)
-        }
-        if imported_namespaces.intersection(declared_namespaces):
-            found.append(candidate)
-    return found
-
-
-def _java_import_candidates(source: str, eligible: set[str]) -> list[str]:
-    found: list[str] = []
+    index = eligible_index if eligible_index is not None else _build_eligible_path_index(eligible)
     for match in _JAVA_IMPORT.finditer(source):
         fqn = match.group(1)
         rel_path = fqn.replace(".", "/") + ".java"
-        for c in eligible:
+        for c in index["by_stem"].get(PurePosixPath(rel_path).stem, ()):
             if c.endswith(rel_path):
                 found.append(c)
     return found
@@ -296,23 +340,24 @@ def _php_psr4_map(base: Path) -> dict[str, tuple[str, ...]]:
         data = json.loads(composer.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, ValueError):
         return {}
-    autoload = data.get("autoload", {}) if isinstance(data, dict) else {}
-    psr4 = autoload.get("psr-4", {}) if isinstance(autoload, dict) else {}
-    if not isinstance(psr4, dict):
-        return {}
-
     mapping: dict[str, tuple[str, ...]] = {}
-    for namespace, directories in psr4.items():
-        if not isinstance(namespace, str):
+    for autoload_name in ("autoload", "autoload-dev"):
+        autoload = data.get(autoload_name, {}) if isinstance(data, dict) else {}
+        psr4 = autoload.get("psr-4", {}) if isinstance(autoload, dict) else {}
+        if not isinstance(psr4, dict):
             continue
-        values = directories if isinstance(directories, list) else [directories]
-        paths = tuple(
-            path.replace("\\", "/").strip("/")
-            for path in values
-            if isinstance(path, str) and path.strip()
-        )
-        if paths:
-            mapping[namespace.lstrip("\\")] = paths
+        for namespace, directories in psr4.items():
+            if not isinstance(namespace, str):
+                continue
+            values = directories if isinstance(directories, list) else [directories]
+            paths = tuple(
+                path.replace("\\", "/").strip("/")
+                for path in values
+                if isinstance(path, str) and path.strip()
+            )
+            if paths:
+                key = namespace.lstrip("\\")
+                mapping[key] = tuple(dict.fromkeys((*mapping.get(key, ()), *paths)))
     return mapping
 
 
@@ -356,6 +401,7 @@ def _direct_import_candidates_for_seed(
     repo_tools: Any,
     ingest_cache: Any = None,
     eligible_by_basename: dict[str, list[str]] | None = None,
+    eligible_index: dict[str, Any] | None = None,
 ) -> list[str]:
     if seed not in eligible or not _safe_inventory_file(base, seed, repo_tools):
         return []
@@ -420,17 +466,17 @@ def _direct_import_candidates_for_seed(
                         if el.endswith("/" + rel_path) or el == rel_path or el.endswith("/" + class_file):
                             candidates.append(el)
         elif suffix == ".go":
-            candidates = _go_import_candidates(base, source, eligible)
+            candidates = _go_import_candidates(base, source, eligible, eligible_index)
         elif suffix == ".rs":
             candidates = _rust_import_candidates(seed, source, eligible)
         elif suffix in _C_EXTENSIONS:
-            candidates = _c_include_candidates(base, seed, source, eligible, repo_tools)
+            candidates = _c_include_candidates(base, seed, source, eligible, repo_tools, eligible_index)
         elif suffix == ".rb":
             candidates = _ruby_require_candidates(base, seed, source, eligible, repo_tools)
         elif suffix == ".cs":
-            candidates = _csharp_using_candidates(base, source, eligible, repo_tools)
+            candidates = _csharp_using_candidates(base, source, eligible, repo_tools, eligible_index)
         elif suffix == ".java":
-            candidates = _java_import_candidates(source, eligible)
+            candidates = _java_import_candidates(source, eligible, eligible_index)
         return candidates
     except (OSError, RuntimeError, UnicodeError, SyntaxError, TypeError, ValueError, RecursionError):
         return []
@@ -446,10 +492,11 @@ def one_hop_related_files(
     if type(limit) is not int or limit < 1 or limit > 256:
         raise ValueError("limit must be an integer between 1 and 256")
     base = Path(root).resolve(strict=True)
+    eligible_index = _build_eligible_path_index(eligible)
     found: list[str] = []
     seen = set(seeds)
     eligible_by_basename = (
-        _index_eligible_paths_by_basename(eligible)
+        eligible_index["by_basename"]
         if any(seed in eligible and PurePosixPath(seed).suffix.lower() == ".php" for seed in seeds[:128])
         else None
     )
@@ -461,6 +508,7 @@ def one_hop_related_files(
             base, seed, eligible, repo_tools,
             ingest_cache=ingest_cache,
             eligible_by_basename=eligible_by_basename,
+            eligible_index=eligible_index,
         ):
             if path not in seen and len(found) < limit:
                 seen.add(path)
@@ -493,10 +541,11 @@ def two_hop_weighted_files(
     if type(limit) is not int or limit < 1 or limit > 256:
         raise ValueError("limit must be an integer between 1 and 256")
     base = Path(root).resolve(strict=True)
+    eligible_index = _build_eligible_path_index(eligible)
     weights: dict[str, float] = {}
     seeds_set = set(seeds)
     eligible_by_basename = (
-        _index_eligible_paths_by_basename(eligible)
+        eligible_index["by_basename"]
         if any(seed in eligible and PurePosixPath(seed).suffix.lower() == ".php" for seed in seeds[:128])
         else None
     )
@@ -507,6 +556,7 @@ def two_hop_weighted_files(
             base, seed, eligible, repo_tools,
             ingest_cache=ingest_cache,
             eligible_by_basename=eligible_by_basename,
+            eligible_index=eligible_index,
         )
         for cand in candidates:
             if cand in seeds_set:
@@ -519,13 +569,14 @@ def two_hop_weighted_files(
     if eligible_by_basename is None and any(
         PurePosixPath(path).suffix.lower() == ".php" for path in hop1_sorted
     ):
-        eligible_by_basename = _index_eligible_paths_by_basename(eligible)
+        eligible_by_basename = eligible_index["by_basename"]
     for h1_file in hop1_sorted:
         h1_weight = weights[h1_file]
         h2_candidates = _direct_import_candidates_for_seed(
             base, h1_file, eligible, repo_tools,
             ingest_cache=ingest_cache,
             eligible_by_basename=eligible_by_basename,
+            eligible_index=eligible_index,
         )
         for h2_cand in h2_candidates:
             if h2_cand in seeds_set:

@@ -1415,7 +1415,8 @@ def test_local_ai_task_vision_forwards_frontend_review_context(monkeypatch) -> N
         source="current_tab",
         root=str(ROOT),
         cloud_fallback=False,
-        json_schema={"type": "object"},
+        json_schema={},
+        operation="fix",
     )
 
     assert result["success"] is True
@@ -1428,7 +1429,8 @@ def test_local_ai_task_vision_forwards_frontend_review_context(monkeypatch) -> N
     assert captured["source"] == "current_tab"
     assert captured["root"] == str(ROOT)
     assert captured["cloud_fallback"] is False
-    assert captured["json_schema"] == {"type": "object"}
+    assert captured["json_schema"] == {}
+    assert captured["operation"] == "fix"
 
 
 @pytest.mark.parametrize(

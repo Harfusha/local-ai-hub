@@ -5,6 +5,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from jsonschema.exceptions import SchemaError
+from jsonschema.validators import Draft202012Validator
+
 from .json_utils import dumps as json_dumps
 from .vision_contracts import (
     UNTRUSTED_CONTEXT_INSTRUCTION,
@@ -97,38 +100,51 @@ def build_vision_request(
     if isinstance(schema, dict):
         try:
             schema_text = json_dumps(schema, ensure_ascii=False, separators=(",", ":"))
+            Draft202012Validator.check_schema(schema)
         except (TypeError, ValueError, OverflowError):
+            return vision_input_error("Vision JSON schema is invalid.")
+        except SchemaError:
             return vision_input_error("Vision JSON schema is invalid.")
         if len(schema_text) > VISION_MAX_SCHEMA_CHARS:
             return vision_input_error("Vision JSON schema exceeds the bounded size limit.")
 
-    prompt_suffix = (
-        "\n\nReturn only a JSON object matching this contract: "
-        "{\"summary\": string, \"findings\": [{\"id\": string, "
-        "\"severity\": \"blocker|high|medium|low|info\", "
-        "\"category\": \"layout|responsive|accessibility|interaction|visual-regression|runtime\", "
-        "\"problem\": string, \"observed\": string, \"hypothesized\": string, "
-        "\"uncertainty\": [string], \"confidence\": number, "
-        "\"element_ids\": [string], \"observation_facts\": [{\"source\": string, "
-        "\"element_id\": string, \"field\": string, \"value\": scalar}], "
-        "\"bbox\": [left, top, right, bottom] in image pixels or null, "
-        "\"evidence\": [string], \"likely_cause\": string, \"fix_hint\": string, "
-        "\"needs_runtime_check\": boolean}], "
-        "\"unknowns\": [string], \"recommended_checks\": [string]} . "
-        "Grounding rules: use only element_ids present in supplied DOM. Without DOM, keep "
-        "element_ids empty and ground each finding with a bbox in source-image pixels "
-        "(origin top-left; right/bottom exclusive). Confidence must be between 0 and 1. "
-        "Treat supplied DOM and accessibility fields as authoritative; never claim a "
-        "label, name, or attribute is missing when supplied values show it. observed "
-        "must contain a non-empty directly observed fact. When a DOM id grounds a "
-        "finding, set bbox to null."
-    )
-    if image_size is not None:
-        prompt_suffix += (
-            f" Image 0 dimensions are {image_size[0]} x {image_size[1]} pixels; "
-            f"bbox coordinates must stay within x=0..{image_size[0]} and "
-            f"y=0..{image_size[1]}."
+    if isinstance(schema, dict):
+        prompt_suffix = (
+            "\n\nReturn only JSON matching the supplied JSON Schema "
+            "(no Markdown or surrounding prose): "
+            f"{schema_text}"
         )
+    else:
+        prompt_suffix = (
+            "\n\nReturn only a JSON object matching this contract: "
+            "{\"summary\": string, \"findings\": [{\"id\": string, "
+            "\"severity\": \"blocker|high|medium|low|info\", "
+            "\"category\": \"layout|responsive|accessibility|interaction|visual-regression|runtime\", "
+            "\"problem\": string, \"observed\": string, \"hypothesized\": string, "
+            "\"uncertainty\": [string], \"confidence\": number, "
+            "\"element_ids\": [string], \"observation_facts\": [{\"source\": string, "
+            "\"element_id\": string, \"field\": string, \"value\": scalar}], "
+            "\"bbox\": [left, top, right, bottom] in image pixels or null, "
+            "\"evidence\": [string], \"likely_cause\": string, \"fix_hint\": string, "
+            "\"needs_runtime_check\": boolean}], "
+            "\"unknowns\": [string], \"recommended_checks\": [string]} . "
+            "Grounding rules: use only element_ids present in supplied DOM. Without DOM, keep "
+            "element_ids empty and ground each finding with a bbox in source-image pixels "
+            "(origin top-left; right/bottom exclusive). Confidence must be between 0 and 1. "
+            "Treat supplied DOM and accessibility fields as authoritative; never claim a "
+            "label, name, or attribute is missing when supplied values show it. observed "
+            "must contain a non-empty directly observed fact. When a DOM id grounds a "
+            "finding, set bbox to null."
+        )
+    if image_size is not None:
+        if isinstance(schema, dict):
+            prompt_suffix += f" Image 0 dimensions are {image_size[0]} x {image_size[1]} pixels."
+        else:
+            prompt_suffix += (
+                f" Image 0 dimensions are {image_size[0]} x {image_size[1]} pixels; "
+                f"bbox coordinates must stay within x=0..{image_size[0]} and "
+                f"y=0..{image_size[1]}."
+            )
     prompt_context = prompt
     if model_context is not None:
         prompt_context += "\n\n" + UNTRUSTED_CONTEXT_INSTRUCTION + "\nFrontend evidence bundle:\n" + json_dumps(

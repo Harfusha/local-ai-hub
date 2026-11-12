@@ -5,7 +5,12 @@ import math
 
 import pytest
 
-from local_ai_hub.retrieval import fuse_ranked_paths
+from local_ai_hub.retrieval import (
+    fuse_ranked_paths,
+    is_source_context_query,
+    prioritize_source_context_paths,
+    source_context_path_tier,
+)
 
 
 def test_path_spellings_canonicalize_before_backend_agreement():
@@ -62,6 +67,39 @@ def test_caller_generator_consumption_is_bounded():
 
     assert len(result) == 1
     assert consumed <= 4096
+
+
+@pytest.mark.parametrize("path", [
+    "src/Model.php", "lib/worker.rb", "web/App.vue", "components/Card.svelte",
+])
+def test_polyglot_source_suffixes_are_current_implementation_paths(path):
+    assert source_context_path_tier(path) == 0
+
+
+def test_source_analysis_intent_activates_source_first_without_language_keywords():
+    paths = ["docs/plan.md", "src/App.vue"]
+
+    assert not is_source_context_query("pokazywać zawartość")
+    assert is_source_context_query("pokazywać zawartość", intent="source_analysis")
+    assert prioritize_source_context_paths(
+        paths, "pokazywać zawartość", intent="source_analysis"
+    ) == ["src/App.vue", "docs/plan.md"]
+
+
+def test_source_file_paths_and_qualified_symbols_are_language_independent_signals():
+    assert is_source_context_query("покажи src/components/App.vue")
+    assert is_source_context_query("où se trouve `AuthService.login` ?")
+    assert is_source_context_query("where is AuthService.login() defined?")
+    assert prioritize_source_context_paths(
+        ["docs/guide.md", "src/auth.py"], "zeige src/auth.py"
+    ) == ["src/auth.py", "docs/guide.md"]
+
+
+def test_documentation_only_path_stays_out_of_source_first_mode():
+    assert not is_source_context_query("read docs/guide.md")
+    assert prioritize_source_context_paths(
+        ["docs/guide.md", "src/auth.py"], "read docs/guide.md"
+    ) == ["docs/guide.md", "src/auth.py"]
 
 
 def test_late_cross_backend_agreement_survives_small_output_limit():

@@ -28,9 +28,62 @@ def _assert_conservative_unknown(result: dict[str, object], reason: str) -> None
     assert result["throttle_background"] is True
     speculative = result["speculative_inference"]
     assert isinstance(speculative, dict)
-    assert speculative["active"] is False
+    assert speculative["recommended"] is False
+    assert speculative["runtime_active"] is None
+    assert speculative["runtime_status"] == "unknown"
     assert result["telemetry_error"] == reason
     assert result["telemetry_wait_timed_out"] is False
+
+
+def test_speculative_recommendation_is_separate_from_configuration_and_runtime() -> None:
+    balancer = VRAMBalancer({"models": {"fast_code": "qwen2.5-coder:7b", "draft_code": "qwen2.5-coder:3b"}})
+    result = balancer._status_from_telemetry(
+        _balanced_sample(vram_used_mb=6000.0, vram_used_pct=73.2)
+    )
+
+    speculative = result["speculative_inference"]
+    assert speculative["recommended"] is True
+    assert speculative["configured"] is True
+    assert speculative["pair_status"] == "valid"
+    assert speculative["draft_size_billions"] == 3.0
+    assert speculative["target_size_billions"] == 7.0
+    assert speculative["runtime_active"] is None
+    assert speculative["runtime_status"] == "unknown"
+
+
+@pytest.mark.parametrize(
+    ("target", "draft", "expected_status"),
+    [
+        ("qwen2.5-coder:3b", "qwen2.5-coder:3b", "draft_not_smaller_than_target"),
+        ("qwen2.5-coder:3b", "qwen2.5-coder:7b", "draft_not_smaller_than_target"),
+        ("qwen2.5-coder:7b", "custom-model:latest", "model_size_unknown"),
+    ],
+)
+def test_incompatible_or_unknown_speculative_pair_is_not_recommended(
+    target: str, draft: str, expected_status: str
+) -> None:
+    balancer = VRAMBalancer({"models": {"fast_code": target, "draft_code": draft}})
+    result = balancer._status_from_telemetry(
+        _balanced_sample(vram_used_mb=6000.0, vram_used_pct=73.2)
+    )
+
+    speculative = result["speculative_inference"]
+    assert speculative["configured"] is True
+    assert speculative["recommended"] is False
+    assert speculative["pair_status"] == expected_status
+    assert speculative["runtime_active"] is None
+
+
+def test_missing_explicit_speculative_pair_is_unconfigured() -> None:
+    balancer = VRAMBalancer({"models": {"fast_code": "qwen2.5-coder:7b"}})
+    result = balancer._status_from_telemetry(
+        _balanced_sample(vram_used_mb=6000.0, vram_used_pct=73.2)
+    )
+
+    speculative = result["speculative_inference"]
+    assert speculative["configured"] is False
+    assert speculative["pair_status"] == "unconfigured"
+    assert speculative["recommended"] is False
 
 
 @pytest.mark.parametrize(
@@ -73,7 +126,8 @@ def test_explicit_zero_percent_cannot_hide_measured_used_to_total_pressure() -> 
     assert result["policy_headroom_mb"] == 300.0
     assert result["policy_measurement_basis"] == "dedicated_observed"
     assert result["policy_pressure_is_derived"] is True
-    assert result["speculative_inference"]["active"] is False
+    assert result["speculative_inference"]["recommended"] is False
+    assert result["speculative_inference"]["runtime_active"] is None
 
 
 def test_free_vram_only_sample_derives_pressure_and_headroom() -> None:

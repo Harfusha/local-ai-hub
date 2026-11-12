@@ -32,14 +32,9 @@ The optional `laya-runtime` extra pins `laya==0.4.31` and `vegaml==0.16.1`. Laya
 
 The normal Hub status response includes `laya_runtime` lifecycle metadata, and the existing diagnostics ZIP includes the same metadata at `laya/report.json.runtime`. These fields report session availability, whether provider close is configured, in-flight calls, timeout and close errors. `runtime_verification` remains `NOT_VERIFIED` until a connected provider independently verifies placement and release; these status fields do not claim device support or reclaimed memory.
 
-### Human review keys
+### Local review
 
-`[laya.reviewers].public_keys` accepts a list of OpenSSH `ssh-ed25519` public-key lines. The Hub derives reviewer identity from each key's SHA-256 fingerprint; caller-supplied reviewer names are not accepted by the production path. Keep private keys with their reviewers. The existing `laya_operation` MCP/HTTP surface returns a base64 review challenge bound to the candidate content hash, repository scope, task/session, rubric, action, role, target, and reviewer fingerprint. Sign the decoded challenge bytes with the matching Ed25519 private key and submit the base64 signature as the review proof. Configure four distinct public keys for the two annotations, adjudication, and independent verification. With no configured keys, label and verification operations fail closed.
-
-```toml
-[laya.reviewers]
-public_keys = [] # Add one "ssh-ed25519 <base64> <comment>" line per reviewer.
-```
+Candidate review runs through the loopback-only, root-scoped Hub API/MCP surface. With no reviewer keys configured, the operator can confirm a candidate using the versioned rubric and one allowed target; no SSH keys, per-example consent receipt, or separate approval record is required. A local model review, when a capable local reviewer is available, must carry separate model identity and provenance and cannot be exported as a human-confirmed label. Remote reviewer quorum and cloud review are not used.
 
 ## Code intelligence
 

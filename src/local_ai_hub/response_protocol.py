@@ -43,6 +43,21 @@ def _bound(value: Any, chars: int, depth: int = 0) -> Any:
     return value
 
 
+def _json_size_bytes(value: Any) -> int:
+    raw = json_dumps(value, ensure_ascii=False, separators=(",", ":"))
+    return len(raw.encode("utf-8"))
+
+
+def _budget_rejected() -> dict[str, Any]:
+    return {
+        "success": False,
+        "status": "response_budget_exceeded",
+        "budget_rejected": True,
+        "error": "Response exceeds max_output_tokens; request a larger budget.",
+        "truncated": True,
+    }
+
+
 def project_response(
     value: Any,
     *,
@@ -54,8 +69,8 @@ def project_response(
 
     Projection is intentionally last-mile only: canonical work, artifacts and caches
     keep their full data. ``return_fields`` is an allow-list and never causes new
-    information to be generated. ``max_output_tokens`` is a conservative JSON-size
-    budget (roughly four UTF-8 characters/token) with a hard lower bound for IDs/errors.
+    information to be generated. ``max_output_tokens`` is a conservative serialized
+    JSON byte budget (roughly four UTF-8 bytes/token) with a hard lower bound for IDs/errors.
     """
     if not isinstance(value, dict):
         return value
@@ -93,14 +108,14 @@ def project_response(
     if token_budget <= 0:
         token_budget = {"minimal": 120, "compact": 350, "standard": 900, "debug": 2400}[profile]
     token_budget = max(64, min(token_budget, 4096))
-    char_budget = token_budget * 4
-    per_string = max(160, min(5000, char_budget // 2))
+    byte_budget = token_budget * 4
+    per_string = max(160, min(5000, byte_budget // 2))
     bounded = _bound(selected, per_string)
     try:
-        raw = json_dumps(bounded, ensure_ascii=False, separators=(",", ":"))
+        serialized_size = _json_size_bytes(bounded)
     except Exception:
-        return bounded
-    if len(raw) <= char_budget:
+        return _budget_rejected()
+    if serialized_size <= byte_budget:
         return bounded
 
     # Preserve decision-grade fields and progressively trim verbose collections.
@@ -112,18 +127,18 @@ def project_response(
         elif isinstance(out.get(key), dict) and key in {"plan", "verification"}:
             out[key] = {k: v for k, v in list(out[key].items())[:6]}
         try:
-            if len(json_dumps(out, ensure_ascii=False, separators=(",", ":"))) <= char_budget:
+            if _json_size_bytes(out) <= byte_budget:
                 return out
         except Exception:
             pass
     if isinstance(out.get("summary"), str):
-        out["summary"] = _dense(out["summary"], max(120, char_budget // 3))
+        out["summary"] = _dense(out["summary"], max(120, byte_budget // 3))
     out["truncated"] = True
     try:
-        if len(json_dumps(out, ensure_ascii=False, separators=(",", ":"))) <= char_budget:
+        if _json_size_bytes(out) <= byte_budget:
             return out
     except Exception:
-        return out
+        return _budget_rejected()
 
     # Last-resort envelope: drop the least decision-critical fields until the
     # requested wire budget is met. Full data remains in the canonical result or
@@ -137,28 +152,23 @@ def project_response(
         if key in out and key not in protected:
             out.pop(key, None)
             try:
-                if len(json_dumps(out, ensure_ascii=False, separators=(",", ":"))) <= char_budget:
+                if _json_size_bytes(out) <= byte_budget:
                     return out
             except Exception:
-                return out
+                return _budget_rejected()
     # IDs and errors are bounded too, but are retained rather than silently removed.
     for key in tuple(protected):
         if isinstance(out.get(key), str):
-            out[key] = _dense(out[key], max(32, char_budget // 4))
+            out[key] = _dense(out[key], max(32, byte_budget // 4))
     try:
-        if len(json_dumps(out, ensure_ascii=False, separators=(",", ":"))) <= char_budget:
+        if _json_size_bytes(out) <= byte_budget:
             return out
     except Exception:
         pass
 
     # A protected-field set can itself exceed a tiny requested budget. Fail closed
     # with a bounded retry instruction instead of returning an oversized success.
-    return {
-        "success": False,
-        "status": "response_budget_exceeded",
-        "error": "Response exceeds max_output_tokens; request a larger budget.",
-        "truncated": True,
-    }
+    return _budget_rejected()
 
 
 def supported_profiles() -> tuple[str, ...]:

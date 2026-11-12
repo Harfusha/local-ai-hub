@@ -1462,10 +1462,12 @@ class LocalAIServices:
                     )
             for index, candidate in enumerate(candidates):
                 breaker_key = f"model:{candidate}"
-                if not self.breakers.allow(breaker_key):
+                breaker_admission = self.breakers.allow(breaker_key)
+                if not breaker_admission:
                     errors.append(f"{candidate}: circuit open")
                     self.telemetry.record_stage(action=source, stage="model_attempt", model=candidate, success=False, degraded=True, error_type="circuit_open")
                     continue
+                probe_generation = breaker_admission.probe_generation
 
                 def run(candidate_model: str = candidate) -> dict[str, Any]:
                     nonlocal mode_pause_result
@@ -1727,18 +1729,18 @@ class LocalAIServices:
                     return mode_pause_result
                 retryable_error = retryable_error or bool(result.get("retryable", False))
                 if result.get("output_truncated") is True:
-                    self.breakers.success(breaker_key)
+                    self.breakers.success(breaker_key, probe_generation=probe_generation)
                     self.telemetry.record_stage(action=source, stage="model_attempt", model=candidate,
                                                 success=False, degraded=index > 0, error_type="model_output_truncated")
                     return result
                 if result.get("success"):
-                    self.breakers.success(breaker_key)
+                    self.breakers.success(breaker_key, probe_generation=probe_generation)
                     if candidate != requested_model:
                         self.fallback_count += 1
                     record_attempt_failures(recovered=True)
                     return result
                 if result.get("_lah_partial_response") or result.get("outcome_unknown") or result.get("cleanup_unconfirmed"):
-                    self.breakers.failure(breaker_key)
+                    self.breakers.failure(breaker_key, probe_generation=probe_generation)
                     attempt_failures.append({"error": str(result.get("error", "model response interrupted")),
                                              "error_type": "model_attempt_interrupted", "error_code": "model_attempt_interrupted",
                                              "retryable": False})
@@ -1752,7 +1754,7 @@ class LocalAIServices:
                     break
                 if result.get("timed_out"):
                     timeout_error = True
-                self.breakers.failure(breaker_key)
+                self.breakers.failure(breaker_key, probe_generation=probe_generation)
                 attempt_error = str(result.get("error", "failed"))
                 attempt_retries = int(result.get("_lah_retry_count", 0) or 0)
                 self.telemetry.record_stage(action=source, stage="model_attempt", model=candidate, success=False, degraded=index > 0, retry_count=attempt_retries, error_type="model_attempt_failed")

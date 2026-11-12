@@ -32,7 +32,11 @@ def vision_success_payload(
     """Assemble the successful vision response without provider side effects."""
     raw = str(raw_output or "") if raw_output is not None else ""
     review_data = asdict(parsed) if hasattr(parsed, "__dataclass_fields__") else (parsed if isinstance(parsed, dict) else {})
-    return {
+    custom_schema_output = bool(review_data.pop("custom_schema_output", False))
+    custom_output = review_data.pop("custom_output", None)
+    if custom_schema_output:
+        review_data = {}
+    result = {
         "success": True,
         "model": str(model or ""),
         "response": raw[:VISION_MAX_INLINE_RESPONSE_CHARS],
@@ -42,3 +46,6 @@ def vision_success_payload(
         "bundle_artifact_id": bundle_artifact_id,
         "raw_output_artifact_id": raw_output_artifact_id,
     }
+    if custom_schema_output:
+        result["structured_output"] = custom_output
+    return result

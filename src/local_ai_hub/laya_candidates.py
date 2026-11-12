@@ -77,11 +77,26 @@ def _identity(value: Any, label: str) -> str:
 
 def _export_label_provenance(candidate: Mapping[str, Any], targets: Mapping[str, Any]) -> dict[str, Any]:
     """Project verified human-label provenance without exporting reviewer identifiers."""
+    if candidate.get("label_status") == "model_reviewed":
+        raise ValueError("model review is not a human-confirmed training label")
     if candidate.get("label_status") != "verified":
         raise ValueError("Laya training export requires independently verified labels")
     provenance = candidate.get("label_provenance")
     if not isinstance(provenance, Mapping):
         raise ValueError("verified Laya candidate has no label provenance")
+    if provenance.get("method") == "local_operator_confirmation":
+        if provenance.get("rubric_version") != _LABEL_RUBRIC_VERSION:
+            raise ValueError("verified Laya candidate has no current label rubric version")
+        canonical_targets = json.dumps(targets, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
+        target_sha256 = hashlib.sha256(canonical_targets.encode("utf-8")).hexdigest()
+        if provenance.get("target_sha256") != target_sha256:
+            raise ValueError("operator-confirmed label provenance does not match target labels")
+        return {
+            "status": "verified",
+            "method": "local_operator_confirmation",
+            "rubric_version": _LABEL_RUBRIC_VERSION,
+            "target_sha256": target_sha256,
+        }
     annotations = provenance.get("annotations")
     adjudication = provenance.get("adjudication")
     verification = provenance.get("verification")
@@ -836,11 +851,18 @@ class LayaCandidateStore:
                     target = candidate.get("targets", {}).get(question_id)
                     if not isinstance(target, str) or target not in candidate["questions"][question_id]["criteria"]:
                         raise ValueError("verified candidate has no valid Laya training target")
+                    state_value = candidate.get("state")
+                    if isinstance(state_value, str):
+                        training_state = state_value
+                    elif isinstance(state_value, Mapping):
+                        training_state = _canonical_json(state_value)
+                    else:
+                        raise ValueError("verified candidate state must be text or an object")
                     rows.append({
                         "id": str(row["candidate_id"]),
                         "group_id": str(row["group_id"]),
                         "source_sha256": str(row["content_hash"]),
-                        "state": candidate["state"],
+                        "state": training_state,
                         "questions": candidate["questions"],
                         "expected": {question_id: target},
                         "provenance": {
@@ -1069,11 +1091,18 @@ class LayaCandidateStore:
                 target = candidate.get("targets", {}).get(question_id)
                 if not isinstance(target, str) or target not in candidate["questions"][question_id]["criteria"]:
                     raise ValueError("verified candidate has no valid Laya training target")
+                state_value = candidate.get("state")
+                if isinstance(state_value, str):
+                    training_state = state_value
+                elif isinstance(state_value, Mapping):
+                    training_state = _canonical_json(state_value)
+                else:
+                    raise ValueError("verified candidate state must be text or an object")
                 rows.append({
                     "id": str(row["candidate_id"]),
                     "group_id": str(row["group_id"]),
                     "source_sha256": str(row["content_hash"]),
-                    "state": candidate["state"],
+                    "state": training_state,
                     "questions": candidate["questions"],
                     "expected": {question_id: target},
                     "provenance": {
@@ -1311,10 +1340,11 @@ class LayaCandidateStore:
         }
 
     def _transition(self, operation: dict[str, Any], *, action: str, scope: str, root: str, task_store: Any) -> dict[str, Any]:
+        local_operator_confirmation = not self._reviewer_keys and not callable(self._reviewer_authenticator)
         if not callable(self._reviewer_authenticator):
             if action == "verify" and "proof" not in operation:
                 raise ValueError("authenticated human reviewer provenance is unavailable")
-            if action == "label" and (
+            if action == "label" and not local_operator_confirmation and (
                 not isinstance(operation.get("annotations"), list)
                 or any(type(item) is not dict or "proof" not in item for item in operation["annotations"])
                 or type(operation.get("adjudication")) is not dict
@@ -1322,7 +1352,11 @@ class LayaCandidateStore:
             ):
                 raise ValueError("authenticated human reviewer provenance is unavailable")
         fields = {
-            "label": {"action", "candidate_id", "annotations", "adjudication"},
+            "label": (
+                {"action", "candidate_id", "target"}
+                if local_operator_confirmation
+                else {"action", "candidate_id", "annotations", "adjudication"}
+            ),
             "verify": {"action", "candidate_id", "proof"} if not callable(self._reviewer_authenticator) else {"action", "candidate_id", "reviewer_ref"},
             "reject": {"action", "candidate_id", "status", "reason_code"},
             "delete": {"action", "candidate_id"},
@@ -1338,6 +1372,33 @@ class LayaCandidateStore:
             candidate = json.loads(row["candidate_json"])
             current = row["status"]
             now = time.time()
+            if action == "label" and local_operator_confirmation:
+                if current not in {"pending", "reviewed", "ambiguous"}:
+                    con.rollback(); raise ValueError("candidate cannot be labeled in current state")
+                target = _identity(op["target"], "review target")
+                if target not in candidate["questions"][candidate["category"]]["criteria"]:
+                    con.rollback(); raise ValueError("review target is not an allowed option")
+                targets = {candidate["category"]: target}
+                targets_sha256 = hashlib.sha256(
+                    json.dumps(targets, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
+                ).hexdigest()
+                candidate["targets"] = targets
+                candidate["label_status"] = "verified"
+                candidate["label_provenance"] = {
+                    "method": "local_operator_confirmation",
+                    "rubric_version": _LABEL_RUBRIC_VERSION,
+                    "target_sha256": targets_sha256,
+                }
+                con.execute(
+                    "UPDATE laya_candidates SET status='verified',candidate_json=?,updated_at=? WHERE candidate_id=?",
+                    (_canonical_json(candidate), now, candidate_id),
+                )
+                self._event(
+                    con, candidate_id, scope, row["task_id"], action,
+                    {"method": "local_operator_confirmation", "rubric_version": _LABEL_RUBRIC_VERSION}, now,
+                )
+                con.commit()
+                return {"success": True, "candidate_id": candidate_id, "status": "verified"}
             if action == "label":
                 if current not in {"pending", "reviewed", "ambiguous"}:
                     con.rollback(); raise ValueError("candidate cannot be labeled in current state")

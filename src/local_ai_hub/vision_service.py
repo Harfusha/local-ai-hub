@@ -187,7 +187,11 @@ class VisionService:
             screenshots.append(base64.b64decode(prepared.images[0], validate=True))
 
         def review(comparison_args: dict[str, Any]) -> dict[str, Any]:
-            inherited = {key: args[key] for key in ("model", "max_tokens", "root", "cloud_fallback") if key in args}
+            inherited = {
+                key: args[key]
+                for key in ("model", "max_tokens", "root", "cloud_fallback", "operation")
+                if key in args
+            }
             return self.run({**inherited, **comparison_args}, cancel_event=cancel_event)
 
         return compare_screens(screenshots[0], screenshots[1], review=review)
@@ -231,6 +235,18 @@ class VisionService:
                 "retryable": False,
                 "error_code": "invalid_request",
                 "error": field_error,
+            }
+        operation = args.get("operation")
+        if "operation" in args and (
+            not isinstance(operation, str)
+            or operation not in {"fix", "review", "describe"}
+        ):
+            return {
+                "success": False,
+                "terminal": True,
+                "retryable": False,
+                "error_code": "invalid_request",
+                "error": "Vision operation must be one of: fix, review, describe.",
             }
         if args.get("baseline_screenshot_artifact_id"):
             return self._compare_artifacts(args, cancel_event)
@@ -345,6 +361,7 @@ class VisionService:
                     model_context.observation_sources if model_context is not None else None
                 ),
                 image_size=image_size,
+                custom_schema=schema if isinstance(schema, dict) else None,
             )
             if parsed.terminal:
                 return {
@@ -370,13 +387,16 @@ class VisionService:
             if frontend_bundle:
                 repo_context = None
                 root = str(args.get("root") or "").strip()
-                fix_requested = any(
-                    marker in prompt.casefold()
-                    for marker in (
-                        "fix", "repair", "implement", "change", "correct",
-                        "oprav", "upravit", "sprav", "implementuj", "změň", "změnit",
+                if "operation" in args:
+                    fix_requested = args["operation"] == "fix"
+                else:
+                    fix_requested = any(
+                        marker in prompt.casefold()
+                        for marker in (
+                            "fix", "repair", "implement", "change", "correct",
+                            "oprav", "upravit", "sprav", "implementuj", "změň", "změnit",
+                        )
                     )
-                )
                 if root and fix_requested and self.repo_tools is not None:
                     findings = asdict(parsed).get("findings", [])
                     query = " ".join(

@@ -201,6 +201,10 @@ def test_live_mcp_schemas_match_registry_for_every_public_tool() -> None:
     for name in enabled_tools:
         expected_input = operation_tool_input_schema(name, mcp_server.FEATURES)
         if name == "local_ai_task":
+            assert expected_input["properties"]["operation"]["enum"] == [
+                "fix", "review", "describe"
+            ]
+            assert "operation" in expected_input["properties"]
             expected_input["properties"]["request_id"] = {
                 "type": "string", "default": "",
                 "description": "Stable async-job idempotency key and request correlation ID.",

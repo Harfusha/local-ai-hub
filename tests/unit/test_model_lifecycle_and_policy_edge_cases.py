@@ -140,3 +140,40 @@ def test_unknown_vram_caps_large_smart_context() -> None:
     )
 
     assert profile.num_ctx <= 16384
+
+
+def test_small_model_size_parser_rejects_multidigit_parameter_counts() -> None:
+    is_small = ModelExecutionPolicy._is_small_model
+
+    for model in ("model:0.5b", "model:1b", "model:1.5b", "model:2b", "model:3b"):
+        assert is_small(model), model
+
+    for model in ("model:13b", "model:23b", "model:33b", "model:130b"):
+        assert not is_small(model), model
+
+
+def test_multidigit_model_size_uses_large_model_vram_admission() -> None:
+    policy = ModelExecutionPolicy(
+        {
+            "model_execution": {
+                "smart": {
+                    "context_tokens": 65536,
+                    "large_context_tokens": 65536,
+                    "max_context_tokens": 65536,
+                    "context_reserve_tokens": 2048,
+                    "parallel": 1,
+                }
+            }
+        }
+    )
+
+    small = policy.profile("model:3b", role="reasoning", vram_free_mb=6144)
+    large = policy.profile("model:13b", role="reasoning", vram_free_mb=6144)
+
+    assert small.num_ctx == 32768
+    assert large.num_ctx == 8192
+
+    small_payload, _ = policy.apply_payload("model:3b", {}, vram_free_mb=6144)
+    large_payload, _ = policy.apply_payload("model:13b", {}, vram_free_mb=6144)
+    assert "keep_alive" not in small_payload
+    assert large_payload["keep_alive"] == "0s"

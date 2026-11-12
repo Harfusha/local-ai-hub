@@ -604,6 +604,123 @@ def test_vision_resolves_network_artifacts_without_owner_partition(tmp_path: Pat
     assert all("tenant" not in call.kwargs for call in services.artifacts.get.call_args_list)
 
 
+@pytest.mark.parametrize(
+    ("operation", "prompt", "context_expected"),
+    [
+        ("fix", "Répare cet écran", True),
+        ("review", "oprav to", False),
+        ("describe", "oprav to", False),
+        (None, "oprav to", True),
+    ],
+)
+def test_vision_operation_controls_repo_context_independently_of_prompt_language(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    operation: str | None,
+    prompt: str,
+    context_expected: bool,
+) -> None:
+    services, _runtime, image = _services(tmp_path, models={"vision": "qwen3-vl:4b"})
+    frontend_inputs = VisionInputs(
+        images=["cG5n"],
+        image_artifact_id="",
+        bundle_artifact_id="bundle-1",
+        bundle_context="",
+        frontend_bundle={"dom": {"redaction": "none", "html": "<main></main>", "elements": []}},
+        model_context=None,
+        image_size=None,
+    )
+    monkeypatch.setattr(
+        "local_ai_hub.vision_service.prepare_vision_inputs",
+        lambda **_kwargs: frontend_inputs,
+    )
+
+    args = {"image": str(image), "root": str(tmp_path), "prompt": prompt}
+    if operation is not None:
+        args["operation"] = operation
+    result = services.vision(args)
+
+    assert result["success"] is True
+    assert services.repo_tools.context_pack.called is context_expected
+
+
+@pytest.mark.parametrize("operation", ["repair", [], None])
+def test_vision_rejects_unsupported_operation_before_runtime(
+    tmp_path: Path, operation: object
+) -> None:
+    services, runtime, image = _services(tmp_path, models={"vision": "qwen3-vl:4b"})
+
+    result = services.vision({"image": str(image), "operation": operation})
+
+    assert result["success"] is False
+    assert result["terminal"] is True
+    assert result["retryable"] is False
+    assert result["error_code"] == "invalid_request"
+    runtime.request.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("schema", "output"),
+    [
+        (
+            {"type": "object", "properties": {"caption": {"type": "string"}}, "required": ["caption"]},
+            {"caption": "A blue button"},
+        ),
+        ({"type": "array", "items": {"type": "string"}}, ["blue button", "save label"]),
+        ({"type": "string"}, "A blue button"),
+        ({}, None),
+    ],
+)
+def test_vision_returns_output_matching_custom_schema(
+    tmp_path: Path, schema: dict[str, object], output: object
+) -> None:
+    services, runtime, image = _services(tmp_path, models={"vision": "qwen3-vl:4b"})
+    runtime.request.return_value = {"response": json.dumps(output)}
+
+    result = services.vision(
+        {"image": str(image), "json_schema": schema, "prompt": "Caption this image"}
+    )
+
+    assert result["success"] is True
+    assert result["structured_output"] == output
+    assert result["review"] == {}
+
+
+def test_vision_rejects_custom_output_that_does_not_match_schema(tmp_path: Path) -> None:
+    services, runtime, image = _services(tmp_path, models={"vision": "qwen3-vl:4b"})
+    runtime.request.return_value = {"response": json.dumps({"caption": 42})}
+
+    result = services.vision(
+        {
+            "image": str(image),
+            "json_schema": {
+                "type": "object",
+                "properties": {"caption": {"type": "string"}},
+                "required": ["caption"],
+            },
+        }
+    )
+
+    assert result["success"] is False
+    assert result["terminal"] is True
+    assert result["error_code"] == "vision_output_invalid"
+    assert "supplied JSON Schema" in result["error"]["message"]
+
+
+def test_vision_rejects_invalid_json_schema_before_runtime(tmp_path: Path) -> None:
+    services, runtime, image = _services(tmp_path, models={"vision": "qwen3-vl:4b"})
+
+    result = services.vision(
+        {"image": str(image), "json_schema": {"type": "object", "required": "caption"}}
+    )
+
+    assert result["success"] is False
+    assert result["terminal"] is True
+    assert result["retryable"] is False
+    assert result["error_code"] == "vision_input_error"
+    runtime.request.assert_not_called()
+
+
 def test_vision_rejects_oversized_inline_dom_like_artifact_ref(tmp_path: Path) -> None:
     services, runtime, image = _services(tmp_path, models={"vision": "qwen3-vl:4b"})
 

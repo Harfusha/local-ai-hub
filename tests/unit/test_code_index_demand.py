@@ -8,12 +8,19 @@ from types import SimpleNamespace
 import sqlite3
 import threading
 import hashlib
+import json
 
 
 def test_evidence_demand_is_root_scoped_and_counts_real_usage(tmp_path):
     store = EvidenceStore(tmp_path / "state")
-    root_a = str(tmp_path / "a")
-    root_b = str(tmp_path / "b")
+    root_a_path = tmp_path / "a"
+    root_b_path = tmp_path / "b"
+    root_a_path.mkdir()
+    root_b_path.mkdir()
+    for root, name in ((root_a_path, "a.py"), (root_a_path, "b.py"), (root_b_path, "foreign.py")):
+        (root / name).write_text("", encoding="utf-8")
+    root_a = str(root_a_path)
+    root_b = str(root_b_path)
     a = {"path": "a.py", "text": "a", "content_hash": "hash-a"}
     b = {"path": "b.py", "text": "b", "content_hash": "hash-b"}
     store.put(root_a, a)
@@ -64,6 +71,43 @@ def test_one_hop_follows_local_javascript_and_php_imports_once(tmp_path):
     assert one_hop_related_files(
         tmp_path, ["src/main.js", "app/main.php"], eligible, RepositoryTools({}), limit=1,
     ) == ["src/lib/boot.js"]
+
+
+def test_one_hop_php_resolves_composer_autoload_and_dev_psr4_aliases(tmp_path):
+    (tmp_path / "src/Services").mkdir(parents=True)
+    (tmp_path / "src/Legacy").mkdir(parents=True)
+    (tmp_path / "tests/Support").mkdir(parents=True)
+    (tmp_path / "tests/Legacy").mkdir(parents=True)
+    (tmp_path / "src/main.php").write_text(
+        "<?php\n"
+        "use App\\Services\\InvoiceService as Invoice;\n"
+        "use Tests\\Support\\FakeClient as Client;\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "src/Services/InvoiceService.php").write_text("<?php\n", encoding="utf-8")
+    (tmp_path / "src/Legacy/InvoiceService.php").write_text("<?php\n", encoding="utf-8")
+    (tmp_path / "tests/Support/FakeClient.php").write_text("<?php\n", encoding="utf-8")
+    (tmp_path / "tests/Legacy/FakeClient.php").write_text("<?php\n", encoding="utf-8")
+    (tmp_path / "composer.json").write_text(
+        json.dumps({
+            "autoload": {"psr-4": {"App\\": "src/"}},
+            "autoload-dev": {"psr-4": {"Tests\\Support\\": "tests/Support/"}},
+        }),
+        encoding="utf-8",
+    )
+    eligible = {
+        "src/main.php",
+        "src/Services/InvoiceService.php",
+        "src/Legacy/InvoiceService.php",
+        "tests/Support/FakeClient.php",
+        "tests/Legacy/FakeClient.php",
+    }
+
+    neighbors = one_hop_related_files(
+        tmp_path, ["src/main.php"], eligible, RepositoryTools({}),
+    )
+
+    assert neighbors == ["src/Services/InvoiceService.php", "tests/Support/FakeClient.php"]
 
 
 def test_one_hop_ignores_ambiguous_module_names(tmp_path):

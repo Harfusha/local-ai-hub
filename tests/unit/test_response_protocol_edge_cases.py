@@ -71,6 +71,19 @@ def test_project_response_rejects_unfit_final_envelope() -> None:
     assert len(wire) <= 64 * 4
     assert result["success"] is False
     assert result["status"] == "response_budget_exceeded"
+    assert result["budget_rejected"] is True
+
+
+def test_project_response_enforces_utf8_serialized_byte_budget() -> None:
+    result = project_response(
+        {"success": True, "status": "ok", "error": "é" * 150},
+        profile="debug",
+        max_output_tokens=64,
+    )
+    wire = json.dumps(result, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+
+    assert len(wire) <= 64 * 4
+    assert result.get("truncated") is True or result.get("status") == "response_budget_exceeded"
 
 
 def test_response_protocol_inspection_helpers() -> None:

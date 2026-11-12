@@ -4,9 +4,62 @@ import threading
 import time
 import math
 import numbers
+import re
 from typing import Any
 
 from .gpu_monitor import get_gpu_telemetry
+
+
+_MODEL_SIZE_B_RE = re.compile(r"(?<![a-z0-9])(\d+(?:\.\d+)?)b(?![a-z0-9])", re.IGNORECASE)
+
+
+def _model_size_billions(model: str) -> float | None:
+    matches = _MODEL_SIZE_B_RE.findall(model)
+    if len(matches) != 1:
+        return None
+    try:
+        size = float(matches[0])
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return size if math.isfinite(size) and size > 0 else None
+
+
+def _speculative_pair_state(
+    models_cfg: dict[str, Any], *, target_model: str, draft_model: str, pressure_recommends: bool
+) -> dict[str, Any]:
+    if not isinstance(models_cfg, dict):
+        models_cfg = {}
+    configured = bool(
+        isinstance(models_cfg.get("fast_code"), str)
+        and models_cfg["fast_code"].strip()
+        and isinstance(models_cfg.get("draft_code"), str)
+        and models_cfg["draft_code"].strip()
+    )
+    target_size = _model_size_billions(target_model)
+    draft_size = _model_size_billions(draft_model)
+    if not configured:
+        pair_status = "unconfigured"
+    elif target_size is None or draft_size is None:
+        pair_status = "model_size_unknown"
+    elif draft_size >= target_size:
+        pair_status = "draft_not_smaller_than_target"
+    else:
+        pair_status = "valid"
+    recommended = pressure_recommends and pair_status == "valid"
+    return {
+        "configured": configured,
+        "pair_status": pair_status,
+        "draft_size_billions": draft_size,
+        "target_size_billions": target_size,
+        "recommended": recommended,
+        "recommendation_reason": (
+            "pressure_recommends_speculation" if recommended else
+            pair_status if pressure_recommends else "pressure_does_not_recommend"
+        ),
+        # VRAM telemetry cannot prove that a runtime has activated speculative decoding.
+        "runtime_active": None,
+        "runtime_status": "unknown",
+    }
 
 
 class VRAMBalancer:
@@ -204,7 +257,10 @@ class VRAMBalancer:
             speculative = result.get("speculative_inference")
             if isinstance(speculative, dict):
                 result["speculative_inference"] = dict(speculative)
-                result["speculative_inference"]["active"] = False
+                result["speculative_inference"]["recommended"] = False
+                result["speculative_inference"]["runtime_active"] = None
+                result["speculative_inference"]["runtime_status"] = "unknown"
+                result["speculative_inference"]["recommendation_reason"] = "telemetry_unavailable"
                 result["speculative_inference"]["strategy"] = "telemetry_unavailable"
         else:
             models_cfg = self.config.get("models", {})
@@ -224,7 +280,12 @@ class VRAMBalancer:
                     "draft_model": str(models_cfg.get("draft_code", "qwen2.5-coder:3b")),
                     "target_model": str(models_cfg.get("fast_code", "qwen2.5-coder:1.5b")),
                     "strategy": "telemetry_unavailable",
-                    "active": False,
+                    **_speculative_pair_state(
+                        models_cfg,
+                        target_model=str(models_cfg.get("fast_code", "qwen2.5-coder:1.5b")),
+                        draft_model=str(models_cfg.get("draft_code", "qwen2.5-coder:3b")),
+                        pressure_recommends=False,
+                    ),
                 },
                 "pinned_model": None,
             }
@@ -456,8 +517,19 @@ class VRAMBalancer:
             dynamic_context = max(4096, int(base_context * factor))
 
             models_cfg = self.config.get("models", {})
+            if not isinstance(models_cfg, dict):
+                models_cfg = {}
             target_model = str(models_cfg.get("fast_code", "qwen2.5-coder:1.5b"))
             draft_model = str(models_cfg.get("draft_code", "qwen2.5-coder:3b"))
+            speculative_state = _speculative_pair_state(
+                models_cfg,
+                target_model=target_model,
+                draft_model=draft_model,
+                pressure_recommends=level in {"moderate", "high"},
+            )
+            speculative_strategy = strategy
+            if level in {"moderate", "high"} and speculative_state["pair_status"] != "valid":
+                speculative_strategy = "fast_tier_only_pair_incompatible"
 
             sample_ts = gpu.get("timestamp")
             if (
@@ -495,8 +567,8 @@ class VRAMBalancer:
                 "speculative_inference": {
                     "draft_model": draft_model,
                     "target_model": target_model,
-                    "strategy": strategy,
-                    "active": level in {"moderate", "high"},
+                    "strategy": speculative_strategy,
+                    **speculative_state,
                 },
                 "pinned_model": (
                     {
@@ -603,14 +675,19 @@ class VRAMBalancer:
         numerator, denominator = factor.as_integer_ratio()
         return max(min(4096, base_tokens), base_tokens * numerator // denominator)
 
-    def get_speculative_pairing(self) -> dict[str, str]:
-        """Return target and draft models for speculative decoding."""
+    def get_speculative_pairing(self) -> dict[str, Any]:
+        """Return model pair and separate recommendation/configuration/runtime states."""
         st = self.status()
         spec = st.get("speculative_inference", {})
         return {
             "target_model": spec.get("target_model", "qwen2.5-coder:3b"),
             "draft_model": spec.get("draft_model", "qwen2.5-coder:7b"),
             "strategy": spec.get("strategy", "full_capacity"),
+            "recommended": spec.get("recommended", False),
+            "configured": spec.get("configured", False),
+            "pair_status": spec.get("pair_status", "unknown"),
+            "runtime_active": spec.get("runtime_active"),
+            "runtime_status": spec.get("runtime_status", "unknown"),
         }
 
     def is_sampling(self) -> bool:

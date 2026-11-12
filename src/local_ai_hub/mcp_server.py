@@ -795,20 +795,20 @@ def _release_root_family_reservation() -> None:
     if not reservation:
         return
     ROOT_FAMILY_BUDGET.release(
-        str(reservation.get("family", "")),
-        tokens=int(reservation.get("tokens", 0) or 0),
-        scope=str(reservation.get("scope", "")),
+        str(reservation.get("reservation_id", "")),
+        owner=str(reservation.get("owner", "")),
     )
-    _CURRENT_ROOT_FAMILY_RESERVATION.set(None)
 
 
 def _release_root_family_on_exit(fn: Any) -> Any:
     @functools.wraps(fn)
     def wrapped(*args: Any, **kwargs: Any) -> Any:
+        reservation_token = _CURRENT_ROOT_FAMILY_RESERVATION.set(None)
         try:
             return fn(*args, **kwargs)
         finally:
             _release_root_family_reservation()
+            _CURRENT_ROOT_FAMILY_RESERVATION.reset(reservation_token)
 
     return wrapped
 
@@ -2831,6 +2831,7 @@ def local_ai_task(
     candidate_data: dict[str, Any] | None = None,
     format: str | dict[str, Any] | None = None,
     json_schema: dict[str, Any] | None = None,
+    operation: Literal["fix", "review", "describe"] | None = None,
     language: str = "auto",
     extra_fields: list[str] | None = None,
     max_response_tokens: int = 0,
@@ -3077,12 +3078,14 @@ def local_ai_task(
         family_key = hashlib.sha1(_client_root(root).encode("utf-8", "replace"), usedforsecurity=False).hexdigest()[:16]
         budget_tokens = max_tokens or 4096
         budget_scope = f"{task_id}:{action}"
+        reservation_owner = f"{task_id}:{uuid.uuid4().hex}"
         admission = ROOT_FAMILY_BUDGET.reserve(
             family_key,
             input_tokens=budget_tokens,
             limit=ROOT_FAMILY_BUDGET.default_limit,
             task_id=task_id,
             scope=budget_scope,
+            owner=reservation_owner,
         )
         if admission.get("status") == "rejected":
             return {
@@ -3093,7 +3096,10 @@ def local_ai_task(
                 "budget": admission,
             }
         if admission.get("status") == "accepted":
-            _CURRENT_ROOT_FAMILY_RESERVATION.set({"family": family_key, "tokens": budget_tokens, "scope": budget_scope})
+            _CURRENT_ROOT_FAMILY_RESERVATION.set({
+                "reservation_id": admission["reservation_id"],
+                "owner": reservation_owner,
+            })
     if action == "continue":
         if profile:
             return {"success": False, "unsupported": True, "error": "Conversations do not support profiles"}
@@ -3232,8 +3238,10 @@ def local_ai_task(
             "cloud_fallback": cloud_fallback,
             "root": root,
         }
-        if json_schema:
+        if json_schema is not None:
             payload["json_schema"] = json_schema
+        if operation is not None:
+            payload["operation"] = operation
         for name, value in {
             "dom": dom,
             "accessibility": accessibility,

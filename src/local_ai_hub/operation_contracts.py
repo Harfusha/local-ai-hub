@@ -366,6 +366,7 @@ _ACTION_SCOPED_FIELDS = {
     "local_ai_status": {},
     "local_ai_task": {
         "path": frozenset(),
+        "operation": frozenset({"vision"}),
         "automation": frozenset({"automation"}),
         "url": frozenset({"browser"}),
         "request_id": frozenset({"submit"}),
@@ -778,7 +779,7 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
                 "accessibility_artifact_id", "computed_styles_artifact_id", "runtime_artifact_id",
                 "network_artifact_id", "source", "cloud_fallback", "root", "dom", "accessibility",
                 "computed_styles", "runtime", "viewport", "page", "bundle", "html",
-                "accessibility_snapshot", "computed_style_data", "runtime_context", "json_schema",
+                "accessibility_snapshot", "computed_style_data", "runtime_context", "json_schema", "operation",
             ),
             "eval_drift": ("task",),
             "complete_code": ("prompt", "candidate", "max_tokens"),
@@ -828,6 +829,11 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
             "page": {"type": "object"},
             "candidate_data": {"type": "object"},
             "json_schema": {"type": "object"},
+            "operation": {
+                "type": "string",
+                "enum": ["fix", "review", "describe"],
+                "description": "Vision request intent; selects whether repository context is requested.",
+            },
             "tasks": {"type": "array", "items": {"type": "object"}},
             "items": {"type": "array", "items": {"type": "object"}},
             "cases": {

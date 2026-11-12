@@ -15,6 +15,7 @@ from local_ai_hub.agent_events import AgentStateStore
 from local_ai_hub.config import ConfigError, validate_config
 from local_ai_hub.laya_dataset_merge import _validate_row
 from local_ai_hub.laya_candidates import LayaCandidateStore
+from tools.model_training.laya_backend import _validate_laya_label_provenance
 from local_ai_hub.laya_decisions import (
     ContextSourceEvidence,
     DecisionInput,
@@ -111,23 +112,77 @@ def test_laya_reviewer_public_key_config_is_typed_and_optional():
         validate_config({"laya": {"reviewers": {"public_keys": [""]}}})
 
 
-def test_label_export_requires_authenticated_human_provenance():
-    candidate = {
-        "label_status": "verified",
-        "label_provenance": {
-            "rubric_version": "laya-source-label-v1",
-            "annotations": [
-                {"annotator_ref": "annotator-a", "target": "indexed"},
-                {"annotator_ref": "annotator-b", "target": "indexed"},
-            ],
-            "adjudication": {"reviewer_ref": "adjudicator", "target": "indexed"},
-            "verification": {"reviewer_ref": "verifier"},
+def test_local_operator_can_confirm_label_without_reviewer_keys(candidate_env):
+    repo, state, task_store, _test_authenticator_store = candidate_env
+    store = LayaCandidateStore(state)
+    captured = store.handle(_capture(), root=str(repo), task_store=task_store)
+
+    labeled = store.handle(
+        {"action": "label", "candidate_id": captured["candidate_id"], "target": "fast"},
+        root=str(repo),
+        task_store=task_store,
+    )
+
+    assert labeled["status"] == "verified"
+    with closing(sqlite3.connect(store.path)) as con:
+        row = con.execute(
+            "SELECT candidate_json FROM laya_candidates WHERE candidate_id=?",
+            (captured["candidate_id"],),
+        ).fetchone()
+    candidate = json.loads(row[0])
+    provenance = candidates_module._export_label_provenance(
+        candidate, {"model_route": "fast"}
+    )
+    assert provenance["method"] == "local_operator_confirmation"
+    assert provenance["status"] == "verified"
+    row = {
+        "id": captured["candidate_id"],
+        "group_id": "group-1",
+        "source_sha256": "c" * 64,
+        "state": "A short approved state",
+        "questions": {"model_route": {"criteria": ["fast", "smart", "background"]}},
+        "expected": {"model_route": "fast"},
+        "provenance": {
+            "source": "laya_candidate_store",
+            "data_class": "local_scoped",
+            "candidate_id": captured["candidate_id"],
+            "candidate_sha256": "c" * 64,
+            "repository_scope_sha256": "d" * 64,
+            "task_id": "task-1",
+            "session_id": "session-1",
+            "evidence_ids": ["ev-1"],
+            "label_provenance": provenance,
         },
     }
-    targets = {"context_source": "indexed"}
+    _validate_row(row)
+    _validate_laya_label_provenance(
+        {
+            "data_class": "local_scoped",
+            "candidate_id": captured["candidate_id"],
+            "candidate_sha256": "c" * 64,
+            "label_provenance": provenance,
+        },
+        {"model_route": "fast"},
+        label="local operator test",
+    )
 
-    with pytest.raises(ValueError, match="authenticated human-review provenance"):
-        candidates_module._export_label_provenance(candidate, targets)
+
+def test_model_review_provenance_is_not_human_training_label():
+    candidate = {
+        "label_status": "model_reviewed",
+        "label_provenance": {
+            "rubric_version": "laya-source-label-v1",
+            "review_kind": "local_model",
+            "model_id": "local-test-model",
+            "model_revision": "rev-1",
+            "target": "indexed",
+        },
+    }
+
+    with pytest.raises(ValueError, match="human-confirmed"):
+        candidates_module._export_label_provenance(
+            candidate, {"context_source": "indexed"}
+        )
 
 
 def test_runtime_outcome_records_deterministic_baseline_and_unobserved_downstream(candidate_env):
@@ -783,7 +838,7 @@ def test_configured_ed25519_keys_authenticate_candidate_bound_reviews(tmp_path, 
 
 
 
-def test_label_requires_authentication_for_every_annotator_and_adjudicator(candidate_env):
+def test_local_operator_label_rejects_caller_supplied_reviewer_identities(candidate_env):
     repo, state, task_store, store = candidate_env
     captured = store.handle(_capture(), root=str(repo), task_store=task_store)
     candidate_id = captured["candidate_id"]
@@ -802,7 +857,7 @@ def test_label_requires_authentication_for_every_annotator_and_adjudicator(candi
         ],
         "adjudication": {"reviewer_ref": "adjudicator", "target": "fast"},
     }
-    with pytest.raises(ValueError, match="authenticated human reviewer provenance"):
+    with pytest.raises(ValueError, match="label fields invalid"):
         unauthenticated_store.handle(labels, root=str(repo), task_store=task_store)
 
     rejecting_store = LayaCandidateStore(

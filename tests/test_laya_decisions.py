@@ -31,6 +31,27 @@ def test_decision_input_separates_typed_state_and_redacted_training_content():
     assert decision_input.redacted_fields == ("task_input",)
 
 
+def test_decision_input_redacts_email_and_private_key_material():
+    decision_input = DecisionInput.from_mapping(
+        {
+            "state": {"gap_code": "unresolved_evidence_gap"},
+            "training_content": {
+                "task_input": "Contact alice@example.com with this key:",
+                "context_excerpt": (
+                    "-----BEGIN PRIVATE KEY-----\\n"
+                    "private-key-material\\n"
+                    "-----END PRIVATE KEY-----"
+                ),
+            },
+        }
+    )
+
+    model_state = decision_input.model_state()
+    assert model_state["raw_task_input"] == "Contact [REDACTED] with this key:"
+    assert model_state["raw_context_excerpt"] == "[REDACTED]"
+    assert decision_input.redacted_fields == ("task_input", "context_excerpt")
+
+
 @pytest.mark.parametrize(
     "payload",
     [

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 import threading
+import uuid
 from dataclasses import dataclass
 from typing import Any
 
@@ -78,7 +79,8 @@ class RootFamilyBudget:
         self.default_limit = max(0, _safe_int(default_limit, 0))
         self.max_active_scopes = max(1, _safe_int(max_active_scopes, 1))
         self._used: dict[str, int] = {}
-        self._scopes: dict[str, set[str]] = {}
+        self._scopes: dict[str, dict[str, str]] = {}
+        self._reservations: dict[str, dict[str, Any]] = {}
         self._lock = threading.RLock()
 
     @staticmethod
@@ -94,33 +96,72 @@ class RootFamilyBudget:
         limit: int | None = None,
         task_id: str = "",
         scope: str = "",
+        owner: str = "",
     ) -> dict[str, Any]:
         key = self._clean(family) or "default"
         clean_scope = self._clean(scope)
         clean_task = self._clean(task_id)[:96]
+        clean_owner = self._clean(owner)
         amount = max(0, _safe_int(input_tokens, 0)) + max(0, _safe_int(output_tokens, 0))
         cap = self.default_limit if limit is None else max(0, _safe_int(limit, 0))
+        if not clean_owner:
+            return {"status": "rejected", "reason": "reservation_owner_required", "family": key}
         with self._lock:
             used = self._used.get(key, 0)
-            scopes = self._scopes.setdefault(key, set())
+            scopes = self._scopes.setdefault(key, {})
             if clean_scope and clean_scope in scopes:
-                return {"status": "coalesced", "family": key, "used": used, "remaining": max(0, cap - used), "scope": clean_scope}
+                return {
+                    "status": "coalesced",
+                    "family": key,
+                    "used": used,
+                    "remaining": max(0, cap - used),
+                    "scope": clean_scope,
+                    "reservation_id": scopes[clean_scope],
+                }
             if cap and used + amount > cap:
                 return {"status": "rejected", "reason": "root_family_budget_exceeded", "family": key, "used": used, "remaining": max(0, cap - used), "retryable": False}
             if clean_scope and len(scopes) >= self.max_active_scopes:
                 return {"status": "rejected", "reason": "fanout_scope_limit_exceeded", "family": key, "used": used, "remaining": max(0, cap - used), "retryable": True}
             self._used[key] = used + amount
+            reservation_id = uuid.uuid4().hex
+            self._reservations[reservation_id] = {
+                "family": key,
+                "tokens": amount,
+                "scope": clean_scope,
+                "owner": clean_owner,
+            }
             if clean_scope:
-                scopes.add(clean_scope)
-            return {"status": "accepted", "family": key, "used": self._used[key], "remaining": max(0, cap - self._used[key]) if cap else None, "task_id": clean_task}
+                scopes[clean_scope] = reservation_id
+            return {
+                "status": "accepted",
+                "family": key,
+                "used": self._used[key],
+                "remaining": max(0, cap - self._used[key]) if cap else None,
+                "task_id": clean_task,
+                "reservation_id": reservation_id,
+                "owner": clean_owner,
+            }
 
-    def release(self, family: str, *, tokens: int = 0, scope: str = "") -> dict[str, Any]:
-        key = self._clean(family) or "default"
-        clean_scope = self._clean(scope)
+    def release(self, reservation_id: str, *, owner: str) -> dict[str, Any]:
+        clean_id = self._clean(reservation_id)
+        clean_owner = self._clean(owner)
         with self._lock:
-            self._used[key] = max(0, self._used.get(key, 0) - max(0, _safe_int(tokens, 0)))
-            if clean_scope:
-                self._scopes.setdefault(key, set()).discard(clean_scope)
+            reservation = self._reservations.get(clean_id)
+            if reservation is None:
+                return {"status": "not_found", "reservation_id": clean_id}
+            if not clean_owner or clean_owner != reservation["owner"]:
+                return {
+                    "status": "owner_mismatch",
+                    "family": reservation["family"],
+                    "used": self._used.get(reservation["family"], 0),
+                }
+            key = reservation["family"]
+            self._used[key] = max(0, self._used.get(key, 0) - reservation["tokens"])
+            scope = reservation["scope"]
+            scopes = self._scopes.get(key, {})
+            if scope and scopes.get(scope) == clean_id:
+                del scopes[scope]
+            del self._reservations[clean_id]
             return {"status": "released", "family": key, "used": self._used[key]}
 
     def used_tokens(self, family: str) -> int:

@@ -42,7 +42,11 @@ def test_vision_model_selection_preserves_disabled_cloud_and_missing_errors() ->
 
 def test_vision_request_plan_preserves_multimodal_payload_and_token_clamp() -> None:
     policy = _ModelPolicy()
-    schema = {"type": "object", "required": ["summary"]}
+    schema = {
+        "type": "object",
+        "properties": {"caption": {"type": "string"}},
+        "required": ["caption"],
+    }
     plan = build_vision_request(
         args={"max_tokens": 500, "json_schema": schema},
         model="local-vl",
@@ -63,7 +67,9 @@ def test_vision_request_plan_preserves_multimodal_payload_and_token_clamp() -> N
         "format": schema,
         "options": {"num_predict": 128},
     }
-    assert plan.prompt_context.startswith("Review image\n\nReturn only a JSON object")
+    assert plan.prompt_context.startswith("Review image\n\nReturn only JSON matching the supplied JSON Schema")
+    assert '"caption"' in plan.prompt_context
+    assert '"findings"' not in plan.prompt_context
     assert policy.call is not None
     assert policy.call[0] == "local-vl"
     assert policy.call[2] == {"role": "vision", "output_tokens": 128}

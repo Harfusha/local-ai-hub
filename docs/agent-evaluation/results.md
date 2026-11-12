@@ -5745,7 +5745,7 @@ The focused files `tests/unit/test_structural_search_confinement.py`, `tests/tes
 - Red reproduction: `postprocess_model_output(..., role="code")` removed `<plan>keep this literal</plan>` from an unfenced source string and deleted a standalone `[DONE]` line inside a triple-quoted fixture. Before implementation, structured-role regressions reported **2 failed, 1 passed**.
 - Normalizer now treats code/JSON/diff and code-producing roles as structured payloads: extracts reasoning tags only at the response prefix, strips orphaned reasoning tags/runtime markers only at the response tail, preserves embedded literals, and skips JSON fence/newline repair. Diff remains on the separate `postprocess_patch` path. Current source SHA `4514ab05ce759ccaf24930e7c56fafbcd5f3fad2ae8038323ba08d20c9798f78`; regression test SHA `6c7f6497be3310727487dc9480b78890a4d83b311f300a0517cb654bc2d49c65`.
 - Focused command `.\\.venv\\Scripts\\python.exe -m pytest -q tests/unit/test_normalizer_edge_cases.py tests/unit/test_normalizer_hardening_wave17.py --tb=short` — **15 passed in 0.59s**. `local_ai_repo.git_diff` returned retryable 503; no native fallback. Exact edited source slices and the focused tests were inspected.
-- **Assessment: normalizer source/test slice verified; B10 remains blocked for end-to-end JSON format wiring.** `services._generate` has a `format` input but calls the normalizer with `role` only. This Stability-owned call site was not edited; integration and focused validation were handed to Stability thread `01a1c762-d599-75c2-ae34-344aae056aa0`. No runtime model or broad-suite test was run.
+- **Assessment: normalizer source/test slice verified; B10 remains blocked for end-to-end JSON format wiring.** `services._generate` has a `format` input but calls the normalizer with `role` only. This goal-owned Stability scope was not edited; the finding was sent to candidate chat `01a1c762-d599-75c2-ae34-344aae056aa0`, whose ownership is unverified. No runtime model or broad-suite test was run.
 
 ### Round 77 — Round 2 N01 TokenRouter invalid-score fallback (2026-11-11)
 
@@ -5936,9 +5936,15 @@ Extracted `classify_python_inline_code` from `CommandBroker._classify_single` in
 ### Round 102 — CASE132 direct readiness-gate observation (2026-11-11)
 
 - Called `local_ai_status` once with `detail=brief`, `response_profile=compact`, no response-token override; request ID `req_ae618f26ab52`.
-- Raw response: `success=true`, Hub online, version 6.0.0, active model `qwen2.5-coder:3b`, hardware profile high, GPU admission available, VRAM nominal.
+- Direct raw response: `success=true`, Hub online, version 6.0.0, active model `qwen2.5-coder:3b`, hardware profile high, GPU admission available, VRAM nominal.
 - Capability row `code_generation`: `available=false`, `state=enabled_by_operator`, `reason=disabled_in_mcp_adapter`, feature gate `local_code_generation`, provider readiness `not_checked`. This verifies the readiness response and adapter exposure only; it does not prove generation quality or provider readiness.
-- Generation stayed GATED/NOT_RUN. No generation call ran because the capability was unavailable; CASE132 full prompt acceptance stays NOT VERIFIED because the isolated raw result and required harness/fixture inputs are absent.
+- Generation stayed GATED/NOT_RUN in this direct observation. No generation call ran.
+
+### CASE132 isolated readiness prompt retests (2026-11-11)
+
+- Chat `01a1c74c-57ac-7050-92a1-bd27026dda41` made one `local_ai_status(response_profile=compact)` call. `read_thread` confirms call status and arguments but omits raw payload; the final agent-reports `success=false`, `status_code=500`, `retryable=false`, `terminal=true`, `error=NOT_RETURNED`. It then labels generation `GATED`, conflicting with the prompt's rule that a failed call means `NOT_RUN/NOT_VERIFIED`. Classify this run's generation `NOT_RUN/NOT_VERIFIED`, `api_success=NOT_RUN`, `content_status=NOT_RUN`; prompt protocol **FAIL**. All values from this chat are agent-reported, not raw-response verified.
+- Chat `01a1c7c7-7ee5-7371-9420-f996dd4cf297` made one `local_ai_status(detail=brief, response_profile=compact)` call. The final agent-reports `success=true` and explicit `code_generation.available=false`, `reason=disabled_in_mcp_adapter`, `feature_gate=local_code_generation`; its `GATED/NOT_RUN` classification follows the prompt gate rule. But `read_thread` shows a second final message, `What should I start?`, so prompt protocol **FAIL**. Raw payload remains absent; values are agent-reported. No generation call ran.
+- These isolated status-only runs do not complete CASE132's six-branch prompt. Fixture, manifest, exact patch inputs, complete live enum and target remain absent; full prompt **NOT_RUN / NOT VERIFIED**. Do not infer server capability, generation quality, or provider readiness from client schema or unavailable adapter capability.
 
 ### Round 2 N24 — root-bound ingest-cache invalidation (2026-11-11)
 
@@ -5953,3 +5959,78 @@ Extracted `classify_python_inline_code` from `CommandBroker._classify_single` in
 - Existing `put()` checks encoded text size and `IngestedFile.size_bytes` against `max_bytes` before cache mutation, so individually oversized entries do not evict valid entries or exceed the byte limit.
 - Existing regression `test_evict_if_needed_does_not_keep_single_oversized_item` ran in the same focused 18-test command above and passed. No N21 source change was needed in this follow-up; current source SHA `7a9a8c9849bb9339bbc26900749a946a179919b229977a2db163e157bfee7ec1`, test SHA `c0613bdc481b055aeb328ad45d7a7addd203524a5f0b9484ba7382a9b2b48684`.
 - This verifies oversized-entry rejection; it does not establish the full Round 2 suite.
+
+### Round 104 — latest isolated prompt transcript reconciliation (2026-11-11)
+
+- **CASE131**, chat `01a1c7c5-4bb3-7902-a3ca-0f7e597d24e4`: transcript confirms the two required ordered calls, `refactor_impact` then `call_graph`, with fixture root and qualified symbol arguments. Exactly one final answer; no extra post-final message. Raw MCP payloads are absent. Agent-reported impact is incomplete with freshness unchecked and `risk_level=UNKNOWN`; graph reports known caller `load_project` but incomplete coverage/truncation. Protocol **PASS**; content and full acceptance **NOT VERIFIED**. Cross-project, collision and duplicate-definition branches **NOT RUN**.
+- **CASE134**, chat `01a1c7c0-e2b1-7753-9dfd-08319c997000`: transcript confirms one status call plus three source reads (exact four-call limit), canonical `line_start`/`line_end`, pinned SHA and no target-action calls. Raw status/source payloads and source artifact IDs are absent; enum is not host-visible. Protocol/argument shape **PASS**; evidence **PARTIAL**, live enum and full acceptance **NOT VERIFIED**.
+- **CASE135**, chat `01a1c754-32a9-7302-964f-9b623c877b56`: transcript confirms exactly one `reachability_dead_code` call on fixture alpha with `limit=1`, then one final answer. Counts in the final remain agent-reported because raw MCP output is absent. Protocol **PASS**; endpoint totals **NOT VERIFIED** in this isolated run. Separate direct endpoint evidence remains in Round 100; no product-wide inference.
+
+### Round 110 — B02 model-size parsing and VRAM admission (2026-11-11)
+
+- Source review found `_is_small_model()` already requires the `3b` token not to be preceded by another digit. Added regression coverage confirming 0.5B/1B/1.5B/2B/3B classify as small and 13B/23B/33B/130B do not; no source change was needed.
+- VRAM admission regression at 6144 MB confirms 3B retains a 32768 context and no forced unload, while 13B is capped at 8192 and gets `keep_alive="0s"`.
+- `python -m pytest -q tests/unit/test_model_lifecycle_and_policy_edge_cases.py`: **5 passed**. This is focused coverage only; full suite and release gates remain **NOT RUN**.
+
+### Round 111 — B12 serialized response byte budget (2026-11-11)
+
+- RED: `python -m pytest -q tests/unit/test_response_protocol_edge_cases.py -k utf8_serialized_byte_budget` showed a 256-byte limit returned **341 bytes** for multibyte UTF-8 content.
+- Updated `project_response()` to measure each serialized projection as UTF-8 bytes. Unmeasurable or still oversized payloads fail closed with `status="response_budget_exceeded"` and `budget_rejected=true`.
+- GREEN: `python -m pytest -q tests/unit/test_response_protocol_edge_cases.py tests/unit/test_response_protocol_and_retrieval_edge_cases.py` passed **8/8**. Full suite and release gates remain **NOT RUN**.
+
+### Round 112 — B14 paired retrieval scope aggregates (2026-11-11)
+
+- RED: mixed `path_only` and `symbol_ast` cases returned `success=false/status=unverified` instead of separate comparable aggregates.
+- `paired_retrieval_delta()` now groups deltas by measurement scope and rejects inconsistent metric contracts within a scope. Homogeneous output shape stays compatible. Existing KeyError handling remains fail-closed.
+- GREEN: `python -m pytest -q tests/unit/test_evaluation_quality_paired_delta.py tests/test_audit_quality_eval_contract.py`: **7 passed**. Full suite and release gates remain **NOT RUN**.
+
+### Round 113 — B15/B16 custom vision contract and operation routing (2026-11-12)
+
+- A supplied `json_schema` now controls the prompt and output parser. Valid JSON is checked against Draft 2020-12 and returned in `structured_output`; malformed schemas and mismatched outputs fail closed. Explicit `operation=fix|review|describe` controls frontend repository-context lookup independently of prompt language; omitted operation preserves existing keyword inference. MCP schema and dispatch expose and forward the optional operation.
+- `python -m pytest -q tests/test_vision_service.py tests/test_vision_service_phases.py tests/test_mcp_agent_routing.py tests/test_mcp_contract_dispatch.py`: **231 passed in 18.68s**. Additional vision edge suites (`tests/test_frontend_review.py`, `tests/unit/test_vision_modules_edge_cases.py`, `tests/unit/test_vision_runtime_and_service_edge_cases.py`, `tests/unit/test_single_owner_vision_service.py`): **34 passed in 1.73s**. Total **265 passed** at HEAD `2915047af9ce7976ef9d267ade182cd7f0003604`; working-tree fingerprint `5912ad1c0940d6638c16e8bfd2d02b38a144f65d99b142f502a8c8a6647e346e` before this documentation update.
+- No live vision-model evaluation ran. Impact request `req_dd6e6f20d8cf` degraded to a stale-index heuristic fallback and does not establish complete dependency coverage; current semantic review action is unavailable.
+
+### Round 113 — Candidate contact for C08/C09/C13; destination unverified (2026-11-12)
+
+- Round 5 B10 alone did not establish the destination. Archived coordinator chat `01a1c75d-f5d5-7e80-bbb9-92035a5c2d54` explicitly designated `01a1c762-d599-75c2-ae34-344aae056aa0` as the Stability/performance chat; its transcript shows operational/embedding work sent there. The designated chat is active under title `Read pasted goal instructions`.
+- C08/C09/C13 requirements and current repository revision/fingerprint were sent there. Contact is **SENT / CURRENT OWNER ACKNOWLEDGMENT PENDING**, not yet accepted or integrated. No Stability-owned source or tests changed.
+- Full repository tests and release gates remain **NOT RUN** on the dirty shared checkout.
+
+### Round 114 — B01 root-family reservation ownership (2026-11-12)
+
+- `RootFamilyBudget.reserve()` now returns a unique `reservation_id` and binds it to an explicit execution owner. Coalesced scope lookup returns the existing ID, while `release()` rejects a different owner and no longer accepts arbitrary family/token/scope decrements.
+- MCP creates an execution owner per invocation and passes the exact reservation ID/owner to cleanup. The wrapper isolates its `ContextVar` at entry and restores the prior context after cleanup, preventing nested wrappers from releasing a parent's reservation.
+- Focused evidence: `python -m pytest -q tests/test_root_family_budget.py tests/test_mcp_budget_wire_accounting.py` — **12 passed**. Coverage includes coalesced ownership, mismatched and repeated release, unknown IDs, required owner, and nested-wrapper context.
+- B01 is complete in the existing Round 5 plan. Current semantic review action is unavailable; indexed impact `req_ab20692168d5` degraded to a broad heuristic fallback and is not treated as exact caller coverage. Full suite/release gates remain **NOT RUN**; overall audit/eval completion remains **NOT VERIFIED**.
+
+### Round 115 — B11 speculative inference observability (2026-11-12)
+
+- `VRAMBalancer` now separates `recommended`, `configured`, and `runtime_active`. Runtime stays `null` with `runtime_status="unknown"` because VRAM telemetry cannot prove that the inference runtime activated speculative decoding.
+- Recommendation requires moderate/high pressure plus explicit `fast_code` and `draft_code` configuration and a parseable size pair where draft is strictly smaller. Equal, larger, absent, and unknown-size pairs are not recommended and expose a `pair_status`; stale telemetry clears recommendation.
+- Focused evidence: `python -m pytest -q tests/unit/test_vram_balancer_telemetry_validity.py tests/unit/test_vram_balancer_edge_cases.py tests/unit/test_vram_balancer_and_work_fencing_wave11.py` — **106 passed**. Combined B01/B11 focused run — **118 passed**. No model installation or runtime activation occurred.
+- B11 is complete in the existing Round 5 plan. Semantic review is unavailable; indexed impact `req_48a7229e391a` returned stale-index heuristic matches and is not exact dependency coverage. Full repository/release gates remain **NOT RUN**; overall audit/eval completion remains **NOT VERIFIED**.
+
+### Round 116 — B17 context warmup lifecycle (2026-11-12)
+
+- `ContextWarmup` now stores bounded per-key lifecycle state and exposes `lifecycle_state(key)`. Accepted work moves through `enqueued`/`running` and finishes as `succeeded`, `failed`, or `expired`; stale queued work is not invoked and shutdown clears queued records as expired.
+- Only success enters the 60-second cooldown. Unsuccessful returns, exceptions, and expired work use short retry backoff; success removes the failure backoff.
+- Focused evidence: B17 tests — **8 passed**. Combined targeted regression command for B01, B11, and B17 — **126 passed in 2.93s**. Coverage includes all five lifecycle states, retry/cooldown, queue expiry, shutdown cleanup, bounded history, owner-bound release, and speculative pair state.
+- B17 is complete in the existing Round 5 plan. Semantic review is unavailable; indexed impact `req_31f48e54edea` degraded to stale-index heuristic matches and is not exact callsite coverage. Full repository/release gates remain **NOT RUN**; overall audit/eval completion remains **NOT VERIFIED**.
+
+### Round 117 — B13 read-only candidate contact (2026-11-12)
+
+- Read-only evidence in `src/local_ai_hub/resilience.py`: a conflicting completion after `_pending_completions` cleanup can be queued again; `_write_completion_batch()` uses `UPDATE ... WHERE state='running'` but ignores rowcount and the terminal row after a miss.
+- No source/test edits and no B13 tests run because the active goal assigns async/shared-runtime ownership to Stability. Finding sent to the historically designated Stability/performance chat `01a1c762-d599-75c2-ae34-344aae056aa0`; current owner acknowledgment and safe validation window are unconfirmed. Existing B13 plan item is blocked pending an accepted owner handoff.
+- Overall audit/eval completion remains **NOT VERIFIED**; broad repository/release gates remain **NOT RUN**.
+
+### Round 118 — Stability destination search correction (2026-11-12)
+
+- Searched 15 active chats and 2,057 archived Codex chats; no Stability/C08/C09/C13 destination appeared in titles or summaries. Deeper review of archived coordinator chat `01a1c75d-f5d5-7e80-bbb9-92035a5c2d54` explicitly maps `01a1c762-d599-75c2-ae34-344aae056aa0` to the Stability/performance role and records operational/embedding messages sent there.
+- C08/C09/C13 and B13 messages sent to that historically designated chat remain **awaiting current owner acknowledgment** and a safe validation window. No Stability-owned source/tests changed.
+- This entry supersedes earlier statements that relied on the candidate's title alone. Overall audit/eval status remains **NOT VERIFIED**; broad gates remain **NOT RUN**.
+
+### Round 119 — Historical Stability role confirmed (2026-11-12)
+
+- Identified the original coordinator chat `01a1c75d-f5d5-7e80-bbb9-92035a5c2d54`. It explicitly named `01a1c762-d599-75c2-ae34-344aae056aa0` as the Stability/performance destination and sent operational/embedding work there.
+- Sent C08/C09/C13 again with exact scope, current HEAD, and a request for current ownership, focused evidence, writer identity, and a safe validation window. Delivery succeeded; recipient acceptance remains **PENDING**.
+- No Stability-owned code/tests changed. Overall audit/eval remains **NOT VERIFIED**; broad gates remain **NOT RUN**.

@@ -8,6 +8,9 @@ import re
 from dataclasses import asdict, dataclass, field, replace
 from typing import Any
 
+from jsonschema.exceptions import SchemaError
+from jsonschema.validators import Draft202012Validator
+
 
 SEVERITIES = {"blocker", "high", "medium", "low", "info"}
 CATEGORIES = {
@@ -187,6 +190,8 @@ class VisionParseResult:
     unknowns: tuple[str, ...] = ()
     recommended_checks: tuple[str, ...] = ()
     observation_sources: dict[str, dict[str, dict[str, Any]]] | None = None
+    custom_output: Any = None
+    custom_schema_output: bool = False
     terminal: bool = False
     error: dict[str, str] = field(default_factory=dict)
 
@@ -371,11 +376,31 @@ def parse_vision_result(
     valid_element_ids: set[str] | None = None,
     observation_sources: dict[str, dict[str, dict[str, Any]]] | None = None,
     image_size: tuple[int, int] | None = None,
+    custom_schema: dict[str, Any] | None = None,
 ) -> VisionParseResult:
     if not isinstance(raw, str):
         return _terminal_error("vision output must be a string")
     if observation_sources is not None and not isinstance(observation_sources, dict):
         return _terminal_error("observation_sources must be an object")
+    if custom_schema is not None:
+        try:
+            Draft202012Validator.check_schema(custom_schema)
+            payload = json.loads(_json_text(raw))
+            validator = Draft202012Validator(custom_schema)
+            if not validator.is_valid(payload):
+                return _terminal_error("Vision output does not match the supplied JSON Schema.")
+            serialized = json.dumps(
+                payload, ensure_ascii=False, separators=(",", ":"), allow_nan=False
+            )
+        except SchemaError:
+            return _terminal_error("The supplied JSON Schema is invalid.")
+        except (json.JSONDecodeError, TypeError, ValueError, OverflowError):
+            return _terminal_error("Vision output is not valid bounded JSON.")
+        except Exception:
+            return _terminal_error("The supplied JSON Schema could not be applied.")
+        if len(serialized) > VISION_MAX_INLINE_RESPONSE_CHARS:
+            return _terminal_error("Vision output exceeds the bounded inline response limit.")
+        return VisionParseResult(custom_output=payload, custom_schema_output=True)
     try:
         payload = json.loads(_json_text(raw))
         if not isinstance(payload, dict) or not isinstance(payload.get("findings"), list):

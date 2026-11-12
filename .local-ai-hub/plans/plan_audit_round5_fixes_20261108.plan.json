@@ -7,159 +7,216 @@
   "spec_refs": [],
   "tasks": {
     "task_b01_root_family_admission": {
-      "acceptance_criteria": [],
+      "acceptance_criteria": [
+        "Every accepted reservation has a unique reservation_id and explicit execution owner.",
+        "Coalesced scope returns the existing reservation ID but cannot release it as a different owner.",
+        "Release requires the matching reservation ID and owner; mismatched or repeated release leaves accounting unchanged.",
+        "The MCP wrapper isolates nested ContextVar state and releases only its own accepted reservation.",
+        "Focused root-family and MCP budget tests pass."
+      ],
       "blocker": null,
       "clarifications": [],
       "depends_on": [],
       "description": "B01: RootFamilyBudget coalesced scope nesmí umožnit volajícímu uvolnit cizí rezervaci. Zavést reservation_id a explicitního vlastníka rezervace v mcp_server.py a budget.py.",
       "kind": "code",
-      "next_action": "",
+      "next_action": "B01 implementation and focused verification complete; remaining Round 5 tasks stay open.",
       "title": "B01 — Root-family reservation ownership: zamezení dvojímu uvolnění",
-      "work_status": "planned"
+      "work_phase": "verification",
+      "work_status": "done"
     },
     "task_b02_model_policy": {
-      "acceptance_criteria": [],
+      "acceptance_criteria": [
+        "ModelExecutionPolicy._is_small_model classifies 0.5B/1B/1.5B/2B/3B as small and rejects 13B/23B/33B/130B.",
+        "At 6144 MB free VRAM, 3B keeps a 32768 context without forced unload; 13B is capped at 8192 and receives keep_alive=0s."
+      ],
       "blocker": null,
       "clarifications": [],
       "depends_on": [],
       "description": "B02: ModelExecutionPolicy._is_small_model() používá podřetězec '3b', což chybně klasifikuje 13B/23B/33B jako malé modely. Opravit parsing velikosti modelu a VRAM admission pravidla.",
       "kind": "code",
-      "next_action": "",
+      "next_action": "No source change required: current parser already has the digit-aware boundary. Added regression tests in tests/unit/test_model_lifecycle_and_policy_edge_cases.py. Focused suite passed 5/5.",
       "title": "B02 — Model memory policy: přesná klasifikace velikosti modelu",
-      "work_status": "planned"
+      "work_status": "completed"
     },
     "task_b03_php_psr4_discovery": {
-      "acceptance_criteria": [],
+      "acceptance_criteria": [
+        "Composer autoload.psr-4 and autoload-dev.psr-4 mappings both resolve PHP namespace imports.",
+        "Aliased use imports with duplicate basenames resolve only to their PSR-4 mapped paths."
+      ],
       "blocker": null,
       "clarifications": [],
       "depends_on": [],
       "description": "B03: code_index_demand.py rozšířit PHP větev o parsování composer.json autoload.psr-4 / autoload-dev.psr-4 a regex/AST analýzu 'use Namespace\\\\Class;' včetně aliasů 'as ...'.",
       "kind": "code",
-      "next_action": "",
+      "next_action": "Verified: B03 focused tests passed (2 passed, 7 deselected); tests/unit/test_code_index_demand.py passed 9/9 after making the EvidenceStore metadata fixture create its strict existing root and source files.",
       "title": "B03 — PHP dependency resolver: podpora Composer PSR-4 use imports",
-      "work_status": "planned"
+      "work_status": "completed"
     },
     "task_b04_b05_unified_language_registry": {
-      "acceptance_criteria": [],
+      "acceptance_criteria": [
+        "Source path tiers classify .php, .rb, .vue and .svelte as current implementation files.",
+        "Source context classification accepts explicit intent=source_analysis.",
+        "Language-independent source paths and qualified code symbols activate source-first path priority, while documentation-only paths remain documentation requests."
+      ],
       "blocker": null,
       "clarifications": [],
       "depends_on": [],
       "description": "B04+B05: retrieval.py doplnit .php, .rb, .vue, .svelte do _SOURCE_SUFFIXES. Doplnit explicitní intent=source_analysis parametr a deterministické signály (přípony, cesty, symboly) pro source-first režim nezávisle na jazyku dotazu.",
       "kind": "code",
-      "next_action": "",
+      "next_action": "Focused evidence: source suffix tier tests cover .php/.rb/.vue/.svelte; explicit source_analysis intent and language-independent source path/qualified-symbol signals enable source-first priority; documentation-only query preserves input ranking. tests/unit/test_retrieval_fusion_canonical_paths.py passed 25/25.",
       "title": "B04+B05 — Unified language registry a multilingvální source-context detekce",
-      "work_status": "planned"
+      "work_status": "completed"
     },
     "task_b06_b07_b18_import_resolvers": {
-      "acceptance_criteria": [],
+      "acceptance_criteria": [
+        "Relative TypeScript NodeNext imports ending in .js resolve to a unique eligible .ts implementation.",
+        "Rust nested modules resolve both parent/stem.rs and parent/stem/mod.rs layouts.",
+        "A Go import exactly matching go.mod module resolves only root package files, while subpackage imports remain scoped to their directory."
+      ],
       "blocker": null,
       "clarifications": [],
       "depends_on": [],
       "description": "B06+B07+B18: code_index_demand.py opravit TS NodeNext .js->.ts resoluci, Rust vnořené moduly (parent/stem/mod.rs i parent/stem.rs) a Go přesnou shodu imp == module_name pro root package.",
       "kind": "code",
-      "next_action": "",
+      "next_action": "Focused evidence: NodeNext prefers the unique indexed .ts/.tsx counterpart over generated .js; Rust parent/stem.rs and parent/stem/mod.rs layouts resolve; exact Go module-root import returns root package file only. Combined focused suites passed 17/17.",
       "title": "B06+B07+B18 — Import resolvery: TypeScript NodeNext, Rust nested mod a Go root package",
-      "work_status": "planned"
+      "work_status": "completed"
     },
     "task_b08_b19_indexed_dependency_lookup": {
-      "acceptance_criteria": [],
+      "acceptance_criteria": [
+        "Eligible paths are indexed once per one-hop/two-hop request by directory, stem, extension and basename, then reused by Go, Java, C/C++ and C# resolvers.",
+        "Go subpackage imports return files in that exact package directory; exact module-root imports return root package files.",
+        "C# using imports match declared namespaces exactly, never a filename stem alone."
+      ],
       "blocker": null,
       "clarifications": [],
       "depends_on": [],
       "description": "B08+B19: code_index_demand.py předpočítat index způsobilých souborů (by_dir, by_stem, by_ext) pro eliminaci O(N*M) průchodů u Go, C#, Java a C/C++. V C# odstranit slabou shodu pouhého stemu.",
       "kind": "code",
-      "next_action": "",
+      "next_action": "Focused evidence: shared by_dir/by_stem/by_ext/by_basename index is reused across one-hop and two-hop requests; Go and Java use direct directory/stem lookups, C includes use basename lookup, C# namespace declarations are indexed once and matched exactly. RED observed four inventory iterations for four C# seeds; GREEN focused code-index/polyglot/efficiency suites passed 21/21.",
       "title": "B08+B19 — Indexed dependency lookup a přesný C# namespace matching",
-      "work_status": "planned"
+      "work_status": "completed"
     },
     "task_b09_circuit_breaker_generations": {
-      "acceptance_criteria": [],
+      "acceptance_criteria": [
+        "allow() returns an admission carrying the generation token when it grants a half-open probe.",
+        "success()/failure() from a stale probe generation cannot mutate a newer probe or reset its open circuit.",
+        "Model-attempt completion passes its admission token into success/failure; ordinary closed-state behavior remains unchanged."
+      ],
       "blocker": null,
       "clarifications": [],
       "depends_on": [],
       "description": "B09: CircuitBreakerRegistry allow() musí vracet probe generation token; success()/failure() smí měnit stav pouze pro odpovídající generaci, aby opožděný probe neresetoval novější aktivní stav.",
       "kind": "code",
-      "next_action": "",
+      "next_action": "Focused evidence: half-open allow returns the atomically captured probe generation; late success and failure from an expired generation are ignored, and the current generation closes the breaker. The model-attempt completion callsite now forwards its captured generation. RED reproduced a bool return without a generation; GREEN `tests/unit/test_resilience_circuit_breaker.py tests/test_resilience_defaults.py` passed 20/20.",
       "title": "B09 — Circuit breaker generations: ochrana před opožděnými half-open výsledky",
-      "work_status": "planned"
+      "work_status": "completed"
     },
     "task_b10_output_integrity": {
       "acceptance_criteria": [],
-      "blocker": "Audit-owned normalizer now preserves code/JSON literals and focused tests pass, but the production `_generate` call does not pass its `format` metadata to the normalizer. `services.py` is Stability-owned; handoff sent to Stability thread 01a1c762-d599-75c2-ae34-344aae056aa0 for format-mode integration and focused validation.",
+      "blocker": "B10 normalizer work is complete; end-to-end format-mode wiring is in Stability-owned shared-runtime services.py. The archived coordinator chat 01a1c75d-f5d5-7e80-bbb9-92035a5c2d54 explicitly assigned thread 01a1c762-d599-75c2-ae34-344aae056aa0 (title 'Read pasted goal instructions') the Stability/performance role and sent it operational/embedding work. This is direct historical role assignment, but the current recipient has not acknowledged ownership or a validation window. No services.py changes were made here.",
       "clarifications": [],
       "depends_on": [],
       "description": "B10: normalizer.py postprocess_model_output nesmí globálně odstraňovat [DONE] ani tagy <plan> uvnitř kódu či fixture textů. Oddělit režimy zpracování pro kód, diff, JSON a obecný text.",
       "kind": "code",
-      "next_action": "Stability wires format-aware mode at the existing response call site and returns current source/test evidence; then re-run focused normalization tests and reconcile B10.",
+      "next_action": "Wait for the Stability/performance owner in 01a1c762-d599-75c2-ae34-344aae056aa0 to confirm current ownership and a safe window, then have that owner wire format-aware normalization and provide current source/test evidence. Review and integrate only after that.",
       "title": "B10 — Runtime output integrity: ochrana zdrojového kódu před nežádoucí substitucí",
       "work_status": "blocked"
     },
     "task_b11_speculative_inference_observability": {
-      "acceptance_criteria": [],
+      "acceptance_criteria": [
+        "Status distinguishes recommended, configured, and runtime_active; runtime_active stays unknown unless runtime evidence exists.",
+        "Speculative recommendation requires a configured model pair with a parseable draft size strictly below target size.",
+        "Equal, larger, or unparseable model pairs report an explicit invalid/unknown reason and are not recommended.",
+        "Telemetry failure/staleness never implies runtime activation.",
+        "Focused VRAM balancer tests pass; no model pulls or runtime activation."
+      ],
       "blocker": null,
       "clarifications": [],
       "depends_on": [],
       "description": "B11: vram_balancer.py rozlišit speculative decoding stavy recommended, configured a runtime_active. Ověřit konfiguraci draft vs target modelu (draft menší/rychlejší než target).",
       "kind": "code",
-      "next_action": "",
+      "next_action": "B11 implementation and focused verification complete; remaining Round 5 tasks and overall audit/eval gates stay open.",
       "title": "B11 — Speculative inference observability: reálný stav a správná volba modelů",
-      "work_status": "planned"
+      "work_phase": "verification",
+      "work_status": "done"
     },
     "task_b12_response_size_contract": {
-      "acceptance_criteria": [],
+      "acceptance_criteria": [
+        "Every projection decision measures compact JSON encoded as UTF-8 bytes against max_output_tokens * 4.",
+        "A response that remains over budget or cannot be serialized fails closed with status=response_budget_exceeded and budget_rejected=true."
+      ],
       "blocker": null,
       "clarifications": [],
       "depends_on": [],
       "description": "B12: response_protocol.py project_response() doplnit závěrečný hard-cap validátor délky serializovaného JSON v bajtech/tokenech. Při překročení rozpočtu vrátit explicitní budget_rejected obálku.",
       "kind": "code",
-      "next_action": "",
+      "next_action": "Implemented UTF-8 serialized-byte measurement and explicit rejection metadata. RED reproduced 341 bytes against a 256-byte cap; focused response-protocol suites passed 8/8.",
       "title": "B12 — Response size contract: tvrdý limit výstupní obálky a budget_rejected",
-      "work_status": "planned"
+      "work_status": "completed"
     },
     "task_b13_recovery_journal_cas": {
       "acceptance_criteria": [],
-      "blocker": "Conflicting duplicate is rejected while the local completion is pending, and durable rows take precedence in replay. A conflicting finish submitted after commit is still queued then ignored by the SQLite CAS rather than immediately rejected/diagnosed; cross-process reservation races remain unverified.",
+      "blocker": "B13 belongs to Stability-owned async/shared-runtime scope. Read-only review found the post-commit conflicting finish/CAS rowcount gap. The archived coordinator chat 01a1c75d-f5d5-7e80-bbb9-92035a5c2d54 explicitly assigned thread 01a1c762-d599-75c2-ae34-344aae056aa0 ('Read pasted goal instructions') the Stability/performance role and sent it operational/embedding work. This is direct historical role assignment, but the current recipient has not acknowledged B13 ownership or a safe validation window. Finding was sent there; no source/tests changed.",
       "clarifications": [],
       "depends_on": [],
       "description": "B13: RecoveryJournal.finish() a dávkový zápis musí používat CAS s kontrolou AND state = 'running'. Replay identického výsledku vrátí původní receipt; pokus o přepis na protichůdný stav selže.",
       "kind": "code",
-      "next_action": "After earlier audit rounds, enforce and test explicit identical replay and conflicting finish handling after commit and across processes without compromising nonblocking completion. Focused recovery/reliability suites passed 36 tests; do not mark B13 complete.",
+      "next_action": "Wait for the Stability/performance owner in 01a1c762-d599-75c2-ae34-344aae056aa0 to confirm ownership and a validation window. Then have that owner validate committed conflict replay and cross-process reservation races; review only after current source and test evidence is returned.",
       "title": "B13 — Recovery journal terminal CAS: ochrana neměnnosti dokončených výsledků",
-      "work_phase": "verification",
-      "work_status": "in_progress"
+      "work_phase": "integration",
+      "work_status": "blocked"
     },
     "task_b14_retrieval_evaluation_contract": {
-      "acceptance_criteria": [],
+      "acceptance_criteria": [
+        "Mixed path_only and symbol_ast cases produce separate per-scope signed aggregates, never a cross-scope average.",
+        "Per-scope metric contracts must be consistent; malformed KeyError inputs return unverified instead of raising.",
+        "Homogeneous results preserve the existing top-level signed_deltas contract."
+      ],
       "blocker": null,
       "clarifications": [],
       "depends_on": [],
       "description": "B14: evaluation_quality.py paired_retrieval_delta validovat konzistenci scope napříč všemi případy, ošetřit KeyError a pro smíšené sady vracet oddělené agregáty místo chybného průměrování.",
       "kind": "code",
-      "next_action": "",
+      "next_action": "Mixed path_only/symbol_ast aggregation and homogeneous-shape regressions pass; malformed KeyError remains fail-closed. Focused paired-delta and audit-quality contract suites passed 7/7.",
       "title": "B14 — Retrieval evaluation contract: oddělení path_only a symbol_ast benchmarků",
-      "work_status": "planned"
+      "work_status": "completed"
     },
     "task_b15_b16_vision_contracts": {
-      "acceptance_criteria": [],
+      "acceptance_criteria": [
+        "A supplied json_schema controls prompt instructions; the default review contract is absent and request format remains the supplied schema.",
+        "Custom-schema model output is parsed as JSON, validated against that schema, and returned as structured_output without requiring review findings fields; invalid schemas reject before runtime.",
+        "operation=fix activates repo context for a frontend bundle with root regardless of prompt language; review and describe do not activate it.",
+        "Unsupported operation values fail closed; omitted operation preserves existing keyword inference.",
+        "The local_ai_task MCP schema exposes operation as the fix|review|describe enum for vision, and forwards an explicitly supplied value."
+      ],
       "blocker": null,
       "clarifications": [],
       "depends_on": [],
       "description": "B15+B16: vision_request.py při vlastním json_schema generovat odpovídající instrukce místo fixního review promptu. vision_service.py doplnit explicitní operation=fix|review|describe parametr pro spolehlivou aktivaci repo kontextu bez závislosti na anglických slovech.",
       "kind": "code",
-      "next_action": "",
+      "next_action": "B15/B16 acceptance met on HEAD 2915047af9ce7976ef9d267ade182cd7f0003604; 265 targeted tests passed across vision service/phases, MCP routing/contracts and vision edge suites. Current semantic review action and live vision model evaluation unavailable; broad repository gates remain outside this unit.",
       "title": "B15+B16 — Vision contracts: podpora custom JSON schema a multilingvální fix intent",
-      "work_status": "planned"
+      "work_phase": "verification",
+      "work_status": "done"
     },
     "task_b17_warmup_lifecycle": {
-      "acceptance_criteria": [],
+      "acceptance_criteria": [
+        "Each accepted key exposes its current/last lifecycle state: enqueued, running, succeeded, failed, or expired.",
+        "Expired queued work is not invoked, clears pending, and records expired.",
+        "Success retains the 60-second cooldown; exceptions and unsuccessful results record failed and use shorter retry/backoff.",
+        "State history remains bounded and close clears queued work coherently.",
+        "Focused warmup tests pass; foreground flow remains independent."
+      ],
       "blocker": null,
       "clarifications": [],
       "depends_on": [],
       "description": "B17: context_warmup.py rozlišit stavy enqueued, running, succeeded, failed a expired. 60s cooldown aplikovat výhradně po úspěchu; po výjimce nebo vypršení ve frontě povolit kratší retry/backoff.",
       "kind": "code",
-      "next_action": "",
+      "next_action": "B17 implementation and focused verification complete; remaining Round 5 tasks and overall audit/eval gates stay open.",
       "title": "B17 — Context warmup lifecycle: zamezení blokování po chybě nebo timeoutu",
-      "work_status": "planned"
+      "work_phase": "verification",
+      "work_status": "done"
     }
   },
   "title": "Audit Round 5: Opravy a regresní testy (commit 2176b0e)"

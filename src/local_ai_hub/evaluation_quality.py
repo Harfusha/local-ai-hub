@@ -6,7 +6,7 @@ import math
 
 
 def paired_retrieval_delta(baseline, candidate):
-    """Compare measured matching location queries; report signed raw deltas."""
+    """Compare matched measured cases, keeping incompatible scopes separate."""
     def cases(report):
         items = report.get("retrieval") if isinstance(report, dict) else None
         if not isinstance(items, list) or not 1 <= len(items) <= 100:
@@ -58,18 +58,47 @@ def paired_retrieval_delta(baseline, candidate):
             raise ValueError("baseline query identities differ")
         if any(before[key][5].keys() != after[key][5].keys() for key in before):
             raise ValueError("baseline metric contracts differ")
-        scopes = {"symbol_ast" if before[k][2] is not None else "path_only" for k in before}
-        if len(scopes) > 1:
-            raise ValueError("mixed measurement scopes across benchmark cases are not supported in paired delta")
-        deltas = {name: sum(after[key][5][name] - before[key][5][name] for key in before) / len(before)
-                  for name in next(iter(before.values()))[5]}
+        grouped: dict[str, list[str]] = {}
+        for key, case in before.items():
+            scope = "symbol_ast" if case[2] is not None else "path_only"
+            grouped.setdefault(scope, []).append(key)
+        aggregates = {}
+        for scope, keys in grouped.items():
+            metric_contracts = {tuple(sorted(before[key][5])) for key in keys}
+            if len(metric_contracts) != 1:
+                raise ValueError("metric contracts differ within measurement scope")
+            metric_names = next(iter(metric_contracts))
+            deltas = {
+                name: sum(after[key][5][name] - before[key][5][name] for key in keys) / len(keys)
+                for name in metric_names
+            }
+            aggregates[scope] = {
+                "case_count": len(keys),
+                "signed_deltas": deltas,
+                "answer_scope": "source_symbols" if scope == "symbol_ast" else "retrieved_paths_only",
+            }
     except (ValueError, TypeError, AttributeError, KeyError) as exc:
         return {"success": False, "status": "unverified", "reason": str(exc)}
-    paired_scope = "symbol_ast" if next(iter(before.values()))[2] is not None else "path_only"
-    return {"success": True, "status": "paired", "case_count": len(before),
-            "measurement_scope": paired_scope, "signed_deltas": deltas,
-            "answer_scope": "source_symbols" if paired_scope == "symbol_ast" else "retrieved_paths_only",
-            "model_quality_verified": False}
+    if len(aggregates) == 1:
+        paired_scope, aggregate = next(iter(aggregates.items()))
+        return {
+            "success": True,
+            "status": "paired",
+            "case_count": len(before),
+            "measurement_scope": paired_scope,
+            "signed_deltas": aggregate["signed_deltas"],
+            "answer_scope": aggregate["answer_scope"],
+            "model_quality_verified": False,
+        }
+    return {
+        "success": True,
+        "status": "paired",
+        "case_count": len(before),
+        "measurement_scope": "mixed",
+        "aggregates": aggregates,
+        "answer_scope": "mixed",
+        "model_quality_verified": False,
+    }
 
 
 def _citation_valid(citation, sources):
