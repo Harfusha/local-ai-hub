@@ -18,12 +18,11 @@ max_request_body_bytes = 16777216 # 16 MiB for JSON/API requests; bundle upload 
 # HTTP access is loopback-only and requires no API credential.
 
 [laya]
-# Shared Laya provider sessions unload after this much idle time. Zero disables it.
+# Laya loads on request and unloads 600 seconds after the latest completed request.
 idle_unload_seconds = 600
 
 [laya.runtime]
-# Shadow evaluation is callable only after a local pinned checkpoint is configured.
-enabled = false
+# The service/API are always available; shadow inference requires a pinned checkpoint.
 checkpoint_path = ""
 revision = ""
 expected_sha256 = {}
