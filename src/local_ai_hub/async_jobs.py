@@ -9,6 +9,7 @@ import sqlite3
 import threading
 import time
 import uuid
+from concurrent.futures import Future
 from contextvars import ContextVar
 from contextlib import closing, contextmanager
 from pathlib import Path
@@ -67,6 +68,7 @@ class AsyncJobManager:
         task_store: Any | None = None,
         verification_store: Any | None = None,
         telemetry: Any | None = None,
+        execution_pool: Any | None = None,
     ):
         cfg = config.get("async_jobs", {})
         self.enabled = bool(cfg.get("enabled", True))
@@ -77,8 +79,14 @@ class AsyncJobManager:
         self.max_attempts = max(1, int(cfg.get("max_attempts", 2)))
         self.stats_max_items = max(1, min(256, int(cfg.get("stats_max_items", 32))))
         self.max_workers = max(1, int(cfg.get("max_workers", 16)))
+        if execution_pool is not None:
+            limits = getattr(execution_pool, "category_limits", {})
+            io_limit = limits.get("io") if isinstance(limits, dict) else None
+            if type(io_limit) is int and io_limit > 0:
+                self.max_workers = min(self.max_workers, io_limit)
         self.max_dispatch_workers = max(1, int(cfg.get("max_dispatch_workers", 4)))
         self.scheduler, self.artifacts, self.executor, self.debug_traces = scheduler, artifacts, executor, debug_traces
+        self.execution_pool = execution_pool
         self.task_store = task_store
         self.verification_store = verification_store
         self.telemetry = telemetry
@@ -100,7 +108,7 @@ class AsyncJobManager:
         self._events: dict[str, threading.Event] = {}
         self._delayed_dispatch: dict[str, threading.Timer] = {}
         self._dispatchers: set[threading.Thread] = set()
-        self._workers: set[threading.Thread] = set()
+        self._workers: set[Future[Any] | threading.Thread] = set()
         self._processes: dict[str, list[Any]] = {}
         self._shutdown = threading.Event()
         self._stats = {"submitted": 0, "coalesced": 0, "completed": 0, "failed": 0, "cancelled": 0, "recovered": 0, "expired": 0}
@@ -1102,16 +1110,38 @@ class AsyncJobManager:
                 except Exception as exc:
                     self._release_for_retry(job_id, str(exc))
                 finally:
-                    with self._lock:
-                        self._workers.discard(threading.current_thread())
-                    self._dispatch_next_queued()
+                    if self.execution_pool is None:
+                        with self._lock:
+                            self._workers.discard(threading.current_thread())
+                        self._dispatch_next_queued()
 
             with self._lock:
                 if self._shutdown.is_set():
                     return
-                worker = threading.Thread(target=run, name=f"async-job-{job_id[:8]}", daemon=True)
-                self._workers.add(worker)
-            worker.start()
+                if self.execution_pool is None:
+                    worker = threading.Thread(target=run, name=f"async-job-{job_id[:8]}", daemon=True)
+                    self._workers.add(worker)
+                    worker.start()
+                    return
+                try:
+                    future = self.execution_pool.submit("io", run)
+                except Exception as exc:
+                    with closing(self._connect()) as con:
+                        con.execute(
+                            "UPDATE async_jobs SET lease_until=0,updated_at=? WHERE job_id=? AND state='queued'",
+                            (time.time(), job_id),
+                        )
+                        con.commit()
+                    self._release_for_retry(job_id, str(exc))
+                    return
+                self._workers.add(future)
+
+            def worker_done(completed: Future[Any]) -> None:
+                with self._lock:
+                    self._workers.discard(completed)
+                self._dispatch_next_queued()
+
+            future.add_done_callback(worker_done)
 
 
     def _release_for_retry(self, job_id: str, error: str) -> None:
@@ -1886,15 +1916,30 @@ class AsyncJobManager:
         deadline = time.monotonic() + 1.5
         current = threading.current_thread()
         for worker in dispatchers + workers + resource_release_workers:
-            if worker is current or not worker.is_alive():
+            if worker is current:
                 continue
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 break
-            worker.join(timeout=remaining)
+            if isinstance(worker, threading.Thread):
+                if worker.is_alive():
+                    worker.join(timeout=remaining)
+            else:
+                try:
+                    worker.result(timeout=remaining)
+                except TimeoutError:
+                    pass
+                except Exception:
+                    pass
         with self._lock:
             self._dispatchers = {thread for thread in self._dispatchers if thread.is_alive()}
-            self._workers = {thread for thread in self._workers if thread.is_alive()}
+            self._workers = {
+                worker for worker in self._workers
+                if isinstance(worker, threading.Thread) and worker.is_alive()
+            } | {
+                worker for worker in self._workers
+                if isinstance(worker, Future) and not worker.done()
+            }
         if persistence_error is not None:
             raise persistence_error
 

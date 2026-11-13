@@ -54,10 +54,13 @@ _IDENTIFIER = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}\Z")
 _OPTION = re.compile(r"[a-z][a-z0-9_]{0,63}\Z")
 _STATE_FIELD = re.compile(r"[a-z][a-z0-9_]{0,63}\Z")
 _STATE_VALUE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}\Z")
-_RAW_CONTENT_FIELDS = frozenset({"task_input", "context_excerpt"})
+_RAW_CONTENT_FIELDS = frozenset({
+    "task_input", "context_excerpt", "model_response", "tool_output_excerpt",
+})
+_CONTEXT_SOURCE_CONTENT_FIELDS = frozenset({"task_input", "context_excerpt"})
 _SECRET_PATTERNS = (
-    re.compile(r"(?i)\b(api[_-]?key|access[_-]?token|refresh[_-]?token|token|password|passwd|secret|authorization)(\s*[:=]\s*)([^\s,;]+)"),
     re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]+"),
+    re.compile(r"(?i)\b(api[_-]?key|access[_-]?token|refresh[_-]?token|token|password|passwd|secret|authorization)(\s*[:=]\s*)([^\s,;]+)"),
     re.compile(r"\b(?:sk-[A-Za-z0-9_-]{16,}|gh[pousr]_[A-Za-z0-9]{20,}|AKIA[0-9A-Z]{16})\b"),
     re.compile(r"(?i)\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b"),
     re.compile(
@@ -181,6 +184,8 @@ class ContextSourceEvidence:
             raise ValueError("invalid context source evidence IDs")
         if len(set(self.evidence_ids)) != len(self.evidence_ids):
             raise ValueError("duplicate context source evidence ID")
+        if not isinstance(self.training_content, Mapping) or set(self.training_content) - _CONTEXT_SOURCE_CONTENT_FIELDS:
+            raise ValueError("context source training content fields invalid")
         decision_input = DecisionInput.from_mapping({
             "state": {"gap_code": self.gap_code},
             "training_content": dict(self.training_content),
@@ -244,8 +249,8 @@ class ContextSourceEvidence:
             "coverage_codes": [item.value for item in self.coverage_codes],
             "evidence_ids": list(self.evidence_ids),
             **{f"raw_{key}": value for key, value in self.training_content.items()},
-            "training_redacted_fields": "none" if not redacted_fields else "_".join(redacted_fields),
-            "training_missing_fields": "none" if not missing_fields else "_".join(missing_fields),
+            "training_redacted_fields": "none" if not redacted_fields else ",".join(redacted_fields),
+            "training_missing_fields": "none" if not missing_fields else ",".join(missing_fields),
             "training_missing_reason": missing_reason,
         }
 
@@ -377,9 +382,20 @@ class DecisionInput:
         return cls(state=dict(state), training_content=sanitized, redacted_fields=tuple(redacted))
 
     def model_state(self) -> dict[str, str]:
+        allowed_content_fields = ("task_input", "context_excerpt")
+        missing_fields = [key for key in allowed_content_fields if key not in self.training_content]
+        redacted_fields = sorted(self.redacted_fields)
+        missing_reason = (
+            "none" if not missing_fields
+            else "both_raw_fields_unavailable" if len(missing_fields) == 2
+            else f"{missing_fields[0]}_unavailable"
+        )
         return {
             **self.state,
             **{f"raw_{key}": value for key, value in self.training_content.items()},
+            "training_redacted_fields": "none" if not redacted_fields else ",".join(redacted_fields),
+            "training_missing_fields": "none" if not missing_fields else ",".join(missing_fields),
+            "training_missing_reason": missing_reason,
         }
 
 

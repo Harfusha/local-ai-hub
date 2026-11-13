@@ -471,6 +471,11 @@ class EndpointStatsStore:
 
         result = {
             "success": True,
+            "window": "stored_since_reset",
+            "latency_method": "fixed_histogram_bucket_estimate",
+            "histogram_bucket_ceiling_ms": int(BUCKET_INTERVALS[-1][1]),
+            "histogram_top_bucket_open_ended": True,
+            "last_used_unit": "unix_seconds",
             "root": (("legacy:" + quote(target_root, safe="")) if scope_kind == "legacy" else target_root) if not is_global else "",
             "is_global": is_global,
             "project_scope_precision": "mixed" if is_global else ("historical_basename" if scope_kind == "legacy" else "exact_root"),

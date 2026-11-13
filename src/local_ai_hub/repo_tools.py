@@ -58,6 +58,9 @@ _WORD = re.compile(r"[A-Za-z_][A-Za-z0-9_./:-]{1,80}")
 MAX_EXACT_SEARCH_FILES = 8000
 MAX_EXACT_GIT_PATHS = 128_000
 MAX_EXACT_GIT_PATH_BYTES = 32 * 1024 * 1024
+_IMPACT_SCAN_MAX_FILES = 8_000
+_IMPACT_SCAN_TIMEOUT_SECONDS = 1.5
+_IMPACT_RIPGREP_TIMEOUT_SECONDS = 1.5
 _INSTALLATION_INTENT_TERMS = frozenset({
     "install", "installation", "setup", "configure", "configuration", "quickstart",
     "nainstalovat", "instalovat", "instalace", "nastavit", "nastavení", "spustit",
@@ -3837,7 +3840,7 @@ class RepositoryTools:
                 cmd.extend(["-e", name])
             cmd.append(str(repo))
             try:
-                proc = subprocess.run(cmd, capture_output=True, text=True, timeout=self.ripgrep_timeout, check=False, encoding="utf-8", errors="replace", **hidden_run_kwargs())
+                proc = subprocess.run(cmd, capture_output=True, text=True, timeout=min(float(self.ripgrep_timeout), _IMPACT_RIPGREP_TIMEOUT_SECONDS), check=False, encoding="utf-8", errors="replace", **hidden_run_kwargs())
                 if proc.returncode in {0, 1}:
                     dependent_candidates = set()
                     for raw in proc.stdout.splitlines():
@@ -3849,7 +3852,30 @@ class RepositoryTools:
             except Exception:
                 dependent_candidates = None
 
-        for path in self.iter_files(str(repo)):
+        scan_complete = True
+        scan_truncated_reason: str | None = None
+        files_scanned = 0
+        scan_deadline = time.monotonic() + _IMPACT_SCAN_TIMEOUT_SECONDS
+        inventory_status: dict[str, Any] = {
+            "complete": True, "reasons": [], "examples": {},
+            "examples_truncated": False, "excluded_link_paths": 0,
+        }
+        for path, _snapshot_stat in self._iter_files_with_stat(
+            str(repo),
+            max_depth=25,
+            max_files=_IMPACT_SCAN_MAX_FILES + 1,
+            inventory_status=inventory_status,
+            inventory_deadline=scan_deadline,
+        ):
+            if files_scanned >= _IMPACT_SCAN_MAX_FILES:
+                scan_complete = False
+                scan_truncated_reason = "file_limit"
+                break
+            if time.monotonic() >= scan_deadline:
+                scan_complete = False
+                scan_truncated_reason = "deadline"
+                break
+            files_scanned += 1
             rel = str(path.relative_to(repo)).replace("\\", "/")
             low_rel = rel.lower()
             is_test = (
@@ -3882,6 +3908,16 @@ class RepositoryTools:
             if matched:
                 dependents.append({"path": rel, "symbols": matched[:8], "mentions": mentions})
 
+        if not inventory_status.get("complete", True):
+            scan_complete = False
+            inventory_reasons = inventory_status.get("reasons", [])
+            if "time_limit" in inventory_reasons:
+                scan_truncated_reason = "deadline"
+            elif "file_limit" in inventory_reasons:
+                scan_truncated_reason = "file_limit"
+            else:
+                scan_truncated_reason = "inventory"
+
         dependents.sort(key=lambda x: (-x["mentions"], x["path"]))
         test_candidates.sort(key=lambda x: (-x["score"], x["path"]))
         dependents = dependents[:max(1, int(max_dependents))]
@@ -3902,6 +3938,8 @@ class RepositoryTools:
             score += 1; reasons.append("no likely tests found")
         if diff.get("truncated"):
             score += 1; reasons.append("diff exceeded local impact budget")
+        if not scan_complete:
+            score += 1; reasons.append("impact scan incomplete")
         level = "high" if score >= 5 else "medium" if score >= 2 else "low"
         if not reasons:
             reasons.append("small localized change")
@@ -3912,6 +3950,12 @@ class RepositoryTools:
             "suggested_tests": suggested_tests,
             "risk": {"score": score, "level": level, "reasons": reasons},
             "diff_sha256": diff.get("diff_sha256"),
+            "analysis_coverage": {
+                "complete": scan_complete,
+                "files_scanned": files_scanned,
+                "limit": _IMPACT_SCAN_MAX_FILES,
+                "truncated_reason": scan_truncated_reason,
+            },
             "note": "Heuristic fallback; use Serena for exact symbol relationships when available.",
         }
 

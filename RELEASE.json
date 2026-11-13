@@ -2,6 +2,6 @@
   "name": "local-ai-hub",
   "version": "6.0.0",
   "release_date": "2026-11-07",
-  "status": "production-ready",
+  "status": "release-candidate",
   "focus": "Release v6.0.0: Clean slate architecture, verified preservation of persistent runtime state with fail-closed mismatch checks, and removal of deprecated compatibility layers."
 }

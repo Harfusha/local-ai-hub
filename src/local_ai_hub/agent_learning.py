@@ -16,7 +16,7 @@ from typing import Any, Callable, Mapping
 
 from .agent_events import AgentEvent, AgentStateStore
 from .agent_memory import ApprovalRequiredError
-from .sqlite_support import connect_sqlite, retry_busy
+from .sqlite_support import connect_sqlite, retry_busy, write_transaction
 
 LOGGER = logging.getLogger(__name__)
 
@@ -719,18 +719,15 @@ class LearningStore:
         def _do_save() -> None:
             con = connect_sqlite(self.state_store.db_path, isolation_level=None)
             try:
-                con.execute("BEGIN IMMEDIATE")
-                self._write_projection_in_transaction(con, candidate)
-                con.execute("COMMIT")
-            except Exception:
-                try:
-                    con.execute("ROLLBACK")
-                except sqlite3.Error as rollback_error:
-                    LOGGER.warning(
+                with write_transaction(
+                    con,
+                    rollback_label="learning",
+                    on_rollback_failure=lambda error: LOGGER.warning(
                         "learning rollback failed error_type=%s",
-                        type(rollback_error).__name__,
-                    )
-                raise
+                        type(error).__name__,
+                    ),
+                ):
+                    self._write_projection_in_transaction(con, candidate)
             finally:
                 con.close()
 
@@ -749,51 +746,48 @@ class LearningStore:
         def _persist() -> ImprovementCandidate:
             con = connect_sqlite(self.state_store.db_path, isolation_level=None)
             try:
-                con.execute("BEGIN IMMEDIATE")
-                appended = self.state_store.append_in_transaction(
+                with write_transaction(
                     con,
-                    event,
-                    strict_idempotency=True,
-                )
-                if appended.error or appended.event is None:
-                    raise RuntimeError(appended.error or "learning event append returned no persisted event")
-                existing = con.execute(
-                    """
-                    SELECT candidate_id, name, baseline_version, candidate_version, status,
-                           slo_thresholds, metrics, approver, created_at, updated_at
-                    FROM agent_learning_candidates WHERE candidate_id = ?
-                    """,
-                    (candidate.candidate_id,),
-                ).fetchone()
-                if appended.duplicate:
-                    persisted = self._row_to_candidate(existing) if existing is not None else None
-                    if persisted is None or (
-                        persisted.candidate_id != candidate.candidate_id
-                        or persisted.name != candidate.name
-                        or persisted.baseline_version != candidate.baseline_version
-                        or persisted.candidate_version != candidate.candidate_version
-                        or persisted.status is not candidate.status
-                        or persisted.slo_thresholds != candidate.slo_thresholds
-                        or persisted.metrics != candidate.metrics
-                        or persisted.approver != candidate.approver
-                        or persisted.created_at != candidate.created_at
-                    ):
-                        raise sqlite3.IntegrityError(
-                            "learning event idempotency conflicts with candidate projection"
-                        )
-                else:
-                    self._write_projection_in_transaction(con, candidate)
-                con.execute("COMMIT")
-                return persisted if appended.duplicate else candidate
-            except Exception:
-                try:
-                    con.execute("ROLLBACK")
-                except sqlite3.Error as rollback_error:
-                    LOGGER.warning(
+                    rollback_label="learning",
+                    on_rollback_failure=lambda error: LOGGER.warning(
                         "learning transaction rollback failed error_type=%s",
-                        type(rollback_error).__name__,
+                        type(error).__name__,
+                    ),
+                ):
+                    appended = self.state_store.append_in_transaction(
+                        con,
+                        event,
+                        strict_idempotency=True,
                     )
-                raise
+                    if appended.error or appended.event is None:
+                        raise RuntimeError(appended.error or "learning event append returned no persisted event")
+                    existing = con.execute(
+                        """
+                        SELECT candidate_id, name, baseline_version, candidate_version, status,
+                               slo_thresholds, metrics, approver, created_at, updated_at
+                        FROM agent_learning_candidates WHERE candidate_id = ?
+                        """,
+                        (candidate.candidate_id,),
+                    ).fetchone()
+                    if appended.duplicate:
+                        persisted = self._row_to_candidate(existing) if existing is not None else None
+                        if persisted is None or (
+                            persisted.candidate_id != candidate.candidate_id
+                            or persisted.name != candidate.name
+                            or persisted.baseline_version != candidate.baseline_version
+                            or persisted.candidate_version != candidate.candidate_version
+                            or persisted.status is not candidate.status
+                            or persisted.slo_thresholds != candidate.slo_thresholds
+                            or persisted.metrics != candidate.metrics
+                            or persisted.approver != candidate.approver
+                            or persisted.created_at != candidate.created_at
+                        ):
+                            raise sqlite3.IntegrityError(
+                                "learning event idempotency conflicts with candidate projection"
+                            )
+                    else:
+                        self._write_projection_in_transaction(con, candidate)
+                    return persisted if appended.duplicate else candidate
             finally:
                 con.close()
 

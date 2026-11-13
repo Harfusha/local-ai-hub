@@ -19,7 +19,11 @@ def _decision_operation() -> dict[str, object]:
             "evidence_ids": ["ev-verified-1"],
             "options": ["compact"],
             "state": {"current_tokens": 1200},
-            "training_content": {"task_input": "summarize indexed evidence"},
+            "training_content": {
+                "task_input": "summarize indexed evidence",
+                "model_response": "Authorization: Bearer abc.def",
+                "tool_output_excerpt": "api_key=secret-value",
+            },
         },
     }
 
@@ -289,3 +293,93 @@ def test_laya_runtime_adapter_uses_shared_scheduler_for_capacity(monkeypatch):
 
     assert isinstance(result, Adapter)
     assert captured["capacity_manager"] is scheduler
+
+
+def test_mcp_curate_dataset_forwards_runtime_status(monkeypatch, tmp_path):
+    calls = []
+    monkeypatch.setattr(mcp_server.FEATURES, "coord", True)
+    monkeypatch.setattr(
+        mcp_server,
+        "CLIENT",
+        SimpleNamespace(post=lambda path, payload, *, timeout: calls.append((path, payload, timeout)) or {
+            "success": True,
+            "service_available": True,
+            "model_resident": False,
+        }),
+    )
+
+    operation = {"action": "runtime_status"}
+    result = mcp_server.local_ai_coord(
+        action="curate_dataset",
+        root=str(tmp_path),
+        laya_operation=operation,
+    )
+
+    assert result["success"] is True
+    assert calls[0][1]["laya_operation"] == operation
+
+
+def test_http_curate_dataset_returns_laya_lifecycle_status(monkeypatch, tmp_path):
+    lifecycle = {
+        "available": False,
+        "provider_close_configured": True,
+        "idle_unload_seconds": 600.0,
+        "inflight": 0,
+        "loading": False,
+        "closing": False,
+        "runtime_verification": "NOT_VERIFIED",
+    }
+    response = _http_post_via_handler(
+        monkeypatch,
+        tmp_path,
+        {
+            "action": "curate_dataset",
+            "root": str(tmp_path),
+            "laya_operation": {"action": "runtime_status"},
+        },
+        app_overrides={"laya_lifecycle": SimpleNamespace(status=lifecycle)},
+    )
+
+    assert response == (
+        200,
+        {
+            "success": True,
+            "service_available": True,
+            "model_resident": False,
+            "runtime": lifecycle,
+        },
+    )
+
+
+def test_http_laya_runtime_status_reports_unavailable_lifecycle(monkeypatch, tmp_path):
+    response = _http_post_via_handler(
+        monkeypatch,
+        tmp_path,
+        {
+            "action": "curate_dataset",
+            "root": str(tmp_path),
+            "laya_operation": {"action": "runtime_status"},
+        },
+        app_overrides={"laya_lifecycle": SimpleNamespace(status=None)},
+    )
+
+    assert response == (
+        503,
+        {
+            "success": False,
+            "error": "Laya lifecycle status is unavailable",
+            "terminal": True,
+            "retryable": False,
+        },
+    )
+
+
+def test_laya_runtime_status_does_not_require_detailed_diagnostics():
+    operation = {"action": "runtime_status"}
+
+    assert diagnostic_mcp_operation(
+        "local_ai_coord", {"action": "curate_dataset", "laya_operation": operation}
+    ) is False
+    assert diagnostic_http_operation(
+        "POST", "/api/agent-state/tasks", {"action": "curate_dataset", "laya_operation": operation}
+    ) is False

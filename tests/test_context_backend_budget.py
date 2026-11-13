@@ -47,3 +47,26 @@ def test_external_context_candidates_clamps_timeout_to_remaining_budget(tmp_path
     assert states == {"serena": "used"}
     assert len(timeouts) == 1
     assert 0 < timeouts[0] <= 0.08
+
+
+def test_external_context_candidates_uses_short_default_timeout(tmp_path) -> None:
+    services = LocalAIServices.__new__(LocalAIServices)
+    timeouts = []
+
+    class FakeExternal:
+        def query(self, *_args, timeout=None, **_kwargs):
+            timeouts.append(timeout)
+            return {"success": True, "results": []}
+
+    services.external_tools = FakeExternal()
+    services.repo_tools = RepositoryTools({"search": {"max_terms": 8}})
+    services.config = {"search": {}}
+
+    groups, warnings, states = services._external_context_candidates(
+        str(tmp_path), "Find the route"
+    )
+
+    assert groups == {}
+    assert warnings == []
+    assert states == {"serena": "used"}
+    assert timeouts == [1.0]

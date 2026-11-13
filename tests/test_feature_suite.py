@@ -40,7 +40,7 @@ def test_release_metadata_and_tool_contract():
     }
     release = json.loads((ROOT / "RELEASE.json").read_text(encoding="utf-8"))
     assert release["version"] == __version__
-    assert release["status"] == "production-ready"
+    assert release["status"] == "release-candidate"
 
 
 def test_call_graph_semantic_diff_integration(tmp_path: Path):

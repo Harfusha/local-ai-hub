@@ -259,28 +259,6 @@ def _validate_laya_label_provenance(
         rubric_version = proof.get("rubric_version")
         if not isinstance(rubric_version, str) or not rubric_version.strip():
             raise ValueError(f"{label}: label_provenance.rubric_version must be a non-empty string")
-    elif method == "blind_double_annotation":
-        annotations = proof.get("annotation_identity_sha256")
-        if (not isinstance(annotations, list) or len(annotations) != 2
-                or any(not isinstance(item, str) or not _SHA256_RE.fullmatch(item) for item in annotations)
-                or len(set(annotations)) != 2):
-            raise ValueError(f"{label}: blind_double_annotation needs two distinct annotator identity hashes")
-        agreement = proof.get("agreement")
-        if not isinstance(agreement, bool):
-            raise ValueError(f"{label}: annotation agreement must be boolean")
-        adjudicator = proof.get("adjudicator_identity_sha256")
-        verifier = proof.get("verification_identity_sha256")
-        reviewers = set(annotations)
-        if not isinstance(adjudicator, str) or not _SHA256_RE.fullmatch(adjudicator) or adjudicator in reviewers:
-            raise ValueError(f"{label}: adjudicator must be independent of both annotators")
-        if not isinstance(verifier, str) or not _SHA256_RE.fullmatch(verifier) or verifier in reviewers | {adjudicator}:
-            raise ValueError(f"{label}: verification reviewer must be independent")
-    elif method == "deterministic_evidence":
-        evidence_ids = proof.get("evidence_ids")
-        if (not isinstance(evidence_ids, list) or not evidence_ids
-                or any(not isinstance(item, str) or not item.strip() for item in evidence_ids)
-                or len(set(evidence_ids)) != len(evidence_ids)):
-            raise ValueError(f"{label}: deterministic_evidence needs unique evidence IDs")
     elif method == "synthetic_fixture_oracle":
         if data_class != "synthetic_non_private":
             raise ValueError(f"{label}: fixture oracle labels require synthetic_non_private data")

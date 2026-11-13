@@ -862,6 +862,7 @@ class WorkOrchestrator:
         leases: Any, artifacts: Any, telemetry: Any | None = None,
         verification_store: Any | None = None,
         fencing_store: FencingLeaseStore | None = None,
+        execution_pool: Any | None = None,
     ):
         raw_cfg = config.get("work_orchestrator") if isinstance(config, dict) else {}
         cfg = raw_cfg if isinstance(raw_cfg, dict) else {}
@@ -885,6 +886,7 @@ class WorkOrchestrator:
         self.default_response_profile = str(cfg.get("default_response_profile", "compact") or "compact")
         self.default_max_output_tokens = max(0, _bounded_int(cfg.get("default_max_output_tokens"), 350, 0, 100000))
         self.services, self.commands, self.leases, self.artifacts = services, commands, leases, artifacts
+        self.execution_pool = execution_pool
         self._tool_qualification_config = config if isinstance(config, dict) else {}
         self.local_diagnostic_dispatch = rollout_feature_enabled(config or {}, "local_diagnostic_dispatch")
         clean_state_dir = str(state_dir).replace("\x00", "")
@@ -2320,7 +2322,10 @@ class WorkOrchestrator:
                     self._wake.wait(0.5); self._wake.clear(); continue
                 idle_since = time.monotonic()
                 try:
-                    self._execute(row)
+                    if self.execution_pool is None:
+                        self._execute(row)
+                    else:
+                        self.execution_pool.submit("io", self._execute, row).result()
                 except Exception as exc:
                     try:
                         work_id = str(row["work_id"])
@@ -3323,9 +3328,14 @@ class WorkOrchestrator:
                 active_outcome = outcome
                 if kind == "inspect":
                     if self.parallel_deterministic > 1:
-                        with ThreadPoolExecutor(max_workers=min(2, self.parallel_deterministic), thread_name_prefix="work-inspect") as pool:
-                            det_future = pool.submit(self.services.deterministic_query, root_s, step["task"], 24)
-                            code_future = pool.submit(self.services.code_query, root_s, step["task"], 20)
+                        if self.execution_pool is None:
+                            with ThreadPoolExecutor(max_workers=min(2, self.parallel_deterministic), thread_name_prefix="work-inspect") as pool:
+                                det_future = pool.submit(self.services.deterministic_query, root_s, step["task"], 24)
+                                code_future = pool.submit(self.services.code_query, root_s, step["task"], 20)
+                                det, code = det_future.result(), code_future.result()
+                        else:
+                            det_future = self.execution_pool.submit("cpu", self.services.deterministic_query, root_s, step["task"], 24)
+                            code_future = self.execution_pool.submit("cpu", self.services.code_query, root_s, step["task"], 20)
                             det, code = det_future.result(), code_future.result()
                     else:
                         det = self.services.deterministic_query(root_s, step["task"], 24)

@@ -10,8 +10,10 @@ existing local Agent State store, scoped to repository/task/session with
 revalidatable evidence provenance. Useful bounded task input and retrieved
 excerpts may be retained after recognized-secret redaction. Per-example consent
 or receipt IDs are not required. Laya outputs, deterministic outcomes and human
-labels remain separate. Training, benchmarking, card generation and rollout
-remain deferred until separately requested and safely approved.
+labels remain separate. Natural capture, human review, labeling, group-safe
+split preparation and authorized dataset export are enabled. Model-weight
+training, benchmarking, card generation and rollout remain deferred until
+separately requested and safely approved.
 
 Existing-card export reads only selected eligible, non-deterministic cards and
 source text already stored in the Hub index. It needs no per-example consent
@@ -36,9 +38,14 @@ manifest, makes no model calls, and generates no cards.
   the Hub binds its identity from a trusted local invocation. `model_review`
   accepts only a candidate ID and invokes a server-configured local reviewer;
   callers cannot submit decisions, confidence, or model identity. Without that
-  callback, the request fails closed without storing a review. The current Hub
-  application has not wired the callback, so model review remains unavailable.
-  Model reviews never become human labels or human-confirmed export evidence.
+  callback, the request fails closed without storing a review. The Hub's local
+  reasoning-route reviewer supports every registered typed decision category,
+  validates the server-generated category rubric and option set, and uses a
+  source-specific rubric for `context_source`. It verifies installed model
+  identity around inference and records provider/model/runtime provenance.
+  Availability depends on the installed route and is not established by
+  configuration alone. Model reviews never become human labels or
+  human-confirmed export evidence.
 - Useful only when it removes one retrieval roundtrip without losing any
   required fact. Unauthorized, stale, or incomplete sources count as false
   positives. Abstain when evidence is insufficient.
@@ -54,7 +61,27 @@ manifest, makes no model calls, and generates no cards.
   provenance.
 - Capture is tied to actual typed runtime execution, not an automatic scrape or
   synthetic inference. It requires the strict typed-input, authorized-root,
-  task/session, and evidence-provenance checks above. Training remains disabled.
+  task/session, and evidence-provenance checks above. Model-weight training
+  remains disabled.
+
+## Other typed decision inputs
+
+The root-authorized `POST /api/agent-state/tasks` endpoint and MCP
+`local_ai_coord(action="curate_dataset")` accept direct `evaluate_decision`
+operations. Their bounded `training_content` may include `task_input`,
+`context_excerpt`, `model_response`, and `tool_output_excerpt`; recognized
+secrets are redacted before the typed decision is sent to Laya. Raw content is
+stored separately from typed state and remains distinct from deterministic
+outcomes and human labels. Ordinary automatic model-route and context-budget
+call sites attach bounded task input, successful model-response text, and the
+typed generator model identity when it fits the state contract. The primary
+repository pipeline also captures bounded successful tool outputs when the
+request has a task ID and retrieved context contains evidence IDs. Tool output
+capture is capped at 4 KiB; automatic task input at that call site is capped at
+4 KiB and model response at 8 KiB, keeping combined raw content within the
+16 KiB decision limit. Unscoped calls and deterministic answers do not produce
+tool-output examples. The context-source pilot continues to accept only task
+input and retrieved context excerpts.
 
 The current Laya Multilingual model card reports typed-decision zero-shot
 accuracy of 0.342 against a 0.461 majority baseline and warns that its
@@ -273,15 +300,19 @@ data quality or label quality.
 
 ## Current blocker
 
-No Hub-specific category has independent labeled examples, a deterministic
-paired baseline, or a sealed group-safe holdout. The `context_source` pilot
-remains scoped to authorized roots, typed metadata, verified evidence IDs, and
-minimum necessary redacted raw context when useful. The state_dir-backed
-candidate lifecycle is infrastructure only: it does not prove label quality or utility.
-Synthetic tests verify support-ZIP exclusion and truthful manifests, not
-production-data quality. Independent labels, a deterministic baseline, and
-fixed evaluation thresholds remain required. No shadow, advisory, or guarded
-execution is enabled.
+No Hub-specific category has authentic independent labels or a sealed
+group-safe holdout, so no paired quality or benefit evaluation is available.
+Server-derived deterministic baselines are recorded for the `context_source`,
+`model_route`, and `context_budget` observations; they still need comparison on
+labeled held-out data. The `context_source` pilot remains scoped to authorized
+roots, typed metadata, verified evidence IDs, and minimum necessary redacted
+raw context when useful. The state_dir-backed candidate lifecycle is
+infrastructure only: it does not prove label quality or utility. Synthetic
+tests verify support-ZIP exclusion and truthful manifests, not production-data
+quality. Evaluation thresholds remain to be predeclared. Eligible shadow
+capture is active for the approved `context_source` pilot and the
+collection-only `model_route`/`context_budget` observations. No advisory or
+guarded execution is enabled.
 
 ## Fine-tuning format evidence
 

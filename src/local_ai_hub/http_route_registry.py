@@ -88,6 +88,7 @@ POST_ROUTE_REGISTRY: tuple[RouteRule, ...] = (
     RouteRule('post_code_batch_replace_1', frozenset(('/api/code/batch_replace',))),
     RouteRule('post_maintenance_optimize_db_1', frozenset(('/api/maintenance/optimize_db',))),
     RouteRule('post_maintenance_purge_cache_1', frozenset(('/api/maintenance/purge_cache',))),
+    RouteRule('post_debug_trace_purge_1', frozenset(('/api/debug-traces/purge',))),
     RouteRule('post_maintenance_resolve_errors_1', frozenset(('/api/maintenance/resolve_errors',))),
     RouteRule('post_doctor_1', frozenset(('/api/doctor',))),
     RouteRule('post_code_symbol_1', frozenset(('/api/code/symbol',))),

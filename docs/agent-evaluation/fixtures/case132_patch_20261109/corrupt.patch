@@ -1,0 +1,5 @@
+diff --git a/sample.py b/sample.py
+--- a/sample.py
++++ b/sample.py
+@@ -1,2 +1,2 @@
+this is not a valid hunk line

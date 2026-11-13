@@ -1,7 +1,15 @@
 import json
 from pathlib import Path
 
-from tools.release_check import run_checks
+from tools.release_check import _release_status_error, run_checks
+
+
+def test_candidate_status_is_allowed_only_outside_strict_release_checks():
+    assert _release_status_error("release-candidate", strict_tree=False) is None
+    assert _release_status_error("release-candidate", strict_tree=True) == (
+        "RELEASE.json status must be production-ready"
+    )
+    assert _release_status_error("production-ready", strict_tree=True) is None
 
 
 def test_defaults_consistency_ignores_newline_style_but_rejects_value_drift(tmp_path):

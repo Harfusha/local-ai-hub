@@ -47,6 +47,7 @@ from .diff_parsers import (
 )
 from .secret_history import parse_git_patch_output
 from .search_pagination import pagination_bounds_error
+from .source_outline import ast_outline as _source_ast_outline, fold_brace_blocks as _fold_brace_blocks
 from .process_utils import (
     ProcessCancelledError, ProcessCleanupUnverifiedError, canonical_root,
     clean_git_env, hidden_run_kwargs, run_hidden,
@@ -581,8 +582,6 @@ _MANIFEST_IDENTIFIER_REGEX_PATTERN = re.compile('^([A-Za-z0-9_.-]+)\\s*(?:[^:=]*
 _DIFF_SHELL_I = re.compile('\\b(exec|system|shell_exec|subprocess|Process\\.Start|Runtime\\.getRuntime)\\b', re.I)
 _DIFF_EVAL_I = re.compile('\\b(eval|exec)\\s*\\(', re.I)
 _DIFF_SECRET_PASSWORD_I = re.compile('\\b(password|secret|api[_-]?key|private[_-]?key|token)\\b', re.I)
-_BRACE_FUNCTION_EXPORT = re.compile('^\\s*(?:(?:pub(?:lic)?|priv(?:ate)?|prot(?:ected)?|internal|static|async|export|default|override|virtual|final)\\s+)*(?:(?:func|fn|function|def)\\b|(?:[A-Za-z_$][\\w.<>,\\[\\]]*\\s+)+[A-Za-z_$][\\w$]*\\s*\\()|^\\s*(?:func\\s*\\([^)]*\\)\\s*)?[A-Za-z_$][\\w$]*\\s*\\([^)]*\\)\\s*(?:[^{;]*\\{|=>)')
-_BRACE_CLASS_INTERFACE = re.compile('^\\s*(?:(?:pub(?:lic)?|export)\\s+)*(?:struct|interface|enum|type|trait|class)\\b')
 _API_EXPRESS_ROUTER_METHOD = re.compile('\\b(?:app|router)\\.(get|post|put|patch|delete|options|head)\\s*\\(', re.I)
 _API_NEXT_ROUTE_HANDLER = re.compile('^\\s*export\\s+(?:async\\s+)?function\\s+(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)\\s*\\(', re.M)
 _API_LARAVEL_ROUTE_METHOD = re.compile('\\bRoute::(get|post|put|patch|delete|options|any)\\s*\\(\\s*[\'\\"]([^\'\\"]+)[\'\\"]', re.I)
@@ -5586,9 +5585,14 @@ def test_{sym}_regression_edge_cases():
         deadline = time.monotonic() + 5.0
         target_paths: list[tuple[str, Path, os.stat_result]] = []
         enumerated = 0
+        inventory_status: dict[str, Any] = {
+            "complete": True, "reasons": [], "examples": {},
+            "examples_truncated": False, "excluded_link_paths": 0,
+        }
         try:
             for candidate, snapshot_stat in self.repo_tools._iter_files_with_stat(
                 root_str, max_depth=25, max_files=max_files,
+                inventory_status=inventory_status, inventory_deadline=deadline,
             ):
                 if time.monotonic() >= deadline:
                     incomplete = True
@@ -5620,6 +5624,23 @@ def test_{sym}_regression_edge_cases():
                 except (OSError, ValueError):
                     incomplete = True
                     warnings.append("test_file_unavailable_or_outside_root")
+            if time.monotonic() >= deadline and "test_file_enumeration_deadline_exceeded" not in warnings:
+                incomplete = True
+                warnings.append("test_file_enumeration_deadline_exceeded")
+            inventory_reasons = inventory_status.get("reasons", [])
+            if not inventory_status.get("complete", True):
+                incomplete = True
+                if not inventory_reasons:
+                    warnings.append("test_file_inventory_incomplete")
+            for reason in inventory_reasons:
+                incomplete = True
+                if reason == "time_limit":
+                    warning = "test_file_enumeration_deadline_exceeded"
+                elif reason == "file_limit":
+                    warning = "test_file_enumeration_limit_reached"
+                else:
+                    warning = f"test_file_inventory_{reason}"
+                warnings.append(warning)
             if enumerated >= max_files:
                 incomplete = True
                 warnings.append("test_file_enumeration_limit_reached")
@@ -7585,126 +7606,10 @@ def test_{sym}_regression_edge_cases():
 
     @staticmethod
     def fold_brace_blocks(code: str, target_symbols: set[str] | None = None) -> str:
-        """Fold function/method bodies in brace-based languages (Go, Rust, TS, JS, C#, Java)."""
-        lines = code.splitlines()
-        out: list[str] = []
-        targets = target_symbols or set()
-
-        in_func = False
-        func_brace_depth = 0
-        current_brace_depth = 0
-
-        FUNC_PAT = _BRACE_FUNCTION_EXPORT
-        STRUCT_PAT = _BRACE_CLASS_INTERFACE
-
-        for line in lines:
-            stripped = line.strip()
-            if stripped.startswith(("//", "#", "/*", "*")):
-                if not in_func:
-                    out.append(line)
-                continue
-
-            if not in_func:
-                if FUNC_PAT.search(line) and not STRUCT_PAT.search(line) and ("{" in line or "=>" in line):
-                    is_target = any(sym in line for sym in targets) if targets else False
-                    if not is_target and "{" in line:
-                        in_func = True
-                        func_brace_depth = current_brace_depth
-                        idx = line.find("{")
-                        out.append(line[:idx + 1])
-                        out.append("    /* ... */")
-                        current_brace_depth += line.count("{") - line.count("}")
-                        if current_brace_depth <= func_brace_depth:
-                            in_func = False
-                            out.append("}")
-                        continue
-
-                out.append(line)
-                current_brace_depth += line.count("{") - line.count("}")
-            else:
-                current_brace_depth += line.count("{") - line.count("}")
-                if current_brace_depth <= func_brace_depth:
-                    in_func = False
-                    indent = " " * (len(line) - len(line.lstrip()))
-                    out.append(f"{indent}}}")
-
-        return "\n".join(out)
+        return _fold_brace_blocks(code, target_symbols)
 
     def ast_outline(self, root: str, path: str) -> dict[str, Any]:
-        """Generate a token-compact structural interface outline collapsing function/method bodies."""
-        p_root = Path(self._root(root)).resolve()
-        target = Path(path)
-        if not target.is_absolute():
-            target = p_root / target
-        target = target.resolve()
-        if not target.is_relative_to(p_root):
-            return {"success": False, "error": "file is outside project root"}
-        if not target.is_file():
-            return {"success": False, "error": f"file not found: {path}"}
-
-        content = target.read_text(encoding="utf-8", errors="replace")
-        try:
-            tree = ast.parse(content, filename=str(target))
-
-            class _BodyEllipsisTransformer(ast.NodeTransformer):
-                def visit_FunctionDef(self, node):
-                    doc = ast.get_docstring(node)
-                    new_body: list[ast.stmt] = []
-                    if doc:
-                        new_body.append(ast.Expr(value=ast.Constant(value=doc)))
-                    new_body.append(ast.Expr(value=ast.Constant(value=Ellipsis)))
-                    node.body = new_body
-                    return self.generic_visit(node)
-
-                def visit_AsyncFunctionDef(self, node):
-                    doc = ast.get_docstring(node)
-                    new_body: list[ast.stmt] = []
-                    if doc:
-                        new_body.append(ast.Expr(value=ast.Constant(value=doc)))
-                    new_body.append(ast.Expr(value=ast.Constant(value=Ellipsis)))
-                    node.body = new_body
-                    return self.generic_visit(node)
-
-            transformer = _BodyEllipsisTransformer()
-            new_tree = transformer.visit(tree)
-            ast.fix_missing_locations(new_tree)
-            outlined = ast.unparse(new_tree)
-            char_savings = max(0, len(content) - len(outlined))
-            token_savings_pct = round((char_savings / max(1, len(content))) * 100, 1)
-
-            return {
-                "success": True,
-                "path": str(target.relative_to(p_root)).replace("\\", "/"),
-                "outline": outlined,
-                "original_chars": len(content),
-                "outline_chars": len(outlined),
-                "reduction_pct": token_savings_pct,
-            }
-        except Exception:
-            if "{" in content and "}" in content:
-                outlined = self.fold_brace_blocks(content)
-                char_savings = max(0, len(content) - len(outlined))
-                token_savings_pct = round((char_savings / max(1, len(content))) * 100, 1)
-                return {
-                    "success": True,
-                    "path": str(target.relative_to(p_root)).replace("\\", "/"),
-                    "outline": outlined,
-                    "original_chars": len(content),
-                    "outline_chars": len(outlined),
-                    "reduction_pct": token_savings_pct,
-                    "polyglot": True,
-                }
-            out_lines = []
-            for line in content.splitlines():
-                if re.match(r"^\s*(?:def|class|async def|public|private|function|fn|func|interface|struct)\b", line):
-                    out_lines.append(line)
-            outline_txt = "\n".join(out_lines)
-            return {
-                "success": True,
-                "path": str(target.relative_to(p_root)).replace("\\", "/"),
-                "outline": outline_txt or content[:1000],
-                "fallback": True,
-            }
+        return _source_ast_outline(self._root(root), path)
 
     def secret_scan(
         self,

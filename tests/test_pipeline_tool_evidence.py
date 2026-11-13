@@ -36,6 +36,36 @@ def test_pipeline_preserves_observed_tool_evidence(tmp_path):
     assert "worker" not in result["tool_evidence"]
 
 
+def test_pipeline_passes_laya_tool_output_callback_only_with_task_and_retrieved_evidence(tmp_path):
+    pipeline = _pipeline(tmp_path, {"success": True, "text": "answer", "model": "fast"})
+    pipeline.services._hybrid_context = lambda *_args, **_kwargs: {
+        "success": True,
+        "root": str(tmp_path),
+        "context": "verified excerpt",
+        "evidence": [{"evidence_id": "ev-pipeline"}],
+    }
+    callback = lambda *_args: None
+    seen = []
+    pipeline.tool_agent.run = lambda *_args, **kwargs: (
+        seen.append(kwargs.get("laya_tool_output_callback"))
+        or {"success": True, "text": "answer", "model": "fast"}
+    )
+
+    pipeline.solve_repo({
+        "root": str(tmp_path),
+        "task": "find symbol",
+        "task_id": "task-pipeline",
+        "_laya_tool_output_callback": callback,
+    })
+    pipeline.solve_repo({
+        "root": str(tmp_path),
+        "task": "find symbol",
+        "_laya_tool_output_callback": callback,
+    })
+
+    assert seen == [callback, None]
+
+
 @pytest.mark.parametrize("value", [None, {}, {"attempted": True, "completed": 1, "failed": 0, "unknown": 0},
                                   {"attempted": 1, "completed": 1, "failed": 1, "unknown": 0}])
 def test_pipeline_does_not_invent_missing_or_malformed_tool_evidence(tmp_path, value):

@@ -11,6 +11,7 @@ import json
 import re
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
 from typing import Any
 
@@ -470,23 +471,17 @@ def _generated_mcp_schemas(
     if added_path:
         sys.path.insert(0, source_path)
     try:
-        from local_ai_hub.config import load_config
         from local_ai_hub.features import FeatureSet
         from local_ai_hub.generator import generate_mcp_tool_schemas
 
-        # This --check fallback must stay read-only: load_config reads files and
-        # generate_mcp_tool_schemas returns an in-memory mapping. Never call
-        # write_all_generated here; that separate generator persists artifacts.
-        config_path = root / "config.toml"
-        if config_path.is_file() and not _git_ignores(root, "config.toml"):
-            cfg = load_config(str(config_path))
-        else:
-            # Inventory generation must not inherit a developer's home config
-            # or LOCAL_AI_CONFIG when this checkout has no project config.
-            defaults_path = root / "defaults.toml"
-            if not defaults_path.is_file():
-                raise FileNotFoundError("project config.toml or defaults.toml is required")
-            cfg = load_config(str(defaults_path))
+        # Contract inventory must be deterministic across developer checkouts.
+        # A local config can be invalid, private, or disable actions; it is not
+        # the source of truth for the repository's public operation registry.
+        # Load the checked-in defaults only, and never persist generated files.
+        defaults_path = root / "defaults.toml"
+        if not defaults_path.is_file():
+            raise FileNotFoundError("project defaults.toml is required")
+        cfg = tomllib.loads(defaults_path.read_text(encoding="utf-8"))
         disabled_tools = set(FeatureSet.from_config(cfg).disabled_tools)
         generated = generate_mcp_tool_schemas(cfg)
         schemas = {name: json.loads(json.dumps(schema)) for name, schema in generated.items()}

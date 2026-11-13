@@ -9,7 +9,7 @@ from typing import Any
 
 _DETAIL_FIELDS = frozenset({
     "telemetry", "debug", "diagnostic_artifacts", "raw", "stdout", "stderr",
-    "phase_timings_ms", "duration_ms", "token_efficiency", "retrieval", "routing",
+    "phase_timings_ms", "token_efficiency", "retrieval", "routing",
     "model_trace", "trace", "prompt_budget", "net_cloud_token_delta_est", "cache_hits",
     "coalesced_waiters", "context_budget_factor", "path_hint_usage",
     "model_debug", "raw_model_output", "raw_output", "model_response", "full_trace",

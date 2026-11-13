@@ -4,6 +4,7 @@ import ctypes
 import io
 import os
 import queue
+import re
 import shutil
 import subprocess
 import sys
@@ -265,3 +266,30 @@ def test_release_workflow_contracts() -> None:
     assert "SHA256SUMS.txt" in release_workflow
     assert "git diff --exit-code" in release_workflow and "git diff --exit-code" in ci_workflow
     assert "ORIGINAL_REQUEST.md" not in {p.name for p in ROOT.iterdir()}
+
+
+def test_ci_separates_required_quality_and_release_gates() -> None:
+    ci = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    jobs = set(re.findall(r"(?m)^  ([a-z][a-z0-9-]*):$", ci))
+    assert {
+        "lint",
+        "typing",
+        "fast-contract",
+        "critical-coverage",
+        "platform-smoke",
+        "integration",
+        "package",
+        "release",
+    } <= jobs
+
+    package = re.search(r"(?ms)^  package:\n(.*?)(?=^  [a-z][a-z0-9-]*:\n|\Z)", ci)
+    assert package is not None
+    for gate in ("lint", "typing", "fast-contract", "platform-smoke", "integration", "critical-coverage"):
+        assert gate in package.group(1)
+
+    release = re.search(r"(?ms)^  release:\n(.*?)(?=^  [a-z][a-z0-9-]*:\n|\Z)", ci)
+    assert release is not None and "needs: [package]" in release.group(1)
+
+    assert "tests/test_gitlink_fixtures.py" in ci
+    assert "git submodule status" in ci
+    assert "git clean -fdX" in ci

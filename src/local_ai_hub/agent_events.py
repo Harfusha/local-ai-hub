@@ -26,6 +26,7 @@ from .sqlite_support import (
     initialize_wal,
     is_busy_error,
     retry_busy,
+    write_transaction,
 )
 
 _MAX_EVENT_GAP_RANGES = 128
@@ -848,17 +849,11 @@ class AgentStateStore:
         def _do_append() -> AppendResult:
             con = connect_sqlite(self.db_path, isolation_level=None, timeout_seconds=2.0)
             try:
-                con.execute("BEGIN IMMEDIATE")
-                result = self.append_in_transaction(
-                    con, event, strict_idempotency=strict_idempotency
-                )
-                con.execute("COMMIT")
-                return result
+                with write_transaction(con, max_duration_seconds=2.0):
+                    return self.append_in_transaction(
+                        con, event, strict_idempotency=strict_idempotency
+                    )
             except Exception as exc:
-                try:
-                    con.execute("ROLLBACK")
-                except Exception:
-                    pass
                 if is_busy_error(exc):
                     raise
                 return AppendResult(seq=0, duplicate=False, error=str(exc))
@@ -1223,31 +1218,23 @@ class AgentStateStore:
         def _do_snapshot() -> int:
             con = connect_sqlite(self.db_path, isolation_level=None)
             try:
-                con.execute("BEGIN IMMEDIATE")
-                target_seq = seq
-                if target_seq is None:
-                    row = con.execute(
-                        "SELECT COALESCE(MAX(seq), 0) FROM agent_events WHERE stream_id = ?",
-                        (stream_id,),
-                    ).fetchone()
-                    target_seq = int(row[0]) if row else 0
+                with write_transaction(con):
+                    target_seq = seq
+                    if target_seq is None:
+                        row = con.execute(
+                            "SELECT COALESCE(MAX(seq), 0) FROM agent_events WHERE stream_id = ?",
+                            (stream_id,),
+                        ).fetchone()
+                        target_seq = int(row[0]) if row else 0
 
-                cur = con.execute(
-                    """
-                    INSERT INTO agent_snapshots (stream_id, seq, state, created_at)
-                    VALUES (?, ?, ?, ?)
-                    """,
-                    (stream_id, target_seq, raw_state, time.time()),
-                )
-                snap_id = cur.lastrowid or 0
-                con.execute("COMMIT")
-                return snap_id
-            except Exception:
-                try:
-                    con.execute("ROLLBACK")
-                except Exception:
-                    pass
-                raise
+                    cur = con.execute(
+                        """
+                        INSERT INTO agent_snapshots (stream_id, seq, state, created_at)
+                        VALUES (?, ?, ?, ?)
+                        """,
+                        (stream_id, target_seq, raw_state, time.time()),
+                    )
+                    return cur.lastrowid or 0
             finally:
                 con.close()
 
@@ -1294,56 +1281,49 @@ class AgentStateStore:
         def _do_cleanup() -> dict[str, Any]:
             con = connect_sqlite(self.db_path, isolation_level=None)
             try:
-                con.execute("BEGIN IMMEDIATE")
-                stream_rows = con.execute(
-                    "SELECT stream_id FROM agent_event_cursors ORDER BY stream_id"
-                ).fetchall()
-                deleted_events = 0
-                for stream_row in stream_rows:
-                    clean_stream = str(stream_row[0])
-                    cursor = con.execute(
-                        "SELECT last_seq FROM agent_event_cursors WHERE stream_id = ?",
-                        (clean_stream,),
-                    ).fetchone()
-                    last_seq = int(cursor[0]) if cursor else 0
-                    first_recent = con.execute(
-                        """
-                        SELECT MIN(seq) FROM agent_events
-                        WHERE stream_id = ? AND created_at >= ?
-                        """,
-                        (clean_stream, cutoff),
-                    ).fetchone()
-                    if first_recent and first_recent[0] is not None:
-                        first_retained_seq = int(first_recent[0])
-                        cur_ev = con.execute(
-                            "DELETE FROM agent_events WHERE stream_id = ? AND seq < ?",
-                            (clean_stream, first_retained_seq),
-                        )
-                    else:
-                        cur_ev = con.execute(
-                            "DELETE FROM agent_events WHERE stream_id = ?",
+                with write_transaction(con, rollback_label="Agent event cleanup"):
+                    stream_rows = con.execute(
+                        "SELECT stream_id FROM agent_event_cursors ORDER BY stream_id"
+                    ).fetchall()
+                    deleted_events = 0
+                    for stream_row in stream_rows:
+                        clean_stream = str(stream_row[0])
+                        cursor = con.execute(
+                            "SELECT last_seq FROM agent_event_cursors WHERE stream_id = ?",
                             (clean_stream,),
+                        ).fetchone()
+                        last_seq = int(cursor[0]) if cursor else 0
+                        first_recent = con.execute(
+                            """
+                            SELECT MIN(seq) FROM agent_events
+                            WHERE stream_id = ? AND created_at >= ?
+                            """,
+                            (clean_stream, cutoff),
+                        ).fetchone()
+                        if first_recent and first_recent[0] is not None:
+                            first_retained_seq = int(first_recent[0])
+                            cur_ev = con.execute(
+                                "DELETE FROM agent_events WHERE stream_id = ? AND seq < ?",
+                                (clean_stream, first_retained_seq),
+                            )
+                        else:
+                            cur_ev = con.execute(
+                                "DELETE FROM agent_events WHERE stream_id = ?",
+                                (clean_stream,),
+                            )
+                        deleted_events += max(0, cur_ev.rowcount if cur_ev else 0)
+                        retained = con.execute(
+                            "SELECT MIN(seq) FROM agent_events WHERE stream_id = ?",
+                            (clean_stream,),
+                        ).fetchone()
+                        first_retained = int(retained[0]) if retained and retained[0] is not None else last_seq + 1
+                        con.execute(
+                            "UPDATE agent_event_cursors SET first_retained_seq = ? WHERE stream_id = ?",
+                            (first_retained, clean_stream),
                         )
-                    deleted_events += max(0, cur_ev.rowcount if cur_ev else 0)
-                    retained = con.execute(
-                        "SELECT MIN(seq) FROM agent_events WHERE stream_id = ?",
-                        (clean_stream,),
-                    ).fetchone()
-                    first_retained = int(retained[0]) if retained and retained[0] is not None else last_seq + 1
-                    con.execute(
-                        "UPDATE agent_event_cursors SET first_retained_seq = ? WHERE stream_id = ?",
-                        (first_retained, clean_stream),
-                    )
-                cur_snap = con.execute("DELETE FROM agent_snapshots WHERE created_at < ?", (cutoff,))
-                deleted_snaps = cur_snap.rowcount if cur_snap else 0
-                con.execute("COMMIT")
-                return {"success": True, "deleted_events": deleted_events, "deleted_snapshots": deleted_snaps}
-            except Exception:
-                try:
-                    con.execute("ROLLBACK")
-                except Exception:
-                    pass
-                raise
+                    cur_snap = con.execute("DELETE FROM agent_snapshots WHERE created_at < ?", (cutoff,))
+                    deleted_snaps = cur_snap.rowcount if cur_snap else 0
+                    return {"success": True, "deleted_events": deleted_events, "deleted_snapshots": deleted_snaps}
             finally:
                 con.close()
 

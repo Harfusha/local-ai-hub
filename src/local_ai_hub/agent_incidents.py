@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any, Callable, Collection, Mapping
 
 from .agent_events import AgentEvent, AgentStateStore
-from .sqlite_support import connect_sqlite, retry_busy
+from .sqlite_support import connect_sqlite, retry_busy, write_transaction
 
 logger = logging.getLogger(__name__)
 
@@ -1155,59 +1155,52 @@ class IncidentStore:
         def _do_save() -> None:
             con = connect_sqlite(self.state_store.db_path, isolation_level=None)
             try:
-                con.execute("BEGIN IMMEDIATE")
-                con.execute(
-                    """
-                    INSERT INTO agent_incidents (
-                        incident_id, operation_class, error_class, signature_hash,
-                        redacted_message, state_revision, attempts, evidence_ids,
-                        root_cause, verified_fix, confidence, resolved,
-                        created_at, updated_at, expires_at, affected_paths, ignored,
-                        repository_key
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    ON CONFLICT(incident_id) DO UPDATE SET
-                        redacted_message = excluded.redacted_message,
-                        state_revision = excluded.state_revision,
-                        attempts = excluded.attempts,
-                        evidence_ids = excluded.evidence_ids,
-                        root_cause = excluded.root_cause,
-                        verified_fix = excluded.verified_fix,
-                        confidence = excluded.confidence,
-                        resolved = excluded.resolved,
-                        ignored = excluded.ignored,
-                        updated_at = excluded.updated_at,
-                        expires_at = excluded.expires_at,
-                        affected_paths = excluded.affected_paths,
-                        repository_key = excluded.repository_key
-                    """,
-                    (
-                        record.incident_id,
-                        record.operation_class,
-                        record.error_class,
-                        record.fingerprint.signature_hash,
-                        record.redacted_message,
-                        record.state_revision,
-                        record.attempts,
-                        json_dumps(list(record.evidence_ids)),
-                        record.root_cause,
-                        record.verified_fix,
-                        record.confidence,
-                        1 if record.resolved else 0,
-                        record.created_at,
-                        record.updated_at,
-                        record.expires_at,
-                        json_dumps(list(record.affected_paths)),
-                        1 if record.ignored else 0,
-                        record.repository_key,
-                    ),
-                )
-                con.execute("COMMIT")
-            except Exception:
-                try:
-                    con.execute("ROLLBACK")
-                except Exception:
-                    pass
-                raise
+                with write_transaction(con):
+                    con.execute(
+                        """
+                        INSERT INTO agent_incidents (
+                            incident_id, operation_class, error_class, signature_hash,
+                            redacted_message, state_revision, attempts, evidence_ids,
+                            root_cause, verified_fix, confidence, resolved,
+                            created_at, updated_at, expires_at, affected_paths, ignored,
+                            repository_key
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ON CONFLICT(incident_id) DO UPDATE SET
+                            redacted_message = excluded.redacted_message,
+                            state_revision = excluded.state_revision,
+                            attempts = excluded.attempts,
+                            evidence_ids = excluded.evidence_ids,
+                            root_cause = excluded.root_cause,
+                            verified_fix = excluded.verified_fix,
+                            confidence = excluded.confidence,
+                            resolved = excluded.resolved,
+                            ignored = excluded.ignored,
+                            updated_at = excluded.updated_at,
+                            expires_at = excluded.expires_at,
+                            affected_paths = excluded.affected_paths,
+                            repository_key = excluded.repository_key
+                        """,
+                        (
+                            record.incident_id,
+                            record.operation_class,
+                            record.error_class,
+                            record.fingerprint.signature_hash,
+                            record.redacted_message,
+                            record.state_revision,
+                            record.attempts,
+                            json_dumps(list(record.evidence_ids)),
+                            record.root_cause,
+                            record.verified_fix,
+                            record.confidence,
+                            1 if record.resolved else 0,
+                            record.created_at,
+                            record.updated_at,
+                            record.expires_at,
+                            json_dumps(list(record.affected_paths)),
+                            1 if record.ignored else 0,
+                            record.repository_key,
+                        ),
+                    )
             finally:
                 con.close()
 

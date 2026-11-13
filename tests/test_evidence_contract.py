@@ -147,6 +147,9 @@ def test_put_many_records_source_provenance_atomically(tmp_path):
 
 def test_put_many_does_not_return_unpersisted_evidence_ids(tmp_path, caplog):
     store = EvidenceStore(tmp_path / "evidence")
+    source = tmp_path / "src" / "example.py"
+    source.parent.mkdir()
+    source.write_text("source snippet\n", encoding="utf-8")
 
     class FailingConnection:
         @staticmethod
@@ -160,7 +163,7 @@ def test_put_many_does_not_return_unpersisted_evidence_ids(tmp_path, caplog):
     store._connect = lambda: FailingConnection()
     item = {
         "path": "src/example.py",
-        "file_sha256": "a" * 64,
+        "file_sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
         "start_line": 1,
         "end_line": 1,
         "text": "source snippet",
@@ -169,7 +172,10 @@ def test_put_many_does_not_return_unpersisted_evidence_ids(tmp_path, caplog):
     with caplog.at_level("DEBUG", logger="local_ai_hub.evidence"):
         result = store.put_many(str(tmp_path), [item])
 
-    assert result == [item]
+    assert len(result) == 1
+    assert result[0]["path"] == item["path"]
+    assert result[0]["source_verified"] is False
+    assert "evidence_id" not in result[0]
     messages = [record.getMessage() for record in caplog.records]
     assert any("Evidence batch persistence skipped (OperationalError)" in message for message in messages)
     assert all(str(tmp_path) not in message for message in messages)

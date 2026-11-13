@@ -9,6 +9,7 @@ from typing import Any
 import pytest
 
 from local_ai_hub.async_jobs import AsyncJobManager
+from local_ai_hub.execution_pool import ExecutionPool
 
 
 class _ArtifactStore:
@@ -42,7 +43,12 @@ def manager_factory(tmp_path: Any, monkeypatch):
     managers: list[AsyncJobManager] = []
     default_artifacts = _ArtifactStore()
 
-    def create(executor, *, artifacts: _ArtifactStore | None = None):
+    def create(
+        executor,
+        *,
+        artifacts: _ArtifactStore | None = None,
+        execution_pool: ExecutionPool | None = None,
+    ):
         manager = AsyncJobManager(
             {
                 "server": {"state_dir": str(tmp_path)},
@@ -51,6 +57,7 @@ def manager_factory(tmp_path: Any, monkeypatch):
             scheduler=object(),
             artifacts=artifacts if artifacts is not None else default_artifacts,
             executor=executor,
+            execution_pool=execution_pool,
         )
         monkeypatch.setattr(
             manager,
@@ -75,6 +82,24 @@ def _cancel_delayed_dispatch(manager: AsyncJobManager, job_id: str) -> None:
     timer = manager._delayed_dispatch.pop(job_id, None)
     if timer is not None:
         timer.cancel()
+
+
+def test_async_job_runs_on_shared_io_pool(manager_factory) -> None:
+    worker_name: list[str] = []
+    pool = ExecutionPool(cpu_workers=1, io_workers=1, inference_workers=1)
+    manager = manager_factory(
+        lambda *_: worker_name.append(threading.current_thread().name) or {"success": True},
+        execution_pool=pool,
+    )
+    try:
+        submitted = manager.submit("reason", {"request_id": "shared-pool-job", "task": "small task"})
+        assert submitted["success"]
+        result = manager.wait(submitted["job_id"], timeout_seconds=5)
+        assert result["state"] == "done"
+        assert worker_name and worker_name[0].startswith("local-ai-io")
+    finally:
+        manager.close()
+        pool.shutdown(wait=True)
 
 
 def test_terminal_failure_result_is_known_failed_not_outcome_unknown(manager_factory) -> None:
@@ -579,3 +604,114 @@ def test_coalesced_submit_reports_sqlite_commit(manager_factory) -> None:
     assert coalesced["coalesced"] is True
     assert coalesced["job_id"] == first["job_id"]
     assert coalesced["durability"] == "sqlite_committed"
+
+
+def test_hundred_plus_durable_jobs_stay_within_configured_worker_bounds(manager_factory) -> None:
+    entered = threading.Event()
+    release = threading.Event()
+    lock = threading.Lock()
+    completed = threading.Event()
+    running = 0
+    max_running = 0
+    completed_count = 0
+    job_count = 120
+
+    def execute(_action, _payload):
+        nonlocal running, max_running, completed_count
+        with lock:
+            running += 1
+            max_running = max(max_running, running)
+            if max_running >= 4:
+                entered.set()
+        assert release.wait(60), "synthetic executor release missing"
+        with lock:
+            running -= 1
+            completed_count += 1
+            if completed_count == job_count:
+                completed.set()
+        return {"success": True}
+
+    manager = manager_factory(execute)
+    manager.max_workers = 4
+    manager.max_dispatch_workers = 2
+    manager.max_pending = job_count
+    submitted = [
+        manager.submit("reason", {"request_id": f"bounded-load-{index}", "task": f"job {index}"})
+        for index in range(job_count)
+    ]
+
+    try:
+        assert all(item["success"] for item in submitted)
+        assert entered.wait(5), "configured async workers did not fill"
+        with manager._lock:
+            assert len(manager._workers) <= 4
+            assert len(manager._dispatchers) <= 2
+        worker_threads = [
+            thread for thread in threading.enumerate()
+            if thread.name.startswith(("async-job-", "async-dispatch-"))
+        ]
+        assert len(worker_threads) <= 6
+        with closing(manager._connect()) as con:
+            persisted = int(con.execute(
+                "SELECT COUNT(*) FROM async_jobs WHERE state IN ('queued','running')"
+            ).fetchone()[0])
+        assert persisted == job_count
+    finally:
+        release.set()
+
+    assert completed.wait(30), "durable backlog did not drain after workers were released"
+    assert max_running == 4
+
+
+@pytest.mark.parametrize(
+    ("manager_response", "expected_status"),
+    [
+        ({"success": False, "error": "async job not found", "terminal": True, "retryable": False}, 404),
+        ({"success": False, "job_id": "job-1", "state": "expired", "terminal": True, "retryable": False}, 410),
+    ],
+)
+def test_async_job_status_maps_missing_and_expired_results(
+    monkeypatch, manager_response: dict[str, Any], expected_status: int
+) -> None:
+    from types import SimpleNamespace
+
+    from local_ai_hub import http_server
+
+    handler = object.__new__(http_server.Handler)
+    handler.headers = {}
+    sent: list[tuple[int, Any]] = []
+    handler._send = lambda status, payload: sent.append((status, payload))
+    jobs = SimpleNamespace(status=lambda _job_id: manager_response)
+    monkeypatch.setattr(http_server, "APP", SimpleNamespace(async_jobs=jobs))
+
+    handler._handle_post_async_jobs({"action": "status", "job_id": "job-1"})
+
+    assert sent[0][0] == expected_status
+    assert sent[0][1]["status_code"] == expected_status
+    assert sent[0][1]["terminal"] is True
+
+
+def test_async_job_submit_maps_retryable_queue_rejection_to_429(monkeypatch) -> None:
+    from types import SimpleNamespace
+
+    from local_ai_hub import http_server
+
+    rejection = {
+        "success": False,
+        "state": "rejected",
+        "error": "async job queue limit reached",
+        "terminal": False,
+        "retryable": True,
+    }
+    handler = object.__new__(http_server.Handler)
+    handler.headers = {}
+    sent: list[tuple[int, Any]] = []
+    handler._send = lambda status, payload: sent.append((status, payload))
+    jobs = SimpleNamespace(submit=lambda _action, _payload: rejection)
+    monkeypatch.setattr(http_server, "APP", SimpleNamespace(async_jobs=jobs))
+
+    handler._handle_post_async_jobs({"action": "submit", "job_action": "reason"})
+
+    assert sent[0][0] == 429
+    assert sent[0][1]["status_code"] == 429
+    assert sent[0][1]["retryable"] is True

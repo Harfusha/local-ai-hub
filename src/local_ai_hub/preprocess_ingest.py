@@ -192,9 +192,12 @@ class SinglePassIngestCache:
 
         cached = self.get(normalized, root=root_str)
         if cached is not None:
-            cached = ensure_current(cached)
-            if cached is not None:
-                return cached
+            current_hash, _current_lines = repo_tools._read_snapshot(base / Path(normalized))
+            if current_hash == cached.content_hash:
+                cached = ensure_current(cached)
+                if cached is not None:
+                    return cached
+            self.invalidate(normalized, root=root_str)
 
         event_key = self._key(normalized, root_str)
         with self._lock:

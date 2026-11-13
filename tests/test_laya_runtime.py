@@ -191,7 +191,11 @@ def test_runtime_adapter_evaluates_standalone_typed_decision_with_redacted_train
     decision_input = DecisionInput.from_mapping(
         {
             "state": {"gap_code": "missing_verification"},
-            "training_content": {"task_input": "Check token=secret-value and run focused test."},
+            "training_content": {
+                "task_input": "Check token=secret-value and run focused test.",
+                "model_response": "Authorization: Bearer response-secret",
+                "tool_output_excerpt": "token=tool-secret",
+            },
         }
     )
     model = adapter(tmp_path, load)
@@ -206,8 +210,12 @@ def test_runtime_adapter_evaluates_standalone_typed_decision_with_redacted_train
     assert result.runtime is not None
     body = holder["agent"].model.seen[0]["body"]
     assert "raw_task_input" in body
+    assert "raw_model_response" in body
+    assert "raw_tool_output_excerpt" in body
     assert "[REDACTED]" in body
     assert "secret-value" not in body
+    assert "response-secret" not in body
+    assert "tool-secret" not in body
 
 
 def test_idle_timeout_starts_after_laya_outcome_recorder_finishes(tmp_path):

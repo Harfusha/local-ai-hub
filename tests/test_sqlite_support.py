@@ -2,7 +2,7 @@ from pathlib import Path
 import sqlite3
 import pytest
 
-from local_ai_hub.sqlite_support import connect_sqlite, is_busy_error
+from local_ai_hub.sqlite_support import connect_sqlite, write_transaction
 
 def test_connect_sqlite_basic(tmp_path: Path):
     db_path = tmp_path / "test_basic.sqlite3"
@@ -54,3 +54,47 @@ def test_connect_sqlite_memory():
 def test_connect_sqlite_null_byte_rejected():
     with pytest.raises(ValueError, match="embedded null byte"):
         connect_sqlite("db\x00bad.sqlite3")
+
+
+def test_write_transaction_commits_and_releases_connection():
+    con = connect_sqlite(":memory:")
+    con.execute("CREATE TABLE events (value TEXT NOT NULL)")
+
+    with write_transaction(con):
+        con.execute("INSERT INTO events VALUES (?)", ("committed",))
+        assert con.in_transaction
+
+    assert not con.in_transaction
+    assert con.execute("SELECT value FROM events").fetchone()[0] == "committed"
+    con.close()
+
+
+def test_write_transaction_rolls_back_body_failure():
+    con = connect_sqlite(":memory:")
+    con.execute("CREATE TABLE events (value TEXT NOT NULL)")
+
+    with pytest.raises(RuntimeError, match="abort"):
+        with write_transaction(con):
+            con.execute("INSERT INTO events VALUES (?)", ("discarded",))
+            raise RuntimeError("abort")
+
+    assert not con.in_transaction
+    assert con.execute("SELECT COUNT(*) FROM events").fetchone()[0] == 0
+    con.close()
+
+
+def test_write_transaction_rolls_back_when_budget_expires(monkeypatch):
+    from local_ai_hub import sqlite_support
+
+    con = connect_sqlite(":memory:")
+    con.execute("CREATE TABLE events (value TEXT NOT NULL)")
+    ticks = iter((10.0, 10.6))
+    monkeypatch.setattr(sqlite_support.time, "monotonic", lambda: next(ticks))
+
+    with pytest.raises(TimeoutError, match="write transaction exceeded"):
+        with write_transaction(con, max_duration_seconds=0.5):
+            con.execute("INSERT INTO events VALUES (?)", ("discarded",))
+
+    assert not con.in_transaction
+    assert con.execute("SELECT COUNT(*) FROM events").fetchone()[0] == 0
+    con.close()

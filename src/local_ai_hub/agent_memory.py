@@ -21,7 +21,7 @@ from typing import Any, Collection, Mapping
 
 from .agent_events import AgentEvent, AgentStateStore
 from .agent_identity import AgentScope
-from .sqlite_support import connect_sqlite, retry_busy
+from .sqlite_support import connect_sqlite, retry_busy, write_transaction
 
 try:
     import numpy as np
@@ -823,79 +823,77 @@ class MemoryStore:
             con = connect_sqlite(self.state_store.db_path, isolation_level=None)
             try:
                 with self.state_store.ordered_event_publication(con) as publish:
-                    con.execute("BEGIN IMMEDIATE")
-                    stream_id = _memory_event_stream_id(
-                        record.scope,
-                        record.scope_id,
-                        record.key or record.record_id,
-                    )
-                    event_idempotency_key = idempotency_key or f"rec_{record.record_id}"
-                    existing = con.execute(
-                        """
-                        SELECT stream_id, seq, event_id, kind, payload, idempotency_key, correlation_id, actor, created_at
-                        FROM agent_events WHERE stream_id = ? AND idempotency_key = ?
-                        """,
-                        (stream_id, event_idempotency_key),
-                    ).fetchone()
-                    if existing:
-                        existing_event = AgentEvent.from_row(existing)
-                        existing_record_id = str(existing_event.payload.get("record_id", ""))
+                    with write_transaction(con, rollback_label="agent memory"):
+                        stream_id = _memory_event_stream_id(
+                            record.scope,
+                            record.scope_id,
+                            record.key or record.record_id,
+                        )
+                        event_idempotency_key = idempotency_key or f"rec_{record.record_id}"
+                        existing = con.execute(
+                            """
+                            SELECT stream_id, seq, event_id, kind, payload, idempotency_key, correlation_id, actor, created_at
+                            FROM agent_events WHERE stream_id = ? AND idempotency_key = ?
+                            """,
+                            (stream_id, event_idempotency_key),
+                        ).fetchone()
+                        if existing:
+                            existing_event = AgentEvent.from_row(existing)
+                            existing_record_id = str(existing_event.payload.get("record_id", ""))
+                            if _memory_deletion_event(
+                                con,
+                                record_id=existing_record_id,
+                            ) is not None:
+                                raise ValueError("memory record was deleted and cannot be replayed")
+                            appended = self.state_store.append_in_transaction(
+                                con,
+                                existing_event,
+                                strict_idempotency=False,
+                            )
+                            if not appended.succeeded():
+                                raise RuntimeError(
+                                    appended.error or "agent memory event append did not succeed"
+                                )
+                            existing_record_id = str(existing_event.payload.get("record_id", ""))
+                            existing_row = con.execute(
+                                """
+                                SELECT record_id, kind, scope, scope_id, key, value, status, confidence, source,
+                                       evidence_ids, sensitivity, contradicts_record_id, supersedes_record_id,
+                                       quarantine_reason, provenance, created_at, updated_at, expires_at
+                                FROM agent_memory_records WHERE record_id = ?
+                                """,
+                                (existing_record_id,),
+                            ).fetchone()
+                            if existing_row:
+                                existing_record = self._row_to_record(existing_row)
+                            else:
+                                existing_record = MemoryRecord.from_dict(existing_event.payload)
+                                self._save_record_row(con, existing_record)
+                            return existing_record, True, None
+
                         if _memory_deletion_event(
                             con,
-                            record_id=existing_record_id,
+                            record_id=record.record_id,
                         ) is not None:
                             raise ValueError("memory record was deleted and cannot be replayed")
+                        final_record = self._resolve_conflict_in_transaction(con, record)
+                        event = AgentEvent.create(
+                            stream_id=stream_id,
+                            kind="memory.recorded",
+                            payload=final_record.to_dict(),
+                            idempotency_key=event_idempotency_key,
+                            actor=actor,
+                        )
                         appended = self.state_store.append_in_transaction(
                             con,
-                            existing_event,
+                            event,
                             strict_idempotency=False,
                         )
                         if not appended.succeeded():
                             raise RuntimeError(
                                 appended.error or "agent memory event append did not succeed"
                             )
-                        existing_record_id = str(existing_event.payload.get("record_id", ""))
-                        existing_row = con.execute(
-                            """
-                            SELECT record_id, kind, scope, scope_id, key, value, status, confidence, source,
-                                   evidence_ids, sensitivity, contradicts_record_id, supersedes_record_id,
-                                   quarantine_reason, provenance, created_at, updated_at, expires_at
-                            FROM agent_memory_records WHERE record_id = ?
-                            """,
-                            (existing_record_id,),
-                        ).fetchone()
-                        if existing_row:
-                            existing_record = self._row_to_record(existing_row)
-                        else:
-                            existing_record = MemoryRecord.from_dict(existing_event.payload)
-                            self._save_record_row(con, existing_record)
-                        con.execute("COMMIT")
-                        return existing_record, True, None
-
-                    if _memory_deletion_event(
-                        con,
-                        record_id=record.record_id,
-                    ) is not None:
-                        raise ValueError("memory record was deleted and cannot be replayed")
-                    final_record = self._resolve_conflict_in_transaction(con, record)
-                    event = AgentEvent.create(
-                        stream_id=stream_id,
-                        kind="memory.recorded",
-                        payload=final_record.to_dict(),
-                        idempotency_key=event_idempotency_key,
-                        actor=actor,
-                    )
-                    appended = self.state_store.append_in_transaction(
-                        con,
-                        event,
-                        strict_idempotency=False,
-                    )
-                    if not appended.succeeded():
-                        raise RuntimeError(
-                            appended.error or "agent memory event append did not succeed"
-                        )
-                    self._save_record_row(con, final_record)
-                    con.execute("COMMIT")
+                        self._save_record_row(con, final_record)
                     publish([appended.event])
                     return final_record, False, appended.event
             except Exception:
@@ -996,14 +994,13 @@ class MemoryStore:
             # T08 contract: enter publication before BEGIN; projection, cursor, and
             # outbox event commit together; publish only the committed row.
             with self.state_store.ordered_event_publication(con) as publish:
-                con.execute("BEGIN IMMEDIATE")
-                appended = self.state_store.append_in_transaction(
-                    con,
-                    event,
-                    strict_idempotency=False,
-                )
-                self._save_record_row(con, record)
-                con.execute("COMMIT")
+                with write_transaction(con, rollback_label="agent memory"):
+                    appended = self.state_store.append_in_transaction(
+                        con,
+                        event,
+                        strict_idempotency=False,
+                    )
+                    self._save_record_row(con, record)
                 publish([appended.event])
             return record
         except Exception:

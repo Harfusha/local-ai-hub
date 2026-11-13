@@ -23,6 +23,92 @@ def _search_service(tmp_path, _preprocessor):
     return services
 
 
+def _service_with_rag_candidates(tmp_path, candidates):
+    services = _search_service(tmp_path, None)
+    services.config["features"] = {"rag": True, "reranker": False}
+    services.config["resilience"] = {
+        "repository_search_source_validation_timeout_seconds": 1.5,
+        "repository_search_source_validation_max_bytes": 8_000_000,
+    }
+
+    class Rag:
+        def workspace_id(self, _root):
+            return "workspace"
+
+        def require_workspace_root(self, *, workspace, root):
+            assert workspace == "workspace"
+            assert root == str(tmp_path)
+
+        def has_workspace_chunks(self, *, workspace):
+            return workspace == "workspace"
+
+        def search(self, *_args, **_kwargs):
+            return {"success": True, "results": candidates, "reranked": False, "fallbacks": []}
+
+        def project_context(self, _root):
+            return {}
+
+        def _project_path_decision(self, _root, _target, _context, *, phase, size_bytes):
+            assert phase == "search"
+            return True, "text"
+
+    services.rag = Rag()
+    return services
+
+
+def test_rag_source_validation_stops_at_aggregate_byte_limit(tmp_path):
+    first = tmp_path / "first.py"
+    second = tmp_path / "second.py"
+    first.write_text("needle", encoding="utf-8")
+    second.write_text("needle", encoding="utf-8")
+    candidates = [
+        {"path": "first.py", "text": "needle", "chunk_no": 0},
+        {"path": "second.py", "text": "needle", "chunk_no": 0},
+    ]
+    services = _service_with_rag_candidates(tmp_path, candidates)
+    services.config["resilience"]["repository_search_source_validation_max_bytes"] = 6
+
+    rows, meta = services._repo_rag_search(str(tmp_path), "needle", 2)
+
+    assert [row["path"] for row in rows] == ["first.py"]
+    assert meta["source_validation"] == {
+        "complete": False,
+        "candidates_checked": 1,
+        "bytes_read": 6,
+        "limit_bytes": 6,
+        "limit_seconds": 1.5,
+        "reason": "byte_limit",
+    }
+    assert meta["degraded"] is True
+    assert meta["candidate_freshness"] == "partially_verified"
+    assert meta["degradation_reason"] == "source_validation_byte_limit"
+
+    response = services.repo_search(str(tmp_path), "needle workflow", search_mode="hybrid")
+    assert response["source_validation"]["complete"] is False
+    assert response["candidate_freshness"] == "partially_verified"
+    assert response["degradation_reason"] == "source_validation_byte_limit"
+
+
+def test_rag_source_validation_stops_at_deadline(tmp_path, monkeypatch):
+    source = tmp_path / "slow.py"
+    source.write_text("needle", encoding="utf-8")
+    services = _service_with_rag_candidates(
+        tmp_path, [{"path": "slow.py", "text": "needle", "chunk_no": 0}]
+    )
+    clock = iter((0.0, 0.0, 2.0))
+    monkeypatch.setattr("local_ai_hub.services.time.perf_counter", lambda: next(clock))
+
+    rows, meta = services._repo_rag_search(str(tmp_path), "needle", 1)
+
+    assert rows == []
+    assert meta["source_validation"]["complete"] is False
+    assert meta["source_validation"]["candidates_checked"] == 0
+    assert meta["source_validation"]["bytes_read"] == 0
+    assert meta["source_validation"]["reason"] == "time_limit"
+    assert meta["candidate_freshness"] == "partially_verified"
+    assert meta["degradation_reason"] == "source_validation_time_limit"
+
+
 def test_search_cache_must_notice_edit_before_fingerprint_ttl(tmp_path):
     class Cache:
         def __init__(self):

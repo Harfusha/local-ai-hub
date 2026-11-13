@@ -5,6 +5,78 @@ import time
 import pytest
 
 
+@pytest.mark.parametrize(
+    ("platform", "device", "mask_present", "avx512_available", "expected_mask"),
+    [
+        ("linux", "cuda", False, False, False),
+        ("win32", "cpu", False, False, False),
+        ("win32", "cuda", True, False, False),
+        ("win32", "cuda:0", False, True, False),
+        ("win32", "cuda:0", False, False, True),
+    ],
+)
+def test_cuda_worker_environment_only_disables_unsupported_avx512(
+    monkeypatch, platform, device, mask_present, avx512_available, expected_mask
+):
+    from local_ai_hub import owned_model
+
+    monkeypatch.setattr(owned_model.sys, "platform", platform)
+    monkeypatch.setattr(owned_model, "_windows_avx512_available", lambda: avx512_available)
+    monkeypatch.delenv("CUBLASLT_DISABLE_CPU_INSTRUCTIONS_MASK", raising=False)
+    if mask_present:
+        monkeypatch.setenv("CUBLASLT_DISABLE_CPU_INSTRUCTIONS_MASK", "existing")
+
+    result = owned_model._cuda_worker_environment({"device": device})
+
+    assert (result is not None) is expected_mask
+    if expected_mask:
+        assert result["CUBLASLT_DISABLE_CPU_INSTRUCTIONS_MASK"] == "1"
+
+
+def test_owned_model_stderr_reader_stops_after_stream_close():
+    from types import SimpleNamespace
+
+    from local_ai_hub.owned_model import _ModelProcess
+
+    class ClosedStream:
+        def read1(self, _size):
+            raise OSError("stream closed")
+
+        def read(self, _size):
+            raise OSError("stream closed")
+
+    process = object.__new__(_ModelProcess)
+    process.process = SimpleNamespace(stderr=ClosedStream())
+    process._stderr_lock = threading.Lock()
+    process._stderr_tail = bytearray()
+
+    process._read_stderr()
+
+    assert process._stderr_tail == b""
+
+
+def test_owned_model_stderr_reader_bounds_retained_tail():
+    from types import SimpleNamespace
+
+    from local_ai_hub.owned_model import _ModelProcess
+
+    class Stream:
+        chunks = iter((b"z", b""))
+
+        def read(self, _size):
+            return next(self.chunks)
+
+    process = object.__new__(_ModelProcess)
+    process.process = SimpleNamespace(stderr=Stream())
+    process._stderr_lock = threading.Lock()
+    process._stderr_tail = bytearray(b"x" * 8192)
+
+    process._read_stderr()
+
+    assert len(process._stderr_tail) == 8192
+    assert process._stderr_tail[-1:] == b"z"
+
+
 @pytest.mark.parametrize("kind", ["embedding", "reranker"])
 def test_failed_worker_cleanup_preserves_owner_for_retry(kind):
     from local_ai_hub.embeddings import EmbeddingModel

@@ -36,6 +36,17 @@ def handle_post_plan(handler: Any, payload: dict[str, Any], path: str, app: Any)
     arguments = {name: value for name, value in plan_payload.items() if name in actions[action]["allowed"]}
     try:
         result = getattr(app.services, action)(**arguments)
+    except TimeoutError as exc:
+        if str(exc) != "file update lock timed out":
+            raise
+        handler._send(503, {
+            "success": False,
+            "error": "file update lock timed out",
+            "terminal": True,
+            "retryable": True,
+            "outcome_unknown": False,
+            "mutation_applied": False,
+        })
     except RepoPlanConflictError as exc:
         handler._send(409, {"success": False, "error": str(exc), "terminal": True, "retryable": False})
     except RepoPlanNotFoundError as exc:

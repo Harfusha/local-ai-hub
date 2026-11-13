@@ -269,6 +269,37 @@ def test_index_rechecks_content_when_size_and_mtime_are_unchanged(tmp_path):
     assert "alpha" not in " ".join(row[0] for row in rows)
 
 
+def test_restart_reindexes_same_stat_edit_without_stale_rag_text(tmp_path):
+    root = tmp_path / "restart-same-stat-edit"
+    root.mkdir()
+    source = root / "module.py"
+    source.write_text("def indexed_value(): return 'alpha'\n", encoding="utf-8")
+    first_store = _store(tmp_path)
+    first = first_store.index(str(root), workspace="restart-same-stat-edit")
+    assert first["success"] is True
+
+    original_stat = source.stat()
+    source.write_text("def indexed_value(): return 'bravo'\n", encoding="utf-8")
+    os.utime(source, ns=(original_stat.st_atime_ns, original_stat.st_mtime_ns))
+    assert source.stat().st_size == original_stat.st_size
+    assert source.stat().st_mtime_ns == original_stat.st_mtime_ns
+
+    # A new RAGStore instance models Hub restart while retaining the SQLite index.
+    restarted_store = _store(tmp_path)
+    result = restarted_store.index(str(root), workspace="restart-same-stat-edit")
+
+    assert result["success"] is True
+    assert result["changed_files"] == 1
+    with closing(restarted_store._connect()) as con:
+        rows = con.execute(
+            "SELECT text FROM chunks WHERE workspace=? AND path=?",
+            ("restart-same-stat-edit", "module.py"),
+        ).fetchall()
+    indexed_text = " ".join(row[0] for row in rows)
+    assert "bravo" in indexed_text
+    assert "alpha" not in indexed_text
+
+
 def test_index_rechunks_files_when_chunker_version_changes(tmp_path, monkeypatch):
     store = _store(tmp_path)
     root = tmp_path / "chunker-version"

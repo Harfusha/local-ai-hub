@@ -133,6 +133,20 @@ def test_http_context_rejects_malformed_explicit_guarded_even_with_empty_paths(c
     assert calls == []
 
 
+@pytest.mark.parametrize("task_id", [None, "", "   "])
+def test_http_context_rejects_guarded_request_without_task_id_before_retrieval(context_http_hub, task_id):
+    base_url, calls, root = context_http_hub
+    payload = {"root": str(root), "query": "test context", "guarded": True}
+    if task_id is not None:
+        payload["task_id"] = task_id
+
+    status, response = _post_context(base_url, payload)
+
+    assert status == 400, response
+    assert response["error"] == "guarded context requires a non-empty task_id"
+    assert calls == []
+
+
 def test_http_context_session_id_explicitly_activates_guarded_request(context_http_hub):
     base_url, calls, root = context_http_hub
 

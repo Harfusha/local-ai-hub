@@ -640,6 +640,49 @@ def retry_busy(
     raise AssertionError("unreachable")
 
 
+@contextmanager
+def write_transaction(
+    con: sqlite3.Connection,
+    *,
+    max_duration_seconds: float = 5.0,
+    rollback_label: str = "SQLite",
+    on_rollback_failure: Callable[[Exception], None] | None = None,
+) -> Iterator[sqlite3.Connection]:
+    """Run one bounded write transaction and roll back work that exceeds its budget."""
+    if bool(getattr(con, "in_transaction", False)):
+        raise RuntimeError("write_transaction requires an idle connection")
+    if isinstance(max_duration_seconds, bool):
+        raise ValueError("max_duration_seconds must be finite and positive")
+    try:
+        budget = float(max_duration_seconds)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError("max_duration_seconds must be finite and positive") from exc
+    if not math.isfinite(budget) or budget <= 0:
+        raise ValueError("max_duration_seconds must be finite and positive")
+
+    con.execute("BEGIN IMMEDIATE")
+    transaction_started = True
+    started = time.monotonic()
+    try:
+        yield con
+        if time.monotonic() - started > budget:
+            raise TimeoutError("SQLite write transaction exceeded its duration budget")
+        con.execute("COMMIT")
+    except BaseException:
+        if transaction_started and bool(getattr(con, "in_transaction", True)):
+            try:
+                con.execute("ROLLBACK")
+            except Exception as rollback_error:
+                if on_rollback_failure is not None:
+                    try:
+                        on_rollback_failure(rollback_error)
+                    except Exception:
+                        _LOGGER.warning("%s rollback error handler failed", rollback_label)
+                else:
+                    _LOGGER.warning("%s rollback failed (%s)", rollback_label, type(rollback_error).__name__)
+        raise
+
+
 def with_degraded_fallback(
     operation: Callable[[], T],
     *,

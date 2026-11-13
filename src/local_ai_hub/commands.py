@@ -54,7 +54,8 @@ from .command_python import (
 from .command_build import classify_build_command
 from .command_powershell import classify_powershell_command
 from .command_read import classify_read_only_command
-from .trace_utils import cluster_stack_traces, deduplicate_stack_traces
+from .command_redaction import redact_secrets as _redact_secrets
+from .trace_utils import deduplicate_stack_traces
 MultiplexEvent = _command_streams.MultiplexEvent
 StreamMultiplexer = _command_streams.StreamMultiplexer
 from .cache import SQLiteCache, TieredCache, stable_hash
@@ -363,16 +364,6 @@ class _RecoveredDaemonProcess:
         if os.name != "nt" and self.poll() is not None:
             return False
         raise OSError("no stable process-tree ownership handle")
-
-_SECRET_PATTERNS = [
-    re.compile(r"(?i)(--?(?:password|token|secret|api[-_]?key)\s*[= ]\s*)([^\s]+)"),
-    re.compile(r"(?i)(Bearer\s+)[A-Za-z0-9._~+/-]+"),
-    re.compile(r"(?i)(basic\s+)[A-Za-z0-9+/=]{16,}"),
-    re.compile(r"sk-[a-zA-Z0-9_\-]{16,}"),
-    re.compile(r"ghp_[a-zA-Z0-9]{36}"),
-    re.compile(r"AKIA[0-9A-Z]{16}"),
-    re.compile(r"(?i)(aws_secret_access_key\s*=\s*)([^\s]+)"),
-]
 
 _DIAGNOSTIC_PATTERNS = [
     re.compile(r"^(?P<path>[^:\n]+):(?P<line>\d+)(?::(?P<col>\d+))?[:\s]+(?P<msg>.+)$"),
@@ -2836,20 +2827,6 @@ def build_invocation(
     if not result["safe"]:
         raise ValueError(result["error"])
     return CommandInvocation(argv=result["argv"], cwd=result["cwd"], shell=False)
-
-
-def _redact_secrets(text: str) -> str:
-    if not text:
-        return ""
-    res = text
-    for pat in _SECRET_PATTERNS:
-        if pat.groups == 2:
-            res = pat.sub(r"\1***", res)
-        elif pat.groups == 1:
-            res = pat.sub(r"\1***", res)
-        else:
-            res = pat.sub("***REDACTED_SECRET***", res)
-    return res
 
 
 class _BoundedStreamBuffer:

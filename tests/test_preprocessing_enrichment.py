@@ -9,10 +9,11 @@ import threading
 
 from local_ai_hub.background_gpu import IdleGPUWorker
 from local_ai_hub.operational_mode import publish_preprocessing_ready, set_operational_mode
-from local_ai_hub.preprocess import PREPROCESS_ANALYZER_VERSION, ProjectPreprocessor
+from local_ai_hub.preprocess import PREPROCESS_ANALYZER_VERSION, ProjectPreprocessor, _RetryablePreprocessingError
 from local_ai_hub.config import load_config
 from local_ai_hub.hardware import PROFILE_OVERRIDES
 from local_ai_hub.repo_tools import RepositoryTools
+from local_ai_hub.scheduler import QueueFullError
 
 
 class _Noop:
@@ -665,3 +666,40 @@ def test_completed_project_card_enrichment_respects_project_slot_limit(tmp_path)
         assert prep._project_row(str(root))["phase"] == "complete"
     finally:
         prep.close()
+
+
+def test_retryable_background_scheduler_rejection_yields_without_failing():
+    def make_preprocessor(error):
+        prep = object.__new__(ProjectPreprocessor)
+        prep.state_dir = None
+        prep.config = {"server": {}}
+        prep.cfg = {"background_scheduler_timeout_seconds": 1}
+        prep._gpu_yield = lambda: False
+        prep.background_gpu = None
+
+        def reject(*_args, **_kwargs):
+            raise error
+
+        prep.scheduler = SimpleNamespace(submit=reject)
+        return prep
+
+    retryable_error = QueueFullError("scheduler queue limit reached", retryable=True)
+    try:
+        make_preprocessor(retryable_error)._run_background_generate(
+            "configured-model", "prompt", "system", {}, 32, "preprocess:file-card"
+        )
+    except _RetryablePreprocessingError as exc:
+        assert "scheduler queue limit reached" in str(exc)
+        assert exc.retry_after_seconds == 30
+    else:
+        raise AssertionError("retryable scheduler admission must defer preprocessing")
+
+    terminal_error = QueueFullError("GPU admission outcome unknown", retryable=False)
+    try:
+        make_preprocessor(terminal_error)._run_background_generate(
+            "configured-model", "prompt", "system", {}, 32, "preprocess:file-card"
+        )
+    except QueueFullError as exc:
+        assert exc is terminal_error
+    else:
+        raise AssertionError("terminal GPU admission must remain fail closed")

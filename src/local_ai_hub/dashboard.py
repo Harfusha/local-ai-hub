@@ -457,7 +457,13 @@ button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-vis
         <div class="tiny muted">Diagnostics</div>
         <button class="btn" id="detailedTelemetryToggle" aria-pressed="false">Detailed telemetry: Off</button>
         <span id="detailedTelemetryStatus" class="tiny" role="status" aria-live="polite"></span>
-        <span class="tiny control-notice">Capture request details for troubleshooting. Off by default.</span>
+        <span class="tiny control-notice">Off by default. When enabled, full request/response details, paths and secrets stay on this device until retention cleanup or purge. Redacted export masks common credentials and local paths.</span>
+        <dialog id="detailedTelemetryConfirm" aria-labelledby="detailedTelemetryConfirmTitle" aria-describedby="detailedTelemetryConfirmCopy" style="max-width:min(32rem,calc(100vw - 2rem))">
+          <h2 id="detailedTelemetryConfirmTitle">Enable detailed telemetry?</h2>
+          <p id="detailedTelemetryConfirmCopy">Full request and response bodies, local paths, and secrets may be stored on this device until retention cleanup or purge.</p>
+          <form method="dialog"><button class="btn" value="cancel">Cancel</button><button class="btn danger" value="enable">Enable detailed telemetry</button></form>
+        </dialog>
+        <button class="btn danger" id="purgeDebugTracesBtn">Purge detailed traces</button>
         <button class="btn ok" id="optDbBtn">Optimize databases</button>
         <button class="btn" id="doctorBtn">Run diagnostics</button>
         <button class="btn" id="pauseEvents">Pause live events</button>
@@ -644,7 +650,7 @@ button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-vis
     <h2>
       <span style="display:flex;align-items:center;gap:8px">
         Dlouhodobá analytika endpointů a MCP
-        <span class="tiny" id="endpointStatsSub">Perzistentní percentily latence (p50 / p95 / p99), počty volání a úspěšnost</span>
+        <span class="tiny" id="endpointStatsSub">Percentily latence (p50 / p95 / p99), počty volání a úspěšnost</span>
       </span>
       <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
         <select id="epStatsProjectSelect" aria-label="Project filter for Endpoint Analytics" style="font-size:11px;padding:3px 8px;background:var(--bg);border:1px solid var(--line);color:var(--text);border-radius:4px">
@@ -1439,12 +1445,35 @@ function syncDetailedTelemetryToggle(enabled){
   button.textContent=`Detailed telemetry: ${enabled?'On':'Off'}`;
   button.setAttribute('aria-pressed',String(Boolean(enabled)));
 }
+let detailedTelemetryOverride=null;
+function resolveDetailedTelemetryState(reported){
+  if(detailedTelemetryOverride===null||reported===detailedTelemetryOverride){
+    detailedTelemetryOverride=null;
+    return reported;
+  }
+  return detailedTelemetryOverride;
+}
+function confirmDetailedTelemetryEnable(){
+  const dialog=$('detailedTelemetryConfirm');
+  if(!dialog||typeof dialog.showModal!=='function')return Promise.resolve(false);
+  return new Promise(resolve=>{
+    const onClose=()=>resolve(dialog.returnValue==='enable');
+    dialog.addEventListener('close',onClose,{once:true});
+    dialog.returnValue='';
+    try{dialog.showModal()}catch{dialog.removeEventListener('close',onClose);resolve(false)}
+  });
+}
 if($('detailedTelemetryToggle'))$('detailedTelemetryToggle').onclick=async()=>{
-  const enabled=!Boolean(last?.debug_traces?.enabled);
-  const button=$('detailedTelemetryToggle');if(button)button.disabled=true;
+  const button=$('detailedTelemetryToggle');
+  const displayedState=button?.getAttribute('aria-pressed');
+  const enabled=displayedState==='true'?false:displayedState==='false'?true:!Boolean(last?.debug_traces?.enabled);
+  if(enabled&&!(await confirmDetailedTelemetryEnable())){const status=$('detailedTelemetryStatus');if(status)status.textContent='Detailed telemetry remains Off.';return;}
+  if(button)button.disabled=true;
   const status=$('detailedTelemetryStatus');if(status)status.textContent='';
+  let failureStage='';
   try{
     const result=await post('/api/config/update',{settings:{'debug_traces.enabled':enabled}});
+    failureStage=result?.failure_stage==='persistence'?'persistence':result?.failure_stage==='validation'?'validation':'';
     if(!result?.success)throw new Error(result?.error||'Unable to update telemetry');
     if(result.applied_live!==true){
       syncDetailedTelemetryToggle(Boolean(last?.debug_traces?.enabled));
@@ -1453,13 +1482,15 @@ if($('detailedTelemetryToggle'))$('detailedTelemetryToggle').onclick=async()=>{
         :'Hub did not confirm live telemetry; current state unchanged.';
       return;
     }
+    detailedTelemetryOverride=enabled;
     last={...last,debug_traces:{...(last?.debug_traces||{}),enabled}};
     syncDetailedTelemetryToggle(enabled);
     if(status)status.textContent=`Detailed telemetry ${enabled?'enabled':'disabled'}.`;
     if(activeTraceData)renderTraceDetail(activeTraceData);
   }catch(error){
     const message=typeof error?.message==='string'?error.message.trim().slice(0,240):'';
-    if(status)status.textContent=message?`Telemetry update failed: ${message}`:'Could not confirm telemetry change. Check the displayed state before retrying.';
+    const stageText=failureStage?` during ${failureStage}`:'';
+    if(status)status.textContent=message?`Telemetry update failed${stageText}: ${message}`:'Could not confirm telemetry change. Check the displayed state before retrying.';
   }
   finally{if(button)button.disabled=false;statusPoller.refresh();}
 };
@@ -2655,7 +2686,7 @@ function traceMetricRow(metrics){
   if(liveEl){liveEl.textContent=d?.terminal?'finished':'● live · updating';liveEl.className='tiny '+(d?.terminal?'ok':'trace-running');}
   const state=traceStatus(s),stateClass=(state==='failed'||state==='error')?'bad':(state==='interrupted'?'warn':(d?.terminal?'ok':'warn'));
   const command=s.action||traceHumanTitle(model),project=model.project?` · ${model.project}`:'',timestamp=Number(s.created_at)>0?new Date(Number(s.created_at)*1000).toLocaleString():'nezaznamenané';
-  const header=`<div class="trace-inspector-head"><div class="trace-header-title"><h1>${esc(command+project)}</h1><span class="badge ${stateClass}">${esc(state)}</span></div><div class="trace-header-meta"><span class="trace-header-time">${esc(timestamp)}</span>${d?.payload_truncated?'<span>Obsah zkrácen limitem trace úložiště</span>':''}</div></div>`;
+  const header=`<div class="trace-inspector-head"><div class="trace-header-title"><h1>${esc(command+project)}</h1><span class="badge ${stateClass}">${esc(state)}</span></div><div class="trace-header-meta"><span class="trace-header-time">${esc(timestamp)}</span>${d?.payload_truncated?'<span>Obsah zkrácen limitem trace úložiště</span>':''}<button type="button" class="btn" data-trace-export>Download redacted trace page</button></div></div>`;
   const requestResponseMarkup=model.presentation?.kind==='request_response'?renderTracePresentation(model):'';
   const primaryMarkup=`<section class="trace-primary"><div class="trace-primary-grid">${traceMainContent('Input','input',tracePrimaryInput(model.input))}${traceMainContent('Output','output',model.output)}</div></section>${requestResponseMarkup}`;
   const historyControls=d?.has_older_events||d?.has_newer_events?`<div class="trace-header-meta">${d?.has_older_events?'<button type="button" class="btn" data-trace-event-page="older">Load older events</button>':''}${d?.has_newer_events?'<button type="button" class="btn" data-trace-event-page="newer">Load newer events</button>':''}</div>`:'';
@@ -2667,11 +2698,22 @@ function traceMetricRow(metrics){
   const detailPolicy='Tajné klíče a přístupové tokeny jsou redigované; běžný obsah zůstává viditelný.';
   const summaryDetails=`<details class="trace-optional-details" data-trace-collapsible data-trace-key="technical-summary"><summary>Souhrn požadavku a dostupnost dat</summary>${traceSummary(model,{})}</details>`;
   const technical=`<details class="trace-optional-details" id="traceTechnicalDetails" data-trace-collapsible data-trace-key="technical"${traceOptionalDetailsOpen?' open':''}><summary>Nastavení a technické údaje</summary><div class="trace-optional-body"><p class="tiny muted">${detailPolicy}</p><label class="trace-view-picker"><span>Zobrazit</span><select data-trace-view-select aria-label="Technické údaje">${technicalOptions}</select></label>${panelMarkup}${summaryDetails}${requestSettings}${historyControls}</div></details>`;
-  if(body){body.className='trace-page-body';body.innerHTML=`<div class="human-shell">${header}${traceMetricRow(d?.metrics)}${primaryMarkup}${technical}</div>`;}
+  if(body){body.className='trace-page-body';body.innerHTML=`<div class="human-shell">${header}${traceMetricRow(d?.metrics)}${primaryMarkup}${technical}</div>`;
+    body.querySelector('[data-trace-export]')?.addEventListener('click',()=>downloadRedactedTracePage(activeTraceId));
+  }
   const restore=()=>{restoreTraceCollapsibleDetails($('tracePageBody'),collapsibleState);restoreTraceThinkingDetails($('tracePageBody'),thinkingDetailsOpen);restoreTraceScrollPositions($('tracePageBody'),scrollPositions);const next=$('tracePageBody')?.closest('.trace-main');if(next){next.scrollTop=mainScrollTop;next.scrollLeft=mainScrollLeft}};
   if(window.requestAnimationFrame)window.requestAnimationFrame(restore);else restore();
  }
 function setTraceView(view){if(!activeTraceData)return;const model=traceDisplayModel(activeTraceData);if(!model.panels.some(panel=>panel.available&&panel.id===view))return;traceView=view;renderTraceDetail(activeTraceData)}
+async function downloadRedactedTracePage(traceId){
+  const id=String(traceId||'').trim();if(!id)return;
+  try{
+    const response=await apiFetch('/api/debug-traces/'+encodeURIComponent(id)+'/export?since_seq=0&limit=1000&max_bytes=8388608',{cache:'no-store'});
+    const data=await response.json();if(!response.ok||data?.success!==true)throw new Error(data?.error||'Redacted trace export failed');
+    const blob=new Blob([JSON.stringify(data,null,2)],{type:'application/json'}),url=URL.createObjectURL(blob),anchor=document.createElement('a');
+    anchor.href=url;anchor.download='local-ai-hub-trace-redacted.json';document.body.appendChild(anchor);anchor.click();anchor.remove();setTimeout(()=>URL.revokeObjectURL(url),1000);
+  }catch(error){const status=$('detailedTelemetryStatus');if(status)status.textContent=String(error?.message||'Redacted trace export failed').slice(0,240);}
+}
 async function fetchTraceContentPages(traceId,field,budget={used:0,limit:8*1024*1024}){
   let offset=0;const chunks=[];let encoding='text',storageTruncated=false;
   for(;;){
@@ -5041,6 +5083,13 @@ function openControlConfirmation(action){
 $('optDbBtn').onclick=async()=>{try{const r=await post('/api/maintenance/optimize_db',{});openModal(r,'Database Optimization & WAL Checkpoint Results','db_opt')}catch(e){openModal({error:String(e)},'Error')}};
 $('purgeCacheBtn').onclick=()=>openControlConfirmation('purge_cache');
 if($('purgeStatsBtn'))$('purgeStatsBtn').onclick=()=>openControlConfirmation('purge_stats');
+if($('purgeDebugTracesBtn'))$('purgeDebugTracesBtn').onclick=async()=>{
+  if(!window.confirm('Purge every retained detailed trace, including active trace records? This cannot be undone.'))return;
+  const button=$('purgeDebugTracesBtn');if(button)button.disabled=true;
+  try{const result=await post('/api/debug-traces/purge',{confirm:true});if(!result?.success)throw new Error(result?.error||'Trace purge failed');activeTraceId='';activeTraceData=null;traceEvents=[];traceSeq=0;$('tracePageBody')?.replaceChildren();const status=$('detailedTelemetryStatus');if(status)status.textContent=`Purged ${result.deleted_sessions} traces and ${result.deleted_events} events.`;await pollTraces();}
+  catch(error){const status=$('detailedTelemetryStatus');if(status)status.textContent=String(error?.message||'Trace purge failed').slice(0,240);}
+  finally{if(button)button.disabled=false;}
+};
 $('doctorBtn').onclick=openDoctorModal;
 
 function ensureHttpTailTable(){
@@ -5125,7 +5174,7 @@ function updateTraceSummaries(items){
 
 function render(s){
   last=s;
-  syncDetailedTelemetryToggle(Boolean(s.debug_traces?.enabled));
+  syncDetailedTelemetryToggle(resolveDetailedTelemetryState(Boolean(s.debug_traces?.enabled)));
   const receivedAt=Date.now();
   lastOverviewReceivedAt=receivedAt;
   const q=s.scheduler||{},o=s.observability||{},p=s.preprocessing||{},bg=s.background_gpu||{},h=s.headless||{},r=s.runtime_stats||{},ss=q.stats||{},rp=s.runtime_profile||{},cmd=r.commands||{};
@@ -6359,6 +6408,16 @@ async function loadEndpointStatsView() {
       return;
     }
     cachedEndpointStats = res;
+    const statsSub = $('endpointStatsSub');
+    if (statsSub) {
+      const windowLabel = res.window === 'stored_since_reset' ? 'souhrn od posledního resetu' : 'časové okno neuvedeno';
+      const methodLabel = res.latency_method === 'fixed_histogram_bucket_estimate' ? 'odhady z histogramu' : 'metoda latence neuvedena';
+      const ceilingMs = Number(res.histogram_bucket_ceiling_ms);
+      const bucketLabel = res.histogram_top_bucket_open_ended === true && Number.isFinite(ceilingMs) && ceilingMs > 0
+        ? ` · horní koš otevřený, odhadovaný strop ${Math.round(ceilingMs / 1000)} s`
+        : '';
+      statsSub.textContent = `p50 / p95 / p99: ${methodLabel} · ${windowLabel}${bucketLabel}`;
+    }
 
     const projSelect = $('epStatsProjectSelect');
     if (projSelect && Array.isArray(res.projects)) {

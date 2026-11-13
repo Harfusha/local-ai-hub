@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from .agent_events import AgentEvent, AgentStateStore
-from .sqlite_support import connect_sqlite, initialize_wal, retry_busy, validate_durable_schema
+from .sqlite_support import connect_sqlite, initialize_wal, retry_busy, validate_durable_schema, write_transaction
 
 LOGGER = logging.getLogger(__name__)
 
@@ -257,22 +257,13 @@ class BlackboardStore:
             )
 
         def _do_update() -> dict[str, Any]:
-            with self._lock, closing(self._connect()) as con:
-                con.isolation_level = None
-                con.execute("BEGIN IMMEDIATE")
-                try:
-                    result = self._update_in_transaction(
-                        con, clean_board, clean_section, content, clean_author,
-                        clock, expected_version, idempotency_key,
-                    )
-                    con.execute("COMMIT")
-                    return result
-                except Exception:
-                    try:
-                        con.execute("ROLLBACK")
-                    except sqlite3.Error as rollback_error:
-                        LOGGER.warning("blackboard rollback failed (%s)", type(rollback_error).__name__)
-                    raise
+            with self._lock, closing(self._connect()) as con, write_transaction(
+                con, rollback_label="blackboard"
+            ):
+                return self._update_in_transaction(
+                    con, clean_board, clean_section, content, clean_author,
+                    clock, expected_version, idempotency_key,
+                )
 
         publication_lock = (
             self.state_store._append_publish_lock
@@ -552,9 +543,9 @@ class BlackboardStore:
             merged_results: list[dict[str, Any]] = []
             published: list[AgentEvent] = []
 
-            with self._lock, closing(self._connect()) as con:
-                con.isolation_level = None
-                con.execute("BEGIN IMMEDIATE")
+            with self._lock, closing(self._connect()) as con, write_transaction(
+                con, rollback_label="blackboard"
+            ):
                 cur = con.cursor()
                 for sec_name, raw_data in items.items():
                     if not sec_name or not isinstance(raw_data, dict):
@@ -624,7 +615,6 @@ class BlackboardStore:
                         if not appended.duplicate and appended.event:
                             published.append(appended.event)
 
-                con.execute("COMMIT")
                 result = {
                     "success": True,
                     "board_id": clean_board,
@@ -659,9 +649,9 @@ class BlackboardStore:
 
         def _do_delete() -> dict[str, Any]:
             published: list[AgentEvent] = []
-            with self._lock, closing(self._connect()) as con:
-                con.isolation_level = None
-                con.execute("BEGIN IMMEDIATE")
+            with self._lock, closing(self._connect()) as con, write_transaction(
+                con, rollback_label="blackboard"
+            ):
                 try:
                     if clean_section:
                         rows = con.execute(
@@ -701,7 +691,6 @@ class BlackboardStore:
                                 raise RuntimeError(appended.error or "blackboard tombstone event append returned no persisted event")
                             if not appended.duplicate and appended.event:
                                 published.append(appended.event)
-                    con.execute("COMMIT")
                 except Exception:
                     try:
                         con.execute("ROLLBACK")

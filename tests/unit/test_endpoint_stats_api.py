@@ -21,6 +21,11 @@ def test_endpoint_stats_api_lifecycle(tmp_path: Path):
     global_res = store.get_stats()
     assert global_res["success"] is True
     assert global_res["is_global"] is True
+    assert global_res["window"] == "stored_since_reset"
+    assert global_res["latency_method"] == "fixed_histogram_bucket_estimate"
+    assert global_res["histogram_bucket_ceiling_ms"] == 120000
+    assert global_res["histogram_top_bucket_open_ended"] is True
+    assert global_res["last_used_unit"] == "unix_seconds"
     assert len(global_res["projects"]) == 2
     assert global_res["total_items"] > 0
     assert global_res["unused_count"] > 0
@@ -34,6 +39,7 @@ def test_endpoint_stats_api_lifecycle(tmp_path: Path):
     proj1_res = store.get_stats(root=root1)
     assert proj1_res["success"] is True
     assert proj1_res["is_global"] is False
+    assert proj1_res["window"] == "stored_since_reset"
     assert proj1_res["root"] in global_res["projects"]
     proj1_items = {i["name"]: i for i in proj1_res["items"]}
     assert proj1_items["/api/search"]["calls"] == 2
@@ -67,13 +73,26 @@ def test_compact_endpoint_stats_preserves_all_issue_dimensions():
             "p50_ms": 1500.0,
             "p95_ms": 12000.0,
             "p99_ms": 20000.0,
+            "last_used": 1794537000.0,
             "status": "failing",
             "issues": ["failing", "slow"],
+        }, {
+            "type": "http",
+            "name": "/api/invalid-last-used",
+            "calls": 1,
+            "last_used": float("nan"),
         }],
     })
 
     assert response["items"][0]["status"] == "failing"
     assert response["items"][0]["issues"] == ["failing", "slow"]
+    assert response["window"] == "stored_since_reset"
+    assert response["latency_method"] == "fixed_histogram_bucket_estimate"
+    assert response["histogram_bucket_ceiling_ms"] == 120000
+    assert response["histogram_top_bucket_open_ended"] is True
+    assert response["last_used_unit"] == "unix_seconds"
+    assert response["items"][0]["last_used"] == 1794537000.0
+    assert "last_used" not in response["items"][1]
 
 
 def test_project_stats_skip_global_scans_and_project_list_payload(tmp_path, monkeypatch):

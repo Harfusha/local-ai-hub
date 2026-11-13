@@ -84,6 +84,24 @@ def test_failed_setting_persistence_does_not_publish_live_toggle(monkeypatch, tm
     assert not (tmp_path / 'config.runtime.toml').exists()
 
 
+def test_setting_persistence_error_reports_safe_stage_without_raw_details(monkeypatch, tmp_path):
+    secret = "denied at C:/private/config-with-secret.toml"
+    responses, app, original_config, writes = _dispatch_settings_update(
+        monkeypatch,
+        tmp_path,
+        "debug_traces.enabled",
+        False,
+        write_error=OSError(secret),
+    )
+
+    assert responses[0][0] == 400
+    assert responses[0][1]["failure_stage"] == "persistence"
+    assert secret not in json.dumps(responses[0][1])
+    assert app.debug_traces.enabled is True
+    assert app.config == original_config
+    assert len(writes) == 1
+
+
 @pytest.mark.parametrize("setting", BOOLEAN_SETTINGS)
 @pytest.mark.parametrize("value", NON_BOOLEAN_JSON_VALUES)
 def test_dashboard_boolean_settings_reject_non_boolean_json_without_publication(

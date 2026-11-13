@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import socket
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -195,6 +196,29 @@ def test_scheduler_timeout_reports_gpu_reservation_wait_reason(tmp_path):
     finally:
         if token:
             assert scheduler.release_external_gpu(token)
+        scheduler.close()
+
+
+def test_scheduler_status_reaps_expired_reservation_when_gpu_state_is_unknown(tmp_path):
+    config = {
+        "server": {"state_dir": str(tmp_path), "ollama_url": "http://127.0.0.1:11434"},
+        "ollama": {"enabled": True},
+    }
+    scheduler = AffinityScheduler(OllamaRuntime(config), config)
+    try:
+        token = scheduler.reserve_external_gpu(owner="status-reap-test", owner_vram_budget_bytes=1)
+        assert token
+        reservation = scheduler._external_gpu_store.read()
+        assert reservation is not None
+        reservation["expires_at"] = time.time() - 1
+        assert scheduler._external_gpu_store._write_metadata(reservation)
+        scheduler._internal_gpu_uncertain = True
+
+        status = scheduler.status()
+
+        assert status["gpu_admission_state"] == "outcome_unknown"
+        assert scheduler._external_gpu_store.read() is None
+    finally:
         scheduler.close()
 
 

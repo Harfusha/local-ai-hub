@@ -131,6 +131,37 @@ def test_completion_outcome_is_queued_and_records_metadata_only() -> None:
     assert all("operation" not in event and "root" not in event for event in telemetry_events)
 
 
+def test_completion_outcome_without_task_id_is_skipped_before_queueing() -> None:
+    app = LocalAIApp.__new__(LocalAIApp)
+    telemetry_events = []
+    app._status_dependency_executor = SimpleNamespace(
+        submit=lambda *_args: (_ for _ in ()).throw(AssertionError("invalid completion must not queue"))
+    )
+    app._shutdown = None
+    app._laya_capture_lock = Lock()
+    app._laya_capture_queue = []
+    app._laya_capture_draining = False
+    app.telemetry = SimpleNamespace(record_stage=lambda **event: telemetry_events.append(event))
+    operation = {
+        "task_id": "",
+        "session_id": "session-1",
+        "outcome": {
+            "status": "passed",
+            "reason_code": "completion_gate_passed",
+            "duration_ms": 8.0,
+            "repository_revision": "a" * 40,
+            "mutation_generation": 2,
+        },
+    }
+
+    result = app.queue_laya_completion_observation(operation, "C:/repo")
+
+    assert result == {"status": "skipped", "reason": "completion_scope_unavailable"}
+    assert app._laya_capture_queue == []
+    assert [event["stage"] for event in telemetry_events] == ["skipped"]
+    assert all("operation" not in event and "root" not in event for event in telemetry_events)
+
+
 def test_completion_outcome_waits_behind_queued_decision_capture() -> None:
     app = LocalAIApp.__new__(LocalAIApp)
     callbacks = []
@@ -203,6 +234,90 @@ def test_delegate_queues_model_route_observation_after_primary_generation() -> N
     assert result["success"] is True
     assert events == ["generation", "laya_queue"]
     assert observations[0]["decision"]["category"] == "model_route"
+    assert observations[0]["decision"]["state"]["generator_model"] == "fast-model"
+    assert observations[0]["decision"]["training_content"] == {
+        "task_input": "Fix the parser.",
+        "model_response": "done",
+    }
+
+
+def test_laya_model_response_excerpt_is_bounded_and_success_only() -> None:
+    assert LocalAIServices._laya_model_response_excerpt({"success": False, "text": "partial"}) == ""
+    excerpt = LocalAIServices._laya_model_response_excerpt({"success": True, "text": "🙂" * 5000})
+
+    assert excerpt
+    assert len(excerpt.encode("utf-8")) <= 8192
+
+
+def test_solve_repo_queues_task_scoped_pipeline_response_for_laya() -> None:
+    service = LocalAIServices.__new__(LocalAIServices)
+    captured_args: list[dict] = []
+    input_args = {
+        "root": "C:/repo",
+        "task_id": "task-pipeline-1",
+        "task": "Implement the bounded parser change.",
+    }
+    result = {
+        "success": True,
+        "text": "Verified answer.",
+        "canonical": {
+            "route": {"task_type": "heavy_code", "complexity": "heavy", "semantic_required": True},
+            "worker": {"used": True, "model": "qwen3.5:9b"},
+        },
+        "repo_context": {"evidence": [{"evidence_id": "ev-pipeline-1"}]},
+        "pipeline": {"stages": ["worker"]},
+    }
+    def solve_repo(args):
+        captured_args.append(args)
+        callback = args.get("_laya_tool_output_callback")
+        if callable(callback):
+            callback("evidence_get", {"success": True, "text": "verified excerpt"})
+        return result
+
+    service.pipeline = SimpleNamespace(enabled=True, solve_repo=solve_repo)
+    observations: list[dict] = []
+    service.laya_decision_observer = lambda operation, _root, _baseline: (
+        observations.append(operation) or {"status": "queued"}
+    )
+
+    actual = service.solve_repo(input_args)
+
+    assert actual is result
+    assert "_laya_tool_output_callback" not in input_args
+    assert callable(captured_args[0]["_laya_tool_output_callback"])
+    assert observations[0]["task_id"] == "task-pipeline-1"
+    assert observations[0]["decision"]["category"] == "model_route"
+    assert observations[0]["decision"]["evidence_ids"] == ["ev-pipeline-1"]
+    assert observations[0]["decision"]["state"]["generator_model"] == "qwen3.5:9b"
+    assert observations[0]["decision"]["training_content"] == {
+        "task_input": "Implement the bounded parser change.",
+        "model_response": "Verified answer.",
+        "tool_output_excerpt": '{"output":{"success":true,"text":"verified excerpt"},"tool":"evidence_get"}',
+    }
+
+
+def test_solve_repo_does_not_label_deterministic_answer_as_model_response() -> None:
+    service = LocalAIServices.__new__(LocalAIServices)
+    service.pipeline = SimpleNamespace(solve_repo=lambda _args: {
+        "success": True,
+        "text": "Deterministic answer.",
+        "canonical": {
+            "route": {"task_type": "fast_code", "complexity": "fast", "semantic_required": False},
+            "worker": {"used": False, "model": "deterministic"},
+        },
+        "repo_context": {"evidence": [{"evidence_id": "ev-deterministic-1"}]},
+        "pipeline": {"stages": ["deterministic"]},
+    })
+    observations: list[dict] = []
+    service.laya_decision_observer = lambda operation, *_args: observations.append(operation) or {"status": "queued"}
+
+    service.solve_repo({
+        "root": "C:/repo",
+        "task_id": "task-deterministic-1",
+        "task": "Find the declared symbol.",
+    })
+
+    assert observations == []
 
 
 def test_delegate_repo_queues_automatic_context_budget_with_retrieval_evidence() -> None:
@@ -219,7 +334,11 @@ def test_delegate_repo_queues_automatic_context_budget_with_retrieval_evidence()
         "scanned_files": 1,
     }
     observations: list[dict] = []
-    service.delegate = lambda _payload, **_kwargs: {"success": True, "text": "done"}
+    service.delegate = lambda _payload, **_kwargs: {
+        "success": True,
+        "text": "done",
+        "route": {"model": "selected-model"},
+    }
     service.laya_decision_observer = lambda operation, _root, _baseline: (
         observations.append(operation) or {"status": "queued"}
     )
@@ -234,6 +353,11 @@ def test_delegate_repo_queues_automatic_context_budget_with_retrieval_evidence()
     assert result["repo_context"]["evidence"] == [{"evidence_id": "ev-1"}]
     assert observations[0]["decision"]["category"] == "context_budget"
     assert observations[0]["decision"]["evidence_ids"] == ["ev-1"]
+    assert observations[0]["decision"]["state"]["generator_model"] == "selected-model"
+    assert observations[0]["decision"]["training_content"] == {
+        "task_input": "Summarize the module.",
+        "model_response": "done",
+    }
 
 
 def test_app_queue_derives_scope_and_rejects_caller_baseline(tmp_path, monkeypatch) -> None:
@@ -301,3 +425,143 @@ def test_app_queue_derives_scope_and_rejects_caller_baseline(tmp_path, monkeypat
     assert "session_id" not in queued_operation
     assert queued_root == str(tmp_path)
     assert queued_baseline == baseline
+
+
+def test_successful_incomplete_task_context_queues_natural_laya_capture(tmp_path) -> None:
+    app = LocalAIApp.__new__(LocalAIApp)
+    callbacks = []
+    telemetry_events = []
+    stored_sources = []
+    verified_sources = []
+
+    class _Executor:
+        def submit(self, callback):
+            callbacks.append(callback)
+            return Future()
+
+    app.agent_tasks = object()
+    app.laya_candidates = SimpleNamespace(
+        _find_task=lambda _store, root, task_id: (
+            object() if root == str(tmp_path) and task_id == "task-1" else None
+        ),
+        _session_for_task=lambda _task: "session-1",
+    )
+
+    def store_evidence(_root, _rows, *, source_code):
+        stored_sources.append(source_code)
+        return [{"evidence_id": "ev-indexed"}]
+
+    def verify_evidence(evidence_ids, *, verify, root):
+        assert verify is True
+        assert root == str(tmp_path)
+        return [{
+            "success": True,
+            "evidence_id": evidence_ids[0],
+            "root": root,
+            "stale": False,
+        }]
+
+    def verify_provenance(evidence_ids, source_codes, *, root):
+        verified_sources.append((evidence_ids, source_codes, root))
+        return root == str(tmp_path) and evidence_ids == ["ev-rag"] and source_codes == ["rag"]
+
+    app.evidence = SimpleNamespace(
+        put_many=store_evidence,
+        get_many=verify_evidence,
+        validate_source_provenance=verify_provenance,
+    )
+    app._status_dependency_executor = _Executor()
+    app._laya_capture_lock = Lock()
+    app._laya_capture_queue = []
+    app._laya_capture_draining = False
+    app._shutdown = SimpleNamespace(is_set=lambda: False)
+    app.telemetry = SimpleNamespace(record_stage=lambda **event: telemetry_events.append(event))
+    app.logger = SimpleNamespace(warning=lambda *_args: None)
+
+    request = SimpleNamespace(
+        root=str(tmp_path),
+        task_id="task-1",
+        session_id="session-1",
+        query="Find the missing source evidence.",
+    )
+    result = {
+        "success": True,
+        "stale": False,
+        "retrieval": {
+            "backend_states": {"lexical": "used", "rag": "used"},
+            "lexical": {
+                "freshness": {"status": "current"},
+                "coverage": {"complete": False, "candidate_count": 1},
+            },
+            "semantic": {
+                "freshness": {"status": "current"},
+                "coverage": {"complete": False, "candidate_count": 1},
+            },
+        },
+        "evidence": [
+            {
+                "semantic": False,
+                "path": "src/indexed.py",
+                "content_hash": "a" * 64,
+                "text": "Indexed source evidence.",
+            },
+            {
+                "semantic": True,
+                "path": "docs/rag.md",
+                "content_hash": "b" * 64,
+                "evidence_id": "ev-rag",
+                "text": "Retrieved RAG evidence.",
+            },
+        ],
+    }
+
+    observation = app.capture_laya_context_source_from_context(request, result)
+
+    assert observation == {"status": "queued"}
+    assert len(callbacks) == 1
+    assert len(app._laya_capture_queue) == 1
+    operation, queued_root, baseline = app._laya_capture_queue[0]
+    assert queued_root == str(tmp_path)
+    assert operation == {
+        "action": "evaluate_context_source",
+        "task_id": "task-1",
+        "session_id": "session-1",
+        "evidence": {
+            "gap_code": "unresolved_evidence_gap",
+            "source_codes": ["indexed", "rag"],
+            "freshness_codes": ["current", "current"],
+            "coverage_codes": ["partial", "partial"],
+            "evidence_ids": ["ev-indexed", "ev-rag"],
+            "training_content": {
+                "task_input": "Find the missing source evidence.",
+                "context_excerpt": "indexed: Indexed source evidence.\nrag: Retrieved RAG evidence.",
+            },
+        },
+    }
+    assert baseline == {
+        "method": "retrieval_rank_order",
+        "suggestion": "indexed",
+        "evidence_id": "ev-indexed",
+    }
+    assert stored_sources == ["indexed"]
+    assert verified_sources == [(["ev-rag"], ["rag"], str(tmp_path))]
+    assert [event["stage"] for event in telemetry_events] == ["queued"]
+    assert all(
+        not {"operation", "root", "query", "context_excerpt"}.intersection(event)
+        for event in telemetry_events
+    )
+
+
+def test_context_source_capture_skips_without_task_identity(tmp_path) -> None:
+    app = LocalAIApp.__new__(LocalAIApp)
+    telemetry_events = []
+    app.telemetry = SimpleNamespace(record_stage=lambda **event: telemetry_events.append(event))
+
+    observation = app.capture_laya_context_source_from_context(
+        SimpleNamespace(root=str(tmp_path), task_id="", session_id="", query="raw user query"),
+        {"success": True},
+    )
+
+    assert observation == {"status": "skipped", "reason": "task_identity_unavailable"}
+    assert [event["stage"] for event in telemetry_events] == ["skipped"]
+    assert all("raw user query" not in str(event) for event in telemetry_events)

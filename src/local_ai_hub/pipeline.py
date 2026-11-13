@@ -270,6 +270,17 @@ class LocalAgentPipeline:
             return packed
         packed_ev = packed.get("evidence") if isinstance(packed, dict) else None
         packed_ev_count = len(packed_ev) if isinstance(packed_ev, (list, tuple)) else 0
+        callback = args.get("_laya_tool_output_callback")
+        has_retrieved_evidence_id = isinstance(packed_ev, (list, tuple)) and any(
+            isinstance(item, dict) and isinstance(item.get("evidence_id"), str) and item["evidence_id"].strip()
+            for item in packed_ev
+        )
+        laya_tool_callback_kwargs = (
+            {"laya_tool_output_callback": callback}
+            if callable(callback) and isinstance(args.get("task_id"), str)
+            and bool(args["task_id"].strip()) and has_retrieved_evidence_id
+            else {}
+        )
         plan = self.planner.plan(route, risk_score, graph_for_plan, packed_ev_count + det_ev_count, mode)
         # Local AI: if smart execution is inevitable, do not pay a fast-tier scout + model swap first.
         # Deterministic facts/search still run, so the smart worker receives scoped evidence.
@@ -321,6 +332,7 @@ class LocalAgentPipeline:
                         seed_context=str(packed.get("context", "")),
                         bootstrap={"deterministic": deterministic, "code_index": graph},
                         system_suffix="Return compact JSON when possible: hypotheses[{claim,confidence,evidence_ids}], candidate_files, missing_evidence. Identify only the minimum relevant surface.",
+                        **laya_tool_callback_kwargs,
                     ) if self.tool_agent is not None else
                     self.services._generate(
                         fast_model,
@@ -400,6 +412,7 @@ class LocalAgentPipeline:
                         seed_context=f"EXPLORER STATE:\n{json_dumps(explorer.get('structured') or {'summary': explorer.get('text','')}, ensure_ascii=False, separators=(',',':'))}\n\nEVIDENCE:\n{packed.get('context','')}",
                         bootstrap={"deterministic": deterministic, "code_index": graph},
                         system_suffix="Produce the smallest correct diagnosis/implementation plan, exact file/symbol actions, edge cases and validation. Return a concise flat list. Never nest bullet points or repeat section headers. Do not repeat evidence.",
+                        **laya_tool_callback_kwargs,
                     )
                     if tool_result.get("success"):
                         return tool_result
@@ -445,6 +458,7 @@ class LocalAgentPipeline:
                             seed_context=f"FIRST PASS:\n{json_dumps(first_state, ensure_ascii=False, separators=(',',':'))}\n\nEVIDENCE:\n{packed.get('context','')}",
                             bootstrap={"deterministic": deterministic, "code_index": graph},
                             system_suffix="Second pass: independently verify the first fast-tier result, correct concrete mistakes, remove unsupported claims, and return only the improved final actions/risks/validation as a concise flat list without nested bullets or repeating headers.",
+                            **laya_tool_callback_kwargs,
                         )
                         if refined.get("success"):
                             return refined
@@ -491,6 +505,7 @@ class LocalAgentPipeline:
                         seed_context=f"CANDIDATE STATE:\n{json_dumps(worker.get('structured') or {'summary': worker.get('text','')}, ensure_ascii=False, separators=(',',':'))}\n\nEVIDENCE:\n{packed.get('context','')}",
                         bootstrap={"deterministic": deterministic, "code_index": graph},
                         system_suffix="Terse technical output only: zero conversational filler. Independently verify only material correctness gaps, unsafe assumptions, missed edge cases or missing validation. Return a flat list without nested bullets. If none, say NO_MATERIAL_ISSUE. Do not praise or restate.",
+                        **laya_tool_callback_kwargs,
                     )
                     if tool_result.get("success"):
                         return tool_result

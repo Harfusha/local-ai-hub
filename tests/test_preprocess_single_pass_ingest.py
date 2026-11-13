@@ -18,18 +18,13 @@ def test_single_pass_ingest_caches_and_avoids_repeated_reads(tmp_path: Path):
     assert ingested1.lines == ("x = 1", "y = 2")
     assert ingested1.ast_tree is not None
 
-    # Modify file on disk without invalidating cache
+    # Modify file on disk without a watcher event or explicit invalidation.
     f.write_text("x = 999\n", encoding="utf-8")
     ingested2 = cache.get_or_ingest(tmp_path, "hello.py", tools)
-    # Should return cached version
-    assert ingested2.text == "x = 1\ny = 2"
-    assert ingested1 is ingested2
-
-    # Invalidate and re-read
-    cache.invalidate("hello.py", root=str(tmp_path))
-    tools.invalidate_snapshot(f)
-    ingested3 = cache.get_or_ingest(tmp_path, "hello.py", tools)
-    assert ingested3.text == "x = 999"
+    assert ingested2.text == "x = 999"
+    assert ingested2.content_hash != ingested1.content_hash
+    assert ingested2 is not ingested1
+    assert cache.get_or_ingest(tmp_path, "hello.py", tools) is ingested2
 
 
 @pytest.mark.parametrize('source,valid', [('x = 1\n', True), ('def broken(:\n', False)])

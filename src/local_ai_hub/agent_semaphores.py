@@ -10,7 +10,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from .sqlite_support import connect_sqlite, initialize_wal, retry_busy
+from .sqlite_support import connect_sqlite, initialize_wal, retry_busy, write_transaction
 
 logger = logging.getLogger(__name__)
 
@@ -89,8 +89,7 @@ class SemaphoreStore:
         with self._lock:
             con = self._connect()
             try:
-                con.execute("BEGIN IMMEDIATE")
-                with con:
+                with write_transaction(con, rollback_label="agent semaphore"):
                     row = con.execute(
                         "SELECT capacity, holders_json, queue_json FROM agent_semaphores WHERE name = ?",
                         (clean_name,),

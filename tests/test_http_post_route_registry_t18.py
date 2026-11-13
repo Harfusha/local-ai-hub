@@ -108,7 +108,8 @@ _CURRENT_ADDED_ROUTES = {
  'post_repo_revert_1': {'paths': ['/api/repo/revert'], 'before': 'post_implementations_1'},
  'post_repo_find_files_1': {'paths': ['/api/repo/find_files'], 'before': 'post_implementations_1'},
  'post_repo_file_info_1': {'paths': ['/api/repo/file_info'], 'before': 'post_implementations_1'},
- 'post_telemetry_endpoint_stats_reset_1': {'paths': ['/api/telemetry/endpoint-stats/reset'], 'before': 'post_work_orders_1'}}
+ 'post_telemetry_endpoint_stats_reset_1': {'paths': ['/api/telemetry/endpoint-stats/reset'], 'before': 'post_work_orders_1'},
+ 'post_debug_trace_purge_1': {'paths': ['/api/debug-traces/purge'], 'before': 'post_maintenance_resolve_errors_1'}}
 _ADDED_ROUTE_IDS = set(_CURRENT_ADDED_ROUTES)
 
 
@@ -343,6 +344,56 @@ def test_async_named_handler_dispatches_action_without_tenant_identity(monkeypat
     assert responses == [(200, {"success": True, "observed": expected})]
 
 
+@pytest.mark.parametrize("action", ["status", "wait", "result", "cancel"])
+@pytest.mark.parametrize("job_id", [None, "", "   ", 7, {}])
+def test_async_named_handler_rejects_invalid_job_id_before_dispatch(monkeypatch, action, job_id):
+    from types import SimpleNamespace
+    from local_ai_hub import http_server
+
+    calls = []
+    jobs = SimpleNamespace(**{
+        name: (lambda *args, name=name: calls.append((name, args)))
+        for name in ("status", "wait", "result", "cancel")
+    })
+    monkeypatch.setattr(http_server, "APP", SimpleNamespace(async_jobs=jobs))
+    handler = http_server.Handler.__new__(http_server.Handler)
+    responses = []
+    handler._send = lambda status, payload: responses.append((status, payload))
+
+    handler._handle_post_async_jobs({"action": action, "job_id": job_id})
+
+    assert responses == [(400, {
+        "success": False,
+        "error": "job_id must be a non-empty string",
+        "terminal": True,
+        "retryable": False,
+    })]
+    assert calls == []
+
+
+@pytest.mark.parametrize("timeout", ["invalid", None, True, {}, "NaN", "Infinity", 10**1000])
+def test_async_named_handler_rejects_invalid_wait_timeout_before_dispatch(monkeypatch, timeout):
+    from types import SimpleNamespace
+    from local_ai_hub import http_server
+
+    calls = []
+    jobs = SimpleNamespace(wait=lambda *args: calls.append(args))
+    monkeypatch.setattr(http_server, "APP", SimpleNamespace(async_jobs=jobs))
+    handler = http_server.Handler.__new__(http_server.Handler)
+    responses = []
+    handler._send = lambda status, payload: responses.append((status, payload))
+
+    handler._handle_post_async_jobs({"action": "wait", "job_id": "job-1", "timeout_seconds": timeout})
+
+    assert responses == [(400, {
+        "success": False,
+        "error": "timeout_seconds must be a finite number",
+        "terminal": True,
+        "retryable": False,
+    })]
+    assert calls == []
+
+
 def test_async_named_submit_preserves_explicit_request_id_and_conversation_rejection(monkeypatch):
     from types import SimpleNamespace
     from local_ai_hub import http_server
@@ -365,6 +416,57 @@ def test_async_named_submit_preserves_explicit_request_id_and_conversation_rejec
     assert responses[-1] == (400, {
         "success": False, "error": "conversations require delivery=sync", "terminal": True, "retryable": False,
     })
+
+
+@pytest.mark.parametrize("job_action", [None, "", "   ", 7, {}, []])
+def test_async_submit_rejects_malformed_job_action_before_dispatch(monkeypatch, job_action):
+    from types import SimpleNamespace
+    from local_ai_hub import http_server
+
+    calls = []
+    monkeypatch.setattr(http_server, "APP", SimpleNamespace(
+        async_jobs=SimpleNamespace(submit=lambda *args: calls.append(args))
+    ))
+    handler = http_server.Handler.__new__(http_server.Handler)
+    handler.headers = {}
+    responses = []
+    handler._send = lambda status, payload: responses.append((status, payload))
+
+    handler._handle_post_async_jobs({"action": "submit", "job_action": job_action})
+
+    assert responses == [(400, {
+        "success": False,
+        "error": "job_action must be a non-empty string",
+        "terminal": True,
+        "retryable": False,
+    })]
+    assert calls == []
+
+
+def test_async_submit_rejects_unknown_job_action_before_dispatch(monkeypatch):
+    from types import SimpleNamespace
+    from local_ai_hub import http_server
+
+    calls = []
+    jobs = SimpleNamespace(
+        ACTIONS={"reason", "review"},
+        submit=lambda *args: calls.append(args),
+    )
+    monkeypatch.setattr(http_server, "APP", SimpleNamespace(async_jobs=jobs))
+    handler = http_server.Handler.__new__(http_server.Handler)
+    handler.headers = {}
+    responses = []
+    handler._send = lambda status, payload: responses.append((status, payload))
+
+    handler._handle_post_async_jobs({"action": "submit", "job_action": "unsupported"})
+
+    assert responses == [(400, {
+        "success": False,
+        "error": "unsupported async task action",
+        "terminal": True,
+        "retryable": False,
+    })]
+    assert calls == []
 
 
 def test_work_order_named_handler_preserves_scoped_get_and_disabled_result(monkeypatch):
@@ -517,3 +619,18 @@ def test_named_telemetry_dispatch_stays_after_recovery_and_inside_error_boundary
         and call.func.id == "_http_mode_gate_error"
     )
     assert mode_gate_line < recovery_begin_line < dispatch_line
+
+
+def test_config_update_failure_exposes_exception_type_without_message() -> None:
+    from local_ai_hub.http_server import _config_update_failure_payload
+
+    payload = _config_update_failure_payload(ValueError("private config path"))
+
+    assert payload == {
+        "success": False,
+        "error": "configuration update rejected",
+        "error_code": "config_update_rejected",
+        "error_type": "ValueError",
+        "terminal": True,
+        "retryable": False,
+    }

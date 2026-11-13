@@ -114,6 +114,14 @@ def _version_from_init(root: Path) -> str:
     return match.group(1)
 
 
+def _release_status_error(status: object, *, strict_tree: bool) -> str | None:
+    if status == "production-ready":
+        return None
+    if not strict_tree and status == "release-candidate":
+        return None
+    return "RELEASE.json status must be production-ready"
+
+
 _INSTALLED_ENV_DIRS = {".venv", "tool-envs", "state", ".serena", ".agents", ".superpowers", ".worktrees", ".merge-checks"}
 
 
@@ -216,8 +224,9 @@ def run_checks(root: Path, *, expected_version: str | None = None, post_test: bo
         })
         if not version_ok:
             errors.append("version metadata is inconsistent")
-        if release.get("status") != "production-ready":
-            errors.append("RELEASE.json status must be production-ready")
+        status_error = _release_status_error(release.get("status"), strict_tree=strict_tree)
+        if status_error:
+            errors.append(status_error)
         if expected_version:
             normalized_expected = str(expected_version).strip()
             if normalized_expected.startswith("v"):

@@ -107,12 +107,18 @@ def validate_config(data: dict[str, Any]) -> None:
     if not isinstance(data, dict):
         raise ConfigError("configuration root must be a TOML table")
 
-    for name in ("server", "security", "hardware", "openvino", "scheduler", "laya", "commands", "client", "mcp", "code_intelligence", "code_index", "bundles", "resilience", "ollama", "llama_cpp", "ollama_subagents", "agent_state", "work_orchestrator", "browser_bridge", "headless", "features", "rag"):
+    for name in ("server", "security", "hardware", "openvino", "scheduler", "laya", "commands", "client", "mcp", "code_intelligence", "code_index", "bundles", "resilience", "ollama", "llama_cpp", "ollama_subagents", "agent_state", "work_orchestrator", "browser_bridge", "headless", "features", "rag", "worker_pool"):
         if name in data and not isinstance(data[name], dict):
             raise ConfigError(f"[{name}] must be a TOML table")
 
     if "scope" in data.get("rag", {}):
         raise ConfigError("rag.scope was removed; use actual workspace/repository scope")
+
+    worker_pool = data.get("worker_pool", {})
+    if isinstance(worker_pool, dict):
+        _number(worker_pool, "cpu_workers", minimum=1, maximum=32)
+        _number(worker_pool, "io_workers", minimum=1, maximum=64)
+        _number(worker_pool, "inference_workers", minimum=1, maximum=16)
 
     server = data.get("server", {})
     if isinstance(server, dict) and server.get("bind", "127.0.0.1") != "127.0.0.1":
@@ -232,6 +238,8 @@ def validate_config(data: dict[str, Any]) -> None:
     if (type(reviewer_public_keys) is not list
             or any(type(key) is not str or not key.strip() for key in reviewer_public_keys)):
         raise ConfigError("laya.reviewers.public_keys must be a list of OpenSSH public-key strings")
+    if reviewer_public_keys:
+        raise ConfigError("SSH reviewer keys are retired; Laya review is local-only")
     allow_laya_cpu = laya_runtime.get("allow_cpu", False)
     if type(allow_laya_cpu) is not bool:
         raise ConfigError("laya.runtime allow_cpu must be a boolean")
@@ -488,6 +496,10 @@ def save_runtime_overrides(config_path: str | os.PathLike[str], patch: dict[str,
             return target
         current = _read_toml(target) if target.is_file() else {}
         text = _dump_toml_tables(deep_merge(current, patch))
+        try:
+            tomllib.loads(text)
+        except tomllib.TOMLDecodeError as exc:
+            raise ConfigError("serialized runtime overrides are invalid TOML") from exc
         descriptor, temporary = tempfile.mkstemp(prefix=target.name + ".", suffix=".tmp", dir=target.parent)
         tmp = Path(temporary)
         try:

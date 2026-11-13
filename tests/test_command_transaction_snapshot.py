@@ -74,7 +74,7 @@ def test_private_snapshot_hashes_copy_without_second_destination_tree_scan(
         source, tmp_path / "transaction"
     )
 
-    assert manifest_roots == [source.resolve(), source.resolve()]
+    assert manifest_roots == [source.resolve()]
     assert original_manifest(snapshot) == baseline
 
 
@@ -97,7 +97,7 @@ def test_private_snapshot_can_run_full_destination_verification(
         source, tmp_path / "transaction", full_verification=True
     )
 
-    assert manifest_roots == [source.resolve(), snapshot.resolve(), source.resolve()]
+    assert manifest_roots == [snapshot.resolve(), source.resolve()]
     assert original_manifest(snapshot) == baseline
 
 

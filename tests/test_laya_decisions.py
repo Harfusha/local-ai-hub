@@ -27,6 +27,9 @@ def test_decision_input_separates_typed_state_and_redacted_training_content():
         "gap_code": "missing_verification",
         "raw_task_input": "Check this token=[REDACTED] and missing receipt.",
         "raw_context_excerpt": "No tool ran.",
+        "training_redacted_fields": "task_input",
+        "training_missing_fields": "none",
+        "training_missing_reason": "none",
     }
     assert decision_input.redacted_fields == ("task_input",)
 
@@ -49,7 +52,56 @@ def test_decision_input_redacts_email_and_private_key_material():
     model_state = decision_input.model_state()
     assert model_state["raw_task_input"] == "Contact [REDACTED] with this key:"
     assert model_state["raw_context_excerpt"] == "[REDACTED]"
+    assert model_state["training_redacted_fields"] == "context_excerpt,task_input"
+    assert model_state["training_missing_fields"] == "none"
+    assert model_state["training_missing_reason"] == "none"
     assert decision_input.redacted_fields == ("task_input", "context_excerpt")
+
+
+def test_decision_input_marks_missing_raw_training_fields():
+    decision_input = DecisionInput.from_mapping(
+        {"state": {"complexity": "heavy"}, "training_content": {"task_input": "Inspect parser."}}
+    )
+
+    assert decision_input.model_state() == {
+        "complexity": "heavy",
+        "raw_task_input": "Inspect parser.",
+        "training_redacted_fields": "none",
+        "training_missing_fields": "context_excerpt",
+        "training_missing_reason": "context_excerpt_unavailable",
+    }
+
+
+def test_decision_input_redacts_model_and_tool_outputs_for_general_decisions():
+    decision_input = DecisionInput.from_mapping(
+        {
+            "state": {"task_type": "code"},
+            "training_content": {
+                "task_input": "Inspect parser.",
+                "model_response": "Authorization: Bearer abc.def",
+                "tool_output_excerpt": "token=secret-value",
+            },
+        }
+    )
+
+    assert decision_input.model_state()["raw_model_response"] == "Authorization: [REDACTED]"
+    assert decision_input.model_state()["raw_tool_output_excerpt"] == "token=[REDACTED]"
+    assert decision_input.redacted_fields == ("model_response", "tool_output_excerpt")
+    assert decision_input.model_state()["training_redacted_fields"] == "model_response,tool_output_excerpt"
+
+
+def test_context_source_rejects_model_and_tool_output_training_content():
+    with pytest.raises(ValueError, match="context source training content fields invalid"):
+        ContextSourceEvidence.from_mapping(
+            {
+                "gap_code": "unresolved_evidence_gap",
+                "source_codes": ["indexed", "artifact"],
+                "freshness_codes": ["current", "current"],
+                "coverage_codes": ["complete", "complete"],
+                "evidence_ids": ["ev-1", "ev-2"],
+                "training_content": {"model_response": "irrelevant"},
+            }
+        )
 
 
 @pytest.mark.parametrize(

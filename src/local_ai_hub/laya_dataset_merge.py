@@ -117,19 +117,13 @@ def _validate_row(row: Any) -> None:
     if not isinstance(label_provenance, dict):
         raise ValueError("candidate provenance requires verified label provenance")
     method = label_provenance.get("method")
-    expected_label_fields = {
-        "status", "method", "rubric_version", "target_sha256",
-        "annotation_identity_sha256", "agreement", "adjudicator_identity_sha256",
-        "verification_identity_sha256",
-    }
-    if method == "local_operator_confirmation":
-        expected_label_fields = {"status", "method", "rubric_version", "target_sha256"}
+    expected_label_fields = {"status", "method", "rubric_version", "target_sha256"}
     if set(label_provenance) != expected_label_fields:
         raise ValueError("label provenance fields are incomplete or unexpected")
     if label_provenance.get("status") != "verified":
         raise ValueError("label_provenance.status must be verified")
-    if method not in {"blind_double_annotation", "local_operator_confirmation"}:
-        raise ValueError("Laya training rows require a supported verified label provenance")
+    if method != "local_operator_confirmation":
+        raise ValueError("Laya training rows require local operator confirmation")
     if not isinstance(label_provenance.get("rubric_version"), str) or not label_provenance["rubric_version"].strip():
         raise ValueError("label_provenance.rubric_version must be a non-empty string")
     if not isinstance(row["state"], str) or not isinstance(row["questions"], dict):
@@ -145,28 +139,8 @@ def _validate_row(row: Any) -> None:
     target_sha256 = hashlib.sha256(_canonical_json(expected).encode("utf-8")).hexdigest()
     if label_provenance.get("target_sha256") != target_sha256:
         raise ValueError("label_provenance.target_sha256 does not match target labels")
-    if method == "local_operator_confirmation":
-        if provenance.get("data_class") != "local_scoped":
-            raise ValueError("local operator confirmation requires local_scoped data")
-        if not isinstance(label_provenance.get("rubric_version"), str) or not label_provenance["rubric_version"].strip():
-            raise ValueError("label_provenance.rubric_version must be a non-empty string")
-        _canonical_json(row)
-        return
-    annotators = label_provenance.get("annotation_identity_sha256")
-    if (not isinstance(annotators, list) or len(annotators) != 2
-            or any(not isinstance(item, str) or not re.fullmatch(r"[0-9a-f]{64}", item) for item in annotators)
-            or len(set(annotators)) != 2):
-        raise ValueError("blind double annotation needs two distinct annotator identity hashes")
-    if not isinstance(label_provenance.get("agreement"), bool):
-        raise ValueError("label_provenance.agreement must be boolean")
-    adjudicator = label_provenance.get("adjudicator_identity_sha256")
-    if (not isinstance(adjudicator, str) or not re.fullmatch(r"[0-9a-f]{64}", adjudicator)
-            or adjudicator in annotators):
-        raise ValueError("label adjudicator must be independent of both annotators")
-    verifier = label_provenance.get("verification_identity_sha256")
-    if (not isinstance(verifier, str) or not re.fullmatch(r"[0-9a-f]{64}", verifier)
-            or verifier in set(annotators) | {adjudicator}):
-        raise ValueError("label verification reviewer must be independent")
+    if provenance.get("data_class") != "local_scoped":
+        raise ValueError("local operator confirmation requires local_scoped data")
     _canonical_json(row)
 
 

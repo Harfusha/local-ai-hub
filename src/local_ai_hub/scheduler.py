@@ -225,7 +225,7 @@ class AffinityScheduler:
     foreground request can take over between micro-steps.
     """
 
-    def __init__(self, runtime: Any, config: dict[str, Any]):
+    def __init__(self, runtime: Any, config: dict[str, Any], *, execution_pool: Any | None = None):
         config = config if isinstance(config, dict) else {}
         cfg = config.get("scheduler", {}) if isinstance(config.get("scheduler"), dict) else {}
         for retired_key in ("max_queued_per_tenant", "max_inflight_per_tenant"):
@@ -236,6 +236,11 @@ class AffinityScheduler:
         self.runtime = runtime
         self.model_policy = ModelExecutionPolicy(config)
         self.max_parallel = _safe_int(cfg.get("max_parallel"), 1, min_val=1)
+        if execution_pool is not None:
+            limits = getattr(execution_pool, "category_limits", {})
+            inference_limit = limits.get("inference") if isinstance(limits, dict) else None
+            if type(inference_limit) is int and inference_limit > 0:
+                self.max_parallel = min(self.max_parallel, inference_limit)
         self.max_queue = _safe_int(cfg.get("max_queue"), 256, min_val=1)
         self.batch_jobs = _safe_int(cfg.get("affinity_batch_jobs"), 8, min_val=1)
         self.batch_seconds = _safe_float(cfg.get("affinity_batch_seconds"), 75.0, min_val=0.0)
@@ -309,7 +314,13 @@ class AffinityScheduler:
         self._internal_gpu_heartbeat_stop: threading.Event | None = None
         self._gpu_prepare_in_progress = False
         self._switch_not_started = False
-        self._executor = ThreadPoolExecutor(max_workers=self.max_parallel, thread_name_prefix="local-ai")
+        self._execution_pool = execution_pool
+        self._owns_executor = execution_pool is None
+        self._executor = (
+            ThreadPoolExecutor(max_workers=self.max_parallel, thread_name_prefix="local-ai")
+            if execution_pool is None
+            else None
+        )
         self._stats = {
             "submitted": 0,
             "completed": 0,
@@ -1873,7 +1884,10 @@ class AffinityScheduler:
 
             if selected is not None:
                 try:
-                    self._executor.submit(self._run_job, selected)
+                    if self._execution_pool is None:
+                        self._executor.submit(self._run_job, selected)
+                    else:
+                        self._execution_pool.submit("inference", self._run_job, selected)
                 except Exception as exc:
                     with self._cond:
                         lease = selected.gpu_capacity_lease
@@ -2380,7 +2394,7 @@ class AffinityScheduler:
             by_model: dict[str, int] = {}
             background_queued = 0
             now = time.monotonic()
-            external_reserved = self._external_gpu_reserved()
+            self._external_gpu_reserved()
             if self._internal_gpu_uncertain:
                 gpu_admission_state = "outcome_unknown"
             elif self._external_gpu_blocks_scheduler():
@@ -2539,7 +2553,8 @@ class AffinityScheduler:
                     # and will be reaped only after its lease expires.
                     pass
             self._cond.notify_all()
-        self._executor.shutdown(wait=False, cancel_futures=True)
+        if self._owns_executor and self._executor is not None:
+            self._executor.shutdown(wait=False, cancel_futures=True)
         if self._dispatcher.is_alive() and threading.current_thread() is not self._dispatcher:
             self._dispatcher.join(timeout=1.0)
 

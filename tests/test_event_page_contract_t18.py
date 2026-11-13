@@ -4,6 +4,9 @@ import sqlite3
 import time
 from contextlib import closing
 
+import pytest
+
+from local_ai_hub import agent_events, sqlite_support
 from local_ai_hub.agent_events import AgentEvent, AgentStateStore
 
 
@@ -19,6 +22,24 @@ def _store_with_events(tmp_path, stream_id: str, count: int, *, created_at: floa
         )
         assert store.append(event).seq == seq
     return store
+
+
+def test_cleanup_rolls_back_when_transaction_budget_expires(tmp_path, monkeypatch) -> None:
+    stream_id = "task:cleanup-timeout"
+    store = _store_with_events(
+        tmp_path, stream_id, 2, created_at=time.time() - 200_000
+    )
+
+    def _expired_transaction(con, **kwargs):
+        return sqlite_support.write_transaction(
+            con, max_duration_seconds=1e-12, **kwargs
+        )
+
+    monkeypatch.setattr(agent_events, "write_transaction", _expired_transaction)
+    with pytest.raises(TimeoutError, match="duration budget"):
+        store.cleanup(retention_days=1)
+
+    assert len(store.events(stream_id)) == 2
 
 
 def _seed_durable_cursor(

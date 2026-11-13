@@ -27,13 +27,18 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Mapping
 import urllib.request
-from urllib.parse import parse_qs, quote, unquote, urlparse
+from urllib.parse import parse_qs, urlparse
 
 from . import __version__
 from .app import LocalAIApp
 from .features import FeatureSet
 from .http_transport import RequestHeadReader
 from .operation_contracts import capability_feature_gate, capability_minimum_profile, capability_profile_available
+from .http_event_cursor import (
+    MAX_EVENT_SEQUENCE,
+    encode_agent_event_cursor as _encode_agent_event_cursor,
+    parse_agent_event_cursor as _parse_agent_event_cursor,
+)
 
 _STATUS_DEPENDENCY_TIMEOUT_SECONDS = 0.25
 _STATUS_TOTAL_BUDGET_SECONDS = 1.0
@@ -98,7 +103,7 @@ def _status_dependency(callback, fallback, *, key, lock, inflight, slots, timeou
         return fallback, False
     return outcome.get("value", fallback), True
 from .scheduler import ModelUnavailableError, QueueFullError
-from .debug_traces import DebugTraceObserver, _normalize_trace_content
+from .debug_traces import DebugTraceObserver, _normalize_trace_content, redact_trace_export
 from .agent_diagnostics import detailed_diagnostics_enabled, project_agent_response, project_pubsub_poll_response, project_wait_event_response, project_status_response, project_aggregate_response
 from .agent_surface import diagnostic_http_operation, diagnostics_disabled_response
 from .response_budget import _reconcile_existing_budget
@@ -161,7 +166,6 @@ os.environ.setdefault("TRANSFORMERS_VERBOSITY", "error")
 
 APP: LocalAIApp | None = None
 _MODE_UNLOAD_STATUS_LOCK = threading.Lock()
-MAX_EVENT_SEQUENCE = (1 << 63) - 1
 _DB_QUERY_TIMEOUT_SECONDS = 0.5
 _DB_QUERY_MAX_ROWS = 100
 _DB_QUERY_MAX_RESPONSE_BYTES = 256 * 1024
@@ -169,25 +173,6 @@ _DB_QUERY_MAX_SQL_BYTES = 8192
 _MODEL_PULL_TIMEOUT_SECONDS = 120.0
 
 
-def _encode_agent_event_cursor(stream_id: str, seq: int) -> str:
-    return f"{quote(str(stream_id), safe='')}:{max(0, min(int(seq), MAX_EVENT_SEQUENCE))}"
-
-
-def _parse_agent_event_cursor(value: Any) -> tuple[str, int] | None:
-    raw = str(value or "")
-    if not raw or len(raw) > 2048 or "\r" in raw or "\n" in raw:
-        return None
-    encoded_stream, separator, encoded_seq = raw.rpartition(":")
-    if not separator or not encoded_stream or not encoded_seq.isascii() or not encoded_seq.isdecimal():
-        return None
-    try:
-        stream_id = unquote(encoded_stream)
-        seq = int(encoded_seq)
-    except (TypeError, ValueError, OverflowError):
-        return None
-    if not stream_id or seq < 0 or seq > MAX_EVENT_SEQUENCE:
-        return None
-    return stream_id, seq
 _MODEL_PULL_MAX_RESPONSE_BYTES = 1024 * 1024
 _HTTP_MAX_JSON_BODY_BYTES = 64 * 1024 * 1024
 _HTTP_MAX_BODY_SECONDS = 60.0
@@ -578,6 +563,8 @@ def _http_admin_action(method: str, path: str) -> str | None:
             "/api/telemetry/timeline": "telemetry.read",
         }.get(path)
     if method == "POST":
+        if path == "/api/debug-traces/purge":
+            return "trace.manage"
         if path.startswith("/api/maintenance/"):
             return "maintenance"
         return {
@@ -597,8 +584,45 @@ def _apply_live_debug_trace_toggle(app: Any, settings: dict[str, Any]) -> bool:
     store = getattr(app, "debug_traces", None)
     if store is None:
         return False
-    store.enabled = bool(settings["debug_traces.enabled"])
+    enabled = bool(settings["debug_traces.enabled"])
+    store.enabled = enabled
+
+    # Dashboard status is cached for a short interval. Keep its copy of the
+    # live switch coherent so the post-update poll cannot immediately redraw
+    # the old value over the server-confirmed setting.
+    status_cache = getattr(app, "_live_status_cache", None)
+    status_lock = getattr(app, "_live_status_lock", None)
+    acquire = getattr(status_lock, "acquire", None)
+    release = getattr(status_lock, "release", None)
+    if isinstance(status_cache, dict):
+        locked = callable(acquire) and callable(release)
+        if locked:
+            acquire()
+        try:
+            for entry in status_cache.values():
+                if not isinstance(entry, tuple) or len(entry) != 2:
+                    continue
+                snapshot = entry[1]
+                if not isinstance(snapshot, dict):
+                    continue
+                trace_status = snapshot.get("debug_traces")
+                if isinstance(trace_status, dict):
+                    snapshot["debug_traces"] = {**trace_status, "enabled": enabled}
+        finally:
+            if locked:
+                release()
     return True
+
+
+def _config_update_failure_payload(exc: Exception) -> dict[str, Any]:
+    return {
+        "success": False,
+        "error": "configuration update rejected",
+        "error_code": "config_update_rejected",
+        "error_type": type(exc).__name__,
+        "terminal": True,
+        "retryable": False,
+    }
 
 
 def _token_matches(supplied: str, expected: str) -> bool:
@@ -1615,6 +1639,25 @@ def _safe_agent(handler: Any) -> str:
         if isinstance(value, str) and value.strip():
             return value.strip()
     return "generic"
+
+
+def _async_job_http_status(response: Any) -> int:
+    """Map async-job result metadata to the matching transport status."""
+    if not isinstance(response, dict):
+        return 200
+    explicit = response.get("status_code")
+    if type(explicit) is int and 400 <= explicit <= 599:
+        return explicit
+    state = response.get("state")
+    if response.get("conflict") is True or state == "conflict":
+        return 409
+    if state == "expired" or response.get("error") == "async job result expired":
+        return 410
+    if response.get("error") == "async job not found":
+        return 404
+    if state == "rejected" and response.get("retryable") is True:
+        return 429
+    return 200
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -3079,9 +3122,17 @@ class Handler(BaseHTTPRequestHandler):
 
     @staticmethod
     def _validate_payload(path: str, payload: dict[str, Any]) -> None:
+        """Cheap endpoint schemas before scheduling or model policy work."""
         if path in {"/api/context/pack", "/api/agent-state/context"} and "identity" in payload:
             raise RequestBodyError("identity was removed; use actual repository/task/session fields")
-        """Cheap endpoint schemas before scheduling or model policy work."""
+        if path == "/api/context/pack":
+            guarded = payload.get("guarded", False)
+            if not isinstance(guarded, bool):
+                raise RequestBodyError("guarded must be boolean")
+            if guarded:
+                task_id = payload.get("task_id")
+                if not isinstance(task_id, str) or not task_id.strip():
+                    raise RequestBodyError("guarded context requires a non-empty task_id")
         def text(value: Any, name: str, maximum: int) -> str:
             if not isinstance(value, str) or len(value) > maximum:
                 raise RequestBodyError(f"{name} must be a string of at most {maximum} characters")
@@ -3397,15 +3448,78 @@ class Handler(BaseHTTPRequestHandler):
         if action == "submit":
             if bool(payload.get("conversation", False)):
                 self._send(400, {"success": False, "error": "conversations require delivery=sync", "terminal": True, "retryable": False}); return
+            raw_job_action = payload.get("job_action", "reason")
+            if not isinstance(raw_job_action, str) or not raw_job_action.strip():
+                self._send(400, {
+                    "success": False,
+                    "error": "job_action must be a non-empty string",
+                    "terminal": True,
+                    "retryable": False,
+                }); return
+            job_action = raw_job_action.strip()
+            supported_actions = getattr(APP.async_jobs, "ACTIONS", None)
+            normalized_job_action = job_action.lower().replace("-", "_")
+            if isinstance(supported_actions, (set, frozenset)) and normalized_job_action not in supported_actions:
+                self._send(400, {
+                    "success": False,
+                    "error": "unsupported async task action",
+                    "terminal": True,
+                    "retryable": False,
+                }); return
             job_payload = dict(payload)
             supplied_request_id = self.headers.get("X-LocalAI-Request-ID")
             if supplied_request_id and not job_payload.get("request_id"):
                 job_payload["request_id"] = supplied_request_id
-            self._send(200, APP.async_jobs.submit(str(payload.get("job_action", "reason")), job_payload)); return
+            response = APP.async_jobs.submit(job_action, job_payload)
+            status_code = _async_job_http_status(response)
+            if status_code != 200 and isinstance(response, dict):
+                response = {**response, "status_code": status_code}
+            self._send(status_code, response); return
+        if action in {"status", "wait", "result", "cancel"}:
+            raw_job_id = payload.get("job_id")
+            if not isinstance(raw_job_id, str) or not raw_job_id.strip():
+                self._send(400, {
+                    "success": False,
+                    "error": "job_id must be a non-empty string",
+                    "terminal": True,
+                    "retryable": False,
+                }); return
+            job_id = raw_job_id.strip()
+
+        def send_async_job_response(response: Any) -> None:
+            status_code = _async_job_http_status(response)
+            if status_code != 200 and isinstance(response, dict):
+                response = {**response, "status_code": status_code}
+            self._send(status_code, response)
+
         if action == "status":
-            self._send(200, APP.async_jobs.status(str(payload.get("job_id", "")))); return
+            send_async_job_response(APP.async_jobs.status(job_id)); return
         if action == "wait":
-            self._send(200, APP.async_jobs.wait(str(payload.get("job_id", "")), float(payload.get("timeout_seconds", 90)))); return
+            raw_timeout = payload.get("timeout_seconds", 90)
+            if isinstance(raw_timeout, bool) or not isinstance(raw_timeout, (int, float, str)):
+                self._send(400, {
+                    "success": False,
+                    "error": "timeout_seconds must be a finite number",
+                    "terminal": True,
+                    "retryable": False,
+                }); return
+            try:
+                timeout_seconds = float(raw_timeout)
+            except (OverflowError, TypeError, ValueError):
+                self._send(400, {
+                    "success": False,
+                    "error": "timeout_seconds must be a finite number",
+                    "terminal": True,
+                    "retryable": False,
+                }); return
+            if not math.isfinite(timeout_seconds):
+                self._send(400, {
+                    "success": False,
+                    "error": "timeout_seconds must be a finite number",
+                    "terminal": True,
+                    "retryable": False,
+                }); return
+            send_async_job_response(APP.async_jobs.wait(job_id, timeout_seconds)); return
         if action == "result":
             diagnostic_result = getattr(APP.async_jobs, "diagnostic_result", None)
             if (
@@ -3415,9 +3529,9 @@ class Handler(BaseHTTPRequestHandler):
             ):
                 self._send(409, diagnostics_disabled_response())
                 return
-            self._send(200, APP.async_jobs.result(str(payload.get("job_id", "")))); return
+            send_async_job_response(APP.async_jobs.result(job_id)); return
         if action == "cancel":
-            self._send(200, APP.async_jobs.cancel(str(payload.get("job_id", "")))); return
+            send_async_job_response(APP.async_jobs.cancel(job_id)); return
         self._send(400, {"success": False, "error": "unknown async job action", "terminal": True, "retryable": False}); return
 
     def _handle_post_db_query(self, payload: Any) -> None:
@@ -4929,6 +5043,29 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200 if result.get("success") else 503 if result.get("retryable") else 400, result); return
             trace_prefix = "/api/debug-traces/"
             metrics_suffix = "/metrics"
+            export_suffix = "/export"
+            if path.startswith(trace_prefix) and path.endswith(export_suffix):
+                trace_id = path[len(trace_prefix):-len(export_suffix)]
+                if not trace_id or "/" in trace_id:
+                    self._send(404, {"success": False, "error": "trace not found"}); return
+                result = APP.debug_traces.detail(
+                    trace_id,
+                    since_seq=_query_int(query, "since_seq", 0),
+                    limit=max(1, min(_query_int(query, "limit", 100), 1000)),
+                    max_bytes=max(1024, min(_query_int(query, "max_bytes", DEBUG_TRACE_HTTP_MAX_BYTES), DEBUG_TRACE_HTTP_MAX_BYTES)),
+                    full_payload=True,
+                )
+                status = 200
+                if result.get("error") == "trace not found":
+                    status = 404
+                elif result.get("error_code") == "trace_detail_oversize":
+                    status = 413
+                elif result.get("success") is not True:
+                    status = 503 if result.get("retryable") else 500
+                if status == 200:
+                    result = redact_trace_export(result)
+                    result["redacted_export"] = True
+                self._send(status, result); return
             if path.startswith(trace_prefix) and path.endswith(metrics_suffix):
                 trace_id = path[len(trace_prefix):-len(metrics_suffix)]
                 if not trace_id or "/" in trace_id:
@@ -6364,21 +6501,23 @@ class Handler(BaseHTTPRequestHandler):
                     patch = dashboard_settings_patch(requested)
                 except ValueError as exc:
                     self._send(400, {"success": False, "error": str(exc)}); return
+                failure_stage = "validation"
                 try:
                     prospective = deep_merge(APP.config, patch)
                     validate_config(prospective)
+                    failure_stage = "persistence"
                     target = save_runtime_overrides(config_path, patch)
                 except (ConfigError, OSError, ValueError) as exc:
                     logger = getattr(APP, "logger", None)
                     if logger is not None:
-                        logger.error("config update rejected error_type=%s", type(exc).__name__)
-                    self._send(400, {
-                        "success": False,
-                        "error": "configuration update rejected",
-                        "error_code": "config_update_rejected",
-                        "terminal": True,
-                        "retryable": False,
-                    }); return
+                        logger.error(
+                            "config update rejected stage=%s error_type=%s",
+                            failure_stage,
+                            type(exc).__name__,
+                        )
+                    failure = _config_update_failure_payload(exc)
+                    failure["failure_stage"] = failure_stage
+                    self._send(400, failure); return
                 live_trace_toggle = _apply_live_debug_trace_toggle(APP, requested)
                 self._send(200, {
                     "success": True,
@@ -6482,6 +6621,17 @@ class Handler(BaseHTTPRequestHandler):
                                 result = APP.evaluate_laya_context_source(laya_operation, root=repo_root)
                             elif laya_operation.get("action") == "evaluate_decision":
                                 result = APP.evaluate_laya_decision(laya_operation, root=repo_root)
+                            elif laya_operation.get("action") == "runtime_status":
+                                lifecycle = getattr(APP, "laya_lifecycle", None)
+                                runtime_status = getattr(lifecycle, "status", None)
+                                if not isinstance(runtime_status, dict):
+                                    raise RuntimeError("Laya lifecycle status is unavailable")
+                                result = {
+                                    "success": True,
+                                    "service_available": True,
+                                    "model_resident": runtime_status.get("available") is True,
+                                    "runtime": runtime_status,
+                                }
                             else:
                                 result = APP.laya_candidates.handle(
                                     laya_operation,
@@ -8098,6 +8248,14 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if 'post_maintenance_optimize_db_1' in post_route_ids:
                 self._send(200, APP.services.optimize_databases())
+                return
+            if 'post_debug_trace_purge_1' in post_route_ids:
+                if set(payload) != {"confirm"} or type(payload.get("confirm")) is not bool or payload["confirm"] is not True:
+                    self._send(400, {"success": False, "error": "explicit confirm=true is required", "terminal": True, "retryable": False})
+                    return
+                result = APP.debug_traces.purge()
+                status = 200 if result.get("success") is True else 503 if result.get("retryable") else 500
+                self._send(status, result)
                 return
             if 'post_maintenance_purge_cache_1' in post_route_ids:
                 days = int(payload.get("days", 7))

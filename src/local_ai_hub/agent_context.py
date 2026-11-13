@@ -27,7 +27,7 @@ from .json_utils import backend_name as json_backend_name
 from .json_utils import dumps as json_dumps
 from .json_utils import dumps_bytes as json_dumps_bytes
 from .process_utils import is_rooted_path
-from .sqlite_support import connect_sqlite, retry_busy
+from .sqlite_support import connect_sqlite, retry_busy, write_transaction
 
 
 @dataclass(frozen=True)
@@ -379,6 +379,15 @@ def _rollback_after_failure(connection: Any, *, operation: str) -> None:
             type(cleanup_error).__name__,
         )
 
+
+def _log_rollback_failure(operation: str, cleanup_error: Exception) -> None:
+    logging.getLogger(__name__).warning(
+        "agent_context transaction rollback failed operation=%s error_type=%s",
+        operation,
+        type(cleanup_error).__name__,
+    )
+
+
 class ContextCompiler:
     def __init__(
         self,
@@ -466,32 +475,36 @@ class ContextCompiler:
         def _do_save() -> None:
             con = connect_sqlite(self.state_store.db_path, isolation_level=None)
             try:
-                con.execute("BEGIN IMMEDIATE")
-                con.execute(
-                    """
-                    INSERT INTO agent_knowledge_links (
-                        link_id, source_id, target_id, relationship, path, revision, valid, created_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        klink.link_id,
-                        klink.source_id,
-                        klink.target_id,
-                        klink.relationship,
-                        klink.path,
-                        klink.revision,
-                        1,
-                        klink.created_at,
+                with write_transaction(
+                    con,
+                    rollback_label="agent_context",
+                    on_rollback_failure=lambda error: _log_rollback_failure(
+                        "knowledge_link_save", error
                     ),
-                )
-                con.execute("COMMIT")
+                ):
+                    con.execute(
+                        """
+                        INSERT INTO agent_knowledge_links (
+                            link_id, source_id, target_id, relationship, path, revision, valid, created_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            klink.link_id,
+                            klink.source_id,
+                            klink.target_id,
+                            klink.relationship,
+                            klink.path,
+                            klink.revision,
+                            1,
+                            klink.created_at,
+                        ),
+                    )
             except Exception as exc:
                 logging.getLogger(__name__).warning(
                     "agent_context transaction failed operation=%s error_type=%s",
                     "knowledge_link_save",
                     type(exc).__name__,
                 )
-                _rollback_after_failure(con, operation="knowledge_link_save")
                 raise
             finally:
                 con.close()
@@ -543,18 +556,23 @@ class ContextCompiler:
         def _do_invalidate() -> int:
             con = connect_sqlite(self.state_store.db_path, isolation_level=None)
             try:
-                con.execute("BEGIN IMMEDIATE")
-                placeholders = ",".join("?" for _ in paths)
-                cur = con.execute(
-                    f"""
-                    UPDATE agent_knowledge_links
-                    SET valid = 0, revision = ?
-                    WHERE valid = 1 AND path IN ({placeholders})
-                    """,
-                    (revision, *paths),
-                )
-                count = int(cur.rowcount or 0)
-                con.execute("COMMIT")
+                with write_transaction(
+                    con,
+                    rollback_label="agent_context",
+                    on_rollback_failure=lambda error: _log_rollback_failure(
+                        "knowledge_link_invalidate", error
+                    ),
+                ):
+                    placeholders = ",".join("?" for _ in paths)
+                    cur = con.execute(
+                        f"""
+                        UPDATE agent_knowledge_links
+                        SET valid = 0, revision = ?
+                        WHERE valid = 1 AND path IN ({placeholders})
+                        """,
+                        (revision, *paths),
+                    )
+                    count = int(cur.rowcount or 0)
                 return count
             except Exception as exc:
                 logging.getLogger(__name__).warning(
@@ -562,7 +580,6 @@ class ContextCompiler:
                     "knowledge_link_invalidate",
                     type(exc).__name__,
                 )
-                _rollback_after_failure(con, operation="knowledge_link_invalidate")
                 raise
             finally:
                 con.close()

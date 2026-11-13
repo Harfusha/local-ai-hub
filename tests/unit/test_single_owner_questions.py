@@ -8,7 +8,7 @@ import pytest
 from local_ai_hub.agent_events import AgentStateStore
 from local_ai_hub.agent_tasks import CheckpointResponseBudgetError, TaskStore
 from local_ai_hub.sqlite_support import DurableSchemaMismatchError
-from local_ai_hub import http_server
+from local_ai_hub import agent_tasks, http_server, sqlite_support
 
 
 @pytest.mark.parametrize("method,arguments", [
@@ -78,3 +78,41 @@ def test_http_question_scope_has_no_owner_selector(tmp_path):
         http_server._agent_question_scope(payload={"root": root, "tenant": None}, authorized_root=root)
     with pytest.raises(TypeError, match="authorized_tenant"):
         http_server._agent_question_scope(payload={"root": root}, authorized_root=root, authorized_tenant=None)
+
+
+@pytest.mark.parametrize("operation", ["ask", "answer"])
+def test_question_writes_roll_back_when_shared_transaction_budget_expires(
+    tmp_path, monkeypatch, operation
+):
+    store = TaskStore(AgentStateStore(tmp_path / "state.sqlite3"))
+    root = str(tmp_path)
+    pending = None
+    if operation == "answer":
+        pending = store.ask_question(
+            root=root, session_id="session-a", question="Proceed?"
+        )
+
+    def _expired_transaction(con, **kwargs):
+        return sqlite_support.write_transaction(
+            con, max_duration_seconds=1e-12, **kwargs
+        )
+
+    monkeypatch.setattr(agent_tasks, "write_transaction", _expired_transaction, raising=False)
+    with pytest.raises(TimeoutError, match="duration budget"):
+        if operation == "ask":
+            store.ask_question(root=root, session_id="session-a", question="Proceed?")
+        else:
+            store.answer_question(
+                root=root,
+                question_id=pending["question_id"],
+                answer="Yes",
+            )
+
+    with closing(sqlite3.connect(store.state_store.db_path)) as con:
+        rows = con.execute(
+            "SELECT question_id, status FROM agent_questions ORDER BY question_id"
+        ).fetchall()
+    if operation == "ask":
+        assert rows == []
+    else:
+        assert rows == [(pending["question_id"], "pending")]

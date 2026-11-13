@@ -14,6 +14,7 @@ def test_normal_response_keeps_decisions_and_evidence_without_internal_metrics()
         "error": "invalid root", "request_id": "request-1", "root": "C:/repo",
         "evidence_ids": ["E123"], "next_action": "choose an authorized root",
         "has_more": True, "next_offset": 3, "stale": True,
+        "duration_ms": 12.5,
         "response_budget": {"requested_tokens": 800, "returned_tokens": 200},
         "_token_accounting": {"raw_response_tokens_est": 123},
         "phase_timings_ms": {"retrieval": 20},
@@ -26,7 +27,24 @@ def test_normal_response_keeps_decisions_and_evidence_without_internal_metrics()
         key: value for key, value in result.items()
         if key not in {"_token_accounting", "phase_timings_ms", "token_efficiency", "pipeline", "results"}
     } | {"results": [{"path": "a.py", "line": 7}]}
+    assert projected["duration_ms"] == 12.5
     assert result["results"][0]["model_debug"] == "hidden"
+
+
+def test_request_history_keeps_latency_when_detailed_diagnostics_are_disabled():
+    result = {
+        "observability": {"recent_http": [{
+            "action": "/api/search", "status_code": 200, "duration_ms": 411.5,
+        }]},
+        "phase_timings_ms": {"retrieval": 400.0},
+        "trace": {"request": {"body": "private"}},
+    }
+
+    projected = project_agent_response(result, enabled=False)
+
+    assert projected["observability"]["recent_http"][0]["duration_ms"] == 411.5
+    assert "phase_timings_ms" not in projected
+    assert "trace" not in projected
 
 
 def test_diagnostic_mode_keeps_detail_but_never_exposes_private_accounting():

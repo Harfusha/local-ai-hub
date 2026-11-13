@@ -23,7 +23,7 @@ from typing import Any, Mapping
 
 from .agent_events import AgentEvent, AgentStateStore
 from .agent_identity import AgentScope, ScopeContext
-from .sqlite_support import connect_sqlite, retry_busy
+from .sqlite_support import connect_sqlite, retry_busy, write_transaction
 from .task_memory_wire import (
     mcp_wire_tokens,
     task_memory_wire_tokens,
@@ -1568,8 +1568,7 @@ class TaskStore:
         self._init_projection_table()
 
         def _write(con: sqlite3.Connection) -> tuple[dict[str, Any], list[AgentEvent]]:
-            try:
-                con.execute("BEGIN IMMEDIATE")
+            with write_transaction(con, rollback_label="agent task question"):
                 con.execute(
                     """
                     INSERT INTO agent_questions (
@@ -1582,12 +1581,7 @@ class TaskStore:
                         question_value, actor_value, created_at,
                     ),
                 )
-                con.execute("COMMIT")
-                return (projected_question, [])
-            except Exception:
-                if con.in_transaction:
-                    con.execute("ROLLBACK")
-                raise
+            return projected_question, []
 
         return self._run_ordered_task_write(_write)
 
@@ -1617,8 +1611,7 @@ class TaskStore:
         self._init_projection_table()
 
         def _write(con: sqlite3.Connection) -> tuple[dict[str, Any] | None, list[AgentEvent]]:
-            try:
-                con.execute("BEGIN IMMEDIATE")
+            with write_transaction(con, rollback_label="agent task question"):
                 row = con.execute(
                     """
                     SELECT question_id, root, session_id, task_id, question,
@@ -1629,18 +1622,15 @@ class TaskStore:
                     (question_key, root_value),
                 ).fetchone()
                 if row is None:
-                    con.execute("COMMIT")
                     return None, []
                 current = self._question_row_to_dict(row)
                 if task_value and current["task_id"] != task_value:
-                    con.execute("COMMIT")
                     return None, []
                 if current["status"] not in {"pending", "answered"}:
                     raise ValueError("unsupported question status")
                 if current["status"] == "answered":
                     if current["answer"] == answer_value:
                         self._preflight_question_response(current, response_budget_tokens)
-                        con.execute("COMMIT")
                         return current, []
                     raise ValueError("question has already been answered")
                 projected_question = {
@@ -1668,12 +1658,7 @@ class TaskStore:
                     """,
                     (question_key, root_value),
                 ).fetchone()
-                con.execute("COMMIT")
-                return self._question_row_to_dict(updated_row), []
-            except Exception:
-                if con.in_transaction:
-                    con.execute("ROLLBACK")
-                raise
+            return self._question_row_to_dict(updated_row), []
 
         return self._run_ordered_task_write(_write)
 
@@ -2156,19 +2141,11 @@ class TaskStore:
             raise RuntimeError("agent task storage is unavailable")
         self._init_projection_table()
         def _write(con: sqlite3.Connection) -> tuple[TaskState | None, list[AgentEvent]]:
-            try:
-                con.execute("BEGIN IMMEDIATE")
+            with write_transaction(con, rollback_label="agent task receipt"):
                 state, event = self.add_verification_receipt_in_transaction(
                     con, task_id, criterion, receipt_id
                 )
-                con.execute("COMMIT")
-                return state, [event] if event is not None else []
-            except Exception:
-                try:
-                    con.execute("ROLLBACK")
-                except Exception:
-                    pass
-                raise
+            return state, [event] if event is not None else []
         state = self._run_ordered_task_write(_write)
         if state is None:
             raise KeyError(f"Task {task_id} not found")
@@ -2662,51 +2639,46 @@ class TaskStore:
                 self.state_store.db_path, isolation_level=None, timeout_seconds=5.0
             )
             try:
-                con.execute("BEGIN IMMEDIATE")
-                row = con.execute(
-                    "SELECT * FROM agent_tasks_projection WHERE task_id = ?", (task_id,)
-                ).fetchone()
-                if not row:
-                    raise KeyError(f"Task {task_id} not found")
-                persisted = self._row_to_state(row)
-                if persisted.status != target:
-                    raise ConcurrentTaskUpdateError(
-                        f"Task {task_id} changed during transition; reload and retry"
-                    )
-                self._preflight_response_budget(persisted, response_budget_tokens)
-                existing = con.execute(
-                    """SELECT stream_id, seq, event_id, kind, payload, idempotency_key,
-                              correlation_id, actor, created_at
-                       FROM agent_events WHERE stream_id = ? AND idempotency_key = ?""",
-                    (f"task:{task_id}", idempotency_key),
-                ).fetchone()
-                if existing:
-                    event = AgentEvent.from_row(existing)
-                    payload = dict(event.payload)
-                    try:
-                        source_status = TaskStatus(payload.get("from_status"))
-                        valid_transition = target in VALID_TRANSITIONS.get(source_status, set())
-                    except (TypeError, ValueError):
-                        valid_transition = False
-                    if (
-                        event.actor != actor
-                        or event.kind != "task.transitioned"
-                        or set(payload) != ({"from_status", "to_status", "reason", "operator_waiver"} if _operator_waiver is not None else {"from_status", "to_status", "reason"})
-                        or (_operator_waiver is not None and payload.get("operator_waiver") != dict(_operator_waiver))
-                        or payload.get("to_status") != target.value
-                        or payload.get("reason") != reason
-                        or not valid_transition
-                    ):
-                        raise ValueError("idempotency key was already used")
-                if target == TaskStatus.COMPLETED:
-                    # Recheck the serialized projection/receipts, not the earlier read.
-                    self._verify_completion(persisted, _waive_receipts=_operator_waiver is not None)
-                con.execute("COMMIT")
-                return persisted
-            except Exception:
-                if con.in_transaction:
-                    con.execute("ROLLBACK")
-                raise
+                with write_transaction(con, rollback_label="Agent task transition replay"):
+                    row = con.execute(
+                        "SELECT * FROM agent_tasks_projection WHERE task_id = ?", (task_id,)
+                    ).fetchone()
+                    if not row:
+                        raise KeyError(f"Task {task_id} not found")
+                    persisted = self._row_to_state(row)
+                    if persisted.status != target:
+                        raise ConcurrentTaskUpdateError(
+                            f"Task {task_id} changed during transition; reload and retry"
+                        )
+                    self._preflight_response_budget(persisted, response_budget_tokens)
+                    existing = con.execute(
+                        """SELECT stream_id, seq, event_id, kind, payload, idempotency_key,
+                                  correlation_id, actor, created_at
+                           FROM agent_events WHERE stream_id = ? AND idempotency_key = ?""",
+                        (f"task:{task_id}", idempotency_key),
+                    ).fetchone()
+                    if existing:
+                        event = AgentEvent.from_row(existing)
+                        payload = dict(event.payload)
+                        try:
+                            source_status = TaskStatus(payload.get("from_status"))
+                            valid_transition = target in VALID_TRANSITIONS.get(source_status, set())
+                        except (TypeError, ValueError):
+                            valid_transition = False
+                        if (
+                            event.actor != actor
+                            or event.kind != "task.transitioned"
+                            or set(payload) != ({"from_status", "to_status", "reason", "operator_waiver"} if _operator_waiver is not None else {"from_status", "to_status", "reason"})
+                            or (_operator_waiver is not None and payload.get("operator_waiver") != dict(_operator_waiver))
+                            or payload.get("to_status") != target.value
+                            or payload.get("reason") != reason
+                            or not valid_transition
+                        ):
+                            raise ValueError("idempotency key was already used")
+                    if target == TaskStatus.COMPLETED:
+                        # Recheck the serialized projection/receipts, not the earlier read.
+                        self._verify_completion(persisted, _waive_receipts=_operator_waiver is not None)
+                    return persisted
             finally:
                 con.close()
 
@@ -4095,53 +4067,46 @@ class TaskStore:
         def _do_save() -> None:
             con = connect_sqlite(self.state_store.db_path, isolation_level=None)
             try:
-                con.execute("BEGIN IMMEDIATE")
-                con.execute(
-                    """
-                    INSERT INTO agent_tasks_projection (
-                        task_id, status, owner, lease_id, contract, context, checkpoint, receipts,
-                        heartbeat_expires_at, created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    ON CONFLICT(task_id) DO UPDATE SET
-                        status = excluded.status,
-                        owner = excluded.owner,
-                        lease_id = excluded.lease_id,
-                        contract = excluded.contract,
-                        context = excluded.context,
-                        checkpoint = excluded.checkpoint,
-                        receipts = excluded.receipts,
-                        heartbeat_expires_at = excluded.heartbeat_expires_at,
-                        updated_at = excluded.updated_at
-                    """,
-                    (
-                        state.task_id,
-                        state.status.value,
-                        state.owner,
-                        state.lease_id,
-                        json_dumps(state.contract.to_dict()),
-                        json_dumps({
-                            "repository_id": state.context.repository_id,
-                            "clone_id": state.context.clone_id,
-                            "worktree_id": state.context.worktree_id,
-                            "branch": state.context.branch,
-                            "task_id": state.context.task_id,
-                            "session_id": state.context.session_id,
-                        }),
-                        json_dumps(state.checkpoint.to_dict()),
-                        json_dumps(state.verification_receipts),
-                        state.heartbeat_expires_at,
-                        state.created_at,
-                        state.updated_at,
-                    ),
-                )
-                self._refresh_task_search_index(con, state.task_id)
-                con.execute("COMMIT")
-            except Exception:
-                try:
-                    con.execute("ROLLBACK")
-                except Exception:
-                    pass
-                raise
+                with write_transaction(con, rollback_label="Agent task projection"):
+                    con.execute(
+                        """
+                        INSERT INTO agent_tasks_projection (
+                            task_id, status, owner, lease_id, contract, context, checkpoint, receipts,
+                            heartbeat_expires_at, created_at, updated_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ON CONFLICT(task_id) DO UPDATE SET
+                            status = excluded.status,
+                            owner = excluded.owner,
+                            lease_id = excluded.lease_id,
+                            contract = excluded.contract,
+                            context = excluded.context,
+                            checkpoint = excluded.checkpoint,
+                            receipts = excluded.receipts,
+                            heartbeat_expires_at = excluded.heartbeat_expires_at,
+                            updated_at = excluded.updated_at
+                        """,
+                        (
+                            state.task_id,
+                            state.status.value,
+                            state.owner,
+                            state.lease_id,
+                            json_dumps(state.contract.to_dict()),
+                            json_dumps({
+                                "repository_id": state.context.repository_id,
+                                "clone_id": state.context.clone_id,
+                                "worktree_id": state.context.worktree_id,
+                                "branch": state.context.branch,
+                                "task_id": state.context.task_id,
+                                "session_id": state.context.session_id,
+                            }),
+                            json_dumps(state.checkpoint.to_dict()),
+                            json_dumps(state.verification_receipts),
+                            state.heartbeat_expires_at,
+                            state.created_at,
+                            state.updated_at,
+                        ),
+                    )
+                    self._refresh_task_search_index(con, state.task_id)
             finally:
                 con.close()
 
@@ -4394,8 +4359,7 @@ class TaskStore:
 
         def _do_commit(con: sqlite3.Connection) -> tuple[TaskState, list[AgentEvent]]:
             published.clear()
-            try:
-                con.execute("BEGIN IMMEDIATE")
+            with write_transaction(con, rollback_label="Agent task create"):
                 existing = con.execute(
                     """
                     SELECT stream_id, seq, event_id, kind, payload, idempotency_key,
@@ -4454,14 +4418,7 @@ class TaskStore:
                         raise RuntimeError("task projection/event idempotency mismatch")
                     if appended.event:
                         published.append(appended.event)
-                con.execute("COMMIT")
                 return state, published
-            except Exception:
-                try:
-                    con.execute("ROLLBACK")
-                except Exception:
-                    pass
-                raise
         res = self._run_ordered_task_write(
             _do_commit, timeout_seconds=0.25
         )
@@ -4538,8 +4495,7 @@ class TaskStore:
 
         def _do_commit(con: sqlite3.Connection) -> tuple[TaskState, list[AgentEvent]]:
             published.clear()
-            try:
-                con.execute("BEGIN IMMEDIATE")
+            with write_transaction(con, rollback_label="Agent task update"):
                 if event.idempotency_key:
                     existing = con.execute(
                         "SELECT stream_id, seq, event_id, kind, payload, idempotency_key, "
@@ -4566,7 +4522,6 @@ class TaskStore:
                         if not current_row:
                             raise RuntimeError("task event exists without its durable projection")
                         replayed = self._row_to_state(current_row)
-                        con.execute("COMMIT")
                         return replayed, []
 
                 con.execute(
@@ -4594,14 +4549,7 @@ class TaskStore:
                     raise RuntimeError("task projection/event idempotency mismatch")
                 if appended.event:
                     published.append(appended.event)
-                con.execute("COMMIT")
                 return updated, published
-            except Exception:
-                try:
-                    con.execute("ROLLBACK")
-                except Exception:
-                    pass
-                raise
         root = _task_scope_root(current)
         if not root:
             return self._run_ordered_task_write(_do_commit, timeout_seconds=0.25)

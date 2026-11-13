@@ -5,6 +5,11 @@ from types import SimpleNamespace
 from local_ai_hub import http_server
 
 
+def test_debug_trace_routes_require_read_or_manage_capabilities():
+    assert http_server._http_admin_action("GET", "/api/debug-traces/trace-1") == "trace.read"
+    assert http_server._http_admin_action("POST", "/api/debug-traces/purge") == "trace.manage"
+
+
 class AuditTelemetry:
     def __init__(self):
         self.events = []
@@ -245,3 +250,39 @@ def test_http_server_rejects_non_loopback_bind_configuration():
 
     with pytest.raises(RuntimeError, match="server.bind must be 127.0.0.1"):
         server.server_bind()
+
+
+def test_require_authorized_rejects_cross_origin_before_authorization(monkeypatch):
+    monkeypatch.setattr(http_server, "APP", SimpleNamespace(
+        config={"security": {}, "server": {"bind": "127.0.0.1"}},
+        telemetry=SimpleNamespace(record_system=lambda *_args, **_kwargs: True),
+    ))
+    handler = _dashboard_handler("/api/config/update", fetch_site="cross-site")
+
+    assert handler._require_authorized() is False
+    assert handler.responses[0][0] == 403
+
+
+def test_require_authorized_rejects_retired_identity_query_fields(monkeypatch):
+    monkeypatch.setattr(http_server, "APP", SimpleNamespace(config={"security": {}}))
+    handler = _dashboard_handler("/api/capabilities?tenant_id=retired")
+
+    assert handler._require_authorized() is False
+    assert handler.responses[0][0] == 400
+
+
+def test_require_authorized_enforces_rate_limit_after_authentication(monkeypatch):
+    monkeypatch.setattr(http_server, "APP", SimpleNamespace(
+        config={"security": {}, "server": {"bind": "127.0.0.1"}},
+        telemetry=SimpleNamespace(record_system=lambda *_args, **_kwargs: True),
+    ))
+    handler = _dashboard_handler("/api/capabilities")
+    handler.server = SimpleNamespace(check_rate_limit=lambda: False)
+
+    assert handler._require_authorized() is False
+    assert handler.responses == [(429, {
+        "success": False,
+        "error": "rate limit exceeded; slow down",
+        "retryable": True,
+        "retry_after_seconds": 10,
+    })]

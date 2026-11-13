@@ -180,3 +180,31 @@ def test_test_matrix_caps_target_count_and_file_bytes(tmp_path: Path, monkeypatc
     assert limits["max_files"] == 2000
     assert limits["max_depth"] == 25
     assert all(len(item.get("content_sha256", "")) == 64 for item in result["test_files"])
+
+
+def test_test_matrix_passes_deadline_to_inventory_and_surfaces_inventory_timeout(
+    tmp_path: Path, monkeypatch
+) -> None:
+    engine = _engine(tmp_path)
+    observed = {}
+
+    def candidates(_root, *, max_depth, max_files, inventory_status=None, inventory_deadline=None):
+        observed.update(
+            max_depth=max_depth,
+            max_files=max_files,
+            inventory_status=inventory_status,
+            inventory_deadline=inventory_deadline,
+        )
+        if inventory_status is not None:
+            inventory_status["complete"] = False
+            inventory_status["reasons"].append("time_limit")
+        return iter(())
+
+    monkeypatch.setattr(engine.repo_tools, "_iter_files_with_stat", candidates)
+
+    result = engine.test_matrix(str(tmp_path))
+
+    assert observed["inventory_deadline"] is not None
+    assert observed["inventory_status"] is not None
+    assert result["coverage"]["scan_complete"] is False
+    assert "test_file_enumeration_deadline_exceeded" in result["coverage"]["warnings"]

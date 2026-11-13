@@ -6648,6 +6648,7 @@
           "APP.agent_tasks.curate_training_dataset",
           "APP.commands.increase_task_budget",
           "APP.evaluate_laya_context_source",
+          "APP.evaluate_laya_decision",
           "APP.laya_candidates.handle",
           "local:error_payload",
           "local:response",
@@ -6767,16 +6768,14 @@
         "literal_response_fields": [
           "error",
           "retryable",
+          "status_code",
           "success",
           "terminal"
         ],
         "response_producers": [
-          "APP.async_jobs.cancel",
-          "APP.async_jobs.result",
-          "APP.async_jobs.status",
           "APP.async_jobs.submit",
-          "APP.async_jobs.wait",
-          "diagnostics_disabled_response"
+          "diagnostics_disabled_response",
+          "local:response"
         ],
         "action_literals": [
           "cancel",
@@ -7317,16 +7316,15 @@
         "literal_response_fields": [
           "applied_live",
           "error",
-          "error_code",
           "reset",
           "restart_required",
-          "retryable",
           "runtime_override_path",
           "settings",
-          "success",
-          "terminal"
+          "success"
         ],
-        "response_producers": [],
+        "response_producers": [
+          "local:failure"
+        ],
         "action_literals": [
           "reset"
         ]
@@ -9839,6 +9837,27 @@
           "submit",
           "wait"
         ]
+      }
+    },
+    "POST /api/debug-traces/purge": {
+      "decision": "diagnostic",
+      "role": "operator_diagnostic",
+      "reason": "Explicitly authorized purge of detailed debug-trace history; destructive cleanup requires administrator authorization, audit recording, and confirm=true.",
+      "response_policy": "Require authorized admin action and exact confirm=true payload; return deletion counts or bounded errors, never trace contents.",
+      "source_contract": {
+        "source": "src/local_ai_hub/http_route_registry.py",
+        "handler": "post_debug_trace_purge_1",
+        "literal_response_fields": [
+          "error",
+          "retryable",
+          "success",
+          "terminal"
+        ],
+        "response_producers": [
+          "APP.debug_traces.purge",
+          "local:result"
+        ],
+        "action_literals": []
       }
     }
   }

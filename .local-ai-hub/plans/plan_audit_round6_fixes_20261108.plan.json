@@ -32,7 +32,7 @@
       "depends_on": [],
       "description": "Critic stage result contracts a deterministické ověřování confidence pro worker skip (C02, C03, T6-05, T6-06)",
       "kind": "code",
-      "next_action": "Fresh focused verification at HEAD 409bed4a6a73fd66175ad339c399f4277ed0ed99: T6-02 critic failure in quality mode and T6-03 evidence-gated worker skip both passed (2 passed in 0.80s). pipeline.py SHA-256 19d988fd8ccd51d739d97b4220e2c61f11f9311a38a47bd3c370b72e8938ed9b and test_audit_round6_regressions.py SHA-256 05a2692f1bb5d3d5460f1135561b95ed2df13e0857576dd0fde13eb720d158db matched before/after. Focused only; broad gates remain deferred.",
+      "next_action": "Fresh scoped verification at current HEAD e4b528d86dd3c1e913224feda9ccf667f8a5b488: `python -m pytest -q tests/test_audit_round6_regressions.py::test_t6_02_critic_failure_in_quality_mode tests/test_audit_round6_regressions.py::test_t6_03_explorer_high_confidence_without_evidence_cannot_skip_worker` passed 2 tests in 0.63s. pipeline.py SHA-256 19d988fd8ccd51d739d97b4220e2c61f11f9311a38a47bd3c370b72e8938ed9b; regression file SHA-256 05a2692f1bb5d3d5460f1135561b95ed2df13e0857576dd0fde13eb720d158db. Both files are clean in Git. Focused only; broad suite remains deferred.",
       "title": "P1-A: Pipeline stage contracts a confidence gate (C02, C03)",
       "work_status": "done"
     },

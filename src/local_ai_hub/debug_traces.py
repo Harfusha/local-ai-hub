@@ -89,6 +89,48 @@ def _normalize_trace_content(value: Any) -> Any:
     return str(value)
 
 
+_TRACE_EXPORT_SECRET_KEY = re.compile(
+    r"(?:api[_-]?key|token|secret|password|passwd|authorization|credential|access[_-]?key)",
+    re.IGNORECASE,
+)
+_TRACE_EXPORT_BEARER = re.compile(r"(?i)\bBearer\s+\S+")
+_TRACE_EXPORT_PATH = re.compile(r"(?i)(?:[A-Z]:[\\/]|\\\\|/(?:Users|home|private|tmp|mnt)/)[^\s\"'<>]+")
+_TRACE_EXPORT_ASSIGNMENT = re.compile(
+    r'''(?i)(\b(?:api[_-]?key|token|secret|password|passwd|authorization|credential|access[_-]?key)\b\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,;}"]+)'''
+)
+_TRACE_EXPORT_CLI = re.compile(
+    r"(?i)(--[A-Za-z0-9_.-]*(?:API[-_]?KEY|TOKEN|SECRET|PASSWORD|PASSWD|AUTHORIZATION|CREDENTIAL)[A-Za-z0-9_.-]*(?:=|\s+))(?:\"[^\"]*\"|'[^']*'|[^\s,;]+)"
+)
+
+
+def redact_trace_export(value: Any) -> Any:
+    """Redact common credential values from an export without changing stored traces."""
+    if isinstance(value, dict):
+        redacted: dict[str, Any] = {}
+        for key, item in value.items():
+            key_text = str(key)
+            if _TRACE_EXPORT_SECRET_KEY.search(key_text):
+                if key_text.lower() == "authorization" and isinstance(item, str) and item.lower().startswith("bearer "):
+                    redacted[key_text] = "Bearer [redacted]"
+                else:
+                    redacted[key_text] = "[redacted]"
+            elif key_text.lower() in {"path", "root", "repo_root", "workspace"}:
+                redacted[key_text] = "[path]"
+            else:
+                redacted[key_text] = redact_trace_export(item)
+        return redacted
+    if isinstance(value, list):
+        return [redact_trace_export(item) for item in value]
+    if isinstance(value, tuple):
+        return [redact_trace_export(item) for item in value]
+    if isinstance(value, str):
+        safe = _TRACE_EXPORT_BEARER.sub("Bearer [redacted]", value)
+        safe = _TRACE_EXPORT_ASSIGNMENT.sub(r"\1[redacted]", safe)
+        safe = _TRACE_EXPORT_CLI.sub(r"\1[redacted]", safe)
+        return _TRACE_EXPORT_PATH.sub("[path]", safe)
+    return value
+
+
 _TRACE_DETAIL_DEFAULT_LIMIT = 100
 _TRACE_DETAIL_MAX_LIMIT = 1000
 _TRACE_DETAIL_DEFAULT_BYTES = 8 * 1024 * 1024
@@ -1139,6 +1181,26 @@ class DebugTraceStore:
             except OSError:
                 pass
         return total
+
+    def purge(self) -> dict[str, Any]:
+        """Remove every stored trace as one explicit, atomic local operation."""
+        try:
+            with closing(self._connect()) as con:
+                con.execute("PRAGMA foreign_keys=ON")
+                con.execute("BEGIN IMMEDIATE")
+                sessions = int(con.execute("SELECT COUNT(*) FROM traces").fetchone()[0])
+                events = int(con.execute("SELECT COUNT(*) FROM trace_events").fetchone()[0])
+                con.execute("DELETE FROM traces")
+                con.commit()
+                try:
+                    con.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                except sqlite3.Error:
+                    pass
+            return {"success": True, "deleted_sessions": sessions, "deleted_events": events}
+        except sqlite3.Error as exc:
+            if is_busy_error(exc):
+                return {"success": False, "error": "trace store is busy", "retryable": True}
+            return {"success": False, "error": "trace purge unavailable", "retryable": False}
 
     def cleanup(self, *, now: float | None = None) -> dict[str, Any]:
         now = time.time() if now is None else float(now)

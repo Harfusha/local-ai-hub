@@ -222,10 +222,10 @@ class _LayaCleanupUnconfirmed(LayaRuntimeUnavailable):
 
 
 class LayaRuntimeAdapter:
-    """Run one typed context-source decision against an explicit local checkpoint.
+    """Run typed shadow decisions against an explicit local checkpoint.
 
-    Callers must opt in by constructing the adapter and calling
-    ``evaluate_context_source``. There is no import-time or startup model load.
+    Callers supply validated requests and inputs. There is no import-time or
+    startup model load; the shared session lifecycle loads on first inference.
     ``device_candidates`` must be derived from installed providers and include a
     true quality gate; provider presence alone is never enough to select a device.
     """

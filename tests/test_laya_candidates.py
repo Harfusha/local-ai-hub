@@ -9,6 +9,7 @@ import pytest
 
 import local_ai_hub.laya_candidates as candidates_module
 from local_ai_hub.agent_events import AgentStateStore
+from local_ai_hub.app import LocalAIApp
 from local_ai_hub.config import ConfigError, validate_config
 from local_ai_hub.laya_dataset_merge import _validate_row
 from local_ai_hub.laya_candidates import LayaCandidateStore, LocalModelReviewResult
@@ -34,10 +35,7 @@ def candidate_env(tmp_path, monkeypatch):
     )
     task_store = SimpleNamespace(list_tasks=lambda **_kwargs: [task], state_store=state_store)
     monkeypatch.setattr(candidates_module, "_task_matches_scope", lambda *_args: True)
-    return repo, state, task_store, LayaCandidateStore(
-        state,
-        reviewer_authenticator=lambda _reviewer_ref, _root, _task_id: True,
-    )
+    return repo, state, task_store, LayaCandidateStore(state)
 
 
 def _capture(*, state="A short approved state", **changes):
@@ -76,6 +74,7 @@ def test_capture_persists_only_real_runtime_candidate(candidate_env):
         ).fetchone()
     assert "consent_receipt_id" not in candidate_json
     assert "per_example_consented" not in candidate_json
+    assert '"annotations"' not in candidate_json
     assert consent_table is None
 
 
@@ -107,6 +106,27 @@ def test_unverified_export_error_does_not_imply_reviewer_quorum():
         candidates_module._export_label_provenance({"label_status": "pending"}, {})
 
 
+def test_candidate_export_rejects_legacy_multi_reviewer_label():
+    target = {"route": "fast"}
+    target_sha256 = hashlib.sha256(
+        json.dumps(target, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    candidate = {
+        "label_status": "verified",
+        "label_provenance": {
+            "method": "blind_double_annotation",
+            "rubric_version": "laya-source-label-v1",
+            "annotations": [{"annotator_ref": "a"}, {"annotator_ref": "b"}],
+            "adjudication": {"reviewer_ref": "c"},
+            "verification": {"method": "authenticated_human_review", "reviewer_ref": "d"},
+            "target_sha256": target_sha256,
+        },
+    }
+
+    with pytest.raises(ValueError, match="local operator confirmation"):
+        candidates_module._export_label_provenance(candidate, target)
+
+
 def test_dataset_merge_error_names_supported_label_provenance():
     expected = {"route": "fast"}
     expected_hash = hashlib.sha256(
@@ -118,10 +138,6 @@ def test_dataset_merge_error_names_supported_label_provenance():
         "method": "unrecognized",
         "rubric_version": "laya-source-label-v1",
         "target_sha256": expected_hash,
-        "annotation_identity_sha256": ["c" * 64, "d" * 64],
-        "agreement": True,
-        "adjudicator_identity_sha256": "e" * 64,
-        "verification_identity_sha256": "f" * 64,
     }
     row = {
         "id": "candidate-1",
@@ -143,7 +159,7 @@ def test_dataset_merge_error_names_supported_label_provenance():
         },
     }
 
-    with pytest.raises(ValueError, match="supported verified label provenance"):
+    with pytest.raises(ValueError, match="local operator confirmation"):
         _validate_row(row)
 
 
@@ -169,12 +185,39 @@ def test_context_source_candidate_persists_only_redacted_raw_training_content():
     assert candidate["state"]["raw_context_excerpt"] == "router.py maps the request"
 
 
-def test_laya_reviewer_public_key_config_is_typed_and_optional():
+def test_decision_candidate_accepts_typed_raw_and_capture_metadata_fields():
+    state = {f"signal_{index}": "typed" for index in range(32)}
+    state.update({
+        "raw_task_input": "Route this task.",
+        "raw_context_excerpt": "Current evidence excerpt.",
+        "raw_model_response": "Model response excerpt.",
+        "raw_tool_output_excerpt": "Tool output excerpt.",
+        "training_redacted_fields": "none",
+        "training_missing_fields": "none",
+        "training_missing_reason": "none",
+    })
+
+    candidate = LayaCandidateStore._candidate_input({
+        "decision_schema_version": "laya-decision-v1",
+        "category": "model_route",
+        "state": state,
+        "options": ["fast", "smart"],
+        "language": "en",
+        "preprocessing": {"name": "laya-runtime", "version": "fixture"},
+        "evidence_ids": [],
+    })
+
+    assert len(candidate["state"]) == 39
+
+
+def test_laya_reviewer_public_key_config_rejects_retired_ssh_reviewers():
     validate_config({"laya": {"reviewers": {"public_keys": []}}})
     with pytest.raises(ConfigError, match="list of OpenSSH public-key strings"):
         validate_config({"laya": {"reviewers": {"public_keys": "ssh-ed25519 key"}}})
     with pytest.raises(ConfigError, match="list of OpenSSH public-key strings"):
         validate_config({"laya": {"reviewers": {"public_keys": [""]}}})
+    with pytest.raises(ConfigError, match="SSH reviewer keys are retired; Laya review is local-only"):
+        validate_config({"laya": {"reviewers": {"public_keys": ["ssh-ed25519 AAAA test"]}}})
 
 
 def test_local_operator_can_confirm_label_without_reviewer_keys(candidate_env):
@@ -592,16 +635,7 @@ def _capture_and_verify(store, repo, task_store, task_id, session_id, state, suf
     )
     cid = captured["candidate_id"]
     store.handle({
-        "action": "label", "candidate_id": cid,
-        "annotations": [
-            {"annotator_ref": f"annotator-a-{suffix}", "target": "fast"},
-            {"annotator_ref": f"annotator-b-{suffix}", "target": "fast"},
-        ],
-        "adjudication": {"reviewer_ref": f"adjudicator-{suffix}", "target": "fast"},
-    }, root=str(repo), task_store=task_store)
-    store.handle({
-        "action": "verify", "candidate_id": cid,
-        "reviewer_ref": f"verifier-{suffix}",
+        "action": "label", "candidate_id": cid, "target": "fast",
     }, root=str(repo), task_store=task_store)
     return cid
 
@@ -766,13 +800,7 @@ def test_get_returns_review_material_without_laya_output_or_human_labels(candida
     repo, _state, task_store, store = candidate_env
     captured = store.handle(_capture(), root=str(repo), task_store=task_store)
     store.handle({
-        "action": "label",
-        "candidate_id": captured["candidate_id"],
-        "annotations": [
-            {"annotator_ref": "annotator-a", "target": "fast"},
-            {"annotator_ref": "annotator-b", "target": "smart"},
-        ],
-        "adjudication": {"reviewer_ref": "adjudicator-c", "target": "fast"},
+        "action": "label", "candidate_id": captured["candidate_id"], "target": "fast",
     }, root=str(repo), task_store=task_store)
     with closing(sqlite3.connect(store.path)) as con:
         candidate = json.loads(con.execute(
@@ -852,32 +880,33 @@ def test_capture_batch_is_unavailable(candidate_env):
     assert store.handle({"action": "list"}, root=str(repo), task_store=task_store)["count"] == 0
 
 
-def test_label_verify_requires_authenticated_human_provenance(candidate_env):
+def test_one_local_operator_can_label_without_reviewer_quorum(candidate_env):
     repo, _state, task_store, store = candidate_env
     captured = store.handle(_capture(), root=str(repo), task_store=task_store)
     cid = captured["candidate_id"]
-    labels = {
-        "action": "label",
-        "candidate_id": cid,
-        "annotations": [
-            {"annotator_ref": "reviewer-a", "target": "fast"},
-            {"annotator_ref": "reviewer-b", "target": "fast"},
-        ],
-        "adjudication": {"reviewer_ref": "adjudicator-c", "target": "fast"},
-    }
-    reviewed = store.handle(labels, root=str(repo), task_store=task_store)
-    assert reviewed["status"] == "reviewed"
-    with pytest.raises(ValueError, match="independent"):
-        store.handle({"action": "verify", "candidate_id": cid, "reviewer_ref": "reviewer-a"}, root=str(repo), task_store=task_store)
-    unauthenticated_store = LayaCandidateStore(_state)
-    with pytest.raises(ValueError, match="authenticated human reviewer provenance"):
-        unauthenticated_store.handle({"action": "verify", "candidate_id": cid, "reviewer_ref": "reviewer-d"}, root=str(repo), task_store=task_store)
+    reviewed = store.handle(
+        {"action": "label", "candidate_id": cid, "target": "fast"},
+        root=str(repo), task_store=task_store,
+    )
+    assert reviewed["success"] is True
+    assert reviewed["status"] == "verified"
+
+
+def test_legacy_multi_reviewer_api_actions_are_retired(candidate_env):
+    repo, _state, task_store, store = candidate_env
+    captured = store.handle(_capture(), root=str(repo), task_store=task_store)
+
+    with pytest.raises(ValueError, match="retired; use local operator label"):
+        store.handle(
+            {"action": "verify", "candidate_id": captured["candidate_id"], "reviewer_ref": "reviewer-x"},
+            root=str(repo), task_store=task_store,
+        )
 
     snapshot = store.handle({"action": "prepare_splits"}, root=str(repo), task_store=task_store)
     assert snapshot["sufficiency_status"] == "INSUFFICIENT DATA"
     assert snapshot["candidate_count"] == 0
     assert snapshot["snapshot_id"] is None
-    assert store.handle({"action": "list", "status": "verified"}, root=str(repo), task_store=task_store)["count"] == 0
+    assert store.handle({"action": "list", "status": "pending"}, root=str(repo), task_store=task_store)["count"] == 1
 
 
 def test_configured_ed25519_keys_are_rejected_for_local_only_review(tmp_path):
@@ -887,15 +916,9 @@ def test_configured_ed25519_keys_are_rejected_for_local_only_review(tmp_path):
 
 
 def test_local_operator_label_rejects_caller_supplied_reviewer_identities(candidate_env):
-    repo, state, task_store, store = candidate_env
+    repo, _state, task_store, store = candidate_env
     captured = store.handle(_capture(), root=str(repo), task_store=task_store)
     candidate_id = captured["candidate_id"]
-    authenticated = {"annotator-a", "annotator-b", "adjudicator"}
-
-    def authenticate(reviewer_ref, _root, _task_id):
-        return reviewer_ref in authenticated
-
-    unauthenticated_store = LayaCandidateStore(state)
     labels = {
         "action": "label",
         "candidate_id": candidate_id,
@@ -906,18 +929,15 @@ def test_local_operator_label_rejects_caller_supplied_reviewer_identities(candid
         "adjudication": {"reviewer_ref": "adjudicator", "target": "fast"},
     }
     with pytest.raises(ValueError, match="label fields invalid"):
-        unauthenticated_store.handle(labels, root=str(repo), task_store=task_store)
+        store.handle(labels, root=str(repo), task_store=task_store)
 
-    rejecting_store = LayaCandidateStore(
-        state,
-        reviewer_authenticator=lambda reviewer_ref, root, task_id: authenticate(
-            reviewer_ref, root, task_id
-        ) and reviewer_ref != "annotator-b",
+    result = store.handle(
+        {"action": "label", "candidate_id": candidate_id, "target": "fast"},
+        root=str(repo), task_store=task_store,
     )
-    with pytest.raises(ValueError, match="authenticated human reviewer provenance"):
-        rejecting_store.handle(labels, root=str(repo), task_store=task_store)
+    assert result["status"] == "verified"
 
-    assert store.handle({"action": "list", "status": "pending"}, root=str(repo), task_store=task_store)["count"] == 1
+    assert store.handle({"action": "list", "status": "verified"}, root=str(repo), task_store=task_store)["count"] == 1
 
 
 def test_split_preparation_without_verified_candidates_reports_insufficient_data(candidate_env):
@@ -1082,7 +1102,7 @@ def test_candidate_operations_are_scoped_to_authorized_repository(candidate_env,
     other_repo = tmp_path / "other"
     other_repo.mkdir()
     with pytest.raises(ValueError, match="not found"):
-        store.handle({"action": "verify", "candidate_id": captured["candidate_id"], "reviewer_ref": "reviewer-x"}, root=str(other_repo), task_store=task_store)
+        store.handle({"action": "label", "candidate_id": captured["candidate_id"], "target": "fast"}, root=str(other_repo), task_store=task_store)
 
 
 def test_local_model_review_uses_server_bound_callback_and_stays_separate_from_operator_label(candidate_env):
@@ -1111,7 +1131,6 @@ def test_local_model_review_uses_server_bound_callback_and_stays_separate_from_o
 
     reviewer_store = LayaCandidateStore(
         state,
-        reviewer_authenticator=lambda _reviewer_ref, _root, _task_id: True,
         local_model_reviewer=local_reviewer,
     )
 
@@ -1145,6 +1164,7 @@ def test_local_model_review_uses_server_bound_callback_and_stays_separate_from_o
     assert model_review["confidence"] == 0.91
     assert model_review["reviewer_identity_status"] == "attested"
     assert model_review["reviewer_model"] == "test-reviewer"
+    assert model_review["rubric_version"] == "laya-decision-review-v1"
     assert model_review["reviewer_revision"] == "test-revision"
     assert model_review["provider"] == "ollama"
     assert model_review["runtime_version"] == "test-runtime"
@@ -1383,3 +1403,356 @@ def test_completion_outcome_is_scoped_and_visible_in_candidate_history(candidate
         "repository_revision": "a" * 40,
         "mutation_generation": 3,
     }
+
+
+def test_app_local_model_reviewer_uses_installed_reasoning_route_and_attested_metadata():
+    app = LocalAIApp.__new__(LocalAIApp)
+    app.config = {"models": {"reasoning": "qwen3.5:9b"}}
+    app.runtime = SimpleNamespace(
+        # Tiered runtimes may report only fast-tier inventory here; model_digest
+        # resolves the exact configured model through its serving tier.
+        installed_models=lambda: [],
+        model_digest=lambda _model: "sha256:" + "a" * 64,
+        version=lambda: "0.17.7",
+        is_online=lambda: True,
+    )
+    calls = {}
+
+    def generate(*args, **kwargs):
+        calls["args"] = args
+        calls["kwargs"] = kwargs
+        return {
+            "success": True,
+            "model": "qwen3.5:9b",
+            "_lah_provider": "ollama",
+            "execution_profile": {"device": "cuda:0"},
+            "text": json.dumps({"decision": "artifact", "confidence": 0.91}),
+        }
+
+    app.services = SimpleNamespace(_generate=generate)
+    request = {
+        "candidate_id": "candidate-1",
+        "task_id": "task-1",
+        "candidate_sha256": "b" * 64,
+        "candidate": {
+            "category": "context_source",
+            "options": ["indexed", "artifact", "more_evidence"],
+            "state": {
+                "gap_code": "unresolved_evidence_gap",
+                "source_codes": ["indexed", "artifact"],
+                "freshness_codes": ["current", "current"],
+                "coverage_codes": ["partial", "complete"],
+                "raw_task_input": "Find the route definition.",
+                "raw_context_excerpt": "artifact: route definitions are listed.",
+            },
+            "questions": {
+                "context_source": {
+                    "id": "context_source",
+                    "type": "choice",
+                    "instructions": "Choose the next authorized context source or evidence action.",
+                    "criteria": {"indexed": "indexed", "artifact": "artifact", "more_evidence": "more evidence"},
+                },
+            },
+            "evidence_ids": ["ev-indexed", "ev-artifact"],
+        },
+    }
+
+    result = app._review_laya_candidate_locally(request)
+
+    assert isinstance(result, LocalModelReviewResult)
+    assert result.decision == "artifact"
+    assert result.confidence == 0.91
+    assert result.provider == "ollama"
+    assert result.model_id == "qwen3.5:9b"
+    assert result.model_revision == "sha256:" + "a" * 64
+    assert result.runtime_version == "0.17.7"
+    assert result.device == "cuda:0"
+    kwargs = calls["kwargs"]
+    assert calls["args"][0] == "qwen3.5:9b"
+    assert kwargs["source"] == "review:reasoning"
+    assert kwargs["use_cache"] is False
+    assert kwargs["format"]["properties"]["decision"]["enum"] == [
+        "indexed", "artifact", "more_evidence", "abstain",
+    ]
+    assert "Find the route definition." in calls["args"][1]
+
+
+def test_app_local_model_reviewer_supports_other_typed_decision_categories():
+    app = LocalAIApp.__new__(LocalAIApp)
+    app.config = {"models": {"reasoning": "qwen3.5:9b"}}
+    app.runtime = SimpleNamespace(
+        model_digest=lambda _model: "sha256:" + "a" * 64,
+        version=lambda: "0.17.7",
+        is_online=lambda: True,
+    )
+    calls = {}
+
+    def generate(*args, **kwargs):
+        calls["args"] = args
+        calls["kwargs"] = kwargs
+        return {
+            "success": True,
+            "model": "qwen3.5:9b",
+            "_lah_provider": "ollama",
+            "execution_profile": {"device": "cuda:0"},
+            "text": json.dumps({"decision": "smart", "confidence": 0.82}),
+        }
+
+    app.services = SimpleNamespace(_generate=generate)
+    request = {
+        "candidate_id": "candidate-route",
+        "task_id": "task-route",
+        "candidate_sha256": "b" * 64,
+        "candidate": {
+            "category": "model_route",
+            "options": ["fast", "smart", "generic"],
+            "state": {
+                "task_type": "code",
+                "complexity": "heavy",
+                "generator_model": "qwen3.5:9b",
+                "raw_task_input": "Implement the parser safely.",
+                "raw_model_response": "The change touches parsing and validation.",
+                "raw_tool_output_excerpt": "{\"tool\":\"repo_search\",\"output\":\"parser evidence\"}",
+            },
+            "questions": {
+                "model_route": {
+                    "id": "model_route",
+                    "type": "choice",
+                    "instructions": "Choose an available model tier for the described task class.",
+                    "criteria": {"fast": "fast", "smart": "smart", "generic": "generic"},
+                },
+            },
+            "evidence_ids": ["ev-route"],
+        },
+    }
+
+    result = app._review_laya_candidate_locally(request)
+
+    assert result.decision == "smart"
+    assert result.confidence == 0.82
+    assert calls["kwargs"]["format"]["properties"]["decision"]["enum"] == [
+        "fast", "smart", "generic", "abstain",
+    ]
+    assert "laya-decision-review-v1" in calls["args"][2]
+    assert "Implement the parser safely." in calls["args"][1]
+    assert "parser evidence" in calls["args"][1]
+
+
+def test_app_local_model_reviewer_rejects_model_digest_change_during_review():
+    app = LocalAIApp.__new__(LocalAIApp)
+    app.config = {"models": {"reasoning": "qwen3.5:9b"}}
+    digest_calls = 0
+
+    def model_digest(_model):
+        nonlocal digest_calls
+        digest_calls += 1
+        return "sha256:" + ("a" if digest_calls == 1 else "b") * 64
+
+    app.runtime = SimpleNamespace(
+        installed_models=lambda: ["qwen3.5:9b"],
+        model_digest=model_digest,
+        version=lambda: "0.17.7",
+        is_online=lambda: True,
+    )
+    app.services = SimpleNamespace(_generate=lambda *_args, **_kwargs: {
+        "success": True,
+        "model": "qwen3.5:9b",
+        "_lah_provider": "ollama",
+        "execution_profile": {"device": "cuda:0"},
+        "text": json.dumps({"decision": "artifact", "confidence": 0.91}),
+    })
+    request = {
+        "candidate_id": "candidate-1",
+        "task_id": "task-1",
+        "candidate_sha256": "b" * 64,
+        "candidate": {
+            "category": "context_source",
+            "options": ["indexed", "artifact"],
+            "state": {"gap_code": "unresolved_evidence_gap"},
+            "questions": {"context_source": {
+                "id": "context_source",
+                "type": "choice",
+                "instructions": "Choose the next authorized context source or evidence action.",
+                "criteria": {"indexed": "indexed", "artifact": "artifact"},
+            }},
+        },
+    }
+
+    with pytest.raises(RuntimeError, match="model identity changed during review"):
+        app._review_laya_candidate_locally(request)
+
+
+def test_app_local_model_reviewer_rejects_missing_exact_model_digest_before_generation():
+    app = LocalAIApp.__new__(LocalAIApp)
+    app.config = {"models": {"reasoning": "qwen3.5:9b"}}
+    app.runtime = SimpleNamespace(
+        model_digest=lambda _model: None,
+        version=lambda: "0.17.7",
+        is_online=lambda: True,
+    )
+    generated = False
+
+    def generate(*_args, **_kwargs):
+        nonlocal generated
+        generated = True
+        raise AssertionError("must reject an unverified model before generation")
+
+    app.services = SimpleNamespace(_generate=generate)
+    request = {
+        "candidate_id": "candidate-1",
+        "task_id": "task-1",
+        "candidate_sha256": "b" * 64,
+        "candidate": {
+            "category": "context_source",
+            "options": ["indexed"],
+            "state": {"gap_code": "unresolved_evidence_gap"},
+            "questions": {"context_source": {
+                "id": "context_source",
+                "type": "choice",
+                "instructions": "Choose the next authorized context source or evidence action.",
+                "criteria": {"indexed": "indexed"},
+            }},
+        },
+    }
+
+    with pytest.raises(RuntimeError, match="model identity"):
+        app._review_laya_candidate_locally(request)
+    assert generated is False
+
+
+def test_app_local_model_reviewer_rejects_non_ollama_provider():
+    app = LocalAIApp.__new__(LocalAIApp)
+    app.config = {"models": {"reasoning": "qwen3.5:9b"}}
+    app.runtime = SimpleNamespace(
+        model_digest=lambda _model: "sha256:" + "a" * 64,
+        version=lambda: "0.17.7",
+        is_online=lambda: True,
+    )
+    app.services = SimpleNamespace(_generate=lambda *_args, **_kwargs: {
+        "success": True,
+        "model": "qwen3.5:9b",
+        "_lah_provider": "openai",
+        "text": json.dumps({"decision": "indexed", "confidence": 0.9}),
+    })
+    request = {
+        "candidate_id": "candidate-1",
+        "task_id": "task-1",
+        "candidate_sha256": "b" * 64,
+        "candidate": {
+            "category": "context_source",
+            "options": ["indexed"],
+            "state": {"gap_code": "unresolved_evidence_gap"},
+            "questions": {"context_source": {
+                "id": "context_source",
+                "type": "choice",
+                "instructions": "Choose the next authorized context source or evidence action.",
+                "criteria": {"indexed": "indexed"},
+            }},
+        },
+    }
+
+    with pytest.raises(RuntimeError, match="not local and pinned"):
+        app._review_laya_candidate_locally(request)
+
+
+def test_runtime_output_history_remains_readable_after_operator_label(candidate_env):
+    repo, _state, task_store, store = candidate_env
+    captured = store.handle(_capture(), root=str(repo), task_store=task_store)
+    store.record_completion_outcome({
+        "task_id": "task-1",
+        "session_id": "session-1",
+        "outcome": {
+            "status": "passed",
+            "reason_code": "completion_gate_passed",
+            "duration_ms": 12.5,
+            "repository_revision": "a" * 40,
+            "mutation_generation": 0,
+        },
+    }, root=str(repo), task_store=task_store)
+    store.handle(
+        {"action": "label", "candidate_id": captured["candidate_id"], "target": "fast"},
+        root=str(repo),
+        task_store=task_store,
+    )
+
+    history = store.handle(
+        {"action": "runtime_output_history", "candidate_id": captured["candidate_id"]},
+        root=str(repo),
+        task_store=task_store,
+    )
+
+    assert history["success"] is True
+    assert [event["event_type"] for event in history["events"]] == ["completion_outcome"]
+
+
+def test_completion_outcome_can_be_recorded_after_operator_label(candidate_env):
+    repo, _state, task_store, store = candidate_env
+    captured = store.handle(_capture(), root=str(repo), task_store=task_store)
+    store.handle(
+        {"action": "label", "candidate_id": captured["candidate_id"], "target": "fast"},
+        root=str(repo),
+        task_store=task_store,
+    )
+
+    result = store.record_completion_outcome({
+        "task_id": "task-1",
+        "session_id": "session-1",
+        "outcome": {
+            "status": "passed",
+            "reason_code": "completion_gate_passed",
+            "duration_ms": 12.5,
+            "repository_revision": "a" * 40,
+            "mutation_generation": 0,
+        },
+    }, root=str(repo), task_store=task_store)
+
+    assert result["candidate_count"] == 1
+    history = store.handle(
+        {"action": "runtime_output_history", "candidate_id": captured["candidate_id"]},
+        root=str(repo),
+        task_store=task_store,
+    )
+    assert [event["event_type"] for event in history["events"]] == ["completion_outcome"]
+
+
+def test_runtime_output_history_remains_readable_after_local_model_review(candidate_env):
+    repo, state, task_store, _store = candidate_env
+    store = LayaCandidateStore(
+        state,
+        local_model_reviewer=lambda _request: LocalModelReviewResult(
+            decision="fast",
+            confidence=0.9,
+            provider="ollama",
+            model_id="local-reviewer",
+            model_revision="sha256:" + "a" * 64,
+            runtime_version="test-runtime",
+            device="cpu",
+            is_local=True,
+        ),
+    )
+    captured = store.handle(_capture(), root=str(repo), task_store=task_store)
+    store.record_completion_outcome({
+        "task_id": "task-1",
+        "session_id": "session-1",
+        "outcome": {
+            "status": "passed",
+            "reason_code": "completion_gate_passed",
+            "duration_ms": 12.5,
+            "repository_revision": "a" * 40,
+            "mutation_generation": 0,
+        },
+    }, root=str(repo), task_store=task_store)
+    store.handle(
+        {"action": "model_review", "candidate_id": captured["candidate_id"]},
+        root=str(repo),
+        task_store=task_store,
+    )
+
+    history = store.handle(
+        {"action": "runtime_output_history", "candidate_id": captured["candidate_id"]},
+        root=str(repo),
+        task_store=task_store,
+    )
+
+    assert history["success"] is True
+    assert [event["event_type"] for event in history["events"]] == ["completion_outcome"]

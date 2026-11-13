@@ -248,6 +248,10 @@ max_caller_wait_timeout_seconds = 1800
 status_max_items = 64
 cache_stats_max_items = 32
 
+# Shared category caps span scheduler, durable async jobs, and work orders.
+# Omitted values derive from each component's existing configuration.
+[worker_pool]
+
 [async_jobs]
 enabled = true
 max_pending = 256
@@ -524,7 +528,7 @@ max_hits = 80
 snippet_lines = 5
 context_top_k = 14
 # Bounded timeout for optional background code intelligence backends (e.g. Serena) during adaptive context pack
-context_backend_timeout_seconds = 3.0
+context_backend_timeout_seconds = 1.0
 context_rag_timeout_seconds = 3.0
 
 [observability]
@@ -727,7 +731,7 @@ l1_entries = 256
 l1_ttl_seconds = 3600
 
 [resilience]
-repository_search_timeout_seconds = 30
+repository_search_timeout_seconds = 10
 watchdog_enabled = true
 watchdog_interval_seconds = 5
 journal_stale_seconds = 900

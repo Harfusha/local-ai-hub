@@ -466,21 +466,14 @@ def test_laya_dataset_rejects_rows_without_verified_label_provenance(tmp_path: P
         validate_laya_dataset_pair(train, evaluation)
 
 
-def test_laya_dataset_accepts_verified_double_reviewed_synthetic_rows(tmp_path: Path) -> None:
+def test_laya_dataset_accepts_verified_synthetic_fixture_oracle_rows(tmp_path: Path) -> None:
     from tools.model_training.laya_backend import validate_laya_dataset_pair
 
     target = {"source": "indexed"}
     label_provenance = {
         "status": "verified",
-        "method": "blind_double_annotation",
+        "method": "synthetic_fixture_oracle",
         "target_sha256": _target_sha256(target),
-        "annotation_identity_sha256": [
-            hashlib.sha256(b"annotation-1").hexdigest(),
-            hashlib.sha256(b"annotation-2").hexdigest(),
-        ],
-        "agreement": False,
-        "adjudicator_identity_sha256": hashlib.sha256(b"adjudicator-1").hexdigest(),
-        "verification_identity_sha256": hashlib.sha256(b"verifier-1").hexdigest(),
     }
     train = tmp_path / "laya-train.jsonl"
     evaluation = tmp_path / "laya-eval.jsonl"
@@ -509,13 +502,6 @@ def test_laya_dataset_accepts_verified_double_reviewed_synthetic_rows(tmp_path: 
                     "fixture_id": "fixture-eval",
                     "label_provenance": {
                         **label_provenance,
-                        "annotation_identity_sha256": [
-                            hashlib.sha256(b"annotation-3").hexdigest(),
-                            hashlib.sha256(b"annotation-4").hexdigest(),
-                        ],
-                        "agreement": True,
-                        "adjudicator_identity_sha256": hashlib.sha256(b"adjudicator-2").hexdigest(),
-                        "verification_identity_sha256": hashlib.sha256(b"verifier-2").hexdigest(),
                     },
                 },
             )
@@ -524,6 +510,67 @@ def test_laya_dataset_accepts_verified_double_reviewed_synthetic_rows(tmp_path: 
 
     result = validate_laya_dataset_pair(train, evaluation)
     assert result["group_overlap"] == []
+
+
+def test_laya_dataset_rejects_legacy_multi_reviewer_labels(tmp_path: Path) -> None:
+    from tools.model_training.laya_backend import validate_laya_dataset_pair
+
+    target = {"source": "indexed"}
+    proof = {
+        "status": "verified",
+        "method": "blind_double_annotation",
+        "target_sha256": _target_sha256(target),
+        "annotation_identity_sha256": ["a" * 64, "b" * 64],
+        "agreement": True,
+        "adjudicator_identity_sha256": "c" * 64,
+        "verification_identity_sha256": "d" * 64,
+    }
+    paths = [tmp_path / "train.jsonl", tmp_path / "eval.jsonl"]
+    rows = [
+        _laya_row("train", "train-group", provenance={
+            "data_class": "local_scoped", "candidate_id": "train", "candidate_sha256": "a" * 64,
+            "label_provenance": proof,
+        }),
+        _laya_row("eval", "eval-group", provenance={
+            "data_class": "local_scoped", "candidate_id": "eval", "candidate_sha256": "b" * 64,
+            "label_provenance": proof,
+        }),
+    ]
+    for path, row in zip(paths, rows):
+        row["source_sha256"] = row["provenance"]["candidate_sha256"]
+        _write_jsonl(path, [row])
+
+    with pytest.raises(ValueError, match="unsupported verified label provenance"):
+        validate_laya_dataset_pair(*paths)
+
+
+def test_laya_dataset_rejects_unbound_deterministic_evidence_labels(tmp_path: Path) -> None:
+    from tools.model_training.laya_backend import validate_laya_dataset_pair
+
+    target = {"source": "indexed"}
+    proof = {
+        "status": "verified",
+        "method": "deterministic_evidence",
+        "target_sha256": _target_sha256(target),
+        "evidence_ids": ["caller-supplied-id"],
+    }
+    paths = [tmp_path / "train.jsonl", tmp_path / "eval.jsonl"]
+    rows = [
+        _laya_row("train", "train-group", provenance={
+            "data_class": "local_scoped", "candidate_id": "train", "candidate_sha256": "a" * 64,
+            "label_provenance": proof,
+        }),
+        _laya_row("eval", "eval-group", provenance={
+            "data_class": "local_scoped", "candidate_id": "eval", "candidate_sha256": "b" * 64,
+            "label_provenance": proof,
+        }),
+    ]
+    for path, row in zip(paths, rows):
+        row["source_sha256"] = row["provenance"]["candidate_sha256"]
+        _write_jsonl(path, [row])
+
+    with pytest.raises(ValueError, match="unsupported verified label provenance"):
+        validate_laya_dataset_pair(*paths)
 
 
 def test_existing_card_export_includes_all_authorized_indexed_rows(tmp_path: Path) -> None:
@@ -579,15 +626,9 @@ def test_laya_dataset_accepts_verified_local_scoped_rows(tmp_path: Path) -> None
     target = {"source": "indexed"}
     label_provenance = {
         "status": "verified",
-        "method": "blind_double_annotation",
+        "method": "local_operator_confirmation",
+        "rubric_version": "laya-target-rubric-v1",
         "target_sha256": _target_sha256(target),
-        "annotation_identity_sha256": [
-            hashlib.sha256(b"annotation-a").hexdigest(),
-            hashlib.sha256(b"annotation-b").hexdigest(),
-        ],
-        "agreement": True,
-        "adjudicator_identity_sha256": hashlib.sha256(b"adjudicator-a").hexdigest(),
-        "verification_identity_sha256": hashlib.sha256(b"verifier-a").hexdigest(),
     }
     train = tmp_path / "laya-train.jsonl"
     evaluation = tmp_path / "laya-eval.jsonl"
@@ -601,15 +642,7 @@ def test_laya_dataset_accepts_verified_local_scoped_rows(tmp_path: Path) -> None
         "data_class": "local_scoped",
         "candidate_id": "eval-1",
         "candidate_sha256": "b" * 64,
-        "label_provenance": {
-            **label_provenance,
-            "annotation_identity_sha256": [
-                hashlib.sha256(b"annotation-c").hexdigest(),
-                hashlib.sha256(b"annotation-d").hexdigest(),
-            ],
-            "adjudicator_identity_sha256": hashlib.sha256(b"adjudicator-b").hexdigest(),
-            "verification_identity_sha256": hashlib.sha256(b"verifier-b").hexdigest(),
-        },
+        "label_provenance": label_provenance,
     }
     train_row = _laya_row("train-1", "repo-train", provenance=train_provenance)
     train_row["source_sha256"] = "a" * 64
@@ -665,15 +698,9 @@ def test_laya_dataset_rejects_retired_consent_fields(tmp_path: Path) -> None:
     target = {"source": "indexed"}
     proof = {
         "status": "verified",
-        "method": "blind_double_annotation",
+        "method": "local_operator_confirmation",
+        "rubric_version": "laya-target-rubric-v1",
         "target_sha256": _target_sha256(target),
-        "annotation_identity_sha256": [
-            hashlib.sha256(b"reviewer-x").hexdigest(),
-            hashlib.sha256(b"reviewer-y").hexdigest(),
-        ],
-        "agreement": True,
-        "adjudicator_identity_sha256": hashlib.sha256(b"adjudicator-x").hexdigest(),
-        "verification_identity_sha256": hashlib.sha256(b"verifier-x").hexdigest(),
     }
     train_row = _laya_row("train-1", "repo-train", provenance={
         "data_class": "local_scoped",

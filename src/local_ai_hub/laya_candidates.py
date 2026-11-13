@@ -38,8 +38,9 @@ _CHECKPOINT = "convaiinnovations/laya-multilingual"
 _CHECKPOINT_REVISION = "1720e3e3357cfe1e281542e223f8273b0890ca34"
 _TOKENIZER_SHA256 = "609d8f4c067cd3950f88594c5a802616cea245823836ef5848ee4fc40aab5b6f"
 _MAX_STATE_BYTES = 16 * 1024
+# 32 typed fields plus four raw fields and three training-capture metadata fields.
+_MAX_DECISION_CANDIDATE_STATE_FIELDS = 39
 _MAX_CANDIDATE_BYTES = 64 * 1024
-_MAX_CAPTURE_BATCH_SIZE = 100
 _MAX_RUNTIME_OUTPUT_HISTORY_PAGE_SIZE = 10
 _RUNTIME_CAPTURE_TOKEN = object()
 _RUNTIME_BASELINE_METHODS = {
@@ -50,6 +51,7 @@ _MAX_SPLIT_SHINGLES = 1_000_000
 _MAX_DUPLICATE_COMPARISONS = 250_000
 _NEAR_DUPLICATE_JACCARD = 0.80
 _LABEL_RUBRIC_VERSION = "laya-source-label-v1"
+_DECISION_REVIEW_RUBRIC_VERSION = "laya-decision-review-v1"
 _IDENT = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}\Z")
 _LANG = re.compile(r"[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})*\Z")
 _STATES = {"captured", "pending", "reviewed", "verified", "rejected", "ambiguous", "exported"}
@@ -95,6 +97,19 @@ def _canonical_json(value: Any) -> str:
     return json_dumps(value, ensure_ascii=False, separators=(",", ":"))
 
 
+def _captured_candidate_hash(candidate_json: str) -> str:
+    """Hash immutable captured input while excluding later review/label metadata."""
+    candidate = json.loads(candidate_json)
+    if type(candidate) is not dict:
+        raise ValueError("stored candidate is invalid")
+    captured = dict(candidate)
+    captured["targets"] = {}
+    captured["label_status"] = "pending"
+    captured["label_provenance"] = {"events": []}
+    captured.pop("model_reviews", None)
+    return hashlib.sha256(_canonical_json(captured).encode("utf-8")).hexdigest()
+
+
 def _strict_object(value: Any, fields: set[str], label: str) -> dict[str, Any]:
     if type(value) is not dict or set(value) != fields:
         raise ValueError(f"{label} fields invalid")
@@ -116,51 +131,16 @@ def _export_label_provenance(candidate: Mapping[str, Any], targets: Mapping[str,
     provenance = candidate.get("label_provenance")
     if not isinstance(provenance, Mapping):
         raise ValueError("verified Laya candidate has no label provenance")
-    if provenance.get("method") == "local_operator_confirmation":
-        if provenance.get("rubric_version") != _LABEL_RUBRIC_VERSION:
-            raise ValueError("verified Laya candidate has no current label rubric version")
-        canonical_targets = json.dumps(targets, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
-        target_sha256 = hashlib.sha256(canonical_targets.encode("utf-8")).hexdigest()
-        if provenance.get("target_sha256") != target_sha256:
-            raise ValueError("operator-confirmed label provenance does not match target labels")
-        return {
-            "status": "verified",
-            "method": "local_operator_confirmation",
-            "rubric_version": _LABEL_RUBRIC_VERSION,
-            "target_sha256": target_sha256,
-        }
-    annotations = provenance.get("annotations")
-    adjudication = provenance.get("adjudication")
-    verification = provenance.get("verification")
-    rubric_version = provenance.get("rubric_version")
-    if not isinstance(verification, Mapping) or verification.get("method") != "authenticated_human_review":
-        raise ValueError("authenticated human-review provenance is unavailable")
-    if rubric_version != _LABEL_RUBRIC_VERSION:
+    if provenance.get("method") != "local_operator_confirmation":
+        raise ValueError("Laya training export requires local operator confirmation")
+    if provenance.get("rubric_version") != _LABEL_RUBRIC_VERSION:
         raise ValueError("verified Laya candidate has no current label rubric version")
-    if not isinstance(annotations, list) or len(annotations) != 2:
-        raise ValueError("verified Laya candidate needs two independent annotations")
-    annotators = [
-        annotation.get("annotator_ref") if isinstance(annotation, Mapping) else None
-        for annotation in annotations
-    ]
-    adjudicator = adjudication.get("reviewer_ref") if isinstance(adjudication, Mapping) else None
-    verifier = verification.get("reviewer_ref") if isinstance(verification, Mapping) else None
-    identities = annotators + [adjudicator, verifier]
-    if any(not isinstance(identity, str) or not identity for identity in identities):
-        raise ValueError("verified Laya candidate has incomplete independent reviewer provenance")
-    identity_hashes = [hashlib.sha256(identity.encode("utf-8")).hexdigest() for identity in identities]
-    if len(set(identity_hashes)) != 4:
-        raise ValueError("verified Laya candidate reviewers are not independent")
     canonical_targets = json.dumps(targets, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
     return {
         "status": "verified",
-        "method": "blind_double_annotation",
-        "rubric_version": rubric_version,
+        "method": "local_operator_confirmation",
+        "rubric_version": _LABEL_RUBRIC_VERSION,
         "target_sha256": hashlib.sha256(canonical_targets.encode("utf-8")).hexdigest(),
-        "annotation_identity_sha256": sorted(identity_hashes[:2]),
-        "agreement": annotations[0].get("target") == annotations[1].get("target"),
-        "adjudicator_identity_sha256": identity_hashes[2],
-        "verification_identity_sha256": identity_hashes[3],
     }
 
 
@@ -257,17 +237,13 @@ class LayaCandidateStore:
         state_dir: str | Path,
         *,
         reviewer_public_keys: list[str] | tuple[str, ...] = (),
-        reviewer_authenticator: Callable[[str, str, str], bool] | None = None,
         local_model_reviewer: Callable[[Mapping[str, Any]], LocalModelReviewResult] | None = None,
     ):
-        if reviewer_authenticator is not None and not callable(reviewer_authenticator):
-            raise TypeError("reviewer_authenticator must be callable")
         if local_model_reviewer is not None and not callable(local_model_reviewer):
             raise TypeError("local_model_reviewer must be callable")
         self.state_dir = Path(state_dir).resolve()
         self.path: Path | None = None
         self._lock = threading.RLock()
-        self._reviewer_authenticator = reviewer_authenticator
         self._local_model_reviewer = local_model_reviewer
         if type(reviewer_public_keys) not in (list, tuple):
             raise ValueError("laya reviewer public keys must be a list")
@@ -456,7 +432,7 @@ class LayaCandidateStore:
             if not state.strip() or len(state.encode("utf-8")) > _MAX_STATE_BYTES or "\x00" in state:
                 raise ValueError("candidate state invalid or too large")
         elif type(state) is dict:
-            if not state or len(state) > 32 or any(
+            if not state or len(state) > _MAX_DECISION_CANDIDATE_STATE_FIELDS or any(
                 type(key) is not str or not _IDENT.fullmatch(key)
                 or type(item) is not str or not item.strip() or "\x00" in item
                 for key, item in state.items()
@@ -516,7 +492,7 @@ class LayaCandidateStore:
             "evidence_ids": evidence_ids,
             "targets": {},
             "label_status": "pending",
-            "label_provenance": {"annotations": [], "events": []},
+            "label_provenance": {"events": []},
             "model_output": None,
         }
         if len(_canonical_json(candidate).encode("utf-8")) > _MAX_CANDIDATE_BYTES:
@@ -639,87 +615,6 @@ class LayaCandidateStore:
             return {"success": True, "duplicate": False, "candidate_id": candidate_id, "status": "pending"}
         if action == "capture_batch":
             raise ValueError("capture_batch is unavailable; only actual per-decision runtime callbacks may capture")
-            op = _strict_object(
-                operation,
-                {"action", "task_id", "session_id", "examples"},
-                "capture_batch",
-            )
-            task_id = _identity(op["task_id"], "task_id")
-            task = self._find_task(task_store, canonical_root, task_id)
-            session_id = _identity(op["session_id"], "session_id")
-            if self._session_for_task(task) != session_id:
-                raise ValueError("session_id does not match the scoped task")
-            examples = op["examples"]
-            if type(examples) is not list or not 1 <= len(examples) <= _MAX_CAPTURE_BATCH_SIZE:
-                raise ValueError(f"capture_batch requires 1..{_MAX_CAPTURE_BATCH_SIZE} examples")
-            prepared: list[tuple[str, dict[str, Any]]] = []
-            for example in examples:
-                row = _strict_object(
-                    example,
-                    {"candidate"},
-                    "capture_batch example",
-                )
-                candidate = self._candidate_input(row["candidate"])
-                self._validate_context_source_evidence(
-                    candidate, evidence_store=evidence_store, canonical_root=canonical_root
-                )
-                content_hash = hashlib.sha256(_canonical_json(candidate).encode("utf-8")).hexdigest()
-                prepared.append((content_hash, candidate))
-            group_id = "grp_" + hashlib.sha256(f"{scope}\0{task_id}\0{session_id}".encode()).hexdigest()[:32]
-            now = time.time()
-            results: list[dict[str, Any]] = []
-            with self._lock, closing(self._connect(task_store)) as con:
-                con.execute("BEGIN IMMEDIATE")
-                seen: dict[str, str] = {}
-                captured_count = 0
-                try:
-                    for content_hash, candidate in prepared:
-                        candidate_id = seen.get(content_hash)
-                        existing = None
-                        duplicate = candidate_id is not None
-                        if not duplicate:
-                            existing = con.execute(
-                                "SELECT candidate_id,status FROM laya_candidates WHERE repository_scope=? AND content_hash=?",
-                                (scope, content_hash),
-                            ).fetchone()
-                            if existing is not None:
-                                candidate_id = str(existing["candidate_id"])
-                                duplicate = True
-                        if not duplicate and existing is None:
-                            candidate_id = "laya_" + uuid.uuid4().hex
-                        if not duplicate:
-                            if existing is None:
-                                con.execute(
-                                    "INSERT INTO laya_candidates VALUES(?,?,?,?,?,?,?,?,?,?)",
-                                    (candidate_id, scope, task_id, session_id, group_id, content_hash,
-                                     "pending", _canonical_json(candidate), now, now),
-                                )
-                                self._event(
-                                    con, candidate_id, scope, task_id, "captured",
-                                    {"schema_version": _SCHEMA_VERSION, "data_class": "local_scoped"}, now,
-                                )
-                                self._event(con, candidate_id, scope, task_id, "pending", {"label_status": "pending"}, now)
-                                captured_count += 1
-                            seen[content_hash] = candidate_id
-                        else:
-                            self._event(
-                                con, candidate_id, scope, task_id, "duplicate_capture",
-                                {"schema_version": _SCHEMA_VERSION, "data_class": "local_scoped"}, now,
-                            )
-                        status = str(existing["status"]) if existing is not None else "pending"
-                        results.append({"candidate_id": candidate_id, "duplicate": duplicate, "status": status})
-                    con.commit()
-                except BaseException:
-                    con.rollback()
-                    raise
-            duplicate_count = len(results) - captured_count
-            return {
-                "success": True,
-                "count": len(results),
-                "captured_count": captured_count,
-                "duplicate_count": duplicate_count,
-                "results": results,
-            }
         if action == "get":
             op = _strict_object(operation, {"action", "candidate_id"}, "get")
             candidate_id = _identity(op["candidate_id"], "candidate_id")
@@ -786,7 +681,7 @@ class LayaCandidateStore:
                 task = self._find_task(task_store, canonical_root, candidate_row["task_id"])
                 if self._session_for_task(task) != candidate_row["session_id"]:
                     raise ValueError("candidate session identity no longer matches its task")
-                if hashlib.sha256(candidate_row["candidate_json"].encode("utf-8")).hexdigest() != candidate_row["content_hash"]:
+                if _captured_candidate_hash(candidate_row["candidate_json"]) != candidate_row["content_hash"]:
                     raise ValueError("candidate content hash mismatch")
                 cursor = None
                 if after_event_id is not None:
@@ -860,7 +755,9 @@ class LayaCandidateStore:
             return {"success": True, "count": len(rows), "candidates": [dict(row) for row in rows]}
         if action == "review_challenge":
             raise ValueError("SSH reviewer challenges are retired; Laya review is local-only")
-        if action in {"model_review", "label", "verify", "reject", "delete"}:
+        if action == "verify":
+            raise ValueError("reviewer verification is retired; use local operator label")
+        if action in {"model_review", "label", "reject", "delete"}:
             return self._transition(operation, action=action, scope=scope, root=canonical_root, task_store=task_store)
         if action == "prepare_splits":
             return self._prepare_splits(operation, scope=scope, task_store=task_store)
@@ -1095,7 +992,7 @@ class LayaCandidateStore:
             ).fetchone()
             if row is None or row["task_id"] != task_id or row["session_id"] != session_id:
                 raise ValueError("captured runtime candidate escaped its repository/task/session scope")
-            if hashlib.sha256(row["candidate_json"].encode("utf-8")).hexdigest() != row["content_hash"]:
+            if _captured_candidate_hash(row["candidate_json"]) != row["content_hash"]:
                 raise ValueError("captured runtime candidate content changed")
             self._event(con, candidate_id, scope, task_id, "runtime_output", runtime_record, now)
             con.commit()
@@ -1155,7 +1052,7 @@ class LayaCandidateStore:
             ).fetchall()
             for row in rows:
                 candidate_json = row["candidate_json"]
-                if hashlib.sha256(candidate_json.encode("utf-8")).hexdigest() != row["content_hash"]:
+                if _captured_candidate_hash(candidate_json) != row["content_hash"]:
                     raise ValueError("completion candidate content hash mismatch")
                 self._event(con, row["candidate_id"], scope, task_id, "completion_outcome", outcome, now)
             con.commit()
@@ -1363,22 +1260,6 @@ class LayaCandidateStore:
                 "reused": False,
             }
 
-    def _authenticated_human_reviewer(self, reviewer_ref: str, root: str, task_id: str) -> bool:
-        authenticate = self._reviewer_authenticator
-        if not callable(authenticate):
-            return False
-        try:
-            return authenticate(reviewer_ref, root, task_id) is True
-        except Exception:
-            return False
-
-    def _review_challenge(
-        self,
-        *_args: Any,
-        **_kwargs: Any,
-    ) -> dict[str, Any]:
-        raise ValueError("SSH reviewer challenges are retired; Laya review is local-only")
-
     def _local_model_review(
         self,
         operation: dict[str, Any],
@@ -1463,6 +1344,11 @@ class LayaCandidateStore:
                 raise ValueError("candidate model review history is invalid or full")
             now = time.time()
             review_id = "lyr_" + uuid.uuid4().hex
+            rubric_version = (
+                _LABEL_RUBRIC_VERSION
+                if candidate.get("category") == DecisionCategory.CONTEXT_SOURCE.value
+                else _DECISION_REVIEW_RUBRIC_VERSION
+            )
             model_reviews.append({
                 "review_id": review_id,
                 "kind": "local_model_review",
@@ -1473,7 +1359,7 @@ class LayaCandidateStore:
                 "runtime_version": result.runtime_version,
                 "device": result.device,
                 "execution_scope": "local",
-                "rubric_version": _LABEL_RUBRIC_VERSION,
+                "rubric_version": rubric_version,
                 "decision": result.decision,
                 "confidence": result.confidence,
                 "target_sha256": target_sha256,
@@ -1502,7 +1388,7 @@ class LayaCandidateStore:
                     "reviewer_model": result.model_id,
                     "reviewer_revision": result.model_revision,
                     "execution_scope": "local",
-                    "rubric_version": _LABEL_RUBRIC_VERSION,
+                    "rubric_version": rubric_version,
                 },
                 now,
             )
@@ -1517,16 +1403,8 @@ class LayaCandidateStore:
     def _transition(self, operation: dict[str, Any], *, action: str, scope: str, root: str, task_store: Any) -> dict[str, Any]:
         if action == "model_review":
             return self._local_model_review(operation, scope=scope, root=root, task_store=task_store)
-        local_operator_confirmation = not callable(self._reviewer_authenticator)
-        if action == "verify" and local_operator_confirmation:
-            raise ValueError("authenticated human reviewer provenance is unavailable")
         fields = {
-            "label": (
-                {"action", "candidate_id", "target"}
-                if local_operator_confirmation
-                else {"action", "candidate_id", "annotations", "adjudication"}
-            ),
-            "verify": {"action", "candidate_id", "reviewer_ref"},
+            "label": {"action", "candidate_id", "target"},
             "reject": {"action", "candidate_id", "status", "reason_code"},
             "delete": {"action", "candidate_id"},
         }[action]
@@ -1541,7 +1419,7 @@ class LayaCandidateStore:
             candidate = json.loads(row["candidate_json"])
             current = row["status"]
             now = time.time()
-            if action == "label" and local_operator_confirmation:
+            if action == "label":
                 if current not in {"pending", "reviewed", "ambiguous"}:
                     con.rollback(); raise ValueError("candidate cannot be labeled in current state")
                 target = _identity(op["target"], "review target")
@@ -1568,65 +1446,6 @@ class LayaCandidateStore:
                 )
                 con.commit()
                 return {"success": True, "candidate_id": candidate_id, "status": "verified"}
-            if action == "label":
-                if current not in {"pending", "reviewed", "ambiguous"}:
-                    con.rollback(); raise ValueError("candidate cannot be labeled in current state")
-                annotations = op["annotations"]
-                if type(annotations) is not list or len(annotations) != 2:
-                    con.rollback(); raise ValueError("two independent annotations are required")
-                parsed = []
-                for item in annotations:
-                    item = _strict_object(item, {"annotator_ref", "target"}, "annotation")
-                    target = _identity(item["target"], "annotation target")
-                    if target not in candidate["questions"][candidate["category"]]["criteria"]:
-                        con.rollback(); raise ValueError("annotation target is not an allowed option")
-                    annotator = _identity(item["annotator_ref"], "annotator_ref")
-                    parsed.append({"annotator_ref": annotator, "target": target})
-                if parsed[0]["annotator_ref"] == parsed[1]["annotator_ref"]:
-                    con.rollback(); raise ValueError("independent annotators must differ")
-                adjudication = _strict_object(op["adjudication"], {"reviewer_ref", "target"}, "adjudication")
-                target = _identity(adjudication["target"], "adjudication target")
-                reviewer = _identity(adjudication["reviewer_ref"], "adjudicator_ref")
-                if reviewer in {parsed[0]["annotator_ref"], parsed[1]["annotator_ref"]}:
-                    con.rollback(); raise ValueError("adjudicator must be independent")
-                if target not in candidate["questions"][candidate["category"]]["criteria"]:
-                    con.rollback(); raise ValueError("adjudication target is not an allowed option")
-                if any(
-                    not self._authenticated_human_reviewer(reviewer_ref, root, row["task_id"])
-                    for reviewer_ref in (parsed[0]["annotator_ref"], parsed[1]["annotator_ref"], reviewer)
-                ):
-                    con.rollback(); raise ValueError("authenticated human reviewer provenance is unavailable")
-                candidate["targets"] = {candidate["category"]: target}
-                candidate["label_provenance"] = {
-                    "rubric_version": _LABEL_RUBRIC_VERSION,
-                    "annotations": parsed,
-                    "adjudication": {
-                        "reviewer_ref": reviewer,
-                        "target": target,
-                    },
-                }
-                candidate["label_status"] = "reviewed"
-                new_status = "reviewed"
-                details = {"annotator_count": 2, "adjudicator_ref": reviewer}
-            elif action == "verify":
-                if current != "reviewed":
-                    con.rollback(); raise ValueError("verify requires a reviewed candidate")
-                reviewer = _identity(op["reviewer_ref"], "reviewer_ref")
-                provenance = candidate.get("label_provenance", {})
-                annotators = {item["annotator_ref"] for item in provenance.get("annotations", [])}
-                adjudicator = provenance.get("adjudication", {}).get("reviewer_ref")
-                if reviewer in annotators or reviewer == adjudicator:
-                    con.rollback(); raise ValueError("verification reviewer must be independent")
-                if not self._authenticated_human_reviewer(reviewer, root, row["task_id"]):
-                    con.rollback()
-                    raise ValueError("authenticated human reviewer provenance is unavailable")
-                candidate["label_status"] = "verified"
-                candidate["label_provenance"]["verification"] = {
-                    "reviewer_ref": reviewer,
-                    "method": "authenticated_human_review",
-                }
-                new_status = "verified"
-                details = {"reviewer_ref": reviewer, "method": "authenticated_human_review"}
             elif action == "reject":
                 if current not in {"pending", "reviewed", "ambiguous"}:
                     con.rollback(); raise ValueError("reject requires a reviewable candidate")

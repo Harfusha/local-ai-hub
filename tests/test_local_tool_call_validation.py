@@ -242,6 +242,46 @@ def test_tool_loop_rejects_backend_length_truncation(tmp_path, stage, expected_c
     assert len(executed) == expected_calls
 
 
+def test_laya_tool_output_callback_records_only_successful_known_tool_results(tmp_path):
+    class Runtime:
+        def __init__(self):
+            self.requests = 0
+
+        def request(self, endpoint, _payload, timeout=None):
+            if endpoint == "/api/show":
+                return {"capabilities": ["completion", "tools"]}
+            self.requests += 1
+            if self.requests == 1:
+                return {"message": {"role": "assistant", "content": "", "tool_calls": [call("repo_search", {"query": "x"})]}}
+            return {"message": {"role": "assistant", "content": "done"}}
+
+    runtime = Runtime()
+    execution = SimpleNamespace(cache_scope=lambda: {"num_ctx": 16384})
+    services = SimpleNamespace(
+        model_policy=SimpleNamespace(profile=lambda *a, **k: execution,
+            apply_payload=lambda model, payload, **kwargs: (payload, execution)),
+        runtime=runtime,
+        scheduler=SimpleNamespace(submit=lambda model, execute, **kwargs: execute()),
+        repo_tools=SimpleNamespace(_root=lambda root: root),
+        _repo_cache_state=lambda root: {"fingerprint": "1"},
+        generation_cache=SimpleNamespace(get_or_compute=lambda key, compute: (compute(), False, False)),
+    )
+    preprocessor = SimpleNamespace(touch_if_registered=lambda root: None, context_revision=lambda root: "1",
+        compact_context=lambda *args: "")
+    agent = ToolAwareLocalAgent({"local_tools": {"bootstrap_deterministic_tools": False}}, services,
+        preprocessor, SimpleNamespace(workspace_id=lambda root: "test"))
+    agent._execute_tool = lambda *_args: {"success": True, "text": "verified excerpt"}
+    captured = []
+
+    result = agent.run(
+        "model", "worker", "task", str(tmp_path), 128, 5,
+        laya_tool_output_callback=lambda name, output: captured.append((name, dict(output))),
+    )
+
+    assert result["success"] is True
+    assert captured == [("repo_search", {"success": True, "text": "verified excerpt"})]
+
+
 def test_tool_cache_key_excludes_old_completion_contract(tmp_path, monkeypatch):
     import local_ai_hub.tool_agent as module
     original_hash = module.stable_hash

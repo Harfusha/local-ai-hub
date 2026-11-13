@@ -10,7 +10,7 @@ import pytest
 
 from local_ai_hub import http_server
 from local_ai_hub import trace_context
-from local_ai_hub.debug_traces import DebugTraceStore
+from local_ai_hub.debug_traces import DebugTraceStore, redact_trace_export
 
 
 def _config(tmp_path, **overrides):
@@ -34,6 +34,203 @@ def test_trace_list_defaults_to_200_and_accepts_higher_configured_limit(tmp_path
     del default_config["debug_traces"]["max_list_limit"]
     assert DebugTraceStore(default_config).max_list_limit == 200
     assert DebugTraceStore(_config(tmp_path / "custom", max_list_limit=500)).max_list_limit == 500
+
+
+def test_trace_export_redacts_credentials_without_mutating_local_trace(tmp_path):
+    store = DebugTraceStore(_config(tmp_path))
+    trace_id = store.start(kind="api_request", action="/api/reason")
+    store.event(trace_id, "request", {
+        "api_token": "secret-value",
+        "authorization": "Bearer secret-value",
+        "path": r"C:\private\project\prompt.txt",
+    })
+    detail = store.detail(trace_id, since_seq=0, full_payload=True)
+
+    exported = redact_trace_export(detail)
+
+    assert exported["events"][0]["payload"] == {
+        "api_token": "[redacted]",
+        "authorization": "Bearer [redacted]",
+        "path": "[path]",
+    }
+    assert detail["events"][0]["payload"]["api_token"] == "secret-value"
+
+
+def test_trace_store_purge_removes_all_sessions_and_events(tmp_path):
+    store = DebugTraceStore(_config(tmp_path))
+    trace_id = store.start(kind="api_request", action="/api/reason")
+    store.event(trace_id, "request", {"prompt": "private"})
+
+    result = store.purge()
+
+    assert result == {"success": True, "deleted_sessions": 1, "deleted_events": 1}
+    assert store.stats()["counts"] == {}
+    assert store.stats()["events"] == 0
+
+
+def test_dashboard_warns_before_capture_and_exposes_purge_and_redacted_export():
+    from local_ai_hub.dashboard import DASHBOARD_HTML
+
+    assert "window.confirm(" in DASHBOARD_HTML
+    assert "detailedTelemetryToggle" in DASHBOARD_HTML
+    assert "purgeDebugTracesBtn" in DASHBOARD_HTML
+    assert "data-trace-export" in DASHBOARD_HTML
+
+
+def test_debug_trace_export_http_is_bounded_and_redacted(tmp_path, monkeypatch):
+    store = DebugTraceStore(_config(tmp_path))
+    trace_id = store.start(kind="api_request", action="/api/reason")
+    store.event(trace_id, "request", {"api_token": "secret-value", "path": r"C:\private\prompt.txt"})
+    app = SimpleNamespace(
+        config={"debug_traces": {"enabled": True}},
+        debug_traces=store,
+        async_jobs=SimpleNamespace(path=tmp_path / "jobs.sqlite3"),
+    )
+    monkeypatch.setattr(http_server, "APP", app)
+    monkeypatch.setattr(http_server, "_http_mode_gate_error", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(http_server, "_operational_mode_api", lambda: SimpleNamespace(
+        load_operational_mode=lambda **_kwargs: SimpleNamespace(mode="active", degraded=False),
+        operational_mode_gate_error=lambda *_args, **_kwargs: None,
+    ))
+    handler = http_server.Handler.__new__(http_server.Handler)
+    handler.path = f"/api/debug-traces/{trace_id}/export?limit=999999"
+    handler.command = "GET"
+    handler.client_address = ("127.0.0.1", 12345)
+    handler.headers = {}
+    handler._authorization_succeeded = True
+    handler._require_authorized = lambda: True
+    handler._authorize_admin_action = lambda action: action == "debug_traces.export"
+    handler._audit_admin_action = lambda *_args, **_kwargs: True
+    handler._begin_trace = lambda _path: None
+    handler.responses = []
+    handler._send = lambda status, data: handler.responses.append((status, data))
+
+    handler.do_GET()
+
+    status, exported = handler.responses[0]
+    assert status == 200
+    assert exported["redacted_export"] is True
+    assert exported["limit"] == 1000
+    assert exported["events"][0]["payload"] == {"api_token": "[redacted]", "path": "[path]"}
+
+
+def test_debug_trace_export_rejects_path_traversal(tmp_path, monkeypatch):
+    store = DebugTraceStore(_config(tmp_path))
+    app = SimpleNamespace(
+        config={"debug_traces": {"enabled": True}},
+        debug_traces=store,
+        async_jobs=SimpleNamespace(path=tmp_path / "jobs.sqlite3"),
+    )
+    monkeypatch.setattr(http_server, "APP", app)
+    monkeypatch.setattr(http_server, "_http_mode_gate_error", lambda *_args, **_kwargs: None)
+    handler = http_server.Handler.__new__(http_server.Handler)
+    handler.path = "/api/debug-traces/../../private/export"
+    handler.command = "GET"
+    handler.client_address = ("127.0.0.1", 12345)
+    handler.headers = {}
+    handler._require_authorized = lambda: True
+    handler._begin_trace = lambda _path: None
+    handler.responses = []
+    handler._send = lambda status, data: handler.responses.append((status, data))
+
+    handler.do_GET()
+
+    assert handler.responses == [(404, {"success": False, "error": "trace not found"})]
+
+
+@pytest.mark.parametrize(
+    ("detail_result", "expected_status"),
+    [
+        ({"error": "trace not found"}, 404),
+        ({"success": False, "error_code": "trace_detail_oversize"}, 413),
+        ({"success": False, "retryable": True}, 503),
+        ({"success": False, "retryable": False}, 500),
+    ],
+)
+def test_debug_trace_export_maps_detail_failures_to_http_status(
+    monkeypatch, tmp_path, detail_result, expected_status
+):
+    app = SimpleNamespace(
+        config={"debug_traces": {"enabled": True}},
+        debug_traces=SimpleNamespace(enabled=True, detail=lambda *_args, **_kwargs: dict(detail_result)),
+        async_jobs=SimpleNamespace(path=tmp_path / "jobs.sqlite3"),
+    )
+    monkeypatch.setattr(http_server, "APP", app)
+    monkeypatch.setattr(http_server, "_http_mode_gate_error", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(http_server, "_operational_mode_api", lambda: SimpleNamespace(
+        load_operational_mode=lambda **_kwargs: SimpleNamespace(mode="active", degraded=False),
+        operational_mode_gate_error=lambda *_args, **_kwargs: None,
+    ))
+    handler = http_server.Handler.__new__(http_server.Handler)
+    handler.path = "/api/debug-traces/trace-1/export"
+    handler.command = "GET"
+    handler.client_address = ("127.0.0.1", 12345)
+    handler.headers = {}
+    handler._authorization_succeeded = True
+    handler._require_authorized = lambda: True
+    handler._authorize_admin_action = lambda action: action == "debug_traces.export"
+    handler._audit_admin_action = lambda *_args, **_kwargs: True
+    handler._begin_trace = lambda _path: None
+    handler.responses = []
+    handler._send = lambda status, data: handler.responses.append((status, data))
+
+    handler.do_GET()
+
+    assert handler.responses[0][0] == expected_status
+    assert handler.responses[0][1] == detail_result
+
+
+def test_debug_trace_purge_http_requires_explicit_confirm_and_admin(tmp_path, monkeypatch):
+    store = DebugTraceStore(_config(tmp_path))
+    trace_id = store.start(kind="api_request")
+    store.event(trace_id, "request", {"prompt": "private"})
+    app = SimpleNamespace(config={"server": {"state_dir": str(tmp_path)}}, debug_traces=store, recovery=None)
+    monkeypatch.setattr(http_server, "APP", app)
+    monkeypatch.setattr(http_server, "_http_mode_gate_error", lambda *_args, **_kwargs: None)
+    handler = http_server.Handler.__new__(http_server.Handler)
+    handler.path = "/api/debug-traces/purge"
+    handler.command = "POST"
+    handler.headers = {}
+    handler._authorization_succeeded = True
+    handler._require_authorized = lambda: True
+    handler._authorize_admin_action = lambda action: action == "debug_traces.purge"
+    handler._audit_admin_action = lambda *_args, **_kwargs: True
+    handler._begin_trace = lambda _path: None
+    handler._read_json = lambda: {"confirm": True}
+    handler.responses = []
+    handler._send = lambda status, data: handler.responses.append((status, data))
+
+    handler.do_POST()
+
+    assert handler.responses == [(200, {"success": True, "deleted_sessions": 1, "deleted_events": 1})]
+
+
+@pytest.mark.parametrize("payload", [{}, {"confirm": False}, {"confirm": True, "extra": 1}])
+def test_debug_trace_purge_http_rejects_noncanonical_confirmation(tmp_path, monkeypatch, payload):
+    app = SimpleNamespace(config={"server": {"state_dir": str(tmp_path)}}, debug_traces=SimpleNamespace(
+        purge=lambda: pytest.fail("purge must not run without exact confirm=true")
+    ), recovery=None)
+    monkeypatch.setattr(http_server, "APP", app)
+    monkeypatch.setattr(http_server, "_http_mode_gate_error", lambda *_args, **_kwargs: None)
+    handler = http_server.Handler.__new__(http_server.Handler)
+    handler.path = "/api/debug-traces/purge"
+    handler.command = "POST"
+    handler.headers = {}
+    handler._authorization_succeeded = True
+    handler._require_authorized = lambda: True
+    handler._authorize_admin_action = lambda action: action == "debug_traces.purge"
+    handler._audit_admin_action = lambda *_args, **_kwargs: True
+    handler._begin_trace = lambda _path: None
+    handler._read_json = lambda: payload
+    handler.responses = []
+    handler._send = lambda status, data: handler.responses.append((status, data))
+
+    handler.do_POST()
+
+    assert handler.responses == [(
+        400,
+        {"success": False, "error": "explicit confirm=true is required", "terminal": True, "retryable": False},
+    )]
 
 
 def test_detailed_traces_default_to_off_without_explicit_opt_in(tmp_path):
@@ -560,8 +757,6 @@ def test_model_request_promotes_model_to_trace_summary(tmp_path):
 
 
 def test_missing_debug_trace_detail_returns_not_found(monkeypatch):
-    from types import SimpleNamespace
-
     class DebugTraces:
         enabled = True
         TERMINAL_STATES = set()

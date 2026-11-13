@@ -4644,6 +4644,7 @@ class ProjectPreprocessor:
 
     def _run_background_generate(self, model: str, prompt: str, system: str, schema: dict[str, Any], max_tokens: int, source: str) -> dict[str, Any]:
         from .operational_mode import load_operational_mode, operational_mode_gate_error, preprocessing_mode_ready
+        from .scheduler import QueueFullError
 
         state_dir = getattr(self, "state_dir", None) or self.config.get("server", {}).get("state_dir")
         if state_dir is not None:
@@ -4736,6 +4737,13 @@ class ProjectPreprocessor:
                 model, source=source, execute=execute, priority=0,
                 wait_timeout=float(self.cfg.get("background_scheduler_timeout_seconds", 120)), background=True,
             )
+        except QueueFullError as exc:
+            if not exc.retryable:
+                raise
+            raise _RetryablePreprocessingError(
+                f"background scheduler deferred preprocessing: {exc}",
+                retry_after_seconds=30.0,
+            ) from exc
         except TimeoutError:
             return {"success": False, "preempted": True, "error": "background scheduler wait timed out"}
 
@@ -4982,10 +4990,17 @@ class ProjectPreprocessor:
         if use_background_gpu:
             results = self.background_gpu.generate_many(claimed_tasks, preprocessing=True)
         else:
-            results = [
-                self._run_background_generate(background_model, t["prompt"], t["system"], t["schema"], int(t["max_tokens"]), str(t["source"]))
-                for t in claimed_tasks
-            ]
+            try:
+                results = [
+                    self._run_background_generate(background_model, t["prompt"], t["system"], t["schema"], int(t["max_tokens"]), str(t["source"]))
+                    for t in claimed_tasks
+                ]
+            except _RetryablePreprocessingError:
+                for _item, _card_key, source_hash in claimed_meta:
+                    self._finish_file_card_enrichment(
+                        source_hash, background_model, success=False, preempted=True,
+                    )
+                raise
 
         for (item, card_key, source_hash), generated in zip(claimed_meta, results):
             if generated.get("preempted"):

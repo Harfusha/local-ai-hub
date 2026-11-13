@@ -8,7 +8,7 @@ import json
 import math
 import threading
 import time
-from typing import Any
+from typing import Any, Callable
 
 from .cache import stable_hash
 from .model_policy import ModelExecutionPolicy
@@ -489,6 +489,7 @@ class ToolAwareLocalAgent:
         cancel_event: threading.Event | None = None,
         max_model_steps: int | None = None,
         allowed_tool_names: list[str] | None = None,
+        laya_tool_output_callback: Callable[[str, dict[str, Any]], None] | None = None,
     ) -> dict[str, Any]:
         if cancel_event is None:
             from .client import CURRENT_REQUEST_CANCEL_EVENT
@@ -805,6 +806,11 @@ class ToolAwareLocalAgent:
                     ))
                     if not uncertain and result.get("success") is True:
                         tool_evidence["completed"] += 1
+                        if callable(laya_tool_output_callback):
+                            try:
+                                laya_tool_output_callback(name, result)
+                            except Exception:
+                                pass
                     elif not uncertain and result.get("success") is False:
                         tool_evidence["failed"] += 1
                     else:

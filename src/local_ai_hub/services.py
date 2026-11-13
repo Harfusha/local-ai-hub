@@ -18,6 +18,7 @@ import sqlite3
 import subprocess
 import time
 import threading
+from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor, wait
 from dataclasses import asdict
 from contextlib import closing, contextmanager
@@ -49,6 +50,10 @@ from .search_modes import (
 )
 from .scheduler import SchedulerCancelledError, SchedulerTimeoutError
 from .router import ModelRouter, review_diff_complexity
+from .evidence_merge import (
+    merge_overlapping_evidence as _merge_overlapping_evidence,
+    merge_overlapping_line_ranges as _merge_overlapping_line_ranges,
+)
 from .sqlite_support import connect_sqlite
 from .adoption_metrics import AdoptionMetricsStore
 from .state_paths import configured_state_dir
@@ -551,132 +556,13 @@ def _active_sqlite_databases(state_dir: Path) -> list[Path]:
 def merge_overlapping_line_ranges(
     ranges: list[tuple[int, int]], *, max_gap: int = 1
 ) -> list[tuple[int, int]]:
-    """Merge overlapping or adjacent line intervals [start, end]."""
-    valid = []
-    for r in ranges:
-        if isinstance(r, (tuple, list)) and len(r) >= 2:
-            try:
-                s, e = int(r[0]), int(r[1])
-                if s > e:
-                    s, e = e, s
-                valid.append((s, e))
-            except (TypeError, ValueError):
-                continue
-    if not valid:
-        return []
-    sorted_ranges = sorted(valid, key=lambda item: (item[0], item[1]))
-    merged = [sorted_ranges[0]]
-    for start, end in sorted_ranges[1:]:
-        prev_start, prev_end = merged[-1]
-        if start <= prev_end + max_gap:
-            merged[-1] = (prev_start, max(prev_end, end))
-        else:
-            merged.append((start, end))
-    return merged
+    return _merge_overlapping_line_ranges(ranges, max_gap=max_gap)
 
 
 def merge_overlapping_evidence(
     evidence: list[dict[str, Any]], root: str | Path | None = None
 ) -> list[dict[str, Any]]:
-    """Group evidence by file path and merge overlapping or adjacent line ranges."""
-    if not evidence:
-        return []
-
-    by_path: dict[str, list[dict[str, Any]]] = {}
-    path_keys: list[str] = []
-
-    for item in evidence:
-        if not isinstance(item, dict):
-            continue
-        p = str(item.get("path") or "").strip().replace("\\", "/")
-        if not p:
-            continue
-        if p not in by_path:
-            by_path[p] = []
-            path_keys.append(p)
-        by_path[p].append(dict(item))
-
-    resolved_root = Path(root).expanduser().resolve(strict=False) if root else None
-    result: list[dict[str, Any]] = []
-
-    for p in path_keys:
-        items = by_path[p]
-        if len(items) == 1:
-            result.append(items[0])
-            continue
-
-        def get_range(it: dict[str, Any]) -> tuple[int, int]:
-            s = int(it.get("start_line", 1) or 1)
-            e = int(it.get("end_line", s) or s)
-            return (min(s, e), max(s, e))
-
-        sorted_items = sorted(items, key=lambda it: get_range(it))
-
-        clusters: list[list[dict[str, Any]]] = []
-        for it in sorted_items:
-            it_range = get_range(it)
-            if not clusters:
-                clusters.append([it])
-            else:
-                cluster = clusters[-1]
-                cluster_end = max(get_range(x)[1] for x in cluster)
-                if it_range[0] <= cluster_end + 1:
-                    cluster.append(it)
-                else:
-                    clusters.append([it])
-
-        for cluster in clusters:
-            if len(cluster) == 1:
-                result.append(cluster[0])
-                continue
-
-            cluster_start = min(get_range(x)[0] for x in cluster)
-            cluster_end = max(get_range(x)[1] for x in cluster)
-            max_score = max(float(x.get("score", 0.0) or 0.0) for x in cluster)
-
-            symbols = []
-            for x in cluster:
-                sym = str(x.get("symbol", "") or "").strip()
-                if sym and sym not in symbols:
-                    symbols.append(sym)
-
-            merged_symbol = ", ".join(symbols) if symbols else ""
-
-            merged_text = ""
-            file_on_disk = (resolved_root / p) if resolved_root else None
-            if file_on_disk and file_on_disk.is_file():
-                try:
-                    all_lines = file_on_disk.read_text(encoding="utf-8", errors="replace").splitlines()
-                    slice_lines = all_lines[max(0, cluster_start - 1):cluster_end]
-                    merged_text = "\n".join(slice_lines)
-                except Exception:
-                    merged_text = ""
-
-            if not merged_text:
-                line_map: dict[int, str] = {}
-                for x in cluster:
-                    x_start = get_range(x)[0]
-                    x_text = str(x.get("text", x.get("content", "")) or "")
-                    x_lines = x_text.splitlines()
-                    for idx, line in enumerate(x_lines):
-                        line_num = x_start + idx
-                        if line_num not in line_map:
-                            line_map[line_num] = line
-                merged_text = "\n".join(line_map.get(i, "") for i in range(cluster_start, cluster_end + 1))
-
-            best_item = max(cluster, key=lambda x: float(x.get("score", 0.0) or 0.0))
-            merged_item = dict(best_item)
-            merged_item["start_line"] = cluster_start
-            merged_item["end_line"] = cluster_end
-            merged_item["score"] = max_score
-            merged_item["text"] = merged_text
-            if "content" in merged_item:
-                merged_item["content"] = merged_text
-            if merged_symbol:
-                merged_item["symbol"] = merged_symbol
-            result.append(merged_item)
-
-    return result
+    return _merge_overlapping_evidence(evidence, root=root)
 
 
 _SOURCE_FOCUS_TERMS = (
@@ -899,6 +785,27 @@ class LocalAIServices:
         if observer is not None and not callable(observer):
             raise TypeError("Laya decision observer must be callable")
         self.laya_decision_observer = observer
+
+    @staticmethod
+    def _laya_model_response_excerpt(result: Mapping[str, Any]) -> str:
+        """Return bounded successful model text for future Laya training review."""
+        if result.get("success") is not True:
+            return ""
+        response = result.get("text")
+        if not isinstance(response, str):
+            return ""
+        return response.encode("utf-8", errors="replace")[:8192].decode("utf-8", errors="ignore").strip()
+
+    @staticmethod
+    def _laya_generator_model_code(result: Mapping[str, Any]) -> str:
+        """Return a bounded model identity when it fits the typed state contract."""
+        route = result.get("route")
+        if not isinstance(route, Mapping):
+            return ""
+        model = route.get("model")
+        if not isinstance(model, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}", model):
+            return ""
+        return model
 
     def _queue_laya_shadow_observation(
         self,
@@ -2345,18 +2252,26 @@ class LocalAIServices:
             evidence_id = args["evidence_ids"][0]
             if route_option is not None:
                 task_input = task.encode("utf-8", errors="replace")[:8192].decode("utf-8", errors="ignore").strip()
+                training_content = {"task_input": task_input} if task_input else {}
+                model_response = self._laya_model_response_excerpt(result)
+                if model_response:
+                    training_content["model_response"] = model_response
+                decision_state = {
+                    "task_type": str(route.get("task_type", "general")),
+                    "complexity": str(route.get("complexity", "fast")),
+                    "semantic_required": "true" if route.get("semantic_required") is True else "false",
+                    "context_present": "true" if context else "false",
+                }
+                generator_model = self._laya_generator_model_code({"route": route})
+                if generator_model:
+                    decision_state["generator_model"] = generator_model
                 self._queue_laya_shadow_observation(
                     args,
                     root=str(args.get("root") or args.get("cwd") or ""),
                     category="model_route",
                     options=["fast", "smart", "generic"],
-                    state={
-                        "task_type": str(route.get("task_type", "general")),
-                        "complexity": str(route.get("complexity", "fast")),
-                        "semantic_required": "true" if route.get("semantic_required") is True else "false",
-                        "context_present": "true" if context else "false",
-                    },
-                    training_content={"task_input": task_input} if task_input else {},
+                    state=decision_state,
+                    training_content=training_content,
                     baseline={
                         "method": "model_router_classify",
                         "suggestion": route_option,
@@ -3615,6 +3530,7 @@ class LocalAIServices:
                 "index_state": rag_meta.get("index_state", "unknown"),
                 "index_coverage": rag_meta.get("index_coverage", "unknown_or_partial"),
                 "candidate_freshness": rag_meta.get("candidate_freshness", "verified_against_current_sources"),
+                "source_validation": rag_meta.get("source_validation", {}),
                 "stale_candidate_count": rag_meta.get("stale_candidate_count", 0),
                 "stale_candidate_reasons": rag_meta.get("stale_candidate_reasons", {}),
                 "stale_candidate_details": rag_meta.get("stale_candidate_details", []),
@@ -3649,6 +3565,7 @@ class LocalAIServices:
                 "index_state": rag_meta.get("index_state", "unknown"),
                 "index_coverage": rag_meta.get("index_coverage", "unknown_or_partial"),
                 "candidate_freshness": rag_meta.get("candidate_freshness", "unknown"),
+                "source_validation": rag_meta.get("source_validation", {}),
                 "stale_candidate_count": rag_meta.get("stale_candidate_count", 0),
                 "stale_candidate_reasons": rag_meta.get("stale_candidate_reasons", {}),
                 "stale_candidate_details": rag_meta.get("stale_candidate_details", []),
@@ -3706,6 +3623,7 @@ class LocalAIServices:
                 "index_state": rag_meta.get("index_state", "unknown"),
                 "index_coverage": rag_meta.get("index_coverage", "unknown_or_partial"),
                 "candidate_freshness": rag_meta.get("candidate_freshness", "verified_against_current_sources"),
+                "source_validation": rag_meta.get("source_validation", {}),
                 "stale_candidate_count": rag_meta.get("stale_candidate_count", 0),
                 "stale_candidate_reasons": rag_meta.get("stale_candidate_reasons", {}),
                 "stale_candidate_details": rag_meta.get("stale_candidate_details", []),
@@ -3733,6 +3651,7 @@ class LocalAIServices:
             "index_state": rag_meta.get("index_state", "unknown"),
             "index_coverage": rag_meta.get("index_coverage", "unknown_or_partial"),
             "candidate_freshness": rag_meta.get("candidate_freshness", "verified_against_current_sources"),
+            "source_validation": rag_meta.get("source_validation", {}),
             "stale_candidate_count": rag_meta.get("stale_candidate_count", 0),
             "stale_candidate_reasons": rag_meta.get("stale_candidate_reasons", {}),
             "stale_candidate_details": rag_meta.get("stale_candidate_details", []),
@@ -3788,6 +3707,21 @@ class LocalAIServices:
                 raise RuntimeError("rag_search_failed")
             project_context = rag.project_context(base)
             max_bytes = int(self.config.get("rag", {}).get("max_file_bytes", 2_000_000))
+            resilience = self.config.get("resilience", {})
+            if not isinstance(resilience, dict):
+                resilience = {}
+            source_validation_timeout = max(
+                0.1,
+                min(5.0, float(resilience.get("repository_search_source_validation_timeout_seconds", 1.5))),
+            )
+            source_validation_limit_bytes = max(
+                1,
+                min(64_000_000, int(resilience.get("repository_search_source_validation_max_bytes", 8_000_000))),
+            )
+            source_validation_deadline = min(deadline, time.perf_counter() + source_validation_timeout)
+            source_validation_bytes = 0
+            source_validation_candidates_checked = 0
+            source_validation_reason: str | None = None
             valid: list[dict[str, Any]] = []
             stale = 0
             stale_reasons = {
@@ -3799,6 +3733,9 @@ class LocalAIServices:
             source_cache: dict[str, tuple[str, int, int]] = {}
             seen_paths: set[str] = set()
             for candidate in raw.get("results", []):
+                if time.perf_counter() >= source_validation_deadline:
+                    source_validation_reason = "time_limit"
+                    break
                 if not isinstance(candidate, dict):
                     continue
                 rel = candidate.get("path")
@@ -3825,7 +3762,27 @@ class LocalAIServices:
                     fragment = str(candidate.get("text") or "")
                     source_meta = source_cache.get(rel_key)
                     if source_meta is None:
-                        source = target.read_text(encoding="utf-8", errors="replace").replace("\r\n", "\n").replace("\r", "\n")
+                        source_size = int(stat.st_size)
+                        if source_validation_bytes + source_size > source_validation_limit_bytes:
+                            source_validation_reason = "byte_limit"
+                            break
+                        source_chunks: list[bytes] = []
+                        remaining_bytes = source_size
+                        try:
+                            with target.open("rb") as source_stream:
+                                while remaining_bytes:
+                                    if time.perf_counter() >= source_validation_deadline:
+                                        raise TimeoutError("repository search source validation deadline exceeded")
+                                    chunk = source_stream.read(min(64 * 1024, remaining_bytes))
+                                    if not chunk:
+                                        raise OSError("source file ended before its stat size")
+                                    source_chunks.append(chunk)
+                                    source_validation_bytes += len(chunk)
+                                    remaining_bytes -= len(chunk)
+                        except TimeoutError:
+                            source_validation_reason = "time_limit"
+                            break
+                        source = b"".join(source_chunks).decode("utf-8", errors="replace").replace("\r\n", "\n").replace("\r", "\n")
                         after_stat = target.stat()
                         if (after_stat.st_mtime_ns, after_stat.st_size) != (stat.st_mtime_ns, stat.st_size):
                             stale += 1
@@ -3840,6 +3797,7 @@ class LocalAIServices:
                         source_meta = (source, int(after_stat.st_mtime_ns), int(after_stat.st_size))
                         source_cache[rel_key] = source_meta
                     source = source_meta[0]
+                    source_validation_candidates_checked += 1
                     if not fragment or not _rag_fragment_matches_source(fragment, source):
                         stale += 1
                         reason = "fragment_mismatch"
@@ -3868,23 +3826,42 @@ class LocalAIServices:
                 item["source_size_bytes"] = source_meta[2]
                 valid.append(item)
                 seen_paths.add(rel_key)
-            degraded = bool(raw.get("degraded") or stale or raw.get("reindex_required"))
+            source_validation_incomplete = source_validation_reason is not None
+            source_validation = {
+                "complete": not source_validation_incomplete,
+                "candidates_checked": source_validation_candidates_checked,
+                "bytes_read": source_validation_bytes,
+                "limit_bytes": source_validation_limit_bytes,
+                "limit_seconds": source_validation_timeout,
+                "reason": source_validation_reason,
+            }
+            degraded = bool(
+                raw.get("degraded") or stale or raw.get("reindex_required")
+                or source_validation_incomplete
+            )
             raw_fallbacks = raw.get("fallbacks", [])
             if not isinstance(raw_fallbacks, list):
                 raw_fallbacks = []
-            reason = "stale_or_denied_candidates" if stale else (
-                raw.get("fallback") or (raw_fallbacks[0] if raw_fallbacks else None)
-            )
+            if source_validation_reason:
+                reason = f"source_validation_{source_validation_reason}"
+            else:
+                reason = "stale_or_denied_candidates" if stale else (
+                    raw.get("fallback") or (raw_fallbacks[0] if raw_fallbacks else None)
+                )
             if raw.get("degraded") and not reason:
                 reason = "rag_backend_degraded"
             return valid, {
                 "success": True,
                 "index_state": "stale" if (stale or raw.get("reindex_required")) else "available",
                 "index_coverage": "unknown_or_partial",
-                "candidate_freshness": "partially_verified" if stale else "verified_against_current_sources",
+                "candidate_freshness": (
+                    "partially_verified" if stale or source_validation_incomplete
+                    else "verified_against_current_sources"
+                ),
                 "stale_candidate_count": stale,
                 "stale_candidate_reasons": stale_reasons,
                 "stale_candidate_details": stale_details,
+                "source_validation": source_validation,
                 "index_revision": raw.get("index_revision"), "degraded": degraded,
                 "degradation_reason": reason,
                 "search_cache": raw.get("search_cache") if isinstance(raw.get("search_cache"), dict) else {},
@@ -7230,11 +7207,11 @@ class LocalAIServices:
 
         search_cfg = getattr(self, "config", {}).get("search", {})
         configured_timeout = search_cfg.get("context_backend_timeout_seconds")
-        timeout = configured_timeout if configured_timeout is not None else 3.0
+        timeout = configured_timeout if configured_timeout is not None else 1.0
         try:
             timeout = max(0.05, min(float(timeout), 120.0))
         except (TypeError, ValueError):
-            timeout = 3.0
+            timeout = 1.0
         if timeout_budget is not None:
             try:
                 timeout = min(timeout, max(0.0, float(timeout_budget)))
@@ -7320,7 +7297,7 @@ class LocalAIServices:
                 return default
 
         backend_deadline = started_at + max(
-            bounded_timeout("context_backend_timeout_seconds", 3.0),
+            bounded_timeout("context_backend_timeout_seconds", 1.0),
             bounded_timeout("context_rag_timeout_seconds", 3.0),
         )
         if self.learner is not None:
@@ -8248,18 +8225,27 @@ class LocalAIServices:
                 else "expanded" if max_context_tokens >= 4200
                 else "standard"
             )
+            task_input = task.encode("utf-8", errors="replace")[:8192].decode("utf-8", errors="ignore").strip()
+            training_content = {"task_input": task_input} if task_input else {}
+            model_response = self._laya_model_response_excerpt(result)
+            if model_response:
+                training_content["model_response"] = model_response
+            decision_state = {
+                "task_type": str(initial_route.get("task_type", "general")),
+                "complexity": str(initial_route.get("complexity", "fast")),
+                "context_budget": budget_profile,
+                "context_tokens": str(max_context_tokens),
+            }
+            generator_model = self._laya_generator_model_code(result)
+            if generator_model:
+                decision_state["generator_model"] = generator_model
             self._queue_laya_shadow_observation(
                 {"task_id": args.get("task_id"), "evidence_ids": packed_evidence_ids},
                 root=root,
                 category="context_budget",
                 options=["compact", "standard", "expanded"],
-                state={
-                    "task_type": str(initial_route.get("task_type", "general")),
-                    "complexity": str(initial_route.get("complexity", "fast")),
-                    "context_budget": budget_profile,
-                    "context_tokens": str(max_context_tokens),
-                },
-                training_content={"task_input": task.encode("utf-8", errors="replace")[:8192].decode("utf-8", errors="ignore").strip()} if task.strip() else {},
+                state=decision_state,
+                training_content=training_content,
                 baseline={
                     "method": "repo_context_token_budget",
                     "suggestion": budget_profile,
@@ -8274,14 +8260,146 @@ class LocalAIServices:
             return {"success": False, "cancelled": True, "reason": "cancelled"}
         if self.pipeline is None:
             return self.delegate_repo(args, **({"cancel_event": cancel_event} if cancel_event is not None else {}))
+        captured_tool_outputs: list[str] = []
+        captured_tool_output_bytes = 0
+        pipeline_args = args
+        task_id = args.get("task_id")
+        root = args.get("root")
+        if (
+            getattr(self.pipeline, "enabled", False) is True
+            and isinstance(task_id, str) and bool(task_id.strip())
+            and isinstance(root, str) and bool(root.strip())
+        ):
+            def capture_tool_output(name: str, result: dict[str, Any]) -> None:
+                nonlocal captured_tool_output_bytes
+                if (
+                    not isinstance(name, str) or not name.strip()
+                    or not isinstance(result, Mapping) or result.get("success") is not True
+                    or captured_tool_output_bytes >= 4096
+                ):
+                    return
+                try:
+                    payload = json.dumps(
+                        {"tool": name, "output": result}, ensure_ascii=False,
+                        sort_keys=True, separators=(",", ":"),
+                    )
+                except (TypeError, ValueError, OverflowError):
+                    return
+                remaining = 4096 - captured_tool_output_bytes
+                bounded = payload.encode("utf-8", errors="replace")[:remaining].decode("utf-8", errors="ignore")
+                if not bounded:
+                    return
+                captured_tool_outputs.append(bounded)
+                captured_tool_output_bytes += len(bounded.encode("utf-8"))
+
+            pipeline_args = dict(args)
+            pipeline_args["_laya_tool_output_callback"] = capture_tool_output
+
+        def queue_observation(result: Mapping[str, Any]) -> None:
+            output_excerpt = "\n".join(captured_tool_outputs)
+            self._queue_laya_solve_repo_observation(
+                args, result, tool_output_excerpt=output_excerpt,
+            )
+
         if cancel_event is None:
-            return self.pipeline.solve_repo(args)
+            result = self.pipeline.solve_repo(pipeline_args)
+            if isinstance(result, Mapping):
+                queue_observation(result)
+            return result
         from .client import CURRENT_REQUEST_CANCEL_EVENT
         token = CURRENT_REQUEST_CANCEL_EVENT.set(cancel_event)
         try:
-            return self.pipeline.solve_repo(args)
+            result = self.pipeline.solve_repo(pipeline_args)
+            if isinstance(result, Mapping):
+                queue_observation(result)
+            return result
         finally:
             CURRENT_REQUEST_CANCEL_EVENT.reset(token)
+
+    def _queue_laya_solve_repo_observation(
+        self, args: Mapping[str, Any], result: Any, *, tool_output_excerpt: str = "",
+    ) -> None:
+        """Capture task-scoped final outcomes from the primary repository pipeline."""
+        if (
+            not isinstance(result, Mapping)
+            or result.get("success") is not True
+            or str(args.get("task_type", "auto")).strip() != "auto"
+            or str(args.get("complexity", "auto")).strip() != "auto"
+            or str(args.get("model", "")).strip()
+        ):
+            return
+        canonical = result.get("canonical")
+        repo_context = result.get("repo_context")
+        pipeline = result.get("pipeline")
+        if not isinstance(canonical, Mapping) or not isinstance(repo_context, Mapping) or not isinstance(pipeline, Mapping):
+            return
+        active_stages = pipeline.get("stages")
+        if not isinstance(active_stages, (list, tuple)):
+            return
+        route = canonical.get("route")
+        if not isinstance(route, Mapping):
+            return
+        route_option = {
+            "fast_code": "fast",
+            "heavy_code": "smart",
+            "reasoning": "smart",
+            "general": "generic",
+        }.get(str(route.get("task_type", "")))
+        if route_option is None:
+            return
+        evidence = repo_context.get("evidence")
+        if not isinstance(evidence, (list, tuple)):
+            return
+        evidence_ids = [
+            item.get("evidence_id") for item in evidence
+            if isinstance(item, Mapping) and isinstance(item.get("evidence_id"), str)
+        ][:64]
+        if not evidence_ids:
+            return
+        worker = canonical.get("worker")
+        explorer = canonical.get("explorer")
+        critic = canonical.get("critic")
+        generator_model = ""
+        for stage_name, stage in (("worker", worker), ("explorer", explorer), ("critic", critic)):
+            if stage_name not in active_stages or not isinstance(stage, Mapping):
+                continue
+            if stage_name in {"worker", "critic"} and stage.get("used") is not True:
+                continue
+            generator_model = self._laya_generator_model_code({"route": {"model": stage.get("model")}})
+            if generator_model and generator_model.casefold() != "deterministic":
+                break
+            generator_model = ""
+        if not generator_model:
+            return
+        task = args.get("task")
+        task_input = task.encode("utf-8", errors="replace")[:4096].decode("utf-8", errors="ignore").strip() if isinstance(task, str) else ""
+        training_content = {"task_input": task_input} if task_input else {}
+        model_response = self._laya_model_response_excerpt(result)
+        if model_response:
+            training_content["model_response"] = model_response
+        if isinstance(tool_output_excerpt, str) and tool_output_excerpt.strip():
+            training_content["tool_output_excerpt"] = tool_output_excerpt
+        state = {
+            "task_type": str(route.get("task_type", "general")),
+            "complexity": str(route.get("complexity", "fast")),
+            "semantic_required": "true" if route.get("semantic_required") is True else "false",
+            "context_present": "true" if evidence_ids else "false",
+        }
+        if generator_model:
+            state["generator_model"] = generator_model
+        self._queue_laya_shadow_observation(
+            {"task_id": args.get("task_id"), "evidence_ids": evidence_ids},
+            root=str(args.get("root") or ""),
+            category="model_route",
+            options=["fast", "smart", "generic"],
+            state=state,
+            training_content=training_content,
+            baseline={
+                "method": "model_router_classify",
+                "suggestion": route_option,
+                "evidence_id": evidence_ids[0],
+            },
+        )
 
     def route_context(self, args: dict[str, Any], *, cancel_event: threading.Event | None = None) -> dict[str, Any]:
         reject_retired_tenancy_fields(args)
