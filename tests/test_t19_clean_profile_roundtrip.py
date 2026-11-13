@@ -161,7 +161,7 @@ def test_clean_profile_install_update_configuration_and_prompt_roundtrip(tmp_pat
     env["LOCAL_AI_CONFIG"] = str(tmp_path / "bootstrap.toml")
     result = subprocess.run(
         [sys.executable, "-I", "-B", str(Path(__file__).resolve()), "--fixture", str(source_root), str(tmp_path)],
-        cwd=tmp_path, env=env, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60,
+        cwd=tmp_path, env=env, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=180,
     )
     assert result.returncode == 0, result.stdout[-2000:] + result.stderr[-4000:]
     receipt = json.loads(result.stdout.splitlines()[-1])

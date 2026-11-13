@@ -3,6 +3,7 @@ from __future__ import annotations
 import threading
 import time
 
+import local_ai_hub.external_gpu_reservation as gpu_reservation_module
 from local_ai_hub.external_gpu_reservation import ExternalGpuReservationStore
 import local_ai_hub.reranker as reranker_module
 from local_ai_hub.reranker import Reranker
@@ -16,6 +17,7 @@ def _cuda_reranker(tmp_path, monkeypatch):
     reranker.active_backend = "torch"
     reranker.active_device = "cuda"
     monkeypatch.setattr(reranker_module, "uses_torch_cuda", lambda backend, device: str(device).lower() == "cuda")
+    monkeypatch.setattr(gpu_reservation_module, "conservative_gpu_capacity_budget_bytes", lambda: 2 * 1024**3)
     monkeypatch.setattr(reranker, "_ensure_model", lambda **_kwargs: True)
     monkeypatch.setattr(reranker, "_rerank_uncached", lambda *_args, **_kwargs: {"success": True, "results": []})
     return reranker

@@ -336,7 +336,8 @@ def test_public_task_create_resume_and_checkpoint_audit_memory_per_attempt(
             first.record_id,
             later.record_id,
         }
-        assert resumed_state["memory_audit"] is None
+        assert resumed_state["memory_audit"]["used_ids"] == []
+        assert resumed_state["memory_audit"]["not_used_reason"]
         assert resumed_state["memory_audit_history"][-1] == {"used_ids": [first.record_id]}
 
         status, verifying = post(

@@ -84,6 +84,7 @@ _STATUS_TELEMETRY_SUMMARY_TIMEOUT_SECONDS = 1.0
 _STATUS_OLLAMA_PROFILE_TIMEOUT_SECONDS = 1.0
 _STATUS_PREPROCESSING_STATUS_TIMEOUT_SECONDS = 2.0
 _STATUS_SCHEDULER_TIMEOUT_SECONDS = 1.0
+_STATUS_AGENT_STATE_TIMEOUT_SECONDS = 2.0
 _STATUS_MAX_WORKERS = 32
 _STATUS_MAX_INFLIGHT_DEPENDENCIES = 32
 
@@ -95,7 +96,7 @@ def _status_dependency_timeout_seconds(key: str) -> float:
     elif key == "runtime.online":
         timeout = max(timeout, float(_STATUS_RUNTIME_ONLINE_TIMEOUT_SECONDS))
     elif key == "agent_state":
-        timeout = max(timeout, 2.0)
+        timeout = max(timeout, float(_STATUS_AGENT_STATE_TIMEOUT_SECONDS))
     elif key == "ollama_profile":
         timeout = max(timeout, float(_STATUS_OLLAMA_PROFILE_TIMEOUT_SECONDS))
     elif key in {"preprocessing.status", "preprocessing.stats", "background_gpu"}:

@@ -70,7 +70,7 @@ class _Guard(AgentConsistencyGuard):
         self.calls.append(("mappings", request))
         return (), ()
 
-    def check_drift(self, request, contract, changed_paths, diff):
+    def check_drift(self, request, contract, changed_paths, diff, *, reuse_candidates=()):
         self.calls.append(("drift", request))
         return self.warnings
 

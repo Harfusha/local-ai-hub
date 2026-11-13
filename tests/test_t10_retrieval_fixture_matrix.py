@@ -94,7 +94,7 @@ def test_affected_test_fixture_matrix_covers_declared_frameworks(tmp_path: Path)
         ("pytest", "pyproject.toml", "[project]\nname='demo'\n", "src/payment.py", "tests/test_payment.py", "pytest tests/test_payment.py"),
         ("dotnet", "Demo.csproj", "<Project />\n", "src/Payment.cs", "tests/PaymentTests.cs", 'dotnet test --filter "FullyQualifiedName~PaymentTests"'),
         ("npm", "package.json", '{"scripts":{"test":"vitest run"}}\n', "src/payment.ts", "tests/payment.spec.ts", "npm test -- tests/payment.spec.ts"),
-        ("cargo", "Cargo.toml", "[package]\nname='demo'\nversion='0.1.0'\n", "src/payment.rs", "tests/payment_test.rs", "cargo test payment_test"),
+        ("cargo", "Cargo.toml", "[package]\nname='demo'\nversion='0.1.0'\n", "src/payment.rs", "tests/payment_test.rs", "cargo test --test payment_test"),
         ("go", "go.mod", "module example.test/demo\n", "internal/payment/payment.go", "internal/payment/payment_test.go", "go test internal/payment/payment_test.go"),
     ]
 

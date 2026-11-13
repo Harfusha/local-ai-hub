@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import multiprocessing
 from pathlib import Path
 
 import pytest
@@ -92,4 +93,34 @@ def test_bootstrap_supervisor_files_allowed(tmp_path: Path):
     assert res["status"] == "initialized"
     assert res["version"] == 6
     assert (state_dir / STATE_VERSION_FILE).is_file()
+
+
+def _initialize_state_version_in_process(state_dir: str, barrier, results) -> None:
+    barrier.wait(timeout=10)
+    results.put(ensure_state_version(state_dir, target_version=6)["status"])
+
+
+def test_concurrent_first_start_initializes_state_once(tmp_path: Path):
+    state_dir = tmp_path / "concurrent_state"
+    context = multiprocessing.get_context("spawn")
+    barrier = context.Barrier(2)
+    results = context.Queue()
+    processes = [
+        context.Process(target=_initialize_state_version_in_process, args=(str(state_dir), barrier, results))
+        for _ in range(2)
+    ]
+    for process in processes:
+        process.start()
+    for process in processes:
+        process.join(timeout=30)
+    try:
+        assert all(process.exitcode == 0 for process in processes)
+        assert sorted(results.get(timeout=2) for _ in processes) == ["current", "initialized"]
+        assert read_state_version(state_dir) == 6
+    finally:
+        for process in processes:
+            if process.is_alive():
+                process.terminate()
+            process.join(timeout=2)
+        results.close()
 

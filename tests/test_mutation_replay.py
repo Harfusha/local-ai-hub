@@ -1394,6 +1394,9 @@ def test_http_partial_publish_failure_replays_without_dispatching_twice(
         agent_state=SimpleNamespace(db_path=str(state_dir / "agent_state.sqlite3")),
         recovery=journal,
         async_jobs=SimpleNamespace(inference_admission=lambda _action: nullcontext()),
+        telemetry=SimpleNamespace(
+            http_latency_estimate=lambda _path: {"samples": 10, "p95_duration_ms": 0, "queue_age_ms": 0}
+        ),
         rag=SimpleNamespace(
             index=lambda *_args, **_kwargs: failed_publish("rag-index"),
             docset_index=lambda *_args, **_kwargs: failed_publish("rag-docset-index"),

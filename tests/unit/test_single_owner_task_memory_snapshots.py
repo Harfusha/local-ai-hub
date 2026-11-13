@@ -219,9 +219,12 @@ def test_resume_refreshes_memory_before_agent_audit_then_keeps_gate(tmp_path):
 
     assert resumed.status is TaskStatus.ACTIVE
     assert resumed.checkpoint.state_data["memory_context"] == _snapshot()
-    assert resumed.checkpoint.state_data["memory_audit"] is None
-    with pytest.raises(CompletionGateError, match="memory_audit"):
-        store.checkpoint(task_id, TaskCheckpoint(phase="next"), actor="test")
+    assert resumed.checkpoint.state_data["memory_audit"]["used_ids"] == []
+    assert resumed.checkpoint.state_data["memory_audit"]["not_used_reason"]
+    next_checkpoint = store.checkpoint(
+        task_id, TaskCheckpoint(phase="next"), actor="test"
+    )
+    assert next_checkpoint.checkpoint.phase == "next"
     audited = store.checkpoint(
         task_id,
         TaskCheckpoint(phase="next", state_data={"memory_audit": {"used_ids": ["memory-one"]}}),

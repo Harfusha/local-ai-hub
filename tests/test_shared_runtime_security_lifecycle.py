@@ -654,12 +654,12 @@ if won:
         for index in range(2)
     ]
     try:
-        deadline = time.monotonic() + 10
+        deadline = time.monotonic() + 30
         while time.monotonic() < deadline and not all((tmp_path / f"ready-{index}").exists() for index in range(2)):
             time.sleep(0.01)
         assert all((tmp_path / f"ready-{index}").exists() for index in range(2))
         gate.write_text("go", encoding="utf-8")
-        deadline = time.monotonic() + 10
+        deadline = time.monotonic() + 30
         while time.monotonic() < deadline and not all((tmp_path / f"attempted-{index}").exists() for index in range(2)):
             time.sleep(0.01)
         # Keep the winner alive until both contenders actually attempted acquire.

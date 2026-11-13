@@ -493,7 +493,10 @@ def test_resume_refreshes_memory_and_checkpoint_keeps_audit_bundle(tmp_path: Pat
 
     bundle = resumed.checkpoint.state_data["memory_context"]
     assert {item["id"] for item in bundle["items"]} == {initial.record_id, later.record_id}
-    assert resumed.checkpoint.state_data["memory_audit"] is None
+    assert resumed.checkpoint.state_data["memory_audit"] == {
+        "used_ids": [],
+        "not_used_reason": "Refreshed memory context has not yet been reviewed or used by the resumed task.",
+    }
     tasks.checkpoint(task.task_id, TaskCheckpoint(phase="work", state_data={
         "note": "saved",
         "memory_audit": {"used_ids": [initial.record_id, later.record_id]},

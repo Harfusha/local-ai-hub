@@ -344,7 +344,9 @@ def test_real_store_create_checkpoint_get_and_resume_deliver_memories_over_stdio
         assert json_tokens(context) == context["estimated_tokens"] <= 512
     assert results[1].structuredContent["task"]["checkpoint"]["state_data"]["memory_audit"] == audit
     assert results[2].structuredContent["task"]["checkpoint"]["state_data"]["memory_audit"] == audit
-    assert results[3].structuredContent["task"]["checkpoint"]["state_data"]["memory_audit"] is None
+    resumed_audit = results[3].structuredContent["task"]["checkpoint"]["state_data"]["memory_audit"]
+    assert resumed_audit["used_ids"] == []
+    assert resumed_audit["not_used_reason"]
     assert [call["body"]["action"] for call in calls] == ["create", "checkpoint", "get", "resume"]
 
 
@@ -597,6 +599,7 @@ def test_stdio_checkpoint_get_show_current_audit_and_resume_resets_it(tmp_path, 
         assert set(payload["task"]["context"]) == {
             "task_id", "clone_id", "session_id", "repository_id", "worktree_id", "branch"}
     resumed = results[2].structuredContent
+    # Resume clears the prior audit instead of presenting it as current proof.
     assert resumed["task"]["checkpoint"]["state_data"]["memory_audit"] is None
     assert [call["body"]["action"] for call in calls] == ["checkpoint", "get", "resume"]
 

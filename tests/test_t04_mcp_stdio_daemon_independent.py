@@ -202,7 +202,18 @@ async def _mcp_status(parameters: StdioServerParameters) -> dict[str, object]:
             result = await session.call_tool("local_ai_status", {"detail": "brief"})
             assert not result.isError
             assert result.content and hasattr(result.content[0], "text")
-            return json.loads(result.content[0].text)
+            payload = json.loads(result.content[0].text)
+            # Cold startup can return one explicit retryable warming response.
+            # Make a single bounded follow-up so the test proves both clients
+            # converge on the same daemon rather than treating that protocol
+            # state as a failed handshake.
+            if payload.get("retryable") is True:
+                await asyncio.sleep(0.25)
+                result = await session.call_tool("local_ai_status", {"detail": "brief"})
+                assert not result.isError
+                assert result.content and hasattr(result.content[0], "text")
+                payload = json.loads(result.content[0].text)
+            return payload
 
 
 def test_stdio_handshake_starts_one_hub_for_simultaneous_cold_clients(tmp_path: Path) -> None:
@@ -247,7 +258,10 @@ def test_stdio_handshake_starts_one_hub_for_simultaneous_cold_clients(tmp_path: 
             f"launches={_launches(child_log)!r}; state_files={state_files!r}"
         )
         rows = _launches(child_log)
-        assert len(rows) == 1, f"simultaneous cold MCP clients started {len(rows)} Hub children"
+        assert len(rows) == 1, (
+            f"simultaneous cold MCP clients started {len(rows)} Hub children: "
+            f"rows={rows!r}; state_files={sorted(path.name for path in state_dir.iterdir())!r}"
+        )
         assert (state_dir / "hub.pid").exists()
         assert (state_dir / "hub.start.lock").read_bytes() == b""
     finally:

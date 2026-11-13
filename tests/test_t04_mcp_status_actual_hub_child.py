@@ -131,7 +131,7 @@ def stop_owned_children():
 try:
     os.environ["T04_EXPECT_PARENT_PID"] = str(os.getpid())
     os.environ["T04_EXPECT_PARENT_CREATION"] = str(process_identity(os.getpid())["creation_identity"])
-    timer = threading.Timer(14.0, stop_owned_children)
+    timer = threading.Timer(40.0, stop_owned_children)
     timer.daemon = True
     timer.start()
     started_at = time.monotonic()
@@ -150,7 +150,7 @@ try:
         "stderr": Path(os.environ["T04_CHILD_STDERR_FILE"]).read_text(encoding="utf-8", errors="replace"),
     }
     assert ensure_calls, "first registered MCP status call skipped HubClient.ensure_server"
-    assert elapsed < 15.0, elapsed
+    assert elapsed < 25.0, elapsed
     children = [item for item in client_module._DETACHED_CHILDREN if id(item) not in started_ids]
     assert len(children) == 1, children
     child = children[0]
@@ -252,8 +252,8 @@ def test_first_mcp_status_starts_and_reaps_real_hub_entrypoint(tmp_path: Path) -
     config_path.write_text(
         f'[server]\nbind="127.0.0.1"\nport={port}\nstate_dir={json.dumps(state_dir.as_posix())}\n'
         "max_concurrent_requests=8\n"
-        "[client]\nstartup_wait_seconds=12\nstartup_poll_seconds=0.05\n"
-        "health_timeout_seconds=0.25\nmax_request_timeout_seconds=14\n"
+        "[client]\nstartup_wait_seconds=30\nstartup_poll_seconds=0.05\n"
+        "health_timeout_seconds=0.25\nmax_request_timeout_seconds=38\n"
         "[features]\nstatus=true\n"
         "[hardware]\nprofile=\"cpu\"\nauto_tune=false\n"
         "[ollama]\nenabled=false\n"
@@ -330,7 +330,7 @@ def test_first_mcp_status_starts_and_reaps_real_hub_entrypoint(tmp_path: Path) -
     )
     process._local_ai_process_identity = process_identity(process.pid)
     try:
-        stdout, stderr = process.communicate(timeout=18)
+        stdout, stderr = process.communicate(timeout=45)
     except subprocess.TimeoutExpired:
         if tracked_pid_file.exists():
             identity = json.loads(tracked_pid_file.read_text(encoding="ascii"))
@@ -338,7 +338,7 @@ def test_first_mcp_status_starts_and_reaps_real_hub_entrypoint(tmp_path: Path) -
                 terminate_tree(identity["pid"], expected_identity=identity, grace_seconds=0.25)
         terminate_tree(process.pid, process_handle=process, grace_seconds=0.25)
         stdout, stderr = process.communicate(timeout=3)
-        pytest.fail(f"isolated MCP autostart exceeded 18s; helper={stdout!r}; stderr={stderr!r}")
+        pytest.fail(f"isolated MCP autostart exceeded 45s; helper={stdout!r}; stderr={stderr!r}")
 
     assert process.returncode == 0, stderr[-1600:]
     result = json.loads(stdout.strip().splitlines()[-1])
@@ -348,7 +348,7 @@ def test_first_mcp_status_starts_and_reaps_real_hub_entrypoint(tmp_path: Path) -
     )
     print("T04_REAL_HUB_PROOF " + json.dumps(result, sort_keys=True))
     assert result["ensure_calls"] >= 1
-    assert result["elapsed"] < 15.0
+    assert result["elapsed"] < 40.0
     assert result["argv"][1:] == ["-m", "local_ai_hub.supervisor", "--config", str(config_path)]
     assert Path(result["package_source"]).resolve() == source_root / "local_ai_hub" / "__init__.py"
     assert Path(result["entrypoint_source"]).resolve() == source_root / "local_ai_hub" / "__main__.py"

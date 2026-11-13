@@ -12,6 +12,7 @@ import pytest
 import local_ai_hub.ollama as ollama_module
 from local_ai_hub.model_policy import ModelExecutionPolicy
 from local_ai_hub.ollama import OllamaRuntime
+from local_ai_hub.resilience import CircuitBreakerAdmission
 from local_ai_hub.scheduler import AffinityScheduler, Job, QueueFullError, SchedulerTimeoutError
 from local_ai_hub.services import LocalAIServices
 
@@ -110,12 +111,12 @@ class _NoStaleCache:
 
 class _Breakers:
     def allow(self, _key):
-        return True
+        return CircuitBreakerAdmission(True)
 
-    def success(self, _key):
+    def success(self, _key, *, probe_generation=None):
         return None
 
-    def failure(self, _key):
+    def failure(self, _key, *, probe_generation=None):
         return None
 
 

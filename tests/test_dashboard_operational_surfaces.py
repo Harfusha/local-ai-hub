@@ -80,7 +80,7 @@ const results=requests.map(request=>{{
 }});
 console.log(JSON.stringify(results));
 """
-    completed = subprocess.run([node, "-e", script], capture_output=True, text=True, check=True, timeout=5)
+    completed = subprocess.run([node, "-e", script], capture_output=True, text=True, encoding="utf-8", check=True, timeout=5)
     results = json.loads(completed.stdout)
 
     assert results == [
@@ -119,7 +119,7 @@ const sandbox=vm.createContext({{humanLabel:value=>value}});
 vm.runInContext(source,sandbox,{{timeout:1000}});
 console.log(JSON.stringify(requests.map(item=>sandbox.requestOutcome(item.request,item.trace))));
 """
-    completed = subprocess.run([node, "-e", script], capture_output=True, text=True, check=True, timeout=5)
+    completed = subprocess.run([node, "-e", script], capture_output=True, text=True, encoding="utf-8", check=True, timeout=5)
     results = json.loads(completed.stdout)
 
     assert results == [

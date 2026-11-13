@@ -72,6 +72,13 @@ def affected_test_command(paths: list[str], runner: str) -> str:
         return "cargo test"
     if runner == "go":
         go_paths = [PurePosixPath(path.replace("\\", "/")) for path in selected]
+        if (
+            all(path.name.endswith("_test.go") for path in go_paths)
+            and len({path.parent for path in go_paths}) == 1
+        ):
+            return "go test " + " ".join(
+                quote(runner_path_argument(path.as_posix())) for path in go_paths
+            )
         packages = dict.fromkeys(
             "." if path.parent == PurePosixPath(".") else "./" + path.parent.as_posix()
             for path in go_paths

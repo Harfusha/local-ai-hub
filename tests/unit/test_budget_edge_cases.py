@@ -62,6 +62,7 @@ def test_root_family_budget_sanitization_and_lifecycle_helpers() -> None:
         output_tokens=50,
         scope=" sc1\x00 ",
         task_id=" t1\x00 ",
+        owner="test-agent",
     )
     assert res["status"] == "accepted"
     assert res["family"] == "fam"
@@ -70,8 +71,8 @@ def test_root_family_budget_sanitization_and_lifecycle_helpers() -> None:
     assert budget.used_tokens("fam") == 50
     assert budget.active_scopes_count("fam") == 1
 
-    # Release with NaN tokens does not crash
-    rel = budget.release("fam", tokens=float("nan"), scope="sc1")  # type: ignore[arg-type]
+    # Release is fenced by the exact reservation ID and owner.
+    rel = budget.release(res["reservation_id"], owner=res["owner"])
     assert rel["status"] == "released"
     assert budget.active_scopes_count("fam") == 0
 

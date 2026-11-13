@@ -8,8 +8,9 @@ from __future__ import annotations
 import json
 import os
 import time
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 CURRENT_STATE_VERSION = 6
 STATE_VERSION_FILE = "state_version.json"
@@ -28,8 +29,50 @@ BOOTSTRAP_STATE_ENTRIES = {
     "hub.owner.json",
     "hub.start.lock",
     "hub.start.lock.guard",
+    "state_version.lock",
     ".gitignore",
 }
+
+
+@contextmanager
+def _state_version_lock(root: Path) -> Iterator[None]:
+    """Serialize first-time state marker creation across Hub processes."""
+    path = root / "state_version.lock"
+    with path.open("a+b") as handle:
+        if os.name == "nt":
+            import msvcrt
+
+            handle.seek(0)
+            if not handle.read(1):
+                handle.seek(0)
+                handle.write(b"\0")
+                handle.flush()
+            deadline = time.monotonic() + 30.0
+            while True:
+                handle.seek(0)
+                try:
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+                    break
+                except OSError:
+                    if time.monotonic() >= deadline:
+                        raise TimeoutError("timed out acquiring state version initialization lock")
+                    time.sleep(0.05)
+        else:
+            import fcntl
+
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            handle.seek(0)
+            if os.name == "nt":
+                import msvcrt
+
+                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 def read_state_version(state_dir: Path | str) -> int | None:
     """Read the current state version from state_dir, or None if absent/invalid."""
@@ -90,29 +133,30 @@ def ensure_state_version(
         raise ValueError("target_version must be a positive integer")
     root.mkdir(parents=True, exist_ok=True)
 
-    current_ver = read_state_version(root)
-    if current_ver == target_version:
-        return {"status": "current", "version": target_version, "wiped": False}
+    with _state_version_lock(root):
+        current_ver = read_state_version(root)
+        if current_ver == target_version:
+            return {"status": "current", "version": target_version, "wiped": False}
 
-    if current_ver is not None and current_ver > target_version:
-        raise RuntimeError(
-            f"State version {current_ver} is newer than supported version {target_version}; "
-            "refusing startup to preserve state. Use an offline state conversion before retrying."
-        )
+        if current_ver is not None and current_ver > target_version:
+            raise RuntimeError(
+                f"State version {current_ver} is newer than supported version {target_version}; "
+                "refusing startup to preserve state. Use an offline state conversion before retrying."
+            )
 
-    unexpected = sorted(item.name for item in root.iterdir() if item.name not in BOOTSTRAP_STATE_ENTRIES)
-    if unexpected:
-        raise RuntimeError(
-            f"State version mismatch (found={current_ver}, target={target_version}, unexpected={unexpected}); "
-            "refusing to delete or migrate state. Complete an offline state conversion "
-            "with backup and verified record preservation before startup."
-        )
+        unexpected = sorted(item.name for item in root.iterdir() if item.name not in BOOTSTRAP_STATE_ENTRIES)
+        if unexpected:
+            raise RuntimeError(
+                f"State version mismatch (found={current_ver}, target={target_version}, unexpected={unexpected}); "
+                "refusing to delete or migrate state. Complete an offline state conversion "
+                "with backup and verified record preservation before startup."
+            )
 
-    write_state_version(root, version=target_version, migrated_from=current_ver)
+        write_state_version(root, version=target_version, migrated_from=current_ver)
 
-    return {
-        "status": "initialized",
-        "version": target_version,
-        "previous_version": current_ver,
-        "wiped": False,
-    }
+        return {
+            "status": "initialized",
+            "version": target_version,
+            "previous_version": current_ver,
+            "wiped": False,
+        }

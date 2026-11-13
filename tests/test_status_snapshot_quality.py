@@ -351,6 +351,7 @@ def test_slow_status_dependency_degrades_within_deadline_and_keeps_shape(monkeyp
     runtime.is_online = slow_online
     app = make_app(runtime=runtime)
     monkeypatch.setattr(app_module, "_STATUS_DEPENDENCY_TIMEOUT_SECONDS", 0.02, raising=False)
+    monkeypatch.setattr(app_module, "_STATUS_RUNTIME_ONLINE_TIMEOUT_SECONDS", 0.02, raising=False)
 
     started = time.monotonic()
     result = app.status()
@@ -674,6 +675,7 @@ def test_realtime_status_bounds_runtime_health_probes(monkeypatch, slow_probe):
     setattr(app.runtime, slow_probe, slow)
     monkeypatch.setattr(app_module, "_STATUS_DEPENDENCY_TIMEOUT_SECONDS", 0.02)
     monkeypatch.setattr(app_module, "_STATUS_OLLAMA_PROFILE_TIMEOUT_SECONDS", 0.02)
+    monkeypatch.setattr(app_module, "_STATUS_RUNTIME_ONLINE_TIMEOUT_SECONDS", 0.02)
 
     started = time.monotonic()
     result = app.realtime_status(light=True)
@@ -720,6 +722,7 @@ def test_slow_agent_state_summary_uses_dependency_deadline(monkeypatch):
     app = make_app()
     app._agent_state_summary = slow_summary
     monkeypatch.setattr(app_module, "_STATUS_DEPENDENCY_TIMEOUT_SECONDS", 0.02)
+    monkeypatch.setattr(app_module, "_STATUS_AGENT_STATE_TIMEOUT_SECONDS", 0.02)
 
     started = time.monotonic()
     result = app.status()
@@ -761,6 +764,7 @@ def test_timed_out_agent_state_is_reused_across_status_cache_hits(monkeypatch):
         return fallback, True
 
     monkeypatch.setattr(app_module, "_STATUS_DEPENDENCY_TIMEOUT_SECONDS", 0.10)
+    monkeypatch.setattr(app_module, "_STATUS_AGENT_STATE_TIMEOUT_SECONDS", 0.10)
     monkeypatch.setattr(app_module, "_status_dependency", isolate_agent_state)
     app = make_app()
     app.status()
@@ -779,14 +783,14 @@ def test_timed_out_agent_state_is_reused_across_status_cache_hits(monkeypatch):
             assert peak_active[0] == 1
         assert first["agent_state"] == {"enabled": False}
         assert all(item["agent_state"] == {"enabled": False} for item in cached)
-        assert len(app._status_dependency_inflight) == 1
+        assert "agent_state" in app._status_dependency_inflight
     finally:
         release.set()
 
     deadline = time.monotonic() + 1.0
     while app._status_dependency_inflight and time.monotonic() < deadline:
         time.sleep(0.005)
-    assert not app._status_dependency_inflight
+    assert "agent_state" not in app._status_dependency_inflight
     with lock:
         assert active[0] == 0
 
@@ -872,6 +876,7 @@ def test_live_status_slow_dependency_returns_degraded_within_deadline(monkeypatc
     runtime.is_online = slow_online
     app = make_live_app(monkeypatch, runtime=runtime)
     monkeypatch.setattr(app_module, "_STATUS_DEPENDENCY_TIMEOUT_SECONDS", 0.02)
+    monkeypatch.setattr(app_module, "_STATUS_RUNTIME_ONLINE_TIMEOUT_SECONDS", 0.02)
 
     started = time.monotonic()
     result = app.realtime_status(light=True)

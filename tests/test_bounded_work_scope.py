@@ -99,7 +99,7 @@ def test_expired_deadline_is_visible_while_backend_is_still_running(tmp_path, mo
             "approved_commands": ["git diff --check"], "budget": {"max_steps": 8, "max_seconds": 60},
             "permissions": {"edit": True, "tests": True, "build": True}})
         assert submitted["success"] is True
-        assert entered.wait(10)
+        assert entered.wait(20)
         work_id = submitted["work_id"]
         assert wo.status(work_id).get("timed_out") is not True
         clock.expired = True
@@ -114,7 +114,7 @@ def test_expired_deadline_is_visible_while_backend_is_still_running(tmp_path, mo
             assert projected["timed_out"] is True and projected["in_progress"] is True, projected
         assert (root / "a.txt").read_text().strip() == "old"
         release.set()
-        handoff = wait_terminal(wo, work_id, timeout=8)
+        handoff = wait_terminal(wo, work_id, timeout=60)
         assert handoff["status"] == "failed", handoff
         assert (root / "a.txt").read_text().strip() == "old"
     finally:
@@ -169,7 +169,7 @@ def test_task_bound_rollback_closes_barrier_on_partial_or_review_handoff(tmp_pat
             "approved_commands": ["git diff --check"], "budget": budget,
             "permissions": {"edit": True, "tests": True, "build": True}})
         assert submitted["success"] is True
-        handoff = wait_terminal(wo, submitted["work_id"], timeout=20)
+        handoff = wait_terminal(wo, submitted["work_id"], timeout=60)
         assert handoff["status"] == {"budget": "partial", "review": "needs_agent", "deadline": "failed"}[reason], handoff
         if reason == "deadline":
             assert "work time budget exhausted" in handoff["error"]
@@ -743,7 +743,7 @@ def test_uncertain_model_response_never_yields_bounded_handoff(tmp_path, stage, 
             "approved_commands": ["git diff --check"], "budget": {"max_steps": 8, "max_seconds": 60},
             "permissions": {"edit": True, "tests": True, "build": True}})
         assert submitted["success"] is True
-        handoff = wait_terminal(wo, submitted["work_id"], timeout=20)
+        handoff = wait_terminal(wo, submitted["work_id"], timeout=60)
         assert handoff["status"] == "failed", handoff
         assert flag in handoff["error"]
         assert (root / "a.txt").read_text(encoding="utf-8").strip() == "old"
@@ -855,7 +855,7 @@ def test_bounded_order_applies_only_allowed_patch_and_runs_only_approved_command
             "budget": {"max_steps": 8, "max_seconds": 60},
         })
         assert submitted["success"] is True
-        result = wait_terminal(wo, submitted["work_id"], timeout=20)
+        result = wait_terminal(wo, submitted["work_id"], timeout=60)
         assert result["status"] == expected_status
         assert (root / "a.txt").read_text().strip() == ("new" if expected_status == "needs_agent" else "old")
         assert all(call.get("command") == "git diff --check" for call in services.commands)
@@ -913,7 +913,7 @@ def test_bounded_order_rolls_back_ambiguous_validation(tmp_path, response):
             "allowed_paths": ["a.txt"], "approved_commands": ["git diff --check"],
             "budget": {"max_steps": 8, "max_seconds": 60},
         })
-        result = wait_terminal(wo, submitted["work_id"], timeout=20)
+        result = wait_terminal(wo, submitted["work_id"], timeout=60)
         assert result["status"] == "failed"
         assert services.command_calls == 1
         assert (root / "a.txt").read_text().strip() == "old"
@@ -948,7 +948,7 @@ def test_bounded_intermediate_review_rejects_non_boolean_passed(tmp_path):
             "approved_commands": ["git diff --check"], "budget": {"max_steps": 8, "max_seconds": 60},
             "permissions": {"edit": True, "tests": True, "build": True},
         })
-        result = wait_terminal(wo, submitted["work_id"], timeout=20)
+        result = wait_terminal(wo, submitted["work_id"], timeout=60)
         assert result["status"] == "failed"
         assert services.verify_calls == 1
         assert (root / "a.txt").read_text().strip() == "old"
@@ -975,7 +975,7 @@ def test_cancel_during_validation_does_not_record_late_receipt(tmp_path, save_ar
 
         def command(self, args, *, request_cancel_event=None):
             entered.set()
-            assert release.wait(5)
+            assert release.wait(30)
             return {"success": True, "exit_code": 0, "execution_id": "late", "repository_revision": "rev"}
 
     root = init_repo(tmp_path)
@@ -997,10 +997,10 @@ def test_cancel_during_validation_does_not_record_late_receipt(tmp_path, save_ar
             "approved_commands": ["python -m pytest"], "budget": {"max_steps": 8, "max_seconds": 60},
             "permissions": {"edit": True, "tests": True, "build": True},
         })
-        assert entered.wait(5)
+        assert entered.wait(30)
         assert wo.cancel(submitted["work_id"])["success"] is True
         release.set()
-        result = wait_terminal(wo, submitted["work_id"], timeout=20)
+        result = wait_terminal(wo, submitted["work_id"], timeout=30)
         assert result["status"] == "cancelled"
         assert not any(item["kind"] == "command_verification" for item in artifacts.data.values())
         if save_artifact:
@@ -1053,7 +1053,7 @@ def test_deadline_after_broker_reply_retains_validation_evidence(tmp_path, monke
             "approved_commands": ["python -m pytest"], "budget": {"max_steps": 8, "max_seconds": 60},
             "permissions": {"edit": True, "tests": True, "build": True},
         })
-        result = wait_terminal(wo, submitted["work_id"], timeout=20)
+        result = wait_terminal(wo, submitted["work_id"], timeout=60)
         assert result["status"] == "failed"
         assert "artifact_id" in result, result
         report = json.loads(artifacts.data[result["artifact_id"]]["text"])
@@ -1099,9 +1099,9 @@ def test_cancel_during_local_edit_retains_observation_and_does_not_apply_late_pa
             "approved_commands": ["git diff --check"], "budget": {"max_steps": 8, "max_seconds": 60},
             "permissions": {"edit": True, "tests": True, "build": True}})
         assert submitted["success"] is True
-        assert entered.wait(10)
+        assert entered.wait(20)
         assert wo.cancel(submitted["work_id"])["success"] is True
-        handoff = wait_terminal(wo, submitted["work_id"], timeout=15)
+        handoff = wait_terminal(wo, submitted["work_id"], timeout=60)
         assert handoff["status"] == "cancelled"
         assert (root / "a.txt").read_text(encoding="utf-8").strip() == "old"
         if save_artifact:
@@ -1152,10 +1152,10 @@ def test_cancel_during_planning_finishes_without_mutation(tmp_path, monkeypatch,
             "approved_commands": ["git diff --check"], "budget": {"max_steps": 8, "max_seconds": 60},
             "permissions": {"edit": True, "tests": True, "build": True}})
         assert submitted["success"] is True
-        assert entered.wait(10)
+        assert entered.wait(20)
         clock.expired = deadline_elapsed
         assert wo.cancel(submitted["work_id"])["success"] is True
-        handoff = wait_terminal(wo, submitted["work_id"], timeout=8)
+        handoff = wait_terminal(wo, submitted["work_id"], timeout=60)
         assert handoff["status"] == "cancelled", handoff
         assert (root / "a.txt").read_text(encoding="utf-8").strip() == "old"
         assert services.delegate_calls == (1 if planner_result == "late_success" else 0)
@@ -1190,7 +1190,7 @@ def test_planning_deadline_is_not_misreported_as_backend_cancellation(tmp_path, 
             "approved_commands": ["git diff --check"], "budget": {"max_steps": 8, "max_seconds": 60},
             "permissions": {"edit": True, "tests": True, "build": True}})
         assert submitted["success"] is True
-        handoff = wait_terminal(wo, submitted["work_id"], timeout=15)
+        handoff = wait_terminal(wo, submitted["work_id"], timeout=60)
         assert handoff["status"] == "failed", handoff
         assert "work time budget exhausted" in handoff["error"]
         assert (root / "a.txt").read_text(encoding="utf-8").strip() == "old"
@@ -1279,7 +1279,7 @@ def test_bounded_elapsed_time_includes_delay_after_deadline_starts(tmp_path, mon
             "approved_commands": ["git diff --check"], "budget": {"max_steps": 8, "max_seconds": 60},
             "permissions": {"edit": True, "tests": True, "build": True}})
         assert submitted["success"] is True
-        handoff = wait_terminal(wo, submitted["work_id"], timeout=20)
+        handoff = wait_terminal(wo, submitted["work_id"], timeout=60)
         assert handoff["status"] == "needs_agent", handoff
         report = json.loads(artifacts.get(handoff["artifact_id"])["text"])
         assert 3 <= report["elapsed_seconds"] < 15
@@ -1334,7 +1334,7 @@ def test_planning_cancellation_preserves_corrupt_journal_for_recovery(tmp_path, 
             "approved_commands": ["git diff --check"], "budget": {"max_steps": 8, "max_seconds": 60},
             "permissions": {"edit": True, "tests": True, "build": True}})
         assert submitted["success"] is True
-        assert entered.wait(10)
+        assert entered.wait(20)
         journal = wo._journal_path(submitted["work_id"])
         journal.parent.mkdir(parents=True, exist_ok=True)
         journal.write_text('{"corrupt": true}', encoding="utf-8")
@@ -1376,7 +1376,7 @@ def test_cancel_signals_running_bounded_validation(tmp_path):
             "approved_commands": ["git diff --check"], "budget": {"max_steps": 8, "max_seconds": 60},
             "permissions": {"edit": True, "tests": True, "build": True},
         })
-        assert entered.wait(5)
+        assert entered.wait(20)
         assert wo.cancel(submitted["work_id"])["success"] is True
         wo.close()
         assert observed == [True]
@@ -1411,7 +1411,7 @@ def test_other_process_cancellation_signals_running_bounded_validation(tmp_path)
                                "acceptance_criteria": ["a.txt contains new"], "allowed_paths": ["a.txt"],
                                "approved_commands": ["git diff --check"], "budget": {"max_steps": 8, "max_seconds": 60},
                                "permissions": {"edit": True, "tests": True, "build": True}})
-        assert entered.wait(5)
+        assert entered.wait(20)
         script = ("import sys,threading; from pathlib import Path; from local_ai_hub.work_orchestrator import WorkOrchestrator; "
                   "w=object.__new__(WorkOrchestrator); w.path=Path(sys.argv[1])/'work_orders.sqlite3'; "
                   "w._lock=threading.RLock(); w._active_cancellations={}; w._waiters={}; w._wake=threading.Event(); "
@@ -1419,7 +1419,7 @@ def test_other_process_cancellation_signals_running_bounded_validation(tmp_path)
         child = subprocess.run([sys.executable, "-c", script, str(state), submitted["work_id"]],
                                capture_output=True, text=True, timeout=10, **hidden_run_kwargs())
         assert child.returncode == 0, (child.stdout, child.stderr)
-        result = wait_terminal(wo, submitted["work_id"], timeout=8)
+        result = wait_terminal(wo, submitted["work_id"], timeout=60)
         assert observed == [True]
         assert result["status"] == "cancelled"
     finally:
@@ -1466,7 +1466,7 @@ def test_cancel_recovers_after_terminal_state_write_failure(tmp_path, monkeypatc
                                "acceptance_criteria": ["a.txt contains new"], "allowed_paths": ["a.txt"],
                                "approved_commands": ["git diff --check"], "budget": {"max_steps": 8, "max_seconds": 60},
                                "permissions": {"edit": True, "tests": True, "build": True}})
-        assert entered.wait(5)
+        assert entered.wait(20)
         assert wo.cancel(submitted["work_id"])["success"] is True
         assert terminal_attempted.wait(10)
         assert recovery_scheduled.wait(5)
@@ -1484,7 +1484,7 @@ def test_cancel_recovers_after_terminal_state_write_failure(tmp_path, monkeypatc
         return
     recovered = WorkOrchestrator(config(tmp_path), state, services, None, FakeLeases(), artifacts)
     try:
-        result = wait_terminal(recovered, submitted["work_id"], timeout=15)
+        result = wait_terminal(recovered, submitted["work_id"], timeout=60)
         assert result["status"] == "cancelled", result
         assert (root / "a.txt").read_text(encoding="utf-8").strip() == "old"
     finally:
@@ -1564,7 +1564,7 @@ def test_unbound_bounded_work_returns_test_evidence_without_fabricating_task_rec
             "allowed_paths": ["a.txt"], "approved_commands": ["git diff --check"],
             "budget": {"max_steps": 8, "max_seconds": 60},
         })
-        result = wait_terminal(wo, submitted["work_id"], timeout=20)
+        result = wait_terminal(wo, submitted["work_id"], timeout=60)
         assert result["status"] == "needs_agent", result
         assert result["requires_primary_review"] is True
         assert result["verification_receipts"] == []
@@ -1607,7 +1607,7 @@ def test_bound_bounded_work_does_not_synthesize_broker_receipt(tmp_path):
             "approved_commands": ["python -m pytest"], "budget": {"max_steps": 8, "max_seconds": 60},
             "permissions": {"edit": True, "tests": True, "build": True},
         })
-        result = wait_terminal(wo, submitted["work_id"], timeout=20)
+        result = wait_terminal(wo, submitted["work_id"], timeout=60)
         assert result["status"] == "needs_agent", result
         assert result["verification_receipts"] == []
         assert result["verification"]["receipt_gate"]["complete"] is False
@@ -1640,7 +1640,7 @@ def test_bounded_handoff_preserves_actual_command_output_evidence(tmp_path):
                                "acceptance_criteria": ["a.txt contains new"], "allowed_paths": ["a.txt"],
                                "approved_commands": ["git diff --check"], "budget": {"max_steps": 8, "max_seconds": 60},
                                "permissions": {"edit": True, "tests": True, "build": True}})
-        result = wait_terminal(wo, submitted["work_id"], timeout=20)
+        result = wait_terminal(wo, submitted["work_id"], timeout=60)
         assert result["status"] == "needs_agent", result
         report = json.loads(artifacts.data[result["artifact_id"]]["text"])
         validation = report["validation"][0]

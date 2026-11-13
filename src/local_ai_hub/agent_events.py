@@ -199,6 +199,7 @@ class AgentStateStore:
     _schema_init_guard = threading.RLock()
     _append_publish_locks_guard = threading.Lock()
     _append_publish_locks: dict[str, Any] = {}
+    _schema_init_locks: dict[str, Any] = {}
     # PRAGMA user_version belongs to the canonical database-wide core schema.
     # Runtime does not accept retired migration/version bookkeeping tables.
     _SCHEMA_VERSION = 1
@@ -312,6 +313,9 @@ class AgentStateStore:
             self._append_publish_lock = self._append_publish_locks.setdefault(
                 lock_key, threading.RLock()
             )
+            self._schema_init_lock = self._schema_init_locks.setdefault(
+                lock_key, threading.RLock()
+            )
         self._lock = threading.RLock()
         self._initialized = False
         self._schema_preflight_cache: tuple[Any, ...] | None = None
@@ -329,7 +333,7 @@ class AgentStateStore:
     def _ensure_schema(self) -> None:
         if self._initialized or not self.enabled:
             return
-        with self._schema_init_guard, self._lock:
+        with self._schema_init_lock, self._schema_init_guard, self._lock:
             if self._initialized or not self.enabled:
                 return
             self.db_path.parent.mkdir(parents=True, exist_ok=True)

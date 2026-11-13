@@ -231,7 +231,7 @@ def test_project_expires_at_24_hours_and_foreground_touch_reactivates_it(schedul
     instance._last_touch = {}
     instance._touch_debounce_seconds = 15.0
 
-    def write_retry(attempt):
+    def write_retry(attempt, **_kwargs):
         with closing(connect()) as con:
             cur = attempt(con)
             con.commit()
@@ -256,7 +256,7 @@ def test_touch_updates_only_matching_absolute_root(scheduler, tmp_path):
     instance._last_touch = {}
     instance._touch_debounce_seconds = 15.0
 
-    def write_retry(attempt):
+    def write_retry(attempt, **_kwargs):
         with closing(connect()) as con:
             cur = attempt(con)
             con.commit()

@@ -454,7 +454,12 @@ class PolicyEngine:
                             "ON agent_external_call_reservations(task_id)"
                         )
             try:
-                retry_busy(_setup, retries=5, base_delay_seconds=0.02)
+                schema_init_lock = getattr(self.state_store, "_schema_init_lock", None)
+                if schema_init_lock is None:
+                    retry_busy(_setup, retries=5, base_delay_seconds=0.02)
+                else:
+                    with schema_init_lock:
+                        retry_busy(_setup, retries=5, base_delay_seconds=0.02)
                 self._initialized = True
             except sqlite3.Error as exc:
                 LOGGER.warning(

@@ -3,6 +3,7 @@ from __future__ import annotations
 import threading
 from unittest.mock import MagicMock
 
+from local_ai_hub.resilience import CircuitBreakerAdmission
 from local_ai_hub.services import LocalAIServices
 
 
@@ -47,7 +48,7 @@ def _make_services(tmp_path):
     services.stale_generation_cache = _NoStaleCache()
     services.tuner = None
     services.breakers = MagicMock()
-    services.breakers.allow.return_value = True
+    services.breakers.allow.return_value = CircuitBreakerAdmission(True)
     services.conversations = MagicMock()
     services._semantic_lock_guard = threading.Lock()
     services._semantic_scope_locks = {}

@@ -217,6 +217,9 @@ def test_unchanged_context_delta_reuses_revision_and_keeps_pack_useful(tmp_path)
             }
 
     class Guard:
+        def diff_analysis_status(self, _diff):
+            return "complete"
+
         def build_contract(self, request):
             return GoalContract(goal=request.query)
 
@@ -226,7 +229,7 @@ def test_unchanged_context_delta_reuses_revision_and_keeps_pack_useful(tmp_path)
         def build_contract_mappings(self, _request, _evidence):
             return (), ()
 
-        def check_drift(self, _request, _contract, _changed_paths, _diff):
+        def check_drift(self, _request, _contract, _changed_paths, _diff, *, reuse_candidates=()):
             return ()
 
     services = LocalAIServices.__new__(LocalAIServices)

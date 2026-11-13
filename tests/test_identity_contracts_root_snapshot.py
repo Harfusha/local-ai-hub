@@ -207,6 +207,12 @@ def test_artifacts_are_owner_global_and_evidence_ids_are_repository_scoped(tmp_p
     item = {"path": "src/module.py", "file_sha256": "a" * 64, "start_line": 1, "end_line": 1, "text": "value = 1"}
     repo_a = str(tmp_path / "repo-a")
     repo_b = str(tmp_path / "repo-b")
+    (tmp_path / "repo-a").mkdir()
+    (tmp_path / "repo-b").mkdir()
+    for repository in (tmp_path / "repo-a", tmp_path / "repo-b"):
+        source = repository / "src"
+        source.mkdir()
+        (source / "module.py").write_text("value = 1\n", encoding="utf-8")
     evidence_a = evidence.put(repo_a, item)
     evidence_b = evidence.put(repo_b, item)
 

@@ -416,7 +416,8 @@ class LearningStore:
                         """
                     )
                     con.commit()
-            retry_busy(_setup, retries=5, base_delay_seconds=0.02)
+            with self.state_store._schema_init_lock:
+                retry_busy(_setup, retries=5, base_delay_seconds=0.02)
             self._initialized = True
 
     def create_candidate(self, candidate: ImprovementCandidate) -> ImprovementCandidate:

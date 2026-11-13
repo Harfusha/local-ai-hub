@@ -99,6 +99,10 @@ def _embedding_model(cache, *, provider="ollama", model_name="test-model", dimen
 def test_ollama_embedding_gpu_call_uses_expiring_owner_lease(tmp_path, monkeypatch):
     from local_ai_hub.external_gpu_reservation import ExternalGpuReservationStore
 
+    monkeypatch.setattr(
+        "local_ai_hub.external_gpu_reservation.conservative_gpu_capacity_budget_bytes",
+        lambda: 2 * 1024 * 1024 * 1024,
+    )
     model = EmbeddingModel.__new__(EmbeddingModel)
     model._gpu_reservation_path = tmp_path / "external-gpu-reservation"
     store = ExternalGpuReservationStore(model._gpu_reservation_path, ttl_seconds=30)
@@ -137,6 +141,10 @@ def test_ollama_embedding_gpu_call_uses_expiring_owner_lease(tmp_path, monkeypat
 def test_failed_ollama_embedding_keeps_active_lease_only_until_ttl(tmp_path, monkeypatch):
     from local_ai_hub.external_gpu_reservation import ExternalGpuReservationStore
 
+    monkeypatch.setattr(
+        "local_ai_hub.external_gpu_reservation.conservative_gpu_capacity_budget_bytes",
+        lambda: 2 * 1024 * 1024 * 1024,
+    )
     now = [time.time()]
     model = EmbeddingModel.__new__(EmbeddingModel)
     model._gpu_reservation_path = tmp_path / "external-gpu-reservation"
@@ -171,6 +179,10 @@ def test_terminal_ollama_embedding_http_error_releases_active_lease(tmp_path, mo
 
     from local_ai_hub.external_gpu_reservation import ExternalGpuReservationStore
 
+    monkeypatch.setattr(
+        "local_ai_hub.external_gpu_reservation.conservative_gpu_capacity_budget_bytes",
+        lambda: 2 * 1024 * 1024 * 1024,
+    )
     model = EmbeddingModel.__new__(EmbeddingModel)
     model._gpu_reservation_path = tmp_path / "external-gpu-reservation"
     store = ExternalGpuReservationStore(model._gpu_reservation_path, ttl_seconds=30)
@@ -204,6 +216,10 @@ def test_sentence_transformers_gpu_lease_release_requires_terminal_outcome(
 ):
     from local_ai_hub.external_gpu_reservation import ExternalGpuReservationStore
 
+    monkeypatch.setattr(
+        "local_ai_hub.external_gpu_reservation.conservative_gpu_capacity_budget_bytes",
+        lambda: 2 * 1024**3,
+    )
     model = _embedding_model(_Cache(), provider="sentence-transformers")
     model.device = "cuda"
     model._gpu_reservation_path = tmp_path / "external-gpu-reservation"

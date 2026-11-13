@@ -5,9 +5,9 @@ import pytest
 
 from local_ai_hub.commands import (
     CommandBroker,
-    cluster_stack_traces,
     deduplicate_stack_traces,
 )
+from local_ai_hub.trace_utils import cluster_stack_traces
 
 
 SAMPLE_TRACEBACK_1 = """\

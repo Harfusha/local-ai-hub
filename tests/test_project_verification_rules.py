@@ -172,10 +172,13 @@ def test_project_completion_rejects_invalid_mutation_generation_before_t09_call(
 def test_http_task_completion_uses_persisted_project_receipts(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    import sys
+
     project_root = tmp_path / "repo"
     project_root.mkdir()
+    required_command = f'{Path(sys.executable).as_posix()} -m pyflakes review'
     (project_root / ".local-ai.toml").write_text(
-        '[commands]\ntest = "python -m pytest -q"\nrequired_commands = "python -m pyflakes review"\n'
+        f'[commands]\ntest = "python -m pytest -q"\nrequired_commands = "{required_command}"\n'
         '[verification_rules]\nrequired_commands = ["test"]\n',
         encoding="utf-8",
     )

@@ -669,7 +669,8 @@ class IncidentStore:
                         # FTS index is temporary and built by find_negative_knowledge.
                 finally:
                     con.close()
-            retry_busy(_setup, retries=5, base_delay_seconds=0.02)
+            with self.state_store._schema_init_lock:
+                retry_busy(_setup, retries=5, base_delay_seconds=0.02)
             self._initialized = True
 
     def capture(self, outcome: ToolOutcome) -> IncidentRecord | None:
@@ -1443,6 +1444,39 @@ class IncidentStore:
                         candidate_limit,
                     ),
                 )
+                rows = list(cur.fetchall())
+                # Some useful negative guidance is derived from error classes
+                # rather than stored verbatim in the incident text (for
+                # example, database-lock errors recommend backoff). FTS cannot
+                # match that derived text, so include a bounded recent window
+                # for the Python-side suggestion matcher as well.
+                if not rows:
+                    # Some useful negative guidance is derived from error
+                    # classes rather than stored verbatim in incident text.
+                    # Only scan the bounded recent window when FTS has no
+                    # direct matches; otherwise preserve FTS relevance order.
+                    rows = list(con.execute(
+                        """
+                        WITH ranked AS (
+                            SELECT incident_id, operation_class, error_class, signature_hash, redacted_message,
+                                   state_revision, root_cause, verified_fix, confidence,
+                                   SUM(attempts) OVER (PARTITION BY operation_class, error_class, signature_hash) AS attempts,
+                                   updated_at, affected_paths, ignored, expires_at, repository_key, resolved,
+                                   ROW_NUMBER() OVER (
+                                       PARTITION BY operation_class, error_class, signature_hash, repository_key
+                                       ORDER BY updated_at DESC, incident_id DESC
+                                   ) AS row_num
+                            FROM agent_incidents WHERE repository_key = ?
+                        )
+                        SELECT incident_id, operation_class, error_class, redacted_message, state_revision,
+                               root_cause, verified_fix, confidence, attempts, updated_at, affected_paths,
+                               repository_key, resolved
+                        FROM ranked
+                        WHERE ignored = 0 AND row_num = 1 AND (expires_at IS NULL OR expires_at > ?)
+                        ORDER BY updated_at DESC LIMIT ?
+                        """,
+                        (*scope_params, time.time(), candidate_limit),
+                    ).fetchall())
             else:
                 cur = con.execute(
                     """
@@ -1469,9 +1503,10 @@ class IncidentStore:
                     """,
                     (*scope_params, time.time(), candidate_limit),
                 )
+                rows = list(cur.fetchall())
             q_norm = query.strip().lower()
             results: list[dict[str, Any]] = []
-            for r in cur.fetchall():
+            for r in rows:
                 rc = str(r[5] or "")
                 raw_fix = str(r[6] or "")
                 resolved = bool(r[12]) and raw_fix.strip().casefold() != "resolved"

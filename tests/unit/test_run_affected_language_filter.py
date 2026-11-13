@@ -72,13 +72,13 @@ def test_cargo_command_selects_test_targets(paths, expected):
 @pytest.mark.parametrize(
     ("paths", "expected"),
     [
-        (["pkg/a/a_test.go"], "go test ./pkg/a"),
-        ([r"pkg\a\a_test.go"], "go test ./pkg/a"),
+        (["pkg/a/a_test.go"], "go test pkg/a/a_test.go"),
+        ([r"pkg\a\a_test.go"], "go test pkg/a/a_test.go"),
         (["pkg/a/a_test.go", "pkg/b/b_test.go"], "go test ./pkg/a ./pkg/b"),
-        (["a_test.go"], "go test ."),
+        (["a_test.go"], "go test a_test.go"),
     ],
 )
-def test_go_command_selects_packages_instead_of_source_files(paths, expected):
+def test_go_command_uses_exact_test_files_when_package_is_ambiguous(paths, expected):
     assert affected_test_command(paths, "go") == expected
 
 

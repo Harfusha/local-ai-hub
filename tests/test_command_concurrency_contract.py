@@ -593,6 +593,12 @@ def test_pipe_reader_start_failure_kills_and_reaps_command(tmp_path, monkeypatch
     real_start = commands_module.threading.Thread.start
     reader_start_count = 0
 
+    def child_pid_if_ready() -> int | None:
+        try:
+            return int(pid_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+
     def fail_reader_start(thread, *args, **kwargs):
         nonlocal reader_start_count
         if getattr(getattr(thread, "_target", None), "__name__", "") == "_reader":
@@ -600,9 +606,9 @@ def test_pipe_reader_start_failure_kills_and_reaps_command(tmp_path, monkeypatch
             if reader_start_count == 1:
                 return real_start(thread, *args, **kwargs)
             deadline = time.monotonic() + 5
-            while time.monotonic() < deadline and not pid_path.exists():
+            while time.monotonic() < deadline and child_pid_if_ready() is None:
                 time.sleep(0.01)
-            assert pid_path.exists(), "child did not start before pipe reader failure injection"
+            assert child_pid_if_ready() is not None, "child did not start before pipe reader failure injection"
             raise RuntimeError("injected reader thread startup failure")
         return real_start(thread, *args, **kwargs)
 
@@ -611,14 +617,15 @@ def test_pipe_reader_start_failure_kills_and_reaps_command(tmp_path, monkeypatch
     result = broker._execute(f'"{sys.executable}" "{script_path}"', str(tmp_path), timeout=8)
 
     deadline = time.monotonic() + 2
-    while time.monotonic() < deadline and not pid_path.exists():
+    while time.monotonic() < deadline and child_pid_if_ready() is None:
         time.sleep(0.02)
     assert reader_start_count == 2
     assert result["success"] is False
     assert result["cleanup_unconfirmed"] is False
     assert "reader" in result["error"].lower()
-    assert pid_path.exists()
-    assert not pid_alive(int(pid_path.read_text(encoding="utf-8")))
+    child_pid = child_pid_if_ready()
+    assert child_pid is not None
+    assert not pid_alive(child_pid)
 
 
 def test_pipe_read_error_fails_closed_and_is_not_cached(tmp_path, monkeypatch) -> None:
@@ -1514,7 +1521,7 @@ def test_patch_root_guard_blocks_rename_during_validation_and_releases_afterward
 
     result = broker.patch_and_verify(patch, str(tmp_path),  command="python -m pytest -q")
 
-    assert result["success"] is True
+    assert result["success"] is True, result
     tmp_path.rename(moved)
     try:
         assert (moved / "target.txt").read_text(encoding="utf-8") == "after\n"

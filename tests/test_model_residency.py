@@ -78,6 +78,7 @@ def test_auto_reasoning_may_reuse_resident_fast_model_with_fast_execution_role()
 
 def test_generate_accepts_route_with_resident_execution_role():
     from unittest.mock import MagicMock
+    from local_ai_hub.resilience import CircuitBreakerAdmission
     from local_ai_hub.services import LocalAIServices
 
     service = LocalAIServices.__new__(LocalAIServices)
@@ -102,7 +103,7 @@ def test_generate_accepts_route_with_resident_execution_role():
     }
     service._fallback_models = lambda m: []
     service.breakers = MagicMock()
-    service.breakers.allow.return_value = True
+    service.breakers.allow.return_value = CircuitBreakerAdmission(True)
     service.scheduler = MagicMock()
     service.scheduler.submit.side_effect = lambda candidate, execute, **kw: execute()
     service.telemetry = MagicMock()

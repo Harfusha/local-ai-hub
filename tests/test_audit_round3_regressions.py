@@ -148,10 +148,9 @@ def test_t3_05_source_slice_empty_file_line_bounds(tmp_path: Path):
     empty_file = tmp_path / "empty.py"
     empty_file.write_text("", encoding="utf-8")
 
-    # line_start=1 on empty file is allowed (empty slice)
+    # Empty files have no line 1, so reject every requested source line.
     res_ok = read_source_slice(str(tmp_path), "empty.py", line_start=1)
-    assert res_ok["success"] is True
-    assert res_ok["text"] == ""
+    assert res_ok["success"] is False
 
     # line_start=5 on empty file must fail
     res_err = read_source_slice(str(tmp_path), "empty.py", line_start=5)

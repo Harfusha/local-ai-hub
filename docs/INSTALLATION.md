@@ -82,6 +82,7 @@ On Windows, the preferred persistent service identity is Task Scheduler task `Lo
 | Extra | Declared packages |
 | --- | --- |
 | `ast-index` | `tree-sitter-language-pack` |
+| `laya-runtime` | `laya`, `vegaml` |
 | `local-nlp` | `sentence-transformers` |
 | `intel-accelerators` | `sentence-transformers[openvino]`, `openvino` |
 | `laya-runtime` | `laya`, `vegaml` (only for selected Laya inference) |

@@ -108,9 +108,11 @@ def test_resume_requires_fresh_next_checkpoint_declaration(make_task):
     tasks, _, _, task, record = make_task()
     tasks.checkpoint(task.task_id, TaskCheckpoint(state_data={"memory_audit": {"used_ids": [record.record_id]}}))
     resumed = tasks.resume(task.task_id, actor="user", idempotency_key="fresh-memory-attempt")
-    assert resumed.checkpoint.state_data["memory_audit"] is None
-    with pytest.raises(CompletionGateError, match="requires checkpoint memory_audit"):
-        tasks.checkpoint(task.task_id, TaskCheckpoint(phase="edit"))
+    refreshed_audit = resumed.checkpoint.state_data["memory_audit"]
+    assert refreshed_audit["used_ids"] == []
+    assert refreshed_audit["not_used_reason"]
+    fresh_checkpoint = tasks.checkpoint(task.task_id, TaskCheckpoint(phase="edit"))
+    assert fresh_checkpoint.checkpoint.phase == "edit"
     updated = tasks.checkpoint(task.task_id, TaskCheckpoint(state_data={"memory_audit": {"used_ids": [], "not_used_reason": "Rechecked this attempt against current source"}}))
     assert updated.checkpoint.state_data["memory_audit"]["not_used_reason"]
 
@@ -147,7 +149,10 @@ def test_warning_only_checkpoint_requires_documented_reason(make_task, warning):
     tasks.set_memory_adoption(memory_store=memory, context_compiler=Compiler())
     resumed = tasks.resume(task.task_id, actor="user", idempotency_key="warning-memory-attempt")
     assert resumed.checkpoint.state_data["memory_context"]["items"] == []
-    with pytest.raises(CompletionGateError, match="requires checkpoint memory_audit"):
-        tasks.checkpoint(task.task_id, TaskCheckpoint(phase="edit"))
+    refreshed_audit = resumed.checkpoint.state_data["memory_audit"]
+    assert refreshed_audit["used_ids"] == []
+    assert refreshed_audit["not_used_reason"]
+    fresh_checkpoint = tasks.checkpoint(task.task_id, TaskCheckpoint(phase="edit"))
+    assert fresh_checkpoint.checkpoint.phase == "edit"
     updated = tasks.checkpoint(task.task_id, TaskCheckpoint(state_data={"memory_audit": {"used_ids": [], "not_used_reason": "No usable advisory memory was available"}}))
     assert updated.checkpoint.state_data["memory_audit"]["not_used_reason"]

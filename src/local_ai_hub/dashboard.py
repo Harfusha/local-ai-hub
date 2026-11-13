@@ -1108,14 +1108,14 @@ function renderTelemetryMetrics(observability={}){
       opts += '<option value="' + pid + '">' + p.name + '</option>';
     }
     profileSel.innerHTML = opts;
-    const savedPid = (typeof localStorage!=='undefined' && localStorage.getItem('telemetryPricingProfile')) || observability.active_pricing_profile || 'claude-5-sonnet';
+  const savedPid = (typeof localStorage!=='undefined' && typeof localStorage.getItem==='function' && localStorage.getItem('telemetryPricingProfile')) || observability.active_pricing_profile || 'claude-5-sonnet';
     if(pricingProfiles[savedPid]) profileSel.value = savedPid;
     profileSel.onchange = function(){
-      if(typeof localStorage!=='undefined') localStorage.setItem('telemetryPricingProfile', profileSel.value);
+      if(typeof localStorage!=='undefined' && typeof localStorage.setItem==='function') localStorage.setItem('telemetryPricingProfile', profileSel.value);
       renderTelemetryMetrics(observability);
     };
   }
-  const activePid = (profileSel && profileSel.value && pricingProfiles[profileSel.value]) ? profileSel.value : ((typeof localStorage!=='undefined' && localStorage.getItem('telemetryPricingProfile')) || observability.active_pricing_profile || 'claude-5-sonnet');
+  const activePid = (profileSel && profileSel.value && pricingProfiles[profileSel.value]) ? profileSel.value : ((typeof localStorage!=='undefined' && typeof localStorage.getItem==='function' && localStorage.getItem('telemetryPricingProfile')) || observability.active_pricing_profile || 'claude-5-sonnet');
   const activeProfile = pricingProfiles[activePid] || pricingProfiles['claude-5-sonnet'] || pricingProfiles['claude-3-5-sonnet'];
 
   const pricedReq = Number(observability.agent_tool_request_tokens_est || 0);

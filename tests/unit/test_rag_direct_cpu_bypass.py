@@ -1,6 +1,7 @@
 import json
 from contextlib import closing
 
+import local_ai_hub.external_gpu_reservation as gpu_reservation_module
 from local_ai_hub.rag import RAGStore
 import local_ai_hub.reranker as reranker_module
 from local_ai_hub.reranker import Reranker
@@ -87,6 +88,7 @@ def _stub_openvino_reranker(tmp_path, monkeypatch, *, fail_gpu_load, fail_gpu_pr
             "openvino": {"cpu_fallback": True},
         }
     )
+    monkeypatch.setattr(gpu_reservation_module, "conservative_gpu_capacity_budget_bytes", lambda: 2 * 1024**3)
     monkeypatch.setattr(reranker_module, "openvino_device_candidates", lambda config, device: ["GPU"])
     attempts = []
     cpu_predictions = []

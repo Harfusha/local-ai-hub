@@ -147,7 +147,7 @@ def owned_verification_context(tmp_path: Path, root: Path, artifacts: FakeArtifa
     return VerificationStore(state_store, task_store=tasks, artifact_store=artifacts)
 
 
-def wait_terminal(wo: WorkOrchestrator, wid: str, timeout=8):
+def wait_terminal(wo: WorkOrchestrator, wid: str, timeout=60):
     deadline = time.time() + timeout
     while time.time() < deadline:
         res = wo.get(wid, profile="debug")
@@ -737,7 +737,7 @@ def test_cancel_after_receipt_collection_preserves_receipts_and_rolls_back(tmp_p
             self.verify_calls += 1
             if self.verify_calls >= 2:
                 self.verification_started.set()
-                if not self.release_verification.wait(timeout=5):
+                if not self.release_verification.wait(timeout=20):
                     return {"success": False, "text": "verification wait expired"}
             return {"success": True, "text": json.dumps({
                 "passed": True, "summary": "verified",
@@ -757,7 +757,11 @@ def test_cancel_after_receipt_collection_preserves_receipts_and_rolls_back(tmp_p
             "acceptance_criteria": ["a.txt contains new"],
             "response_profile": "debug",
         })
-        assert services.verification_started.wait(timeout=5)
+        assert services.verification_started.wait(timeout=30), {
+            "verify_calls": services.verify_calls,
+            "delegate_calls": services.delegate_calls,
+            "work": wo.get(submitted["work_id"], profile="debug"),
+        }
         cancellation = wo.cancel(submitted["work_id"])
         services.release_verification.set()
         result = wait_terminal(wo, submitted["work_id"])

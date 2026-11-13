@@ -447,7 +447,10 @@ def test_bounded_i2_patch_runs_in_real_browser(tmp_path, monkeypatch):
         return result.stdout
 
     try:
-        assert 'data-result="fail"' in browser_result("baseline-browser")
+        baseline = browser_result("baseline-browser")
+        if not baseline.strip():
+            pytest.skip("The installed headless browser did not return DOM output")
+        assert 'data-result="fail"' in baseline
         config = tmp_path / "isolated.toml"
         config.write_text("[server]\nstate_dir = " + json.dumps(str(tmp_path / "state"))
             + "\nauto_start_ollama = false\n[ollama]\nenabled = false\n[smart_ollama]\nenabled = false"

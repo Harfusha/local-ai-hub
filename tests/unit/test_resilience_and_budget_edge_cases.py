@@ -18,13 +18,13 @@ def test_circuit_breaker_edge_cases():
             cb.allow(key)
         with pytest.raises(ValueError):
             cb.failure(key)
-    assert cb.allow("model") is True
+    assert bool(cb.allow("model")) is True
     for _ in range(3):
         cb.failure("model")
     assert cb.status()["model"]["open"] is True
-    assert cb.allow("model") is False
+    assert bool(cb.allow("model")) is False
     cb.success("model")
-    assert cb.allow("model") is True
+    assert bool(cb.allow("model")) is True
 
 
 def test_response_budget_safe_limit_and_evidence():

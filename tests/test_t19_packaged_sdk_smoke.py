@@ -174,7 +174,10 @@ def _run(command: list[str], cwd: Path, env: dict[str, str], scratch: Path,
 
 
 OFFLINE_GUARD = r'''
-import sys
+# Prime CPython's Windows platform cache before the audit hook: first
+# platform.uname() may itself execute `ver` via subprocess on Windows.
+import platform, sys
+platform.uname()
 forbidden = []
 def deny_external(event, args):
     if event in {"socket.__new__", "socket.connect", "socket.bind", "socket.getaddrinfo",
@@ -323,7 +326,8 @@ def _verify_package(source: Path, scratch: Path) -> dict:
         env = _environment(scratch)
         # -I prevents inherited PYTHONPATH/editable source from becoming build input.
         sdist_code = OFFLINE_GUARD + "import setuptools.build_meta as b; print(b.build_sdist(sys.argv[1])); assert not forbidden, forbidden"
-        _run([sys.executable, "-I", "-B", "-c", sdist_code, str(dist)], snapshot, env, scratch, "sdist", receipt)
+        _run([sys.executable, "-I", "-B", "-c", sdist_code, str(dist)], snapshot, env, scratch,
+             "sdist", receipt, timeout=180)
         sdists = list(dist.glob("*.tar.gz"))
         assert len(sdists) == 1
         sdist = sdists[0]
