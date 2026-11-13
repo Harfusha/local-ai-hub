@@ -85,6 +85,52 @@ def _cancel_delayed_dispatch(manager: AsyncJobManager, job_id: str) -> None:
         timer.cancel()
 
 
+def test_recovery_does_not_overwrite_concurrent_completion(manager_factory, monkeypatch) -> None:
+    manager = manager_factory(lambda *_: {"success": True})
+    finalizer = manager_factory(lambda *_: {"success": True})
+    job_id = "recovery-cas-race"
+    now = time.time()
+    payload_json = json.dumps({"request_id": "recovery-cas-race-request"})
+    with closing(manager._connect()) as con:
+        con.execute(
+            """
+            INSERT INTO async_jobs (
+                job_id, action, request_hash, payload_json, state, attempts,
+                created_at, updated_at, expires_at, lease_until
+            ) VALUES (?, 'reason', ?, ?, 'running', 1, ?, ?, ?, ?)
+            """,
+            (job_id, f"hash-{job_id}", payload_json, now, now, now + 600, now + 300),
+        )
+        con.commit()
+
+    def finalize_between_recovery_read_and_write(action, stored_payload, attempts):
+        assert action == "reason"
+        assert stored_payload == payload_json
+        assert attempts == 1
+        completed_at = time.time()
+        with closing(finalizer._connect()) as con:
+            cursor = con.execute(
+                """
+                UPDATE async_jobs
+                SET state='done', result_json=?, artifact_id='completed-result',
+                    lease_until=0, updated_at=?
+                WHERE job_id=? AND state='running' AND attempts=1
+                """,
+                (json.dumps({"success": True}), completed_at, job_id),
+            )
+            con.commit()
+        assert cursor.rowcount == 1
+        return False
+
+    monkeypatch.setattr(manager, "_can_replay_after_interruption", finalize_between_recovery_read_and_write)
+
+    manager.recover()
+
+    current = manager._row(job_id)
+    assert current is not None
+    assert current["state"] == "done"
+
+
 @pytest.mark.parametrize("state", ["queued", "running"])
 def test_pending_async_result_is_not_counted_as_endpoint_failure(manager_factory, state: str) -> None:
     manager = manager_factory(lambda *_: {"success": True})

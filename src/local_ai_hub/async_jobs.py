@@ -1819,15 +1819,27 @@ class AsyncJobManager:
         unknown_ids: list[tuple[str, str]] = []
         now = time.time()
         with self._lock, closing(self._connect()) as con:
-            rows = con.execute("SELECT job_id,state,action,attempts,cancel_requested,trace_id,payload_json,lease_until,dispatch_not_before FROM async_jobs WHERE state IN ('queued','running')").fetchall(); ids: list[tuple[str, str]] = []
-            for job_id, state, action, attempts, cancelled, trace_id, payload_json, lease_until, dispatch_not_before in rows:
+            rows = con.execute("SELECT job_id,state,action,attempts,cancel_requested,trace_id,payload_json,lease_until,dispatch_not_before,updated_at FROM async_jobs WHERE state IN ('queued','running')").fetchall(); ids: list[tuple[str, str]] = []
+            for job_id, state, action, attempts, cancelled, trace_id, payload_json, lease_until, dispatch_not_before, updated_at in rows:
+                # Recovery may race a live manager. Change the row only if every
+                # field used for this decision still matches the selected snapshot.
+                cas = "job_id=? AND state IS ? AND attempts IS ? AND cancel_requested IS ? AND lease_until IS ? AND dispatch_not_before IS ? AND updated_at IS ?"
+                expected = (job_id, state, attempts, cancelled, lease_until, dispatch_not_before, updated_at)
                 if cancelled:
-                    con.execute("UPDATE async_jobs SET state='cancelled',lease_until=0,dispatch_not_before=0,updated_at=? WHERE job_id=?", (time.time(), job_id))
-                    cancelled_ids.append((str(job_id), str(trace_id or "")))
+                    cursor = con.execute(
+                        f"UPDATE async_jobs SET state='cancelled',lease_until=0,dispatch_not_before=0,updated_at=? WHERE {cas}",
+                        (time.time(), *expected),
+                    )
+                    if cursor.rowcount == 1:
+                        cancelled_ids.append((str(job_id), str(trace_id or "")))
                 elif (state == "running" or int(attempts or 0) > 0) and int(attempts or 0) > 0 and not self._can_replay_after_interruption(action, payload_json, int(attempts or 0)):
                     error = "async job outcome unknown after restart; safe replay unavailable"
-                    con.execute("UPDATE async_jobs SET state='outcome_unknown',lease_until=0,dispatch_not_before=0,error=?,updated_at=? WHERE job_id=?", (error, time.time(), job_id))
-                    unknown_ids.append((str(job_id), str(trace_id or "")))
+                    cursor = con.execute(
+                        f"UPDATE async_jobs SET state='outcome_unknown',lease_until=0,dispatch_not_before=0,error=?,updated_at=? WHERE {cas}",
+                        (error, time.time(), *expected),
+                    )
+                    if cursor.rowcount == 1:
+                        unknown_ids.append((str(job_id), str(trace_id or "")))
                 elif state == "queued" and (
                     float(lease_until or 0) > now or float(dispatch_not_before or 0) > now
                 ):
@@ -1835,7 +1847,12 @@ class AsyncJobManager:
                     # tick will dispatch a queued job once its persisted deadline is due.
                     continue
                 else:
-                    con.execute("UPDATE async_jobs SET state='queued',lease_until=0,updated_at=? WHERE job_id=?", (time.time(), job_id)); ids.append((str(job_id), str(trace_id or "")))
+                    cursor = con.execute(
+                        f"UPDATE async_jobs SET state='queued',lease_until=0,updated_at=? WHERE {cas}",
+                        (time.time(), *expected),
+                    )
+                    if cursor.rowcount == 1:
+                        ids.append((str(job_id), str(trace_id or "")))
             con.commit()
         for job_id, trace_id in cancelled_ids:
             self._event(job_id).set()
