@@ -42,9 +42,8 @@ def _state_version_lock(root: Path) -> Iterator[None]:
         if os.name == "nt":
             import msvcrt
 
-            handle.seek(0)
-            if not handle.read(1):
-                handle.seek(0)
+            handle.seek(0, os.SEEK_END)
+            if handle.tell() == 0:
                 handle.write(b"\0")
                 handle.flush()
             deadline = time.monotonic() + 30.0

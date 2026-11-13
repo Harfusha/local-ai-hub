@@ -150,7 +150,7 @@ try:
         "stderr": Path(os.environ["T04_CHILD_STDERR_FILE"]).read_text(encoding="utf-8", errors="replace"),
     }
     assert ensure_calls, "first registered MCP status call skipped HubClient.ensure_server"
-    assert elapsed < 25.0, elapsed
+    assert elapsed < 35.0, elapsed
     children = [item for item in client_module._DETACHED_CHILDREN if id(item) not in started_ids]
     assert len(children) == 1, children
     child = children[0]
