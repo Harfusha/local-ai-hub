@@ -31,7 +31,7 @@ A live installed-loopback-Hub hybrid run used 2 samples per case, the prior 40-c
 | Status | Evidence |
 |---|---|
 | PASSED | Focused cross-workstream matrix: 386 passed. Stack-trace export regression: 5 passed. |
-| FAILED | Latest full `python -m pytest -q -x` stopped at 2,068 passed, 2 skipped because a paired-retrieval test expected mixed measurement scopes to fail. Current contract groups them into separate aggregates; corrected regression and paired-delta tests pass (4). Full rerun pending. |
+| FAILED | Latest full `python -m pytest -q -x` stopped at 2,001 passed, 2 skipped because an ingest test expected exactly one snapshot read, including fresh-cache validation reads. It now asserts one shared cached object per root; ingest tests pass (19). Full rerun pending. |
 | SKIPPED | Symlink/junction denial skipped where Windows denied creation (WinError 1314). |
 | NOT_RUN | Real Chrome extension host, cross-platform rerun, embedding-model-specific metrics, resource use, and cold/warm evaluation. |
 
@@ -46,6 +46,7 @@ A live installed-loopback-Hub hybrid run used 2 samples per case, the prior 40-c
 - The newest run exposed a root-family reservation test without `owner`; production correctly rejects ownerless reservations. The regression now passes one explicit owner across both calls; `tests/test_root_family_budget.py` plus the regression pass (7).
 - Circuit-breaker regression and unit tests now inspect `CircuitBreakerAdmission.allowed` and its probe generation instead of boolean identity; 21 focused tests pass.
 - Paired-retrieval mixed-scope regression now verifies separate `path_only` and `symbol_ast` aggregates; paired-delta tests pass (4).
+- Ingest contention regression now checks all concurrent callers share the same root-scoped cached object. Snapshot reads remain allowed for freshness checks; ingest tests pass (19).
 - HUB-048 stack-trace collection fix: `src/local_ai_hub/commands.py` re-exports `cluster_stack_traces`; paired source SHA-256 `6f3b46647727327ec937cdd3257123eb315c6cb5e4c95cbce6d8b1374a8ff0b9`, test SHA-256 `4602bc8a5b66af80f5287a22e574d51aaf3adcf80f65b72a3f46f636509248fe` for `tests/unit/test_stack_trace_clustering.py`; 5 passed.
 
 ## N2-01–N2-15 evidence crosswalk
