@@ -29,6 +29,24 @@ if _skill_ownership_spec is None or _skill_ownership_spec.loader is None:
 _skill_ownership_module = importlib.util.module_from_spec(_skill_ownership_spec)
 _skill_ownership_spec.loader.exec_module(_skill_ownership_module)
 install_owned_skill = _skill_ownership_module.install_skill
+_install_ownership_spec = importlib.util.spec_from_file_location(
+    "_local_ai_hub_install_ownership", Path(__file__).with_name("install_ownership.py")
+)
+if _install_ownership_spec is None or _install_ownership_spec.loader is None:
+    raise ImportError("could not load sibling install_ownership.py")
+_install_ownership_module = importlib.util.module_from_spec(_install_ownership_spec)
+_install_ownership_spec.loader.exec_module(_install_ownership_module)
+write_install_manifest = _install_ownership_module.write_install_manifest
+record_external_block = _install_ownership_module.record_external_block
+assert_external_block_writable = _install_ownership_module.assert_external_block_writable
+record_external_json_key = _install_ownership_module.record_external_json_key
+assert_external_json_key_writable = _install_ownership_module.assert_external_json_key_writable
+record_external_json_list_item = _install_ownership_module.record_external_json_list_item
+record_external_json_container = _install_ownership_module.record_external_json_container
+record_external_file = _install_ownership_module.record_external_file
+assert_external_file_writable = _install_ownership_module.assert_external_file_writable
+forget_external_record = _install_ownership_module.forget_external_record
+_ACTIVE_INSTALL_ROOT: Path | None = None
 
 _update_transaction_spec = importlib.util.spec_from_file_location(
     "_local_ai_hub_update_transaction", Path(__file__).with_name("update_transaction.py")
@@ -442,12 +460,24 @@ If any required skill or the Hub is unavailable, report the precise limitation a
     path.parent.mkdir(parents=True, exist_ok=True)
     text = path.read_bytes().decode("utf-8") if path.exists() else ""
     pattern = re.compile(re.escape(ANTIGRAVITY_POLICY_BEGIN) + r".*?" + re.escape(ANTIGRAVITY_POLICY_END) + r"(?:\r?\n)*", re.DOTALL)
+    matches = list(pattern.finditer(text))
+    if len(matches) > 1:
+        raise RuntimeError(f"multiple Antigravity policy blocks found in {path}")
+    preimage = matches[0].group(0).rstrip("\r\n") if matches else None
+    marker = {"begin": ANTIGRAVITY_POLICY_BEGIN, "end": ANTIGRAVITY_POLICY_END}
+    if preimage is not None and _ACTIVE_INSTALL_ROOT is not None:
+        assert_external_block_writable(_ACTIVE_INSTALL_ROOT, path, owner_marker=marker, current_block=preimage)
     unmanaged = pattern.sub("", text)
     separator = "" if not unmanaged else "\n" if unmanaged.startswith("\n") else "\n\n"
     updated = policy + separator + unmanaged
     if updated != text:
         backup(path, backup_enabled)
         path.write_bytes(updated.encode("utf-8"))
+        if _ACTIVE_INSTALL_ROOT is not None:
+            record_external_block(
+                _ACTIVE_INSTALL_ROOT, path, kind="text_block", owner_marker=marker,
+                preimage=preimage, postimage=policy,
+            )
 
 
 def get_user_homes() -> list[Path]:
@@ -544,13 +574,35 @@ def json_server_merge(
     container = data.setdefault(container_key, {})
     if not isinstance(container, dict):
         raise RuntimeError(f"{container_key} is not an object in {path}")
+    owned_writes: list[tuple[str, Any | None, dict[str, Any]]] = []
     for name, raw_entry in servers.items():
         entry = dict(raw_entry)
-        entry = preserve_isolated_hub_args(name, container.get(name), entry)
+        existing = container.get(name)
+        entry = preserve_isolated_hub_args(name, existing, entry)
         if require_stdio_type:
             entry.setdefault("type", "stdio")
+        if _ACTIVE_INSTALL_ROOT is not None and name in container:
+            try:
+                assert_external_json_key_writable(
+                    _ACTIVE_INSTALL_ROOT, path, container=container_key, key=name, current_value=existing,
+                )
+            except ValueError:
+                if existing != entry:
+                    log(f"MCP entry '{name}' exists without matching ownership; leaving it unchanged in {path}")
+                continue
+        if existing == entry:
+            continue
         container[name] = entry
+        owned_writes.append((name, existing, entry))
+    if _ACTIVE_INSTALL_ROOT is not None and not owned_writes:
+        return
     path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    if _ACTIVE_INSTALL_ROOT is not None:
+        for name, preimage, postimage in owned_writes:
+            record_external_json_key(
+                _ACTIVE_INSTALL_ROOT, path, container=container_key, key=name,
+                preimage=preimage, postimage=postimage,
+            )
     log(f"MCP config updated: {path}")
 
 
@@ -562,7 +614,7 @@ def prune_direct_code_intelligence(
     path: Path, serena: Path | None, backup_enabled: bool,
 ) -> None:
     """Remove only stale Hub-generated direct backend entries from a JSON MCP manifest."""
-    if not path.exists():
+    if not path.exists() or _ACTIVE_INSTALL_ROOT is None:
         return
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
@@ -580,11 +632,23 @@ def prune_direct_code_intelligence(
         if executable is None or not isinstance(command, str):
             continue
         if os.path.normcase(os.path.abspath(command)) == os.path.normcase(os.path.abspath(str(executable))):
+            try:
+                assert_external_json_key_writable(
+                    _ACTIVE_INSTALL_ROOT, path, container="mcpServers", key=name, current_value=entry,
+                )
+            except ValueError:
+                log(f"Unowned direct code-intelligence entry preserved: {path}#{name}")
+                continue
             del container[name]
             removed = True
     if removed:
         backup(path, backup_enabled)
         path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        for name in expected:
+            forget_external_record(
+                _ACTIVE_INSTALL_ROOT, path, kind="json_key",
+                owner_marker={"container": "mcpServers", "key": name},
+            )
         log(f"Stale direct code-intelligence MCP entries removed: {path}")
 
 
@@ -617,25 +681,33 @@ def sync_antigravity_config_json(path: Path, backup_enabled: bool) -> None:
         except Exception as exc:
             log(f"WARNING: could not parse {path}: {exc}")
 
+    if "userSettings" in data and not isinstance(data["userSettings"], dict):
+        log(f"WARNING: preserving non-object userSettings in {path}")
+        return
+    user_settings_created = "userSettings" not in data
     user_settings = data.setdefault("userSettings", {})
-    if not isinstance(user_settings, dict):
-        user_settings = {}
-        data["userSettings"] = user_settings
+    owned_keys: list[tuple[str, str, Any]] = []
+    defaults = {
+        "autoExecutionPolicy": "CASCADE_COMMANDS_AUTO_EXECUTION_EAGER",
+        "enableTerminalSandbox": False,
+        "nonWorkspaceFileAccessPolicy": "AGENT_SETTING_POLICY_ALLOW",
+        "permissionPreset": "AGENT_PERMISSION_PRESET_TURBO",
+    }
+    for key, value in defaults.items():
+        if key not in user_settings:
+            user_settings[key] = value
+            owned_keys.append(("userSettings", key, value))
 
-    user_settings.setdefault("autoExecutionPolicy", "CASCADE_COMMANDS_AUTO_EXECUTION_EAGER")
-    user_settings.setdefault("enableTerminalSandbox", False)
-    user_settings.setdefault("nonWorkspaceFileAccessPolicy", "AGENT_SETTING_POLICY_ALLOW")
-    user_settings.setdefault("permissionPreset", "AGENT_PERMISSION_PRESET_TURBO")
-
+    if "globalPermissionGrants" in user_settings and not isinstance(user_settings["globalPermissionGrants"], dict):
+        log(f"WARNING: preserving non-object globalPermissionGrants in {path}")
+        return
+    grants_created = "globalPermissionGrants" not in user_settings
     grants = user_settings.setdefault("globalPermissionGrants", {})
-    if not isinstance(grants, dict):
-        grants = {}
-        user_settings["globalPermissionGrants"] = grants
-
+    if "allow" in grants and not isinstance(grants["allow"], list):
+        log(f"WARNING: preserving non-list globalPermissionGrants.allow in {path}")
+        return
+    allow_created = "allow" not in grants
     allow_list = grants.setdefault("allow", [])
-    if not isinstance(allow_list, list):
-        allow_list = []
-        grants["allow"] = allow_list
 
     required_grants = [
         "mcp(local-ai/*)",
@@ -657,22 +729,29 @@ def sync_antigravity_config_json(path: Path, backup_enabled: bool) -> None:
         "mcp(local_ai/local_ai_work)",
         "mcp(local_ai/local_ai_artifact)",
     ]
-    allow_list[:] = [
-        grant for grant in allow_list
-        if not (grant.startswith("mcp(local-ai/") or grant.startswith("mcp(local_ai/")) or grant in required_grants
-    ]
-
+    owned_grants: list[str] = []
     for grant in required_grants:
         if grant not in allow_list:
             allow_list.append(grant)
-
-    block_list = grants.get("block")
-    if isinstance(block_list, list):
-        for grant in list(block_list):
-            if "local-ai" in grant or "local_ai" in grant:
-                block_list.remove(grant)
+            owned_grants.append(grant)
 
     path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    if _ACTIVE_INSTALL_ROOT is not None:
+        if user_settings_created:
+            record_external_json_container(_ACTIVE_INSTALL_ROOT, path, container_path="userSettings", container_type="object")
+        if grants_created:
+            record_external_json_container(_ACTIVE_INSTALL_ROOT, path, container_path="userSettings.globalPermissionGrants", container_type="object")
+        if allow_created:
+            record_external_json_container(_ACTIVE_INSTALL_ROOT, path, container_path="userSettings.globalPermissionGrants.allow", container_type="list")
+        for container_name, key, value in owned_keys:
+            record_external_json_key(
+                _ACTIVE_INSTALL_ROOT, path, container=container_name, key=key, preimage=None, postimage=value,
+            )
+        for grant in owned_grants:
+            record_external_json_list_item(
+                _ACTIVE_INSTALL_ROOT, path,
+                container="userSettings.globalPermissionGrants.allow", item=grant,
+            )
     log(f"Antigravity permissions configured: {path}")
 
 
@@ -707,7 +786,7 @@ def sync_antigravity_hooks_json(
             "    exit /b 0\r\n"
             ")\r\n"
         )
-        hook_script.write_text(batch_content, encoding="utf-8")
+        script_content = batch_content
     else:
         hook_script = path.parent / "local-ai-hook.sh"
         sh_content = (
@@ -715,11 +794,22 @@ def sync_antigravity_hooks_json(
             f'"{python_exe}" -m local_ai_hub.antigravity_hook "$@" || echo \'{{"decision": "allow"}}\'\n'
             "exit 0\n"
         )
-        hook_script.write_text(sh_content, encoding="utf-8")
+        script_content = sh_content
+    current_script = None
+    record_script = _ACTIVE_INSTALL_ROOT is None or not hook_script.exists()
+    if _ACTIVE_INSTALL_ROOT is not None and hook_script.exists():
         try:
-            hook_script.chmod(0o755)
-        except OSError:
-            pass
+            current_script = hook_script.read_bytes()
+        except (OSError, UnicodeDecodeError):
+            log(f"WARNING: preserving unreadable hook script: {hook_script}")
+            return
+        try:
+            assert_external_file_writable(_ACTIVE_INSTALL_ROOT, hook_script, current_script)
+            record_script = True
+        except ValueError:
+            if current_script != script_content:
+                log(f"WARNING: preserving hook script without matching ownership: {hook_script}")
+                return
     hook_config: dict[str, Any] = {
         "enabled": True,
         "PreToolUse": [
@@ -736,12 +826,44 @@ def sync_antigravity_hooks_json(
         ],
     }
 
+    previous_hook = data.get("local-ai-hub")
+    if _ACTIVE_INSTALL_ROOT is not None and "local-ai-hub" in data:
+        try:
+            assert_external_json_key_writable(
+                _ACTIVE_INSTALL_ROOT, path, container="", key="local-ai-hub", current_value=previous_hook,
+            )
+        except ValueError:
+            if previous_hook != hook_config:
+                log(f"WARNING: preserving unowned local-ai-hub hook configuration in {path}")
+                return
+            return
     data["local-ai-hub"] = hook_config
     path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    if _ACTIVE_INSTALL_ROOT is not None:
+        if record_script:
+            hook_script.write_bytes(script_content.encode("utf-8"))
+            if os.name != "nt":
+                try:
+                    hook_script.chmod(0o755)
+                except OSError:
+                    pass
+        record_external_json_key(
+            _ACTIVE_INSTALL_ROOT, path, container="", key="local-ai-hub",
+            preimage=previous_hook, postimage=hook_config,
+        )
+        if record_script:
+            record_external_file(_ACTIVE_INSTALL_ROOT, hook_script, script_content)
+    else:
+        hook_script.write_bytes(script_content.encode("utf-8"))
+        if os.name != "nt":
+            try:
+                hook_script.chmod(0o755)
+            except OSError:
+                pass
     log(f"Antigravity hooks configured: {path}")
 
 
-def configure_gemini_instance(
+def _configure_gemini_instance_impl(
     gemini_dir: Path,
     install_dir: Path,
     hub_python: Path,
@@ -773,7 +895,7 @@ def configure_gemini_instance(
         doc = gemini_dir / "GEMINI.md"
         merge_global_policy(doc, backup_enabled, cfg=cfg)
         merge_token_economy_policy(doc, backup_enabled, cfg=cfg)
-        if include_companion:
+        if bool(cfg.get("setup", {}).get("install_antigravity_style_policy", False)):
             merge_antigravity_skill_policy(gemini_dir / "AGENTS.md", backup_enabled)
             merge_antigravity_skill_policy((project_root or Path.cwd()) / "AGENTS.md", backup_enabled)
 
@@ -787,6 +909,33 @@ def configure_gemini_instance(
             gemini_dir / "config" / "config.json",
             backup_enabled,
         )
+
+
+def configure_gemini_instance(
+    gemini_dir: Path,
+    install_dir: Path,
+    hub_python: Path,
+    serena: Path | None,
+    cfg: dict[str, Any],
+    backup_enabled: bool,
+    include_companion: bool,
+    *,
+    project_root: Path | None = None,
+    agent_components: dict[str, Any] | None = None,
+) -> None:
+    global _ACTIVE_INSTALL_ROOT
+    previous_root = _ACTIVE_INSTALL_ROOT
+    candidate_root = Path(install_dir)
+    if previous_root is None and candidate_root.is_dir():
+        _ACTIVE_INSTALL_ROOT = candidate_root
+        write_install_manifest(candidate_root)
+    try:
+        _configure_gemini_instance_impl(
+            gemini_dir, install_dir, hub_python, serena, cfg, backup_enabled, include_companion,
+            project_root=project_root, agent_components=agent_components,
+        )
+    finally:
+        _ACTIVE_INSTALL_ROOT = previous_root
         sync_antigravity_hooks_json(
             gemini_dir / "config" / "hooks.json",
             install_dir, hub_python, backup_enabled,
@@ -834,8 +983,16 @@ def codex_mcp_merge(path: Path, servers: dict[str, dict[str, Any]], backup_enabl
                 raise ValueError("HTTP MCP URL must be a non-empty string")
     path.parent.mkdir(parents=True, exist_ok=True)
     text = path.read_text(encoding="utf-8") if path.exists() else ""
+    marker_pattern = re.compile(rf"{re.escape(MARKER_BEGIN)}.*?{re.escape(MARKER_END)}", re.DOTALL)
+    managed_matches = list(marker_pattern.finditer(text))
+    if len(managed_matches) > 1:
+        raise RuntimeError(f"multiple Codex Local AI Hub blocks found in {path}")
+    managed = managed_matches[0] if managed_matches else None
+    preimage = managed.group(0) if managed else None
+    owner_marker = {"begin": MARKER_BEGIN, "end": MARKER_END}
+    if preimage is not None and _ACTIVE_INSTALL_ROOT is not None:
+        assert_external_block_writable(_ACTIVE_INSTALL_ROOT, path, owner_marker=owner_marker, current_block=preimage)
     backup(path, backup_enabled)
-    managed = re.search(rf"{re.escape(MARKER_BEGIN)}.*?{re.escape(MARKER_END)}", text, flags=re.DOTALL)
     existing_servers: dict[str, Any] = {}
     if managed:
         try:
@@ -883,32 +1040,51 @@ def codex_mcp_merge(path: Path, servers: dict[str, dict[str, Any]], backup_enabl
             blocks.extend(f"{key} = {toml_quote(value)}" for key, value in env.items())
         blocks.append("")
     blocks.append(MARKER_END)
-    path.write_text(text + "\n".join(blocks) + "\n", encoding="utf-8")
+    written_block = "\n".join(blocks)
+    path.write_text(text + written_block + "\n", encoding="utf-8")
+    if _ACTIVE_INSTALL_ROOT is not None:
+        record_external_block(
+            _ACTIVE_INSTALL_ROOT, path, kind="text_block", owner_marker=owner_marker,
+            preimage=preimage, postimage=written_block,
+        )
     log(f"Codex MCP config updated: {path}")
 
 
 def merge_global_policy(path: Path, backup_enabled: bool, cfg: dict[str, Any] | None = None) -> None:
     policy = build_global_policy(cfg or {})
-    path.parent.mkdir(parents=True, exist_ok=True)
-    text = path.read_bytes().decode("utf-8") if path.exists() else ""
-    pattern = re.compile(re.escape(GLOBAL_POLICY_BEGIN) + r".*?" + re.escape(GLOBAL_POLICY_END), re.DOTALL)
-    updated = pattern.sub(lambda _match: policy, text) if pattern.search(text) else text + ("" if not text or text.endswith("\n") else "\n") + "\n" + policy + "\n"
-    if updated != text:
-        backup(path, backup_enabled)
-        path.write_bytes(updated.encode("utf-8"))
-        log(f"Tool-first policy installed: {path}")
+    _merge_owned_text_block(path, policy, GLOBAL_POLICY_BEGIN, GLOBAL_POLICY_END, backup_enabled)
+    log(f"Tool-first policy installed: {path}")
 
 
 def merge_token_economy_policy(path: Path, backup_enabled: bool, cfg: dict[str, Any] | None = None) -> None:
     policy = generate_token_economy_policy(cfg or {})
+    _merge_owned_text_block(path, policy, TOKEN_ECONOMY_POLICY_BEGIN, TOKEN_ECONOMY_POLICY_END, backup_enabled)
+    log(f"Token economy policy installed: {path}")
+
+
+def _merge_owned_text_block(path: Path, block: str, begin: str, end: str, backup_enabled: bool) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     text = path.read_bytes().decode("utf-8") if path.exists() else ""
-    pattern = re.compile(re.escape(TOKEN_ECONOMY_POLICY_BEGIN) + r".*?" + re.escape(TOKEN_ECONOMY_POLICY_END), re.DOTALL)
-    updated = pattern.sub(lambda _match: policy, text) if pattern.search(text) else text + ("" if not text or text.endswith("\n") else "\n") + "\n" + policy + "\n"
-    if updated != text:
-        backup(path, backup_enabled)
-        path.write_bytes(updated.encode("utf-8"))
-        log(f"Token economy policy installed: {path}")
+    pattern = re.compile(re.escape(begin) + r".*?" + re.escape(end), re.DOTALL)
+    matches = list(pattern.finditer(text))
+    if len(matches) > 1:
+        raise RuntimeError(f"multiple Local AI Hub blocks found in {path}")
+    preimage = matches[0].group(0) if matches else None
+    marker = {"begin": begin, "end": end}
+    if preimage is not None and _ACTIVE_INSTALL_ROOT is not None:
+        assert_external_block_writable(_ACTIVE_INSTALL_ROOT, path, owner_marker=marker, current_block=preimage)
+    updated = pattern.sub(lambda _match: block, text) if preimage is not None else (
+        text + ("" if not text or text.endswith("\n") else "\n") + "\n" + block + "\n"
+    )
+    if updated == text:
+        return
+    backup(path, backup_enabled)
+    path.write_bytes(updated.encode("utf-8"))
+    if _ACTIVE_INSTALL_ROOT is not None:
+        record_external_block(
+            _ACTIVE_INSTALL_ROOT, path, kind="text_block", owner_marker=marker,
+            preimage=preimage, postimage=block,
+        )
 
 
 def ensure_cursor_rule_frontmatter(path: Path, backup_enabled: bool) -> bool:
@@ -918,6 +1094,14 @@ def ensure_cursor_rule_frontmatter(path: Path, backup_enabled: bool) -> bool:
     if text and GLOBAL_POLICY_BEGIN not in text and TOKEN_ECONOMY_POLICY_BEGIN not in text:
         return False
     match = re.match(r"\A---\r?\n(.*?)\r?\n---(?:\r?\n|$)", text, re.DOTALL)
+    owner_marker = {"begin": "---", "end": "---"}
+    preimage = match.group(0).rstrip("\r\n") if match else None
+    if preimage is not None and _ACTIVE_INSTALL_ROOT is not None:
+        try:
+            assert_external_block_writable(_ACTIVE_INSTALL_ROOT, path, owner_marker=owner_marker, current_block=preimage)
+        except ValueError:
+            log(f"Cursor frontmatter ownership is unclear; preserving existing metadata: {path}")
+            return False
     if match:
         metadata = match.group(1)
         if re.search(r"(?m)^alwaysApply\s*:", metadata):
@@ -936,6 +1120,13 @@ def ensure_cursor_rule_frontmatter(path: Path, backup_enabled: bool) -> bool:
         if path.exists():
             backup(path, backup_enabled)
         path.write_text(updated, encoding="utf-8")
+        if _ACTIVE_INSTALL_ROOT is not None:
+            updated_match = re.match(r"\A---\r?\n.*?\r?\n---", updated, re.DOTALL)
+            if updated_match is not None:
+                record_external_block(
+                    _ACTIVE_INSTALL_ROOT, path, kind="text_block", owner_marker=owner_marker,
+                    preimage=preimage, postimage=updated_match.group(0),
+                )
         log(f"Cursor Local AI Hub rule enabled: {path}")
     return True
 
@@ -954,7 +1145,14 @@ def merge_windsurf_global_policy(path: Path, install_dir: Path, backup_enabled: 
     path.parent.mkdir(parents=True, exist_ok=True)
     text = path.read_text(encoding="utf-8") if path.exists() else ""
     pattern = re.compile(re.escape(begin) + r".*?" + re.escape(end), re.DOTALL)
-    updated = pattern.sub(lambda _match: policy, text) if pattern.search(text) else (
+    matches = list(pattern.finditer(text))
+    if len(matches) > 1:
+        return f"Multiple Local AI Hub Windsurf blocks found; existing rule file was preserved: {path}"
+    preimage = matches[0].group(0) if matches else None
+    marker = {"begin": begin, "end": end}
+    if preimage is not None and _ACTIVE_INSTALL_ROOT is not None:
+        assert_external_block_writable(_ACTIVE_INSTALL_ROOT, path, owner_marker=marker, current_block=preimage)
+    updated = pattern.sub(lambda _match: policy, text) if preimage is not None else (
         text + ("" if not text or text.endswith("\n") else "\n") + "\n" + policy + "\n"
     )
     if len(updated) > 6000:
@@ -965,6 +1163,11 @@ def merge_windsurf_global_policy(path: Path, install_dir: Path, backup_enabled: 
     if updated != text:
         backup(path, backup_enabled)
         path.write_text(updated, encoding="utf-8")
+        if _ACTIVE_INSTALL_ROOT is not None:
+            record_external_block(
+                _ACTIVE_INSTALL_ROOT, path, kind="text_block", owner_marker=marker,
+                preimage=preimage, postimage=policy,
+            )
         log(f"Windsurf Local AI Hub rule installed: {path}")
     return None
 
@@ -987,14 +1190,8 @@ def generate_autosetup_policy(skills_dir: Path) -> str:
 
 def merge_autosetup_policy(path: Path, backup_enabled: bool, skills_dir: Path) -> None:
     policy = generate_autosetup_policy(skills_dir)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    text = path.read_text(encoding="utf-8") if path.exists() else ""
-    pattern = re.compile(re.escape(AUTOSETUP_BEGIN) + r".*?" + re.escape(AUTOSETUP_END), re.DOTALL)
-    updated = pattern.sub(lambda _match: policy, text) if pattern.search(text) else (text.rstrip() + "\n\n" + policy + "\n")
-    if updated != text:
-        backup(path, backup_enabled)
-        path.write_text(updated, encoding="utf-8")
-        log(f"Autosetup policy installed: {path}")
+    _merge_owned_text_block(path, policy, AUTOSETUP_BEGIN, AUTOSETUP_END, backup_enabled)
+    log(f"Autosetup policy installed: {path}")
 
 
 def install_tool_env(install_dir: Path, name: str, package: str, executables: list[str]) -> Path | None:
@@ -1404,7 +1601,7 @@ def _agent_component_enabled(
     return bool(selections.get(f"agent_{agent}_{component}", True))
 
 
-def configure_agents(
+def _configure_agents_impl(
     install_dir: Path,
     hub_python: Path,
     serena: Path | None,
@@ -1543,6 +1740,31 @@ def configure_agents(
             vscode_mcp_merge(expand(str(raw)), generic_entries, backup_enabled)
     write_generated_agent_manifests(install_dir, hub_python, serena, cfg)
     return manual_actions
+
+
+def configure_agents(
+    install_dir: Path,
+    hub_python: Path,
+    serena: Path | None,
+    cfg: dict[str, Any],
+    *,
+    include_companion: bool = True,
+    agent_components: dict[str, Any] | None = None,
+) -> list[str]:
+    global _ACTIVE_INSTALL_ROOT
+    previous_root = _ACTIVE_INSTALL_ROOT
+    candidate_root = Path(install_dir)
+    _ACTIVE_INSTALL_ROOT = candidate_root if candidate_root.is_dir() else None
+    if _ACTIVE_INSTALL_ROOT is not None:
+        write_install_manifest(_ACTIVE_INSTALL_ROOT)
+    try:
+        return _configure_agents_impl(
+            install_dir, hub_python, serena, cfg,
+            include_companion=include_companion,
+            agent_components=agent_components,
+        )
+    finally:
+        _ACTIVE_INSTALL_ROOT = previous_root
 
 
 
@@ -2283,6 +2505,12 @@ def main() -> int:
         "manual_actions": manual_actions,
         "recovery_guide": str(SOURCE_ROOT / "docs" / "INSTALLER_RECOVERY.md"),
     }
+    try:
+        write_install_manifest(install_dir)
+    except (OSError, ValueError) as exc:
+        log(f"Setup incomplete: install ownership marker could not be written: {exc}")
+        write_setup_failure_report(install_dir, state_dir, stage="install_ownership", error=exc)
+        return 1
     try:
         report_path = write_setup_report(install_dir, install_report)
         log(f"Installer report: {report_path}")

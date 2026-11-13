@@ -206,10 +206,11 @@ class LosslessTokenRouter:
             raw_score = item.get("score", 1.0)
             if isinstance(raw_score, bool):
                 continue
-            try:
-                score_val = float(raw_score)
-            except Exception:
-                continue
+            else:
+                try:
+                    score_val = float(raw_score)
+                except (ValueError, TypeError, OverflowError):
+                    continue
             if not math.isfinite(score_val) or not 0.0 <= score_val <= 1.0:
                 continue
             out.append((start, end, score_val))

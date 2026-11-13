@@ -3,7 +3,8 @@ from __future__ import annotations
 import threading
 import pytest
 
-from local_ai_hub.automation import AutomationBroker, TargetPolicy
+from local_ai_hub.automation import AUTOMATION_REQUEST_SCHEMA, AutomationBroker, TargetPolicy
+from local_ai_hub.operation_contracts import validate_operation_output
 
 
 @pytest.mark.parametrize("scheme", ["http", "https"])
@@ -64,7 +65,56 @@ def call(setup, request, owner="task-one"):
 def opened(setup, mode="isolated"):
     result = call(setup, {"op": "open", "mode": mode, "url": "http://localhost:8765/"})
     assert result["success"], result
+    assert result["automation"]["navigation_policy"] == {
+        "name": "navigation_allowlist", "scope": "top_level_navigation", "configured_target_count": 1,
+    }
+    assert result["automation"]["network_egress_policy"] == {"status": "isolation_not_proven", "enforced": False}
     return result["automation"]
+
+
+@pytest.mark.parametrize("mode", ["isolated", "extension", "desktop", "desktop_sandbox"])
+def test_strict_network_egress_request_fails_before_backend_start(setup, mode):
+    result = call(setup, {
+        "op": "open", "mode": mode, "url": "http://localhost:8765/",
+        "require_network_egress_isolation": True,
+    })
+
+    assert result["success"] is False
+    assert result["error_code"] == "isolation_not_proven"
+    assert result["network_egress_policy"] == {
+        "requested": True, "status": "isolation_not_proven", "enforced": False,
+    }
+    assert validate_operation_output("local_ai_task", "automation", result) is None
+    assert setup[1] == []
+
+
+@pytest.mark.parametrize("value", [1, "true", None])
+def test_strict_network_egress_request_rejects_non_boolean_values(setup, value):
+    result = call(setup, {
+        "op": "open", "mode": "isolated", "url": "http://localhost:8765/",
+        "require_network_egress_isolation": value,
+    })
+
+    assert result["success"] is False
+    assert result["error_code"] == "invalid_automation_request"
+    assert setup[1] == []
+
+
+def test_strict_network_egress_option_is_only_valid_for_open(setup):
+    result = call(setup, {
+        "op": "status", "require_network_egress_isolation": True,
+    })
+
+    assert result["success"] is False
+    assert result["error_code"] == "invalid_automation_request"
+    assert setup[1] == []
+
+
+def test_automation_schema_documents_strict_egress_request_as_boolean():
+    assert AUTOMATION_REQUEST_SCHEMA["properties"]["require_network_egress_isolation"] == {
+        "type": "boolean",
+        "description": "Fail closed unless network egress isolation is actually enforced.",
+    }
 
 
 def act(session, **kwargs):

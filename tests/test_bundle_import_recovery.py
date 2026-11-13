@@ -441,6 +441,33 @@ def test_startup_replays_bundle_imports_before_async_jobs(tmp_path: Path, monkey
         app.close()
 
 
+def test_bundle_restore_uses_bounded_write_transactions(tmp_path: Path, monkeypatch) -> None:
+    from local_ai_hub.sqlite_support import write_transaction
+
+    source_root = tmp_path / "source-project"
+    source_root.mkdir()
+    bundle = _source_bundle(tmp_path, source_root)
+    target_root = tmp_path / "target-project"
+    target_root.mkdir()
+    app, _ = _app(tmp_path / "target-app")
+    observed: list[dict[str, object]] = []
+
+    def record_transaction(connection, **kwargs):
+        observed.append(kwargs)
+        return write_transaction(connection, **kwargs)
+
+    monkeypatch.setattr(app_module, "write_transaction", record_transaction, raising=False)
+    try:
+        result = app.import_bundle(bundle, target_root.as_posix())
+
+        assert result["success"] is True
+        assert len(observed) == 3
+        assert all(item["max_duration_seconds"] == 5.0 for item in observed)
+        assert all(item["rollback_label"] == "bundle import" for item in observed)
+    finally:
+        app.close()
+
+
 def test_staging_journal_replays_and_orphan_payload_fails_closed(tmp_path: Path):
     source_root = tmp_path / "source-repo"
     source_root.mkdir()

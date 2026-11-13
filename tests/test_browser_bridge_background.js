@@ -17,6 +17,11 @@ function identity() {
     target_origin: new URL(tab.url).origin,
     document_token: documentToken,
     document_state_token: stateToken,
+    relevant_state_token: `sha256:${"a".repeat(64)}`,
+    relevant_state_complete: true,
+    history_state_token: "b".repeat(64),
+    viewport_token: "1280x720@1",
+    interaction_observed: true,
   };
 }
 
@@ -45,6 +50,8 @@ const context = {
       }
     } else if (path.endsWith("/abandon")) {
       value = {success: true, abandoned: true, request_id: body.request_id};
+    } else if (path.endsWith("/purge")) {
+      value = {success: true, deleted_count: 7};
     } else if (path.endsWith("/commit")) {
       const commitCount = posts.filter((post) => post.path.endsWith("/commit")).length;
       value = changeKind === "artifact-failure"
@@ -82,15 +89,15 @@ const context = {
     return {ok: responseOk, status: responseStatus, json: async () => value};
   },
   chrome: {
-    runtime: {getURL: () => "chrome-extension://fixture/"},
-    action: {onClicked: {addListener: () => undefined}},
+    runtime: {id: "fixture", getURL: () => "chrome-extension://fixture/", onMessage: {addListener: () => undefined}},
+    scripting: {executeScript: async () => []},
     tabs: {
       query: async () => [{...tab}],
       get: async () => ({...tab}),
       sendMessage: async (_tabId, message) => {
         const value = identity();
         if (message.type === "LOCAL_AI_CAPTURE_CURRENT_TAB") {
-          return {success: true, ...value, capture_identity: {initial: value}, dom: {html: "<main />"}};
+          return {success: true, ...value, privacy_mode: "full_local_capture", redaction_manifest: {}, capture_identity: {initial: value}, dom: {redaction: "none", html: "<main />"}};
         }
         return {success: true, ...value};
       },
@@ -104,7 +111,25 @@ context.globalThis = context;
 vm.runInNewContext(backgroundSource, context, {filename: sourcePath});
 
 (async () => {
-  const result = await context.captureCurrentTab({id: 7, windowId: 3});
+  if (changeKind === "purge") {
+    const result = await context.purgeCurrentCapture({id: 7, windowId: 3}, "art_0123456789abcdef01234567");
+    assert.equal(result.success, true);
+    assert.deepEqual(JSON.parse(JSON.stringify(posts.map((post) => post.path))), ["/api/browser/capability", "/api/browser/capture/purge"]);
+    assert.equal(posts[1].body.bundle_artifact_id, "art_0123456789abcdef01234567");
+    assert.equal(posts[1].body.capability, "capability-1");
+    process.stdout.write(JSON.stringify({success: true, case: "purge-uses-fresh-capability-and-exact-bundle"}));
+    return;
+  }
+  if (changeKind === "purge-invalid-id") {
+    const result = await context.purgeCurrentCapture({id: 7, windowId: 3}, "not-an-artifact-id");
+    assert.equal(result.success, false);
+    assert.equal(posts.length, 0);
+    process.stdout.write(JSON.stringify({success: true, case: "purge-rejects-invalid-id-before-network"}));
+    return;
+  }
+  const result = await context.captureCurrentTab({id: 7, windowId: 3}, {
+    privacyMode: "full_local_capture", consentAcknowledged: true, fullCaptureAcknowledged: true,
+  });
   assert.equal(posts.every((post) => !("X-LocalAI-Token" in post.headers)), true);
   assert.equal(changedAfterStage, true);
   if (changeKind === "artifact-failure") {
@@ -157,6 +182,11 @@ vm.runInNewContext(backgroundSource, context, {filename: sourcePath});
     const commits = posts.filter((post) => post.path.endsWith("/commit"));
     assert.deepEqual(commits[1].body, commits[0].body);
     process.stdout.write(JSON.stringify({success: true, case: "malformed-commit-remains-unknown"}));
+  } else if (changeKind === "same-url-state") {
+    assert.equal(result.success, true, "safe same-document mutation may commit");
+    assert.equal(posts.filter((post) => post.path.endsWith("/commit")).length, 1);
+    assert.equal(posts.filter((post) => post.path.endsWith("/abandon")).length, 0);
+    process.stdout.write(JSON.stringify({success: true, case: "same-url-state-after-stage-commits-safe"}));
   } else {
     assert.equal(result.success, false, "page change after staging must prevent commit");
     assert.equal(result.error_code, "target_changed");

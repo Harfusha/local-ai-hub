@@ -39,6 +39,7 @@ from .sqlite_support import (
     is_busy_error,
     retry_busy,
     sqlite_batches,
+    write_transaction,
 )
 from .worktrees import discover_worktree_roots
 from .process_utils import canonical_root, set_current_thread_priority
@@ -501,10 +502,8 @@ class ProjectPreprocessor:
 
         def attempt() -> Any:
             with self._db_lock, closing(self._connect()) as con:
-                con.execute("BEGIN IMMEDIATE")
-                value = operation(con)
-                con.commit()
-                return value
+                with write_transaction(con, max_duration_seconds=5.0, rollback_label="preprocessor state write"):
+                    return operation(con)
 
         return retry_busy(
             attempt,
@@ -1596,70 +1595,72 @@ class ProjectPreprocessor:
                 except OSError:
                     stale_candidates.append((rel, parent_hash))
 
-            if candidates or stale_candidates:
+            verified_candidates = []
+            for rel, parent_hash, size, mtime_ns, identity in candidates:
+                child_file = (base / rel).resolve(strict=False)
+                try:
+                    st = child_file.stat()
+                except OSError:
+                    continue
+                current_identity = (
+                    int(st.st_size), int(st.st_mtime_ns),
+                    int(getattr(st, "st_ctime_ns", 0)), int(getattr(st, "st_ino", 0)),
+                    int(getattr(st, "st_dev", 0)),
+                )
+                if current_identity == identity:
+                    verified_candidates.append((rel, parent_hash, size, mtime_ns))
+
+            if verified_candidates or stale_candidates:
                 with self._db_lock, closing(self._connect()) as con:
-                    con.execute("BEGIN IMMEDIATE")
-                    for rel, parent_hash in stale_candidates:
-                        con.execute(
-                            """UPDATE file_refs
-                               SET content_hash='',needs_hash=1,rag_hash=NULL,card_key=NULL,updated_at=?
-                               WHERE root=? AND path=? AND content_hash=? AND needs_hash=0
-                                 AND EXISTS (
-                                     SELECT 1 FROM file_refs p
-                                     WHERE p.root=? AND p.path=? AND p.content_hash=? AND p.needs_hash=0
-                                 )""",
-                            (now, resolved, rel, parent_hash, parent_resolved, rel, parent_hash),
-                        )
-                        con.execute(
-                            """DELETE FROM source_index
-                               WHERE root=? AND path=? AND content_hash=?
-                                 AND EXISTS (
-                                     SELECT 1 FROM file_refs p
-                                     WHERE p.root=? AND p.path=? AND p.content_hash=? AND p.needs_hash=0
-                                 )""",
-                            (resolved, rel, parent_hash, parent_resolved, rel, parent_hash),
-                        )
-                    for rel, parent_hash, size, mtime_ns, identity in candidates:
-                        child_file = (base / rel).resolve(strict=False)
-                        try:
-                            st = child_file.stat()
-                        except OSError:
-                            continue
-                        current_identity = (
-                            int(st.st_size), int(st.st_mtime_ns),
-                            int(getattr(st, "st_ctime_ns", 0)), int(getattr(st, "st_ino", 0)),
-                            int(getattr(st, "st_dev", 0)),
-                        )
-                        if current_identity != identity:
-                            continue
-                        parent = con.execute(
-                            """SELECT card_key FROM file_refs
-                               WHERE root=? AND path=? AND content_hash=? AND size=? AND needs_hash=0""",
-                            (parent_resolved, rel, parent_hash, size),
-                        ).fetchone()
-                        if parent is None:
-                            continue
-                        inserted = con.execute(
-                            """INSERT OR IGNORE INTO file_refs(
-                                root,path,content_hash,size,mtime_ns,needs_hash,rag_hash,
-                                last_accessed_at,generation,card_key,updated_at
-                            ) VALUES(?,?,?,?,?,0,NULL,?,1,?,?)""",
-                            (resolved, rel, parent_hash, size, mtime_ns, now, parent["card_key"], now),
-                        )
-                        if inserted.rowcount > 0:
-                            stats["file_refs"] += 1
-                        child = con.execute(
-                            "SELECT content_hash,needs_hash FROM file_refs WHERE root=? AND path=?",
-                            (resolved, rel),
-                        ).fetchone()
-                        if child is not None and str(child["content_hash"] or "") == parent_hash and int(child["needs_hash"] or 0) == 0:
+                    with write_transaction(con, max_duration_seconds=5.0, rollback_label="preprocessor derived refs"):
+                        for rel, parent_hash in stale_candidates:
                             con.execute(
-                                """INSERT OR IGNORE INTO source_index(root,path,content_hash,text,updated_at)
-                                   SELECT ?,path,content_hash,text,? FROM source_index
-                                   WHERE root=? AND path=? AND content_hash=?""",
-                                (resolved, now, parent_resolved, rel, parent_hash),
+                                """UPDATE file_refs
+                                   SET content_hash='',needs_hash=1,rag_hash=NULL,card_key=NULL,updated_at=?
+                                   WHERE root=? AND path=? AND content_hash=? AND needs_hash=0
+                                     AND EXISTS (
+                                         SELECT 1 FROM file_refs p
+                                         WHERE p.root=? AND p.path=? AND p.content_hash=? AND p.needs_hash=0
+                                     )""",
+                                (now, resolved, rel, parent_hash, parent_resolved, rel, parent_hash),
                             )
-                    con.commit()
+                            con.execute(
+                                """DELETE FROM source_index
+                                   WHERE root=? AND path=? AND content_hash=?
+                                     AND EXISTS (
+                                         SELECT 1 FROM file_refs p
+                                         WHERE p.root=? AND p.path=? AND p.content_hash=? AND p.needs_hash=0
+                                     )""",
+                                (resolved, rel, parent_hash, parent_resolved, rel, parent_hash),
+                            )
+                        for rel, parent_hash, size, mtime_ns in verified_candidates:
+                            parent = con.execute(
+                                """SELECT card_key FROM file_refs
+                                   WHERE root=? AND path=? AND content_hash=? AND size=? AND needs_hash=0""",
+                                (parent_resolved, rel, parent_hash, size),
+                            ).fetchone()
+                            if parent is None:
+                                continue
+                            inserted = con.execute(
+                                """INSERT OR IGNORE INTO file_refs(
+                                    root,path,content_hash,size,mtime_ns,needs_hash,rag_hash,
+                                    last_accessed_at,generation,card_key,updated_at
+                                ) VALUES(?,?,?,?,?,0,NULL,?,1,?,?)""",
+                                (resolved, rel, parent_hash, size, mtime_ns, now, parent["card_key"], now),
+                            )
+                            if inserted.rowcount > 0:
+                                stats["file_refs"] += 1
+                            child = con.execute(
+                                "SELECT content_hash,needs_hash FROM file_refs WHERE root=? AND path=?",
+                                (resolved, rel),
+                            ).fetchone()
+                            if child is not None and str(child["content_hash"] or "") == parent_hash and int(child["needs_hash"] or 0) == 0:
+                                con.execute(
+                                    """INSERT OR IGNORE INTO source_index(root,path,content_hash,text,updated_at)
+                                       SELECT ?,path,content_hash,text,? FROM source_index
+                                       WHERE root=? AND path=? AND content_hash=?""",
+                                    (resolved, now, parent_resolved, rel, parent_hash),
+                                )
         except (OSError, sqlite3.Error) as exc:
             logger.warning("worktree file cache seed skipped (%s)", type(exc).__name__)
 
@@ -2651,6 +2652,7 @@ class ProjectPreprocessor:
     def _next_cpu_project(self) -> sqlite3.Row | None:
         now = time.time()
         order_sql, order_params = self._scheduler_order(now)
+        watcher_active = bool(getattr(self, "_watcher_active", False))
         with self._db_lock, closing(self._connect()) as con:
             # Keep one durable queue order across CPU and GPU selectors.
             self._rebalance_processing_slots(con)
@@ -2673,18 +2675,170 @@ class ProjectPreprocessor:
                 return None
             # A healthy filesystem watcher queues only changed paths. Avoid waking
             # completed projects into a full-tree inventory while that signal is
-            # available; periodic inventory remains the fallback when watching is
-            # disabled or unavailable.
-            if self._watcher_active:
-                return None
-            # Complete projects needing auto-recheck
-            return con.execute(
-                """SELECT * FROM projects
-                   WHERE paused=0 AND next_check_at<=? AND retry_after<=?
+            # available. Still reconcile completed RAG indexes on their existing
+            # recheck cadence; chunk-store loss does not produce filesystem events.
+            if not watcher_active:
+                # Periodic inventory remains the fallback when watching is
+                # disabled or unavailable.
+                return con.execute(
+                    """SELECT * FROM projects
+                       WHERE paused=0 AND next_check_at<=? AND retry_after<=?
+                         AND status='complete' AND phase='complete'
+                       ORDER BY next_check_at ASC LIMIT 1""",
+                    (now, now),
+                ).fetchone()
+        return self._reconcile_completed_rag_index(now)
+
+    def _reconcile_completed_rag_index(self, now: float) -> sqlite3.Row | None:
+        """Requeue only completed projects whose chunk rows disappeared."""
+        if self.rag is None:
+            return None
+        with self._db_lock, closing(self._connect()) as con:
+            project = con.execute(
+                """SELECT root,workspace,generation,next_check_at
+                   FROM projects
+                   WHERE paused=0 AND retry_after<=? AND next_check_at<=?
                      AND status='complete' AND phase='complete'
-                   ORDER BY next_check_at ASC LIMIT 1""",
+                   ORDER BY next_check_at ASC,root ASC LIMIT 1""",
                 (now, now),
             ).fetchone()
+        if project is None:
+            return None
+
+        try:
+            return self._reconcile_completed_rag_candidate(project, now)
+        except Exception as exc:
+            interval = max(30, int(self.cfg.get("auto_recheck_seconds", 1800)))
+            retry_at = now + min(300, interval)
+            try:
+                with self._db_lock, closing(self._connect()) as con:
+                    con.execute(
+                        """UPDATE projects SET next_check_at=?,updated_at=?
+                           WHERE root=? AND generation=? AND status='complete' AND phase='complete'
+                             AND paused=0 AND next_check_at=?""",
+                        (
+                            retry_at, time.time(), str(project["root"]),
+                            int(project["generation"]), float(project["next_check_at"]),
+                        ),
+                    )
+                    con.commit()
+            except Exception as defer_exc:
+                logger.error(
+                    "Completed RAG integrity retry scheduling failed (root=%s error=%s)",
+                    project["root"], type(defer_exc).__name__,
+                )
+            logger.warning(
+                "Completed RAG integrity check deferred (root=%s error=%s)",
+                project["root"], type(exc).__name__,
+            )
+            return None
+
+    def _reconcile_completed_rag_candidate(
+        self, project: sqlite3.Row, now: float,
+    ) -> sqlite3.Row | None:
+        root = str(project["root"])
+        workspace = str(project["workspace"])
+        generation = int(project["generation"])
+        checked_at = float(project["next_check_at"])
+        semantic_rows: list[sqlite3.Row] = []
+        rag_allowed = self._project_phase_allowed(root, "rag")
+        if rag_allowed:
+            with self._db_lock, closing(self._connect()) as con:
+                semantic_rows = con.execute(
+                    """SELECT path,content_hash FROM file_refs
+                       WHERE root=? AND needs_hash=0 AND content_hash<>''
+                       ORDER BY path""",
+                    (root,),
+                ).fetchall()
+        skip_declarative = (
+            self.deterministic is not None
+            and bool(self.cfg.get("skip_rag_for_deterministic_declarative", True))
+        )
+        semantic_rows = [
+            item for item in semantic_rows
+            if not skip_declarative or self.deterministic.semantic_needed(root, str(item["path"]))
+        ]
+        semantic_paths = [str(item["path"]) for item in semantic_rows]
+        if rag_allowed:
+            indexed_paths = self.rag.indexed_paths(workspace=workspace, paths=semantic_paths)
+            if not isinstance(indexed_paths, set):
+                raise RuntimeError("RAG indexed-path check returned an invalid result")
+            indexed_file_paths = indexed_paths.intersection(semantic_paths)
+            indexed_chunk_paths = self.rag.indexed_chunk_paths(
+                workspace=workspace, paths=sorted(indexed_file_paths),
+            ) if indexed_file_paths else set()
+            if not isinstance(indexed_chunk_paths, set):
+                raise RuntimeError("RAG indexed-chunk check returned an invalid result")
+        else:
+            indexed_paths = set()
+            indexed_file_paths = set()
+            indexed_chunk_paths = set()
+        hashes = {str(item["path"]): str(item["content_hash"]) for item in semantic_rows}
+        missing_paths = [path for path in semantic_paths if path not in indexed_paths]
+        missing_paths.extend(
+            path for path in sorted(indexed_file_paths - indexed_chunk_paths)
+            if self._completed_rag_path_has_content(root, path)
+        )
+        interval = max(30, int(self.cfg.get("auto_recheck_seconds", 1800)))
+        updated_at = time.time()
+
+        with self._db_lock, closing(self._connect()) as con:
+            if missing_paths:
+                cur = con.execute(
+                    """UPDATE projects SET status='queued',phase='rag',next_check_at=0,updated_at=?
+                       WHERE root=? AND generation=? AND status='complete' AND phase='complete'
+                         AND paused=0 AND retry_after<=? AND next_check_at=?""",
+                    (updated_at, root, generation, now, checked_at),
+                )
+                if cur.rowcount != 1:
+                    return None
+                con.executemany(
+                    """UPDATE file_refs SET rag_hash=NULL,updated_at=?
+                       WHERE root=? AND path=? AND content_hash=? AND needs_hash=0""",
+                    [(updated_at, root, path, hashes[path]) for path in missing_paths],
+                )
+                con.commit()
+                return con.execute("SELECT * FROM projects WHERE root=?", (root,)).fetchone()
+
+            con.execute(
+                """UPDATE projects SET next_check_at=?,updated_at=?
+                   WHERE root=? AND generation=? AND status='complete' AND phase='complete'
+                     AND paused=0 AND retry_after<=? AND next_check_at=?""",
+                (now + interval, updated_at, root, generation, now, checked_at),
+            )
+            con.commit()
+        return None
+
+    @staticmethod
+    def _completed_rag_path_has_content(root: str, relative_path: str) -> bool:
+        """Distinguish lost chunks from indexed empty/whitespace-only files."""
+        root_path = Path(root).resolve(strict=True)
+        relative = PureWindowsPath(relative_path)
+        parts = relative.parts
+        if relative.is_absolute() or relative.drive or not parts or any(
+            part in {"", ".", ".."} for part in parts
+        ):
+            raise ValueError("RAG integrity path must stay relative to its project root")
+
+        candidate = root_path
+        try:
+            for part in parts:
+                candidate = candidate / part
+                info = os.lstat(candidate)
+                if stat.S_ISLNK(info.st_mode) or (
+                    getattr(info, "st_file_attributes", 0)
+                    & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+                ):
+                    raise ValueError("RAG integrity path cannot traverse symlinks or junctions")
+        except FileNotFoundError:
+            return True
+        if not stat.S_ISREG(info.st_mode):
+            return True
+        with candidate.open("r", encoding="utf-8", errors="replace") as stream:
+            for text in iter(lambda: stream.read(64 * 1024), ""):
+                if text.strip():
+                    return True
+        return False
 
     def _next_gpu_project(self) -> sqlite3.Row | None:
         now = time.time()
@@ -3627,6 +3781,39 @@ class ProjectPreprocessor:
             if not pending:
                 all_paths = [str(r[0]) for r in con.execute("SELECT path FROM file_refs WHERE root=? ORDER BY path", (root,)).fetchall()]
         if not pending:
+            with self._db_lock, closing(self._connect()) as con:
+                semantic_rows = con.execute(
+                    """SELECT f.path,f.content_hash
+                       FROM file_refs f
+                       WHERE f.root=? AND f.needs_hash=0 AND f.content_hash<>''
+                       ORDER BY f.path""",
+                    (root,),
+                ).fetchall()
+            skip_declarative = (
+                self.deterministic is not None
+                and bool(self.cfg.get("skip_rag_for_deterministic_declarative", True))
+            )
+            semantic_paths = [
+                str(item["path"])
+                for item in semantic_rows
+                if not skip_declarative or self.deterministic.semantic_needed(root, str(item["path"]))
+            ]
+            if semantic_paths:
+                indexed_paths = self.rag.indexed_paths(workspace=workspace, paths=semantic_paths)
+                if not isinstance(indexed_paths, set):
+                    raise RuntimeError("RAG indexed-path check returned an invalid result")
+                missing_paths = [path for path in semantic_paths if path not in indexed_paths]
+                if missing_paths:
+                    hashes = {str(item["path"]): str(item["content_hash"]) for item in semantic_rows}
+                    now = time.time()
+                    with self._db_lock, closing(self._connect()) as con:
+                        con.executemany(
+                            """UPDATE file_refs SET rag_hash=NULL,updated_at=?
+                               WHERE root=? AND path=? AND content_hash=? AND needs_hash=0""",
+                            [(now, root, path, hashes[path]) for path in missing_paths],
+                        )
+                        con.commit()
+                    return True
             with self._db_lock:
                 batch_limits.pop(root, None)
                 batch_successes.pop(root, None)
@@ -3738,29 +3925,30 @@ class ProjectPreprocessor:
                 con.commit()
         if missing:
             self.rag.remove_paths(workspace=workspace, paths=missing)
+            existence = {}
+            for rel in missing:
+                try:
+                    existence[rel] = "present" if stat.S_ISREG((Path(root) / rel).stat().st_mode) else "missing"
+                except (FileNotFoundError, NotADirectoryError):
+                    existence[rel] = "missing"
+                except OSError:
+                    existence[rel] = "uncertain"
             with self._db_lock, closing(self._connect()) as con:
-                con.execute("BEGIN IMMEDIATE")
-                for rel in missing:
-                    try:
-                        if not stat.S_ISREG((Path(root) / rel).stat().st_mode):
-                            raise FileNotFoundError(rel)
-                    except (FileNotFoundError, NotADirectoryError):
-                        deleted = con.execute(
-                            "DELETE FROM file_refs WHERE root=? AND path=? AND content_hash=? AND needs_hash=0",
-                            (root, rel, pending_hashes[rel]),
-                        ).rowcount
-                        if deleted:
-                            con.execute("DELETE FROM source_index WHERE root=? AND path=?", (root, rel))
-                            con.execute("DELETE FROM source_fts WHERE root=? AND path=?", (root, rel))
+                with write_transaction(con, max_duration_seconds=5.0, rollback_label="preprocessor missing refs"):
+                    for rel in missing:
+                        if existence[rel] == "missing":
+                            deleted = con.execute(
+                                "DELETE FROM file_refs WHERE root=? AND path=? AND content_hash=? AND needs_hash=0",
+                                (root, rel, pending_hashes[rel]),
+                            ).rowcount
+                            if deleted:
+                                con.execute("DELETE FROM source_index WHERE root=? AND path=?", (root, rel))
+                                con.execute("DELETE FROM source_fts WHERE root=? AND path=?", (root, rel))
+                            else:
+                                con.execute("UPDATE file_refs SET needs_hash=1,rag_hash=NULL WHERE root=? AND path=?", (root, rel))
                         else:
+                            # Uncertain or reappeared paths must be hashed again.
                             con.execute("UPDATE file_refs SET needs_hash=1,rag_hash=NULL WHERE root=? AND path=?", (root, rel))
-                    except OSError:
-                        con.execute("UPDATE file_refs SET needs_hash=1,rag_hash=NULL WHERE root=? AND path=?", (root, rel))
-                    else:
-                        # RAG rows were removed but the path reappeared during
-                        # the batch. Retain its record and schedule a fresh hash.
-                        con.execute("UPDATE file_refs SET needs_hash=1,rag_hash=NULL WHERE root=? AND path=?", (root, rel))
-                con.commit()
         if processed:
             now = time.time()
             with self._db_lock, closing(self._connect()) as con:
@@ -3849,34 +4037,33 @@ class ProjectPreprocessor:
 
         now = time.time()
         with self._db_lock, closing(self._connect()) as con:
-            con.execute("BEGIN IMMEDIATE")
-            placeholders = ",".join("?" for _ in lex_results)
-            current = {str(item["path"]): (str(item["content_hash"]), int(item["needs_hash"]))
-                       for item in con.execute(
-                           f"SELECT path,content_hash,needs_hash FROM file_refs WHERE root=? AND path IN ({placeholders})",
-                           (root, *(item[0] for item in lex_results)),
-                       )}
-            # The bytes or the watcher may have changed while the CPU pool read
-            # the batch. Publish only text carrying the selected source identity.
-            accepted = []
-            for rel, expected_hash, file_hash, text in lex_results:
-                if current.get(rel) != (expected_hash, 0):
-                    continue
-                if file_hash != expected_hash:
-                    con.execute("UPDATE file_refs SET needs_hash=1 WHERE root=? AND path=? AND content_hash=? AND needs_hash=0",
-                                (root, rel, expected_hash))
-                    continue
-                accepted.append((rel, expected_hash, text))
-            con.executemany(
-                "INSERT OR REPLACE INTO source_index(root,path,content_hash,text,updated_at) VALUES(?,?,?,?,?)",
-                [(root, rel, chash, text, now) for rel, chash, text in accepted],
-            )
-            for rel, _, text in accepted:
-                con.execute("DELETE FROM source_fts WHERE root=? AND path=?", (root, rel))
-                # Include path in indexed content so filename/class/module searches
-                # can narrow candidates without a full repository scan.
-                con.execute("INSERT INTO source_fts(root,path,content) VALUES(?,?,?)", (root, rel, rel + "\n" + text))
-            con.commit()
+            with write_transaction(con, max_duration_seconds=5.0, rollback_label="preprocessor lexical index"):
+                placeholders = ",".join("?" for _ in lex_results)
+                current = {str(item["path"]): (str(item["content_hash"]), int(item["needs_hash"]))
+                           for item in con.execute(
+                               f"SELECT path,content_hash,needs_hash FROM file_refs WHERE root=? AND path IN ({placeholders})",
+                               (root, *(item[0] for item in lex_results)),
+                           )}
+                # The bytes or the watcher may have changed while the CPU pool read
+                # the batch. Publish only text carrying the selected source identity.
+                accepted = []
+                for rel, expected_hash, file_hash, text in lex_results:
+                    if current.get(rel) != (expected_hash, 0):
+                        continue
+                    if file_hash != expected_hash:
+                        con.execute("UPDATE file_refs SET needs_hash=1 WHERE root=? AND path=? AND content_hash=? AND needs_hash=0",
+                                    (root, rel, expected_hash))
+                        continue
+                    accepted.append((rel, expected_hash, text))
+                con.executemany(
+                    "INSERT OR REPLACE INTO source_index(root,path,content_hash,text,updated_at) VALUES(?,?,?,?,?)",
+                    [(root, rel, chash, text, now) for rel, chash, text in accepted],
+                )
+                for rel, _, text in accepted:
+                    con.execute("DELETE FROM source_fts WHERE root=? AND path=?", (root, rel))
+                    # Include path in indexed content so filename/class/module searches
+                    # can narrow candidates without a full repository scan.
+                    con.execute("INSERT INTO source_fts(root,path,content) VALUES(?,?,?)", (root, rel, rel + "\n" + text))
         with self._stats_lock:
             self._stats["lexical_files"] = self._stats.get("lexical_files", 0) + len(accepted)
         self._record_progress(root, len(accepted))

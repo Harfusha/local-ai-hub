@@ -99,6 +99,10 @@ def test_mcp_task_description_exposes_async_and_conversation_contracts():
         "`review.max_queue_age_ms`",
         "`cold_start_review_diff`",
         "`cold_start_rag_index`",
+        "defaults to `auto` with a 30-second latency budget",
+        "explicit `delivery=sync` stays inline",
+        "body `request_id` is the job idempotency key",
+        "Retryable async queue rejection maps to HTTP 429",
         "`speculative_lint`",
         "`X-LocalAI-Request-ID`",
         "12 turns",
@@ -276,3 +280,120 @@ def test_cold_start_rag_index_auto_delivery_uses_durable_job(monkeypatch):
         "action": "rag_index",
         "payload": {"root": "C:/project", "workspace": "workspace-1"},
     }
+
+
+def test_rag_index_defaults_to_bounded_async_delivery_but_keeps_explicit_sync(monkeypatch):
+    submitted = {}
+
+    class _Telemetry:
+        def http_latency_estimate(self, _action):
+            return {"samples": 0, "p95_duration_ms": 0}
+
+    class _Jobs:
+        def submit(self, action, payload):
+            submitted.update(action=action, payload=payload)
+            return {"success": True, "job_id": "job-default-rag", "state": "queued"}
+
+    class _App:
+        telemetry = _Telemetry()
+        async_jobs = _Jobs()
+
+    monkeypatch.setattr(http_server, "APP", _App())
+    handler = object.__new__(http_server.Handler)
+
+    status, response = handler._async_delivery(
+        "/api/rag/index", {"root": "C:/project", "workspace": "workspace-1"}
+    )
+
+    assert status == 200
+    assert response["job_id"] == "job-default-rag"
+    assert response["delivery"] == {"mode": "async", "reason": "cold_start_rag_index"}
+    assert submitted == {
+        "action": "rag_index",
+        "payload": {"root": "C:/project", "workspace": "workspace-1"},
+    }
+
+    submitted.clear()
+    assert handler._async_delivery(
+        "/api/rag/index",
+        {"delivery": "sync", "root": "C:/project", "workspace": "workspace-1"},
+    ) is None
+    assert submitted == {}
+
+    class _SlowTelemetry:
+        def http_latency_estimate(self, _action):
+            return {"samples": 12, "p95_duration_ms": 30_001}
+
+    http_server.APP.telemetry = _SlowTelemetry()
+    status, response = handler._async_delivery(
+        "/api/rag/index", {"root": "C:/project", "workspace": "workspace-1"}
+    )
+    assert status == 200
+    assert response["delivery"] == {
+        "mode": "async",
+        "reason": "p95_latency_budget_exceeded",
+        "observed_p95_ms": 30_001.0,
+        "samples": 12,
+        "queue_age_ms": 0.0,
+    }
+
+
+def test_async_delivery_keeps_journal_header_separate_from_body_idempotency(monkeypatch):
+    submitted = {}
+
+    class _Telemetry:
+        def http_latency_estimate(self, _action):
+            return {"samples": 0, "p95_duration_ms": 0}
+
+    class _Jobs:
+        def submit(self, action, payload):
+            submitted.update(action=action, payload=payload)
+            return {"success": True, "job_id": "job-request-id", "state": "queued"}
+
+    class _App:
+        telemetry = _Telemetry()
+        async_jobs = _Jobs()
+
+    monkeypatch.setattr(http_server, "APP", _App())
+    handler = object.__new__(http_server.Handler)
+    handler.headers = {"X-LocalAI-Request-ID": "journal-id"}
+
+    status, response = handler._async_delivery(
+        "/api/rag/index",
+        {"root": "C:/project", "workspace": "workspace-1", "request_id": "body-idempotency-id"},
+    )
+
+    assert status == 200
+    assert response["job_id"] == "job-request-id"
+    assert submitted["payload"]["request_id"] == "body-idempotency-id"
+
+
+def test_async_delivery_returns_http_429_for_retryable_queue_rejection(monkeypatch):
+    class _Telemetry:
+        def http_latency_estimate(self, _action):
+            return {"samples": 0, "p95_duration_ms": 0}
+
+    class _Jobs:
+        def submit(self, _action, _payload):
+            return {
+                "success": False,
+                "state": "rejected",
+                "retryable": True,
+                "error": "async job queue is full",
+            }
+
+    class _App:
+        telemetry = _Telemetry()
+        async_jobs = _Jobs()
+
+    monkeypatch.setattr(http_server, "APP", _App())
+    handler = object.__new__(http_server.Handler)
+    status, response = handler._async_delivery(
+        "/api/rag/index", {"root": "C:/project", "workspace": "workspace-1"}
+    )
+
+    assert status == 429
+    assert response["status_code"] == 429
+    assert response["state"] == "rejected"
+    assert response["retryable"] is True
+    assert response["delivery"]["reason"] == "cold_start_rag_index"

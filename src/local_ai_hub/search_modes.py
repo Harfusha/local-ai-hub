@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import re
 from collections.abc import Mapping, Sequence
 from pathlib import PurePosixPath
@@ -278,7 +279,7 @@ def expand_semantic_query(query: str) -> tuple[str, bool]:
     return f"{query.strip()} {' '.join(translated)}", True
 
 
-def _path_key(item: Mapping[str, Any]) -> tuple[str, str] | None:
+def _path_key(item: Mapping[str, Any], *, case_sensitive: bool = True) -> tuple[str, str] | None:
     path = item.get("path")
     if type(path) is not str or not path.strip():
         return None
@@ -293,7 +294,7 @@ def _path_key(item: Mapping[str, Any]) -> tuple[str, str] | None:
     ):
         return None
     display = str(PurePosixPath(raw))
-    return display.casefold(), display
+    return (display if case_sensitive else display.casefold()), display
 
 
 def deduplicate_search_files(rows: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
@@ -321,13 +322,14 @@ def fuse_search_results(
     offset: int,
     rrf_k: int = RRF_K,
     lexical_first: bool = False,
+    case_sensitive: bool = True,
+    matches_per_file: int = 8,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    """Fuse file-level lexical and RAG ranks without counting files twice.
+    """Fuse per-file ranks while retaining bounded evidence from every chunk.
 
-    Each backend contributes at most once per file. The lexical snippet is kept
-    when both backends agree, so semantic metadata cannot replace exact source.
-    Counts describe only this bounded candidate pool; hybrid does not claim an
-    exact total over the mixed result set.
+    Git-relative path identity is case-sensitive by default on every host;
+    repositories with an explicit case-insensitive policy can opt in. File
+    ranking remains bounded while distinct lexical and RAG matches are retained.
     """
     if type(limit) is not int or limit < 1:
         raise ValueError("limit must be a positive integer")
@@ -335,26 +337,32 @@ def fuse_search_results(
         raise ValueError("offset must be a non-negative integer")
     if type(rrf_k) is not int or rrf_k < 1:
         raise ValueError("rrf_k must be a positive integer")
+    if type(case_sensitive) is not bool or type(matches_per_file) is not int or matches_per_file < 1:
+        raise ValueError("case_sensitive must be boolean and matches_per_file positive")
 
     merged: dict[str, dict[str, Any]] = {}
     for source, rows in (("lexical", lexical), ("rag", rag)):
-        seen: set[str] = set()
+        source_ranks: dict[str, int] = {}
         for rank, raw in enumerate(rows, start=1):
             if not isinstance(raw, Mapping):
                 continue
-            identity = _path_key(raw)
+            identity = _path_key(raw, case_sensitive=case_sensitive)
             if identity is None:
                 continue
             key, display_path = identity
-            if key in seen:
-                continue
-            seen.add(key)
+            source_rank = source_ranks.get(key)
+            first_for_source = source_rank is None
+            if first_for_source:
+                source_rank = rank
+                source_ranks[key] = source_rank
             entry = merged.get(key)
             if entry is None:
                 entry = {
                     "path": display_path,
                     "sources": [],
                     "fusion_score": 0.0,
+                    "source_breakdown": {},
+                    "matches": [],
                 }
                 merged[key] = entry
             if source == "lexical":
@@ -370,16 +378,57 @@ def fuse_search_results(
                 for field, value in raw.items():
                     if field not in entry and field not in {"embedding", "raw_embedding"}:
                         entry[field] = value
-            entry[f"{source}_rank"] = rank
-            entry["fusion_score"] += 1.0 / (rrf_k + rank)
-            entry["sources"].append(source)
+            file_score = 1.0 / (rrf_k + source_rank)
+            if first_for_source:
+                entry[f"{source}_rank"] = source_rank
+                entry["fusion_score"] += file_score
+                entry["source_breakdown"][source] = {"rank": source_rank, "score": file_score}
+                entry["sources"].append(source)
+
+            match = {field: value for field, value in raw.items() if field not in {"embedding", "raw_embedding"}}
+            match["path"] = display_path
+            match["source"] = source
+            match["source_rank"] = source_rank
+            match["fusion_score"] = file_score
+            content_hash = raw.get("content_hash")
+            chunk_id = raw.get("chunk_id", raw.get("chunk_no", raw.get("start_line")))
+            source_id = raw.get("source_id", display_path)
+            match_identity = (str(source_id), str(chunk_id), str(content_hash)) if content_hash is not None and chunk_id is not None else None
+            existing = next((candidate for candidate in entry["matches"]
+                             if match_identity is not None and candidate.get("_identity") == match_identity), None)
+            if existing is None:
+                match["_identity"] = match_identity
+                match["sources"] = [source]
+                entry["matches"].append(match)
+            elif source not in existing["sources"]:
+                existing["sources"].append(source)
+                existing["fusion_score"] += file_score
+
+    for item in merged.values():
+        matches = sorted(item["matches"], key=lambda match: (
+            not (type(match.get("relevance")) in {int, float} and math.isfinite(match["relevance"])),
+            -float(match["relevance"]) if type(match.get("relevance")) in {int, float} and math.isfinite(match["relevance"]) else 0.0,
+            -float(match.get("fusion_score", 0.0)),
+            "lexical" not in match.get("sources", []),
+            int(match.get("source_rank", 0)),
+            str(match.get("chunk_id", match.get("chunk_no", match.get("start_line", "")))),
+        ))
+        total_matches = len(matches)
+        kept = matches[:matches_per_file]
+        for match in kept:
+            match.pop("_identity", None)
+        item["matches"] = kept
+        item["primary_match"] = kept[0] if kept else None
+        item["alternative_matches"] = kept[1:]
+        item["truncated"] = total_matches > len(kept)
+        item["omitted_matches"] = total_matches - len(kept)
 
     ranked = sorted(
         merged.values(),
         key=lambda item: (
             0 if lexical_first and item.get("lexical_rank") else 1,
             -float(item["fusion_score"]),
-            str(item.get("path", "")).casefold(),
+            str(item.get("path", "")) if case_sensitive else str(item.get("path", "")).casefold(),
             str(item.get("path", "")),
         ),
     )

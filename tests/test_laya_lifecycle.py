@@ -45,6 +45,94 @@ def test_idle_timeout_uses_inference_completion_then_reloads_after_unload():
     assert lifecycle.poll_idle_unload(2100) == "unloaded"
 
 
+@pytest.mark.parametrize("invalid_now", [float("nan"), float("inf"), float("-inf"), True, "600"])
+def test_idle_unload_rejects_invalid_clock_values_without_closing_session(invalid_now):
+    clock = FakeClock()
+    closed = []
+    lifecycle = LayaSessionLifecycle(600, close_session=lambda session: closed.append(session) or True, clock=clock)
+    with lifecycle.inference_session(FakeSession):
+        pass
+
+    with pytest.raises(ValueError, match="finite monotonic timestamp"):
+        lifecycle.poll_idle_unload(invalid_now)
+
+    assert lifecycle.status["available"] is True
+    assert closed == []
+
+
+def test_non_finite_internal_clock_fails_closed_without_unloading_session():
+    closed = []
+    lifecycle = LayaSessionLifecycle(
+        600,
+        close_session=lambda session: closed.append(session) or True,
+        clock=lambda: float("nan"),
+    )
+    with lifecycle.inference_session(FakeSession):
+        pass
+
+    with pytest.raises(ValueError, match="finite monotonic timestamp"):
+        lifecycle.poll_idle_unload()
+
+    assert lifecycle.status["available"] is True
+    assert closed == []
+
+
+@pytest.mark.parametrize(
+    "invalid_time",
+    [
+        pytest.param(float("nan"), id="nan"),
+        pytest.param(float("inf"), id="infinity"),
+        pytest.param(True, id="boolean"),
+        pytest.param(10**10000, id="integer-overflow"),
+    ],
+)
+def test_invalid_completion_clock_never_starts_idle_unload_timer(invalid_time):
+    closed = []
+
+    def invalid_clock():
+        return invalid_time
+
+    lifecycle = LayaSessionLifecycle(
+        600, close_session=lambda session: closed.append(session) or True,
+        clock=invalid_clock,
+    )
+    with lifecycle.inference_session(FakeSession):
+        pass
+
+    # Even an arbitrarily large valid poll timestamp cannot turn an invalid
+    # inference completion time into an immediately expired idle interval.
+    assert lifecycle.poll_idle_unload(1e300) == "not_idle"
+    assert lifecycle.status["available"] is True
+    assert closed == []
+
+
+def test_completion_clock_exception_does_not_reuse_old_idle_timestamp():
+    clock = FakeClock()
+    closed = []
+
+    def ticking_clock():
+        if clock.value == 2:
+            raise RuntimeError("clock unavailable")
+        return clock.value
+
+    lifecycle = LayaSessionLifecycle(
+        10, close_session=lambda session: closed.append(session) or True,
+        clock=ticking_clock,
+    )
+    with lifecycle.inference_session(FakeSession):
+        pass
+    clock.value = 1
+    with lifecycle.inference_session(FakeSession):
+        pass
+    clock.value = 2
+    with lifecycle.inference_session(FakeSession):
+        pass
+
+    assert lifecycle.poll_idle_unload(1000) == "not_idle"
+    assert lifecycle.status["available"] is True
+    assert closed == []
+
+
 def test_concurrent_inference_shares_session_and_blocks_idle_release():
     clock = FakeClock()
     lifecycle = LayaSessionLifecycle(10, close_session=lambda _session: True, clock=clock)
@@ -71,6 +159,58 @@ def test_concurrent_inference_shares_session_and_blocks_idle_release():
     assert not worker.is_alive()
     assert lifecycle.poll_idle_unload(clock.value + 10) == "unloaded"
     assert len(loaded) == 1
+
+
+def test_concurrent_waiters_share_one_failed_load_attempt():
+    lifecycle = LayaSessionLifecycle(600, close_session=lambda _session: True)
+    load_started = threading.Event()
+    release_load = threading.Event()
+    waiter_entered = threading.Event()
+    load_attempts = []
+    failures = []
+    original_wait = lifecycle._condition.wait
+
+    def tracked_wait(timeout=None):
+        waiter_entered.set()
+        return original_wait(timeout)
+
+    lifecycle._condition.wait = tracked_wait
+
+    def load():
+        load_attempts.append(1)
+        if len(load_attempts) == 1:
+            load_started.set()
+            assert release_load.wait(2)
+            raise OSError("provider unavailable")
+        return FakeSession()
+
+    def inference():
+        try:
+            with lifecycle.inference_session(load):
+                failures.append(None)
+        except Exception as exc:
+            failures.append(exc)
+
+    first = threading.Thread(target=inference)
+    second = threading.Thread(target=inference)
+    first.start()
+    assert load_started.wait(1)
+    second.start()
+    assert waiter_entered.wait(1)
+    release_load.set()
+    first.join(1)
+    second.join(1)
+
+    assert not first.is_alive()
+    assert not second.is_alive()
+    assert len(load_attempts) == 1
+    assert len(failures) == 2
+    assert sum(isinstance(exc, OSError) for exc in failures) == 1
+    assert sum(isinstance(exc, RuntimeError) for exc in failures) == 1
+
+    with lifecycle.inference_session(load) as later_session:
+        assert isinstance(later_session, FakeSession)
+    assert len(load_attempts) == 2
 
 
 def test_new_inference_waits_for_in_progress_close_then_reloads_once():

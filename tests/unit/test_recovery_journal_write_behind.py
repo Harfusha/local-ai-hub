@@ -109,9 +109,14 @@ def test_completion_batch_commits_multiple_updates_in_one_transaction(tmp_path: 
             self.connection.close()
 
         def execute(self, sql: str, parameters: tuple[Any, ...] = ()):
-            if sql.strip().upper() == "BEGIN IMMEDIATE":
+            normalized = sql.strip().upper()
+            if normalized == "BEGIN IMMEDIATE":
                 self.in_transaction = True
-            return self.connection.execute(sql, parameters)
+            cursor = self.connection.execute(sql, parameters)
+            if normalized == "COMMIT" and self.in_transaction and self.updates >= 2:
+                self.in_transaction = False
+                batch_committed.set()
+            return cursor
 
         def executemany(self, sql: str, parameters: list[tuple[Any, ...]]):
             rows = list(parameters)
@@ -234,6 +239,13 @@ def test_conflicting_pending_completion_is_rejected_and_reservations_remain_boun
         def __init__(self, connection: sqlite3.Connection):
             self.connection = connection
 
+        def execute(self, sql: str, parameters: tuple[Any, ...] = ()):
+            cursor = self.connection.execute(sql, parameters)
+            if sql.strip().upper() == "COMMIT" and not durable_commit.is_set():
+                durable_commit.set()
+                assert release_after_commit.wait(3)
+            return cursor
+
         def __enter__(self) -> "BlockedConnection":
             return self
 
@@ -245,12 +257,6 @@ def test_conflicting_pending_completion_is_rejected_and_reservations_remain_boun
                 write_entered.set()
                 assert release_write.wait(3)
             return self.connection.executemany(sql, parameters)
-
-        def commit(self) -> None:
-            self.connection.commit()
-            if not durable_commit.is_set():
-                durable_commit.set()
-                assert release_after_commit.wait(3)
 
         def __getattr__(self, name: str) -> Any:
             return getattr(self.connection, name)

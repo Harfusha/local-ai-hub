@@ -51,6 +51,17 @@ def test_speculative_recommendation_is_separate_from_configuration_and_runtime()
     assert speculative["runtime_status"] == "unknown"
 
 
+def test_successful_sample_reports_explicit_freshness_state() -> None:
+    balancer = VRAMBalancer({})
+
+    result = balancer._status_from_telemetry(_balanced_sample(timestamp=time.time()))
+
+    assert result["telemetry_sampling"] is False
+    assert result["telemetry_stale"] is False
+    assert result["telemetry_wait_timed_out"] is False
+    assert result["telemetry_error"] is None
+
+
 @pytest.mark.parametrize(
     ("target", "draft", "expected_status"),
     [

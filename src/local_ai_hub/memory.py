@@ -9,7 +9,7 @@ from contextlib import closing
 from pathlib import Path
 from typing import Any
 
-from .sqlite_support import connect_sqlite, initialize_wal, retry_busy
+from .sqlite_support import connect_sqlite, initialize_wal, retry_busy, write_transaction
 from .process_utils import canonical_root
 
 def _clean_text(value: Any) -> str:
@@ -156,29 +156,32 @@ class WorkspaceMemoryStore:
             def _setup() -> None:
                 with closing(self._connect()) as con:
                     initialize_wal(con)
-                    con.execute("BEGIN IMMEDIATE")
-                    con.execute(
-                        """CREATE TABLE IF NOT EXISTS memos (
-                            workspace TEXT NOT NULL,
-                            memo_key TEXT NOT NULL,
-                            value TEXT NOT NULL,
-                            metadata TEXT NOT NULL,
-                            updated_at REAL NOT NULL,
-                            expires_at REAL NOT NULL,
-                            version INTEGER NOT NULL DEFAULT 1,
-                            PRIMARY KEY(workspace, memo_key)
-                        )"""
-                    )
-                    con.execute(
-                        """CREATE TABLE IF NOT EXISTS memo_versions (
-                            workspace TEXT NOT NULL,
-                            memo_key TEXT NOT NULL,
-                            version INTEGER NOT NULL,
-                            PRIMARY KEY(workspace, memo_key)
-                        )"""
-                    )
-                    con.execute("CREATE INDEX IF NOT EXISTS idx_memos_expiry ON memos(expires_at)")
-                    con.commit()
+                    with write_transaction(
+                        con,
+                        max_duration_seconds=5.0,
+                        rollback_label="workspace memory schema initialization",
+                    ):
+                        con.execute(
+                            """CREATE TABLE IF NOT EXISTS memos (
+                                workspace TEXT NOT NULL,
+                                memo_key TEXT NOT NULL,
+                                value TEXT NOT NULL,
+                                metadata TEXT NOT NULL,
+                                updated_at REAL NOT NULL,
+                                expires_at REAL NOT NULL,
+                                version INTEGER NOT NULL DEFAULT 1,
+                                PRIMARY KEY(workspace, memo_key)
+                            )"""
+                        )
+                        con.execute(
+                            """CREATE TABLE IF NOT EXISTS memo_versions (
+                                workspace TEXT NOT NULL,
+                                memo_key TEXT NOT NULL,
+                                version INTEGER NOT NULL,
+                                PRIMARY KEY(workspace, memo_key)
+                            )"""
+                        )
+                        con.execute("CREATE INDEX IF NOT EXISTS idx_memos_expiry ON memos(expires_at)")
             retry_busy(_setup, retries=5, base_delay_seconds=0.02)
             self._initialized = True
 
@@ -234,42 +237,40 @@ class WorkspaceMemoryStore:
         meta_json = _clean_text(json.dumps(meta, ensure_ascii=False, separators=(",", ":"), default=str))
         def write() -> int | dict[str, Any]:
             with closing(self._connect()) as con:
-                con.execute("BEGIN IMMEDIATE")
-                self._purge(con)
-                row = con.execute(
-                    "SELECT version FROM memo_versions WHERE workspace=? AND memo_key=?",
-                    (workspace, key),
-                ).fetchone()
-                current_version = int(row[0]) if row else 0
-                if expected_version is not None and current_version != expected_version:
-                    con.rollback()
-                    return {
-                        "success": False,
-                        "error": "memo version conflict",
-                        "version_conflict": True,
-                        "workspace": workspace,
-                        "key": key,
-                        "scope": "workspace-shared",
-                        "expected_version": expected_version,
-                        "current_version": current_version,
-                    }
-                con.execute(
-                    """INSERT INTO memo_versions(workspace,memo_key,version) VALUES(?,?,?)
-                       ON CONFLICT(workspace,memo_key) DO UPDATE SET version=excluded.version""",
-                    (workspace, key, current_version + 1),
-                )
-                version = current_version + 1
-                con.execute(
-                    """INSERT INTO memos(workspace,memo_key,value,metadata,updated_at,expires_at,version)
-                       VALUES(?,?,?,?,?,?,?)
-                       ON CONFLICT(workspace,memo_key) DO UPDATE SET
-                           value=excluded.value, metadata=excluded.metadata,
-                           updated_at=excluded.updated_at, expires_at=excluded.expires_at,
-                           version=excluded.version""",
-                    (workspace, key, value, meta_json, now, now + ttl, version),
-                )
-                con.commit()
-                return version
+                with write_transaction(con, max_duration_seconds=5.0, rollback_label="workspace memo set"):
+                    row = con.execute(
+                        "SELECT version FROM memo_versions WHERE workspace=? AND memo_key=?",
+                        (workspace, key),
+                    ).fetchone()
+                    current_version = int(row[0]) if row else 0
+                    if expected_version is not None and current_version != expected_version:
+                        return {
+                            "success": False,
+                            "error": "memo version conflict",
+                            "version_conflict": True,
+                            "workspace": workspace,
+                            "key": key,
+                            "scope": "workspace-shared",
+                            "expected_version": expected_version,
+                            "current_version": current_version,
+                        }
+                    self._purge(con)
+                    con.execute(
+                        """INSERT INTO memo_versions(workspace,memo_key,version) VALUES(?,?,?)
+                           ON CONFLICT(workspace,memo_key) DO UPDATE SET version=excluded.version""",
+                        (workspace, key, current_version + 1),
+                    )
+                    version = current_version + 1
+                    con.execute(
+                        """INSERT INTO memos(workspace,memo_key,value,metadata,updated_at,expires_at,version)
+                           VALUES(?,?,?,?,?,?,?)
+                           ON CONFLICT(workspace,memo_key) DO UPDATE SET
+                               value=excluded.value, metadata=excluded.metadata,
+                               updated_at=excluded.updated_at, expires_at=excluded.expires_at,
+                               version=excluded.version""",
+                        (workspace, key, value, meta_json, now, now + ttl, version),
+                    )
+                    return version
         result = retry_busy(write, retries=4)
         if isinstance(result, dict):
             return result
@@ -347,34 +348,32 @@ class WorkspaceMemoryStore:
         key = self._clean_key(key)
         def write() -> tuple[int, int]:
             with closing(self._connect()) as con:
-                con.execute("BEGIN IMMEDIATE")
-                row = con.execute(
-                    "SELECT version FROM memos WHERE workspace=? AND memo_key=?",
-                    (workspace, key),
-                ).fetchone()
-                if not row:
-                    generation = con.execute(
+                with write_transaction(con, max_duration_seconds=5.0, rollback_label="workspace memo delete"):
+                    row = con.execute(
+                        "SELECT version FROM memos WHERE workspace=? AND memo_key=?",
+                        (workspace, key),
+                    ).fetchone()
+                    if not row:
+                        generation = con.execute(
+                            "SELECT version FROM memo_versions WHERE workspace=? AND memo_key=?",
+                            (workspace, key),
+                        ).fetchone()
+                        return 0, (int(generation[0]) if generation else 0)
+                    current = con.execute(
                         "SELECT version FROM memo_versions WHERE workspace=? AND memo_key=?",
                         (workspace, key),
                     ).fetchone()
-                    con.rollback()
-                    return 0, (int(generation[0]) if generation else 0)
-                current = con.execute(
-                    "SELECT version FROM memo_versions WHERE workspace=? AND memo_key=?",
-                    (workspace, key),
-                ).fetchone()
-                next_version = (int(current[0]) if current else int(row[0])) + 1
-                cur = con.execute(
-                    "DELETE FROM memos WHERE workspace=? AND memo_key=?", (workspace, key)
-                )
-                if cur.rowcount:
-                    con.execute(
-                        """INSERT INTO memo_versions(workspace,memo_key,version) VALUES(?,?,?)
-                           ON CONFLICT(workspace,memo_key) DO UPDATE SET version=excluded.version""",
-                        (workspace, key, next_version),
+                    next_version = (int(current[0]) if current else int(row[0])) + 1
+                    cur = con.execute(
+                        "DELETE FROM memos WHERE workspace=? AND memo_key=?", (workspace, key)
                     )
-                con.commit()
-                return int(cur.rowcount or 0), next_version
+                    if cur.rowcount:
+                        con.execute(
+                            """INSERT INTO memo_versions(workspace,memo_key,version) VALUES(?,?,?)
+                               ON CONFLICT(workspace,memo_key) DO UPDATE SET version=excluded.version""",
+                            (workspace, key, next_version),
+                        )
+                    return int(cur.rowcount or 0), next_version
         deleted, version = retry_busy(write, retries=4)
         return {"success": True, "workspace": workspace, "key": key, "scope": "workspace-shared", "deleted": deleted > 0, "version": version}
 
@@ -402,13 +401,12 @@ class WorkspaceMemoryStore:
     def clear(self, root: str | None = None) -> None:
         def write() -> None:
             with closing(self._connect()) as con:
-                con.execute("BEGIN IMMEDIATE")
-                if root is not None:
-                    workspace = self.workspace_id(root)
-                    con.execute("DELETE FROM memos WHERE workspace=?", (workspace,))
-                else:
-                    con.execute("DELETE FROM memos")
-                con.commit()
+                with write_transaction(con, max_duration_seconds=5.0, rollback_label="workspace memo clear"):
+                    if root is not None:
+                        workspace = self.workspace_id(root)
+                        con.execute("DELETE FROM memos WHERE workspace=?", (workspace,))
+                    else:
+                        con.execute("DELETE FROM memos")
         try:
             retry_busy(write, retries=3)
         except sqlite3.DatabaseError:

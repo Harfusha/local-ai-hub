@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import sqlite3
-from contextlib import closing
+from contextlib import closing, contextmanager
 from pathlib import Path
 
 import pytest
 
+import local_ai_hub.memory as memory_module
 from local_ai_hub.memory import WorkspaceMemoryStore
 
 
@@ -39,6 +40,28 @@ def test_retired_tenant_field_is_rejected_in_memo_metadata(tmp_path: Path) -> No
         store.delete("repo", "memo", tenant=False)  # type: ignore[call-arg]
 
 
+def test_workspace_memo_mutations_use_bounded_write_transactions(tmp_path: Path, monkeypatch) -> None:
+    store = WorkspaceMemoryStore(tmp_path / "state")
+    original = memory_module.write_transaction
+    labels = []
+
+    @contextmanager
+    def observed_transaction(connection, **kwargs):
+        labels.append(kwargs.get("rollback_label"))
+        with original(connection, **kwargs) as transaction:
+            yield transaction
+
+    monkeypatch.setattr(memory_module, "write_transaction", observed_transaction)
+
+    first = store.put("repo", "first", "value")
+    deleted = store.delete("repo", "first")
+    store.clear("repo")
+
+    assert first["success"] is True
+    assert deleted["deleted"] is True
+    assert labels == ["workspace memo set", "workspace memo delete", "workspace memo clear"]
+
+
 def test_tenant_shaped_memo_database_is_refused_without_rewriting(tmp_path: Path) -> None:
     state_dir = tmp_path / "state"
     state_dir.mkdir()
@@ -65,3 +88,23 @@ def test_tenant_shaped_memo_database_is_refused_without_rewriting(tmp_path: Path
         WorkspaceMemoryStore(state_dir)
 
     assert db_path.read_bytes() == original
+
+
+def test_workspace_memory_schema_initialization_uses_bounded_transaction(
+    tmp_path: Path, monkeypatch
+) -> None:
+    original = memory_module.write_transaction
+    labels: list[str | None] = []
+
+    @contextmanager
+    def observed_transaction(connection, **kwargs):
+        labels.append(kwargs.get("rollback_label"))
+        with original(connection, **kwargs) as transaction:
+            yield transaction
+
+    monkeypatch.setattr(memory_module, "write_transaction", observed_transaction)
+
+    store = WorkspaceMemoryStore(tmp_path / "state")
+
+    assert store.path.exists()
+    assert labels == ["workspace memory schema initialization"]

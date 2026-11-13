@@ -14,6 +14,10 @@ Implement typed, category-specific proposals for context source/quality, context
 
 Expose a typed Laya decision request through an existing compact MCP tool and a root-authorized Hub HTTP API. Callers may select only a registered category and supply bounded input/evidence IDs. The server chooses mode, resolves repository/task/session identity, validates evidence and options, and applies category gates. Never accept caller-supplied identity, authorization, arbitrary tool execution, or a mode override. Direct API/MCP requests return explicit proposal, abstention, or unavailable status. API errors do not affect ordinary Hub behavior.
 
+## Public entry points
+
+Use `local_ai_coord(action="curate_dataset", root=ROOT, laya_operation=OPERATION)` for MCP. The root-authorized HTTP equivalent is `POST /api/agent-state/tasks` with top-level `action="curate_dataset"`, the authorized root, and the same `laya_operation` object. Typed decision operations are `evaluate_decision` and `evaluate_context_source`; scoped candidate review and read-only `runtime_status` use the same surface. `runtime_status` never loads the model.
+
 ## Runtime lifecycle
 
 Load Laya on its first request and retain the loaded session until 600 seconds of inactivity after the latest completed Laya request. Every later request resets the idle deadline; never unload while a request is in flight. Do not reject Laya solely because another model is loaded or a GPU reservation exists. Never evict, preempt, unload, or reconfigure another model. Preserve the configured hardware profile and CPU fallback. If actual provider or device capacity prevents Laya from loading, return an explicit isolated unavailable result and preserve deterministic Hub behavior. Use the existing Hub runtime; create no separate daemon.
@@ -30,8 +34,18 @@ Deterministic baselines are derived by the Hub, never asserted by the caller. `c
 
 Natural capture, storage, review, labeling, and export require no per-example consent, receipt, or separate per-example approval. Retired consent fields may be rejected but never gate these lifecycle stages. Preserve repository authorization, local access control, evidence provenance, deletion, and export safeguards.
 
+For `context_source` entries using `memory`, store one opaque `source_record_id` aligned with each memory source and evidence ID. Resolve records through explicit non-global MemoryStore scopes for the authorized repository/task/session, accepting only active or confirmed normal-sensitivity records. Require the evidence ID to be linked from that record and revalidate it as current in EvidenceStore at capture and immediately before export. Keep memory record IDs as candidate provenance only; never send them to the model as decision input. Owner-global or cross-context memory cannot become a training source.
+
 Keep examples local under configured state storage, scoped to repository/task/session, revalidatable against current evidence, deletable with linked payloads and snapshots, and out of ordinary telemetry/logs/diagnostics. Preserve task/session/source group provenance to prevent split leakage. Record review kind, reviewer/model identity, exact local model and revision where applicable, prompt/rubric version, evidence, timestamp, confidence/abstention, and decision separately from the target. A model output is never represented as a human label. Human-confirmed labels and local-model-reviewed labels remain distinct in storage and export; a model review cannot silently enter a human-confirmed training export. The current source-label rubric is `laya-source-label-v1`: select only a permitted source that best resolves the gap using relevance, freshness, and coverage; do not invent evidence or treat Laya output as a label. The local operator may confirm a label, or a capable local Codex/model may provide a separately attributed review. No four-key SSH quorum or remote reviewer keys. Collect data now; do not start fine-tuning or publish data without a separate request.
 
 ## Rollout and verification
 
 Keep each category shadow until paired comparison shows noninferior decision quality and measured improvement in reliability, quality, end-to-end latency, compute, or useful capability. Promote only a qualifying category to opt-in advisory; preserve a per-category off switch and deterministic fallback. Test MCP and HTTP contracts, identity and evidence authorization, redaction, capture scoping, deletion, dataset split, failure isolation, and concurrent lifecycle. Report source tests separately from installed live-model/provider evidence. Never claim device placement, quality, speedup, or memory release without direct measurements.
+
+## Candidate listing
+
+Root-authorized candidate `list` supports stable cursor pages with `limit` from 1 through 1000 and optional `after_candidate_id`. Return `has_more` and `next_candidate_id`; cursors must resolve inside the authorized repository and any active task filter. Keep listings metadata-only. Expose the same nested `laya_operation` through MCP and HTTP. Runtime-output history remains a separate scoped operation and never changes blind candidate `get` or human-label export.
+
+## Completion-gap capture
+
+When a natural Agent OS completion gate rejects a task, queue a local shadow `completion_gap` recommendation only if the task still has verified checkpoint evidence. Include typed `not_ready` status, the fixed rejection reason code, mutation generation and verified evidence ID. Exclude task text and raw verifier details. Queue work asynchronously; never delay or alter the deterministic completion gate. Waivers do not trigger this observation.

@@ -616,8 +616,11 @@ class IncidentStore:
                 self.state_store._preflight_schema_read_only()
                 con = connect_sqlite(self.state_store.db_path)
                 try:
-                    con.execute("BEGIN IMMEDIATE")
-                    with con:
+                    with write_transaction(
+                        con,
+                        max_duration_seconds=5.0,
+                        rollback_label="agent incident schema initialization",
+                    ):
                         con.execute(
                             """
                             CREATE TABLE IF NOT EXISTS agent_incidents (

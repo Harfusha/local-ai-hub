@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .sqlite_support import connect_sqlite, initialize_wal, is_busy_error, retry_busy, quick_sanity_check
+from .sqlite_support import connect_sqlite, initialize_wal, is_busy_error, retry_busy, quick_sanity_check, write_transaction
 
 
 @dataclass
@@ -376,45 +376,44 @@ class RecoveryJournal:
             def write() -> None:
                 result.clear()
                 with closing(self._connect()) as con:
-                    con.execute("BEGIN IMMEDIATE")
-                    row = con.execute(
-                        "SELECT action,payload_fingerprint,state,status_code,response_json,updated_at "
-                        "FROM requests WHERE request_id=?",
-                        (request_id,),
-                    ).fetchone()
-                    if row is None:
-                        con.execute(
-                            "INSERT INTO requests(request_id,action,payload_fingerprint,state,created_at,updated_at,detail,status_code,response_json) "
-                            "VALUES(?,?,?,'running',?,?,?,0,'')",
-                            (request_id, action, fingerprint, now, now, ""),
-                        )
-                        result.update({
-                            "claimed": True,
-                            "state": "running",
-                            "response": None,
-                            "status_code": 0,
-                            "payload_fingerprint": fingerprint,
-                        })
-                    elif row[0] != action or row[1] != fingerprint:
-                        result.update({
-                            "claimed": False,
-                            "state": "conflict",
-                            "error": "request id already belongs to a different operation or payload",
-                        })
-                    else:
-                        response = self._decode_response(str(row[4] or ""))
-                        state = str(row[2])
-                        result.update({
-                            "claimed": False,
-                            "state": state,
-                            "status_code": int(row[3] or 0),
-                            "response": response,
-                            "updated_at": float(row[5]),
-                            "payload_fingerprint": str(row[1]),
-                        })
-                        if state == "abandoned" or (state in {"done", "failed"} and response is None):
-                            result["outcome_unknown"] = True
-                    con.commit()
+                    with write_transaction(con, max_duration_seconds=5.0, rollback_label="recovery journal claim"):
+                        row = con.execute(
+                            "SELECT action,payload_fingerprint,state,status_code,response_json,updated_at "
+                            "FROM requests WHERE request_id=?",
+                            (request_id,),
+                        ).fetchone()
+                        if row is None:
+                            con.execute(
+                                "INSERT INTO requests(request_id,action,payload_fingerprint,state,created_at,updated_at,detail,status_code,response_json) "
+                                "VALUES(?,?,?,'running',?,?,?,0,'')",
+                                (request_id, action, fingerprint, now, now, ""),
+                            )
+                            result.update({
+                                "claimed": True,
+                                "state": "running",
+                                "response": None,
+                                "status_code": 0,
+                                "payload_fingerprint": fingerprint,
+                            })
+                        elif row[0] != action or row[1] != fingerprint:
+                            result.update({
+                                "claimed": False,
+                                "state": "conflict",
+                                "error": "request id already belongs to a different operation or payload",
+                            })
+                        else:
+                            response = self._decode_response(str(row[4] or ""))
+                            state = str(row[2])
+                            result.update({
+                                "claimed": False,
+                                "state": state,
+                                "status_code": int(row[3] or 0),
+                                "response": response,
+                                "updated_at": float(row[5]),
+                                "payload_fingerprint": str(row[1]),
+                            })
+                            if state == "abandoned" or (state in {"done", "failed"} and response is None):
+                                result["outcome_unknown"] = True
             retry_busy(write, retries=2)
         pending = self._pending_completions.get(request_id)
         if pending is not None and result.get("state") == "running":
@@ -543,58 +542,57 @@ class RecoveryJournal:
             for completion in batch:
                 first_by_request.setdefault(completion[0], completion)
             with closing(self._connect()) as con:
-                con.execute("BEGIN IMMEDIATE")
-                updates: list[tuple[str, float, str, int, str, str]] = []
-                for request_id, state, updated_at, detail, status_code, response_json, _sequence in first_by_request.values():
-                    existing = con.execute(
-                        "SELECT state,detail,status_code,response_json FROM requests WHERE request_id=?",
-                        (request_id,),
-                    ).fetchone()
-                    if existing is None:
-                        raise ValueError("request row missing during completion")
-                    if str(existing[0]) == "running":
-                        updates.append((state, updated_at, detail, status_code, response_json, request_id))
-                        continue
-                    try:
-                        existing_response = (
-                            json_dumps(
-                                json.loads(str(existing[3])),
-                                ensure_ascii=False,
-                                separators=(",", ":"),
-                                sort_keys=True,
+                with write_transaction(con, max_duration_seconds=5.0, rollback_label="recovery journal completion"):
+                    updates: list[tuple[str, float, str, int, str, str]] = []
+                    for request_id, state, updated_at, detail, status_code, response_json, _sequence in first_by_request.values():
+                        existing = con.execute(
+                            "SELECT state,detail,status_code,response_json FROM requests WHERE request_id=?",
+                            (request_id,),
+                        ).fetchone()
+                        if existing is None:
+                            raise ValueError("request row missing during completion")
+                        if str(existing[0]) == "running":
+                            updates.append((state, updated_at, detail, status_code, response_json, request_id))
+                            continue
+                        try:
+                            existing_response = (
+                                json_dumps(
+                                    json.loads(str(existing[3])),
+                                    ensure_ascii=False,
+                                    separators=(",", ":"),
+                                    sort_keys=True,
+                                )
+                                if existing[3]
+                                else ""
                             )
-                            if existing[3]
-                            else ""
-                        )
-                        candidate_response = (
-                            json_dumps(
-                                json.loads(response_json),
-                                ensure_ascii=False,
-                                separators=(",", ":"),
-                                sort_keys=True,
+                            candidate_response = (
+                                json_dumps(
+                                    json.loads(response_json),
+                                    ensure_ascii=False,
+                                    separators=(",", ":"),
+                                    sort_keys=True,
+                                )
+                                if response_json
+                                else ""
                             )
-                            if response_json
-                            else ""
+                            same_response = existing_response == candidate_response
+                        except (TypeError, ValueError):
+                            same_response = False
+                        if (
+                            str(existing[0]) != state
+                            or str(existing[1] or "") != detail
+                            or int(existing[2] or 0) != status_code
+                            or not same_response
+                        ):
+                            raise ValueError("conflicting completion for request id")
+                    if updates:
+                        cursor = con.executemany(
+                            "UPDATE requests SET state=?, updated_at=?, detail=?, status_code=?, response_json=? "
+                            "WHERE request_id=? AND state='running'",
+                            updates,
                         )
-                        same_response = existing_response == candidate_response
-                    except (TypeError, ValueError):
-                        same_response = False
-                    if (
-                        str(existing[0]) != state
-                        or str(existing[1] or "") != detail
-                        or int(existing[2] or 0) != status_code
-                        or not same_response
-                    ):
-                        raise ValueError("conflicting completion for request id")
-                if updates:
-                    cursor = con.executemany(
-                        "UPDATE requests SET state=?, updated_at=?, detail=?, status_code=?, response_json=? "
-                        "WHERE request_id=? AND state='running'",
-                        updates,
-                    )
-                    if cursor.rowcount != len(updates):
-                        raise ValueError("conflicting completion for request id")
-                con.commit()
+                        if cursor.rowcount != len(updates):
+                            raise ValueError("conflicting completion for request id")
 
         retry_busy(write, retries=2)
 

@@ -1,27 +1,187 @@
+(function installLocalAiCapture() {
+const elementIdCache = new WeakMap();
+const siblingIndexCache = new WeakMap();
+
+function documentRevisionState() {
+  const existing = globalThis.__LOCAL_AI_DOCUMENT_REVISION__;
+  if (existing && existing.document === document) return existing;
+  const state = {document, content: 0, interaction: 0, observer: null, interactionObserved: false};
+  if (typeof globalThis.MutationObserver === "function") {
+    state.observer = new MutationObserver(() => { state.content += 1; });
+    state.observer.observe(document.documentElement || document, {subtree: true, childList: true, attributes: true, characterData: true});
+  }
+  if (typeof document.addEventListener === "function") {
+    for (const eventName of ["input", "change", "click", "submit"]) {
+      document.addEventListener(eventName, () => { state.interaction += 1; }, true);
+    }
+    state.interactionObserved = true;
+  }
+  globalThis.__LOCAL_AI_DOCUMENT_REVISION__ = state;
+  return state;
+}
+
 function stableElementId(element) {
+  const cached = elementIdCache.get(element);
+  if (cached) return cached;
   const parts = [];
   let cursor = element;
   while (cursor && cursor.parentElement) {
-    let index = 0;
-    let sibling = cursor;
-    while ((sibling = sibling.previousElementSibling)) index += 1;
+    const parent = cursor.parentElement;
+    let indexes = siblingIndexCache.get(parent);
+    if (!indexes) {
+      indexes = new Map();
+      Array.from(parent.children || []).forEach((child, index) => indexes.set(child, index));
+      siblingIndexCache.set(parent, indexes);
+    }
+    const index = indexes.get(cursor);
+    if (index === undefined) break;
     parts.unshift(index);
-    cursor = cursor.parentElement;
+    cursor = parent;
   }
-  return `e-${parts.join("-")}`;
+  const identity = `e-${parts.join("-")}`;
+  elementIdCache.set(element, identity);
+  return identity;
 }
 
 function visible(element) {
-  const style = getComputedStyle(element);
-  return style.display !== "none" && style.visibility !== "hidden";
+  let cursor = element;
+  while (cursor) {
+    if (cursor.getAttribute && cursor.getAttribute("aria-hidden") === "true") return false;
+    const style = getComputedStyle(cursor);
+    if (style.display === "none" || style.visibility === "hidden" || style.visibility === "collapse" || style.opacity === "0") return false;
+    if (typeof cursor.getBoundingClientRect === "function") {
+      const rect = cursor.getBoundingClientRect();
+      if (!rect || rect.width <= 0 || rect.height <= 0) return false;
+      if (rect.bottom < 0 || rect.right < 0 || rect.top > innerHeight || rect.left > innerWidth) return false;
+    }
+    cursor = cursor.parentElement;
+  }
+  return true;
 }
 
-function collectAccessibleProjection(elements) {
-  return elements.filter(visible).map((element) => ({
-    element_id: stableElementId(element),
-    role: element.getAttribute("role") || element.tagName.toLowerCase(),
-    name: element.getAttribute("aria-label") || (element.textContent || "").trim().slice(0, 256),
-  }));
+const MAX_CAPTURE_ELEMENTS = 8192;
+const MAX_PROJECTED_ELEMENTS = 256;
+const IMPORTANT_ELEMENT = /^(button|input|select|textarea|option|label|summary|h[1-6])$/i;
+
+function selectRelevantElements(elements, totalElementCount = elements.length) {
+  const bounded = elements;
+  const labelTargets = new Set();
+  const labels = document.querySelectorAll("label");
+  for (let index = 0; index < Math.min(labels.length, MAX_CAPTURE_ELEMENTS); index += 1) {
+    const target = labels[index].getAttribute("for");
+    if (target) labelTargets.add(target);
+  }
+  const ranked = bounded.map((element, index) => {
+    const tag = String(element.tagName || "").toLowerCase();
+    const role = String(element.getAttribute && element.getAttribute("role") || "").toLowerCase();
+    const invalid = element.getAttribute && element.getAttribute("aria-invalid") === "true";
+    const labelFor = Boolean(element.id && labelTargets.has(element.id));
+    const priority = (visible(element) ? 100 : -1000)
+      + (IMPORTANT_ELEMENT.test(tag) ? 80 : 0)
+      + (["alert", "status", "dialog", "textbox", "button", "combobox", "checkbox", "radio"].includes(role) ? 50 : 0)
+      + (invalid || role === "alert" ? 80 : 0)
+      + (labelFor ? 20 : 0)
+      + (element.getAttribute && element.getAttribute("aria-label") ? 10 : 0);
+    return {element, index, priority};
+  });
+  ranked.sort((left, right) => right.priority - left.priority || left.index - right.index);
+  return {
+    all: bounded,
+    total: totalElementCount,
+    relevantCount: ranked.filter((item) => item.priority > 0).length,
+    selected: ranked.filter((item) => item.priority > 0).slice(0, MAX_PROJECTED_ELEMENTS).map((item) => item.element),
+  };
+}
+
+function boundedHistoryState() {
+  let nodes = 0;
+  let remainingChars = 32768;
+  let complete = true;
+  const seen = new WeakSet();
+  function visit(value, depth) {
+    nodes += 1;
+    if (nodes > 512 || depth > 12) { complete = false; return "[bounded]"; }
+    if (value === null || typeof value === "boolean" || typeof value === "number") return value;
+    if (typeof value === "string") {
+      if (value.length > remainingChars) { complete = false; const clipped = value.slice(0, Math.max(0, remainingChars)); remainingChars = 0; return clipped; }
+      remainingChars -= value.length;
+      return value;
+    }
+    if (!value || typeof value !== "object") { complete = false; return `[${typeof value}]`; }
+    if (seen.has(value)) { complete = false; return "[cycle]"; }
+    seen.add(value);
+    if (Array.isArray(value)) {
+      const result = value.slice(0, 128).map((item) => visit(item, depth + 1));
+      if (value.length > 128) complete = false;
+      return result;
+    }
+    const keys = Object.keys(value).sort();
+    const result = {};
+    for (const key of keys.slice(0, 128)) {
+      if (key.length > remainingChars) { complete = false; break; }
+      remainingChars -= key.length;
+      result[key] = visit(value[key], depth + 1);
+    }
+    if (keys.length > 128) complete = false;
+    return result;
+  }
+  try { return {value: visit(globalThis.history && globalThis.history.state, 0), complete}; }
+  catch (_) { return {value: "[unreadable]", complete: false}; }
+}
+
+async function relevantStateFingerprint(selection) {
+  const history = boundedHistoryState();
+  const historyStateToken = await digestState(JSON.stringify(history.value));
+  const viewportToken = `${Number(innerWidth) || 0}x${Number(innerHeight) || 0}@${Number(devicePixelRatio) || 1}`;
+  const targets = selection.all.filter((element) => {
+    const tag = String(element.tagName || "").toLowerCase();
+    const role = String(element.getAttribute && element.getAttribute("role") || "").toLowerCase();
+    return IMPORTANT_ELEMENT.test(tag) || tag === "a" && Boolean(element.getAttribute("href"))
+      || ["alert", "status", "dialog", "textbox", "button", "combobox", "checkbox", "radio", "link", "tab"].includes(role)
+      || Boolean(element.getAttribute && (element.getAttribute("aria-label") || element.getAttribute("aria-invalid") === "true"));
+  });
+  const active = document.activeElement;
+  if (active && !targets.includes(active) && visible(active)) targets.push(active);
+  const complete = selection.total <= MAX_CAPTURE_ELEMENTS && targets.length <= MAX_PROJECTED_ELEMENTS && history.complete;
+  const elements = targets.slice(0, MAX_PROJECTED_ELEMENTS).map((element) => {
+    const attrs = {};
+    for (const name of ["id", "role", "aria-label", "aria-labelledby", "aria-describedby", "aria-invalid", "type", "name", "value", "checked", "selected", "disabled", "href", "for"]) {
+      const value = element.getAttribute && element.getAttribute(name);
+      if (value !== null && value !== undefined) attrs[name] = String(value).slice(0, 512);
+    }
+    if ("value" in element) attrs.value = String(element.value || "").slice(0, 512);
+    if ("checked" in element) attrs.checked = Boolean(element.checked);
+    if ("selected" in element) attrs.selected = Boolean(element.selected);
+    if ("disabled" in element) attrs.disabled = Boolean(element.disabled);
+    const rect = typeof element.getBoundingClientRect === "function" ? element.getBoundingClientRect() : null;
+    return {
+      element_id: stableElementId(element),
+      tag: String(element.tagName || "").toLowerCase(),
+      attributes: attrs,
+      text: String(element.textContent || "").trim().slice(0, 1024),
+      visible: visible(element),
+      bounds: rect ? [rect.left, rect.top, rect.width, rect.height].map((value) => Math.round(Number(value) || 0)) : null,
+    };
+  });
+  return {
+    relevant_state_token: `sha256:${await digestState(JSON.stringify({elements, historyStateToken, viewportToken}))}`,
+    relevant_state_complete: complete,
+    history_state_token: historyStateToken,
+    viewport_token: viewportToken,
+  };
+}
+
+function collectAccessibleProjection(elements, privacyMode = "full_local_capture", manifest = {}) {
+  return elements.filter(visible).map((element) => {
+    const name = element.getAttribute("aria-label") || (element.textContent || "").trim().slice(0, 256);
+    const redacted = privacyMode === "privacy_redacted" ? redactSensitiveText(name) : {text: name, manifest: {}};
+    addRedactions(manifest, redacted.manifest);
+    return {
+      element_id: stableElementId(element),
+      role: element.getAttribute("role") || element.tagName.toLowerCase(),
+      name: redacted.text,
+    };
+  });
 }
 
 function collectVisibleComputedStyles(elements) {
@@ -57,7 +217,7 @@ function collectRuntimeRefs() {
     let safeUrl = "";
     try {
       const parsed = new URL(entry.name, location.href);
-      safeUrl = `${parsed.origin}${parsed.pathname}`;
+      safeUrl = sanitizePrivacyUrl(parsed.href).url;
     } catch (_) {}
     return {
       request_id: `resource:${index}`,
@@ -75,6 +235,90 @@ const MAX_DOM_NODES = 8192;
 const MAX_DOM_DEPTH = 128;
 const SENSITIVE_ATTRIBUTE = /(^|[-_:])(token|secret|password|passwd|authorization|cookie|csrf|session|api[-_]?key|access[-_]?token|refresh[-_]?token|nonce|signature|state)([-_:]|$)/i;
 const URL_ATTRIBUTE = /^(href|src|action|formaction|poster)$/i;
+const SENSITIVE_TEXT_RULES = [
+  {category: "credential", pattern: /(\b(?:api[_-]?key|access[_-]?token|refresh[_-]?token|id[_-]?token|csrf[_-]?token|session(?:[_-]?id)?|secret|password|passwd|authorization|signature|sig)\b\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s&;,<>]+)/gi, replacement: "$1[REDACTED]"},
+  {category: "credential", pattern: /\bBearer\s+[A-Za-z0-9._~+\/-]{12,}=*/gi, replacement: "Bearer [REDACTED]"},
+  {category: "credential", pattern: /\b(?:eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}|gh[pousr]_[A-Za-z0-9]{20,}|sk-[A-Za-z0-9_-]{20,}|AKIA[A-Z0-9]{16})\b/g, replacement: "[REDACTED]"},
+  {category: "personal", pattern: /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi, replacement: "[REDACTED]"},
+];
+
+function redactSensitiveText(value) {
+  let text = String(value || "");
+  const manifest = {};
+  for (const rule of SENSITIVE_TEXT_RULES) {
+    let count = 0;
+    text = text.replace(rule.pattern, (...args) => {
+      count += 1;
+      return typeof rule.replacement === "function" ? rule.replacement(...args) : args[0].replace(rule.pattern, rule.replacement);
+    });
+    if (count) manifest[rule.category] = (manifest[rule.category] || 0) + count;
+  }
+  return {text, manifest};
+}
+
+function sanitizePrivacyUrl(value) {
+  let parsed;
+  try { parsed = new URL(String(value || "")); } catch (_) {
+    return {url: "", manifest: {path_segments: 0, query: Boolean(String(value || "").includes("?")), fragment: Boolean(String(value || "").includes("#"))}};
+  }
+  let redactedSegments = 0;
+  const segments = parsed.pathname.split("/").map((segment) => {
+    let decoded = segment;
+    try { decoded = decodeURIComponent(segment); } catch (_) {}
+    const sensitive = decoded.length >= 24
+      || /(?:token|secret|signature|(?:^|[-_])auth(?:[-_]|$)|api[-_]?key)\s*[:=_-]/i.test(decoded)
+      || /^(?:eyJ[A-Za-z0-9_-]{8,}\.|gh[pousr]_|sk-|AKIA[A-Z0-9]{16})/.test(decoded);
+    if (sensitive) { redactedSegments += 1; return "~redacted~"; }
+    return segment;
+  });
+  const hadQuery = Boolean(parsed.search);
+  const hadFragment = Boolean(parsed.hash);
+  parsed.pathname = segments.join("/");
+  parsed.search = "";
+  parsed.hash = "";
+  return {
+    url: `${parsed.origin}${parsed.pathname}`.slice(0, 4096),
+    manifest: {path_segments: redactedSegments, query: hadQuery, fragment: hadFragment},
+  };
+}
+
+function collectRedactionRegions(manifest) {
+  const regions = [];
+  let complete = true;
+  const nodes = document.querySelectorAll("*");
+  const limit = Math.min(nodes.length, MAX_CAPTURE_ELEMENTS);
+  if (nodes.length > limit) complete = false;
+  for (let index = 0; index < limit; index += 1) {
+    const element = nodes[index];
+    const tag = String(element.tagName || "").toLowerCase();
+    const type = String(element.getAttribute && element.getAttribute("type") || "").toLowerCase();
+    const editable = element.getAttribute && element.getAttribute("contenteditable") !== null && element.getAttribute("contenteditable") !== "false";
+    const formField = tag === "textarea" || editable || (tag === "input" && !["button", "submit", "reset", "checkbox", "radio", "hidden"].includes(type));
+    const textNodes = element.childNodes && typeof element.childNodes.length === "number"
+      ? Array.from(element.childNodes).filter((node) => node.nodeType === 3).map((node) => String(node.nodeValue || ""))
+      : element.children && element.children.length ? [] : [String(element.textContent || "")];
+    const text = textNodes.join(" ");
+    const detected = redactSensitiveText(text);
+    if (formField) addRedactions(manifest, {form_field: 1});
+    if (Object.keys(detected.manifest).length) addRedactions(manifest, detected.manifest);
+    if (!formField && !Object.keys(detected.manifest).length) continue;
+    if (!visible(element)) continue;
+    if (typeof element.getBoundingClientRect !== "function") { complete = false; continue; }
+    const rect = element.getBoundingClientRect();
+    if (!rect || ![rect.left, rect.top, rect.right, rect.bottom].every(Number.isFinite)) { complete = false; continue; }
+    const left = Math.max(0, rect.left);
+    const top = Math.max(0, rect.top);
+    const right = Math.min(innerWidth, rect.right);
+    const bottom = Math.min(innerHeight, rect.bottom);
+    if (right <= left || bottom <= top) continue;
+    const candidate = {x: left, y: top, width: right - left, height: bottom - top};
+    const duplicate = regions.some((item) => Math.abs(item.x - candidate.x) < 1 && Math.abs(item.y - candidate.y) < 1
+      && Math.abs(item.width - candidate.width) < 1 && Math.abs(item.height - candidate.height) < 1);
+    if (!duplicate) regions.push(candidate);
+    if (regions.length >= 512) { complete = false; break; }
+  }
+  return {regions, complete};
+}
 
 function attributeEntries(node) {
   if (!node || !node.attributes) return [];
@@ -94,28 +338,50 @@ function appendSafeChild(node, child) {
   else if (typeof node.append === "function") node.append(child);
 }
 
-function safeAttributeValue(source, name, value) {
-  const normalizedName = name.toLowerCase();
-  const tagName = String(source.tagName || "").toLowerCase();
-  const fieldName = String((typeof source.getAttribute === "function" && source.getAttribute("name")) || "");
-  if (normalizedName === "style" || normalizedName === "value" || normalizedName === "integrity" || SENSITIVE_ATTRIBUTE.test(name)) return null;
-  if (tagName === "input" && (normalizedName === "checked" || normalizedName === "selected")) return null;
-  if (tagName === "option" && normalizedName === "selected") return null;
-  if (tagName === "meta" && normalizedName === "content" && SENSITIVE_ATTRIBUTE.test(fieldName)) return null;
-  if (!URL_ATTRIBUTE.test(normalizedName)) return String(value).slice(0, 4096);
-  if (/^(data|javascript|blob):/i.test(String(value).trim())) return null;
-  try {
-    const parsed = new URL(String(value), location.href);
-    return `${parsed.origin}${parsed.pathname}`.slice(0, 4096);
-  } catch (_) {
-    return String(value).split(/[?#]/, 1)[0].slice(0, 4096);
+function addRedactions(manifest, additions) {
+  for (const [category, count] of Object.entries(additions || {})) {
+    if (count > 0) manifest[category] = (manifest[category] || 0) + count;
   }
 }
 
-function sanitizedDomNode(source, state, depth) {
+function safeAttributeValue(source, name, value, privacyMode, manifest) {
+  const normalizedName = name.toLowerCase();
+  const tagName = String(source.tagName || "").toLowerCase();
+  const fieldName = String((typeof source.getAttribute === "function" && source.getAttribute("name")) || "");
+  if (normalizedName === "style" || normalizedName === "value" || normalizedName === "integrity" || SENSITIVE_ATTRIBUTE.test(name)) {
+    if (privacyMode === "privacy_redacted" && SENSITIVE_ATTRIBUTE.test(name)) addRedactions(manifest, {sensitive_attribute: 1});
+    return null;
+  }
+  if (tagName === "input" && (normalizedName === "checked" || normalizedName === "selected")) return null;
+  if (tagName === "option" && normalizedName === "selected") return null;
+  if (tagName === "meta" && normalizedName === "content" && SENSITIVE_ATTRIBUTE.test(fieldName)) return null;
+  if (!URL_ATTRIBUTE.test(normalizedName)) {
+    const text = String(value).slice(0, 4096);
+    if (privacyMode !== "privacy_redacted") return text;
+    const redacted = redactSensitiveText(text);
+    addRedactions(manifest, redacted.manifest);
+    return redacted.text;
+  }
+  if (/^(data|javascript|blob):/i.test(String(value).trim())) return null;
+  try {
+    const parsed = new URL(String(value), location.href);
+    const sanitized = sanitizePrivacyUrl(parsed.href);
+    addRedactions(manifest, {url_path_segments: sanitized.manifest.path_segments});
+    return sanitized.url;
+  } catch (_) {
+    return sanitizePrivacyUrl(String(value)).url;
+  }
+}
+
+function sanitizedDomNode(source, state, depth, privacyMode, manifest) {
   if (!source || depth > MAX_DOM_DEPTH || state.nodes >= MAX_DOM_NODES) return null;
   if (source.nodeType === 3) {
-    const text = String(source.nodeValue || "");
+    let text = String(source.nodeValue || "");
+    if (privacyMode === "privacy_redacted") {
+      const redacted = redactSensitiveText(text);
+      text = redacted.text;
+      addRedactions(manifest, redacted.manifest);
+    }
     const allowed = Math.min(text.length, Math.floor(state.remaining / 6));
     if (allowed <= 0) return null;
     state.remaining -= allowed * 6;
@@ -130,14 +396,25 @@ function sanitizedDomNode(source, state, depth) {
     else if (copy.attributes) delete copy.attributes[name];
   }
   for (const [name, value] of attributeEntries(source)) {
-    const safe = safeAttributeValue(source, name, value);
+    const safe = safeAttributeValue(source, name, value, privacyMode, manifest);
     if (safe !== null && state.remaining > (name.length + safe.length + tagName.length + 8) * 6) {
       setSafeAttribute(copy, name, safe);
       state.remaining -= (name.length + safe.length + 8) * 6;
     }
   }
+  if (privacyMode === "privacy_redacted" && (tagName === "textarea" || source.getAttribute && source.getAttribute("contenteditable") !== null && source.getAttribute("contenteditable") !== "false")) {
+    copy.textContent = "[REDACTED]";
+    state.remaining = Math.max(0, state.remaining - 72);
+    addRedactions(manifest, {form_field: 1});
+    return copy;
+  }
   if (!source.childNodes && tagName !== "textarea") {
-    const text = String(source.textContent || "");
+    let text = String(source.textContent || "");
+    if (privacyMode === "privacy_redacted") {
+      const redacted = redactSensitiveText(text);
+      text = redacted.text;
+      addRedactions(manifest, redacted.manifest);
+    }
     const allowed = Math.min(text.length, Math.floor(state.remaining / 6));
     copy.textContent = text.slice(0, allowed);
     state.remaining -= allowed * 6;
@@ -147,7 +424,7 @@ function sanitizedDomNode(source, state, depth) {
   if (tagName !== "textarea") {
     const children = source.childNodes ? Array.from(source.childNodes) : Array.from(source.children || []);
     for (const child of children) {
-      const sanitized = sanitizedDomNode(child, state, depth + 1);
+      const sanitized = sanitizedDomNode(child, state, depth + 1, privacyMode, manifest);
       if (sanitized) appendSafeChild(copy, sanitized);
       if (state.remaining <= 0) break;
     }
@@ -155,9 +432,9 @@ function sanitizedDomNode(source, state, depth) {
   return copy;
 }
 
-function safeDomHtml() {
+function safeDomHtml(privacyMode = "full_local_capture", manifest = {}) {
   const state = {nodes: 0, remaining: MAX_DOM_SERIALIZED_CHARS};
-  const clone = sanitizedDomNode(document.documentElement, state, 0);
+  const clone = sanitizedDomNode(document.documentElement, state, 0, privacyMode, manifest);
   return clone ? String(clone.outerHTML || "").slice(0, MAX_DOM_SERIALIZED_CHARS) : "<html></html>";
 }
 
@@ -276,46 +553,105 @@ async function digestState(value) {
 }
 
 async function currentDocumentStateToken() {
-  let historyState = "";
-  try {
-    historyState = JSON.stringify(globalThis.history && globalThis.history.state) || "";
-  } catch (_) {}
-  return `state:sha256:${await digestState(`${safeDomHtml()}\n${historyState}`)}`.slice(0, 256);
+  const revision = documentRevisionState();
+  if (revision && revision.observer) return `state:content-${revision.content}:interaction-${revision.interaction}`;
+  return "state:content-unobserved";
 }
 
 async function currentDocumentIdentity() {
   const navigation = performance.getEntriesByType("navigation")[0] || {};
   const document_token = `document:${String(performance.timeOrigin || "unknown")}:${String(navigation.startTime || 0)}:${String(navigation.type || "navigate")}`.slice(0, 256);
+  const revision = documentRevisionState();
+  const nodeList = document.querySelectorAll("*");
+  const totalElementCount = Math.max(0, Number(nodeList.length) || 0);
+  const candidates = [];
+  for (let index = 0; index < Math.min(totalElementCount, MAX_CAPTURE_ELEMENTS); index += 1) candidates.push(nodeList[index]);
+  const fingerprint = await relevantStateFingerprint(selectRelevantElements(candidates, totalElementCount));
   return {
     url: String(location.href).slice(0, 4096),
     target_origin: String(location.origin).slice(0, 256),
+    document_id: document_token,
     document_token,
+    content_revision: revision && revision.observer ? String(revision.content) : "",
+    interaction_revision: revision ? String(revision.interaction) : "",
     document_state_token: await currentDocumentStateToken(),
+    ...fingerprint,
+    interaction_observed: Boolean(revision && revision.interactionObserved),
   };
 }
 
-async function captureCurrentTab() {
+async function captureCurrentTab(options = {}) {
+  const privacyMode = options && options.privacyMode || "full_local_capture";
+  if (!["full_local_capture", "privacy_redacted", "screenshot_only"].includes(privacyMode)) {
+    return {success: false, error_code: "unsupported_privacy_mode"};
+  }
   const initial_identity = await currentDocumentIdentity();
-  const allElements = Array.from(document.querySelectorAll("*"));
-  const elements = allElements.slice(0, 256).map((element) => ({
+  const redactionManifest = {};
+  const urlPrivacy = sanitizePrivacyUrl(initial_identity.url);
+  redactionManifest.url_path_segments = urlPrivacy.manifest.path_segments;
+  if (urlPrivacy.manifest.query) redactionManifest.url_query = 1;
+  if (urlPrivacy.manifest.fragment) redactionManifest.url_fragment = 1;
+  const capturedHtml = privacyMode === "screenshot_only" ? "" : safeDomHtml(privacyMode, redactionManifest);
+  const snapshotDigest = `sha256:${await digestState(capturedHtml)}`;
+  const nodeList = privacyMode === "screenshot_only" ? [] : document.querySelectorAll("*");
+  const selectedCandidates = [];
+  const totalElementCount = Math.max(0, Number(nodeList.length) || 0);
+  for (let index = 0; index < Math.min(totalElementCount, MAX_CAPTURE_ELEMENTS); index += 1) {
+    selectedCandidates.push(nodeList[index]);
+  }
+  const selection = selectRelevantElements(selectedCandidates, totalElementCount);
+  const relevantFingerprint = await relevantStateFingerprint(selection);
+  const allElements = selection.all;
+  const selectedElements = selection.selected;
+  const elements = selectedElements.map((element) => ({
     element_id: stableElementId(element),
     tag: element.tagName.toLowerCase(),
-    id: element.id || undefined,
+    id: privacyMode === "privacy_redacted" ? redactSensitiveText(element.id || "").text || undefined : element.id || undefined,
     role: element.getAttribute("role") || undefined,
   }));
+  const accessibility = privacyMode === "screenshot_only"
+    ? {snapshot: []}
+    : {snapshot: collectAccessibleProjection(selectedElements, privacyMode, redactionManifest)};
+  const runtime = privacyMode === "screenshot_only"
+    ? {console_refs: [], network_refs: []}
+    : collectRuntimeRefs();
+  if (privacyMode === "privacy_redacted") runtime.console_refs = [];
+  const redaction = privacyMode === "privacy_redacted"
+    ? collectRedactionRegions(redactionManifest)
+    : {regions: [], complete: true};
+  redactionManifest.screenshot_regions = redaction.regions.length;
+  if (privacyMode === "privacy_redacted") {
+    const titleRedaction = redactSensitiveText(document.title);
+    addRedactions(redactionManifest, titleRedaction.manifest);
+  }
   return {
     success: true,
+    privacy_mode: privacyMode,
     url: initial_identity.url,
     target_origin: initial_identity.target_origin,
     document_token: initial_identity.document_token,
     document_state_token: initial_identity.document_state_token,
     captured_at: new Date().toISOString(),
-    title: document.title,
+    title: privacyMode === "screenshot_only" ? "Screenshot-only capture" : privacyMode === "privacy_redacted" ? redactSensitiveText(document.title).text : document.title,
     capture_identity: {initial: initial_identity},
-    dom: {redaction: "none", password_values_sanitized: true, html: safeDomHtml(), elements},
-    accessibility: {snapshot: collectAccessibleProjection(allElements.slice(0, 256))},
-    computed_styles: collectVisibleComputedStyles(allElements.slice(0, 256)),
-    runtime: collectRuntimeRefs(),
+    ...relevantFingerprint,
+    dom: {
+      redaction: privacyMode === "privacy_redacted" ? "deterministic" : "none", password_values_sanitized: true, html: capturedHtml, snapshot_digest: snapshotDigest, elements,
+      element_count_total: selection.total,
+      element_count_selected: selectedElements.length,
+      coverage_incomplete: selection.total > selectedElements.length,
+      selection_reason: "visible controls, headings, labels, and status/error elements ranked first; IDs are stable only for this DOM revision",
+    },
+    accessibility,
+    computed_styles: privacyMode === "screenshot_only" ? {} : collectVisibleComputedStyles(selectedElements),
+    runtime,
+    redaction_regions: redaction.regions,
+    redaction_complete: redaction.complete,
+    redaction_manifest: privacyMode === "privacy_redacted" ? redactionManifest : {
+      url_path_segments: urlPrivacy.manifest.path_segments,
+      url_query_removed: urlPrivacy.manifest.query,
+      url_fragment_removed: urlPrivacy.manifest.fragment,
+    },
     viewport: {width: innerWidth, height: innerHeight, device_scale_factor: devicePixelRatio},
   };
 }
@@ -325,10 +661,21 @@ async function verifyCurrentTab() {
   return {success: true, ...identity};
 }
 
-chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-  if (!message || !["LOCAL_AI_CAPTURE_CURRENT_TAB", "LOCAL_AI_VERIFY_CURRENT_TAB"].includes(message.type)) return undefined;
-  Promise.resolve(message.type === "LOCAL_AI_CAPTURE_CURRENT_TAB" ? captureCurrentTab() : verifyCurrentTab())
-    .then(sendResponse)
-    .catch(() => sendResponse({success: false, error_code: "unsupported"}));
-  return true;
-});
+if (!globalThis.__LOCAL_AI_CAPTURE_LISTENER_INSTALLED__) {
+  globalThis.__LOCAL_AI_CAPTURE_LISTENER_INSTALLED__ = true;
+  chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+    if (!message || !["LOCAL_AI_CAPTURE_CURRENT_TAB", "LOCAL_AI_VERIFY_CURRENT_TAB"].includes(message.type)) return undefined;
+    Promise.resolve(message.type === "LOCAL_AI_CAPTURE_CURRENT_TAB" ? captureCurrentTab({privacyMode: message.privacyMode}) : verifyCurrentTab())
+      .then(sendResponse)
+      .catch(() => sendResponse({success: false, error_code: "unsupported"}));
+    return true;
+  });
+}
+globalThis.captureCurrentTab = captureCurrentTab;
+globalThis.verifyCurrentTab = verifyCurrentTab;
+globalThis.currentDocumentIdentity = currentDocumentIdentity;
+globalThis.sha256Fallback = sha256Fallback;
+globalThis.digestState = digestState;
+globalThis.redactSensitiveText = redactSensitiveText;
+globalThis.sanitizePrivacyUrl = sanitizePrivacyUrl;
+})();

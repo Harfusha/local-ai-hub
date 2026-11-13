@@ -28,8 +28,8 @@ def test_decision_input_separates_typed_state_and_redacted_training_content():
         "raw_task_input": "Check this token=[REDACTED] and missing receipt.",
         "raw_context_excerpt": "No tool ran.",
         "training_redacted_fields": "task_input",
-        "training_missing_fields": "none",
-        "training_missing_reason": "none",
+        "training_missing_fields": "model_response,tool_output_excerpt",
+        "training_missing_reason": "multiple_raw_fields_unavailable",
     }
     assert decision_input.redacted_fields == ("task_input",)
 
@@ -53,9 +53,28 @@ def test_decision_input_redacts_email_and_private_key_material():
     assert model_state["raw_task_input"] == "Contact [REDACTED] with this key:"
     assert model_state["raw_context_excerpt"] == "[REDACTED]"
     assert model_state["training_redacted_fields"] == "context_excerpt,task_input"
-    assert model_state["training_missing_fields"] == "none"
-    assert model_state["training_missing_reason"] == "none"
+    assert model_state["training_missing_fields"] == "model_response,tool_output_excerpt"
+    assert model_state["training_missing_reason"] == "multiple_raw_fields_unavailable"
     assert decision_input.redacted_fields == ("task_input", "context_excerpt")
+
+
+@pytest.mark.parametrize(
+    "private_key_block",
+    [
+        "-----BEGIN PRIVATE KEY-----\nprivate-key-material",
+        "-----BEGIN OPENSSH PRIVATE KEY-----\nprivate-key-material\ntruncated",
+    ],
+)
+def test_decision_input_redacts_unterminated_private_key_block(private_key_block):
+    decision_input = DecisionInput.from_mapping(
+        {
+            "state": {"gap_code": "unresolved_evidence_gap"},
+            "training_content": {"task_input": f"Inspect config:\n{private_key_block}"},
+        }
+    )
+
+    assert decision_input.model_state()["raw_task_input"] == "Inspect config:\n[REDACTED]"
+    assert decision_input.redacted_fields == ("task_input",)
 
 
 def test_decision_input_marks_missing_raw_training_fields():
@@ -67,8 +86,21 @@ def test_decision_input_marks_missing_raw_training_fields():
         "complexity": "heavy",
         "raw_task_input": "Inspect parser.",
         "training_redacted_fields": "none",
-        "training_missing_fields": "context_excerpt",
-        "training_missing_reason": "context_excerpt_unavailable",
+        "training_missing_fields": "context_excerpt,model_response,tool_output_excerpt",
+        "training_missing_reason": "multiple_raw_fields_unavailable",
+    }
+
+
+def test_decision_input_marks_all_general_raw_fields_unavailable():
+    decision_input = DecisionInput.from_mapping(
+        {"state": {"complexity": "fast"}, "training_content": {}}
+    )
+
+    assert decision_input.model_state() == {
+        "complexity": "fast",
+        "training_redacted_fields": "none",
+        "training_missing_fields": "context_excerpt,model_response,task_input,tool_output_excerpt",
+        "training_missing_reason": "all_raw_fields_unavailable",
     }
 
 
@@ -88,6 +120,141 @@ def test_decision_input_redacts_model_and_tool_outputs_for_general_decisions():
     assert decision_input.model_state()["raw_tool_output_excerpt"] == "token=[REDACTED]"
     assert decision_input.redacted_fields == ("model_response", "tool_output_excerpt")
     assert decision_input.model_state()["training_redacted_fields"] == "model_response,tool_output_excerpt"
+    assert decision_input.model_state()["training_missing_fields"] == "context_excerpt"
+    assert decision_input.model_state()["training_missing_reason"] == "context_excerpt_unavailable"
+
+
+@pytest.mark.parametrize(
+    ("secret_assignment", "redacted_assignment"),
+    [
+        ("AWS_SECRET_ACCESS_KEY=aws-secret", "AWS_SECRET_ACCESS_KEY=[REDACTED]"),
+        ("client_secret: oauth-secret", "client_secret: [REDACTED]"),
+        ("oauth_refresh_token=refresh-secret", "oauth_refresh_token=[REDACTED]"),
+        ("TLS_PRIVATE_KEY=private-material", "TLS_PRIVATE_KEY=[REDACTED]"),
+        ("encryption_key=key-material", "encryption_key=[REDACTED]"),
+        ("clientSecret=oauth-secret", "clientSecret=[REDACTED]"),
+        ("oauthRefreshToken=refresh-secret", "oauthRefreshToken=[REDACTED]"),
+        ("TLSPrivateKey=private-material", "TLSPrivateKey=[REDACTED]"),
+        ("session_id=runtime-session-secret", "session_id=[REDACTED]"),
+        ("sessionId: 'two word session secret'", "sessionId: '[REDACTED]'"),
+        ("signature=private-signature-value", "signature=[REDACTED]"),
+        ('apiKey="two word secret"', 'apiKey="[REDACTED]"'),
+        ("password: 'two word secret'", "password: '[REDACTED]'"),
+    ],
+)
+def test_decision_input_redacts_prefixed_secret_assignment_names(secret_assignment, redacted_assignment):
+    decision_input = DecisionInput.from_mapping(
+        {
+            "state": {"task_type": "code"},
+            "training_content": {"task_input": f"Use {secret_assignment} for local setup."},
+        }
+    )
+
+    assert decision_input.model_state()["raw_task_input"] == f"Use {redacted_assignment} for local setup."
+    assert decision_input.redacted_fields == ("task_input",)
+
+
+@pytest.mark.parametrize(
+    "cookie_header",
+    [
+        "Cookie: SID=secret-session; theme=dark",
+        "Set-Cookie: refresh=secret-refresh; HttpOnly; Secure",
+    ],
+)
+def test_decision_input_redacts_entire_cookie_header(cookie_header):
+    decision_input = DecisionInput.from_mapping(
+        {"state": {"task_type": "code"}, "training_content": {"tool_output_excerpt": cookie_header}}
+    )
+
+    assert decision_input.model_state()["raw_tool_output_excerpt"] == cookie_header.split(":", 1)[0] + ": [REDACTED]"
+    assert decision_input.redacted_fields == ("tool_output_excerpt",)
+
+
+def test_decision_input_redacts_complete_credential_field_with_spaces():
+    decision_input = DecisionInput.from_mapping(
+        {
+            "state": {"task_type": "code"},
+            "training_content": {"tool_output_excerpt": "credential: private client key material"},
+        }
+    )
+
+    assert decision_input.model_state()["raw_tool_output_excerpt"] == "credential: [REDACTED]"
+    assert decision_input.redacted_fields == ("tool_output_excerpt",)
+
+
+def test_decision_input_redacts_amz_credential_parameter():
+    decision_input = DecisionInput.from_mapping(
+        {"state": {"task_type": "code"}, "training_content": {"task_input": "X-Amz-Credential=account/key-scope"}}
+    )
+
+    assert decision_input.model_state()["raw_task_input"] == "X-Amz-Credential=[REDACTED]"
+    assert decision_input.redacted_fields == ("task_input",)
+
+
+def test_decision_input_redacts_uri_userinfo_password():
+    decision_input = DecisionInput.from_mapping(
+        {
+            "state": {"gap_code": "unresolved_evidence_gap"},
+            "training_content": {
+                "task_input": "Check database at postgresql://alice:swordfish@db.example.test:5432/app"
+            },
+        }
+    )
+
+    assert decision_input.model_state()["raw_task_input"] == (
+        "Check database at [REDACTED]@db.example.test:5432/app"
+    )
+    assert decision_input.redacted_fields == ("task_input",)
+
+
+@pytest.mark.parametrize(
+    "secret_token",
+    [
+        "github_pat_" + "a" * 32,
+        "glpat-" + "a" * 24,
+        "xoxb-" + "a" * 28,
+        "AIza" + "A" * 35,
+    ],
+)
+def test_decision_input_redacts_common_provider_token_shapes(secret_token):
+    decision_input = DecisionInput.from_mapping(
+        {
+            "state": {"task_type": "code"},
+            "training_content": {"tool_output_excerpt": f"credential: {secret_token}"},
+        }
+    )
+
+    assert decision_input.model_state()["raw_tool_output_excerpt"] == "credential: [REDACTED]"
+    assert decision_input.redacted_fields == ("tool_output_excerpt",)
+
+
+def test_decision_input_redacts_unlabelled_jwt_shape():
+    token = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c"
+    decision_input = DecisionInput.from_mapping(
+        {
+            "state": {"task_type": "code"},
+            "training_content": {"tool_output_excerpt": f"Unexpected auth response: {token}"},
+        }
+    )
+
+    assert decision_input.model_state()["raw_tool_output_excerpt"] == "Unexpected auth response: [REDACTED]"
+    assert decision_input.redacted_fields == ("tool_output_excerpt",)
+
+
+def test_decision_input_redacts_quoted_json_secret_fields_without_breaking_json():
+    decision_input = DecisionInput.from_mapping(
+        {
+            "state": {"task_type": "code"},
+            "training_content": {
+                "task_input": 'Use {"client_secret":"oauth-secret","clientSecret":"camel-secret"} for local setup.'
+            },
+        }
+    )
+
+    assert decision_input.model_state()["raw_task_input"] == (
+        'Use {"client_secret":"[REDACTED]","clientSecret":"[REDACTED]"} for local setup.'
+    )
+    assert decision_input.redacted_fields == ("task_input",)
 
 
 def test_context_source_rejects_model_and_tool_output_training_content():
@@ -126,6 +293,7 @@ def test_context_source_evidence_accepts_redacted_training_content_separately():
             "freshness_codes": ["current", "current", "stale"],
             "coverage_codes": ["complete", "complete", "complete"],
             "evidence_ids": ["ev-1", "ev-2", "ev-3"],
+            "source_record_ids": [None, None, "memory-record-1"],
             "training_content": {
                 "task_input": "Find the parser for token=secret-value.",
                 "context_excerpt": "parser.py: parse_request validates input.",
@@ -201,6 +369,7 @@ def test_context_source_evidence_retains_bad_source_codes_for_false_positive_mea
             "freshness_codes": ["current", "stale", "current"],
             "coverage_codes": ["complete", "complete", "partial"],
             "evidence_ids": ["ev-1", "ev-2", "ev-3"],
+            "source_record_ids": [None, None, "memory-record-1"],
         },
     )
 
@@ -438,3 +607,20 @@ def test_non_success_result_requires_a_reason_code():
             request,
             {"success": True, "status": "abstain", "suggestion": None, "reason_codes": []},
         )
+def test_context_source_memory_record_ids_are_required_and_kept_out_of_model_input():
+    evidence = {
+        "gap_code": "unresolved_evidence_gap",
+        "source_codes": ["memory", "indexed"],
+        "freshness_codes": ["current", "current"],
+        "coverage_codes": ["partial", "complete"],
+        "evidence_ids": ["ev-memory", "ev-indexed"],
+    }
+
+    with pytest.raises(ValueError, match="record ID"):
+        ContextSourceEvidence.from_mapping(evidence)
+
+    evidence["source_record_ids"] = ["mem_task_1", None]
+    parsed = ContextSourceEvidence.from_mapping(evidence)
+
+    assert parsed.source_record_ids == ("mem_task_1", None)
+    assert "source_record_ids" not in parsed.model_input()

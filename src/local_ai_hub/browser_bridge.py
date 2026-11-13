@@ -9,9 +9,11 @@ from __future__ import annotations
 
 import base64
 import binascii
+import hashlib
 import ipaddress
 import json
 import os
+import re
 import select
 import shutil
 import socket
@@ -25,10 +27,11 @@ from collections.abc import Callable, Mapping
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import unquote, urlsplit, urlunsplit
 
 from .artifacts import ArtifactBatchCancelled, ArtifactStore, ArtifactTransportError
 from .process_utils import run_hidden
+from .vision_contracts import VISION_MAX_BUNDLE_CHARS, VISION_MAX_IMAGE_BYTES
 
 
 class _PageTitleParser:
@@ -443,6 +446,7 @@ CAPTURE_ERROR_STATUSES = {
     "tab_mismatch": 409,
     "window_mismatch": 409,
     "target_changed": 409,
+    "unverifiable": 409,
     "timeout": 408,
 }
 _SENSITIVE_KEYS = {
@@ -811,9 +815,18 @@ def commit_staged_capture(
             return _result_error("capture_stage_missing", "capture stage is missing or expired", status=409)
         if stage.get("capability") != str(capability):
             return _result_error("request_id_conflict", "capture request_id is already in use", status=409)
+        consistency = request.get("capture_consistency")
+        if consistency is not None and consistency not in ("unchanged", "changed_but_safe"):
+            return _result_error("invalid_capture_consistency", "capture consistency is invalid", status=400)
         checked = _validate_capture_request_locked(capability, request, consume=False, request_id=request_id)
         if not checked.get("success"):
             return checked
+        if consistency == "changed_but_safe":
+            staged_payload = stage.get("payload")
+            if isinstance(staged_payload, dict):
+                staged_identity = staged_payload.get("capture_identity")
+                if isinstance(staged_identity, dict):
+                    staged_identity["consistency"] = "changed_but_safe"
         if stage.get("status") == "committing":
             return _result_error("capture_in_progress", "capture commit is already in progress", status=409)
         if stage.get("cancel_requested"):
@@ -955,6 +968,33 @@ def validate_capture_payload(payload: Mapping[str, Any], *, config: Any | None =
         return _result_error("missing_tab_id", "current-tab capture requires the explicitly selected tab_id")
     if "captured_at" in payload and not _safe_capture_timestamp(payload.get("captured_at")):
         return _result_error("invalid_capture_timestamp", "capture timestamp is invalid or unbounded")
+    privacy_mode = payload.get("privacy_mode", "full_local_capture")
+    if type(privacy_mode) is not str or privacy_mode not in {"full_local_capture", "privacy_redacted", "screenshot_only"}:
+        return _result_error("unsupported_privacy_mode", "capture privacy mode is not supported")
+    if payload.get("privacy_notice_acknowledged") is not True:
+        return _result_error("capture_consent_required", "capture requires explicit notice acknowledgement")
+    if privacy_mode == "full_local_capture" and payload.get("full_capture_acknowledged") is not True:
+        return _result_error("full_capture_confirmation_required", "full capture requires a separate acknowledgement")
+    redaction_manifest = payload.get("redaction_manifest", {})
+    allowed_redaction_fields = {
+        "credential", "personal", "form_field", "sensitive_attribute", "url_path_segments",
+        "url_query", "url_fragment", "screenshot_regions",
+    }
+    if not isinstance(redaction_manifest, Mapping) or any(
+        key not in allowed_redaction_fields or type(value) is not int or value < 0 or value > 1_000_000
+        for key, value in redaction_manifest.items()
+    ):
+        return _result_error("invalid_redaction_manifest", "redaction manifest must contain bounded category counts only")
+    screenshot_redaction = payload.get("screenshot_redaction", "none")
+    if privacy_mode == "privacy_redacted":
+        if screenshot_redaction != "opaque_region_mask":
+            return _result_error("screenshot_redaction_required", "privacy-redacted capture requires an opaque screenshot mask")
+        if type(payload.get("screenshot_redaction_regions")) is not int or payload.get("screenshot_redaction_regions") < 0:
+            return _result_error("invalid_screenshot_redaction", "masked screenshot region count is invalid")
+        if redaction_manifest.get("screenshot_regions") != payload.get("screenshot_redaction_regions"):
+            return _result_error("invalid_screenshot_redaction", "screenshot mask count must match the redaction manifest")
+    elif screenshot_redaction != "none":
+        return _result_error("invalid_screenshot_redaction", "only privacy-redacted captures may declare screenshot masks")
     try:
         _screenshot_bytes(payload.get("screenshot"), max_bytes=int(_setting(config or {}, "max_screenshot_bytes")))
     except CaptureProtocolError as exc:
@@ -962,13 +1002,24 @@ def validate_capture_payload(payload: Mapping[str, Any], *, config: Any | None =
     dom = payload.get("dom")
     if not isinstance(dom, Mapping):
         return _result_error("invalid_dom", "current-tab capture requires a DOM object")
-    if dom.get("redaction") != "none":
-        return _result_error("missing_dom_redaction" if "redaction" not in dom else "semantic_dom_redaction_not_allowed", "live DOM must include explicit redaction=none")
+    expected_dom_redaction = "deterministic" if privacy_mode == "privacy_redacted" else "none"
+    if dom.get("redaction") != expected_dom_redaction:
+        return _result_error("missing_dom_redaction" if "redaction" not in dom else "semantic_dom_redaction_not_allowed", f"{privacy_mode} requires DOM redaction={expected_dom_redaction}")
     html = dom.get("html")
     if not isinstance(html, str):
         return _result_error("invalid_dom", "live DOM html must be a string")
+    elements_value = dom.get("elements")
+    if privacy_mode == "screenshot_only" and (html or elements_value):
+        return _result_error("screenshot_only_contains_dom", "screenshot-only mode cannot include DOM content or elements")
     if len(html) > int(_setting(config or {}, "max_dom_chars")):
         return _result_error("dom_too_large", "live DOM exceeds the bounded character limit", status=413)
+    snapshot_digest = dom.get("snapshot_digest")
+    if snapshot_digest is not None:
+        if type(snapshot_digest) is not str or not re.fullmatch(r"sha256:[0-9a-f]{64}", snapshot_digest):
+            return _result_error("invalid_dom_snapshot_digest", "DOM snapshot digest is invalid")
+        expected_digest = "sha256:" + hashlib.sha256(html.encode("utf-8")).hexdigest()
+        if snapshot_digest != expected_digest:
+            return _result_error("dom_snapshot_digest_mismatch", "DOM snapshot digest does not match the stored snapshot", status=409)
     derived_origin = _safe_origin(payload.get("url"))
     if not derived_origin:
         return _result_error("invalid_target_origin", "current-tab capture requires a valid target origin")
@@ -977,12 +1028,28 @@ def validate_capture_payload(payload: Mapping[str, Any], *, config: Any | None =
     identity = payload.get("capture_identity")
     if not isinstance(identity, Mapping):
         return _result_error("invalid_capture_identity", "capture requires bounded initial and final document identity")
+    declared_consistency = identity.get("consistency", "unchanged")
+    if declared_consistency not in ("unchanged", "changed_but_safe"):
+        return _result_error("invalid_capture_consistency", "capture consistency is invalid")
     initial_identity = _capture_identity(identity.get("initial"))
     final_identity = _capture_identity(identity.get("final"))
     if initial_identity is None or final_identity is None:
         return _result_error("invalid_capture_identity", "capture document identity is invalid or unbounded")
-    if initial_identity != final_identity:
+    if not initial_identity["relevant_state_complete"] or not final_identity["relevant_state_complete"]:
+        return _result_error("unverifiable", "the page state could not be verified completely", status=409, fallback=False)
+    if not initial_identity["interaction_observed"] or not final_identity["interaction_observed"]:
+        return _result_error("unverifiable", "page interactions could not be observed", status=409, fallback=False)
+    if (initial_identity["url"], initial_identity["target_origin"], initial_identity["document_id"], initial_identity["document_token"]) != (
+        final_identity["url"], final_identity["target_origin"], final_identity["document_id"], final_identity["document_token"]
+    ):
         return _result_error("target_changed", "the explicitly requested tab navigated during capture", status=409, fallback=False)
+    if any(initial_identity[key] != final_identity[key] for key in (
+        "interaction_revision", "history_state_token", "viewport_token", "relevant_state_token"
+    )):
+        return _result_error("target_changed", "the page target or interaction changed during capture", status=409, fallback=False)
+    capture_consistency = "changed_but_safe" if any(
+        initial_identity[key] != final_identity[key] for key in ("content_revision", "document_state_token")
+    ) or declared_consistency == "changed_but_safe" else "unchanged"
     if initial_identity["url"] != str(payload.get("url", "")) or initial_identity["target_origin"] != derived_origin:
         return _result_error("target_changed", "capture identity does not match the captured page", status=409, fallback=False)
     elements = dom.get("elements")
@@ -1001,6 +1068,12 @@ def validate_capture_payload(payload: Mapping[str, Any], *, config: Any | None =
     for field in ("accessibility", "computed_styles", "runtime"):
         if field in payload and not isinstance(payload[field], Mapping):
             return _result_error("invalid_capture_payload", f"{field} must be an object")
+    if privacy_mode == "screenshot_only":
+        accessibility = payload.get("accessibility", {})
+        styles = payload.get("computed_styles", {})
+        runtime_value = payload.get("runtime", {})
+        if accessibility not in ({}, {"snapshot": []}) or styles or runtime_value not in ({}, {"console_refs": [], "network_refs": []}):
+            return _result_error("screenshot_only_contains_dom", "screenshot-only mode cannot include DOM, accessibility, style, or runtime content")
     runtime = payload.get("runtime", {})
     if isinstance(runtime, Mapping):
         try:
@@ -1009,7 +1082,11 @@ def validate_capture_payload(payload: Mapping[str, Any], *, config: Any | None =
                 return _result_error("runtime_too_large", "runtime refs exceed the bounded character limit", status=413)
         except CaptureProtocolError as exc:
             return _result_error(exc.error_code, str(exc), status=exc.status)
-    return {"success": True, "payload": dict(payload)}
+    normalized_payload = dict(payload)
+    normalized_identity = dict(identity)
+    normalized_identity.update({"initial": initial_identity, "final": final_identity, "consistency": capture_consistency})
+    normalized_payload["capture_identity"] = normalized_identity
+    return {"success": True, "payload": normalized_payload}
 
 
 def capture_failure(error_code: str) -> dict[str, Any]:
@@ -1022,6 +1099,7 @@ def capture_failure(error_code: str) -> dict[str, Any]:
         "tab_mismatch": "the active tab changed during capture; no fallback tab was captured",
         "window_mismatch": "the active browser window changed during capture",
         "target_changed": "the explicitly requested tab navigated during capture; no artifact was committed",
+        "unverifiable": "the page state could not be verified completely; no artifact was committed",
         "timeout": "current-tab capture timed out",
     }
     return _result_error(code, messages.get(code, "current-tab capture failed"), status=status, fallback=False)
@@ -1032,7 +1110,16 @@ def _safe_url(value: Any) -> str:
     origin = _safe_origin(value)
     if not origin:
         return ""
-    return f"{origin}{parsed.path}"[:4096]
+    path_segments = []
+    for segment in parsed.path.split("/"):
+        decoded = unquote(segment)
+        sensitive = (
+            len(decoded) >= 24
+            or bool(re.search(r"(?:token|secret|signature|(?:^|[-_])auth(?:[-_]|$)|api[-_]?key)\s*[:=_-]", decoded, re.IGNORECASE))
+            or bool(re.match(r"(?:eyJ[A-Za-z0-9_-]{8,}\.|gh[pousr]_|sk-|AKIA[A-Z0-9]{16})", decoded))
+        )
+        path_segments.append("~redacted~" if sensitive else segment)
+    return f"{origin}{'/'.join(path_segments)}"[:4096]
 
 
 def _safe_origin(value: Any) -> str:
@@ -1068,7 +1155,7 @@ def _safe_capture_timestamp(value: Any) -> str:
     return parsed.astimezone(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
-def _capture_identity(value: Any) -> dict[str, str] | None:
+def _capture_identity(value: Any) -> dict[str, Any] | None:
     if not isinstance(value, Mapping):
         return None
     url = str(value.get("url", ""))
@@ -1077,7 +1164,28 @@ def _capture_identity(value: Any) -> dict[str, str] | None:
     state_token = str(value.get("document_state_token", ""))
     if not url or len(url) > 4096 or not origin or not token or len(token) > 256 or not state_token or len(state_token) > 256:
         return None
-    return {"url": url, "target_origin": origin, "document_token": token, "document_state_token": state_token}
+    document_id = value.get("document_id", token)
+    content_revision = value.get("content_revision", "")
+    interaction_revision = value.get("interaction_revision", "")
+    relevant_state_token = value.get("relevant_state_token", "")
+    history_state_token = value.get("history_state_token", "")
+    viewport_token = value.get("viewport_token", "")
+    relevant_state_complete = value.get("relevant_state_complete")
+    interaction_observed = value.get("interaction_observed")
+    if (type(document_id) is not str or len(document_id) > 256 or not document_id
+            or type(content_revision) is not str or len(content_revision) > 128
+            or type(interaction_revision) is not str or len(interaction_revision) > 128
+            or type(relevant_state_token) is not str or not re.fullmatch(r"sha256:[0-9a-f]{64}", relevant_state_token)
+            or type(history_state_token) is not str or not re.fullmatch(r"[0-9a-f]{64}", history_state_token)
+            or type(viewport_token) is not str or len(viewport_token) > 128
+            or type(relevant_state_complete) is not bool or type(interaction_observed) is not bool):
+        return None
+    return {"url": url, "target_origin": origin, "document_id": document_id,
+            "document_token": token, "content_revision": content_revision,
+            "interaction_revision": interaction_revision, "document_state_token": state_token,
+            "relevant_state_token": relevant_state_token, "history_state_token": history_state_token,
+            "viewport_token": viewport_token, "relevant_state_complete": relevant_state_complete,
+            "interaction_observed": interaction_observed}
 
 
 def _safe_runtime(runtime: Mapping[str, Any]) -> dict[str, Any]:
@@ -1115,8 +1223,82 @@ def capture_to_artifacts(
         if cancel_check and cancel_check():
             return _result_error("capture_cancelled", "capture was cancelled before artifact write", status=409)
         screenshot, mime = _screenshot_bytes(value["screenshot"], max_bytes=int(_setting(config, "max_screenshot_bytes")))
+        privacy_mode = str(value.get("privacy_mode", "full_local_capture"))
+        raw_dom = dict(value["dom"])
+        if privacy_mode == "privacy_redacted":
+            raw_dom["redaction_manifest"] = dict(value.get("redaction_manifest", {}))
+        projection_dom = {
+            "redaction": raw_dom.get("redaction", "none"),
+            "html": str(raw_dom.get("html", ""))[:6_000],
+            "elements": [
+                {key: str(element[key])[:256] for key in ("element_id", "tag", "id", "role") if key in element}
+                for element in raw_dom.get("elements", [])[:128]
+                if isinstance(element, Mapping)
+            ],
+            "element_count_total": int(raw_dom.get("element_count_total", len(raw_dom.get("elements", [])))),
+            "element_count_selected": int(raw_dom.get("element_count_selected", len(raw_dom.get("elements", [])))),
+            "coverage_incomplete": bool(raw_dom.get("coverage_incomplete", False)),
+            "projection_truncated": len(str(raw_dom.get("html", ""))) > 6_000,
+            "selection_reason": str(raw_dom.get("selection_reason", ""))[:512],
+        }
+        if privacy_mode == "privacy_redacted":
+            projection_dom["redaction_manifest"] = dict(value.get("redaction_manifest", {}))
+        projection_dom["projection_truncated"] = projection_dom["projection_truncated"] or len(raw_dom.get("elements", [])) > len(projection_dom["elements"])
+        projection_dom["omitted_element_count"] = max(0, len(raw_dom.get("elements", [])) - len(projection_dom["elements"]))
+        projection_dom["review_completeness"] = (
+            "partial" if projection_dom["projection_truncated"] or projection_dom["coverage_incomplete"] else "complete"
+        )
+        projection_json = json.dumps(projection_dom, ensure_ascii=False, separators=(",", ":"))
+        while len(projection_json) > VISION_MAX_BUNDLE_CHARS and projection_dom["elements"]:
+            projection_dom["elements"].pop()
+            projection_dom["omitted_element_count"] += 1
+            projection_dom["projection_truncated"] = True
+            projection_json = json.dumps(projection_dom, ensure_ascii=False, separators=(",", ":"))
+        if len(projection_json) > VISION_MAX_BUNDLE_CHARS:
+            projection_dom["html"] = projection_dom["html"][:1_000]
+            projection_dom["projection_truncated"] = True
+            projection_json = json.dumps(projection_dom, ensure_ascii=False, separators=(",", ":"))
+        review_ready = len(screenshot) <= VISION_MAX_IMAGE_BYTES and len(projection_json) <= VISION_MAX_BUNDLE_CHARS
+        review_reasons = []
+        if len(screenshot) > VISION_MAX_IMAGE_BYTES:
+            review_reasons.append("screenshot_exceeds_vision_image_limit")
+        if not review_ready:
+            review_reasons.append("review_projection_exceeds_vision_context_limit")
+        review_completeness = projection_dom["review_completeness"]
+        review_recovery = []
+        if len(screenshot) > VISION_MAX_IMAGE_BYTES:
+            review_recovery.append("recapture_at_smaller_viewport_or_image_scale")
+        if review_completeness == "partial":
+            review_recovery.append("capture_focused_region_for_complete_review")
+        retention_seconds = getattr(artifacts, "ttl_seconds", None)
+        if type(retention_seconds) is not int or retention_seconds < 0:
+            retention_seconds = None
+        if privacy_mode == "screenshot_only":
+            payload_includes = ["screenshot"]
+            notice = "Only the screenshot and limited sanitized page metadata are stored locally."
+        elif privacy_mode == "privacy_redacted":
+            payload_includes = ["screenshot", "deterministically_redacted_dom", "accessibility", "computed_styles", "runtime_refs_without_console_text"]
+            notice = "Recognized secrets, contact addresses, form fields, and screenshot regions are deterministically masked; unknown secrets may remain."
+        else:
+            payload_includes = ["screenshot", "raw_dom", "accessibility", "computed_styles", "runtime_refs"]
+            notice = "Screenshot and unredacted page DOM are stored in the local artifact store."
+        privacy = {
+            "mode": privacy_mode,
+            "stored_locally": True,
+            "redaction": raw_dom.get("redaction", "none"),
+            "redaction_manifest": dict(value.get("redaction_manifest", {})),
+            "screenshot_redaction": value.get("screenshot_redaction", "none"),
+            "screenshot_redaction_regions": value.get("screenshot_redaction_regions", 0),
+            "payload_includes": payload_includes,
+            "retention_seconds": retention_seconds,
+            "notice": notice,
+            "sharing_confirmation_required": True,
+            "local_only_transport": True,
+        }
+        capture_id = secrets.token_hex(16)
         with artifacts.batch( cancel_check=cancel_check) as batch:
-            dom_id = batch.put_json(dict(value["dom"]), kind="browser-dom")
+            dom_id = batch.put_json(raw_dom, kind="browser-dom")
+            projection_id = batch.put_json(projection_dom, kind="browser-dom-review-projection")
             accessibility_id = batch.put_json(dict(value.get("accessibility", {})), kind="browser-accessibility")
             styles_id = batch.put_json(dict(value.get("computed_styles", {})), kind="browser-computed-styles")
             runtime_id = batch.put_json(_safe_runtime(value.get("runtime", {})), kind="browser-runtime")
@@ -1126,22 +1308,39 @@ def capture_to_artifacts(
 
                 "version": 1,
                 "source": "current-tab",
+                "capture_id": capture_id,
                 "tab_id": str(value["tab_id"]),
-                "page": {"url": _safe_url(value.get("url")), "title": str(value.get("title", ""))[:512]},
+                "page": {
+                    "url": _safe_url(value.get("url")),
+                    "title": "Screenshot-only capture" if privacy_mode == "screenshot_only" else str(value.get("title", ""))[:512],
+                },
                 "provenance": {
                     "captured_at": _safe_capture_timestamp(value.get("captured_at"))
                     or datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z"),
                     "target_origin": initial_identity["target_origin"] if initial_identity else "",
+                    "document_id": initial_identity["document_id"] if initial_identity else "",
                     "document_token": initial_identity["document_token"] if initial_identity else "",
+                    "content_revision": initial_identity["content_revision"] if initial_identity else "",
+                    "interaction_revision": initial_identity["interaction_revision"] if initial_identity else "",
                     "document_state_token": initial_identity["document_state_token"] if initial_identity else "",
+                    "capture_consistency": value.get("capture_identity", {}).get("consistency", "unchanged"),
                 },
 
                 "screenshot": {"artifact_id": screenshot_id, "mime_type": mime},
-                "dom": {"artifact_id": dom_id, "format": "live-dom", "redaction": "none"},
+                "dom": {"artifact_id": projection_id, "format": "live-dom-review-projection", "redaction": projection_dom["redaction"],
+                        "raw_dom_artifact_id": dom_id, "review_completeness": review_completeness,
+                        "omitted_element_count": projection_dom["omitted_element_count"]},
                 "accessibility": {"artifact_id": accessibility_id, "format": "accessibility-snapshot"},
                 "computed_styles": {"artifact_id": styles_id, "format": "computed-styles"},
                 "runtime": {"artifact_id": runtime_id, "format": "runtime-refs"},
                 "viewport": dict(value.get("viewport", {})) if isinstance(value.get("viewport"), Mapping) else {},
+                "capture_success": True,
+                "review_ready": review_ready,
+                "review_not_ready_reasons": review_reasons,
+                "review_recovery": review_recovery,
+                "review_completeness": review_completeness,
+                "screenshot_transform": "opaque_region_mask" if privacy_mode == "privacy_redacted" else "none",
+                "privacy": privacy,
             }
             bundle_id = batch.put_json(bundle, kind="frontend-review-bundle")
     except ArtifactBatchCancelled:
@@ -1153,9 +1352,18 @@ def capture_to_artifacts(
         "bundle_artifact_id": bundle_id,
         "screenshot_artifact_id": screenshot_id,
         "dom_artifact_id": dom_id,
+        "raw_dom_artifact_id": dom_id,
+        "review_dom_projection_id": projection_id,
         "accessibility_artifact_id": accessibility_id,
         "computed_styles_artifact_id": styles_id,
         "runtime_artifact_id": runtime_id,
         "page": bundle["page"],
         "tab_id": bundle["tab_id"],
+        "capture_success": True,
+        "review_ready": review_ready,
+        "review_not_ready_reasons": review_reasons,
+        "review_recovery": review_recovery,
+        "review_completeness": review_completeness,
+        "screenshot_transform": "opaque_region_mask" if privacy_mode == "privacy_redacted" else "none",
+        "privacy": privacy,
     }

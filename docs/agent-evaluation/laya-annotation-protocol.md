@@ -15,6 +15,12 @@ split preparation and authorized dataset export are enabled. Model-weight
 training, benchmarking, card generation and rollout remain deferred until
 separately requested and safely approved.
 
+Naturally rejected Agent OS completion gates also queue a shadow completion-gap
+recommendation when the task has current verified checkpoint evidence. The
+candidate contains typed `not_ready` status, a reason code, mutation generation,
+and evidence IDs. It contains no task text or verifier error text; the
+authoritative completion gate remains unchanged.
+
 Existing-card export reads only selected eligible, non-deterministic cards and
 source text already stored in the Hub index. It needs no per-example consent
 manifest, makes no model calls, and generates no cards.
@@ -30,6 +36,11 @@ manifest, makes no model calls, and generates no cards.
   request hook may also pass the task query and bounded retrieved excerpts when
   materially useful. These optional text fields are redacted and stored
   separately from the typed codes; see Candidate handling for limits.
+  Every `memory` source also requires a parallel opaque `source_record_id` in
+  candidate provenance. It is resolved against explicit repository/task/session
+  MemoryStore scopes, active or confirmed normal-sensitivity records, and the
+  linked current EvidenceStore ID. Owner-global memory is excluded. This ID
+  stays out of Laya model input and is revalidated before export.
 - Current deterministic retrieval order is the baseline.
 - The local operator may confirm one permitted target under the versioned
   rubric; this is the human label for the single-owner Hub. No second annotator,
@@ -55,9 +66,12 @@ manifest, makes no model calls, and generates no cards.
   recorded by trusted Hub retrieval callsites in the same EvidenceStore
   database. Current capture provenance supports `indexed` from repository and
   deterministic retrieval, `rag` from repository-search result metadata, and
-  `artifact` after a successful `evidence_get`. The schema accepts `memory`
-  as a code, but capture rejects it until an existing root-scoped EvidenceStore
-  path can record that route. Caller-supplied codes alone cannot establish
+  `artifact` after a successful `evidence_get`. For `memory`, preserve an
+  aligned opaque `source_record_id` outside model input. Revalidate it against
+  active or confirmed normal-sensitivity MemoryStore records for the exact
+  repository/task/session context, require the source evidence ID to be linked
+  from that record and current in EvidenceStore, and exclude owner-global
+  memory. Caller-supplied codes or record IDs alone cannot establish
   provenance.
 - Capture is tied to actual typed runtime execution, not an automatic scrape or
   synthetic inference. It requires the strict typed-input, authorized-root,
@@ -70,7 +84,9 @@ The root-authorized `POST /api/agent-state/tasks` endpoint and MCP
 `local_ai_coord(action="curate_dataset")` accept direct `evaluate_decision`
 operations. Their bounded `training_content` may include `task_input`,
 `context_excerpt`, `model_response`, and `tool_output_excerpt`; recognized
-secrets are redacted before the typed decision is sent to Laya. Raw content is
+secrets are redacted before the typed decision is sent to Laya, including
+credential fields with spaces, signatures, session identifiers, and complete
+`Cookie`/`Set-Cookie` headers and URI userinfo passwords. Raw content is
 stored separately from typed state and remains distinct from deterministic
 outcomes and human labels. Ordinary automatic model-route and context-budget
 call sites attach bounded task input, successful model-response text, and the
@@ -91,14 +107,14 @@ Hub evaluation and does not prove this pilot useful.
 ## Entry gate
 
 The approved `context_source` pilot fixes its category, minimal fields,
-deterministic baseline, label rubric, and privacy scope. `model_route` and
-`context_budget` are collection-only shadow categories until their own natural
-examples, labels, measured baselines, and approval gates pass. No advisory
-behavior is enabled by these observations.
+deterministic baseline, label rubric, and privacy scope. `model_route`,
+`context_budget`, and `completion_gap` are collection-only shadow categories
+until their own natural examples, labels, measured baselines, and approval gates
+pass. No advisory behavior is enabled by these observations.
 
 ## Additional automatic shadow observations
 
-The Hub also queues two server-derived categories through the same bounded
+The Hub also queues three server-derived categories through the same bounded
 runtime-outcome path when a pinned local checkpoint is configured:
 
 - `model_route` follows an automatic `delegate` route after the ordinary model
@@ -109,8 +125,13 @@ runtime-outcome path when a pinned local checkpoint is configured:
   when the caller did not set an explicit token budget. The baseline is the
   configured fast/heavy context-token budget mapped to `compact`, `standard`,
   or `expanded`.
+- `completion_gap` follows a naturally rejected Agent OS completion gate only
+  when current checkpoint evidence is available. It records `not_ready`, the
+  fixed rejection reason, mutation generation, and verified evidence ID; task
+  text and verifier details stay out of the candidate. The deterministic gate
+  remains authoritative, and operator waivers do not trigger capture.
 
-Both require an existing task and current root-scoped evidence IDs. The Hub
+All three require an existing task and current root-scoped evidence IDs. The Hub
 derives repository/session identity from the authorized task and validates
 evidence provenance before queueing. The bounded raw task input is secret
 redacted and separate from typed state. These observations do not change route,
@@ -147,7 +168,10 @@ checkpoint, scope, or evidence skips collection.
 - `laya_operation={action:"delete",candidate_id:"..."}` invalidates affected
   snapshots, removes local train JSONL exports and candidate/runtime event
   payloads, then retains only a minimal deletion audit. It cannot recall copies
-  already exported outside `server.state_dir`.
+  already exported outside `server.state_dir`. If an export file cannot be
+  removed, the response reports `success=false`, `deleted=true`, and
+  `cleanup_pending=true`; repeat the same scoped delete after the file is
+  available. The invalidated snapshot cannot be exported while cleanup waits.
 
 ### Existing-card export and dataset admission
 
@@ -218,6 +242,12 @@ existing support ZIP strips candidate tables and linked Laya capture traces from
 disposable snapshots. Candidate JSONL requires an authorized repository,
 verified snapshot, and separate local export. This verifies the code path, not
 data quality or label quality.
+
+The metadata-only `list` action accepts `limit` from 1 through 1000 and an
+optional `after_candidate_id` cursor. Results are ordered by creation time and
+candidate ID; `has_more` and `next_candidate_id` continue the bounded page. A
+cursor must belong to the authorized repository and, when filtered, the same
+task. Candidate text, Laya outputs, and labels remain hidden from this listing.
 
 - `capture` requires a task and matching session resolved under the authorized
   repository root, authorized evidence provenance, a closed typed candidate,
@@ -303,16 +333,16 @@ data quality or label quality.
 No Hub-specific category has authentic independent labels or a sealed
 group-safe holdout, so no paired quality or benefit evaluation is available.
 Server-derived deterministic baselines are recorded for the `context_source`,
-`model_route`, and `context_budget` observations; they still need comparison on
-labeled held-out data. The `context_source` pilot remains scoped to authorized
-roots, typed metadata, verified evidence IDs, and minimum necessary redacted
-raw context when useful. The state_dir-backed candidate lifecycle is
+`model_route`, `context_budget`, and `completion_gap` observations; they still
+need comparison on labeled held-out data. The `context_source` pilot remains
+scoped to authorized roots, typed metadata, verified evidence IDs, and minimum
+necessary redacted raw context when useful. The state_dir-backed candidate lifecycle is
 infrastructure only: it does not prove label quality or utility. Synthetic
 tests verify support-ZIP exclusion and truthful manifests, not production-data
 quality. Evaluation thresholds remain to be predeclared. Eligible shadow
 capture is active for the approved `context_source` pilot and the
-collection-only `model_route`/`context_budget` observations. No advisory or
-guarded execution is enabled.
+collection-only `model_route`, `context_budget`, and `completion_gap`
+observations. No advisory or guarded execution is enabled.
 
 ## Fine-tuning format evidence
 

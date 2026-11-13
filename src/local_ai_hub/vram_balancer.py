@@ -547,6 +547,13 @@ class VRAMBalancer:
                 "available": available,
                 "sample_timestamp": sample_timestamp,
                 "sample_age_seconds": sample_age_seconds,
+                "telemetry_sampling": False,
+                "telemetry_stale": (
+                    sample_age_seconds is None
+                    or sample_age_seconds > self._sample_wait_timeout_seconds
+                ),
+                "telemetry_wait_timed_out": False,
+                "telemetry_error": None,
                 "gpu_name": gpu.get("gpu_name", "GPU"),
                 "vendor": gpu.get("vendor", "unknown"),
                 "vram_total_mb": total_mb,

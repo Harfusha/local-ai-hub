@@ -607,6 +607,53 @@ def test_gpu_capacity_rejection_happens_before_provider_load(tmp_path):
     assert capacity.releases == []
 
 
+def test_actual_provider_capacity_failure_stays_unavailable(tmp_path):
+    events = []
+    capacity = FakeCapacityManager(events=events)
+
+    def load(_path, *, device, expected_sha256):
+        events.append(("load", device))
+        raise OSError("device out of memory")
+
+    model = adapter(
+        tmp_path,
+        load,
+        capacity_manager=capacity,
+        capacity_request_bytes=2 * 1024**3,
+    )
+    shared = lifecycle()
+    request, evidence = request_and_evidence()
+
+    unavailable = model.evaluate_context_source(request, evidence, session_lifecycle=shared)
+    assert unavailable.decision.status is DecisionStatus.ERROR
+    assert [item[0] for item in events].count("load") == 1
+    assert [item[0] for item in events].count("acquire") == 1
+
+
+def test_transient_gpu_capacity_rejection_retries_same_device_later(tmp_path):
+    events = []
+    capacity = FakeCapacityManager(admitted=False, events=events)
+    model = adapter(
+        tmp_path,
+        lambda _path, *, device, expected_sha256: (events.append(("load", device)) or FakeAgent(device)),
+        capacity_manager=capacity,
+        capacity_request_bytes=2 * 1024**3,
+    )
+    shared = lifecycle()
+    request, evidence = request_and_evidence()
+
+    unavailable = model.evaluate_context_source(request, evidence, session_lifecycle=shared)
+    assert unavailable.decision.status is DecisionStatus.ERROR
+    assert not any(item[0] == "load" for item in events)
+
+    capacity.admitted = True
+    available = model.evaluate_context_source(request, evidence, session_lifecycle=shared)
+
+    assert available.decision.suggestion == "artifact"
+    assert [item[0] for item in events].count("load") == 1
+    assert [item[0] for item in events].count("acquire") == 2
+
+
 def test_failed_gpu_capacity_release_records_pending_after_confirmed_provider_unload(tmp_path):
     now = [0.0]
     capacity = FakeCapacityManager(release_result=False)
@@ -650,3 +697,5 @@ def test_laya_retries_pending_capacity_release_before_reacquiring(tmp_path):
     assert second.decision.suggestion == "artifact"
     assert [event[0] for event in capacity.events] == ["acquire", "release", "release", "acquire"]
     assert model._capacity_lease_release_pending is False
+
+

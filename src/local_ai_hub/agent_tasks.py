@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from .json_utils import dumps as json_dumps
 
+import hashlib
 import json
 import sqlite3
 import contextvars
@@ -1901,21 +1902,64 @@ class TaskStore:
             grams.update(normalized[index:index + 3] for index in range(max(0, len(normalized) - 2)))
         return grams
 
+    @staticmethod
+    def _task_search_source_digest(
+        task_id: str,
+        owner: Any,
+        contract_raw: Any,
+        context_raw: Any,
+        checkpoint_raw: Any,
+    ) -> str:
+        source = json_dumps(
+            [task_id, owner, contract_raw or "{}", context_raw or "{}", checkpoint_raw or "{}"],
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        return hashlib.sha256(source.encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _task_search_gram_digest(grams: Any) -> tuple[str, int]:
+        digest = hashlib.sha256()
+        count = 0
+        for value in grams:
+            gram = value if isinstance(value, str) else value[0]
+            encoded = str(gram).encode("utf-8")
+            digest.update(len(encoded).to_bytes(8, "big"))
+            digest.update(encoded)
+            count += 1
+        return digest.hexdigest(), count
+
     @classmethod
     def _write_task_search_index(
         cls,
         con: sqlite3.Connection,
         task_id: str,
         fields: tuple[str, ...],
+        source_digest: str,
     ) -> None:
+        fields_json = json_dumps(list(fields))
+        grams = cls._search_grams(fields)
+        ordered_grams = sorted(grams)
+        grams_digest, grams_count = cls._task_search_gram_digest(ordered_grams)
         con.execute("DELETE FROM agent_task_search_grams WHERE task_id = ?", (task_id,))
         con.execute(
             "INSERT OR REPLACE INTO agent_task_search_documents(task_id, fields) VALUES (?, ?)",
-            (task_id, json_dumps(list(fields))),
+            (task_id, fields_json),
         )
         con.executemany(
             "INSERT INTO agent_task_search_grams(task_id, gram) VALUES (?, ?)",
-            ((task_id, gram) for gram in sorted(cls._search_grams(fields))),
+            ((task_id, gram) for gram in ordered_grams),
+        )
+        con.execute(
+            "INSERT OR REPLACE INTO agent_task_search_index_state "
+            "(task_id, source_digest, fields_digest, grams_digest, grams_count) VALUES (?, ?, ?, ?, ?)",
+            (
+                task_id,
+                source_digest,
+                hashlib.sha256(fields_json.encode("utf-8")).hexdigest(),
+                grams_digest,
+                grams_count,
+            ),
         )
 
     @classmethod
@@ -1929,6 +1973,11 @@ class TaskStore:
             "(task_id TEXT NOT NULL, gram TEXT NOT NULL, PRIMARY KEY(task_id, gram))"
         )
         con.execute(
+            "CREATE TABLE IF NOT EXISTS agent_task_search_index_state "
+            "(task_id TEXT PRIMARY KEY, source_digest TEXT NOT NULL, fields_digest TEXT NOT NULL, "
+            "grams_digest TEXT NOT NULL, grams_count INTEGER NOT NULL)"
+        )
+        con.execute(
             "CREATE INDEX IF NOT EXISTS idx_agent_task_search_grams_gram "
             "ON agent_task_search_grams(gram, task_id)"
         )
@@ -1936,29 +1985,44 @@ class TaskStore:
             "SELECT task_id, owner, contract, context, checkpoint FROM agent_tasks_projection"
         ).fetchall()
         for task_id, owner, contract_raw, context_raw, checkpoint_raw in rows:
+            source_digest = cls._task_search_source_digest(
+                str(task_id), owner, contract_raw, context_raw, checkpoint_raw
+            )
+            document = con.execute(
+                "SELECT fields FROM agent_task_search_documents WHERE task_id = ?", (task_id,)
+            ).fetchone()
+            index_state = con.execute(
+                "SELECT source_digest, fields_digest, grams_digest, grams_count "
+                "FROM agent_task_search_index_state WHERE task_id = ?",
+                (task_id,),
+            ).fetchone()
+            if document is not None and index_state is not None and index_state[0] == source_digest:
+                stored_fields = str(document[0] or "")
+                fields_digest = hashlib.sha256(stored_fields.encode("utf-8")).hexdigest()
+                if fields_digest == index_state[1]:
+                    grams_digest, grams_count = cls._task_search_gram_digest(
+                        con.execute(
+                            "SELECT gram FROM agent_task_search_grams WHERE task_id = ? ORDER BY gram",
+                            (task_id,),
+                        )
+                    )
+                    if grams_digest == index_state[2] and grams_count == int(index_state[3]):
+                        continue
             contract = json.loads(contract_raw or "{}")
             context = json.loads(context_raw or "{}")
             checkpoint = json.loads(checkpoint_raw or "{}")
             fields = cls._searchable_task_fields(task_id, contract, checkpoint, context, owner)
-            target_fields_json = json_dumps(list(fields))
-            document = con.execute(
-                "SELECT fields FROM agent_task_search_documents WHERE task_id = ?", (task_id,)
-            ).fetchone()
-            expected_grams = cls._search_grams(fields)
-            stored_grams = {
-                str(row[0]) for row in con.execute(
-                    "SELECT gram FROM agent_task_search_grams WHERE task_id = ?", (task_id,)
-                ).fetchall()
-            }
-            if document and document[0] == target_fields_json and stored_grams == expected_grams:
-                continue
-            cls._write_task_search_index(con, task_id, fields)
+            cls._write_task_search_index(con, task_id, fields, source_digest)
         con.execute(
             "DELETE FROM agent_task_search_documents WHERE task_id NOT IN "
             "(SELECT task_id FROM agent_tasks_projection)"
         )
         con.execute(
             "DELETE FROM agent_task_search_grams WHERE task_id NOT IN "
+            "(SELECT task_id FROM agent_tasks_projection)"
+        )
+        con.execute(
+            "DELETE FROM agent_task_search_index_state WHERE task_id NOT IN "
             "(SELECT task_id FROM agent_tasks_projection)"
         )
 
@@ -1971,11 +2035,13 @@ class TaskStore:
         if not row:
             con.execute("DELETE FROM agent_task_search_documents WHERE task_id = ?", (task_id,))
             con.execute("DELETE FROM agent_task_search_grams WHERE task_id = ?", (task_id,))
+            con.execute("DELETE FROM agent_task_search_index_state WHERE task_id = ?", (task_id,))
             return
         owner = row[0]
+        source_digest = cls._task_search_source_digest(task_id, owner, *row[1:])
         contract, context, checkpoint = (json.loads(value or "{}") for value in row[1:])
         fields = cls._searchable_task_fields(task_id, contract, checkpoint, context, owner)
-        cls._write_task_search_index(con, task_id, fields)
+        cls._write_task_search_index(con, task_id, fields, source_digest)
 
     def list_tasks(
         self,
@@ -4360,7 +4426,9 @@ class TaskStore:
 
         def _do_commit(con: sqlite3.Connection) -> tuple[TaskState, list[AgentEvent]]:
             published.clear()
-            with write_transaction(con, rollback_label="Agent task create"):
+            with write_transaction(
+                con, max_duration_seconds=0.25, rollback_label="Agent task create"
+            ):
                 existing = con.execute(
                     """
                     SELECT stream_id, seq, event_id, kind, payload, idempotency_key,
@@ -4380,7 +4448,6 @@ class TaskStore:
                         (state.task_id,),
                     ).fetchone()
                     if current:
-                        con.execute("COMMIT")
                         return self._row_to_state(current), []
                     if str(existing_event.payload.get("task_id", "")) != state.task_id:
                         raise TaskIdempotencyConflictError(
@@ -4496,7 +4563,9 @@ class TaskStore:
 
         def _do_commit(con: sqlite3.Connection) -> tuple[TaskState, list[AgentEvent]]:
             published.clear()
-            with write_transaction(con, rollback_label="Agent task update"):
+            with write_transaction(
+                con, max_duration_seconds=0.25, rollback_label="Agent task update"
+            ):
                 if event.idempotency_key:
                     existing = con.execute(
                         "SELECT stream_id, seq, event_id, kind, payload, idempotency_key, "

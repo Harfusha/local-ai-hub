@@ -845,6 +845,7 @@ _COORD_PROTECTED_KEYS = (
     "board", "columns", "summary", "checkpoint_sync",
     "plan", "plans", "file_revision", "plan_id", "rel_path", "git_branch", "git_head",
     "project_root", "counts", "total_items", "plan_filter", "plan_task_id",
+    "reason_code", "reaped",
 )
 _REPO_PROTECTED_KEYS = (
     "symbols", "files", "results", "evidence", "findings", "issues", "diff",
@@ -1383,8 +1384,20 @@ def _search_prefix_fitting(
         for count in range(len(source_results), min_count - 1, -1):
             candidate = _search_page_with_prefix(base, raw, source_results, count)
             if compact_metadata:
-                for key in ("workspace_cache", "path_hint_usage", "engine", "scanned_files", "terms"):
+                omitted = [
+                    key for key in (
+                        "workspace_cache", "path_hint_usage", "engine", "scanned_files", "terms",
+                        "source_validation", "stale_candidate_details",
+                    )
+                    if key in candidate
+                ]
+                for key in omitted:
                     candidate.pop(key, None)
+                if omitted:
+                    candidate["omitted_fields"] = list(dict.fromkeys([
+                        *(candidate.get("omitted_fields") if isinstance(candidate.get("omitted_fields"), list) else []),
+                        *omitted,
+                    ]))
             candidate = _normalize_deterministic(account_projection(raw, candidate))
             if json_tokens(candidate) > requested:
                 continue
@@ -5274,7 +5287,7 @@ def local_ai_coord(
     spec_content: str = "",
     expected_spec_revision: str = "",
 ) -> dict[str, Any]:
-    """Coordination for Hub work and GPU reservations. `gpu_reservation_status` takes only `action` (no root) and reports owner, generation, state and expiry. `gpu_reservation_release` requires `generation`, `consent=true` and a non-empty `audit_reason`; release is allowed after expiry or when the owner process is confirmed gone. `gpu_reservation_release_authorized` requires explicit consent and an audit reason, without a status or owner-liveness preflight. It releases a valid reservation or records a durable operator-release marker when the reservation file is already missing, allowing the scheduler to clear only stale in-memory external admission. Malformed metadata and symlinks remain fail-closed. Never unlink reservation files directly. ask persists a repository/session-scoped question; retrieve it later with the same question_id, root and session_id. answer records an operator response under the authorized repository root. Public actions are limited to the contract enum; unscoped memory relation/reaping storage remains private. Claim overlapping edit paths before concurrent Hub work. Use scoped Agent OS memory_find/memory_record for reusable findings; workspace memo actions are operator-only and unavailable through this tool. Native peer subagents are coordinated by Codex rather than by this Hub tool."""
+    """Coordination for Hub work and GPU reservations. `gpu_reservation_status` takes only `action` (no root) and reports owner, generation, state and expiry; reports `reaped=true` after expiry cleanup. Unresolved state includes a non-secret `reason_code` and remains fail-closed. `gpu_reservation_release` requires `generation`, `consent=true` and a non-empty `audit_reason`; release is allowed after expiry or when the owner process is confirmed gone. `gpu_reservation_release_authorized` requires explicit consent and an audit reason, without a status or owner-liveness preflight. It releases a valid reservation or records a durable operator-release marker when the reservation file is already missing, allowing the scheduler to clear only stale in-memory external admission. Malformed metadata and symlinks remain fail-closed. Never unlink reservation files directly. ask persists a repository/session-scoped question; retrieve it later with the same question_id, root and session_id. answer records an operator response under the authorized repository root. Public actions are limited to the contract enum; unscoped memory relation/reaping storage remains private. Claim overlapping edit paths before concurrent Hub work. Use scoped Agent OS memory_find/memory_record for reusable findings; workspace memo actions are operator-only and unavailable through this tool. Native peer subagents are coordinated by Codex rather than by this Hub tool."""
     if not FEATURES.coord:
         return {"success": False, "unsupported": True, "error": "local_ai_coord is disabled in configuration"}
     if action in {"gpu_reservation_status", "gpu_reservation_release", "gpu_reservation_release_authorized"}:

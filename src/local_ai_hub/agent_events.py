@@ -296,6 +296,7 @@ class AgentStateStore:
         ("table", "agent_event_cursors", "agent_event_cursors"): "0ecf2e08637aef9d2f4a9167feb61de083e1a9d9b8b927f79ae7a58e74b2ef71",
         ("table", "agent_task_search_documents", "agent_task_search_documents"): "a291a7122e95c8b2f3f6b9a9a73269489b1794ceea3f4378d9ff6155fd900f93",
         ("table", "agent_task_search_grams", "agent_task_search_grams"): "d2f7c3b733bc0ffcee4d9ee72804edc3fedc36f73f7ceca5ce18662941a13b78",
+        ("table", "agent_task_search_index_state", "agent_task_search_index_state"): "56c60333a7ff80bcae274e8da3832a33c7b3cbd8676aa8cacfeb557bafeb6169",
         ("table", "agent_verification_task_outbox", "agent_verification_task_outbox"): "2f17423836ca86bf09a701a71a27ead55a2c458d02bb9f29e1445a0c0fc11d17",
     })
     def __init__(
@@ -363,9 +364,11 @@ class AgentStateStore:
                     self._preflight_schema_read_only()
                 con = connect_sqlite(self.db_path, timeout_seconds=5.0, wal=True)
                 try:
-                    if not con.in_transaction:
-                        con.execute("BEGIN IMMEDIATE")
-                    with con:
+                    with write_transaction(
+                        con,
+                        max_duration_seconds=5.0,
+                        rollback_label="agent event schema initialization",
+                    ):
                         con.execute("""
                             CREATE TABLE IF NOT EXISTS agent_events (
                                 stream_id TEXT NOT NULL,

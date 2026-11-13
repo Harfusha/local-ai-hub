@@ -29,6 +29,7 @@ from .sqlite_support import (
     initialize_wal,
     is_busy_error,
     retry_busy,
+    write_transaction,
 )
 from .process_utils import canonical_root, canonical_workspace_id
 
@@ -806,6 +807,56 @@ class RAGStore:
                 "SELECT 1 FROM chunks WHERE workspace=? LIMIT 1", (workspace,)
             ).fetchone() is not None
 
+    def indexed_paths(self, *, workspace: str, paths: list[str]) -> set[str]:
+        """Return requested paths already persisted in a workspace index."""
+        if type(workspace) is not str or not workspace:
+            raise ValueError("RAG workspace must be a non-empty string")
+        if not isinstance(paths, list):
+            raise TypeError("RAG indexed paths must be a list")
+        normalized = list(dict.fromkeys(paths))
+        if any(type(path) is not str or not path for path in normalized):
+            raise ValueError("RAG indexed paths must be non-empty strings")
+        if not normalized:
+            return set()
+
+        found: set[str] = set()
+        with closing(self._connect()) as con:
+            # Leave room for the workspace parameter below SQLite's usual
+            # bound-variable limit.
+            for offset in range(0, len(normalized), 900):
+                batch = normalized[offset:offset + 900]
+                placeholders = ",".join("?" for _ in batch)
+                rows = con.execute(
+                    f"SELECT path FROM files WHERE workspace=? AND path IN ({placeholders})",
+                    (workspace, *batch),
+                ).fetchall()
+                found.update(str(row[0]) for row in rows)
+        return found
+
+    def indexed_chunk_paths(self, *, workspace: str, paths: list[str]) -> set[str]:
+        """Return requested paths with persisted semantic chunks."""
+        if type(workspace) is not str or not workspace:
+            raise ValueError("RAG workspace must be a non-empty string")
+        if not isinstance(paths, list):
+            raise TypeError("RAG indexed chunk paths must be a list")
+        normalized = list(dict.fromkeys(paths))
+        if any(type(path) is not str or not path for path in normalized):
+            raise ValueError("RAG indexed chunk paths must be non-empty strings")
+        if not normalized:
+            return set()
+
+        found: set[str] = set()
+        with closing(self._connect()) as con:
+            for offset in range(0, len(normalized), 900):
+                batch = normalized[offset:offset + 900]
+                placeholders = ",".join("?" for _ in batch)
+                rows = con.execute(
+                    f"SELECT DISTINCT path FROM chunks WHERE workspace=? AND path IN ({placeholders})",
+                    (workspace, *batch),
+                ).fetchall()
+                found.update(str(row[0]) for row in rows)
+        return found
+
     def project_config_api(self) -> Any | None:
         """Load project policy lazily so shared revisions without the API still work."""
         try:
@@ -1364,8 +1415,9 @@ class RAGStore:
             return
 
         def publish() -> None:
-            with closing(self._connect()) as con:
-                con.execute("BEGIN IMMEDIATE")
+            with closing(self._connect()) as con, write_transaction(
+                con, max_duration_seconds=5.0, rollback_label="RAG read uncertainty"
+            ):
                 changed = self._update_workspace_read_uncertainty(
                     con, workspace,
                     uncertain_paths=uncertain_paths,
@@ -1373,7 +1425,6 @@ class RAGStore:
                 )
                 if changed:
                     self._bump_workspace_index_generation(con, workspace)
-                con.commit()
 
         retry_busy(
             publish,
@@ -1400,11 +1451,11 @@ class RAGStore:
         key = self._workspace_project_config_key(workspace, root_identity)
         root_key = self._workspace_root_identity_key(workspace)
         if not isinstance(digest, str) or not digest:
-            with closing(self._connect()) as con:
-                con.execute("BEGIN IMMEDIATE")
+            with closing(self._connect()) as con, write_transaction(
+                con, max_duration_seconds=5.0, rollback_label="RAG project policy identity"
+            ):
                 bound = con.execute("SELECT value FROM rag_meta WHERE key=?", (root_key,)).fetchone()
                 if bound is not None and str(bound[0]) != root_identity:
-                    con.rollback()
                     raise ProjectPolicySyncError(
                         "RAG workspace is already bound to a different project root",
                         retryable=False,
@@ -1416,7 +1467,6 @@ class RAGStore:
                         "SELECT 1 FROM chunks WHERE workspace=? LIMIT 1", (workspace,)
                     ).fetchone()
                     if populated is not None:
-                        con.rollback()
                         raise ProjectPolicySyncError(
                             "populated RAG workspace has no repository binding; explicit offline rebuild required",
                             retryable=False,
@@ -1424,7 +1474,6 @@ class RAGStore:
                     con.execute(
                         "INSERT INTO rag_meta(key,value) VALUES(?,?)", (root_key, root_identity)
                     )
-                con.commit()
             return 0
         with closing(self._connect()) as con:
             bound_root = con.execute("SELECT value FROM rag_meta WHERE key=?", (root_key,)).fetchone()
@@ -1517,13 +1566,15 @@ class RAGStore:
                 )
 
         def persist_identity() -> int:
-            with closing(self._connect()) as con:
-                con.execute("BEGIN IMMEDIATE")
+            # Project config reads stay outside the SQLite writer transaction.
+            verify_current_context()
+            with closing(self._connect()) as con, write_transaction(
+                con, max_duration_seconds=5.0, rollback_label="RAG project policy sync"
+            ):
                 current_root = con.execute(
                     "SELECT value FROM rag_meta WHERE key=?", (root_key,)
                 ).fetchone()
                 if current_root is not None and str(current_root[0]) != root_identity:
-                    con.rollback()
                     raise ProjectPolicySyncError(
                         "RAG workspace was concurrently bound to a different project root",
                         retryable=False,
@@ -1531,15 +1582,12 @@ class RAGStore:
                 current = con.execute("SELECT value FROM rag_meta WHERE key=?", (key,)).fetchone()
                 current_digest = str(current[0]) if current is not None else None
                 if current_digest == digest and current_root is not None:
-                    con.rollback()
                     return 0
                 if current_digest != previous_digest:
-                    con.rollback()
                     raise ProjectPolicySyncError(
                         "project policy identity changed during RAG policy synchronization",
                         retryable=True,
                     )
-                verify_current_context()
                 if rejected:
                     pairs = [(workspace, rel) for rel in sorted(set(rejected))]
                     con.executemany(
@@ -1564,8 +1612,6 @@ class RAGStore:
                 )
                 con.execute("INSERT OR REPLACE INTO rag_meta(key,value) VALUES(?,?)", (key, digest))
                 self._bump_workspace_index_generation(con, workspace)
-                verify_current_context()
-                con.commit()
             return len(set(rejected))
 
         return retry_busy(
@@ -2077,8 +2123,9 @@ class RAGStore:
         # The embed phase is intentionally outside this retry: a transient writer
         # must not cause expensive model work to run again.
         def publish() -> None:
-            with self._get_workspace_lock(workspace,), closing(self._connect()) as con:
-                con.execute("BEGIN IMMEDIATE")
+            with self._get_workspace_lock(workspace,), closing(self._connect()) as con, write_transaction(
+                con, max_duration_seconds=5.0, rollback_label="RAG index publish"
+            ):
                 fts_exists = con.execute(
                     "SELECT 1 FROM sqlite_master WHERE type='table' AND name='chunk_fts'"
                 ).fetchone()
@@ -2133,7 +2180,6 @@ class RAGStore:
                 )
                 if publish_paths or uncertainty_changed:
                     self._bump_workspace_index_generation(con, workspace)
-                con.commit()
 
         report_progress(90.0, "publishing index")
         retry_busy(
@@ -2356,17 +2402,16 @@ class RAGStore:
                 recovery_conflict = {"value": False}
 
                 def persist_recovered_space() -> None:
-                    with closing(self._connect()) as con:
-                        con.execute("BEGIN IMMEDIATE")
+                    with closing(self._connect()) as con, write_transaction(
+                        con, max_duration_seconds=5.0, rollback_label="RAG embedding space recovery"
+                    ):
                         current_space = self._stored_workspace_embedding_space(con, workspace)
                         if current_space is not None and current_space != inferred_space:
-                            con.rollback()
                             recovery_conflict["value"] = True
                             return
                         if current_space is None:
                             self._store_workspace_embedding_space(con, workspace, inferred_space)
                             self._bump_workspace_index_generation(con, workspace)
-                        con.commit()
 
                 try:
                     retry_busy(
@@ -2471,12 +2516,12 @@ class RAGStore:
             if not file_data and not deleted_unique:
                 if read_uncertain_paths:
                     def publish_uncertain_only() -> None:
-                        with closing(self._connect()) as con:
-                            con.execute("BEGIN IMMEDIATE")
+                        with closing(self._connect()) as con, write_transaction(
+                            con, max_duration_seconds=5.0, rollback_label="RAG uncertainty publish"
+                        ):
                             self._update_workspace_read_uncertainty(
                                 con, workspace, uncertain_paths=read_uncertain_paths,
                             )
-                            con.commit()
 
                     retry_busy(
                         publish_uncertain_only,
@@ -2634,8 +2679,9 @@ class RAGStore:
                 processed_paths.append(rel)
 
             def publish() -> None:
-                with closing(self._connect()) as con:
-                    con.execute("BEGIN IMMEDIATE")
+                with closing(self._connect()) as con, write_transaction(
+                    con, max_duration_seconds=5.0, rollback_label="RAG batch index publish"
+                ):
                     fts_exists = con.execute(
                         "SELECT 1 FROM sqlite_master WHERE type='table' AND name='chunk_fts'"
                     ).fetchone()
@@ -2680,7 +2726,6 @@ class RAGStore:
                     )
                     if all_rels or uncertainty_changed:
                         self._bump_workspace_index_generation(con, workspace)
-                    con.commit()
 
             try:
                 retry_busy(
@@ -3019,16 +3064,29 @@ class RAGStore:
         con.commit()
         return f" AND {column} NOT IN (SELECT path FROM rag_uncertain_paths)"
 
+    @staticmethod
+    def _fts_error_status(error: sqlite3.Error) -> str:
+        message = str(error).lower()
+        if any(token in message for token in ("database is locked", "database is busy", "locked", "busy", "timeout")):
+            return "FTS_TIMEOUT/LOCKED"
+        if "malformed" in message or "corrupt" in message:
+            return "FTS_INDEX_CORRUPT"
+        if any(token in message for token in ("syntax error", "unterminated", "no such column")):
+            return "FTS_QUERY_INVALID"
+        if any(token in message for token in ("no such table", "no such module", "fts5 is not available")):
+            return "FTS_UNAVAILABLE"
+        return "FTS_UNAVAILABLE"
+
     def _search_fts_candidates(
         self, query: str, workspace: str, limit: int = 16,
         scope_path: str | None = None, embedding_space: str | None = None,
         excluded_paths: set[str] | None = None,
-    ) -> list[dict[str, Any]]:
+    ) -> dict[str, Any]:
         try:
             tokens = [re.sub(r"[^\w_]", "", t) for t in query.split()]
             tokens = [t for t in tokens if len(t) > 1]
             if not tokens:
-                return []
+                return {"status": "MATCHES_EMPTY", "candidates": []}
             fts_expr = " OR ".join(f'"{t}"' for t in tokens[:8])
             space_filter = " AND c.embedding_space=?" if embedding_space is not None else ""
             space_params = (embedding_space,) if embedding_space is not None else ()
@@ -3053,15 +3111,16 @@ class RAGStore:
                            ORDER BY bm25(chunk_fts) LIMIT ?""",
                         (workspace, *space_params, fts_expr, limit),
                     ).fetchall()
-                return [
+                candidates = [
                     {
                         "path": r[0], "chunk_no": r[1], "text": r[2], "content_hash": r[3],
                         "fts_score": float(r[4]),
                     }
                     for r in fts_rows
                 ]
-        except Exception:
-            return []
+                return {"status": "MATCHES_FOUND" if candidates else "MATCHES_EMPTY", "candidates": candidates}
+        except sqlite3.Error as exc:
+            return {"status": self._fts_error_status(exc), "candidates": []}
 
     def _search_token_overlap(
         self, query: str, workspace: str, limit: int = 16,
@@ -3338,16 +3397,23 @@ class RAGStore:
                 return {"success": True, "workspace": workspace, "results": [], "degraded": True,
                         "fallback": "embedding_backend", "reason": str(query_result.get("error", "embedder_unavailable"))}
             lexical_backend = "fts5"
-            candidates = visible(self._search_fts_candidates(
+            fts_raw = self._search_fts_candidates(
                 query, workspace, max(16, top_k * 2), scope_path,
                 excluded_paths=uncertain_paths,
-            ))
+            )
+            fts_result = (
+                fts_raw if isinstance(fts_raw, dict)
+                else {"status": "MATCHES_FOUND" if fts_raw else "MATCHES_EMPTY", "candidates": fts_raw}
+            )
+            candidates = visible(fts_result["candidates"])
+            fallback_used = False
             if not candidates:
                 lexical_backend = "token_overlap"
                 candidates = visible(self._search_token_overlap(
                     query, workspace, max(16, top_k * 2), scope_path,
                     excluded_paths=uncertain_paths,
                 ))
+                fallback_used = True
             results = [
                 {
                     "path": c["path"],
@@ -3366,6 +3432,11 @@ class RAGStore:
                 "fallback": "source_read_uncertain" if uncertain_paths else "bm25_fts",
                 "retrieval_mode": "lexical_fallback",
                 "lexical_backend": lexical_backend,
+                "component_status": {
+                    "fts": fts_result["status"],
+                    "lexical_fallback": "FALLBACK_USED" if fallback_used else "not_used",
+                },
+                "fallback_used": fallback_used,
                 "reason": str(query_result.get("error", "embedder_unavailable")),
             }
         query_vec = query_result["embeddings"][0]
@@ -3578,11 +3649,11 @@ class RAGStore:
         if embedding_space_resolved:
             try:
                 if not stored_embedding_space_read or stored_embedding_space != embedding_space:
-                    with closing(self._connect()) as con:
-                        con.execute("BEGIN IMMEDIATE")
+                    with closing(self._connect()) as con, write_transaction(
+                        con, max_duration_seconds=5.0, rollback_label="RAG embedding metadata"
+                    ):
                         if self._stored_workspace_embedding_space(con, workspace) != embedding_space:
                             self._store_workspace_embedding_space(con, workspace, embedding_space)
-                        con.commit()
             except sqlite3.Error:
                 fallbacks.append("embedding_space_metadata")
 
@@ -3623,9 +3694,19 @@ class RAGStore:
         ]
 
         # Hybrid search: combine vector candidates with FTS5 keyword hits via Reciprocal Rank Fusion (RRF)
-        fts_candidates = [] if semantic_only else visible(self._search_fts_candidates(
-            query, workspace, 16, scope_path, embedding_space, uncertain_paths
-        ))
+        fts_raw = (
+            {"status": "NOT_REQUESTED", "candidates": []}
+            if semantic_only
+            else self._search_fts_candidates(query, workspace, 16, scope_path, embedding_space, uncertain_paths)
+        )
+        fts_result = (
+            fts_raw if isinstance(fts_raw, dict)
+            else {"status": "MATCHES_FOUND" if fts_raw else "MATCHES_EMPTY", "candidates": fts_raw}
+        )
+        fts_candidates = visible(fts_result["candidates"])
+        fts_failed = fts_result["status"] not in {"NOT_REQUESTED", "MATCHES_FOUND", "MATCHES_EMPTY"}
+        if fts_failed:
+            fallbacks.append(f"fts_{fts_result['status'].lower().replace('/', '_')}")
 
         is_hybrid = bool(fts_candidates)
         if is_hybrid:
@@ -3789,6 +3870,11 @@ class RAGStore:
             "degraded": bool(fallbacks),
             "fallback": fallbacks[0] if fallbacks else None,
             "fallbacks": fallbacks,
+            "component_status": {
+                "fts": fts_result["status"],
+                "lexical_fallback": "FALLBACK_USED" if fts_failed else "not_used",
+            },
+            "fallback_used": fts_failed,
             "reindex_required": has_stale_embedding_rows,
             "hybrid": is_hybrid,
             "graphrag_enriched": graphrag_enriched,
@@ -4023,8 +4109,9 @@ class RAGStore:
                 r["embedding"] = ""
 
         def publish_document() -> None:
-            with self._get_workspace_lock(clean_ws), closing(self._connect()) as con:
-                con.execute("BEGIN IMMEDIATE")
+            with self._get_workspace_lock(clean_ws), closing(self._connect()) as con, write_transaction(
+                con, max_duration_seconds=5.0, rollback_label="RAG document publish"
+            ):
                 con.execute("DELETE FROM chunks WHERE workspace=? AND path=?", (clean_ws, doc_path))
                 con.execute("DELETE FROM files WHERE workspace=? AND path=?", (clean_ws, doc_path))
                 fts_exists = con.execute(
@@ -4047,7 +4134,6 @@ class RAGStore:
                         "INSERT INTO chunk_fts(workspace,path,chunk_no,text) VALUES(?,?,?,?)",
                         [(clean_ws, doc_path, r["chunk_no"], r["text"]) for r in records],
                     )
-                con.commit()
 
         try:
             retry_busy(

@@ -131,6 +131,63 @@ def test_completion_outcome_is_queued_and_records_metadata_only() -> None:
     assert all("operation" not in event and "root" not in event for event in telemetry_events)
 
 
+def test_rejected_completion_queues_typed_shadow_gap_decision(tmp_path) -> None:
+    app = LocalAIApp.__new__(LocalAIApp)
+    callbacks = []
+    decisions = []
+    task = SimpleNamespace(checkpoint=SimpleNamespace(evidence_ids=("ev-verified-1",)))
+    app._status_dependency_executor = SimpleNamespace(
+        submit=lambda callback: callbacks.append(callback) or Future()
+    )
+    app._shutdown = None
+    app._laya_capture_lock = Lock()
+    app._laya_capture_queue = []
+    app._laya_capture_draining = False
+    app.telemetry = SimpleNamespace(record_stage=lambda **_event: None)
+    app.agent_tasks = object()
+    app.laya_candidates = SimpleNamespace(
+        _find_task=lambda _store, root, task_id: task,
+        _session_for_task=lambda _task: "session-1",
+    )
+    app.queue_laya_decision_observation = lambda operation, root, baseline: (
+        decisions.append((operation, root, baseline)) or {"status": "queued"}
+    )
+    operation = {
+        "task_id": "task-1",
+        "session_id": "session-1",
+        "outcome": {
+            "status": "rejected",
+            "reason_code": "completion_gate_rejected",
+            "duration_ms": 8.0,
+            "repository_revision": "a" * 40,
+            "mutation_generation": 2,
+        },
+    }
+
+    result = app.queue_laya_completion_observation(operation, str(tmp_path))
+
+    assert result == {"status": "queued", "reason": "completion_outcome"}
+    assert len(decisions) == 1
+    decision, root, baseline = decisions[0]
+    assert root == str(tmp_path)
+    assert decision["decision"] == {
+        "category": "completion_gap",
+        "evidence_ids": ["ev-verified-1"],
+        "options": ["missing_verification", "request_human_review", "resolve_blocker"],
+        "state": {
+            "completion_status": "not_ready",
+            "reason_code": "completion_gate_rejected",
+            "mutation_generation": "2",
+        },
+        "training_content": {},
+    }
+    assert baseline == {
+        "method": "agent_os_completion_gate",
+        "suggestion": "not_ready",
+        "evidence_id": "ev-verified-1",
+    }
+
+
 def test_completion_outcome_without_task_id_is_skipped_before_queueing() -> None:
     app = LocalAIApp.__new__(LocalAIApp)
     telemetry_events = []
@@ -418,9 +475,31 @@ def test_app_queue_derives_scope_and_rejects_caller_baseline(tmp_path, monkeypat
         {**baseline, "suggestion": "outside-options"},
     )
 
+    completion_gap_operation = {
+        **operation,
+        "decision": {
+            "category": "completion_gap",
+            "evidence_ids": ["ev-1"],
+            "options": ["missing_verification", "resolve_blocker"],
+            "state": {"completion_status": "not_ready", "reason_code": "completion_gate_rejected"},
+            "training_content": {},
+        },
+    }
+    completion_gap_baseline = {
+        "method": "agent_os_completion_gate",
+        "suggestion": "not_ready",
+        "evidence_id": "ev-1",
+    }
+    completion_gap_queued = app.queue_laya_decision_observation(
+        completion_gap_operation,
+        str(tmp_path),
+        completion_gap_baseline,
+    )
+
     assert queued == {"status": "queued"}
     assert rejected == {"status": "skipped", "reason": "decision_invalid"}
-    assert len(app._laya_capture_queue) == 1
+    assert completion_gap_queued == {"status": "queued"}
+    assert len(app._laya_capture_queue) == 2
     queued_operation, queued_root, queued_baseline = app._laya_capture_queue[0]
     assert "session_id" not in queued_operation
     assert queued_root == str(tmp_path)
@@ -429,6 +508,11 @@ def test_app_queue_derives_scope_and_rejects_caller_baseline(tmp_path, monkeypat
 
 def test_successful_incomplete_task_context_queues_natural_laya_capture(tmp_path) -> None:
     app = LocalAIApp.__new__(LocalAIApp)
+    app.config = {"laya": {"runtime": {
+        "checkpoint_path": "pinned-local-checkpoint",
+        "revision": "pinned-revision",
+        "expected_sha256": {"model.safetensors": "a" * 64},
+    }}}
     callbacks = []
     telemetry_events = []
     stored_sources = []
@@ -532,6 +616,7 @@ def test_successful_incomplete_task_context_queues_natural_laya_capture(tmp_path
             "freshness_codes": ["current", "current"],
             "coverage_codes": ["partial", "partial"],
             "evidence_ids": ["ev-indexed", "ev-rag"],
+            "source_record_ids": [None, None],
             "training_content": {
                 "task_input": "Find the missing source evidence.",
                 "context_excerpt": "indexed: Indexed source evidence.\nrag: Retrieved RAG evidence.",
@@ -565,3 +650,25 @@ def test_context_source_capture_skips_without_task_identity(tmp_path) -> None:
     assert observation == {"status": "skipped", "reason": "task_identity_unavailable"}
     assert [event["stage"] for event in telemetry_events] == ["skipped"]
     assert all("raw user query" not in str(event) for event in telemetry_events)
+
+
+def test_context_source_capture_skips_when_checkpoint_is_not_configured(tmp_path) -> None:
+    app = LocalAIApp.__new__(LocalAIApp)
+    telemetry_events = []
+    app.config = {"laya": {"runtime": {
+        "checkpoint_path": "", "revision": "", "expected_sha256": {},
+    }}}
+    app.telemetry = SimpleNamespace(record_stage=lambda **event: telemetry_events.append(event))
+
+    observation = app.capture_laya_context_source_from_context(
+        SimpleNamespace(
+            root=str(tmp_path), task_id="task-1", session_id="session-1",
+            query="private raw task text",
+        ),
+        {"success": True},
+    )
+
+    assert observation == {"status": "skipped", "reason": "checkpoint_unavailable"}
+    assert [event["stage"] for event in telemetry_events] == ["skipped"]
+    assert [event["bypass_reason"] for event in telemetry_events] == ["checkpoint_unavailable"]
+    assert "private raw task text" not in str(telemetry_events)

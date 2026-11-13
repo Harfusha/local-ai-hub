@@ -438,10 +438,10 @@ def test_t4_09_model_quality_receipt_validation():
     # Strong receipt
     strong_receipt = {
         "receipt_id": "r2",
-        "model_digest": "sha256abc",
+        "model_digest": "sha256-model",
         "suite_version": "v1",
-        "dataset_hash": "dataset-sha256",
-        "run_id": "run-1",
+        "dataset_hash": "sha256-dataset",
+        "run_id": "run-2",
         "evaluator_id": "evaluator-1",
     }
     dec_strong = promote_candidate(cand, receipt=strong_receipt)

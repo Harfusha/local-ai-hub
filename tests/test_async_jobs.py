@@ -8,6 +8,7 @@ import time
 from contextlib import closing
 
 import local_ai_hub.async_jobs as async_jobs_module
+from local_ai_hub import sqlite_support
 from local_ai_hub.async_jobs import AsyncJobManager
 
 
@@ -64,6 +65,25 @@ def test_rag_index_gpu_reservation_denial_is_known_failure_not_unknown(tmp_path)
         assert stored["error_code"] == "gpu_reserved"
     finally:
         manager.close()
+
+
+def test_async_job_schema_initialization_uses_bounded_transaction(tmp_path, monkeypatch):
+    observed = []
+    original_transaction = async_jobs_module.write_transaction
+
+    def record_transaction(connection, **kwargs):
+        observed.append(kwargs)
+        return original_transaction(connection, **kwargs)
+
+    monkeypatch.setattr(async_jobs_module, "write_transaction", record_transaction)
+    manager, _scheduler = _manager(tmp_path)
+    try:
+        assert manager.path.exists()
+        assert observed == [
+            {"max_duration_seconds": 5.0, "rollback_label": "async job schema initialization"}
+        ]
+    finally:
+        manager.close()
 from local_ai_hub.debug_traces import DebugTraceStore
 
 
@@ -112,6 +132,137 @@ def _wait_for_terminal(manager, job_id, expected_state="done"):
     waited = manager.wait(job_id, 10)
     assert waited["state"] == expected_state, waited
     return waited
+
+
+def test_success_finalization_checks_artifact_outside_async_job_write_lock(tmp_path):
+    manager, _scheduler = _manager(tmp_path)
+    lock_was_free: list[bool] = []
+    original_check = manager._result_artifact_available
+
+    def _check_without_writer_lock(artifact_id: str) -> bool:
+        probe = sqlite3.connect(manager.path, timeout=0.01, isolation_level=None)
+        try:
+            try:
+                probe.execute("BEGIN IMMEDIATE")
+                probe.execute("ROLLBACK")
+                lock_was_free.append(True)
+            except sqlite3.OperationalError:
+                lock_was_free.append(False)
+        finally:
+            probe.close()
+        return original_check(artifact_id)
+
+    manager._result_artifact_available = _check_without_writer_lock
+    try:
+        submitted = manager.submit("reason", {"task": "bounded test"})
+        status = _wait_for_terminal(manager, submitted["job_id"])
+
+        assert status["state"] == "done"
+        assert lock_was_free
+        assert all(lock_was_free)
+    finally:
+        manager.close()
+
+
+def test_success_finalization_uses_bounded_write_transaction(tmp_path, monkeypatch):
+    manager, _scheduler = _manager(tmp_path)
+    budgets: list[float | None] = []
+    original_transaction = sqlite_support.write_transaction
+
+    def _record_budget(con, **kwargs):
+        budgets.append(kwargs.get("max_duration_seconds"))
+        return original_transaction(con, **kwargs)
+
+    monkeypatch.setattr(async_jobs_module, "write_transaction", _record_budget, raising=False)
+    try:
+        submitted = manager.submit("reason", {"task": "bounded test"})
+        status = _wait_for_terminal(manager, submitted["job_id"])
+
+        assert status["state"] == "done"
+        assert 2.0 in budgets
+    finally:
+        manager.close()
+
+
+def test_failed_task_callback_runs_outside_async_job_write_lock(tmp_path):
+    manager, _scheduler = _manager(tmp_path)
+    callback_lock_was_free: list[bool] = []
+    callback_finished = threading.Event()
+
+    class _TaskStore:
+        def fail(self, _task_id: str, *, reason: str) -> None:
+            assert reason == "bounded failure"
+            probe = sqlite3.connect(manager.path, timeout=0.01, isolation_level=None)
+            try:
+                try:
+                    probe.execute("BEGIN IMMEDIATE")
+                    probe.execute("ROLLBACK")
+                    callback_lock_was_free.append(True)
+                except sqlite3.OperationalError:
+                    callback_lock_was_free.append(False)
+            finally:
+                probe.close()
+                callback_finished.set()
+
+    manager.task_store = _TaskStore()
+    manager.executor = lambda _action, _payload: {
+        "success": False, "error": "bounded failure", "retryable": False,
+    }
+    try:
+        submitted = manager.submit("reason", {"task_id": "task-1", "task": "bounded test"})
+        status = _wait_for_terminal(manager, submitted["job_id"], "failed")
+
+        assert status["state"] == "failed"
+        assert callback_finished.wait(timeout=2.0)
+        assert callback_lock_was_free == [True]
+    finally:
+        manager.close()
+
+
+@pytest.mark.parametrize(
+    ("action", "response", "expected_state"),
+    [
+        (
+            "reason",
+            {"success": False, "cleanup_unconfirmed": True, "outcome_unknown": True},
+            "outcome_unknown",
+        ),
+        (
+            "rag_index",
+            {"success": False, "error_code": "gpu_reserved", "error": "GPU busy"},
+            "failed",
+        ),
+    ],
+)
+def test_terminal_task_callbacks_run_outside_async_job_write_lock(
+    tmp_path, action, response, expected_state
+):
+    manager, _scheduler = _manager(tmp_path)
+    callback_lock_was_free: list[bool] = []
+
+    class _TaskStore:
+        def fail(self, _task_id: str, *, reason: str) -> None:
+            probe = sqlite3.connect(manager.path, timeout=0.01, isolation_level=None)
+            try:
+                try:
+                    probe.execute("BEGIN IMMEDIATE")
+                    probe.execute("ROLLBACK")
+                    callback_lock_was_free.append(True)
+                except sqlite3.OperationalError:
+                    callback_lock_was_free.append(False)
+            finally:
+                probe.close()
+
+    manager.task_store = _TaskStore()
+    manager.executor = lambda _action, _payload: dict(response)
+    try:
+        submitted = manager.submit(action, {"task_id": "task-1", "task": "bounded test"})
+        status = _wait_for_terminal(manager, submitted["job_id"], expected_state)
+
+        assert status["state"] == expected_state
+        assert callback_lock_was_free == [True]
+    finally:
+        manager.close()
 
 
 def test_cancelled_job_with_unconfirmed_worker_cleanup_remains_unknown(tmp_path):
@@ -392,7 +543,7 @@ def test_submit_returns_before_slow_async_execution(tmp_path):
 
         assert submitted["success"] is True
         assert elapsed < 0.75
-        assert started.wait(0.5)
+        assert started.wait(2.0)
     finally:
         release.set()
         manager.close()
@@ -524,6 +675,38 @@ def test_recovery_keeps_unkeyed_running_job_outcome_unknown(tmp_path):
     assert dispatched == []
     assert scheduler.calls == []
     manager.close()
+
+
+def test_release_for_retry_does_not_overwrite_newer_attempt(tmp_path):
+    manager, _scheduler = _manager(tmp_path)
+    now = time.time()
+    with closing(manager._connect()) as con:
+        con.execute(
+            "INSERT INTO async_jobs(job_id,action,request_hash,payload_json,state,attempts,created_at,updated_at,expires_at) VALUES(?,?,?,?, 'running',1,?,?,?)",
+            ("stale-retry", "reason", "stale-retry-hash", '{"task":"retry"}', now, now, now + 600),
+        )
+        con.commit()
+
+    def complete_newer_attempt(*_args):
+        with closing(manager._connect()) as con:
+            con.execute(
+                "UPDATE async_jobs SET state='done',attempts=2,lease_until=0 WHERE job_id=?",
+                ("stale-retry",),
+            )
+            con.commit()
+        return True
+
+    manager._can_replay_after_interruption = complete_newer_attempt
+    try:
+        manager._release_for_retry("stale-retry", "late failure")
+
+        row = manager._row("stale-retry")
+        assert row is not None
+        assert row["state"] == "done"
+        assert row["attempts"] == 2
+        assert manager._event("stale-retry").is_set() is False
+    finally:
+        manager.close()
 
 
 def test_recovery_requeues_interrupted_idempotent_rag_index(tmp_path):

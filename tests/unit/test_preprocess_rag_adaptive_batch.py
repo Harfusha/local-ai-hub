@@ -28,6 +28,7 @@ def test_preemption_reduces_batch_until_progress_and_keeps_other_roots_independe
 
     class Rag:
         def __init__(self): self.batches = []
+        def indexed_paths(self, *, workspace, paths): return set(paths)
         def prune_missing(self, root, workspace, all_paths): return 0
         def index_paths_step(self, root, *, workspace, paths, should_yield, content_overrides):
             self.batches.append((root, list(paths)))

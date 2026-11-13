@@ -19,7 +19,12 @@ from .agent_blackboard import BlackboardStore
 from .agent_events import AgentEvent, AgentStateStore
 from .agent_verification import VerificationStore
 from .leases import ScopeLeaseStore
-from .sqlite_support import connect_sqlite, initialize_wal, validate_durable_schema
+from .sqlite_support import (
+    begin_write_transaction,
+    connect_sqlite,
+    initialize_wal,
+    validate_durable_schema,
+)
 
 
 def _serialized_event_writer(method):
@@ -29,6 +34,11 @@ def _serialized_event_writer(method):
             return method(self, *args, **kwargs)
 
     return wrapped
+
+
+def _rollback_if_active(transaction: Any | None) -> None:
+    if transaction is not None:
+        transaction.rollback()
 
 
 class SwarmState(str, Enum):
@@ -167,15 +177,18 @@ class SwarmCoordinator:
         published: list[AgentEvent] = []
         changed = False
         con = self._connect()
+        transaction = None
         try:
             con.isolation_level = None
-            con.execute("BEGIN IMMEDIATE")
+            transaction = begin_write_transaction(
+                con, max_duration_seconds=5.0, rollback_label="swarm recovery"
+            )
             row = con.execute(
                 "SELECT version, state, history FROM agent_swarms WHERE swarm_id = ?",
                 (swarm_id,),
             ).fetchone()
             if not row or int(row[0]) != expected_version or str(row[1]) != expected_state:
-                con.execute("ROLLBACK")
+                _rollback_if_active(transaction)
                 return False
             version = int(row[0])
             updated_at = time.time()
@@ -197,11 +210,11 @@ class SwarmCoordinator:
                 ),
                 published,
             )
-            con.execute("COMMIT")
+            transaction.commit()
             changed = True
         except Exception:
             try:
-                con.execute("ROLLBACK")
+                _rollback_if_active(transaction)
             except Exception:
                 pass
             raise
@@ -305,9 +318,12 @@ class SwarmCoordinator:
         }]
         published: list[AgentEvent] = []
         con = self._connect()
+        transaction = None
         try:
             con.isolation_level = None
-            con.execute("BEGIN IMMEDIATE")
+            transaction = begin_write_transaction(
+                con, max_duration_seconds=5.0, rollback_label="swarm dispatch"
+            )
             con.execute(
                 """
                 INSERT INTO agent_swarms (
@@ -331,10 +347,10 @@ class SwarmCoordinator:
                 ),
                 published,
             )
-            con.execute("COMMIT")
+            transaction.commit()
         except Exception as exc:
             try:
-                con.execute("ROLLBACK")
+                _rollback_if_active(transaction)
             except Exception:
                 pass
             return {"success": False, "error": str(exc)}
@@ -434,12 +450,13 @@ class SwarmCoordinator:
         root: str | None,
     ) -> dict[str, Any]:
         con = self._connect()
+        transaction = None
         published: list[AgentEvent] = []
         terminal = False
         receipt_id: str | None = None
         try:
             con.isolation_level = None
-            con.execute("BEGIN IMMEDIATE")
+            transaction = begin_write_transaction(con, max_duration_seconds=5.0, rollback_label="swarm step")
             row = con.execute(
                 """
                 SELECT swarm_id, goal, target_paths, test_command, root, state, receipt_id,
@@ -449,10 +466,10 @@ class SwarmCoordinator:
                 (swarm_id,),
             ).fetchone()
             if not row:
-                con.execute("ROLLBACK")
+                _rollback_if_active(transaction)
                 return {"success": False, "error": f"Swarm '{swarm_id}' not found"}
             if root is not None and str(row[4]) != str(root):
-                con.execute("ROLLBACK")
+                _rollback_if_active(transaction)
                 return {"success": False, "error": f"Swarm '{swarm_id}' not found"}
             current_state = str(row[5])
             current_version = int(row[9])
@@ -490,14 +507,14 @@ class SwarmCoordinator:
                         and requested_version is not None
                     )
                 ):
-                    con.execute("ROLLBACK")
+                    _rollback_if_active(transaction)
                     return {
                         "success": False,
                         "error": "idempotency key was already used for a different swarm step",
                         "idempotency_conflict": True,
                         "current_version": current_version,
                     }
-                con.execute("COMMIT")
+                transaction.commit()
                 saved_state = str(saved_payload.get("resulting_state", current_state))
                 lease_pending = (
                     saved_state in (SwarmState.COMPLETED.value, SwarmState.FAILED.value)
@@ -513,7 +530,7 @@ class SwarmCoordinator:
                     result["lease_release_pending"] = True
                 return result
             if requested_version is not None and current_version != requested_version:
-                con.execute("ROLLBACK")
+                _rollback_if_active(transaction)
                 return {
                     "success": False,
                     "error": "version conflict",
@@ -522,7 +539,7 @@ class SwarmCoordinator:
                     "expected_version": requested_version,
                 }
             if current_state in (SwarmState.COMPLETED.value, SwarmState.FAILED.value):
-                con.execute("ROLLBACK")
+                _rollback_if_active(transaction)
                 return {
                     "success": False,
                     "error": f"Swarm '{swarm_id}' already terminated with state '{current_state}'",
@@ -542,24 +559,24 @@ class SwarmCoordinator:
 
             if current_state == SwarmState.CODING.value:
                 if role != "Coder":
-                    con.execute("ROLLBACK")
+                    _rollback_if_active(transaction)
                     return {"success": False, "error": f"Expected Coder role in CODING state, got '{role}'"}
                 board_section = "code"
                 new_state = SwarmState.TESTING.value
             elif current_state == SwarmState.TESTING.value:
                 if role != "Tester":
-                    con.execute("ROLLBACK")
+                    _rollback_if_active(transaction)
                     return {"success": False, "error": f"Expected Tester role in TESTING state, got '{role}'"}
                 board_section = "test"
                 new_state = SwarmState.REVIEWING.value if pay.get("passed") is True else SwarmState.FAILED.value
             elif current_state == SwarmState.REVIEWING.value:
                 if role != "Reviewer":
-                    con.execute("ROLLBACK")
+                    _rollback_if_active(transaction)
                     return {"success": False, "error": f"Expected Reviewer role in REVIEWING state, got '{role}'"}
                 board_section = "review"
                 if action == "approve":
                     if self.verifications is None or not self.verifications.state_store.enabled:
-                        con.execute("ROLLBACK")
+                        _rollback_if_active(transaction)
                         return {
                             "success": False, "error": "durable verification store is unavailable",
                             "state": current_state, "retryable": False,
@@ -575,7 +592,7 @@ class SwarmCoordinator:
                         None,
                     )
                     if tester is None:
-                        con.execute("ROLLBACK")
+                        _rollback_if_active(transaction)
                         return {
                             "success": False, "error": "successful tester evidence is missing",
                             "state": current_state, "retryable": False,
@@ -604,7 +621,7 @@ class SwarmCoordinator:
                 else:
                     new_state = SwarmState.FAILED.value
             else:
-                con.execute("ROLLBACK")
+                _rollback_if_active(transaction)
                 return {"success": False, "error": f"Unsupported swarm state '{current_state}'"}
 
             if board_section and self.blackboard is not None:
@@ -618,7 +635,7 @@ class SwarmCoordinator:
                     connection=con,
                 )
                 if not board_result.get("success"):
-                    con.execute("ROLLBACK")
+                    _rollback_if_active(transaction)
                     return {
                         "success": False,
                         "error": board_result.get("error", "blackboard compare-and-set failed"),
@@ -682,11 +699,11 @@ class SwarmCoordinator:
             )
             if cur.rowcount != 1:
                 raise ConcurrentSwarmUpdateError(f"Swarm {swarm_id} changed during step")
-            con.execute("COMMIT")
+            transaction.commit()
             terminal = new_state in (SwarmState.COMPLETED.value, SwarmState.FAILED.value)
         except Exception as exc:
             try:
-                con.execute("ROLLBACK")
+                _rollback_if_active(transaction)
             except Exception:
                 pass
             return {
@@ -758,10 +775,11 @@ class SwarmCoordinator:
         root: str | None = None,
     ) -> dict[str, Any]:
         con = self._connect()
+        transaction = None
         published: list[AgentEvent] = []
         try:
             con.isolation_level = None
-            con.execute("BEGIN IMMEDIATE")
+            transaction = begin_write_transaction(con, max_duration_seconds=5.0, rollback_label="swarm cancel")
             sql = "SELECT root, state, history, version FROM agent_swarms WHERE swarm_id = ?"
             params: list[Any] = [swarm_id]
             if root is not None:
@@ -769,7 +787,7 @@ class SwarmCoordinator:
                 params.append(root)
             row = con.execute(sql, tuple(params)).fetchone()
             if not row:
-                con.execute("ROLLBACK")
+                _rollback_if_active(transaction)
                 return {"success": False, "error": f"Swarm '{swarm_id}' not found"}
             current_state = str(row[1])
             history = json.loads(row[2])
@@ -799,14 +817,14 @@ class SwarmCoordinator:
                         and requested_version is not None
                     )
                 ):
-                    con.execute("ROLLBACK")
+                    _rollback_if_active(transaction)
                     return {
                         "success": False,
                         "error": "idempotency key was already used for a different swarm operation",
                         "idempotency_conflict": True,
                         "current_version": version,
                     }
-                con.execute("COMMIT")
+                transaction.commit()
                 lease_pending = not self._release_all_leases(swarm_id)
                 result = {
                     "success": True,
@@ -821,7 +839,7 @@ class SwarmCoordinator:
                     result["lease_release_pending"] = True
                 return result
             if requested_version is not None and version != requested_version:
-                con.execute("ROLLBACK")
+                _rollback_if_active(transaction)
                 return {
                     "success": False,
                     "error": "version conflict",
@@ -830,7 +848,7 @@ class SwarmCoordinator:
                     "expected_version": requested_version,
                 }
             if current_state in (SwarmState.COMPLETED.value, SwarmState.FAILED.value):
-                con.execute("ROLLBACK")
+                _rollback_if_active(transaction)
                 return {
                     "success": False,
                     "error": f"Swarm '{swarm_id}' already terminated ({current_state})",
@@ -869,10 +887,10 @@ class SwarmCoordinator:
             if cur.rowcount != 1:
                 raise ConcurrentSwarmUpdateError(f"Swarm {swarm_id} changed during cancellation")
             self._append_event(con, event, published)
-            con.execute("COMMIT")
+            transaction.commit()
         except Exception as exc:
             try:
-                con.execute("ROLLBACK")
+                _rollback_if_active(transaction)
             except Exception:
                 pass
             return {

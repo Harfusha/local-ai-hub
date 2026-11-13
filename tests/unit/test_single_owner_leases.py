@@ -1,10 +1,11 @@
 """Writer leases remain distinct from removed human tenancy."""
 
-from contextlib import closing
+from contextlib import closing, contextmanager
 import sqlite3
 
 import pytest
 
+from local_ai_hub import leases as leases_module
 from local_ai_hub.leases import ScopeLeaseStore
 
 
@@ -24,6 +25,54 @@ def test_actual_writers_conflict_without_cross_repository_leakage(tmp_path):
     assert not store.renew(owner="task-two:execution-two", lease_id=held["lease_id"])["success"]
     assert store.release(owner="task-two:execution-two", lease_id=held["lease_id"])["released_rows"] == 0
     assert store.release(owner="task-one:execution-one", lease_id=held["lease_id"])["released_rows"] == 1
+
+
+def test_lease_mutations_use_bounded_write_transactions(tmp_path, monkeypatch):
+    store = ScopeLeaseStore(tmp_path / "state")
+    original = leases_module.write_transaction
+    labels = []
+
+    @contextmanager
+    def observed_transaction(connection, **kwargs):
+        labels.append(kwargs.get("rollback_label"))
+        with original(connection, **kwargs) as transaction:
+            yield transaction
+
+    monkeypatch.setattr(leases_module, "write_transaction", observed_transaction)
+
+    held = store.claim(owner="writer-a", root=str(tmp_path), paths=["src/a.py"])
+    blocked = store.claim(owner="writer-b", root=str(tmp_path), paths=["src/a.py"])
+    renewed = store.renew(owner="writer-a", lease_id=held["lease_id"])
+    released = store.release(owner="writer-a", lease_id=held["lease_id"])
+    reaped = store.reap_expired()
+
+    assert held["success"] is True
+    assert blocked["success"] is False
+    assert renewed["success"] is True
+    assert released["released_rows"] == 1
+    assert reaped["success"] is True
+    assert labels == [
+        "writer lease claim",
+        "writer lease claim",
+        "writer lease renew",
+        "writer lease release",
+        "writer lease reap",
+    ]
+
+
+def test_expired_lease_does_not_block_new_claim(tmp_path):
+    store = ScopeLeaseStore(tmp_path / "state")
+    held = store.claim(owner="writer-a", root=str(tmp_path), paths=["src/a.py"])
+    with closing(store._connect()) as connection:
+        connection.execute(
+            "UPDATE leases SET expires_at=0 WHERE lease_id=?",
+            (held["lease_id"],),
+        )
+        connection.commit()
+
+    replacement = store.claim(owner="writer-b", root=str(tmp_path), paths=["src/a.py"])
+
+    assert replacement["success"] is True
 
 
 @pytest.mark.parametrize("method,arguments", [

@@ -136,6 +136,56 @@ def rank_summary(ranks: list[int | None], *, k: int = 8) -> dict:
     }
 
 
+def _ndcg_at_k(ranked_paths: list[str], expected_paths: list[str], *, k: int) -> float | None:
+    if not expected_paths:
+        return None
+    unique_paths = list(dict.fromkeys(path for path in ranked_paths if type(path) is str))
+    ranks = {path: index for index, path in enumerate(unique_paths, 1)}
+    relevant_ranks = sorted(ranks[path] for path in set(expected_paths) if path in ranks and ranks[path] <= k)
+    dcg = sum(1 / math.log2(rank + 1) for rank in relevant_ranks)
+    ideal_hits = min(len(set(expected_paths)), k)
+    idcg = sum(1 / math.log2(rank + 1) for rank in range(1, ideal_hits + 1))
+    return dcg / idcg if idcg else 0.0
+
+
+def offline_embedding_rank_summary(rows: list[dict], *, model_configured: bool, k: int = 8) -> dict | None:
+    if not model_configured:
+        return None
+    measured_rows = []
+    for row in rows:
+        metrics = row.get("offline_embedding_metrics")
+        successful_repeats = metrics.get("successful_repeats") if isinstance(metrics, dict) else None
+        if type(successful_repeats) is int and successful_repeats > 0:
+            measured_rows.append(row)
+    if not measured_rows:
+        return None
+    summary = rank_summary([row.get("offline_embedding_rank") for row in measured_rows], k=k)
+    ranks = [row.get("offline_embedding_rank") for row in measured_rows]
+    summary["recall_at_5"] = sum(rank is not None and rank <= 5 for rank in ranks) / len(ranks)
+    summary["recall_at_10"] = sum(rank is not None and rank <= 10 for rank in ranks) / len(ranks)
+    ndcg = [
+        _ndcg_at_k(row.get("offline_embedding_ranked_paths", []), row.get("expected_paths", []), k=10)
+        for row in measured_rows
+    ]
+    measured_ndcg = [score for score in ndcg if score is not None]
+    summary["ndcg_at_10"] = sum(measured_ndcg) / len(measured_ndcg) if measured_ndcg else None
+    return summary
+
+
+def negative_candidate_summary(rows: list[dict]) -> dict:
+    evaluated = [
+        row for row in rows
+        if row.get("candidate_source") in {"lexical", "lexical_empty"}
+    ]
+    false_positives = sum(type(row.get("candidate_count")) is int and row["candidate_count"] > 0 for row in evaluated)
+    return {
+        "negative_cases": len(rows),
+        "lexical_cases_evaluated": len(evaluated),
+        "candidate_false_positive_cases": false_positives,
+        "candidate_false_positive_rate": false_positives / len(evaluated) if evaluated else None,
+    }
+
+
 def latency_summary(samples: list[dict]) -> dict:
     values = sorted(float(sample["latency_ms"]) for sample in samples)
     if not values:
@@ -252,6 +302,29 @@ def _search_variant(client: HubClient, root: Path, workspace: str, query: str,
     return response, samples
 
 
+def _offline_embedding_candidates(client, root: Path, query: str,
+                                  source: dict) -> tuple[list[dict], str]:
+    """Use an independent lexical pool; fall back to RAG only if lexical search fails."""
+    try:
+        response = client.post("/api/search", {
+            "root": str(root), "query": query, "search_mode": "lexical",
+            "limit": 10, "offset": 0,
+        }, timeout=30)
+    except (OSError, TimeoutError, ValueError):
+        response = {}
+    lexical_empty = False
+    if isinstance(response, dict) and response.get("success") is True:
+        results = response.get("results", [])
+        if isinstance(results, list):
+            if results:
+                return results, "lexical"
+            lexical_empty = True
+    rag_candidates = source.get("results", []) if isinstance(source, dict) else []
+    if isinstance(rag_candidates, list) and rag_candidates:
+        return rag_candidates, "rag_fallback"
+    return [], "lexical_empty" if lexical_empty else "lexical_unavailable"
+
+
 def _benchmark_embeddings(model, query: str, candidates: list[dict], *,
                           repeats: int, requested_device: str,
                           cold_inference_recorded: bool = False) -> tuple[list[dict], list[dict], dict, bool]:
@@ -352,6 +425,7 @@ def run(root: Path, config_path: Path, *, repeats: int = 3, offline_device: str 
         embedding_cold_inference_recorded = False
         offline_all_samples: list[dict] = []
         rows = []
+        negative_rows = []
         try:
             for case in cases:
                 query = case["query"]
@@ -362,7 +436,9 @@ def run(root: Path, config_path: Path, *, repeats: int = 3, offline_device: str 
                 active_reranked, active_samples = _search_variant(
                     client, root, workspace, query, use_reranker=True, repeats=repeats,
                 )
-                candidates = source.get("results", [])
+                candidates, embedding_candidate_source = _offline_embedding_candidates(
+                    client, root, query, source,
+                )
                 offline_samples = []
                 ranked = {
                     "success": False,
@@ -428,9 +504,27 @@ def run(root: Path, config_path: Path, *, repeats: int = 3, offline_device: str 
                               "offline_embedding_ranked_paths": [item.get("path") for item in embedding_ranked],
                               "offline_embedding_metrics": embedding_metrics,
                               "offline_embedding_samples": embedding_samples,
+                              "offline_embedding_candidate_source": embedding_candidate_source,
                              "candidate_paths": [item.get("path") for item in candidates],
                              "reranked_paths": [item.get("path") for item in reordered],
                              "rag_degraded": source.get("degraded"), "rag_hybrid": source.get("hybrid")})
+            for case in dataset["cases"]:
+                if case.get("negative") is not True:
+                    continue
+                candidates, candidate_source = _offline_embedding_candidates(
+                    client, root, case["query"], {},
+                )
+                negative_rows.append({
+                    "case_id": case["id"],
+                    "language": case.get("language"),
+                    "candidate_source": candidate_source,
+                    "candidate_count": len(candidates),
+                    "candidate_false_positive": (
+                        bool(candidates)
+                        if candidate_source in {"lexical", "lexical_empty"}
+                        else None
+                    ),
+                })
         finally:
             client.close()
         final_device = next((row["offline_rerank_metrics"]["actual_device"] for row in reversed(rows)
@@ -464,16 +558,31 @@ def run(root: Path, config_path: Path, *, repeats: int = 3, offline_device: str 
                 "peak_vram_measurement": "not captured outside the shared GPU admission lease",
                 "offline_embedding_model": str(model_path) if model_path else None,
                 "offline_embedding_device": embedding_device if model_path else None,
+                "offline_embedding_memory": {
+                    "peak_ram_mb": None,
+                    "peak_vram_mb": None,
+                    "measurement": "not captured",
+                },
                 "case_set": dataset.get("case_set"),
                 "negative_cases_excluded": sum(case.get("negative") is True for case in dataset["cases"]),
+                "negative_candidate_summary": negative_candidate_summary(negative_rows),
+                "negative_candidate_cases": negative_rows,
+                "offline_embedding_candidate_sources": {
+                    candidate_source: sum(
+                        row.get("offline_embedding_candidate_source") == candidate_source for row in rows
+                    )
+                    for candidate_source in sorted({
+                        row.get("offline_embedding_candidate_source") for row in rows
+                    })
+                },
                 "repeats": repeats, "metrics": {
                     "baseline": rank_summary([row["baseline_rank"] for row in rows]),
                     "offline_reranked": rank_summary([
                         row["reranked_rank"] for row in rows if row["offline_reranker_available"]
                     ]),
                     "active_hub_reranker": rank_summary([row["active_hub_reranker_rank"] for row in rows]),
-                    "offline_embeddings": (
-                        rank_summary([row["offline_embedding_rank"] for row in rows]) if model_path else None
+                    "offline_embeddings": offline_embedding_rank_summary(
+                        rows, model_configured=model_path is not None,
                     ),
                 }, "cases": rows}
 

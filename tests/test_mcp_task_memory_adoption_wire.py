@@ -346,7 +346,9 @@ def test_real_store_create_checkpoint_get_and_resume_deliver_memories_over_stdio
     assert results[2].structuredContent["task"]["checkpoint"]["state_data"]["memory_audit"] == audit
     resumed_audit = results[3].structuredContent["task"]["checkpoint"]["state_data"]["memory_audit"]
     assert resumed_audit["used_ids"] == []
-    assert resumed_audit["not_used_reason"]
+    assert resumed_audit["not_used_reason"] == (
+        "Refreshed memory context has not yet been reviewed or used by the resumed task."
+    )
     assert [call["body"]["action"] for call in calls] == ["create", "checkpoint", "get", "resume"]
 
 

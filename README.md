@@ -1,5 +1,7 @@
 # Local AI Hub
 
+**Release status:** source version **6.0.0** is a release candidate; production readiness is not claimed. See [`RELEASE.json`](RELEASE.json) for status and the release workflow for gates.
+
 Local AI Hub **6.0.0** is a local, deterministic-first tool and inference layer for coding agents such as Codex, Claude Code, Gemini CLI, Cursor, Windsurf, VS Code/Copilot and other MCP clients. Its purpose is to keep repetitive repository discovery, code-relationship analysis, validation, retrieval and bounded local reasoning off the cloud agent's context while sharing the resulting work across agents.
 
 The public interface is intentionally small: **7 MCP tools** (`local_ai_status`, `local_ai_task`, `local_ai_repo`, `local_ai_rag`, `local_ai_coord`, `local_ai_work`, `local_ai_artifact`). Serena is managed behind that surface by default, so agents gain language-aware symbols without paying for additional MCP schemas on every turn.
@@ -53,6 +55,58 @@ Local AI Hub is engineered to maximize **Quality**, **Speed**, and **Token Econo
 | **Optional Local Inference** (`local_ai_task`) | Configured profile routes and installed local models; see [model capabilities](docs/MODEL_CAPABILITIES.md). The 1.5B tier is preprocessing-only. | Local output is advisory; exact repository evidence and final decisions remain with the primary agent. | Local generation can overlap independent cloud planning, subject to admission and available hardware. | Local inference avoids a cloud generation call; tool requests, schemas and returned context still consume cloud tokens. Savings require a measured baseline. |
 | **Whole-Task Delegation** (`local_ai_work`) | Explicitly requested bounded work with transactional staging, journals and verification receipts | Mutation and recovery depend on ownership, write-set and fence validation; unknown cleanup is reported explicitly. | Iteration is bounded by the configured work budget and available backend. | A compact handoff can reduce repeated context; no fixed percentage or price saving is guaranteed. |
 | **Hardware-Aware Scheduling & NPU Acceleration** | Configured hardware profiles, admission controls and supported optional device backends | Resource limits and bounded recovery reduce allocation risk; OOM and backend failures remain possible and must be reported. | CPU, GPU and NPU performance depends on installed backends, models and measured workload. | Semantic processing can stay local where the selected backend is available; latency and avoided cloud tokens need cohort-specific evidence. |
+
+## Laya Typed Decisions (MCP/API)
+
+Laya is available through the existing `local_ai_coord` MCP tool and the root-authorized HTTP API. Use `curate_dataset` with a nested `laya_operation` for typed evaluation or candidate review:
+
+```json
+{
+  "action": "curate_dataset",
+  "root": "C:/path/to/repository",
+  "laya_operation": {
+    "action": "evaluate_decision",
+    "task_id": "<task-id>",
+    "decision": {
+      "category": "context_budget",
+      "evidence_ids": ["<authorized-evidence-id>"],
+      "options": ["compact", "keep"],
+      "state": {"current_tokens": 1200},
+      "training_content": {
+        "task_input": "<useful task text>",
+        "model_response": "<bounded answer text, when useful>",
+        "tool_output_excerpt": "<bounded tool result, when useful>"
+      }
+    }
+  }
+}
+```
+
+For MCP, pass this object as `local_ai_coord` arguments. For HTTP, send it to `POST /api/agent-state/tasks`. `evaluate_context_source` is the other typed decision operation. It captures the bounded task query and source excerpts automatically. Eligible task-bound model-route and context-budget observations capture bounded task input and successful model responses; `solve_repo` also captures bounded tool-output excerpts. Rejected Agent OS completion gates queue a shadow completion-gap recommendation from typed status, mutation generation, and verified checkpoint evidence only. These remain shadow data tied to verified evidence, with deterministic Hub behavior authoritative. Decision `training_content` accepts `task_input`, `context_excerpt`, `model_response`, and `tool_output_excerpt`; include raw answer or tool text only when it improves later learning. Each field is capped at 8 KiB and recognized secret patterns are redacted before candidate persistence and export. `runtime_status` is read-only and does not load the model.
+
+Candidate review uses the same `curate_dataset` transport. First list and inspect candidates without Laya's answer or prior reviews; then either confirm a target locally or request a separately attributed local-model review:
+
+```json
+{"action":"curate_dataset","root":"C:/path/to/repository","laya_operation":{"action":"list","status":"pending","limit":100}}
+{"action":"curate_dataset","root":"C:/path/to/repository","laya_operation":{"action":"list","status":"pending","limit":100,"after_candidate_id":"<next-candidate-id>"}}
+{"action":"curate_dataset","root":"C:/path/to/repository","laya_operation":{"action":"get","candidate_id":"<candidate-id>"}}
+{"action":"curate_dataset","root":"C:/path/to/repository","laya_operation":{"action":"label","candidate_id":"<candidate-id>","target":"<allowed-option>"}}
+{"action":"curate_dataset","root":"C:/path/to/repository","laya_operation":{"action":"model_review","candidate_id":"<candidate-id>"}}
+{"action":"curate_dataset","root":"C:/path/to/repository","laya_operation":{"action":"model_review_history","candidate_id":"<candidate-id>"}}
+```
+
+Candidate pages are stable and bounded (1–1000 rows). Continue with `next_candidate_id` while `has_more` is true. Listing returns metadata only; it never reveals task text, model output, or labels.
+
+`label` records `local_operator_confirmation`. `model_review` uses the configured local reasoning route and records model/runtime provenance; it cannot confirm a human label or enable training export. Prepare group-safe splits only after authentic examples have local operator labels, then export the returned snapshot's train split:
+
+```json
+{"action":"curate_dataset","root":"C:/path/to/repository","laya_operation":{"action":"prepare_splits"}}
+{"action":"curate_dataset","root":"C:/path/to/repository","laya_operation":{"action":"export","snapshot_id":"<snapshot-id>"}}
+```
+
+Send each object as MCP `local_ai_coord` arguments or as the JSON body to `POST /api/agent-state/tasks`. Export remains unavailable until real verified candidates and a valid train snapshot exist.
+
+The Hub service stays available while the Hub runs. Source lifecycle lazily opens a configured, pinned local checkpoint on first inference, keeps active work resident, then unloads after 600 seconds idle from the latest completed request. Missing checkpoint or provider leaves ordinary Hub behavior unchanged. Live provider availability, load, device admission and residency still need runtime verification. Laya output remains shadow-only; deterministic Hub decisions stay authoritative. Eligible natural requests can add local, scoped training candidates with provenance and redaction. No per-example consent receipt is required; labels remain separate from model reviews.
 
 ## Installation & One-Command Setup
 

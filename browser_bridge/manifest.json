@@ -2,19 +2,12 @@
   "manifest_version": 3,
   "name": "Local AI Hub current-tab bridge",
   "version": "0.1.0",
-  "description": "Explicitly capture the active tab for local frontend review.",
-  "permissions": ["activeTab", "scripting"],
+  "description": "Choose a privacy mode and capture the active tab locally for review.",
+  "permissions": ["activeTab", "offscreen", "scripting", "storage"],
   "host_permissions": [
     "http://127.0.0.1:11435/*",
     "http://localhost:11435/*"
   ],
   "background": {"service_worker": "background.js"},
-  "action": {"default_title": "Capture current tab for Local AI Hub"},
-  "content_scripts": [
-    {
-      "matches": ["http://*/*", "https://*/*"],
-      "js": ["capture.js"],
-      "run_at": "document_idle"
-    }
-  ]
+  "action": {"default_title": "Choose a privacy mode before Local AI Hub capture", "default_popup": "popup.html"}
 }

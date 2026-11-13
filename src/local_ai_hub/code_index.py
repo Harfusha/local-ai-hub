@@ -14,7 +14,7 @@ import sqlite3
 import threading
 import time
 import weakref
-from contextlib import closing, contextmanager
+from contextlib import closing, contextmanager, nullcontext
 from collections import Counter
 from pathlib import Path
 from typing import Any, Iterable, Iterator
@@ -36,6 +36,7 @@ from .sqlite_support import (
     quick_sanity_check,
     sqlite_batches,
     SQLiteChangeObserver,
+    write_transaction,
 )
 from .sqlite_counts import global_row_counts, initialize_row_counts
 
@@ -1633,13 +1634,13 @@ class CodeIndex:
         if not paths:
             return
         c_root = canonical_root(root)
-        with self._lock, closing(self._connect()) as con:
-            con.execute("BEGIN IMMEDIATE")
+        with self._lock, closing(self._connect()) as con, write_transaction(
+            con, rollback_label="code index remove paths"
+        ):
             for path in paths:
                 con.execute("DELETE FROM symbol_trigrams WHERE root=? AND path=?", (c_root, path))
                 for table in ("files", "symbols", "refs", "edges", "file_usage"):
                     con.execute(f"DELETE FROM {table} WHERE root=? AND path=?", (c_root, path))
-            con.commit()
         self._status_cache.pop(c_root, None)
         self._advance_query_cache_generation()
 
@@ -2387,19 +2388,20 @@ class CodeIndex:
                         "reason": "code index size limit", "budget": budget,
                     }
             with closing(self._connect()) as con:
-                con.execute("BEGIN IMMEDIATE")
-                con.execute("DELETE FROM symbol_trigrams WHERE root=? AND path=?", (root, path))
-                for table in ("symbols", "refs", "edges"):
-                    con.execute(f"DELETE FROM {table} WHERE root=? AND path=?", (root, path))
-                con.execute(
-                    "INSERT INTO files(root,path,content_hash,analyzer_version,language,updated_at,mtime_ns,size_bytes) "
-                    "VALUES(?,?,NULL,NULL,?,?,NULL,NULL) "
-                    "ON CONFLICT(root,path) DO UPDATE SET content_hash=NULL, "
-                    "analyzer_version=NULL, language=excluded.language, updated_at=excluded.updated_at, "
-                    "mtime_ns=NULL, size_bytes=NULL",
-                    (root, path, language, updated_at),
-                )
-                con.commit()
+                with write_transaction(
+                    con, max_duration_seconds=5.0, rollback_label="code index unindexable file"
+                ):
+                    con.execute("DELETE FROM symbol_trigrams WHERE root=? AND path=?", (root, path))
+                    for table in ("symbols", "refs", "edges"):
+                        con.execute(f"DELETE FROM {table} WHERE root=? AND path=?", (root, path))
+                    con.execute(
+                        "INSERT INTO files(root,path,content_hash,analyzer_version,language,updated_at,mtime_ns,size_bytes) "
+                        "VALUES(?,?,NULL,NULL,?,?,NULL,NULL) "
+                        "ON CONFLICT(root,path) DO UPDATE SET content_hash=NULL, "
+                        "analyzer_version=NULL, language=excluded.language, updated_at=excluded.updated_at, "
+                        "mtime_ns=NULL, size_bytes=NULL",
+                        (root, path, language, updated_at),
+                    )
         self._advance_query_cache_generation()
         self._status_cache.pop(root, None)
         return {"success": True, "budget_limited": False, "budget": budget}
@@ -2524,29 +2526,30 @@ class CodeIndex:
             if parse_blob_rows:
                 self._parse_blob_put(content_hash, lang, syms, refs, edges, parse_outcome)
             with closing(self._connect()) as con:
-                con.execute("BEGIN IMMEDIATE")
-                con.execute(
-                    "INSERT OR REPLACE INTO files(root,path,content_hash,analyzer_version,language,updated_at,mtime_ns,size_bytes) "
-                    "VALUES(?,?,?,?,?,?,?,?)",
-                    (
-                        str(base), path, content_hash, _PARSER_ANALYZER_VERSION, lang, time.time(),
-                        target_stat.st_mtime_ns if stat_is_current else None,
-                        target_stat.st_size if stat_is_current else None,
-                    ),
-                )
-                metadata_update = {
-                    "symbols": self._sync_file_rows(con, "symbols", str(base), path, [
-                        (x["name"], x["kind"], x["line"], x["end_line"], x.get("container", ""),
-                         x.get("name_path", x["name"]), x.get("signature", ""), x.get("access", "public"),
-                         x.get("docstring", "")) for x in syms]),
-                    "refs": self._sync_file_rows(con, "refs", str(base), path, [
-                        (x["name"], x["line"], x.get("kind", "call")) for x in refs]),
-                    "edges": self._sync_file_rows(con, "edges", str(base), path, [
-                        (x["src"], x["dst"], _edge_endpoint_name(x["src"]), _edge_endpoint_name(x["dst"]),
-                         x.get("kind", "reference"), x["line"]) for x in edges]),
-                }
-                self._replace_symbol_trigrams(con, str(base), [path])
-                con.commit()
+                with write_transaction(
+                    con, max_duration_seconds=5.0, rollback_label="code index update file"
+                ):
+                    con.execute(
+                        "INSERT OR REPLACE INTO files(root,path,content_hash,analyzer_version,language,updated_at,mtime_ns,size_bytes) "
+                        "VALUES(?,?,?,?,?,?,?,?)",
+                        (
+                            str(base), path, content_hash, _PARSER_ANALYZER_VERSION, lang, time.time(),
+                            target_stat.st_mtime_ns if stat_is_current else None,
+                            target_stat.st_size if stat_is_current else None,
+                        ),
+                    )
+                    metadata_update = {
+                        "symbols": self._sync_file_rows(con, "symbols", str(base), path, [
+                            (x["name"], x["kind"], x["line"], x["end_line"], x.get("container", ""),
+                             x.get("name_path", x["name"]), x.get("signature", ""), x.get("access", "public"),
+                             x.get("docstring", "")) for x in syms]),
+                        "refs": self._sync_file_rows(con, "refs", str(base), path, [
+                            (x["name"], x["line"], x.get("kind", "call")) for x in refs]),
+                        "edges": self._sync_file_rows(con, "edges", str(base), path, [
+                            (x["src"], x["dst"], _edge_endpoint_name(x["src"]), _edge_endpoint_name(x["dst"]),
+                             x.get("kind", "reference"), x["line"]) for x in edges]),
+                    }
+                    self._replace_symbol_trigrams(con, str(base), [path])
             post_write_budget = self._reconcile_post_write_budget([(str(base), path)])
 
         self._advance_query_cache_generation()
@@ -2781,49 +2784,50 @@ class CodeIndex:
                         "budget": budget,
                     }
                 with closing(self._connect()) as con:
-                    con.execute("BEGIN IMMEDIATE")
-                    if parse_blob_rows:
-                        con.executemany("INSERT OR REPLACE INTO parse_blobs(content_hash,analyzer_version,language,payload_json,updated_at) VALUES(?,?,?,?,?)", parse_blob_rows)
-                    _IDX_TABLES = frozenset({"symbols", "refs", "edges"})
-                    if deleted_paths:
-                        con.executemany("DELETE FROM files WHERE root=? AND path=?", deleted_paths)
-                        con.executemany("DELETE FROM symbol_trigrams WHERE root=? AND path=?", deleted_paths)
-                        for table in ("symbols", "refs", "edges"):
-                            assert table in _IDX_TABLES
-                            con.executemany(f"DELETE FROM {table} WHERE root=? AND path=?", deleted_paths)  # noqa: S608
-                    if not single_delta:
-                        for table in ("symbols", "refs", "edges"):
-                            assert table in _IDX_TABLES
-                            con.executemany(f"DELETE FROM {table} WHERE root=? AND path=?", paths_to_clean)
-                    con.executemany(
-                        "INSERT OR REPLACE INTO files(root,path,content_hash,analyzer_version,language,updated_at,mtime_ns,size_bytes) "
-                        "VALUES(?,?,?,?,?,?,?,?)",
-                        files_to_insert,
-                    )
-                    if single_delta:
-                        changed_path = str(files_to_insert[0][1])
-                        metadata_update = {
-                            "symbols": self._sync_file_rows(con, "symbols", c_root, changed_path,
-                                                            [tuple(row[2:]) for row in syms_to_insert]),
-                            "refs": self._sync_file_rows(con, "refs", c_root, changed_path,
-                                                         [tuple(row[2:]) for row in refs_to_insert]),
-                            "edges": self._sync_file_rows(con, "edges", c_root, changed_path,
-                                                          [(row[1], row[2], row[3], row[4], row[5], row[7])
-                                                           for row in edges_to_insert]),
-                        }
-                    else:
-                        con.executemany("INSERT OR REPLACE INTO symbols(root,path,name,kind,line,end_line,container,name_path,signature,access,docstring) VALUES(?,?,?,?,?,?,?,?,?,?,?)", syms_to_insert)
-                        con.executemany("INSERT INTO refs(root,path,name,line,kind) VALUES(?,?,?,?,?)", refs_to_insert)
+                    with write_transaction(
+                        con, max_duration_seconds=5.0, rollback_label="code index batch update"
+                    ):
+                        if parse_blob_rows:
+                            con.executemany("INSERT OR REPLACE INTO parse_blobs(content_hash,analyzer_version,language,payload_json,updated_at) VALUES(?,?,?,?,?)", parse_blob_rows)
+                        _IDX_TABLES = frozenset({"symbols", "refs", "edges"})
+                        if deleted_paths:
+                            con.executemany("DELETE FROM files WHERE root=? AND path=?", deleted_paths)
+                            con.executemany("DELETE FROM symbol_trigrams WHERE root=? AND path=?", deleted_paths)
+                            for table in ("symbols", "refs", "edges"):
+                                assert table in _IDX_TABLES
+                                con.executemany(f"DELETE FROM {table} WHERE root=? AND path=?", deleted_paths)  # noqa: S608
+                        if not single_delta:
+                            for table in ("symbols", "refs", "edges"):
+                                assert table in _IDX_TABLES
+                                con.executemany(f"DELETE FROM {table} WHERE root=? AND path=?", paths_to_clean)
                         con.executemany(
-                            "INSERT INTO edges(root,src,dst,src_name,dst_name,kind,path,line) VALUES(?,?,?,?,?,?,?,?)",
-                            edges_to_insert,
+                            "INSERT OR REPLACE INTO files(root,path,content_hash,analyzer_version,language,updated_at,mtime_ns,size_bytes) "
+                            "VALUES(?,?,?,?,?,?,?,?)",
+                            files_to_insert,
                         )
-                    self._replace_symbol_trigrams(
-                        con,
-                        c_root,
-                        [str(item[1]) for item in files_to_insert],
-                    )
-                    con.commit()
+                        if single_delta:
+                            changed_path = str(files_to_insert[0][1])
+                            metadata_update = {
+                                "symbols": self._sync_file_rows(con, "symbols", c_root, changed_path,
+                                                                [tuple(row[2:]) for row in syms_to_insert]),
+                                "refs": self._sync_file_rows(con, "refs", c_root, changed_path,
+                                                             [tuple(row[2:]) for row in refs_to_insert]),
+                                "edges": self._sync_file_rows(con, "edges", c_root, changed_path,
+                                                              [(row[1], row[2], row[3], row[4], row[5], row[7])
+                                                       for row in edges_to_insert]),
+                            }
+                        else:
+                            con.executemany("INSERT OR REPLACE INTO symbols(root,path,name,kind,line,end_line,container,name_path,signature,access,docstring) VALUES(?,?,?,?,?,?,?,?,?,?,?)", syms_to_insert)
+                            con.executemany("INSERT INTO refs(root,path,name,line,kind) VALUES(?,?,?,?,?)", refs_to_insert)
+                            con.executemany(
+                                "INSERT INTO edges(root,src,dst,src_name,dst_name,kind,path,line) VALUES(?,?,?,?,?,?,?,?)",
+                                edges_to_insert,
+                            )
+                        self._replace_symbol_trigrams(
+                            con,
+                            c_root,
+                            [str(item[1]) for item in files_to_insert],
+                        )
                 post_write_budget = self._reconcile_post_write_budget(
                     [(c_root, str(item[1])) for item in files_to_insert],
                 )
@@ -3834,13 +3838,14 @@ class CodeIndex:
                     stale = [path for path in stale if path in stale_candidates]
                 if not stale:
                     return {"success": True, "root": resolved_root, "pruned": 0}
-                con.execute("BEGIN IMMEDIATE")
-                pairs = [(resolved_root, path) for path in stale]
-                con.executemany("DELETE FROM symbol_trigrams WHERE root=? AND path=?", pairs)
-                for table in ("symbols", "refs", "edges", "files"):
-                    con.executemany(f"DELETE FROM {table} WHERE root=? AND path=?", pairs)
-                con.executemany("DELETE FROM file_usage WHERE root=? AND path=?", pairs)
-                con.commit()
+                with write_transaction(
+                    con, max_duration_seconds=5.0, rollback_label="code index prune"
+                ):
+                    pairs = [(resolved_root, path) for path in stale]
+                    con.executemany("DELETE FROM symbol_trigrams WHERE root=? AND path=?", pairs)
+                    for table in ("symbols", "refs", "edges", "files"):
+                        con.executemany(f"DELETE FROM {table} WHERE root=? AND path=?", pairs)
+                    con.executemany("DELETE FROM file_usage WHERE root=? AND path=?", pairs)
             self._advance_query_cache_generation()
             self._status_cache.pop(resolved_root, None)
             return {"success": True, "root": resolved_root, "pruned": len(stale), "paths": stale[:100]}
@@ -3888,23 +3893,24 @@ class CodeIndex:
                 if not budget["success"]:
                     return 0
             with closing(self._connect()) as con:
-                con.execute("BEGIN IMMEDIATE")
-                placeholders = ",".join("?" for _ in unique_paths)
-                con.execute(
-                    "UPDATE file_usage SET last_used_at=0 WHERE root=? "
-                    f"AND last_used_at<>0 AND path NOT IN ({placeholders})",
-                    (resolved_root, *unique_paths),
-                )
-                con.executemany(
-                    "INSERT INTO file_usage(root,path,use_count,last_used_at) VALUES(?,?,?,?) "
-                    "ON CONFLICT(root,path) DO UPDATE SET "
-                    "use_count=MAX(file_usage.use_count,excluded.use_count), "
-                    "last_used_at=excluded.last_used_at "
-                    "WHERE excluded.use_count>file_usage.use_count "
-                    "OR excluded.last_used_at<>file_usage.last_used_at",
-                    rows,
-                )
-                con.commit()
+                with write_transaction(
+                    con, max_duration_seconds=5.0, rollback_label="code index usage"
+                ):
+                    placeholders = ",".join("?" for _ in unique_paths)
+                    con.execute(
+                        "UPDATE file_usage SET last_used_at=0 WHERE root=? "
+                        f"AND last_used_at<>0 AND path NOT IN ({placeholders})",
+                        (resolved_root, *unique_paths),
+                    )
+                    con.executemany(
+                        "INSERT INTO file_usage(root,path,use_count,last_used_at) VALUES(?,?,?,?) "
+                        "ON CONFLICT(root,path) DO UPDATE SET "
+                        "use_count=MAX(file_usage.use_count,excluded.use_count), "
+                        "last_used_at=excluded.last_used_at "
+                        "WHERE excluded.use_count>file_usage.use_count "
+                        "OR excluded.last_used_at<>file_usage.last_used_at",
+                        rows,
+                    )
         return len(rows)
 
     def measure_storage(self) -> dict[str, int]:
@@ -3948,9 +3954,11 @@ class CodeIndex:
         deleted_count = 0
         deleted_payload_bytes = 0
         try:
-            with self._lock, closing(self._connect()) as con:
-                if not dry_run:
-                    con.execute("BEGIN IMMEDIATE")
+            with self._lock, closing(self._connect()) as con, (
+                write_transaction(
+                    con, max_duration_seconds=5.0, rollback_label="code index parse blob prune"
+                ) if not dry_run else nullcontext(con)
+            ):
                 totals = con.execute(
                     "SELECT COUNT(*) AS blob_count, "
                     "COALESCE(SUM(length(p.payload_json)),0) AS payload_bytes "
@@ -3986,8 +3994,6 @@ class CodeIndex:
                     )
                     deleted_count = con.total_changes - before_changes
                     deleted_payload_bytes = sum(payload_bytes for _, payload_bytes in selected[:deleted_count])
-                if not dry_run:
-                    con.commit()
         except sqlite3.DatabaseError as exc:
             return {
                 "success": False,
@@ -4086,9 +4092,11 @@ class CodeIndex:
         need = max(0, live_physical_bytes - limit)
         selected: list[tuple[str, str]] = []
         estimated = 0
-        with self._lock, closing(self._connect()) as con:
-            if not dry_run and need:
-                con.execute("BEGIN IMMEDIATE")
+        with self._lock, closing(self._connect()) as con, (
+            write_transaction(
+                con, max_duration_seconds=5.0, rollback_label="code index size enforcement"
+            ) if not dry_run and need else nullcontext(con)
+        ):
             if normalized_protected_roots:
                 con.execute(
                     "CREATE TEMP TABLE protected_code_index_roots (root TEXT PRIMARY KEY) WITHOUT ROWID"
@@ -4136,8 +4144,6 @@ class CodeIndex:
             if not dry_run and selected:
                 for table in ("symbol_trigrams", "symbols", "refs", "edges", "file_usage", "files"):
                     con.executemany(f"DELETE FROM {table} WHERE root=? AND path=?", selected)
-            if not dry_run and need:
-                con.commit()
 
         if dry_run:
             predicted_physical = max(0, live_physical_bytes - estimated)
@@ -4299,15 +4305,16 @@ class CodeIndex:
                         (*eligible_roots, max_rows),
                     ).fetchall()
                 if not dry_run and candidates:
-                    con.execute("BEGIN IMMEDIATE")
-                    con.executemany(
-                        "DELETE FROM symbol_trigrams WHERE root=? AND path=? AND symbol_rowid=? "
-                        "AND field=? AND gram=? AND NOT EXISTS ("
-                        "SELECT 1 FROM symbols s WHERE s.rowid=symbol_trigrams.symbol_rowid "
-                        "AND s.root=symbol_trigrams.root AND s.path=symbol_trigrams.path)",
-                        [tuple(row) for row in candidates],
-                    )
-                    con.commit()
+                    with write_transaction(
+                        con, max_duration_seconds=5.0, rollback_label="code index orphan trigram prune"
+                    ):
+                        con.executemany(
+                            "DELETE FROM symbol_trigrams WHERE root=? AND path=? AND symbol_rowid=? "
+                            "AND field=? AND gram=? AND NOT EXISTS ("
+                            "SELECT 1 FROM symbols s WHERE s.rowid=symbol_trigrams.symbol_rowid "
+                            "AND s.root=symbol_trigrams.root AND s.path=symbol_trigrams.path)",
+                            [tuple(row) for row in candidates],
+                        )
                 rows_pruned = 0 if dry_run else int(con.total_changes)
                 after = self.measure_storage() if not dry_run else before
         except sqlite3.DatabaseError as exc:

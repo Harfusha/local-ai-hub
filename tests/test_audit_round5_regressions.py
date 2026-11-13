@@ -65,7 +65,7 @@ def test_t5_04_recovery_journal_finish_cas_running(tmp_path: Path):
     finally:
         con.close()
 
-    # Late finish with success=True should not overwrite the terminal failed state
+    # Late conflicting finish must fail without overwriting the terminal row.
     with pytest.raises(ValueError, match="conflicting completion"):
         journal._write_completion_batch([("req_1", "done", time.time(), "late success", 200, "", 1)])
 
@@ -81,12 +81,12 @@ def test_t5_05_root_family_budget_coalesced_status_handled():
     """T5-05 (B01): RootFamilyBudget coalesces identical scope and does not double count."""
     from local_ai_hub.budget import RootFamilyBudget
     budget = RootFamilyBudget(default_limit=200, max_active_scopes=1)
-    res1 = budget.reserve("fam", input_tokens=100, task_id="t1", scope="scope1", owner="test-agent")
+    res1 = budget.reserve("fam", input_tokens=100, task_id="t1", scope="scope1", owner="task-1")
     assert res1["status"] == "accepted"
     assert budget.used_tokens("fam") == 100
 
     # Second call with same scope coalesces without increasing tokens
-    res2 = budget.reserve("fam", input_tokens=100, task_id="t1", scope="scope1", owner="test-agent")
+    res2 = budget.reserve("fam", input_tokens=100, task_id="t1", scope="scope1", owner="task-1")
     assert res2["status"] == "coalesced"
     assert budget.used_tokens("fam") == 100
 
@@ -138,12 +138,15 @@ def test_t5_09_circuit_breaker_probe_generation():
     assert cb.status()["modelA"]["open"] is True
 
     time.sleep(0.02)
-    assert bool(cb.allow("modelA")) is True
-    gen1 = cb.probe_generation("modelA")
+    first_probe = cb.allow("modelA")
+    assert first_probe.allowed is True
+    gen1 = first_probe.probe_generation
 
     time.sleep(0.02)
-    assert bool(cb.allow("modelA")) is True
-    gen2 = cb.probe_generation("modelA")
+    second_probe = cb.allow("modelA")
+    assert second_probe.allowed is True
+    gen2 = second_probe.probe_generation
+    assert gen1 is not None and gen2 is not None
     assert gen2 > gen1
 
     cb.success("modelA", probe_generation=gen1)

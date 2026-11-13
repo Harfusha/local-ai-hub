@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any, Sequence
 from urllib.parse import quote, unquote
 
-from .sqlite_support import connect_sqlite
+from .sqlite_support import connect_sqlite, write_transaction
 
 
 LATENCY_BUCKET_LIMITS: tuple[float, ...] = (
@@ -303,16 +303,14 @@ class EndpointStatsStore:
                 if con is None:
                     con = self._connect(check_same_thread=False)
                     self._write_connection = con
-                if event_id:
-                    con.execute("BEGIN IMMEDIATE")
-                    cursor = con.execute("INSERT OR IGNORE INTO endpoint_call_ids(event_id, created_at) VALUES (?, ?)", (event_id, now))
-                    if cursor.rowcount == 0:
-                        con.rollback()
-                        return
-                con.execute(sql, (safe_root, clean_type, clean_name, is_succ, is_fail, now, is_succ, is_fail, now))
-                if event_id:
-                    con.execute("DELETE FROM endpoint_call_ids WHERE created_at < ? OR seq <= (SELECT MAX(seq) - 100000 FROM endpoint_call_ids)", (now - 7 * 86400,))
-                con.commit()
+                with write_transaction(con, max_duration_seconds=5.0, rollback_label="endpoint stats update"):
+                    if event_id:
+                        cursor = con.execute("INSERT OR IGNORE INTO endpoint_call_ids(event_id, created_at) VALUES (?, ?)", (event_id, now))
+                        if cursor.rowcount == 0:
+                            return
+                    con.execute(sql, (safe_root, clean_type, clean_name, is_succ, is_fail, now, is_succ, is_fail, now))
+                    if event_id:
+                        con.execute("DELETE FROM endpoint_call_ids WHERE created_at < ? OR seq <= (SELECT MAX(seq) - 100000 FROM endpoint_call_ids)", (now - 7 * 86400,))
         except sqlite3.Error:
             if con is not None:
                 with self._lock:

@@ -232,6 +232,9 @@ def test_unchanged_context_delta_reuses_revision_and_keeps_pack_useful(tmp_path)
         def check_drift(self, _request, _contract, _changed_paths, _diff, *, reuse_candidates=()):
             return ()
 
+        def diff_analysis_status(self, diff):
+            return "partial" if diff.get("success") is True else "unavailable"
+
     services = LocalAIServices.__new__(LocalAIServices)
     root = tmp_path / "repo"
     root.mkdir()

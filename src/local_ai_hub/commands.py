@@ -55,7 +55,8 @@ from .command_build import classify_build_command
 from .command_powershell import classify_powershell_command
 from .command_read import classify_read_only_command
 from .command_redaction import redact_secrets as _redact_secrets
-from .trace_utils import deduplicate_stack_traces
+from .trace_utils import cluster_stack_traces as _cluster_stack_traces, deduplicate_stack_traces
+cluster_stack_traces = _cluster_stack_traces
 MultiplexEvent = _command_streams.MultiplexEvent
 StreamMultiplexer = _command_streams.StreamMultiplexer
 from .cache import SQLiteCache, TieredCache, stable_hash

@@ -646,8 +646,11 @@ class MemoryStore:
                             raise RuntimeError("retired memory identity found; explicit offline data conversion is required")
                     # SQLite DDL may autocommit statement by statement. Keep the
                     # durable table group invisible until both tables exist.
-                    con.execute("BEGIN IMMEDIATE")
-                    with con:
+                    with write_transaction(
+                        con,
+                        max_duration_seconds=5.0,
+                        rollback_label="agent memory schema initialization",
+                    ):
                         con.execute(
                             """
                             CREATE TABLE IF NOT EXISTS agent_memory_records (
@@ -1118,8 +1121,7 @@ class MemoryStore:
             con = connect_sqlite(self.state_store.db_path, isolation_level=None)
             try:
                 with self.state_store.ordered_event_publication(con) as publish:
-                    con.execute("BEGIN IMMEDIATE")
-                    try:
+                    with write_transaction(con, rollback_label="agent memory quarantine"):
                         row = con.execute(
                             """
                             SELECT record_id, kind, scope, scope_id, key, value, status,
@@ -1165,11 +1167,6 @@ class MemoryStore:
                             strict_idempotency=False,
                         )
                         self._save_record_row(con, quarantined)
-                        con.execute("COMMIT")
-                    except BaseException:
-                        if bool(getattr(con, "in_transaction", False)):
-                            con.execute("ROLLBACK")
-                        raise
                     persisted_event = appended.event
                     publish([persisted_event] if persisted_event is not None else [])
                     return quarantined, persisted_event
@@ -1285,69 +1282,72 @@ class MemoryStore:
                     ),
                 )
                 with self.state_store.ordered_event_publication(con) as publish:
-                    con.execute("BEGIN IMMEDIATE")
-                    rows = con.execute(select_sql, select_params).fetchall()
-                    for row in rows:
-                        current = self._row_to_record(row)
+                    with write_transaction(
+                        con,
+                        max_duration_seconds=5.0,
+                        rollback_label="agent memory revision",
+                    ):
+                        rows = con.execute(select_sql, select_params).fetchall()
+                        for row in rows:
+                            current = self._row_to_record(row)
 
-                        original = current.to_dict()
-                        updated_provenance = dict(current.provenance)
-                        updated_provenance["staled_by_revision"] = str(revision)
-                        updated_provenance["staled_changed_paths"] = list(changed)[:32]
-                        updated_provenance["superseded_metadata"] = original
-                        stale = replace(
-                            current,
-                            status=MemoryStatus.STALE,
-                            quarantine_reason=f"Repository revision changed to {revision}",
-                            provenance=updated_provenance,
-                            updated_at=time.time(),
-                        )
-                        provenance_raw = row[14]
-                        update = con.execute(
-                            """
-                            UPDATE agent_memory_records
-                            SET status = ?, quarantine_reason = ?, provenance = ?, updated_at = ?
-                            WHERE record_id = ? AND status = ? AND updated_at = ? AND provenance = ?
-                            """,
-                            (
-                                stale.status.value,
-                                stale.quarantine_reason,
-                                json_dumps(stale.provenance),
-                                stale.updated_at,
-                                current.record_id,
-                                current.status.value,
-                                current.updated_at,
-                                provenance_raw,
-                            ),
-                        )
-                        if update.rowcount != 1:
-                            continue
+                            original = current.to_dict()
+                            updated_provenance = dict(current.provenance)
+                            updated_provenance["staled_by_revision"] = str(revision)
+                            updated_provenance["staled_changed_paths"] = list(changed)[:32]
+                            updated_provenance["superseded_metadata"] = original
+                            stale = replace(
+                                current,
+                                status=MemoryStatus.STALE,
+                                quarantine_reason=f"Repository revision changed to {revision}",
+                                provenance=updated_provenance,
+                                updated_at=time.time(),
+                            )
+                            provenance_raw = row[14]
+                            update = con.execute(
+                                """
+                                UPDATE agent_memory_records
+                                SET status = ?, quarantine_reason = ?, provenance = ?, updated_at = ?
+                                WHERE record_id = ? AND status = ? AND updated_at = ? AND provenance = ?
+                                """,
+                                (
+                                    stale.status.value,
+                                    stale.quarantine_reason,
+                                    json_dumps(stale.provenance),
+                                    stale.updated_at,
+                                    current.record_id,
+                                    current.status.value,
+                                    current.updated_at,
+                                    provenance_raw,
+                                ),
+                            )
+                            if update.rowcount != 1:
+                                continue
 
-                        event = AgentEvent.create(
-                            stream_id=_memory_event_stream_id(
-                                current.scope,
-                                current.scope_id,
-                                current.key or current.record_id,
-                            ),
-                            kind="memory.staled",
-                            payload={
-                                "record_id": current.record_id,
-                                "root": root,
-                                "revision": str(revision),
-                                "changed_paths": list(changed)[:32],
-                            },
-                            idempotency_key=f"stale_{current.record_id}_{revision}",
-                            actor="system",
-                        )
-                        append_result = self.state_store.append_in_transaction(
-                            con,
-                            event,
-                            strict_idempotency=False,
-                        )
-                        if not append_result.duplicate:
-                            published_events.append(append_result.event)
-                        stale_count += 1
-                    con.execute("COMMIT")
+                            event = AgentEvent.create(
+                                stream_id=_memory_event_stream_id(
+                                    current.scope,
+                                    current.scope_id,
+                                    current.key or current.record_id,
+                                ),
+                                kind="memory.staled",
+                                payload={
+                                    "record_id": current.record_id,
+                                    "root": root,
+                                    "revision": str(revision),
+                                    "changed_paths": list(changed)[:32],
+                                },
+                                idempotency_key=f"stale_{current.record_id}_{revision}",
+                                actor="system",
+                            )
+                            append_result = self.state_store.append_in_transaction(
+                                con,
+                                event,
+                                strict_idempotency=False,
+                            )
+                            if not append_result.duplicate:
+                                published_events.append(append_result.event)
+                            stale_count += 1
                     publish(published_events)
             except Exception:
                 try:
@@ -2035,8 +2035,10 @@ class MemoryStore:
                 con = connect_sqlite(self.state_store.db_path, isolation_level=None)
                 try:
                     with self.state_store.ordered_event_publication(con) as publish:
-                        con.execute("BEGIN IMMEDIATE")
-                        try:
+                        events: list[AgentEvent] = []
+                        with write_transaction(
+                            con, max_duration_seconds=2.0, rollback_label="expired memory reap"
+                        ):
                             expired_rows = con.execute(
                                 """
                                 SELECT record_id, scope, scope_id, key, expires_at
@@ -2046,7 +2048,6 @@ class MemoryStore:
                                 """,
                                 (cutoff,),
                             ).fetchall()
-                            events: list[AgentEvent] = []
                             for row in expired_rows:
                                 record_id = str(row[0])
                                 event = AgentEvent.create(
@@ -2092,11 +2093,6 @@ class MemoryStore:
                                     )
                                 except Exception:
                                     pass
-                            con.execute("COMMIT")
-                        except BaseException:
-                            if bool(getattr(con, "in_transaction", False)):
-                                con.execute("ROLLBACK")
-                            raise
                         publish(events)
                         return count, events
                 finally:
@@ -2123,15 +2119,12 @@ class MemoryStore:
         def _do_save() -> None:
             con = connect_sqlite(self.state_store.db_path, isolation_level=None)
             try:
-                con.execute("BEGIN IMMEDIATE")
-                self._save_record_row(con, record)
-                con.execute("COMMIT")
-            except Exception:
-                try:
-                    con.execute("ROLLBACK")
-                except Exception:
-                    pass
-                raise
+                with write_transaction(
+                    con,
+                    max_duration_seconds=5.0,
+                    rollback_label="agent memory projection",
+                ):
+                    self._save_record_row(con, record)
             finally:
                 con.close()
 
@@ -2141,65 +2134,59 @@ class MemoryStore:
         if not self.state_store.enabled:
             return record
         self._init_table()
-        published: list[AgentEvent] = []
-
-        def _do_save() -> MemoryRecord:
+        def _do_save() -> tuple[MemoryRecord, AgentEvent | None]:
             con = connect_sqlite(self.state_store.db_path, isolation_level=None)
             try:
-                con.execute("BEGIN IMMEDIATE")
-                existing_event = con.execute(
-                    "SELECT stream_id, seq, event_id, kind, payload, idempotency_key, "
-                    "correlation_id, actor, created_at FROM agent_events "
-                    "WHERE stream_id = ? AND idempotency_key = ?",
-                    (event.stream_id, event.idempotency_key),
-                ).fetchone()
-                if existing_event:
-                    checked = self.state_store.append_in_transaction(
-                        con, event, strict_idempotency=True
-                    )
-                    if checked.error or checked.event is None:
-                        raise RuntimeError(checked.error or "memory duplicate event append returned no persisted event")
-                    if not checked.duplicate:
-                        raise RuntimeError("memory event disappeared during duplicate reconciliation")
-                    row = con.execute(
-                        """
-                        SELECT record_id, kind, scope, scope_id, key, value, status, confidence, source,
-                               evidence_ids, sensitivity, contradicts_record_id, supersedes_record_id,
-                               quarantine_reason, provenance, created_at, updated_at, expires_at
-                        FROM agent_memory_records WHERE record_id = ?
-                        """,
-                        (record.record_id,),
+                persisted_event: AgentEvent | None = None
+                with write_transaction(
+                    con,
+                    max_duration_seconds=5.0,
+                    rollback_label="agent memory projection event",
+                ):
+                    existing_event = con.execute(
+                        "SELECT stream_id, seq, event_id, kind, payload, idempotency_key, "
+                        "correlation_id, actor, created_at FROM agent_events "
+                        "WHERE stream_id = ? AND idempotency_key = ?",
+                        (event.stream_id, event.idempotency_key),
                     ).fetchone()
-                    saved = self._row_to_record(row) if row else record
-                    if row is None:
+                    if existing_event:
+                        checked = self.state_store.append_in_transaction(
+                            con, event, strict_idempotency=True
+                        )
+                        if checked.error or checked.event is None:
+                            raise RuntimeError(checked.error or "memory duplicate event append returned no persisted event")
+                        if not checked.duplicate:
+                            raise RuntimeError("memory event disappeared during duplicate reconciliation")
+                        row = con.execute(
+                            """
+                            SELECT record_id, kind, scope, scope_id, key, value, status, confidence, source,
+                                   evidence_ids, sensitivity, contradicts_record_id, supersedes_record_id,
+                                   quarantine_reason, provenance, created_at, updated_at, expires_at
+                            FROM agent_memory_records WHERE record_id = ?
+                            """,
+                            (record.record_id,),
+                        ).fetchone()
+                        saved = self._row_to_record(row) if row else record
+                        if row is None:
+                            self._save_record_row(con, record)
+                    else:
                         self._save_record_row(con, record)
-                    con.execute("COMMIT")
-                    return saved
-
-                self._save_record_row(con, record)
-                appended = self.state_store.append_in_transaction(
-                    con, event, strict_idempotency=True
-                )
-                if appended.error or appended.event is None:
-                    raise RuntimeError(appended.error or "memory event append returned no persisted event")
-                if appended.duplicate:
-                    raise RuntimeError("memory projection/event idempotency mismatch")
-                if appended.event:
-                    published.append(appended.event)
-                con.execute("COMMIT")
-                return record
-            except Exception:
-                try:
-                    con.execute("ROLLBACK")
-                except Exception:
-                    pass
-                raise
+                        appended = self.state_store.append_in_transaction(
+                            con, event, strict_idempotency=True
+                        )
+                        if appended.error or appended.event is None:
+                            raise RuntimeError(appended.error or "memory event append returned no persisted event")
+                        if appended.duplicate:
+                            raise RuntimeError("memory projection/event idempotency mismatch")
+                        persisted_event = appended.event
+                        saved = record
+                return saved, persisted_event
             finally:
                 con.close()
 
         with self.state_store._append_publish_lock:
-            saved = retry_busy(_do_save, retries=5, base_delay_seconds=0.02)
-            for persisted in published:
+            saved, persisted = retry_busy(_do_save, retries=5, base_delay_seconds=0.02)
+            if persisted is not None:
                 self.state_store._publish(persisted)
         return saved
 
@@ -2405,109 +2392,103 @@ class MemoryStore:
             con = connect_sqlite(self.state_store.db_path, isolation_level=None)
             try:
                 with self.state_store.ordered_event_publication(con) as publish:
-                    con.execute("BEGIN IMMEDIATE")
-                    if parsed_scope is AgentScope.REPOSITORY and not scope_id_value:
-                        row = con.execute(
-                            """
-                            SELECT scope_id, key, provenance
-                            FROM agent_memory_records
-                            WHERE record_id = ? AND scope = ?
-                            """,
-                            (record_id, scope_value),
-                        ).fetchone()
-                    else:
-                        row = con.execute(
-                            """
-                            SELECT scope_id, key, provenance
-                            FROM agent_memory_records
-                            WHERE record_id = ? AND scope = ? AND scope_id = ?
-                            """,
-                            (record_id, scope_value, scope_id_value),
-                        ).fetchone()
-                    if row is None:
-                        con.execute("COMMIT")
-                        return False, None
-                    stored_scope_id = str(row[0] or "")
-                    provenance_valid = False
-                    provenance: Any = {}
-                    try:
-                        if isinstance(row[2], str):
-                            provenance = json.loads(row[2])
-                            provenance_valid = isinstance(provenance, dict)
-                    except (TypeError, ValueError):
-                        provenance = {}
-                    if not isinstance(provenance, dict):
-                        provenance = {}
-                        provenance_valid = False
-                    if not provenance_valid:
-                        con.execute("COMMIT")
-                        return False, None
-                    if "tenant" in provenance or "tenant_key" in provenance:
-                        raise RuntimeError("retired memory identity found; explicit offline data conversion is required")
-                    for identity_key, expected in identity_values.items():
-                        if not expected or identity_key == scope_identity_key:
-                            continue
-                        if identity_key == "root":
-                            actual_root = provenance.get("root")
-                            if (
-                                not isinstance(actual_root, str)
-                                or not actual_root
-                                or actual_root != actual_root.strip()
-                            ):
-                                con.execute("COMMIT")
-                                return False, None
-                            actual = actual_root
-                            if not actual or _normalise_scope_root(actual) != _normalise_scope_root(expected):
-                                con.execute("COMMIT")
-                                return False, None
-                        elif str(provenance.get(identity_key, "") or "").strip() != expected:
-                            con.execute("COMMIT")
+                    with write_transaction(con, max_duration_seconds=5.0, rollback_label="agent memory delete"):
+                        if parsed_scope is AgentScope.REPOSITORY and not scope_id_value:
+                            row = con.execute(
+                                """
+                                SELECT scope_id, key, provenance
+                                FROM agent_memory_records
+                                WHERE record_id = ? AND scope = ?
+                                """,
+                                (record_id, scope_value),
+                            ).fetchone()
+                        else:
+                            row = con.execute(
+                                """
+                                SELECT scope_id, key, provenance
+                                FROM agent_memory_records
+                                WHERE record_id = ? AND scope = ? AND scope_id = ?
+                                """,
+                                (record_id, scope_value, scope_id_value),
+                            ).fetchone()
+                        if row is None:
                             return False, None
+                        stored_scope_id = str(row[0] or "")
+                        provenance_valid = False
+                        provenance: Any = {}
+                        try:
+                            if isinstance(row[2], str):
+                                provenance = json.loads(row[2])
+                                provenance_valid = isinstance(provenance, dict)
+                        except (TypeError, ValueError):
+                            provenance = {}
+                        if not isinstance(provenance, dict):
+                            provenance = {}
+                            provenance_valid = False
+                        if not provenance_valid:
+                            return False, None
+                        if "tenant" in provenance or "tenant_key" in provenance:
+                            raise RuntimeError("retired memory identity found; explicit offline data conversion is required")
+                        for identity_key, expected in identity_values.items():
+                            if not expected or identity_key == scope_identity_key:
+                                continue
+                            if identity_key == "root":
+                                actual_root = provenance.get("root")
+                                if (
+                                    not isinstance(actual_root, str)
+                                    or not actual_root
+                                    or actual_root != actual_root.strip()
+                                ):
+                                    return False, None
+                                actual = actual_root
+                                if not actual or _normalise_scope_root(actual) != _normalise_scope_root(expected):
+                                    return False, None
+                            elif str(provenance.get(identity_key, "") or "").strip() != expected:
+                                return False, None
 
-                    stream_id = _memory_event_stream_id(
-                        parsed_scope,
-                        str(row[0] or ""),
-                        str(row[1] or record_id),
-                    )
-                    event = AgentEvent.create(
-                        stream_id=stream_id,
-                        kind="memory.deleted",
-                        payload={"record_id": record_id},
-                        idempotency_key=f"deleted_{record_id}",
-                        actor="memory-store",
-                    )
-                    appended = self.state_store.append_in_transaction(
-                        con,
-                        event,
-                        strict_idempotency=True,
-                    )
-                    if appended.error or appended.event is None:
-                        raise RuntimeError(appended.error or "memory deletion event append returned no persisted event")
-
-                    cur = con.execute(
-                        "DELETE FROM agent_memory_records WHERE record_id = ? AND scope = ? AND scope_id = ?",
-                        (record_id, scope_value, stored_scope_id),
-                    )
-                    cnt = cur.rowcount
-                    if cnt <= 0:
-                        raise RuntimeError("memory record disappeared during deletion")
-                    if cnt > 0:
-                        con.execute(
-                            "DELETE FROM agent_memory_embeddings WHERE record_id = ?",
-                            (record_id,),
+                        stream_id = _memory_event_stream_id(
+                            parsed_scope,
+                            str(row[0] or ""),
+                            str(row[1] or record_id),
                         )
-                        if con.execute(
-                            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='agent_memory_fts'"
-                        ).fetchone() is not None:
+                        event = AgentEvent.create(
+                            stream_id=stream_id,
+                            kind="memory.deleted",
+                            payload={"record_id": record_id},
+                            idempotency_key=f"deleted_{record_id}",
+                            actor="memory-store",
+                        )
+                        appended = self.state_store.append_in_transaction(
+                            con,
+                            event,
+                            strict_idempotency=True,
+                        )
+                        if appended.error or appended.event is None:
+                            raise RuntimeError(appended.error or "memory deletion event append returned no persisted event")
+
+                        cur = con.execute(
+                            "DELETE FROM agent_memory_records WHERE record_id = ? AND scope = ? AND scope_id = ?",
+                            (record_id, scope_value, stored_scope_id),
+                        )
+                        cnt = cur.rowcount
+                        if cnt <= 0:
+                            raise RuntimeError("memory record disappeared during deletion")
+                        if cnt > 0:
                             con.execute(
-                                "DELETE FROM agent_memory_fts WHERE record_id = ?",
+                                "DELETE FROM agent_memory_embeddings WHERE record_id = ?",
                                 (record_id,),
                             )
-                        con.execute(
-                            "DELETE FROM agent_entity_relations WHERE source_entity = ? OR target_entity = ?",
-                            (record_id, record_id),
-                        )
-                    con.execute("COMMIT")
+                            if con.execute(
+                                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='agent_memory_fts'"
+                            ).fetchone() is not None:
+                                con.execute(
+                                    "DELETE FROM agent_memory_fts WHERE record_id = ?",
+                                    (record_id,),
+                                )
+                            con.execute(
+                                "DELETE FROM agent_entity_relations WHERE source_entity = ? OR target_entity = ?",
+                                (record_id, record_id),
+                            )
                     publish([appended.event])
                     return True, appended.event
             except Exception:
@@ -2666,8 +2647,7 @@ class MemoryStore:
 
             def _commit_group(con: Any) -> list[AgentEvent]:
                 published: list[AgentEvent] = []
-                try:
-                    con.execute("BEGIN IMMEDIATE")
+                with write_transaction(con, max_duration_seconds=5.0, rollback_label="agent memory compaction"):
                     records_to_event = [digest_record, *superseded_records]
                     for record in records_to_event:
                         record_event = AgentEvent.create(
@@ -2732,14 +2712,7 @@ class MemoryStore:
                         raise RuntimeError("compaction event already exists without its projection commit")
                     if appended.event:
                         published.append(appended.event)
-                    con.execute("COMMIT")
                     return published
-                except Exception:
-                    try:
-                        con.execute("ROLLBACK")
-                    except Exception:
-                        pass
-                    raise
             con = connect_sqlite(self.state_store.db_path, isolation_level=None)
             try:
                 with self.state_store.ordered_event_publication(con) as publish_committed:
@@ -2783,24 +2756,23 @@ class MemoryStore:
         def _insert() -> AgentEvent | None:
             con = connect_sqlite(self.state_store.db_path, isolation_level=None)
             try:
-                con.execute("BEGIN IMMEDIATE")
-                con.execute(
-                    """
-                    INSERT INTO agent_entity_relations (
-                        relation_id, source_entity, relation, target_entity, weight, metadata, created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (rel_id, source.strip(), relation.strip(), target.strip(), float(weight), meta_json, now, now),
-                )
-                appended = self.state_store.append_in_transaction(
-                    con, event, strict_idempotency=True
-                )
-                if appended.error or appended.event is None:
-                    raise RuntimeError(appended.error or "relation event append returned no persisted event")
-                if appended.duplicate:
-                    raise RuntimeError("relation projection/event idempotency mismatch")
-                con.execute("COMMIT")
-                return appended.event
+                with write_transaction(con, max_duration_seconds=5.0, rollback_label="agent memory relation"):
+                    con.execute(
+                        """
+                        INSERT INTO agent_entity_relations (
+                            relation_id, source_entity, relation, target_entity, weight, metadata, created_at, updated_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (rel_id, source.strip(), relation.strip(), target.strip(), float(weight), meta_json, now, now),
+                    )
+                    appended = self.state_store.append_in_transaction(
+                        con, event, strict_idempotency=True
+                    )
+                    if appended.error or appended.event is None:
+                        raise RuntimeError(appended.error or "relation event append returned no persisted event")
+                    if appended.duplicate:
+                        raise RuntimeError("relation projection/event idempotency mismatch")
+                    return appended.event
             except Exception:
                 try:
                     con.execute("ROLLBACK")

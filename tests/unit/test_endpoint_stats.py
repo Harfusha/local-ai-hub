@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 from pathlib import Path
+from contextlib import contextmanager
 import pytest
 
+import local_ai_hub.endpoint_stats as endpoint_stats_module
 from local_ai_hub.endpoint_stats import (
     EndpointStatsStore,
     calculate_percentiles,
@@ -57,6 +59,26 @@ def test_record_call_reuses_writer_connection_and_close_reopens(tmp_path, monkey
     store.record_call(item_type="mcp", item_name="tool", duration_ms=4)
     assert len(connections) == 2
     assert store.get_stats(include_unused=False)["items"][0]["calls"] == 3
+    store.close()
+
+
+def test_record_call_uses_bounded_write_transaction_and_deduplicates(tmp_path, monkeypatch):
+    store = EndpointStatsStore(tmp_path / "state")
+    original = endpoint_stats_module.write_transaction
+    labels = []
+
+    @contextmanager
+    def observed_transaction(connection, **kwargs):
+        labels.append(kwargs.get("rollback_label"))
+        with original(connection, **kwargs) as transaction:
+            yield transaction
+
+    monkeypatch.setattr(endpoint_stats_module, "write_transaction", observed_transaction)
+    store.record_call(item_type="mcp", item_name="tool", duration_ms=2, event_id="unique-event")
+    store.record_call(item_type="mcp", item_name="tool", duration_ms=2, event_id="unique-event")
+
+    assert store.get_stats(include_unused=False)["items"][0]["calls"] == 1
+    assert labels == ["endpoint stats update", "endpoint stats update"]
     store.close()
 
 

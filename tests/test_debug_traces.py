@@ -3,12 +3,12 @@ from __future__ import annotations
 import json
 import sqlite3
 import time
-from contextlib import closing
+from contextlib import closing, contextmanager
 from types import SimpleNamespace
 
 import pytest
 
-from local_ai_hub import http_server
+from local_ai_hub import debug_traces, http_server
 from local_ai_hub import trace_context
 from local_ai_hub.debug_traces import DebugTraceStore, redact_trace_export
 
@@ -33,6 +33,53 @@ def test_trace_list_defaults_to_200_and_accepts_higher_configured_limit(tmp_path
     default_config = _config(tmp_path / "default")
     del default_config["debug_traces"]["max_list_limit"]
     assert DebugTraceStore(default_config).max_list_limit == 200
+
+
+def test_trace_purge_transaction_timeout_is_retryable(monkeypatch, tmp_path):
+    store = DebugTraceStore(_config(tmp_path))
+
+    @contextmanager
+    def timeout_transaction(connection, **_kwargs):
+        yield connection
+        raise TimeoutError("write budget elapsed")
+
+    monkeypatch.setattr(debug_traces, "write_transaction", timeout_transaction)
+
+    assert store.purge() == {
+        "success": False,
+        "error": "trace purge exceeded its transaction budget",
+        "retryable": True,
+    }
+
+
+def test_trace_cleanup_checks_file_size_outside_write_transaction(monkeypatch, tmp_path):
+    store = DebugTraceStore(_config(tmp_path))
+    assert store.start(kind="request")
+    transaction_active = False
+    write_transaction = debug_traces.write_transaction
+    file_bytes = store._file_bytes
+
+    @contextmanager
+    def observe_transaction(connection, **kwargs):
+        nonlocal transaction_active
+        with write_transaction(connection, **kwargs):
+            transaction_active = True
+            try:
+                yield connection
+            finally:
+                transaction_active = False
+
+    def observe_file_size():
+        assert transaction_active is False
+        return file_bytes()
+
+    monkeypatch.setattr(debug_traces, "write_transaction", observe_transaction)
+    monkeypatch.setattr(store, "_file_bytes", observe_file_size)
+
+    result = store.cleanup(now=time.time())
+
+    assert result["deleted_sessions"] == 0
+    assert result["busy"] is False
     assert DebugTraceStore(_config(tmp_path / "custom", max_list_limit=500)).max_list_limit == 500
 
 

@@ -38,7 +38,35 @@ def test_status_keeps_malformed_reservation_fail_closed(tmp_path):
     assert result['state'] == 'unknown'
     assert result['reservation_present'] is True
     assert result['manual_intervention_required'] is True
+    assert result['reason_code'] == 'reservation_fence_unreadable'
     assert store.path.read_text(encoding='utf-8') == 'invalid'
+
+
+def test_status_explains_valid_legacy_fence_without_releasing_it(tmp_path):
+    store = ExternalGpuReservationStore(tmp_path / 'gpu')
+    digest = 'd' * 64
+    store.path.write_text(digest, encoding='ascii')
+
+    result = _scheduler(store).gpu_reservation_operation(action='status')
+
+    assert result['state'] == 'unknown'
+    assert result['reason_code'] == 'legacy_digest_only_fence'
+    assert store.path.read_text(encoding='ascii') == digest
+
+
+def test_status_reports_when_it_reaps_an_expired_reservation(tmp_path):
+    now = [1000.0]
+    store = ExternalGpuReservationStore(
+        tmp_path / 'gpu', ttl_seconds=1, clock=lambda: now[0]
+    )
+    store.reserve('e' * 64, owner_vram_budget_bytes=16 * 1024**3, owner='expired-owner')
+    now[0] += 2
+
+    result = _scheduler(store).gpu_reservation_operation(action='status')
+
+    assert result['state'] == 'free'
+    assert result['reaped'] is True
+    assert not store.path.exists()
 
 
 def test_status_snapshot_and_competing_reservation_are_serialized(tmp_path, monkeypatch):

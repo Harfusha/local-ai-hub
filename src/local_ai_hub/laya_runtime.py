@@ -221,6 +221,10 @@ class _LayaCleanupUnconfirmed(LayaRuntimeUnavailable):
     """Stop fallback when a failed provider may still retain its session."""
 
 
+class _LayaCapacityUnavailable(LayaRuntimeUnavailable):
+    """A transient admission denial that must not retire an otherwise valid device."""
+
+
 class LayaRuntimeAdapter:
     """Run typed shadow decisions against an explicit local checkpoint.
 
@@ -360,7 +364,7 @@ class LayaRuntimeAdapter:
                             else "gpu_capacity_rejected"
                         )
                         capacity_lease = None
-                        raise LayaRuntimeUnavailable(str(reason))
+                        raise _LayaCapacityUnavailable(str(reason))
                     if not all(
                         isinstance(capacity_lease.get(key), str) and capacity_lease[key]
                         for key in ("lease_id", "generation")
@@ -387,7 +391,8 @@ class LayaRuntimeAdapter:
                     self._capacity_provider_cleanup_unconfirmed = True
                 raise
             except Exception as exc:
-                self._failed_devices.add((selected.provider, selected.device))
+                if not isinstance(exc, _LayaCapacityUnavailable):
+                    self._failed_devices.add((selected.provider, selected.device))
                 errors.append(type(exc).__name__)
                 if model is not None:
                     try:

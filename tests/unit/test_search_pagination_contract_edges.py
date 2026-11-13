@@ -537,6 +537,42 @@ def test_search_compaction_keeps_largest_whole_result_prefix_with_continuation(
     assert result["next_offset"] == 40 + len(result["results"])
 
 
+def test_search_compaction_omits_large_optional_validation_details() -> None:
+    result = {
+        "success": True,
+        "root": "C:/repo",
+        "results": [{
+            "path": "src/module.py", "start_line": 3, "end_line": 4,
+            "score": 0.9, "evidence_id": "E1", "text": "needle found",
+            "chunks": [{"text": "large source chunk " * 400}],
+        }],
+        "limit": 1,
+        "offset": 0,
+        "total_matches": 1,
+        "has_more": False,
+        "index_state": "current_sources",
+        "candidate_freshness": "verified_against_current_sources",
+        "source_validation": {"chunks": [{"text": "large validation payload " * 300}]},
+        "stale_candidate_details": [{"text": "large stale detail " * 300}],
+    }
+
+    fitted = mcp_server._search_prefix_fitting(
+        result, result, result["results"], 1800, wire_budget=True,
+    )
+
+    assert fitted is not None
+    assert fitted["success"] is True
+    assert fitted["results"] == [{
+        "path": "src/module.py", "start_line": 3, "end_line": 4,
+        "score": 0.9, "evidence_id": "E1",
+    }]
+    assert fitted["index_state"] == "current_sources"
+    assert fitted["candidate_freshness"] == "verified_against_current_sources"
+    assert "source_validation" not in fitted
+    assert "stale_candidate_details" not in fitted
+    assert set(fitted["omitted_fields"]) >= {"source_validation", "stale_candidate_details"}
+
+
 def test_registered_search_wire_keeps_prefix_and_final_wire_accounting(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:

@@ -19,7 +19,7 @@ from dataclasses import dataclass, field, replace
 from typing import Any, Mapping
 
 from .agent_events import AgentEvent, AgentStateStore
-from .sqlite_support import connect_sqlite, retry_busy
+from .sqlite_support import connect_sqlite, retry_busy, write_transaction
 
 
 class VerificationStoreIntegrationError(RuntimeError):
@@ -1157,8 +1157,11 @@ class VerificationStore:
                             "agent_outcomes": ("outcome.%",),
                         },
                     )
-                    con.execute("BEGIN IMMEDIATE")
-                    with con:
+                    with write_transaction(
+                        con,
+                        max_duration_seconds=5.0,
+                        rollback_label="agent verification schema initialization",
+                    ):
                         con.execute(
                             """
                             CREATE TABLE IF NOT EXISTS agent_verification_receipts (
@@ -1298,21 +1301,17 @@ class VerificationStore:
                             timeout_seconds=0.25,
                         )
                         try:
-                            con.execute("BEGIN IMMEDIATE")
-                            cur = con.execute(
-                                "UPDATE agent_verification_task_outbox "
-                                "SET status = 'completed', completed_at = ? "
-                                "WHERE receipt_id = ? AND status = 'pending'",
-                                (time.time(), pending_receipt_id),
-                            )
-                            con.execute("COMMIT")
-                            return int(cur.rowcount)
-                        except Exception:
-                            try:
-                                con.execute("ROLLBACK")
-                            except Exception:
-                                pass
-                            raise
+                            with write_transaction(
+                                con, max_duration_seconds=2.0,
+                                rollback_label="verification outbox completion",
+                            ):
+                                cur = con.execute(
+                                    "UPDATE agent_verification_task_outbox "
+                                    "SET status = 'completed', completed_at = ? "
+                                    "WHERE receipt_id = ? AND status = 'pending'",
+                                    (time.time(), pending_receipt_id),
+                                )
+                                return int(cur.rowcount)
                         finally:
                             con.close()
 
@@ -1513,8 +1512,9 @@ class VerificationStore:
         same_task_database = bool(update_task and self._same_task_database())
 
         def _save_transaction(con: Any) -> list[AgentEvent]:
-            try:
-                con.execute("BEGIN IMMEDIATE")
+            with write_transaction(
+                con, max_duration_seconds=2.0, rollback_label="verification receipt save"
+            ):
                 published = self.record_in_transaction(
                     con, receipt, event=event, update_task=same_task_database
                 )
@@ -1526,14 +1526,7 @@ class VerificationStore:
                         "ON CONFLICT(receipt_id) DO NOTHING",
                         (receipt.receipt_id, receipt.task_id, receipt.criterion, time.time()),
                     )
-                con.execute("COMMIT")
                 return published
-            except Exception:
-                try:
-                    con.execute("ROLLBACK")
-                except Exception:
-                    pass
-                raise
 
         def _do_save() -> list[AgentEvent]:
             con = connect_sqlite(self.state_store.db_path, isolation_level=None)
@@ -1589,8 +1582,9 @@ class VerificationStore:
         )
         def _do_save(con: Any) -> list[AgentEvent]:
             published: list[AgentEvent] = []
-            try:
-                con.execute("BEGIN IMMEDIATE")
+            with write_transaction(
+                con, max_duration_seconds=5.0, rollback_label="verification change intent"
+            ):
                 appended = self.state_store.append_in_transaction(
                     con, event, strict_idempotency=True
                 )
@@ -1622,14 +1616,7 @@ class VerificationStore:
                 ).fetchone()
                 if not saved or tuple(saved) != expected:
                     raise ValueError("change_id already belongs to different change intent")
-                con.execute("COMMIT")
-                return published
-            except Exception:
-                try:
-                    con.execute("ROLLBACK")
-                except Exception:
-                    pass
-                raise
+            return published
         con = connect_sqlite(self.state_store.db_path, isolation_level=None)
         try:
             with self.state_store.ordered_event_publication(con) as publish_committed:
@@ -1682,8 +1669,9 @@ class VerificationStore:
         )
         def _do_save(con: Any) -> list[AgentEvent]:
             published: list[AgentEvent] = []
-            try:
-                con.execute("BEGIN IMMEDIATE")
+            with write_transaction(
+                con, max_duration_seconds=5.0, rollback_label="verification outcome"
+            ):
                 appended = self.state_store.append_in_transaction(
                     con, event, strict_idempotency=True
                 )
@@ -1714,14 +1702,7 @@ class VerificationStore:
                 ).fetchone()
                 if not saved or tuple(saved) != expected:
                     raise ValueError("outcome_id already belongs to different outcome")
-                con.execute("COMMIT")
-                return published
-            except Exception:
-                try:
-                    con.execute("ROLLBACK")
-                except Exception:
-                    pass
-                raise
+            return published
         con = connect_sqlite(self.state_store.db_path, isolation_level=None)
         try:
             with self.state_store.ordered_event_publication(con) as publish_committed:

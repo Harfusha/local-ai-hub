@@ -60,6 +60,53 @@ def _api_result_http_response(result: Any) -> tuple[int, Any]:
     return status, body
 
 
+def _recovery_claim_failure_response(
+    recovery: Any,
+    error: Exception | None = None,
+    *,
+    invalid_claim: bool = False,
+) -> dict[str, Any]:
+    base = {
+        "success": False,
+        "status_code": 503,
+        "outcome_unknown": False,
+    }
+    if invalid_claim:
+        return {
+            **base,
+            "error_code": "request_journal_invalid",
+            "error": "request was not dispatched because recovery journal returned an invalid claim",
+            "terminal": True,
+            "retryable": False,
+        }
+    if (
+        getattr(recovery, "_journal_unavailable", False) is not True
+        and error is not None
+        and is_busy_error(error)
+    ):
+        return {
+            **base,
+            "error_code": "request_journal_busy",
+            "error": "request was not dispatched because recovery journal is temporarily busy",
+            "terminal": False,
+            "retryable": True,
+            "retry_after_seconds": 1,
+        }
+    if getattr(recovery, "_journal_unavailable", False) is True:
+        error_code = "request_journal_unavailable"
+        detail = "request was not dispatched because recovery journal is unavailable"
+    else:
+        error_code = "request_journal_error"
+        detail = "request was not dispatched because recovery journal failed"
+    return {
+        **base,
+        "error_code": error_code,
+        "error": detail,
+        "terminal": True,
+        "retryable": False,
+    }
+
+
 def _status_dependency(callback, fallback, *, key, lock, inflight, slots, timeout_seconds=None):
     timeout = _STATUS_DEPENDENCY_TIMEOUT_SECONDS if timeout_seconds is None else max(0.0, float(timeout_seconds))
     if timeout <= 0:
@@ -693,8 +740,10 @@ def _http_mode_policy(method: str, path: str, payload: Mapping[str, Any] | None 
         return "blocked"
     if path in HTTP_MODE_OPERATOR_POST_PATHS:
         return "operator"
-    action_key = "job_action" if path == "/api/async-jobs" else "action"
-    action = str((payload or {}).get(action_key, "")).strip().lower().replace("-", "_")
+    if path in {"/api/async-jobs", "/api/work-orders"}:
+        action = _http_mode_action(path, payload)
+    else:
+        action = str((payload or {}).get("action", "")).strip().lower().replace("-", "_")
     if path == "/api/evaluation" and action == "report":
         return "gaming_read"
     if path == "/api/async-jobs" and action in {"status", "wait", "result", "cancel", "evaluation_report"}:
@@ -3467,9 +3516,6 @@ class Handler(BaseHTTPRequestHandler):
                     "retryable": False,
                 }); return
             job_payload = dict(payload)
-            supplied_request_id = self.headers.get("X-LocalAI-Request-ID")
-            if supplied_request_id and not job_payload.get("request_id"):
-                job_payload["request_id"] = supplied_request_id
             response = APP.async_jobs.submit(job_action, job_payload)
             status_code = _async_job_http_status(response)
             if status_code != 200 and isinstance(response, dict):
@@ -3585,8 +3631,10 @@ class Handler(BaseHTTPRequestHandler):
             return None
         try:
             estimate = APP.telemetry.http_latency_estimate(path)
-            delivery = str(payload.get("delivery", "sync"))
-            budget_ms = float(payload.get("latency_budget_ms", 0) or 0)
+            default_delivery = "auto" if job_action == "rag_index" else "sync"
+            delivery = str(payload.get("delivery", default_delivery))
+            default_budget_ms = 30_000 if job_action == "rag_index" else 0
+            budget_ms = float(payload.get("latency_budget_ms", default_budget_ms) or 0)
             samples = int(estimate.get("samples", 0) or 0)
             queue_age_ms = float(payload.get("queue_age_ms", estimate.get("queue_age_ms", 0)) or 0)
             max_queue_age_ms = float(
@@ -3617,7 +3665,7 @@ class Handler(BaseHTTPRequestHandler):
                 decision = {"mode": "async", "reason": "cold_start_review_diff"}
             else:
                 decision = decide_delivery(
-                    delivery, latency_budget_ms=payload.get("latency_budget_ms", 0),
+                    delivery, latency_budget_ms=budget_ms,
                     observed_p95_ms=estimate.get("p95_duration_ms", 0), samples=estimate.get("samples", 0),
                     queue_age_ms=queue_age_ms,
                     max_queue_age_ms=max_queue_age_ms,
@@ -3636,10 +3684,6 @@ class Handler(BaseHTTPRequestHandler):
         if decision["mode"] != "async":
             return None
         job_payload = dict(payload)
-        headers = getattr(self, "headers", None)
-        supplied_request_id = headers.get("X-LocalAI-Request-ID") if hasattr(headers, "get") else None
-        if supplied_request_id:
-            job_payload["request_id"] = supplied_request_id
         job_payload.pop("delivery", None); job_payload.pop("latency_budget_ms", None)
         if job_action == "reason":
             job_payload["task"] = str(job_payload.get("problem", job_payload.get("task", "")))
@@ -3657,14 +3701,18 @@ class Handler(BaseHTTPRequestHandler):
         elif job_action == "review_diff":
             job_payload["_async_job"] = True
         result = APP.async_jobs.submit(job_action, job_payload)
-        result["delivery"] = decision
+        status_code = _async_job_http_status(result)
+        if status_code != 200 and isinstance(result, dict):
+            result = {**result, "status_code": status_code}
+        if isinstance(result, dict):
+            result["delivery"] = decision
         trace_store = getattr(APP, "debug_traces", None)
         api_trace_id = str(getattr(self, "_debug_trace_id", "") or "")
         if trace_store is not None and api_trace_id and isinstance(result, dict):
             if result.get("job_id"):
                 trace_store.link(api_trace_id, async_job_id=str(result["job_id"]))
             trace_store.event(api_trace_id, "async_job_submitted", {"job_id": result.get("job_id", ""), "trace_id": result.get("trace_id", ""), "delivery": decision})
-        return 200, result
+        return status_code, result
 
     def _send_database_locked(self) -> None:
         mutation = str(getattr(self, "command", "GET")).upper() not in {"GET", "HEAD", "OPTIONS"}
@@ -3801,7 +3849,34 @@ class Handler(BaseHTTPRequestHandler):
                     repo_evidence = repo_context.get("evidence", []) if isinstance(repo_context.get("evidence"), list) else []
                     stages = pipeline.get("stages", []) if isinstance(pipeline.get("stages"), list) else []
                     phase_latency = _response_phase_latency(data)
-                    APP.telemetry.record_http(agent=self._agent(), request_id=str(getattr(self, "_trace_request_id", "")), trace_id=str(getattr(self, "_trace_id", "")), action=path, duration_ms=elapsed_ms, success=reliability_success, status_code=status, response_bytes=len(body), model=str(data.get("model", "")) if isinstance(data, dict) else "", cache_hit=bool(data.get("cache_hit", False)) if isinstance(data, dict) else False, preprocessed_hit=bool(data.get("preprocessed_hit", False)) if isinstance(data, dict) else False, cache_layer=str(data.get("cache_layer", "")) if isinstance(data, dict) else "", fallback_used=bool(data.get("fallback_used", False)) if isinstance(data, dict) else False, degraded=bool(data.get("stale_fallback", False) or data.get("degraded", False)) if isinstance(data, dict) else False, route=(">".join(str(x) for x in stages) if stages else str(data.get("strategy", data.get("route", ""))))[:120] if isinstance(data, dict) else "", task_type=str(canonical_route.get("task_type", ""))[:80], complexity=str(canonical_route.get("complexity", ""))[:40], evidence_count=(len(repo_evidence) if repo_evidence else (len(evidence) if isinstance(evidence, list) else 0)), error_type=outcome_error_type, queue_wait_ms=phase_latency.get("queue_wait_ms"), service_ms=phase_latency.get("service_ms"), db_wait_ms=phase_latency.get("db_wait_ms"), exec_ms=exec_ms, serialization_ms=serialization_ms)
+                    req_root = getattr(self, "_request_root", "") or (data.get("root") if isinstance(data, dict) else "")
+                    APP.telemetry.record_http(
+                        agent=self._agent(),
+                        request_id=str(getattr(self, "_trace_request_id", "")),
+                        trace_id=str(getattr(self, "_trace_id", "")),
+                        action=path,
+                        duration_ms=elapsed_ms,
+                        success=reliability_success,
+                        status_code=status,
+                        response_bytes=len(body),
+                        model=str(data.get("model", "")) if isinstance(data, dict) else "",
+                        cache_hit=bool(data.get("cache_hit", False)) if isinstance(data, dict) else False,
+                        preprocessed_hit=bool(data.get("preprocessed_hit", False)) if isinstance(data, dict) else False,
+                        cache_layer=str(data.get("cache_layer", "")) if isinstance(data, dict) else "",
+                        fallback_used=bool(data.get("fallback_used", False)) if isinstance(data, dict) else False,
+                        degraded=bool(data.get("stale_fallback", False) or data.get("degraded", False)) if isinstance(data, dict) else False,
+                        route=(">".join(str(x) for x in stages) if stages else str(data.get("strategy", data.get("route", ""))))[:120] if isinstance(data, dict) else "",
+                        task_type=str(canonical_route.get("task_type", ""))[:80],
+                        complexity=str(canonical_route.get("complexity", ""))[:40],
+                        evidence_count=(len(repo_evidence) if repo_evidence else (len(evidence) if isinstance(evidence, list) else 0)),
+                        error_type=outcome_error_type,
+                        queue_wait_ms=phase_latency.get("queue_wait_ms"),
+                        service_ms=phase_latency.get("service_ms"),
+                        db_wait_ms=phase_latency.get("db_wait_ms"),
+                        exec_ms=exec_ms,
+                        serialization_ms=serialization_ms,
+                        root=str(req_root or ""),
+                    )
                     request_evaluation = getattr(self, "_request_evaluation", None)
                     if reliability_success and request_evaluation is not None:
                         APP.telemetry.record_request_evaluation(request_evaluation, duration_ms=elapsed_ms)
@@ -3810,7 +3885,6 @@ class Handler(BaseHTTPRequestHandler):
                         APP.telemetry.record_error("http", path, err, request_id=str(getattr(self, "_trace_request_id", "")), agent=self._agent(), error_type_override=outcome_error_type, error_code_override=error_code, retryable=status in {429, 500, 502, 503, 504})
                     if APP is not None and getattr(APP, "endpoint_stats", None) is not None:
                         try:
-                            req_root = getattr(self, "_request_root", "") or (data.get("root") if isinstance(data, dict) else "")
                             APP.endpoint_stats.record_call(
                                 item_type="endpoint",
                                 item_name=path,
@@ -5511,26 +5585,14 @@ class Handler(BaseHTTPRequestHandler):
                 action=path,
                 payload=payload,
             )
-        except Exception:
+        except Exception as exc:
             self._journal_finished = True
-            self._send(503, {
-                "success": False,
-                "error": "request journal unavailable; mutation was not dispatched",
-                "status_code": 503,
-                "retryable": True,
-                "outcome_unknown": False,
-            })
+            self._send(503, _recovery_claim_failure_response(recovery, exc))
             return False
 
         if not isinstance(claim, Mapping):
             self._journal_finished = True
-            self._send(503, {
-                "success": False,
-                "error": "request journal unavailable; mutation was not dispatched",
-                "status_code": 503,
-                "retryable": True,
-                "outcome_unknown": False,
-            })
+            self._send(503, _recovery_claim_failure_response(recovery, invalid_claim=True))
             return False
         if claim.get("claimed"):
             return True
@@ -6546,6 +6608,12 @@ class Handler(BaseHTTPRequestHandler):
                     "request_id": payload.get("request_id"),
                 }
                 capability = str(payload.get("capability", ""))
+                if path == "/api/browser/capture/purge":
+                    checked = validate_capture_request(capability, request)
+                    if not checked.get("success"):
+                        self._send(int(checked.get("status_code", 403)), checked); return
+                    result = APP.artifacts.purge_browser_capture(payload.get("bundle_artifact_id"))
+                    self._send(int(result.get("status_code", 200 if result.get("success") else 400)), result); return
                 if path == "/api/browser/capture/stage":
                     staged_payload = dict(payload)
                     staged_payload["origin"] = request["origin"]

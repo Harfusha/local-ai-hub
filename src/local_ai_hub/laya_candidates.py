@@ -31,7 +31,7 @@ from .laya_decisions import (
     _CATEGORY_INSTRUCTIONS,
     _CATEGORY_OPTIONS,
 )
-from .sqlite_support import connect_sqlite
+from .sqlite_support import connect_sqlite, write_transaction
 
 _SCHEMA_VERSION = 1
 _CHECKPOINT = "convaiinnovations/laya-multilingual"
@@ -41,9 +41,12 @@ _MAX_STATE_BYTES = 16 * 1024
 # 32 typed fields plus four raw fields and three training-capture metadata fields.
 _MAX_DECISION_CANDIDATE_STATE_FIELDS = 39
 _MAX_CANDIDATE_BYTES = 64 * 1024
+_MAX_CANDIDATE_LIST_PAGE_SIZE = 1000
 _MAX_RUNTIME_OUTPUT_HISTORY_PAGE_SIZE = 10
 _RUNTIME_CAPTURE_TOKEN = object()
 _RUNTIME_BASELINE_METHODS = {
+    DecisionCategory.MODEL_ROUTE: "model_router_classify",
+    DecisionCategory.CONTEXT_BUDGET: "repo_context_token_budget",
     DecisionCategory.COMPLETION_GAP: "agent_os_completion_gate",
 }
 _MAX_CANDIDATES_PER_EXPORT = 20_000
@@ -244,6 +247,7 @@ class LayaCandidateStore:
         self.state_dir = Path(state_dir).resolve()
         self.path: Path | None = None
         self._lock = threading.RLock()
+        self._schema_database_identity: tuple[str, int, int] | None = None
         self._local_model_reviewer = local_model_reviewer
         if type(reviewer_public_keys) not in (list, tuple):
             raise ValueError("laya reviewer public keys must be a list")
@@ -261,18 +265,31 @@ class LayaCandidateStore:
         ensure_schema = getattr(state_store, "_ensure_schema", None)
         if not callable(ensure_schema):
             raise RuntimeError("Agent State schema initializer is unavailable")
-        ensure_schema()
-        self.path = path
-        con = connect_sqlite(
-            path,
-            timeout_seconds=2.0,
-            isolation_level=None,
-            row_factory=sqlite3.Row,
-            foreign_keys=True,
-            wal=True,
-        )
-        con.execute("PRAGMA secure_delete=ON")
-        con.executescript(
+        with self._lock:
+            try:
+                stat = path.stat()
+                database_identity = (str(path), int(stat.st_dev), int(stat.st_ino))
+            except FileNotFoundError:
+                database_identity = None
+            initialize_schema = (
+                database_identity is None
+                or database_identity != self._schema_database_identity
+            )
+            if initialize_schema:
+                ensure_schema()
+            self.path = path
+            con = connect_sqlite(
+                path,
+                timeout_seconds=2.0,
+                isolation_level=None,
+                row_factory=sqlite3.Row,
+                foreign_keys=True,
+                wal=True,
+            )
+            try:
+                con.execute("PRAGMA secure_delete=ON")
+                if initialize_schema:
+                    con.executescript(
             """
             CREATE TABLE IF NOT EXISTS laya_candidates (
                 candidate_id TEXT PRIMARY KEY,
@@ -321,8 +338,15 @@ class LayaCandidateStore:
             CREATE INDEX IF NOT EXISTS idx_laya_dataset_assignments_candidate
                 ON laya_dataset_assignments(candidate_id, snapshot_id);
             """
-        )
-        return con
+                    )
+                    stat = path.stat()
+                    self._schema_database_identity = (
+                        str(path), int(stat.st_dev), int(stat.st_ino)
+                    )
+            except Exception:
+                con.close()
+                raise
+            return con
 
     def _purge_snapshot_export(self, snapshot_id: str) -> None:
         if (
@@ -379,11 +403,13 @@ class LayaCandidateStore:
 
     @staticmethod
     def _candidate_input(value: Any) -> dict[str, Any]:
-        row = _strict_object(
-            value,
-            {"decision_schema_version", "category", "state", "options", "language", "preprocessing", "evidence_ids"},
-            "candidate",
-        )
+        candidate_fields = {
+            "decision_schema_version", "category", "state", "options", "language",
+            "preprocessing", "evidence_ids",
+        }
+        if type(value) is not dict or set(value) not in (candidate_fields, candidate_fields | {"source_record_ids"}):
+            raise ValueError("candidate fields invalid")
+        row = value
         schema_version = row["decision_schema_version"]
         if type(schema_version) is not str or not _IDENT.fullmatch(schema_version):
             raise ValueError("decision_schema_version invalid")
@@ -406,6 +432,10 @@ class LayaCandidateStore:
             context_input = {
                 **{key: value for key, value in state.items() if key in expected_state_fields},
                 "evidence_ids": row["evidence_ids"],
+                **(
+                    {"source_record_ids": row["source_record_ids"]}
+                    if "source_record_ids" in row else {}
+                ),
                 "training_content": {
                     key.removeprefix("raw_"): value
                     for key, value in state.items()
@@ -438,7 +468,11 @@ class LayaCandidateStore:
                 for key, item in state.items()
             ):
                 raise ValueError("candidate state fields invalid")
-            if len(_canonical_json(state).encode("utf-8")) > _MAX_STATE_BYTES:
+            # DecisionInput bounds typed signals and raw training content
+            # independently; candidate persistence applies the combined
+            # serialized-candidate limit below instead of rejecting useful
+            # examples once their merged Laya input exceeds the typed-only cap.
+            if len(_canonical_json(state).encode("utf-8")) > _MAX_CANDIDATE_BYTES - 4096:
                 raise ValueError("candidate state is too large")
         else:
             raise ValueError("candidate state must be a string or flat string object")
@@ -459,6 +493,7 @@ class LayaCandidateStore:
         if any(type(preprocessing[k]) is not str or not _IDENT.fullmatch(preprocessing[k]) for k in preprocessing):
             raise ValueError("preprocessing identity invalid")
         evidence_ids = row["evidence_ids"]
+        source_record_ids = row.get("source_record_ids")
         if category is DecisionCategory.CONTEXT_SOURCE:
             if (
                 type(evidence_ids) is not list
@@ -466,7 +501,22 @@ class LayaCandidateStore:
                 or any(type(item) is not str or not is_evidence_id(item) for item in evidence_ids)
             ):
                 raise ValueError("context_source evidence_ids invalid")
+            if source_record_ids is not None and (
+                type(source_record_ids) is not list
+                or len(source_record_ids) != len(evidence_ids)
+                or any(
+                    type(record_id) is not str or not _IDENT.fullmatch(record_id)
+                    if source_code == "memory"
+                    else record_id is not None
+                    for source_code, record_id in zip(state["source_codes"], source_record_ids, strict=False)
+                )
+            ):
+                raise ValueError("context_source source_record_ids invalid")
+            if "memory" in state["source_codes"] and source_record_ids is None:
+                raise ValueError("context_source memory source_record_ids are required")
         else:
+            if source_record_ids is not None:
+                raise ValueError("candidate source_record_ids invalid for category")
             if type(evidence_ids) is not list or len(evidence_ids) > 64:
                 raise ValueError("candidate evidence_ids invalid")
             evidence_ids = [_identity(item, "evidence_id") for item in evidence_ids]
@@ -495,6 +545,8 @@ class LayaCandidateStore:
             "label_provenance": {"events": []},
             "model_output": None,
         }
+        if source_record_ids is not None:
+            candidate["source_record_ids"] = list(source_record_ids)
         if len(_canonical_json(candidate).encode("utf-8")) > _MAX_CANDIDATE_BYTES:
             raise ValueError("candidate exceeds byte limit")
         return candidate
@@ -505,6 +557,10 @@ class LayaCandidateStore:
         *,
         evidence_store: Any,
         canonical_root: str,
+        memory_store: Any = None,
+        task_id: str = "",
+        session_id: str = "",
+        coordination_id: str | None = None,
     ) -> None:
         evidence_ids = candidate["evidence_ids"]
         if not evidence_ids:
@@ -535,19 +591,81 @@ class LayaCandidateStore:
             raise ValueError(evidence_error)
         if not is_context_source:
             return
-        validate_provenance = getattr(evidence_store, "validate_source_provenance", None)
-        if not callable(validate_provenance):
-            raise ValueError("context_source evidence source provenance is unavailable")
-        try:
-            provenance_valid = validate_provenance(
-                evidence_ids,
-                candidate["state"]["source_codes"],
-                root=canonical_root,
-            )
-        except Exception as exc:
-            raise ValueError("context_source evidence source provenance is unavailable") from exc
-        if provenance_valid is not True:
-            raise ValueError("context_source source codes do not match recorded provenance")
+        source_codes = candidate["state"]["source_codes"]
+        source_record_ids = candidate.get("source_record_ids", [None] * len(evidence_ids))
+        if type(source_record_ids) is not list or len(source_record_ids) != len(evidence_ids):
+            raise ValueError("context_source source_record_ids invalid")
+        memory_indices = [index for index, code in enumerate(source_codes) if code == "memory"]
+        if memory_indices:
+            find_memory = getattr(memory_store, "find", None)
+            if not callable(find_memory) or not task_id or not session_id:
+                raise ValueError("context_source memory source provenance is unavailable")
+            try:
+                from .agent_identity import AgentScope
+                from .agent_memory import MemoryStatus
+
+                scoped_queries = [
+                    (AgentScope.TASK, {"root": canonical_root, "task_id": task_id}),
+                    (
+                        AgentScope.SESSION,
+                        {"root": canonical_root, "task_id": task_id, "session_id": session_id},
+                    ),
+                ]
+                if coordination_id:
+                    scoped_queries.append((
+                        AgentScope.REPOSITORY,
+                        {"root": canonical_root, "repository_id": coordination_id},
+                    ))
+                records = []
+                for scope, context_args in scoped_queries:
+                    for status in (MemoryStatus.ACTIVE, MemoryStatus.CONFIRMED):
+                        records.extend(find_memory(
+                            scope=scope,
+                            status=status,
+                            semantic=False,
+                            limit=20,
+                            **context_args,
+                        ))
+            except Exception as exc:
+                raise ValueError("context_source memory source provenance is unavailable") from exc
+            if type(records) is not list:
+                raise ValueError("context_source memory source provenance is unavailable")
+            records_by_id = {
+                getattr(record, "record_id", None): record
+                for record in records
+                if type(getattr(record, "record_id", None)) is str
+                and getattr(getattr(record, "scope", None), "value", None)
+                in {"repository", "task", "session"}
+            }
+            for index in memory_indices:
+                record_id = source_record_ids[index]
+                record = records_by_id.get(record_id) if type(record_id) is str else None
+                linked_evidence_ids = getattr(record, "evidence_ids", ()) if record is not None else ()
+                if (
+                    record is None
+                    or type(linked_evidence_ids) not in (list, tuple)
+                    or any(type(linked_id) is not str for linked_id in linked_evidence_ids)
+                    or evidence_ids[index] not in linked_evidence_ids
+                ):
+                    raise ValueError("context_source memory source provenance does not match scoped memory")
+        elif any(record_id is not None for record_id in source_record_ids):
+            raise ValueError("context_source source_record_ids invalid")
+
+        non_memory_indices = [index for index, code in enumerate(source_codes) if code != "memory"]
+        if non_memory_indices:
+            validate_provenance = getattr(evidence_store, "validate_source_provenance", None)
+            if not callable(validate_provenance):
+                raise ValueError("context_source evidence source provenance is unavailable")
+            try:
+                provenance_valid = validate_provenance(
+                    [evidence_ids[index] for index in non_memory_indices],
+                    [source_codes[index] for index in non_memory_indices],
+                    root=canonical_root,
+                )
+            except Exception as exc:
+                raise ValueError("context_source evidence source provenance is unavailable") from exc
+            if provenance_valid is not True:
+                raise ValueError("context_source source codes do not match recorded provenance")
 
     def handle(
         self,
@@ -581,37 +699,53 @@ class LayaCandidateStore:
             if self._session_for_task(task) != session_id:
                 raise ValueError("session_id does not match the scoped task")
             candidate = self._candidate_input(op["candidate"])
+            memory_store = None
+            coordination_id = None
+            task_context = getattr(task, "context", None)
+            if isinstance(task_context, Mapping):
+                coordination_id = task_context.get("repository_id")
+            else:
+                coordination_id = getattr(task_context, "repository_id", None)
+            candidate_state = candidate.get("state")
+            if isinstance(candidate_state, Mapping) and "memory" in candidate_state.get("source_codes", ()):
+                from .agent_memory import MemoryStore
+
+                memory_store = MemoryStore(task_store.state_store)
             self._validate_context_source_evidence(
-                candidate, evidence_store=evidence_store, canonical_root=canonical_root
+                candidate,
+                evidence_store=evidence_store,
+                canonical_root=canonical_root,
+                memory_store=memory_store,
+                task_id=task_id,
+                session_id=session_id,
+                coordination_id=coordination_id if type(coordination_id) is str else None,
             )
             content_hash = hashlib.sha256(_canonical_json(candidate).encode("utf-8")).hexdigest()
             group_id = "grp_" + hashlib.sha256(f"{scope}\0{task_id}\0{session_id}".encode()).hexdigest()[:32]
             now = time.time()
             with self._lock, closing(self._connect(task_store)) as con:
-                con.execute("BEGIN IMMEDIATE")
-                existing = con.execute(
-                    "SELECT candidate_id,status FROM laya_candidates WHERE repository_scope=? AND content_hash=?",
-                    (scope, content_hash),
-                ).fetchone()
-                candidate_id = str(existing["candidate_id"]) if existing else "laya_" + uuid.uuid4().hex
-                if existing:
+                with write_transaction(con, max_duration_seconds=5.0, rollback_label="Laya candidate capture"):
+                    existing = con.execute(
+                        "SELECT candidate_id,status FROM laya_candidates WHERE repository_scope=? AND content_hash=?",
+                        (scope, content_hash),
+                    ).fetchone()
+                    candidate_id = str(existing["candidate_id"]) if existing else "laya_" + uuid.uuid4().hex
+                    if existing:
+                        self._event(
+                            con, candidate_id, scope, task_id, "duplicate_capture",
+                            {"schema_version": _SCHEMA_VERSION, "data_class": "local_scoped"}, now,
+                        )
+                        return {"success": True, "duplicate": True, "candidate_id": candidate_id, "status": existing["status"]}
+                    con.execute(
+                        "INSERT INTO laya_candidates VALUES(?,?,?,?,?,?,?,?,?,?)",
+                        (candidate_id, scope, task_id, session_id, group_id, content_hash,
+                         "pending", _canonical_json(candidate), now, now),
+                    )
                     self._event(
-                        con, candidate_id, scope, task_id, "duplicate_capture",
+                        con, candidate_id, scope, task_id, "captured",
                         {"schema_version": _SCHEMA_VERSION, "data_class": "local_scoped"}, now,
                     )
-                    con.commit()
-                    return {"success": True, "duplicate": True, "candidate_id": candidate_id, "status": existing["status"]}
-                con.execute(
-                    "INSERT INTO laya_candidates VALUES(?,?,?,?,?,?,?,?,?,?)",
-                    (candidate_id, scope, task_id, session_id, group_id, content_hash,
-                     "pending", _canonical_json(candidate), now, now),
-                )
-                self._event(
-                    con, candidate_id, scope, task_id, "captured",
-                    {"schema_version": _SCHEMA_VERSION, "data_class": "local_scoped"}, now,
-                )
-                self._event(con, candidate_id, scope, task_id, "pending", {"label_status": "pending"}, now)
-                con.commit()
+                    self._event(con, candidate_id, scope, task_id, "pending", {"label_status": "pending"}, now)
             return {"success": True, "duplicate": False, "candidate_id": candidate_id, "status": "pending"}
         if action == "capture_batch":
             raise ValueError("capture_batch is unavailable; only actual per-decision runtime callbacks may capture")
@@ -733,7 +867,7 @@ class LayaCandidateStore:
                 "next_event_id": events[-1]["event_id"] if has_more and events else None,
             }
         if action == "list":
-            allowed = {"action", "task_id", "status"}
+            allowed = {"action", "task_id", "status", "limit", "after_candidate_id"}
             if set(operation) - allowed or "action" not in operation:
                 raise ValueError("list fields invalid")
             task_id = operation.get("task_id")
@@ -743,16 +877,43 @@ class LayaCandidateStore:
             status = operation.get("status")
             if status is not None and status not in _STATES:
                 raise ValueError("candidate status invalid")
+            limit = operation.get("limit", _MAX_CANDIDATE_LIST_PAGE_SIZE)
+            if type(limit) is not int or not 1 <= limit <= _MAX_CANDIDATE_LIST_PAGE_SIZE:
+                raise ValueError("list limit invalid")
+            after_candidate_id = operation.get("after_candidate_id")
+            if after_candidate_id is not None:
+                after_candidate_id = _identity(after_candidate_id, "after_candidate_id")
             query = "SELECT candidate_id,task_id,session_id,group_id,status,created_at,updated_at FROM laya_candidates WHERE repository_scope=?"
             args: list[Any] = [scope]
             if task_id is not None:
                 query += " AND task_id=?"; args.append(task_id)
             if status is not None:
                 query += " AND status=?"; args.append(status)
-            query += " ORDER BY created_at,candidate_id LIMIT 1000"
             with closing(self._connect(task_store)) as con:
-                rows = con.execute(query, args).fetchall()
-            return {"success": True, "count": len(rows), "candidates": [dict(row) for row in rows]}
+                if after_candidate_id is not None:
+                    cursor_query = (
+                        "SELECT created_at FROM laya_candidates "
+                        "WHERE repository_scope=? AND candidate_id=?"
+                    )
+                    cursor_args: list[Any] = [scope, after_candidate_id]
+                    if task_id is not None:
+                        cursor_query += " AND task_id=?"; cursor_args.append(task_id)
+                    cursor = con.execute(cursor_query, cursor_args).fetchone()
+                    if cursor is None:
+                        raise ValueError("candidate cursor is outside the authorized repository scope")
+                    query += " AND (created_at>? OR (created_at=? AND candidate_id>?))"
+                    args.extend((cursor["created_at"], cursor["created_at"], after_candidate_id))
+                query += " ORDER BY created_at,candidate_id LIMIT ?"
+                rows = con.execute(query, [*args, limit + 1]).fetchall()
+            has_more = len(rows) > limit
+            page = rows[:limit]
+            return {
+                "success": True,
+                "count": len(page),
+                "candidates": [dict(row) for row in page],
+                "has_more": has_more,
+                "next_candidate_id": page[-1]["candidate_id"] if has_more and page else None,
+            }
         if action == "review_challenge":
             raise ValueError("SSH reviewer challenges are retired; Laya review is local-only")
         if action == "verify":
@@ -769,7 +930,7 @@ class LayaCandidateStore:
                 raise ValueError("candidate export path escaped configured state_dir")
             out_file = out_dir / f"laya-{snapshot_id}.train.jsonl"
             with self._lock, closing(self._connect(task_store)) as con:
-                con.execute("BEGIN IMMEDIATE")
+                con.execute("BEGIN")
                 snapshot = con.execute(
                     "SELECT status,manifest_json FROM laya_dataset_snapshots WHERE snapshot_id=? AND repository_scope=?",
                     (snapshot_id, scope),
@@ -795,6 +956,29 @@ class LayaCandidateStore:
                     task = self._find_task(task_store, canonical_root, str(row["task_id"]))
                     if self._session_for_task(task) != row["session_id"]:
                         raise ValueError("candidate session identity no longer matches its task")
+                    if candidate.get("category") == DecisionCategory.CONTEXT_SOURCE.value:
+                        candidate_state = candidate.get("state")
+                        source_codes = candidate_state.get("source_codes", []) if isinstance(candidate_state, Mapping) else []
+                        memory_store = None
+                        if "memory" in source_codes:
+                            from .agent_memory import MemoryStore
+
+                            memory_store = MemoryStore(task_store.state_store)
+                        task_context = getattr(task, "context", None)
+                        coordination_id = (
+                            task_context.get("repository_id")
+                            if isinstance(task_context, Mapping)
+                            else getattr(task_context, "repository_id", None)
+                        )
+                        self._validate_context_source_evidence(
+                            candidate,
+                            evidence_store=evidence_store,
+                            canonical_root=canonical_root,
+                            memory_store=memory_store,
+                            task_id=str(row["task_id"]),
+                            session_id=str(row["session_id"]),
+                            coordination_id=coordination_id if type(coordination_id) is str else None,
+                        )
                     question_id = candidate["category"]
                     target = candidate.get("targets", {}).get(question_id)
                     if not isinstance(target, str) or target not in candidate["questions"][question_id]["criteria"]:
@@ -822,6 +1006,10 @@ class LayaCandidateStore:
                             "task_id": str(row["task_id"]),
                             "session_id": str(row["session_id"]),
                             "evidence_ids": list(candidate["evidence_ids"]),
+                            **(
+                                {"source_record_ids": list(candidate["source_record_ids"])}
+                                if "source_record_ids" in candidate else {}
+                            ),
                             "label_provenance": _export_label_provenance(candidate, {question_id: target}),
                         },
                     })
@@ -832,6 +1020,9 @@ class LayaCandidateStore:
                     raise ValueError("candidate export exceeds byte limit")
                 if not rows:
                     raise ValueError("dataset snapshot has no train candidates to export")
+                # End the read snapshot before touching the filesystem. SQLite stays
+                # open for the later short status transition, but no lock spans I/O.
+                con.commit()
                 out_file.parent.mkdir(parents=True, exist_ok=True)
                 out_file = out_file.resolve(strict=False)
                 if not out_file.is_relative_to(self.state_dir):
@@ -845,22 +1036,52 @@ class LayaCandidateStore:
                     try: os.unlink(tmp_name)
                     except OSError: pass
                     raise
-                now = time.time()
-                for row in assignments:
-                    changed = con.execute(
-                        "UPDATE laya_candidates SET status='exported',updated_at=? "
-                        "WHERE candidate_id=? AND status IN ('verified','exported')",
-                        (now, row["candidate_id"]),
-                    ).rowcount
-                    if changed != 1:
-                        raise ValueError("train candidate changed during export")
-                    task_id = con.execute(
-                        "SELECT task_id FROM laya_candidates WHERE candidate_id=?",
-                        (row["candidate_id"],),
-                    ).fetchone()[0]
-                    self._event(con, row["candidate_id"], scope, task_id, "exported", {"format": "jsonl", "snapshot_id": snapshot_id}, now)
-                con.execute("UPDATE laya_dataset_snapshots SET status='exported' WHERE snapshot_id=? AND repository_scope=?", (snapshot_id, scope))
-                con.commit()
+                try:
+                    now = time.time()
+                    with write_transaction(con, max_duration_seconds=5.0, rollback_label="Laya candidate export"):
+                        current_snapshot = con.execute(
+                            "SELECT status FROM laya_dataset_snapshots WHERE snapshot_id=? AND repository_scope=?",
+                            (snapshot_id, scope),
+                        ).fetchone()
+                        if current_snapshot is None or current_snapshot["status"] == "invalidated":
+                            raise ValueError("dataset snapshot changed during export")
+                        current_assignments = con.execute(
+                            "SELECT a.candidate_id,a.content_hash,c.status,c.task_id "
+                            "FROM laya_dataset_assignments a JOIN laya_candidates c ON c.candidate_id=a.candidate_id "
+                            "WHERE a.snapshot_id=? AND a.split_name='train' AND c.repository_scope=? "
+                            "ORDER BY c.created_at,c.candidate_id",
+                            (snapshot_id, scope),
+                        ).fetchall()
+                        if len(current_assignments) != len(assignments) or any(
+                            current["candidate_id"] != original["candidate_id"]
+                            or current["content_hash"] != original["content_hash"]
+                            or current["status"] not in {"verified", "exported"}
+                            for current, original in zip(current_assignments, assignments)
+                        ):
+                            raise ValueError("train candidate changed during export")
+                        for row in current_assignments:
+                            changed = con.execute(
+                                "UPDATE laya_candidates SET status='exported',updated_at=? "
+                                "WHERE candidate_id=? AND status IN ('verified','exported')",
+                                (now, row["candidate_id"]),
+                            ).rowcount
+                            if changed != 1:
+                                raise ValueError("train candidate changed during export")
+                            self._event(con, row["candidate_id"], scope, row["task_id"], "exported", {"format": "jsonl", "snapshot_id": snapshot_id}, now)
+                        con.execute(
+                            "UPDATE laya_dataset_snapshots SET status='exported' "
+                            "WHERE snapshot_id=? AND repository_scope=?",
+                            (snapshot_id, scope),
+                        )
+                except BaseException as export_error:
+                    try:
+                        self._purge_snapshot_export(snapshot_id)
+                    except Exception as cleanup_error:
+                        export_error.add_note(
+                            f"Laya export cleanup pending: {type(cleanup_error).__name__}: {cleanup_error}"
+                        )
+                        raise export_error from cleanup_error
+                    raise
             return {"success": True, "count": len(rows), "output_path": str(out_file), "format": "jsonl", "dataset_kind": "laya_candidates", "split": "train", "snapshot_id": snapshot_id}
         raise ValueError("unsupported laya_operation action")
 
@@ -914,6 +1135,11 @@ class LayaCandidateStore:
                     raise ValueError("deterministic baseline method is not registered for this Laya category")
                 if request.category is DecisionCategory.COMPLETION_GAP and suggestion not in {"ready", "not_ready"}:
                     raise ValueError("completion-gap baseline suggestion must be ready or not_ready")
+                if (
+                    request.category is not DecisionCategory.COMPLETION_GAP
+                    and suggestion not in request.options
+                ):
+                    raise ValueError("baseline suggestion is not allowed for this category")
             baseline_record = {
                 "status": "recorded",
                 "method": baseline["method"],
@@ -941,6 +1167,8 @@ class LayaCandidateStore:
             "preprocessing": {"name": "laya-runtime", "version": runtime_version},
             "evidence_ids": list(request.evidence_ids),
         }
+        if isinstance(evidence, ContextSourceEvidence) and "memory" in evidence.source_codes:
+            candidate["source_record_ids"] = list(evidence.source_record_ids)
         captured = self.handle(
             {
                 "action": "capture", "task_id": task_id, "session_id": session_id,
@@ -984,18 +1212,17 @@ class LayaCandidateStore:
         scope = self._repo_scope(canonical_root)
         now = time.time()
         with self._lock, closing(self._connect(task_store)) as con:
-            con.execute("BEGIN IMMEDIATE")
-            row = con.execute(
-                "SELECT task_id,session_id,content_hash,candidate_json FROM laya_candidates "
-                "WHERE candidate_id=? AND repository_scope=?",
-                (candidate_id, scope),
-            ).fetchone()
-            if row is None or row["task_id"] != task_id or row["session_id"] != session_id:
-                raise ValueError("captured runtime candidate escaped its repository/task/session scope")
-            if _captured_candidate_hash(row["candidate_json"]) != row["content_hash"]:
-                raise ValueError("captured runtime candidate content changed")
-            self._event(con, candidate_id, scope, task_id, "runtime_output", runtime_record, now)
-            con.commit()
+            with write_transaction(con, max_duration_seconds=5.0, rollback_label="Laya runtime outcome"):
+                row = con.execute(
+                    "SELECT task_id,session_id,content_hash,candidate_json FROM laya_candidates "
+                    "WHERE candidate_id=? AND repository_scope=?",
+                    (candidate_id, scope),
+                ).fetchone()
+                if row is None or row["task_id"] != task_id or row["session_id"] != session_id:
+                    raise ValueError("captured runtime candidate escaped its repository/task/session scope")
+                if _captured_candidate_hash(row["candidate_json"]) != row["content_hash"]:
+                    raise ValueError("captured runtime candidate content changed")
+                self._event(con, candidate_id, scope, task_id, "runtime_output", runtime_record, now)
         return {**captured, "runtime_output_recorded": True}
 
     def record_completion_outcome(self, operation: Any, *, root: str, task_store: Any) -> dict[str, Any]:
@@ -1044,18 +1271,17 @@ class LayaCandidateStore:
         scope = self._repo_scope(canonical_root)
         now = time.time()
         with self._lock, closing(self._connect(task_store)) as con:
-            con.execute("BEGIN IMMEDIATE")
-            rows = con.execute(
-                "SELECT candidate_id,content_hash,candidate_json FROM laya_candidates "
-                "WHERE repository_scope=? AND task_id=? AND session_id=? ORDER BY created_at,candidate_id",
-                (scope, task_id, session_id),
-            ).fetchall()
-            for row in rows:
-                candidate_json = row["candidate_json"]
-                if _captured_candidate_hash(candidate_json) != row["content_hash"]:
-                    raise ValueError("completion candidate content hash mismatch")
-                self._event(con, row["candidate_id"], scope, task_id, "completion_outcome", outcome, now)
-            con.commit()
+            with write_transaction(con, max_duration_seconds=5.0, rollback_label="Laya completion outcome"):
+                rows = con.execute(
+                    "SELECT candidate_id,content_hash,candidate_json FROM laya_candidates "
+                    "WHERE repository_scope=? AND task_id=? AND session_id=? ORDER BY created_at,candidate_id",
+                    (scope, task_id, session_id),
+                ).fetchall()
+                for row in rows:
+                    candidate_json = row["candidate_json"]
+                    if _captured_candidate_hash(candidate_json) != row["content_hash"]:
+                        raise ValueError("completion candidate content hash mismatch")
+                    self._event(con, row["candidate_id"], scope, task_id, "completion_outcome", outcome, now)
         return {"success": True, "candidate_count": len(rows), "event_count": len(rows)}
 
     def export_train_payload(self, operation: Any, *, root: str, task_store: Any) -> bytes:
@@ -1065,7 +1291,7 @@ class LayaCandidateStore:
         scope = self._repo_scope(canonical_root)
         snapshot_id = _identity(op["snapshot_id"], "snapshot_id")
         with self._lock, closing(self._connect(task_store)) as con:
-            con.execute("BEGIN IMMEDIATE")
+            con.execute("BEGIN")
             snapshot = con.execute(
                 "SELECT status FROM laya_dataset_snapshots WHERE snapshot_id=? AND repository_scope=?",
                 (snapshot_id, scope),
@@ -1128,13 +1354,12 @@ class LayaCandidateStore:
             payload = "".join(_canonical_json(row) + "\n" for row in rows).encode("utf-8")
             if len(payload) > 16 * 1024 * 1024:
                 raise ValueError("candidate export exceeds byte limit")
-            con.commit()
             return payload
 
     def _prepare_splits(self, operation: dict[str, Any], *, scope: str, task_store: Any) -> dict[str, Any]:
         _strict_object(operation, {"action"}, "prepare_splits")
         with self._lock, closing(self._connect(task_store)) as con:
-            con.execute("BEGIN IMMEDIATE")
+            con.execute("BEGIN")
             status_counts = {
                 row["status"]: row["count"]
                 for row in con.execute(
@@ -1149,7 +1374,6 @@ class LayaCandidateStore:
                 (scope, _MAX_CANDIDATES_PER_EXPORT + 1),
             ).fetchall()
             if len(rows) > _MAX_CANDIDATES_PER_EXPORT:
-                con.rollback()
                 raise ValueError("candidate split preparation exceeds row limit")
             if not rows:
                 con.commit()
@@ -1239,19 +1463,44 @@ class LayaCandidateStore:
                 }
             manifest["snapshot_hash"] = snapshot_hash
             now = time.time()
-            con.execute(
-                "INSERT INTO laya_dataset_snapshots VALUES(?,?,?,?,?,?)",
-                (snapshot_id, scope, snapshot_hash, "prepared", _canonical_json(manifest), now),
-            )
-            con.executemany(
-                "INSERT INTO laya_dataset_assignments(snapshot_id,candidate_id,group_id,split_name,content_hash) "
-                "VALUES(?,?,?,?,?)",
-                [
-                    (snapshot_id, candidate_id, group_id, split_name, record_hash)
-                    for candidate_id, record_hash, group_id, split_name in assignment_rows
-                ],
-            )
             con.commit()
+            with write_transaction(con, max_duration_seconds=5.0, rollback_label="Laya dataset split preparation"):
+                existing = con.execute(
+                    "SELECT status,manifest_json FROM laya_dataset_snapshots WHERE repository_scope=? AND snapshot_hash=?",
+                    (scope, snapshot_hash),
+                ).fetchone()
+                if existing:
+                    return {
+                        "success": True,
+                        "snapshot_id": snapshot_id,
+                        **json.loads(existing["manifest_json"]),
+                        "snapshot_status": existing["status"],
+                        "reused": True,
+                    }
+                for candidate_id, record_hash, _group_id, _split_name in assignment_rows:
+                    current = con.execute(
+                        "SELECT candidate_json,status FROM laya_candidates "
+                        "WHERE repository_scope=? AND candidate_id=?",
+                        (scope, candidate_id),
+                    ).fetchone()
+                    if (
+                        current is None
+                        or hashlib.sha256(current["candidate_json"].encode("utf-8")).hexdigest() != record_hash
+                        or current["status"] not in {"verified", "exported"}
+                    ):
+                        raise ValueError("candidate changed during split preparation")
+                con.execute(
+                    "INSERT INTO laya_dataset_snapshots VALUES(?,?,?,?,?,?)",
+                    (snapshot_id, scope, snapshot_hash, "prepared", _canonical_json(manifest), now),
+                )
+                con.executemany(
+                    "INSERT INTO laya_dataset_assignments(snapshot_id,candidate_id,group_id,split_name,content_hash) "
+                    "VALUES(?,?,?,?,?)",
+                    [
+                        (snapshot_id, candidate_id, group_id, split_name, record_hash)
+                        for candidate_id, record_hash, group_id, split_name in assignment_rows
+                    ],
+                )
             return {
                 "success": True,
                 "snapshot_id": snapshot_id,
@@ -1291,7 +1540,7 @@ class LayaCandidateStore:
             candidate_fingerprint = hashlib.sha256(candidate_json.encode("utf-8")).hexdigest()
             candidate_sha256 = str(row["content_hash"])
             review_input = json.loads(candidate_json)
-            for field in ("targets", "label_status", "label_provenance", "model_reviews"):
+            for field in ("model_output", "targets", "label_status", "label_provenance", "model_reviews"):
                 review_input.pop(field, None)
             request = {
                 "candidate_id": candidate_id,
@@ -1321,84 +1570,78 @@ class LayaCandidateStore:
             ).hexdigest()
 
         with self._lock, closing(self._connect(task_store)) as con:
-            con.execute("BEGIN IMMEDIATE")
-            row = con.execute(
-                "SELECT task_id,candidate_json,content_hash,status FROM laya_candidates "
-                "WHERE repository_scope=? AND candidate_id=?",
-                (scope, candidate_id),
-            ).fetchone()
-            if row is None:
-                con.rollback()
-                raise ValueError("candidate not found in authorized repository scope")
-            self._find_task(task_store, root, row["task_id"])
-            if hashlib.sha256(str(row["candidate_json"]).encode("utf-8")).hexdigest() != candidate_fingerprint:
-                con.rollback()
-                raise ValueError("candidate changed during local model review")
-            if row["status"] not in {"pending", "reviewed", "ambiguous", "verified"}:
-                con.rollback()
-                raise ValueError("candidate cannot receive a model review in current state")
-            candidate = json.loads(row["candidate_json"])
-            model_reviews = candidate.setdefault("model_reviews", [])
-            if type(model_reviews) is not list or len(model_reviews) >= 16:
-                con.rollback()
-                raise ValueError("candidate model review history is invalid or full")
-            now = time.time()
-            review_id = "lyr_" + uuid.uuid4().hex
-            rubric_version = (
-                _LABEL_RUBRIC_VERSION
-                if candidate.get("category") == DecisionCategory.CONTEXT_SOURCE.value
-                else _DECISION_REVIEW_RUBRIC_VERSION
-            )
-            model_reviews.append({
-                "review_id": review_id,
-                "kind": "local_model_review",
-                "reviewer_identity_status": "attested",
-                "reviewer_model": result.model_id,
-                "reviewer_revision": result.model_revision,
-                "provider": result.provider,
-                "runtime_version": result.runtime_version,
-                "device": result.device,
-                "execution_scope": "local",
-                "rubric_version": rubric_version,
-                "decision": result.decision,
-                "confidence": result.confidence,
-                "target_sha256": target_sha256,
-                "candidate_sha256": candidate_sha256,
-                "evidence_ids": list(candidate["evidence_ids"]),
-                "recorded_at": now,
-            })
-            changed = con.execute(
-                "UPDATE laya_candidates SET candidate_json=?,updated_at=? "
-                "WHERE repository_scope=? AND candidate_id=?",
-                (_canonical_json(candidate), now, scope, candidate_id),
-            ).rowcount
-            if changed != 1:
-                con.rollback()
-                raise ValueError("candidate changed during local model review")
-            self._event(
-                con,
-                candidate_id,
-                scope,
-                row["task_id"],
-                "model_review",
-                {
+            with write_transaction(con, max_duration_seconds=5.0, rollback_label="Laya model review"):
+                row = con.execute(
+                    "SELECT task_id,candidate_json,content_hash,status FROM laya_candidates "
+                    "WHERE repository_scope=? AND candidate_id=?",
+                    (scope, candidate_id),
+                ).fetchone()
+                if row is None:
+                    raise ValueError("candidate not found in authorized repository scope")
+                self._find_task(task_store, root, row["task_id"])
+                if hashlib.sha256(str(row["candidate_json"]).encode("utf-8")).hexdigest() != candidate_fingerprint:
+                    raise ValueError("candidate changed during local model review")
+                if row["status"] not in {"pending", "reviewed", "ambiguous", "verified"}:
+                    raise ValueError("candidate cannot receive a model review in current state")
+                candidate = json.loads(row["candidate_json"])
+                model_reviews = candidate.setdefault("model_reviews", [])
+                if type(model_reviews) is not list or len(model_reviews) >= 16:
+                    raise ValueError("candidate model review history is invalid or full")
+                now = time.time()
+                review_id = "lyr_" + uuid.uuid4().hex
+                rubric_version = (
+                    _LABEL_RUBRIC_VERSION
+                    if candidate.get("category") == DecisionCategory.CONTEXT_SOURCE.value
+                    else _DECISION_REVIEW_RUBRIC_VERSION
+                )
+                model_reviews.append({
                     "review_id": review_id,
-                    "decision": result.decision,
-                    "confidence": result.confidence,
+                    "kind": "local_model_review",
+                    "reviewer_identity_status": "attested",
                     "reviewer_model": result.model_id,
                     "reviewer_revision": result.model_revision,
+                    "provider": result.provider,
+                    "runtime_version": result.runtime_version,
+                    "device": result.device,
                     "execution_scope": "local",
                     "rubric_version": rubric_version,
-                },
-                now,
-            )
-            con.commit()
-            return {
-                "success": True,
-                "candidate_id": candidate_id,
-                "status": row["status"],
-                "review_id": review_id,
-            }
+                    "decision": result.decision,
+                    "confidence": result.confidence,
+                    "target_sha256": target_sha256,
+                    "candidate_sha256": candidate_sha256,
+                    "evidence_ids": list(candidate["evidence_ids"]),
+                    "recorded_at": now,
+                })
+                changed = con.execute(
+                    "UPDATE laya_candidates SET candidate_json=?,updated_at=? "
+                    "WHERE repository_scope=? AND candidate_id=?",
+                    (_canonical_json(candidate), now, scope, candidate_id),
+                ).rowcount
+                if changed != 1:
+                    raise ValueError("candidate changed during local model review")
+                self._event(
+                    con,
+                    candidate_id,
+                    scope,
+                    row["task_id"],
+                    "model_review",
+                    {
+                        "review_id": review_id,
+                        "decision": result.decision,
+                        "confidence": result.confidence,
+                        "reviewer_model": result.model_id,
+                        "reviewer_revision": result.model_revision,
+                        "execution_scope": "local",
+                        "rubric_version": rubric_version,
+                    },
+                    now,
+                )
+                return {
+                    "success": True,
+                    "candidate_id": candidate_id,
+                    "status": row["status"],
+                    "review_id": review_id,
+                }
 
     def _transition(self, operation: dict[str, Any], *, action: str, scope: str, root: str, task_store: Any) -> dict[str, Any]:
         if action == "model_review":
@@ -1411,76 +1654,137 @@ class LayaCandidateStore:
         op = _strict_object(operation, fields, action)
         candidate_id = _identity(op["candidate_id"], "candidate_id")
         with self._lock, closing(self._connect(task_store)) as con:
-            con.execute("BEGIN IMMEDIATE")
-            row = con.execute("SELECT * FROM laya_candidates WHERE repository_scope=? AND candidate_id=?", (scope, candidate_id)).fetchone()
-            if row is None:
-                con.rollback(); raise ValueError("candidate not found in authorized repository scope")
-            self._find_task(task_store, root, row["task_id"])
-            candidate = json.loads(row["candidate_json"])
-            current = row["status"]
-            now = time.time()
-            if action == "label":
-                if current not in {"pending", "reviewed", "ambiguous"}:
-                    con.rollback(); raise ValueError("candidate cannot be labeled in current state")
-                target = _identity(op["target"], "review target")
-                if target not in candidate["questions"][candidate["category"]]["criteria"]:
-                    con.rollback(); raise ValueError("review target is not an allowed option")
-                targets = {candidate["category"]: target}
-                targets_sha256 = hashlib.sha256(
-                    json.dumps(targets, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
-                ).hexdigest()
-                candidate["targets"] = targets
-                candidate["label_status"] = "verified"
-                candidate["label_provenance"] = {
-                    "method": "local_operator_confirmation",
-                    "rubric_version": _LABEL_RUBRIC_VERSION,
-                    "target_sha256": targets_sha256,
-                }
-                con.execute(
-                    "UPDATE laya_candidates SET status='verified',candidate_json=?,updated_at=? WHERE candidate_id=?",
-                    (_canonical_json(candidate), now, candidate_id),
-                )
-                self._event(
-                    con, candidate_id, scope, row["task_id"], action,
-                    {"method": "local_operator_confirmation", "rubric_version": _LABEL_RUBRIC_VERSION}, now,
-                )
-                con.commit()
-                return {"success": True, "candidate_id": candidate_id, "status": "verified"}
-            elif action == "reject":
-                if current not in {"pending", "reviewed", "ambiguous"}:
-                    con.rollback(); raise ValueError("reject requires a reviewable candidate")
-                new_status = op["status"]
-                if new_status not in {"rejected", "ambiguous"}:
-                    con.rollback(); raise ValueError("reject status must be rejected or ambiguous")
-                reason_code = _identity(op["reason_code"], "reason_code")
-                candidate["label_status"] = new_status
-                candidate["label_provenance"].setdefault("events", []).append(
-                    {"status": new_status, "reason_code": reason_code}
-                )
-                details = {"reason_code": reason_code}
-            else:
-                snapshots = con.execute(
-                    "SELECT DISTINCT snapshot_id FROM laya_dataset_assignments WHERE candidate_id=?",
-                    (candidate_id,),
-                ).fetchall()
+            if action == "delete":
+                row = con.execute(
+                    "SELECT candidate_id FROM laya_candidates WHERE repository_scope=? AND candidate_id=?",
+                    (scope, candidate_id),
+                ).fetchone()
+                if row is None:
+                    pending_exports = con.execute(
+                        "SELECT DISTINCT s.snapshot_id FROM laya_dataset_assignments a "
+                        "JOIN laya_dataset_snapshots s ON s.snapshot_id=a.snapshot_id "
+                        "WHERE a.candidate_id=? AND s.repository_scope=? AND s.status='invalidated'",
+                        (candidate_id, scope),
+                    ).fetchall()
+                    if pending_exports:
+                        cleanup_failures = []
+                        for snapshot in pending_exports:
+                            try:
+                                self._purge_snapshot_export(str(snapshot["snapshot_id"]))
+                            except Exception:
+                                cleanup_failures.append(snapshot["snapshot_id"])
+                        try:
+                            con.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                        except sqlite3.Error:
+                            cleanup_failures.append("wal_checkpoint")
+                        if cleanup_failures:
+                            return {
+                                "success": False,
+                                "candidate_id": candidate_id,
+                                "deleted": True,
+                                "cleanup_pending": True,
+                                "error": "candidate deletion committed; retry delete to finish local export cleanup",
+                            }
+                        return {
+                            "success": True,
+                            "candidate_id": candidate_id,
+                            "deleted": True,
+                            "cleanup_pending": False,
+                            "already_deleted": True,
+                        }
+                    raise ValueError("candidate not found in authorized repository scope")
+
+            snapshots = []
+            new_status = ""
+            with write_transaction(con, max_duration_seconds=5.0, rollback_label=f"Laya candidate {action}"):
+                row = con.execute(
+                    "SELECT * FROM laya_candidates WHERE repository_scope=? AND candidate_id=?",
+                    (scope, candidate_id),
+                ).fetchone()
+                if row is None:
+                    raise ValueError("candidate not found in authorized repository scope")
+                self._find_task(task_store, root, row["task_id"])
+                candidate = json.loads(row["candidate_json"])
+                current = row["status"]
+                now = time.time()
+                if action == "label":
+                    if current not in {"pending", "reviewed", "ambiguous"}:
+                        raise ValueError("candidate cannot be labeled in current state")
+                    target = _identity(op["target"], "review target")
+                    if target not in candidate["questions"][candidate["category"]]["criteria"]:
+                        raise ValueError("review target is not an allowed option")
+                    targets = {candidate["category"]: target}
+                    targets_sha256 = hashlib.sha256(
+                        json.dumps(targets, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
+                    ).hexdigest()
+                    candidate["targets"] = targets
+                    candidate["label_status"] = "verified"
+                    candidate["label_provenance"] = {
+                        "method": "local_operator_confirmation",
+                        "rubric_version": _LABEL_RUBRIC_VERSION,
+                        "target_sha256": targets_sha256,
+                    }
+                    con.execute(
+                        "UPDATE laya_candidates SET status='verified',candidate_json=?,updated_at=? WHERE candidate_id=?",
+                        (_canonical_json(candidate), now, candidate_id),
+                    )
+                    self._event(
+                        con, candidate_id, scope, row["task_id"], action,
+                        {"method": "local_operator_confirmation", "rubric_version": _LABEL_RUBRIC_VERSION}, now,
+                    )
+                    return {"success": True, "candidate_id": candidate_id, "status": "verified"}
+                if action == "reject":
+                    if current not in {"pending", "reviewed", "ambiguous"}:
+                        raise ValueError("reject requires a reviewable candidate")
+                    new_status = op["status"]
+                    if new_status not in {"rejected", "ambiguous"}:
+                        raise ValueError("reject status must be rejected or ambiguous")
+                    reason_code = _identity(op["reason_code"], "reason_code")
+                    candidate["label_status"] = new_status
+                    candidate["label_provenance"].setdefault("events", []).append(
+                        {"status": new_status, "reason_code": reason_code}
+                    )
+                    details = {"reason_code": reason_code}
+                else:
+                    snapshots = con.execute(
+                        "SELECT DISTINCT snapshot_id FROM laya_dataset_assignments WHERE candidate_id=?",
+                        (candidate_id,),
+                    ).fetchall()
+                    con.execute(
+                        "UPDATE laya_dataset_snapshots SET status='invalidated' "
+                        "WHERE snapshot_id IN (SELECT snapshot_id FROM laya_dataset_assignments WHERE candidate_id=?)",
+                        (candidate_id,),
+                    )
+                    con.execute("DELETE FROM laya_candidate_events WHERE candidate_id=?", (candidate_id,))
+                    self._event(con, candidate_id, scope, row["task_id"], "deleted", {"status": "deleted"}, now)
+                    con.execute("DELETE FROM laya_candidates WHERE candidate_id=?", (candidate_id,))
+                    new_status = "deleted"
+                if action == "reject":
+                    con.execute(
+                        "UPDATE laya_candidates SET status=?,candidate_json=?,updated_at=? WHERE candidate_id=?",
+                        (new_status, _canonical_json(candidate), now, candidate_id),
+                    )
+                    self._event(con, candidate_id, scope, row["task_id"], action, details, now)
+            if action == "delete":
+                cleanup_failures = []
                 for snapshot in snapshots:
-                    self._purge_snapshot_export(str(snapshot["snapshot_id"]))
-                con.execute(
-                    "UPDATE laya_dataset_snapshots SET status='invalidated' "
-                    "WHERE snapshot_id IN (SELECT snapshot_id FROM laya_dataset_assignments WHERE candidate_id=?)",
-                    (candidate_id,),
-                )
-                con.execute("DELETE FROM laya_candidate_events WHERE candidate_id=?", (candidate_id,))
-                self._event(
-                    con, candidate_id, scope, row["task_id"], "deleted", {"status": "deleted"}, now
-                )
-                con.execute("DELETE FROM laya_candidates WHERE candidate_id=?", (candidate_id,))
-                con.commit()
-                con.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-                return {"success": True, "candidate_id": candidate_id, "deleted": True}
-            con.execute("UPDATE laya_candidates SET status=?,candidate_json=?,updated_at=? WHERE candidate_id=?", (new_status, _canonical_json(candidate), now, candidate_id))
-            self._event(con, candidate_id, scope, row["task_id"], action, details, now)
-            con.commit()
+                    try:
+                        self._purge_snapshot_export(str(snapshot["snapshot_id"]))
+                    except Exception:
+                        cleanup_failures.append(snapshot["snapshot_id"])
+                try:
+                    con.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                except sqlite3.Error:
+                    cleanup_failures.append("wal_checkpoint")
+                if cleanup_failures:
+                    return {
+                        "success": False,
+                        "candidate_id": candidate_id,
+                        "deleted": True,
+                        "cleanup_pending": True,
+                        "error": "candidate deletion committed; retry delete to finish local export cleanup",
+                    }
+                return {"success": True, "candidate_id": candidate_id, "deleted": True, "cleanup_pending": False}
         return {"success": True, "candidate_id": candidate_id, "status": new_status}
 
     @staticmethod

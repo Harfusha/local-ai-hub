@@ -7,6 +7,10 @@ from pathlib import Path
 
 def test_actual_current_tab_fixture_preserves_login_and_never_falls_back() -> None:
     root = Path(__file__).parents[1]
+    manifest = json.loads((root / "browser_bridge/manifest.json").read_text(encoding="utf-8"))
+    assert "content_scripts" not in manifest
+    assert set(manifest["permissions"]) == {"activeTab", "offscreen", "scripting", "storage"}
+    assert manifest["action"]["default_popup"] == "popup.html"
     result = subprocess.run(
         [
             "node",
@@ -23,4 +27,4 @@ def test_actual_current_tab_fixture_preserves_login_and_never_falls_back() -> No
     )
     evidence = json.loads(result.stdout)
     assert evidence["success"] is True
-    assert evidence["cases"] == ["success", "permission-denied-no-capture", "timeout", "screenshot-timeout", "hub-timeout", "final-post-timeout", "query-timeout", "get-timeout", "tab-switch", "same-tab-navigation", "same-url-state-race", "disconnect-after-stage", "missing-tab-url", "empty-tab-url", "password", "timestamp", "origin", "token"]
+    assert evidence["cases"] == ["success", "permission-denied-no-capture", "unsupported-page-no-injection", "injection-denied", "timeout", "screenshot-timeout", "hub-timeout", "final-post-timeout", "query-timeout", "get-timeout", "tab-switch", "same-tab-navigation", "same-url-state-race", "disconnect-after-stage", "missing-tab-url", "empty-tab-url", "password", "timestamp", "origin", "token", "privacy-redacted", "screenshot-only", "mask-failure-no-stage", "sensitive-origin-blocked"]

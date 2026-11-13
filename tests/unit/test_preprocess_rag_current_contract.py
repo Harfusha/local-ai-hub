@@ -65,6 +65,37 @@ def add_pending(prep, root, path):
         con.commit()
 
 
+def add_completed_project(prep, root, workspace="repo-workspace"):
+    with closing(prep._connect()) as con:
+        con.execute(
+            """CREATE TABLE projects (
+                root TEXT PRIMARY KEY, workspace TEXT, status TEXT, phase TEXT,
+                paused INTEGER, retry_after REAL, next_check_at REAL,
+                updated_at REAL, generation INTEGER, force_refresh INTEGER,
+                last_requested_at REAL
+            )"""
+        )
+        con.execute(
+            "INSERT INTO projects VALUES(?, ?, 'complete', 'complete', 0, 0, 0, 0, 7, 0, 0)",
+            (root, workspace),
+        )
+        con.execute(
+            "INSERT INTO file_refs VALUES(?,?,?,0,?,0,1,0)",
+            (root, "service.py", "current-hash", "current-hash"),
+        )
+        con.commit()
+
+
+def configure_watched_rag_reconciliation(prep):
+    prep.cfg.update({"auto_recheck_seconds": 1800})
+    prep._watcher_active = True
+    prep._project_limit = Mock(return_value=6)
+    prep._scheduler_order = Mock(return_value=("root ASC", []))
+    prep._rebalance_processing_slots = Mock()
+    prep._first_unowned_project = lambda rows: rows[0] if rows else None
+    prep._project_phase_allowed = Mock(return_value=True)
+
+
 def test_rag_idle_prunes_current_workspace(prep, tmp_path):
     root = str(tmp_path)
     prep.rag.prune_missing.return_value = 2
@@ -72,6 +103,30 @@ def test_rag_idle_prunes_current_workspace(prep, tmp_path):
     prep.rag.prune_missing.assert_called_once_with(root, "repo-workspace", [])
     prep._set_project.assert_called_once_with(root, phase="files")
     assert prep._stats["rag_deleted_files"] == 2
+
+
+def test_rag_idle_requeues_semantic_paths_missing_from_workspace(prep, tmp_path):
+    root = str(tmp_path)
+    prep.cfg["rag_files_per_step"] = 1
+    prep.deterministic = Mock()
+    prep.deterministic.semantic_needed.return_value = True
+    prep.rag.indexed_paths.return_value = set()
+    with closing(prep._connect()) as con:
+        con.execute(
+            "INSERT INTO file_refs VALUES(?,?,?,0,?,0,1,0)",
+            (root, "service.py", "current-hash", "current-hash"),
+        )
+        con.commit()
+
+    assert prep._step_rag({"root": root, "workspace": "repo-workspace"})
+
+    prep.rag.indexed_paths.assert_called_once_with(
+        workspace="repo-workspace", paths=["service.py"],
+    )
+    prep.rag.prune_missing.assert_not_called()
+    prep._set_project.assert_not_called()
+    with closing(prep._connect()) as con:
+        assert con.execute("SELECT rag_hash FROM file_refs").fetchone()[0] is None
 
 
 def test_declarative_skip_removes_stale_paths_and_marks_synced(prep, tmp_path):
@@ -138,3 +193,110 @@ def test_hot_query_uses_current_search_revision_and_hybrid_contracts(prep, tmp_p
     with closing(prep._connect()) as con:
         assert con.execute("SELECT revision_hash FROM hot_query_state").fetchone()[0] == "revision-current"
     assert prep._stats["hot_queries"] == 1
+
+
+def test_completed_project_requeues_missing_rag_rows_with_watcher_active(prep, tmp_path):
+    root = str(tmp_path)
+    add_completed_project(prep, root)
+    configure_watched_rag_reconciliation(prep)
+    prep.rag.indexed_paths.return_value = set()
+
+    row = prep._next_cpu_project()
+
+    assert row is not None
+    assert row["root"] == root
+    assert row["workspace"] == "repo-workspace"
+    assert row["status"] == "queued"
+    assert row["phase"] == "rag"
+    prep.rag.indexed_paths.assert_called_once_with(
+        workspace="repo-workspace", paths=["service.py"],
+    )
+    with closing(prep._connect()) as con:
+        assert con.execute("SELECT rag_hash FROM file_refs").fetchone()[0] is None
+
+
+def test_completed_project_rag_check_advances_cadence_when_workspace_is_current(prep, tmp_path):
+    root = str(tmp_path)
+    add_completed_project(prep, root)
+    configure_watched_rag_reconciliation(prep)
+    prep.rag.indexed_paths.return_value = {"service.py"}
+    prep.rag.indexed_chunk_paths.return_value = {"service.py"}
+
+    assert prep._next_cpu_project() is None
+
+    with closing(prep._connect()) as con:
+        project = con.execute(
+            "SELECT status,phase,next_check_at FROM projects WHERE root=?", (root,),
+        ).fetchone()
+    assert project["status"] == "complete"
+    assert project["phase"] == "complete"
+    assert project["next_check_at"] > 0
+
+
+def test_completed_project_rag_check_error_is_deferred_without_stopping_selection(prep, tmp_path):
+    root = str(tmp_path)
+    add_completed_project(prep, root)
+    configure_watched_rag_reconciliation(prep)
+    prep.rag.indexed_paths.side_effect = RuntimeError("database locked")
+
+    assert prep._next_cpu_project() is None
+
+    with closing(prep._connect()) as con:
+        project = con.execute(
+            "SELECT status,phase,next_check_at FROM projects WHERE root=?", (root,),
+        ).fetchone()
+    assert project["status"] == "complete"
+    assert project["phase"] == "complete"
+    assert project["next_check_at"] > 0
+
+
+def test_completed_project_requeues_nonempty_file_when_chunk_rows_are_lost(prep, tmp_path):
+    root = str(tmp_path)
+    (tmp_path / "service.py").write_text("def service():\n    return 'ready'\n", encoding="utf-8")
+    add_completed_project(prep, root)
+    configure_watched_rag_reconciliation(prep)
+    prep.rag.indexed_paths.return_value = {"service.py"}
+    prep.rag.indexed_chunk_paths.return_value = set()
+
+    row = prep._next_cpu_project()
+
+    assert row is not None
+    assert row["status"] == "queued"
+    assert row["phase"] == "rag"
+    prep.rag.indexed_chunk_paths.assert_called_once_with(
+        workspace="repo-workspace", paths=["service.py"],
+    )
+
+
+def test_completed_project_keeps_whitespace_file_without_chunk_rows(prep, tmp_path):
+    root = str(tmp_path)
+    (tmp_path / "service.py").write_text(" \n\t \n", encoding="utf-8")
+    add_completed_project(prep, root)
+    configure_watched_rag_reconciliation(prep)
+    prep.rag.indexed_paths.return_value = {"service.py"}
+    prep.rag.indexed_chunk_paths.return_value = set()
+
+    assert prep._next_cpu_project() is None
+
+    prep.rag.indexed_chunk_paths.assert_called_once_with(
+        workspace="repo-workspace", paths=["service.py"],
+    )
+
+
+def test_indexed_chunk_paths_reads_chunk_rows_not_file_rows(tmp_path):
+    store = RAGStore({"server": {"state_dir": str(tmp_path / "state")}})
+    with closing(store._connect()) as con:
+        con.execute(
+            "INSERT INTO files(workspace,path,mtime_ns,size,content_hash) VALUES(?,?,?,?,?)",
+            ("ws", "missing-chunk.py", 1, 20, "file-hash"),
+        )
+        con.execute(
+            "INSERT INTO chunks(workspace,path,chunk_no,content_hash,text,embedding,embedding_space) "
+            "VALUES(?,?,?,?,?,?,?)",
+            ("ws", "indexed.py", 0, "chunk-hash", "text", "[]", "test-space"),
+        )
+        con.commit()
+
+    assert store.indexed_chunk_paths(
+        workspace="ws", paths=["indexed.py", "missing-chunk.py", "other-workspace.py"],
+    ) == {"indexed.py"}

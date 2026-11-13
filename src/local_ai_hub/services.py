@@ -1231,6 +1231,7 @@ class LocalAIServices:
         repository_revision: str = "",
         trace_system_override: str | None = None,
         cancel_event: threading.Event | None = None,
+        request_timeout_seconds: float | None = None,
         route: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         from .operational_mode import (
@@ -1290,6 +1291,16 @@ class LocalAIServices:
         resilience = self.config.get("resilience", {})
         default_request_timeout = float(self.config.get("server", {}).get("request_timeout_seconds", 300)) + 30.0
         request_timeout = max(0.05, float(resilience.get("scheduler_wait_timeout_seconds", default_request_timeout)))
+        if request_timeout_seconds is not None:
+            if isinstance(request_timeout_seconds, bool):
+                raise ValueError("request_timeout_seconds must be finite and positive")
+            try:
+                timeout_override = float(request_timeout_seconds)
+            except (TypeError, ValueError, OverflowError) as exc:
+                raise ValueError("request_timeout_seconds must be finite and positive") from exc
+            if not math.isfinite(timeout_override) or timeout_override <= 0:
+                raise ValueError("request_timeout_seconds must be finite and positive")
+            request_timeout = min(request_timeout, max(0.05, timeout_override))
         request_deadline = time.monotonic() + request_timeout
         max_tokens = max(64, min(int(max_tokens), int(saving.get("max_local_output_tokens", 8192))))
         role = source.rsplit(":", 1)[-1].lower()
@@ -6423,11 +6434,26 @@ class LocalAIServices:
                         semantic_context_fingerprint=stable_hash(params),
                         internal=True,
                         format={"type": "object"},
+                        # Context relevance is optional; deterministic evidence remains
+                        # available when local inference exceeds its latency budget.
+                        request_timeout_seconds=15.0,
                     )
                 except Exception:
                     return {"success": False, "degraded": True, "degraded_reason": "model_error", "warnings": []}
                 if not isinstance(generated, dict) or not generated.get("success"):
-                    return {"success": False, "degraded": True, "degraded_reason": "model_unavailable", "warnings": []}
+                    is_result = isinstance(generated, dict)
+                    error_type = str(generated.get("error_type") or "") if is_result else ""
+                    error_code = str(generated.get("error_code") or "") if is_result else ""
+                    timed_out = is_result and generated.get("timed_out") is True
+                    if error_type == "QueueFullError":
+                        degraded_reason = "backend_queue_full"
+                    elif timed_out or error_code == "model_request_timeout":
+                        degraded_reason = "backend_timeout"
+                    elif error_code == "local_backend_transport":
+                        degraded_reason = "backend_transport"
+                    else:
+                        degraded_reason = "model_unavailable"
+                    return {"success": False, "degraded": True, "degraded_reason": degraded_reason, "warnings": []}
                 raw = generated.get("text") or generated.get("response") or ""
                 try:
                     if isinstance(raw, dict):

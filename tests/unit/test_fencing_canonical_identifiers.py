@@ -91,8 +91,9 @@ def test_normalize_paths_preserves_valid_relative_paths_and_rejects_string() -> 
 
 
 class _CorruptLiveLeaseStore(FencingLeaseStore):
-    def __init__(self, root: str, now: float = 100.0) -> None:
+    def __init__(self, root: str, path: Path, now: float = 100.0) -> None:
         self.root = root
+        self.path = path
         self._clock = lambda: now
 
     def _connect(self) -> sqlite3.Connection:
@@ -121,9 +122,9 @@ class _CorruptLiveLeaseStore(FencingLeaseStore):
         return con
 
 
-def test_acquire_fails_closed_on_corrupt_live_lease_paths() -> None:
+def test_acquire_fails_closed_on_corrupt_live_lease_paths(tmp_path: Path) -> None:
     root = canonical_resource("repo")
-    store = _CorruptLiveLeaseStore(root)
+    store = _CorruptLiveLeaseStore(root, tmp_path / "fencing.sqlite3")
     attempt = WorkAttemptFence(root, "work", "attempt", "writer", 1, 500.0)
 
     with pytest.raises(LeaseUnavailableError, match="corrupt path scope"):

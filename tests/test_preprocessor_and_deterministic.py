@@ -351,6 +351,9 @@ def test_active_watcher_suppresses_periodic_full_inventory(tmp_path: Path):
     repo_tools = RepositoryTools(cfg)
     pre = ProjectPreprocessor(cfg, _Noop(), _Rag(), _Noop(), _Noop(), repo_tools)
     try:
+        # This test covers watcher-driven inventory scheduling. Keep the
+        # independent completed-RAG reconciliation path out of the fixture.
+        pre.rag = None
         root = str(repo.resolve())
         now = time.time()
         with closing(pre._connect()) as con:

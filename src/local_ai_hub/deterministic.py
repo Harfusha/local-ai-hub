@@ -35,7 +35,7 @@ from .code_index import _mask_non_code
 from .normalizer import tokenize_query_terms
 from .sqlite_support import (
     SQLiteChangeObserver, connect_sqlite, initialize_wal, is_busy_error,
-    quick_sanity_check, sqlite_batches,
+    quick_sanity_check, sqlite_batches, write_transaction,
 )
 from .sqlite_counts import global_row_counts, initialize_row_counts
 from .diff_parsers import (
@@ -91,6 +91,8 @@ _SECRET_SCAN_MAX_TOTAL_BYTES = 16_777_216
 _SECRET_SCAN_MAX_LINE_BYTES = 65_536
 _SECRET_SCAN_MAX_SECONDS = 5.0
 _SECRET_SCAN_MAX_FINDINGS = 100
+_SQLITE_DISCOVERY_MAX_ENTRIES = 20_000
+_SQLITE_DISCOVERY_MAX_SECONDS = 3.0
 _RELATION_SCAN_MAX_SECONDS = 3.0
 _GIT_INSIGHT_DEADLINE_SECONDS = 8.0
 _GIT_INSIGHT_STREAM_LIMIT = 1_048_576
@@ -761,12 +763,13 @@ class DeterministicEngine:
             return
         resolved = str(self._root(root))
         now = time.time()
-        with self._lock, closing(self._connect()) as con:
+        with self._lock, closing(self._connect()) as con, write_transaction(
+            con, max_duration_seconds=5.0, rollback_label="deterministic test source links"
+        ):
             con.executemany(
                 "INSERT OR REPLACE INTO test_source_links(root, source_path, test_path, confidence, updated_at) VALUES(?, ?, ?, ?, ?)",
                 [(resolved, src.replace("\\", "/"), test.replace("\\", "/"), float(conf), now) for src, test, conf in links],
             )
-            con.commit()
 
     def get_test_source_links(self, root: str, source_paths: list[str]) -> list[str]:
         if not source_paths:
@@ -925,22 +928,23 @@ class DeterministicEngine:
         try:
             payload = json_dumps(value, ensure_ascii=False, separators=(",", ":"))
             with self._lock, closing(self._connect()) as con:
-                con.execute("BEGIN IMMEDIATE")
-                if self._generation(root, con) != generation:
-                    self._query_l1.pop(cache_key, None)
-                    return
-                con.execute(
-                    "INSERT OR REPLACE INTO query_cache(root,generation,query_key,result_json,updated_at) VALUES(?,?,?,?,?)",
-                    (root, generation, key, payload, now),
-                )
-                con.execute("DELETE FROM query_cache WHERE updated_at<?", (now - self._query_l2_ttl,))
-                count = int(con.execute("SELECT COUNT(*) FROM query_cache WHERE root=? AND generation=?", (root, generation)).fetchone()[0])
-                if count > self._query_l2_max_per_root:
+                with write_transaction(
+                    con, max_duration_seconds=1.0, rollback_label="deterministic query cache"
+                ):
+                    if self._generation(root, con) != generation:
+                        self._query_l1.pop(cache_key, None)
+                        return
                     con.execute(
-                        "DELETE FROM query_cache WHERE rowid IN (SELECT rowid FROM query_cache WHERE root=? AND generation=? ORDER BY updated_at ASC LIMIT ?)",
-                        (root, generation, count - self._query_l2_max_per_root),
+                        "INSERT OR REPLACE INTO query_cache(root,generation,query_key,result_json,updated_at) VALUES(?,?,?,?,?)",
+                        (root, generation, key, payload, now),
                     )
-                con.commit()
+                    con.execute("DELETE FROM query_cache WHERE updated_at<?", (now - self._query_l2_ttl,))
+                    count = int(con.execute("SELECT COUNT(*) FROM query_cache WHERE root=? AND generation=?", (root, generation)).fetchone()[0])
+                    if count > self._query_l2_max_per_root:
+                        con.execute(
+                            "DELETE FROM query_cache WHERE rowid IN (SELECT rowid FROM query_cache WHERE root=? AND generation=? ORDER BY updated_at ASC LIMIT ?)",
+                            (root, generation, count - self._query_l2_max_per_root),
+                        )
                 # Cache-only commits do not change source generations. Acknowledge
                 # ours so the next read can reuse L1; concurrent source commits are
                 # still fenced by their transactional project generation.
@@ -994,7 +998,9 @@ class DeterministicEngine:
     def prune(self, root: str, valid_paths: list[str]) -> int:
         root = self._root(root)
         valid = set(valid_paths)
-        with self._lock, closing(self._connect()) as con:
+        with self._lock, closing(self._connect()) as con, write_transaction(
+            con, max_duration_seconds=5.0, rollback_label="deterministic prune"
+        ):
             existing = [str(r[0]) for r in con.execute("SELECT path FROM files WHERE root=?", (root,)).fetchall()]
             stale = [path for path in existing if path not in valid]
             deleted = len(stale)
@@ -1022,7 +1028,6 @@ class DeterministicEngine:
                     )
             if deleted:
                 self._bump_generation(con, root)
-            con.commit()
         return deleted
 
     @staticmethod
@@ -1709,7 +1714,9 @@ class DeterministicEngine:
         self._fact_blob_l1.set(key, facts)
         try:
             payload = json_dumps(facts, ensure_ascii=False, separators=(",", ":"))
-            with self._lock, closing(self._connect()) as con:
+            with self._lock, closing(self._connect()) as con, write_transaction(
+                con, max_duration_seconds=1.0, rollback_label="deterministic fact blob cache"
+            ):
                 con.execute(
                     "INSERT OR REPLACE INTO fact_blobs(content_hash,analyzer_version,language,facts_json,updated_at) VALUES(?,?,?,?,?)",
                     (content_hash, __version__, language, payload, time.time()),
@@ -1720,7 +1727,6 @@ class DeterministicEngine:
                         "DELETE FROM fact_blobs WHERE rowid IN (SELECT rowid FROM fact_blobs ORDER BY updated_at ASC LIMIT ?)",
                         (max(100, count - self._fact_blob_max),),
                     )
-                con.commit()
         except (sqlite3.DatabaseError, TypeError, ValueError):
             pass
 
@@ -1735,7 +1741,9 @@ class DeterministicEngine:
             return {"success": False, "error": "invalid path"}
         root_s = str(base)
         if not target.is_file():
-            with self._lock, closing(self._connect()) as con:
+            with self._lock, closing(self._connect()) as con, write_transaction(
+                con, max_duration_seconds=2.0, rollback_label="deterministic remove file"
+            ):
                 existed = con.execute("SELECT 1 FROM files WHERE root=? AND path=?", (root_s, path)).fetchone() is not None
                 con.execute("DELETE FROM files WHERE root=? AND path=?", (root_s, path))
                 con.execute("DELETE FROM facts WHERE root=? AND path=?", (root_s, path))
@@ -1745,7 +1753,6 @@ class DeterministicEngine:
                     pass
                 if existed:
                     self._bump_generation(con, root_s)
-                con.commit()
             return {"success": True, "deleted": True}
         digest, lines = self.repo_tools._read_snapshot(target)
         content_hash = content_hash or digest
@@ -1761,8 +1768,9 @@ class DeterministicEngine:
             facts = self._extract_source_facts(path, text)
             self._fact_blob_put(content_hash, language, facts)
         now = time.time()
-        with self._lock, closing(self._connect()) as con:
-            con.execute("BEGIN IMMEDIATE")
+        with self._lock, closing(self._connect()) as con, write_transaction(
+            con, max_duration_seconds=5.0, rollback_label="deterministic update file"
+        ):
             con.execute("DELETE FROM facts WHERE root=? AND path=?", (root_s, path))
             try:
                 con.execute("DELETE FROM fact_fts WHERE root=? AND path=?", (root_s, path))
@@ -1784,7 +1792,6 @@ class DeterministicEngine:
             except sqlite3.OperationalError:
                 pass
             self._bump_generation(con, root_s)
-            con.commit()
         self._stats["files_parsed"] += 1
         self._stats["facts_extracted"] += len(facts)
         return {"success": True, "cached": False, "path": path, "facts": len(facts)}
@@ -1869,8 +1876,9 @@ class DeterministicEngine:
             parsed_rows.append((path, content_hash, language, facts))
 
         if parsed_rows:
-            with self._lock, closing(self._connect()) as con:
-                con.execute("BEGIN IMMEDIATE")
+            with self._lock, closing(self._connect()) as con, write_transaction(
+                con, max_duration_seconds=5.0, rollback_label="deterministic batch update"
+            ):
                 if blob_rows:
                     con.executemany("INSERT OR REPLACE INTO fact_blobs(content_hash,analyzer_version,language,facts_json,updated_at) VALUES(?,?,?,?,?)", blob_rows)
                 # FTS root/path filters scan its unindexed columns. Scope one
@@ -1905,7 +1913,6 @@ class DeterministicEngine:
                         pass
                 con.execute("DELETE FROM _det_batch_active WHERE root=?", (root_s,))
                 self._bump_generation(con, root_s)
-                con.commit()
             self._stats["files_parsed"] += len(parsed_rows)
             self._stats["facts_extracted"] += sum(len(x[3]) for x in parsed_rows)
             self._stats["fact_blob_misses"] += len(blob_rows)
@@ -1996,7 +2003,9 @@ class DeterministicEngine:
         self._manifest_blob_l1.set(key, (deps, scripts))
         try:
             now = time.time()
-            with self._lock, closing(self._connect()) as con:
+            with self._lock, closing(self._connect()) as con, write_transaction(
+                con, max_duration_seconds=1.0, rollback_label="deterministic manifest blob cache"
+            ):
                 con.execute(
                     "INSERT OR REPLACE INTO manifest_blobs(content_hash,analyzer_version,filename,deps_json,scripts_json,updated_at) VALUES(?,?,?,?,?,?)",
                     (content_hash, __version__, filename.lower(), json_dumps(deps, ensure_ascii=False, separators=(",", ":")), json_dumps(scripts, ensure_ascii=False, separators=(",", ":")), now),
@@ -2004,7 +2013,6 @@ class DeterministicEngine:
                 count = int(con.execute("SELECT COUNT(*) FROM manifest_blobs").fetchone()[0])
                 if count > self._manifest_blob_max:
                     con.execute("DELETE FROM manifest_blobs WHERE rowid IN (SELECT rowid FROM manifest_blobs ORDER BY updated_at ASC LIMIT ?)", (max(100, count - self._manifest_blob_max),))
-                con.commit()
         except (sqlite3.DatabaseError, TypeError, ValueError):
             pass
 
@@ -2356,12 +2364,12 @@ class DeterministicEngine:
             dep_rows.extend((root_s, rel, n, v, scope) for n, v, scope in deps)
             script_rows.extend((root_s, rel, n, command, purpose) for n, command, purpose in scripts)
 
-        with self._lock, closing(self._connect()) as con:
-            con.execute("BEGIN IMMEDIATE")
+        with self._lock, closing(self._connect()) as con, write_transaction(
+            con, max_duration_seconds=5.0, rollback_label="deterministic manifest refresh"
+        ):
             # Another thread may have completed the same refresh while we parsed.
             current = con.execute("SELECT manifest_hash FROM project_state WHERE root=?", (root_s,)).fetchone()
             if current and str(current[0]) == mh:
-                con.rollback()
                 self._stats["manifest_cache_hits"] += 1
                 return {"success": True, "cached": True, "manifests": len(manifests)}
             con.execute("DELETE FROM dependencies WHERE root=?", (root_s,))
@@ -2374,7 +2382,6 @@ class DeterministicEngine:
                 (root_s, mh, time.time()),
             )
             self._bump_generation(con, root_s)
-            con.commit()
         self._stats["manifest_refreshes"] += 1
         return {"success": True, "cached": False, "manifests": len(manifests), "dependencies": len(dep_rows), "scripts": len(script_rows)}
 
@@ -4084,7 +4091,9 @@ class DeterministicEngine:
         dead_info = self.detect_dead_code(resolved, limit=limit)
         items = dead_info.get("dead_symbols", [])
         now = time.time()
-        with self._lock, closing(self._connect()) as con:
+        with self._lock, closing(self._connect()) as con, write_transaction(
+            con, max_duration_seconds=5.0, rollback_label="deterministic dead-code projection"
+        ):
             con.execute("DELETE FROM unreferenced_symbols WHERE root=?", (resolved,))
             if items:
                 con.executemany(
@@ -4092,7 +4101,6 @@ class DeterministicEngine:
                        VALUES (?, ?, ?, ?, ?, ?)""",
                     [(resolved, str(i["path"]), str(i["name"]), str(i["kind"]), int(i.get("line", 0)), now) for i in items],
                 )
-            con.commit()
         return {"success": True, "root": resolved, "count": len(items), "symbols": items}
 
     def get_unreferenced_symbols(self, root: str, limit: int = 50) -> list[dict[str, Any]]:
@@ -8036,12 +8044,34 @@ def test_{sym}_regression_edge_cases():
         }
 
     @staticmethod
-    def _find_sqlite_database(p_root: Path) -> Path | None:
-        """Find a SQLite file without traversing generated or environment trees."""
+    def _find_sqlite_database(p_root: Path) -> tuple[Path | None, bool]:
+        """Find a SQLite file within bounded entry and time budgets."""
         ignored_dirs = {"node_modules", "venv", "tool-envs", "site-packages", ".venv"}
         sqlite_suffixes = {".sqlite3", ".db", ".sqlite"}
-        for current, dirnames, filenames in os.walk(p_root, topdown=True, followlinks=False):
+        started = time.monotonic()
+        scanned_entries = 0
+        scan_failed = False
+
+        def note_scan_error(_error: OSError) -> None:
+            nonlocal scan_failed
+            scan_failed = True
+
+        for current, dirnames, filenames in os.walk(
+            p_root, topdown=True, onerror=note_scan_error, followlinks=False
+        ):
+            if time.monotonic() - started >= _SQLITE_DISCOVERY_MAX_SECONDS:
+                return None, False
             current_path = Path(current)
+            sqlite_files = sorted(
+                filename for filename in filenames
+                if Path(filename).suffix.lower() in sqlite_suffixes
+            )
+            if sqlite_files:
+                return current_path / sqlite_files[0], True
+
+            scanned_entries += len(dirnames) + len(filenames)
+            if scanned_entries > _SQLITE_DISCOVERY_MAX_ENTRIES:
+                return None, False
             kept_dirs: list[str] = []
             for dirname in dirnames:
                 if dirname.startswith(".") or dirname.lower() in ignored_dirs:
@@ -8051,10 +8081,7 @@ def test_{sym}_regression_edge_cases():
                     continue
                 kept_dirs.append(dirname)
             dirnames[:] = sorted(kept_dirs)
-            for filename in sorted(filenames):
-                if Path(filename).suffix.lower() in sqlite_suffixes:
-                    return current_path / filename
-        return None
+        return None, not scan_failed
 
     def schema_inspect(self, root: str, db_path: str | None = None) -> dict[str, Any]:
         """Inspect SQLite database schema (tables, columns, indexes, foreign keys)."""
@@ -8063,11 +8090,26 @@ def test_{sym}_regression_edge_cases():
         if db_path:
             p = Path(db_path)
             target_db = p if p.is_absolute() else p_root / p
+            search_complete = True
         else:
-            target_db = self._find_sqlite_database(p_root)
+            target_db, search_complete = self._find_sqlite_database(p_root)
 
         if not target_db or not target_db.is_file():
-            return {"success": False, "status_code": 404, "error": f"no SQLite database found in root: {root}"}
+            if not search_complete:
+                return {
+                    "success": False,
+                    "status_code": 422,
+                    "terminal": True,
+                    "retryable": False,
+                    "database_search_complete": False,
+                    "error": "SQLite database search reached a safety limit; provide db_path",
+                }
+            return {
+                "success": False,
+                "status_code": 404,
+                "database_search_complete": True,
+                "error": f"no SQLite database found in root: {root}",
+            }
 
         try:
             resolved_db = target_db.resolve(strict=True)
@@ -8106,11 +8148,26 @@ def test_{sym}_regression_edge_cases():
         if db_path:
             p = Path(db_path)
             target_db = p if p.is_absolute() else p_root / p
+            search_complete = True
         else:
-            target_db = self._find_sqlite_database(p_root)
+            target_db, search_complete = self._find_sqlite_database(p_root)
 
         if not target_db or not target_db.is_file():
-            return {"success": False, "status_code": 404, "error": "no SQLite database found for query explain"}
+            if not search_complete:
+                return {
+                    "success": False,
+                    "status_code": 422,
+                    "terminal": True,
+                    "retryable": False,
+                    "database_search_complete": False,
+                    "error": "SQLite database search reached a safety limit; provide db_path",
+                }
+            return {
+                "success": False,
+                "status_code": 404,
+                "database_search_complete": True,
+                "error": "no SQLite database found for query explain",
+            }
 
         if not query or not query.strip():
             return {"success": False, "status_code": 400, "error": "query cannot be empty"}

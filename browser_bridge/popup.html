@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Local AI Hub capture</title>
+  <style>
+    body { width: 330px; margin: 0; padding: 16px; color: #202124; font: 14px/1.45 system-ui, sans-serif; }
+    h1 { margin: 0 0 10px; font-size: 17px; }
+    p { margin: 8px 0; }
+    label { display: block; margin-top: 12px; font-weight: 600; }
+    select, button { box-sizing: border-box; width: 100%; margin-top: 6px; padding: 8px; font: inherit; }
+    .notice { padding: 10px; border: 1px solid #b8c4d2; border-radius: 6px; background: #f4f7fb; }
+    .check { display: flex; gap: 8px; align-items: flex-start; font-weight: 400; }
+    .check input { margin-top: 4px; }
+    #captureStatus { min-height: 1.5em; }
+    button { border: 0; border-radius: 5px; background: #155eef; color: white; cursor: pointer; }
+    button:disabled { opacity: .55; cursor: default; }
+  </style>
+</head>
+<body>
+  <h1>Capture current page</h1>
+  <div class="notice" id="privacyNotice">
+    <p>Captures stay in the Local AI Hub on this PC. Artifact retention follows the Hub’s configured lifetime. This does not verify OS or network isolation.</p>
+    <p>Before exporting or sharing an artifact, inspect its contents and confirm the disclosure yourself. Current-tab review sends data only to the loopback Hub.</p>
+  </div>
+  <label for="captureMode">Capture mode</label>
+  <select id="captureMode">
+    <option value="privacy_redacted" selected>Privacy redacted</option>
+    <option value="screenshot_only">Screenshot only</option>
+    <option value="full_local_capture">Full local capture</option>
+  </select>
+  <p id="modeDescription" aria-live="polite"></p>
+  <label class="check"><input id="noticeAccepted" type="checkbox"><span>I understand what this capture stores locally.</span></label>
+  <label class="check"><input id="fullCaptureAcknowledged" type="checkbox"><span>For full capture, I accept that unredacted page text may be stored.</span></label>
+  <label class="check"><input id="blockSensitiveOrigins" type="checkbox" checked><span>Block likely login, banking, identity, and payment origins.</span></label>
+  <button id="captureButton" type="button" disabled>Capture page</button>
+  <button id="purgeCaptureButton" type="button" hidden>Delete this capture</button>
+  <p id="captureStatus" role="status" aria-live="polite"></p>
+  <script src="popup.js"></script>
+</body>
+</html>

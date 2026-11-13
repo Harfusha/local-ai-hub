@@ -81,12 +81,26 @@ class ExternalGpuReservationStore:
         with self._locked():
             return self._read_unlocked()
 
-    def status_snapshot(self) -> tuple[dict[str, Any] | None, bool]:
+    def status_snapshot(self) -> tuple[dict[str, Any] | None, bool, str | None]:
         """Observe metadata and fence presence under the same reservation lock."""
         with self._locked():
             record = self._read_unlocked()
             present = record is not None or self.path.exists() or self.path.is_symlink()
-            return record, present
+            reason_code = None
+            if record is None and present:
+                if self.path.is_symlink():
+                    reason_code = "reservation_fence_symlink"
+                elif self.metadata_path.is_symlink():
+                    reason_code = "reservation_metadata_symlink"
+                elif not self.path.exists():
+                    reason_code = "reservation_metadata_without_fence"
+                elif self.metadata_path.exists():
+                    reason_code = "reservation_metadata_invalid_or_mismatched"
+                elif self._read_internal_digest_unlocked() is not None:
+                    reason_code = "legacy_digest_only_fence"
+                else:
+                    reason_code = "reservation_fence_unreadable"
+            return record, present, reason_code
 
     def scheduler_snapshot(self) -> tuple[bool, dict[str, Any] | None, str | None]:
         """Reap expired state and read scheduler metadata under one file lock."""
@@ -297,12 +311,15 @@ class ExternalGpuReservationStore:
                 "expires_at": self._clock() + self.ttl_seconds,
             }
             record["owner_vram_budget_bytes"] = owner_vram_budget_bytes
+            digest_file_stat = None
             try:
-                self._write_digest_exclusive(token_digest)
+                digest_file_stat = self._write_digest_exclusive(token_digest)
                 if not self._write_metadata(record):
+                    self._remove_uncommitted_digest_unlocked(token_digest, expected_stat=digest_file_stat)
                     return None
             except OSError:
-                # A digest without metadata is intentionally left fail-closed.
+                if digest_file_stat is not None:
+                    self._remove_uncommitted_digest_unlocked(token_digest, expected_stat=digest_file_stat)
                 return None
             return dict(record)
 
@@ -860,11 +877,53 @@ class ExternalGpuReservationStore:
                     return False
         return False
 
-    def _write_digest_exclusive(self, digest: str) -> None:
-        with self.path.open("xb") as stream:
-            stream.write(digest.encode("ascii"))
-            stream.flush()
-            os.fsync(stream.fileno())
+    def _remove_uncommitted_digest_unlocked(
+        self, digest: str, *, expected_stat: os.stat_result, allow_prefix: bool = False,
+    ) -> bool:
+        """Remove only the digest file created by this failed reservation transaction."""
+        if self.path.is_symlink() or self.metadata_path.exists() or self.metadata_path.is_symlink():
+            return False
+        expected = digest.encode("ascii")
+        try:
+            with self.path.open("rb") as stream:
+                before = os.fstat(stream.fileno())
+                raw = stream.read(65)
+                after = os.fstat(stream.fileno())
+                current = self.path.stat(follow_symlinks=False)
+            if (not stat.S_ISREG(before.st_mode) or before.st_size > 64
+                    or not os.path.samestat(expected_stat, before)
+                    or not os.path.samestat(before, after)
+                    or not os.path.samestat(after, current)
+                    or len(raw) > 64):
+                return False
+            matches = (expected.startswith(raw) if allow_prefix else raw == expected)
+            if not matches or self.path.is_symlink():
+                return False
+            current = self.path.stat(follow_symlinks=False)
+            if not os.path.samestat(after, current):
+                return False
+            self.path.unlink()
+            return True
+        except FileNotFoundError:
+            return True
+        except OSError:
+            return False
+
+    def _write_digest_exclusive(self, digest: str) -> os.stat_result:
+        created_stat = None
+        try:
+            with self.path.open("xb") as stream:
+                created_stat = os.fstat(stream.fileno())
+                stream.write(digest.encode("ascii"))
+                stream.flush()
+                os.fsync(stream.fileno())
+                return os.fstat(stream.fileno())
+        except OSError:
+            if created_stat is not None:
+                self._remove_uncommitted_digest_unlocked(
+                    digest, expected_stat=created_stat, allow_prefix=True,
+                )
+            raise
 
     def _write_metadata(self, record: dict[str, Any]) -> bool:
         if self.metadata_path.is_symlink():

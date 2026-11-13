@@ -14,7 +14,7 @@ import time
 from typing import Any
 
 from .source_slice import MAX_SOURCE_BYTES
-from .sqlite_support import connect_sqlite, initialize_wal, is_busy_error
+from .sqlite_support import connect_sqlite, initialize_wal, is_busy_error, write_transaction
 
 logger = logging.getLogger(__name__)
 
@@ -337,21 +337,20 @@ class EvidenceStore:
         ):
             return False
         try:
-            with self._lock, closing(self._connect()) as con:
-                con.execute("BEGIN IMMEDIATE")
+            with self._lock, closing(self._connect()) as con, write_transaction(
+                con, max_duration_seconds=5.0, rollback_label="evidence provenance"
+            ):
                 exists = con.execute(
                     "SELECT 1 FROM evidence WHERE id=? AND root=?",
                     (evidence_id, root),
                 ).fetchone()
                 if exists is None:
-                    con.rollback()
                     return False
                 con.execute(
                     "INSERT OR IGNORE INTO evidence_source_provenance"
                     "(evidence_id,root,source_code,created_at) VALUES(?,?,?,?)",
                     (evidence_id, root, source_code, time.time()),
                 )
-                con.commit()
             return True
         except sqlite3.DatabaseError:
             return False

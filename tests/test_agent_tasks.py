@@ -1732,6 +1732,24 @@ def test_task_keyword_index_backfills_existing_projection_on_startup(store: Task
     assert [item.task_id for item in reloaded_store.list_tasks(query="searchable marker")] == [task.task_id]
 
 
+def test_task_keyword_index_skips_unchanged_projection_parsing_on_startup(
+    store: TaskStore, monkeypatch: pytest.MonkeyPatch
+):
+    store.create(
+        GoalContract(goal="Stable task", description="Skip startup parsing"),
+        task_context(),
+        task_id="task-search-stable-projection",
+    )
+
+    def unexpected_parse(*args: Any, **kwargs: Any) -> Any:
+        raise AssertionError("unchanged task projection should not be parsed")
+
+    monkeypatch.setattr(TaskStore, "_searchable_task_fields", classmethod(unexpected_parse))
+    monkeypatch.setattr(TaskStore, "_search_grams", classmethod(unexpected_parse))
+
+    TaskStore(store.state_store)
+
+
 def test_task_keyword_index_does_not_recover_goal_from_legacy_title(store: TaskStore):
     task = store.create(
         GoalContract(goal="Legacy task"),
@@ -1744,8 +1762,6 @@ def test_task_keyword_index_does_not_recover_goal_from_legacy_title(store: TaskS
             "UPDATE agent_tasks_projection SET contract=? WHERE task_id=?",
             (json.dumps({"title": "Legacy title quasar marker"}), task.task_id),
         )
-        con.execute("DELETE FROM agent_task_search_grams WHERE task_id=?", (task.task_id,))
-        con.execute("DELETE FROM agent_task_search_documents WHERE task_id=?", (task.task_id,))
         TaskStore._backfill_task_search_index(con)
     finally:
         con.close()

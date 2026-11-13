@@ -46,6 +46,8 @@ class LayaSessionLifecycle:
         self._session: Any | None = None
         self._inflight = 0
         self._loading = False
+        self._load_generation = 0
+        self._failed_load_generation: int | None = None
         self._closing = False
         self._shutdown = False
         self._last_inference_completed: float | None = None
@@ -94,22 +96,53 @@ class LayaSessionLifecycle:
         finally:
             with self._condition:
                 self._inflight -= 1
-                self._last_inference_completed = self._clock()
+                try:
+                    completed_at = self._clock()
+                except Exception:
+                    completed_at = None
+                if isinstance(completed_at, bool) or not isinstance(
+                    completed_at, (int, float)
+                ):
+                    # Keep the session loaded when the clock cannot establish
+                    # a trustworthy idle boundary. A later successful request
+                    # can establish a fresh completion timestamp.
+                    self._last_inference_completed = None
+                else:
+                    try:
+                        completed_at = float(completed_at)
+                    except OverflowError:
+                        self._last_inference_completed = None
+                    else:
+                        self._last_inference_completed = (
+                            completed_at if math.isfinite(completed_at) else None
+                        )
                 self._close_failed_since_completion = False
                 self._last_close_error = None
                 self._condition.notify_all()
 
     def _acquire(self, load_session: Callable[[], Any]) -> Any:
+        waited_for_generation: int | None = None
         while True:
             with self._condition:
                 while self._closing or self._loading:
+                    if self._loading and waited_for_generation is None:
+                        waited_for_generation = self._load_generation
                     self._condition.wait()
+                    if (
+                        waited_for_generation is not None
+                        and self._failed_load_generation == waited_for_generation
+                    ):
+                        raise RuntimeError(
+                            "Laya provider session load failed for concurrent request"
+                        )
                 if self._shutdown:
                     raise RuntimeError("Laya session lifecycle is shutting down")
                 if self._session is not None:
                     self._inflight += 1
                     return self._session
                 self._loading = True
+                self._load_generation += 1
+                load_generation = self._load_generation
             try:
                 session = load_session()
                 if session is None:
@@ -117,6 +150,7 @@ class LayaSessionLifecycle:
             except BaseException:
                 with self._condition:
                     self._loading = False
+                    self._failed_load_generation = load_generation
                     self._condition.notify_all()
                 raise
             with self._condition:
@@ -135,7 +169,15 @@ class LayaSessionLifecycle:
 
     def poll_idle_unload(self, now: float | None = None) -> str:
         """Claim and close an idle session; safe to call from the existing scheduler loop."""
-        current = self._clock() if now is None else float(now)
+        current = self._clock() if now is None else now
+        if isinstance(current, bool) or not isinstance(current, (int, float)):
+            raise ValueError("now must be a finite monotonic timestamp")
+        try:
+            current = float(current)
+        except OverflowError as exc:
+            raise ValueError("now must be a finite monotonic timestamp") from exc
+        if not math.isfinite(current):
+            raise ValueError("now must be a finite monotonic timestamp")
         with self._condition:
             if self._shutdown:
                 return "shutdown"

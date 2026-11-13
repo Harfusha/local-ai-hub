@@ -416,6 +416,47 @@ def test_symbol_like_hybrid_queries_put_exact_lexical_hits_first():
     assert not prefers_lexical_precision("Local AI Hub installation")
 
 
+def test_hybrid_fusion_retains_distinct_chunk_evidence_and_selects_relevant_match():
+    lexical = [{"path": "src/Foo.php", "source_id": "repo", "chunk_id": "method-a", "content_hash": "a",
+                "text": "wrong method", "relevance": 0.2, "start_line": 10}]
+    rag = [{"path": "src/Foo.php", "source_id": "repo", "chunk_id": "method-b", "content_hash": "b",
+            "text": "right method", "relevance": 0.9, "chunk_no": 1}]
+
+    fused, _ = fuse_search_results(lexical, rag, limit=10, offset=0)
+
+    assert fused[0]["primary_match"]["text"] == "right method"
+    assert [match["text"] for match in fused[0]["alternative_matches"]] == ["wrong method"]
+    assert fused[0]["source_breakdown"].keys() == {"lexical", "rag"}
+
+
+def test_hybrid_fusion_truncates_matches_after_counting_and_uses_explicit_case_policy():
+    rows = [
+        {"path": "Src/Foo.php", "chunk_no": index, "content_hash": str(index), "text": str(index)}
+        for index in range(3)
+    ]
+    fused, _ = fuse_search_results(rows, [], limit=10, offset=0, matches_per_file=1)
+    assert fused[0]["truncated"] is True
+    assert fused[0]["omitted_matches"] == 2
+
+    case_sensitive, _ = fuse_search_results(
+        [{"path": "Src/Foo.php"}], [{"path": "src/foo.php"}], limit=10, offset=0,
+    )
+    case_insensitive, _ = fuse_search_results(
+        [{"path": "Src/Foo.php"}], [{"path": "src/foo.php"}], limit=10, offset=0, case_sensitive=False,
+    )
+    assert len(case_sensitive) == 2
+    assert len(case_insensitive) == 1
+
+
+def test_hybrid_path_identity_does_not_normalize_unicode_or_over_merge_casefold():
+    composed = "café/file.py"
+    decomposed = "cafe\u0301/file.py"
+    fused, _ = fuse_search_results(
+        [{"path": composed}], [{"path": decomposed}], limit=10, offset=0, case_sensitive=False,
+    )
+    assert len(fused) == 2
+
+
 def test_czech_semantic_query_gets_bounded_english_terms_without_changing_lexical_text():
     original = "Jak nastavit limit code indexu?"
     expanded, applied = expand_semantic_query(original)

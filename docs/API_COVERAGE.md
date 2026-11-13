@@ -1,8 +1,8 @@
 # API surface coverage
 
 Deterministic source inventory. Status describes static evidence, not runtime health or asserted behavior. Full contracts, fixtures, provenance, and coverage details live in `API_COVERAGE.json`.
-Reproduce with `python tools/surface_inventory.py --check --task-id task_d20e0b092c32`.
-<!-- coverage-task-id: task_d20e0b092c32 -->
+Reproduce with `python tools/surface_inventory.py --check --task-id task_064acbe93528`.
+<!-- coverage-task-id: task_064acbe93528 -->
 
 | Surface | Name | Evidence status | Owner | Operation ID |
 |---|---|---|---|---|
@@ -110,6 +110,7 @@ Reproduce with `python tools/surface_inventory.py --check --task-id task_d20e0b0
 | HTTP POST | /api/browser/capture | confirmed | src/local_ai_hub/http_server.py | op-fc062f29cc19 |
 | HTTP POST | /api/browser/capture/abandon | confirmed | src/local_ai_hub/http_server.py | op-7cd3d27a3948 |
 | HTTP POST | /api/browser/capture/commit | confirmed | src/local_ai_hub/http_server.py | op-483376ef8eb5 |
+| HTTP POST | /api/browser/capture/purge | confirmed | src/local_ai_hub/http_server.py | op-7284ec881505 |
 | HTTP POST | /api/browser/capture/stage | confirmed | src/local_ai_hub/http_server.py | op-4d1662739283 |
 | HTTP POST | /api/bundle/export | confirmed | src/local_ai_hub/http_server.py | op-21ec1373e039 |
 | HTTP POST | /api/bundle/import | confirmed | src/local_ai_hub/http_server.py | op-e64c615a36e2 |

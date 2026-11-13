@@ -20,6 +20,29 @@ from .trace_context import observer
 
 
 _INVALID_EXTERNAL_RESERVATION = "invalid"
+_MAX_GPU_CAPACITY_SAMPLE_AGE_SECONDS = 5.0
+
+
+def _gpu_telemetry_freshness_reason(resource: Mapping[str, Any]) -> str | None:
+    """Reject stale or malformed freshness metadata before using measured VRAM."""
+    telemetry_stale = resource.get("telemetry_stale", False)
+    if telemetry_stale is True:
+        return "vram_telemetry_stale"
+    if type(telemetry_stale) is not bool:
+        return "vram_telemetry_unavailable"
+    if resource.get("available") is not True:
+        return None
+    sample_age_seconds = resource.get("sample_age_seconds")
+    if (
+        isinstance(sample_age_seconds, bool)
+        or not isinstance(sample_age_seconds, (int, float))
+        or not math.isfinite(sample_age_seconds)
+        or sample_age_seconds < 0
+    ):
+        return "vram_telemetry_unavailable"
+    if sample_age_seconds > _MAX_GPU_CAPACITY_SAMPLE_AGE_SECONDS:
+        return "vram_telemetry_stale"
+    return None
 
 
 def _read_external_reservation(path: Any) -> str | None:
@@ -601,6 +624,13 @@ class AffinityScheduler:
                 resource = {"available": False}
         else:
             resource = self._resource_status()
+        freshness_reason = _gpu_telemetry_freshness_reason(resource)
+        if freshness_reason is not None:
+            return {
+                "state": "rejected", "reason": freshness_reason,
+                "vram_admission": "rejected", "vram_admission_phase": "post_unload",
+                "vram_estimate_source": "unknown",
+            }
         total_mb = resource.get("vram_total_mb")
         available_mb = resource.get("vram_available_mb")
         valid_total = (
@@ -655,6 +685,17 @@ class AffinityScheduler:
         pressure = str(resource.get("pressure_level", "nominal") or "nominal").lower()
         vram_fields: dict[str, int] = {}
         shared_capacity_enforced = False
+        freshness_reason = _gpu_telemetry_freshness_reason(resource)
+        if freshness_reason is not None:
+            return {
+                "state": "rejected",
+                "reason": freshness_reason,
+                "pressure_level": pressure,
+                "queue_age_ms": 0,
+                "retryable": True,
+                "vram_admission": "unknown",
+                "vram_estimate_source": "unknown",
+            }
         total_mb = resource.get("vram_total_mb")
         available_mb = resource.get("vram_available_mb")
         valid_total = (
@@ -1561,6 +1602,9 @@ class AffinityScheduler:
         resource = self._resource_status()
         total_mb = resource.get("vram_total_mb")
         available_mb = resource.get("vram_available_mb")
+        freshness_reason = _gpu_telemetry_freshness_reason(resource)
+        if freshness_reason is not None:
+            return {"state": "rejected", "reason": freshness_reason}
         if (resource.get("available") is not True
                 or isinstance(total_mb, bool) or not isinstance(total_mb, (int, float))
                 or not math.isfinite(total_mb) or total_mb <= 0
@@ -2103,18 +2147,24 @@ class AffinityScheduler:
                 if isinstance(admission, dict) and admission.get("state") == "rejected":
                     admission_rejected = True
                     post_unload_admission = dict(admission)
+                    with self._cond:
+                        self._switch_not_started = True
                     evicted_models = getattr(exc, "evicted_models", None)
                     evicted = list(evicted_models) if isinstance(evicted_models, (list, tuple, set)) else []
                     error = f"{type(exc).__name__}: {admission.get('reason', 'post-unload admission rejected')}"[:300]
                 elif bool(getattr(exc, "preparation_cancelled", False)):
                     cancelled = True
-                    if not bool(getattr(exc, "operation_not_started", False)):
-                        with self._cond:
+                    with self._cond:
+                        if bool(getattr(exc, "operation_not_started", False)):
+                            self._switch_not_started = True
+                        else:
                             self._mark_internal_gpu_uncertain_locked()
                 else:
                     error = f"{type(exc).__name__}: {exc}"[:300]
-                    if not bool(getattr(exc, "operation_not_started", False)):
-                        with self._cond:
+                    with self._cond:
+                        if bool(getattr(exc, "operation_not_started", False)):
+                            self._switch_not_started = True
+                        else:
                             self._mark_internal_gpu_uncertain_locked()
         if not cancelled and not error:
             observed_vram_bytes = self._observe_model_vram_bytes(
@@ -2456,25 +2506,31 @@ class AffinityScheduler:
             return {"success": False, "error": "GPU reservation store unavailable"}
         if action == "status":
             with self._cond:
-                store.reap_expired()
-                record, present = store.status_snapshot()
+                reaped = store.reap_expired()
+                record, present, reason_code = store.status_snapshot()
                 digest = self._internal_gpu_digest
                 if (record is None and present and digest and not self._internal_gpu_uncertain
                         and store.owns_internal_fence(digest)):
                     return {"success": True, "reservation_present": True,
-                            "state": "internal", "manual_intervention_required": False}
+                            "state": "internal", "manual_intervention_required": False,
+                            "reaped": reaped}
             if record is None:
-                return {
+                result = {
                     "success": True, "reservation_present": present,
                     "state": "unknown" if present else "free",
                     "manual_intervention_required": present,
+                    "reaped": reaped,
                 }
+                if reason_code:
+                    result["reason_code"] = reason_code
+                return result
             return {
                 "success": True, "reservation_present": True,
                 "generation": record["generation"], "owner": record["owner"],
                 "state": record["state"], "created_at": record["created_at"],
                 "expires_at": record["expires_at"],
                 "expired": record["expires_at"] <= time.time(),
+                "reaped": reaped,
             }
         if action == "release_authorized":
             if (type(consent) is not bool or not consent

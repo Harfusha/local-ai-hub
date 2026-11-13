@@ -50,6 +50,10 @@ function isValidCommitResponse(result, expectedRequestId) {
   return typeof result.error_code === "string" && Boolean(result.error_code.trim());
 }
 
+function isValidCaptureBundleId(value) {
+  return typeof value === "string" && /^art_[0-9a-f]{24}$/.test(value);
+}
+
 async function post(path, payload, {retryServerErrors = false} = {}) {
   if (typeof globalThis.AbortController !== "function") {
     const error = new Error("AbortController unavailable");
@@ -145,6 +149,57 @@ async function activeTabStatus(tab) {
   return (await currentTabState(tab)).status;
 }
 
+function supportsCaptureUrl(value) {
+  try {
+    const protocol = new URL(value).protocol;
+    return protocol === "http:" || protocol === "https:";
+  } catch (_) {
+    return false;
+  }
+}
+
+function isSensitiveOrigin(value) {
+  try {
+    const labels = new URL(value).hostname.toLowerCase().split(".");
+    return labels.some((label) => /^(auth|login|signin|bank|banking|payment|wallet|identity|idp)$/.test(label));
+  } catch (_) {
+    return false;
+  }
+}
+
+async function maskSensitiveScreenshot(dataUrl, page) {
+  if (!page || page.redaction_complete !== true || !Array.isArray(page.redaction_regions)
+    || !page.viewport || page.redaction_regions.length > 512) {
+    return {success: false, error_code: "redaction_failed"};
+  }
+  try {
+    if (!chrome.offscreen || typeof chrome.offscreen.hasDocument !== "function") {
+      return {success: false, error_code: "redaction_failed"};
+    }
+    if (!await chrome.offscreen.hasDocument()) {
+      await chrome.offscreen.createDocument({
+        url: "offscreen.html",
+        reasons: ["BLOBS"],
+        justification: "Mask sensitive page regions in the locally captured screenshot before staging it to the loopback Hub.",
+      });
+    }
+    const result = await timed(chrome.runtime.sendMessage({
+      type: "LOCAL_AI_MASK_SCREENSHOT",
+      dataUrl,
+      regions: page.redaction_regions,
+      viewport: page.viewport,
+    }), CAPTURE_TIMEOUT_MS);
+    if (!result || result.success !== true || typeof result.dataUrl !== "string"
+      || !result.dataUrl.startsWith("data:image/png;base64,")
+      || result.maskedRegions !== page.redaction_regions.length) {
+      return {success: false, error_code: "redaction_failed"};
+    }
+    return {success: true, screenshot: result.dataUrl, maskedRegions: result.maskedRegions};
+  } catch (_) {
+    return {success: false, error_code: "redaction_failed"};
+  }
+}
+
 function boundedIdentity(value) {
   if (!value || typeof value !== "object") return null;
   const url = String(value.url || "");
@@ -152,11 +207,34 @@ function boundedIdentity(value) {
   const documentToken = String(value.document_token || "");
   const documentStateToken = String(value.document_state_token || "");
   if (!url || url.length > 4096 || !targetOrigin || targetOrigin.length > 256 || !documentToken || documentToken.length > 256 || !documentStateToken || documentStateToken.length > 256) return null;
-  return {url, target_origin: targetOrigin, document_token: documentToken, document_state_token: documentStateToken};
+  return {
+    url,
+    target_origin: targetOrigin,
+    document_id: String(value.document_id || documentToken).slice(0, 256),
+    document_token: documentToken,
+    content_revision: String(value.content_revision || "").slice(0, 128),
+    interaction_revision: String(value.interaction_revision || "").slice(0, 128),
+    document_state_token: documentStateToken,
+    relevant_state_token: String(value.relevant_state_token || "").slice(0, 128),
+    relevant_state_complete: value.relevant_state_complete === true,
+    history_state_token: String(value.history_state_token || "").slice(0, 128),
+    viewport_token: String(value.viewport_token || "").slice(0, 128),
+    interaction_observed: value.interaction_observed === true,
+  };
 }
 
-function sameIdentity(left, right) {
-  return Boolean(left && right && left.url === right.url && left.target_origin === right.target_origin && left.document_token === right.document_token && left.document_state_token === right.document_state_token);
+function compareIdentity(left, right) {
+  if (!left || !right) return "unverifiable";
+  if (left.url !== right.url || left.target_origin !== right.target_origin
+    || left.document_id !== right.document_id || left.document_token !== right.document_token) return "target_changed";
+  if (!left.relevant_state_complete || !right.relevant_state_complete
+    || !left.relevant_state_token || !right.relevant_state_token
+    || !left.interaction_observed || !right.interaction_observed) return "unverifiable";
+  if (left.interaction_revision !== right.interaction_revision
+    || left.history_state_token !== right.history_state_token || left.viewport_token !== right.viewport_token) return "target_changed";
+  if (left.relevant_state_token !== right.relevant_state_token) return "target_changed";
+  if (left.content_revision !== right.content_revision || left.document_state_token !== right.document_state_token) return "changed_but_safe";
+  return "unchanged";
 }
 
 function tabUrlMatches(tab, identity) {
@@ -164,12 +242,26 @@ function tabUrlMatches(tab, identity) {
   return Boolean(tabUrl && identity && tabUrl === identity.url);
 }
 
-async function captureCurrentTab(tab) {
+async function captureCurrentTab(tab, options = {}) {
   if (!tab || typeof tab.id !== "number" || typeof tab.windowId !== "number") {
     return {success: false, error_code: "closed_tab", fallback: false};
   }
+  const privacyMode = options && options.privacyMode;
+  if (!["full_local_capture", "privacy_redacted", "screenshot_only"].includes(privacyMode)) {
+    return {success: false, error_code: "unsupported_privacy_mode", fallback: false};
+  }
+  if (options.consentAcknowledged !== true) {
+    return {success: false, error_code: "capture_consent_required", fallback: false};
+  }
+  if (privacyMode === "full_local_capture" && options.fullCaptureAcknowledged !== true) {
+    return {success: false, error_code: "full_capture_confirmation_required", fallback: false};
+  }
   const initialState = await currentTabState(tab);
   if (initialState.status !== "ok") return {success: false, error_code: initialState.status, fallback: false};
+  if (!supportsCaptureUrl(initialState.tab.url)) return {success: false, error_code: "unsupported", fallback: false};
+  if (options.blockSensitiveOrigins === true && isSensitiveOrigin(initialState.tab.url)) {
+    return {success: false, error_code: "sensitive_origin_blocked", fallback: false};
+  }
   const origin = extensionOrigin();
   let capability;
   try {
@@ -180,9 +272,16 @@ async function captureCurrentTab(tab) {
     return {success: false, error_code: isTimeout(error) ? "timeout" : "unsupported", fallback: false};
   }
 
+  try {
+    await timed(chrome.scripting.executeScript({target: {tabId: tab.id}, files: ["capture.js"]}), CAPTURE_TIMEOUT_MS);
+  } catch (error) {
+    if (isTimeout(error)) return sendFailure(capability, tab, "timeout");
+    return sendFailure(capability, tab, "permission_denied");
+  }
+
   let page;
   try {
-    page = await timed(chrome.tabs.sendMessage(tab.id, {type: "LOCAL_AI_CAPTURE_CURRENT_TAB"}), CAPTURE_TIMEOUT_MS);
+    page = await timed(chrome.tabs.sendMessage(tab.id, {type: "LOCAL_AI_CAPTURE_CURRENT_TAB", privacyMode}), CAPTURE_TIMEOUT_MS);
   } catch (error) {
     if (isTimeout(error)) return sendFailure(capability, tab, "timeout");
     const status = await activeTabStatus(tab);
@@ -191,8 +290,13 @@ async function captureCurrentTab(tab) {
   if (!page || page.success !== true) {
     return sendFailure(capability, tab, page && page.error_code ? page.error_code : "unsupported");
   }
+  if (page.privacy_mode !== privacyMode) return sendFailure(capability, tab, "privacy_mode_mismatch");
+  if (privacyMode === "privacy_redacted" && page.redaction_complete !== true) {
+    return sendFailure(capability, tab, "redaction_failed");
+  }
   const initialIdentity = boundedIdentity(page.capture_identity && page.capture_identity.initial);
-  if (!initialIdentity || !tabUrlMatches(initialState.tab, initialIdentity)) return sendFailure(capability, tab, "target_changed");
+  if (!initialIdentity || !initialIdentity.relevant_state_complete || !initialIdentity.interaction_observed) return sendFailure(capability, tab, "unverifiable");
+  if (!tabUrlMatches(initialState.tab, initialIdentity)) return sendFailure(capability, tab, "target_changed");
 
   const beforeScreenshot = await currentTabState(tab);
   if (beforeScreenshot.status !== "ok") return sendFailure(capability, tab, beforeScreenshot.status);
@@ -205,6 +309,13 @@ async function captureCurrentTab(tab) {
     if (isTimeout(error)) return sendFailure(capability, tab, "timeout");
     const status = await activeTabStatus(tab);
     return sendFailure(capability, tab, status === "ok" ? "permission_denied" : status);
+  }
+  let maskedRegions = 0;
+  if (privacyMode === "privacy_redacted") {
+    const masked = await maskSensitiveScreenshot(screenshot, page);
+    if (!masked.success) return sendFailure(capability, tab, "redaction_failed");
+    screenshot = masked.screenshot;
+    maskedRegions = masked.maskedRegions;
   }
   const afterScreenshot = await currentTabState(tab);
   if (afterScreenshot.status !== "ok") return sendFailure(capability, tab, afterScreenshot.status);
@@ -220,8 +331,9 @@ async function captureCurrentTab(tab) {
   }
   if (!finalPage || finalPage.success !== true) return sendFailure(capability, tab, finalPage && finalPage.error_code ? finalPage.error_code : "unsupported");
   const finalIdentity = boundedIdentity(finalPage);
-  if (!sameIdentity(initialIdentity, finalIdentity) || !tabUrlMatches(afterScreenshot.tab, finalIdentity)) {
-    return sendFailure(capability, tab, "target_changed");
+  const initialConsistency = compareIdentity(initialIdentity, finalIdentity);
+  if (["target_changed", "unverifiable"].includes(initialConsistency) || !tabUrlMatches(afterScreenshot.tab, finalIdentity)) {
+    return sendFailure(capability, tab, initialConsistency === "unverifiable" ? "unverifiable" : "target_changed");
   }
   const requestId = captureRequestId();
   const stagedPayload = {
@@ -231,9 +343,17 @@ async function captureCurrentTab(tab) {
       window_id: tab.windowId,
       request_id: requestId,
       screenshot,
+      privacy_mode: privacyMode,
+      privacy_notice_acknowledged: true,
+      full_capture_acknowledged: privacyMode !== "full_local_capture" || options.fullCaptureAcknowledged === true,
+      screenshot_redaction: privacyMode === "privacy_redacted" ? "opaque_region_mask" : "none",
+      screenshot_redaction_regions: maskedRegions,
+      redaction_manifest: page.redaction_manifest || {},
       ...page,
-      capture_identity: {initial: initialIdentity, final: finalIdentity},
+      capture_identity: {initial: initialIdentity, final: finalIdentity, consistency: initialConsistency},
   };
+  delete stagedPayload.redaction_regions;
+  delete stagedPayload.redaction_complete;
   try {
     const staged = await post("/api/browser/capture/stage", stagedPayload);
     if (!staged.success) return staged;
@@ -253,9 +373,10 @@ async function captureCurrentTab(tab) {
       return {success: false, error_code: isTimeout(error) ? "timeout" : "target_changed", fallback: false};
     }
     const currentIdentity = boundedIdentity(commitIdentity);
-    if (!commitIdentity || commitIdentity.success !== true || !sameIdentity(finalIdentity, currentIdentity)) {
+    const commitConsistency = compareIdentity(finalIdentity, currentIdentity);
+    if (!commitIdentity || commitIdentity.success !== true || ["target_changed", "unverifiable"].includes(commitConsistency)) {
       await abandonCapture(capability, tab, origin, requestId);
-      return {success: false, error_code: commitIdentity && commitIdentity.error_code || "target_changed", fallback: false};
+      return {success: false, error_code: commitIdentity && commitIdentity.error_code || commitConsistency, fallback: false};
     }
     const commitPayload = {
       capability,
@@ -263,6 +384,8 @@ async function captureCurrentTab(tab) {
       tab_id: tab.id,
       window_id: tab.windowId,
       request_id: requestId,
+      capture_consistency: initialConsistency === "changed_but_safe" || commitConsistency === "changed_but_safe"
+        ? "changed_but_safe" : "unchanged",
     };
     let committed;
     try {
@@ -304,8 +427,67 @@ async function captureCurrentTab(tab) {
   }
 }
 
-// The browser action is the only capture trigger. It receives the tab Chrome
-// passed for that click; it never queries, activates, updates, or navigates tabs.
-chrome.action.onClicked.addListener((tab) => {
-  captureCurrentTab(tab).catch(() => undefined);
+async function purgeCurrentCapture(tab, bundleArtifactId) {
+  if (!tab || !Number.isInteger(tab.id) || !Number.isInteger(tab.windowId) || !isValidCaptureBundleId(bundleArtifactId)) {
+    return {success: false, error_code: "invalid_request", fallback: false};
+  }
+  const origin = extensionOrigin();
+  try {
+    const permission = await post("/api/browser/capability", {
+      origin, tab_id: tab.id, window_id: tab.windowId,
+    });
+    if (!permission || permission.success !== true || typeof permission.capability !== "string" || !permission.capability) {
+      return {success: false, error_code: permission && permission.error_code || "permission_denied", fallback: false};
+    }
+    const result = await post("/api/browser/capture/purge", {
+      capability: permission.capability,
+      origin,
+      tab_id: tab.id,
+      window_id: tab.windowId,
+      bundle_artifact_id: bundleArtifactId,
+    });
+    return result && typeof result.success === "boolean"
+      ? result
+      : {success: false, error_code: "unsupported", fallback: false};
+  } catch (error) {
+    return {success: false, error_code: isTimeout(error) ? "timeout" : "unsupported", fallback: false};
+  }
+}
+
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (!message || !["LOCAL_AI_START_CAPTURE", "LOCAL_AI_PURGE_CAPTURE"].includes(message.type)) return undefined;
+  const ownOrigin = extensionOrigin();
+  if (!sender || sender.id !== chrome.runtime.id || typeof sender.url !== "string" || !sender.url.startsWith(`${ownOrigin}/`)) {
+    sendResponse({success: false, error_code: "unsupported"});
+    return false;
+  }
+  if (message.type === "LOCAL_AI_PURGE_CAPTURE") {
+    if (!isValidCaptureBundleId(message.bundle_artifact_id)) {
+      sendResponse({success: false, error_code: "invalid_request"});
+      return false;
+    }
+    chrome.tabs.query({active: true, currentWindow: true}).then((tabs) => {
+      const tab = Array.isArray(tabs) && tabs[0];
+      return purgeCurrentCapture(tab, message.bundle_artifact_id);
+    }).then(sendResponse).catch(() => sendResponse({success: false, error_code: "unsupported"}));
+    return true;
+  }
+  if (message.consent_acknowledged !== true) {
+    sendResponse({success: false, error_code: "capture_consent_required"});
+    return false;
+  }
+  if (message.privacy_mode === "full_local_capture" && message.full_capture_acknowledged !== true) {
+    sendResponse({success: false, error_code: "full_capture_confirmation_required"});
+    return false;
+  }
+  chrome.tabs.query({active: true, currentWindow: true}).then((tabs) => {
+    const tab = Array.isArray(tabs) && tabs[0];
+    return captureCurrentTab(tab, {
+      privacyMode: message.privacy_mode,
+      consentAcknowledged: message.consent_acknowledged,
+      fullCaptureAcknowledged: message.full_capture_acknowledged,
+      blockSensitiveOrigins: message.block_sensitive_origins === true,
+    });
+  }).then(sendResponse).catch(() => sendResponse({success: false, error_code: "unsupported"}));
+  return true;
 });

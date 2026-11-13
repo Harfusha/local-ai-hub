@@ -1,5 +1,6 @@
 """Regressions for actual execution authority versus repository declarations."""
 
+from contextlib import contextmanager
 from pathlib import Path
 import hashlib
 import json
@@ -11,6 +12,7 @@ from threading import Barrier, Event
 
 import pytest
 
+from local_ai_hub import agent_tasks
 from local_ai_hub.agent_events import AgentStateStore
 from local_ai_hub.agent_tasks import GoalContract, ScopeContext, TaskCheckpoint, TaskStatus, TaskStore
 from local_ai_hub.agent_verification import VerificationStore
@@ -152,6 +154,39 @@ def test_plan_binding_reports_missing_persisted_session(environment):
             tasks, root=str(root), task_id=task.task_id, plan_id="plan_work",
             plan_task_id="task_work",
         )
+
+
+def test_bound_checkpoint_performs_filesystem_io_outside_write_transaction(environment, monkeypatch):
+    _, tasks, *_ = environment
+    transaction_active = False
+    original_transaction = agent_tasks.write_transaction
+
+    @contextmanager
+    def _tracked_transaction(con, **kwargs):
+        nonlocal transaction_active
+        with original_transaction(con, **kwargs):
+            transaction_active = True
+            try:
+                yield con
+            finally:
+                transaction_active = False
+
+    monkeypatch.setattr(agent_tasks, "write_transaction", _tracked_transaction)
+    for name in ("open", "read_text", "write_text", "unlink", "replace", "mkdir", "stat"):
+        original = getattr(Path, name)
+
+        def _guarded(path, *args, _original=original, _name=name, **kwargs):
+            if transaction_active:
+                raise AssertionError(f"filesystem operation {_name} ran inside a SQLite write transaction")
+            return _original(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, name, _guarded)
+
+    tasks.checkpoint(
+        "execution_a",
+        TaskCheckpoint(phase="implementation", next_action="bound transaction probe"),
+        actor="agent_a",
+    )
 
 
 def test_delayed_checkpoint_sync_uses_latest_persisted_state(environment):
@@ -633,8 +668,15 @@ def test_separate_processes_cannot_bind_two_active_attempts(environment):
         for process in processes:
             process.join(timeout=10)
             assert process.exitcode == 0
-        assert sum(kind == "success" and value is True for kind, value in results) == 1
-        assert sum(kind == "error" and "active execution binding" in value for kind, value in results) == 1
+        assert sum(kind == "success" and value is True for kind, value in results) == 1, results
+        conflict_markers = (
+            "active execution binding",
+            "expected_revision conflicts with the current plan revision",
+        )
+        assert sum(
+            kind == "error" and any(marker in value for marker in conflict_markers)
+            for kind, value in results
+        ) == 1, results
     finally:
         for process in processes:
             if process.is_alive():

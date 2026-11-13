@@ -148,6 +148,7 @@ jobs:
           tests/unit/test_ci_failure_diagnostics.py
           tests/unit/test_prompt_contracts_hardening_wave18.py
           tests/test_gitlink_fixtures.py
+          tests/test_scheduler_status_external_reservation.py
           tests/test_command_rollback.py::test_rollback_snapshot_and_restore_accept_nested_paths
           tests/test_command_rollback.py::test_command_rollback_preserves_filesystem_security_metadata
       - name: Export measured branch coverage
@@ -250,6 +251,10 @@ jobs:
           tests/test_audit_pending_source_regressions.py
           tests/test_audit_quality_gates.py
           tests/test_audit_release_inventory.py
+          tests/test_async_jobs.py::test_success_finalization_checks_artifact_outside_async_job_write_lock
+          tests/test_async_jobs.py::test_success_finalization_uses_bounded_write_transaction
+          tests/test_async_jobs.py::test_failed_task_callback_runs_outside_async_job_write_lock
+          tests/test_async_jobs.py::test_terminal_task_callbacks_run_outside_async_job_write_lock
           tests/test_audit_owned_model_process.py
           tests/test_audit_review_consistency.py
           tests/test_audit_ollama_error_deadline.py
@@ -262,6 +267,7 @@ jobs:
           tests/test_agent_identity.py
           tests/test_agent_memory.py
           tests/test_agent_memory_candidate_scope_recall.py
+          tests/test_code_index_transaction_boundaries.py
           tests/test_file_locks.py
           tests/test_project_command_broker.py
           tests/test_http_admin_action_auth_t18.py
@@ -278,6 +284,8 @@ jobs:
           tests/test_audit_budget_process_isolation.py
           tests/test_audit_budget_diagnostics.py
           tests/test_agent_task_budget_increase.py
+          tests/unit/test_agent_task_receipt_transaction.py
+          tests/test_repo_plan_verified_flow.py
           tests/test_automation_broker.py
           tests/test_automation_adapters.py
           tests/test_automation_integration.py
@@ -287,6 +295,7 @@ jobs:
           tests/test_audit_review_delivery_quality.py
           tests/test_audit_retrieval_gold_contract.py
           tests/test_audit_quality_eval_contract.py
+          tests/test_scheduler_status_external_reservation.py
           tests/unit/test_rollback_exchange_identity.py
           tests/unit/test_rollback_quarantine_identity.py
           tests/unit/test_quality_floor_threshold_validation.py

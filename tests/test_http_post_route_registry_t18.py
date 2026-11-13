@@ -15,6 +15,7 @@ _CROSSWALK = json.loads(_CROSSWALK_FIXTURE.read_text(encoding="utf-8"))
 _RETIRED_ROUTE_IDS = {"post_control_1", "post_command_1", "post_command_preflight_1", "post_command_speculative_lint_1", "post_command_daemon_1", "post_command_lint_fix_1", "post_command_http_probe_1", "post_command_mock_server_1", "post_command_diff_hunk_stage_1", "post_command_flaky_detect_1", "post_command_webhook_replay_1"}
 # Frozen, reviewed public-contract deltas from the immutable historical preimage.
 _CURRENT_ROUTE_PATHS = {
+ 'post_browser_capture_abandon_1': ['/api/browser/capture/stage', '/api/browser/capture/commit', '/api/browser/capture/abandon', '/api/browser/capture/purge'],
  'post_leases_claim_1': ['/api/leases/claim_batch'],
  'post_repo_state_1': ['/api/repo/state'],
  'post_hotspots_1': ['/api/repo/hotspots'],
@@ -310,6 +311,11 @@ def test_telemetry_timeline_selects_named_handler_boundary() -> None:
     assert select_post_handler(("unmigrated_route",)) is None
 
 
+def test_browser_capture_purge_uses_capability_guarded_handler() -> None:
+    route_ids = select_http_routes("POST", "/api/browser/capture/purge")
+    assert route_ids == ("post_browser_capture_abandon_1",)
+
+
 @pytest.mark.parametrize("path, expected", [
     ("/api/async-jobs", "_handle_post_async_jobs"),
     ("/api/work-orders", "_handle_post_work_orders"),
@@ -411,7 +417,7 @@ def test_async_named_submit_preserves_explicit_request_id_and_conversation_rejec
     assert responses[-1] == (200, {"success": True, "action": "reason", "payload": original})
     assert original["request_id"] == "explicit-id"
     handler._handle_post_async_jobs({"action": "submit"})
-    assert responses[-1][1]["payload"]["request_id"] == "header-id"
+    assert "request_id" not in responses[-1][1]["payload"]
     handler._handle_post_async_jobs({"action": "submit", "conversation": True})
     assert responses[-1] == (400, {
         "success": False, "error": "conversations require delivery=sync", "terminal": True, "retryable": False,

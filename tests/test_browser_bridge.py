@@ -13,6 +13,7 @@ import local_ai_hub.browser_bridge as browser_bridge_module
 from local_ai_hub.browser_bridge import (
     CaptureProtocolError,
     abandon_staged_capture,
+    capture_failure,
     capture_to_artifacts,
     commit_staged_capture,
     issue_capture_capability,
@@ -43,6 +44,11 @@ def config() -> dict:
 def capture_payload(*, tab_id: int = 7, window_id: int = 3) -> dict:
     return {
         "origin": "chrome-extension://fixture",
+        "privacy_mode": "full_local_capture",
+        "privacy_notice_acknowledged": True,
+        "full_capture_acknowledged": True,
+        "screenshot_redaction": "none",
+        "redaction_manifest": {},
         "tab_id": tab_id,
         "window_id": window_id,
         "url": "https://fixture.test/checkout?secret=not-persisted",
@@ -54,12 +60,26 @@ def capture_payload(*, tab_id: int = 7, window_id: int = 3) -> dict:
                 "target_origin": "https://fixture.test",
                 "document_token": "document:fixture:1",
                 "document_state_token": "state:fixture:1",
+                "relevant_state_token": "sha256:" + "a" * 64,
+                "relevant_state_complete": True,
+                "history_state_token": "b" * 64,
+                "viewport_token": "1280x720@1",
+                "interaction_observed": True,
+                "content_revision": "0",
+                "interaction_revision": "0",
             },
             "final": {
                 "url": "https://fixture.test/checkout?secret=not-persisted",
                 "target_origin": "https://fixture.test",
                 "document_token": "document:fixture:1",
                 "document_state_token": "state:fixture:1",
+                "relevant_state_token": "sha256:" + "a" * 64,
+                "relevant_state_complete": True,
+                "history_state_token": "b" * 64,
+                "viewport_token": "1280x720@1",
+                "interaction_observed": True,
+                "content_revision": "0",
+                "interaction_revision": "0",
             },
         },
         "title": "Checkout",
@@ -186,8 +206,12 @@ def test_capture_requires_sanitized_timestamp_and_target_origin_provenance() -> 
     assert bundle["provenance"] == {
         "captured_at": "2026-09-18T10:20:30.123Z",
         "target_origin": "https://fixture.test",
+        "document_id": "document:fixture:1",
         "document_token": "document:fixture:1",
+        "content_revision": "0",
+        "interaction_revision": "0",
         "document_state_token": "state:fixture:1",
+        "capture_consistency": "unchanged",
     }
 
     oversized = capture_payload()
@@ -210,6 +234,24 @@ def test_capture_aborts_same_tab_navigation_before_artifact_commit() -> None:
     assert "status" not in result
 
 
+def test_capture_accepts_safe_content_revision_but_rejects_target_or_incomplete_state() -> None:
+    safe = capture_payload()
+    safe["capture_identity"]["final"]["content_revision"] = "1"
+    safe["capture_identity"]["final"]["document_state_token"] = "state:fixture:2"
+    checked = validate_capture_payload(safe, config=config())
+    assert checked["success"] is True
+    assert checked["payload"]["capture_identity"]["consistency"] == "changed_but_safe"
+
+    changed = capture_payload()
+    changed["capture_identity"]["final"]["relevant_state_token"] = "sha256:" + "c" * 64
+    assert validate_capture_payload(changed, config=config())["error_code"] == "target_changed"
+
+    incomplete = capture_payload()
+    incomplete["capture_identity"]["final"]["relevant_state_complete"] = False
+    assert validate_capture_payload(incomplete, config=config())["error_code"] == "unverifiable"
+    assert capture_failure("unverifiable")["status_code"] == 409
+
+
 def test_staged_capture_requires_explicit_commit_and_abandon_is_terminal() -> None:
     sink = ArtifactSink()
     capability = issue_capture_capability(
@@ -226,12 +268,13 @@ def test_staged_capture_requires_explicit_commit_and_abandon_is_terminal() -> No
     assert duplicate == staged
     committed = commit_staged_capture(
         capability,
-        {"origin": "chrome-extension://fixture", "tab_id": 7, "window_id": 3, "request_id": "capture-request-1"},
+        {"origin": "chrome-extension://fixture", "tab_id": 7, "window_id": 3, "request_id": "capture-request-1", "capture_consistency": "changed_but_safe"},
         artifacts=sink,
         config=config(),
     )
     assert committed["success"] is True
-    assert any(call[0] == "frontend-review-bundle" for call in sink.calls)
+    bundle = next(call[1] for call in sink.calls if call[0] == "frontend-review-bundle")
+    assert bundle["provenance"]["capture_consistency"] == "changed_but_safe"
     late_commit = commit_staged_capture(
         capability,
         {"origin": "chrome-extension://fixture", "tab_id": 7, "window_id": 3, "request_id": "capture-request-1"},
@@ -466,11 +509,15 @@ def run_browser_background_case(case: str) -> dict:
 
 
 def test_extension_abandons_stage_when_tab_or_document_changes_before_commit() -> None:
-    for change_kind in ("navigation", "same-url-state"):
+    for change_kind in ("navigation",):
         assert run_browser_background_case(change_kind) == {
             "success": True,
             "case": f"{change_kind}-after-stage-abandons",
         }
+    assert run_browser_background_case("same-url-state") == {
+        "success": True,
+        "case": "same-url-state-after-stage-commits-safe",
+    }
 
 
 def test_extension_reports_and_abandons_partial_artifact_commit_failure() -> None:
@@ -513,6 +560,14 @@ def test_extension_does_not_cancel_commit_when_both_responses_are_lost() -> None
         "success": True,
         "case": "ambiguous-commit-left-uncancelled",
     }
+
+
+@pytest.mark.parametrize(("case", "expected"), [
+    ("purge", "purge-uses-fresh-capability-and-exact-bundle"),
+    ("purge-invalid-id", "purge-rejects-invalid-id-before-network"),
+])
+def test_extension_capture_purge_is_capability_gated(case: str, expected: str) -> None:
+    assert run_browser_background_case(case) == {"success": True, "case": expected}
 
 
 @pytest.mark.parametrize("response_case", ["commit-request-id-mismatch", "commit-invalid-shape", "commit-missing-artifact-id", "commit-missing-request-id", "commit-mismatched-request-id", "commit-mismatched-error-request-id"])
@@ -627,7 +682,11 @@ def test_extension_is_explicit_current_tab_only_and_does_not_mutate_pages() -> N
     background = (root / "background.js").read_text(encoding="utf-8")
     capture = (root / "capture.js").read_text(encoding="utf-8")
 
-    assert "chrome.action.onClicked" in background
+    assert "LOCAL_AI_START_CAPTURE" in background
+    assert "sender.id !== chrome.runtime.id" in background
+    manifest = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["action"]["default_popup"] == "popup.html"
+    assert "chrome.action.onClicked" not in background
     assert "tabs.get" in background
     assert "tabs.query" in background
     assert "tabs.update" not in background

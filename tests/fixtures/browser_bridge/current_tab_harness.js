@@ -22,6 +22,7 @@ class FakeAbortController {
 
 class FakeElement {
   constructor(tagName, attributes = {}, textContent = "") {
+    this.rectIndex = FakeElement.rectIndex++;
     this.tagName = tagName.toUpperCase();
     this.attributes = {...attributes};
     this.textContent = textContent;
@@ -39,6 +40,7 @@ class FakeElement {
 
   get id() { return this.attributes.id || ""; }
   getAttribute(name) { return this.attributes[name] || null; }
+  getBoundingClientRect() { const top = 10 + (this.rectIndex % 20) * 25; return {left: 10, top, right: 210, bottom: top + 20, width: 200, height: 20}; }
   removeAttribute(name) { delete this.attributes[name]; }
   get previousElementSibling() {
     if (!this.parentElement) return null;
@@ -73,6 +75,7 @@ class FakeElement {
     return `<${this.tagName.toLowerCase()}${attrs}>${this.textContent}${this.children.map((child) => child.outerHTML).join("")}</${this.tagName.toLowerCase()}>`;
   }
 }
+FakeElement.rectIndex = 0;
 
 const html = new FakeElement("html", {lang: "en"});
 const body = html.append(new FakeElement("body"));
@@ -81,14 +84,17 @@ main.append(new FakeElement("button", {id: "pay", type: "button"}, "Pay"));
 body.append(new FakeElement("input", {type: "password", value: "do-not-export"}));
 body.append(new FakeElement("input", {type: "hidden", name: "csrf-token", value: "hidden-token"}));
 body.append(new FakeElement("textarea", {}, "textarea-secret"));
-body.append(new FakeElement("div", {"data-state": "inline-secret"}, "visible content"));
+body.append(new FakeElement("div", {"data-state": "inline-secret"}, "api_key=secret-visible-token-123 and alice@example.test"));
 body.append(new FakeElement("script", {}, "window.__INITIAL_STATE__={token:'script-secret'}"));
 
 const captureContext = {
+  messageListeners: [],
+  documentEventListeners: {},
   document: {
     documentElement: html,
     title: "Signed-in checkout",
     querySelectorAll: (selector) => html.querySelectorAll(selector),
+    addEventListener: (name, listener) => (captureContext.documentEventListeners[name] ||= []).push(listener),
   },
   location: {href: "https://fixture.test/checkout?session=preserved", origin: "https://fixture.test"},
   history: {state: {step: 1}, replaceState(value) { this.state = value; }},
@@ -97,15 +103,38 @@ const captureContext = {
   innerWidth: 1280,
   innerHeight: 720,
   devicePixelRatio: 1,
-  chrome: {runtime: {onMessage: {addListener: () => {}}}},
+  chrome: {runtime: {onMessage: {addListener: (listener) => captureContext.messageListeners.push(listener)}}},
   URL,
 };
 vm.runInNewContext(captureSource, captureContext);
+assert.equal(captureContext.messageListeners.length, 1);
+vm.runInNewContext(captureSource, captureContext);
+assert.equal(captureContext.messageListeners.length, 1);
+class FixtureMutationObserver {
+  constructor(callback) { this.callback = callback; }
+  observe() {}
+  trigger() { this.callback(); }
+}
+const revisionContext = {...captureContext, MutationObserver: FixtureMutationObserver};
+vm.runInNewContext(captureSource, revisionContext);
 async function runFixture() {
+const identityBeforeMutation = await revisionContext.currentDocumentIdentity();
+revisionContext.__LOCAL_AI_DOCUMENT_REVISION__.observer.trigger();
+const identityAfterMutation = await revisionContext.currentDocumentIdentity();
+assert.equal(identityAfterMutation.document_id, identityBeforeMutation.document_id);
+assert.notEqual(identityAfterMutation.document_state_token, identityBeforeMutation.document_state_token);
+assert.equal(identityAfterMutation.content_revision, "1");
 assert.equal(captureContext.sha256Fallback("abc"), "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
 assert.equal(captureContext.sha256Fallback("\ud800"), "83d544ccc223c057d2bf80d3f2a32982c32c3c0db8e2674820da5064783fb097");
+const redactedText = captureContext.redactSensitiveText("api_key=sk-12345678901234567890 and Bearer abcdefghijklmnop");
+assert.equal(redactedText.text, "api_key=[REDACTED] and Bearer [REDACTED]");
+assert.deepEqual(JSON.parse(JSON.stringify(redactedText.manifest)), {credential: 2});
+const redactedUrl = captureContext.sanitizePrivacyUrl("https://fixture.test/reset/eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.signaturetoken?access_token=secret");
+assert.equal(redactedUrl.url, "https://fixture.test/reset/~redacted~");
+assert.deepEqual(JSON.parse(JSON.stringify(redactedUrl.manifest)), {path_segments: 1, query: true, fragment: false});
 const page = await captureContext.captureCurrentTab();
 assert.equal(page.success, true);
+assert.match(page.dom.snapshot_digest, /^sha256:[0-9a-f]{64}$/);
 assert.equal(page.dom.redaction, "none");
 assert.equal(page.dom.password_values_sanitized, true);
 assert.match(page.dom.html, /data-authenticated="true"/);
@@ -114,7 +143,27 @@ assert.doesNotMatch(page.dom.html, /hidden-token|textarea-secret|inline-secret|s
 assert.equal(html.querySelectorAll('input[type="password"]')[0].value, "do-not-export");
 assert.match(page.target_origin, /^https:\/\/fixture\.test$/);
 assert.match(page.captured_at, /T/);
-assert.match(page.document_state_token, /^state:sha256:[0-9a-f]{64}$/);
+assert.equal(page.document_state_token, "state:content-unobserved");
+const originalHistoryState = captureContext.history.state;
+const cyclicHistoryState = {};
+cyclicHistoryState.self = cyclicHistoryState;
+captureContext.history.state = cyclicHistoryState;
+assert.equal((await captureContext.currentDocumentIdentity()).relevant_state_complete, false);
+captureContext.history.state = originalHistoryState;
+const redactedPage = await captureContext.captureCurrentTab({privacyMode: "privacy_redacted"});
+assert.equal(redactedPage.privacy_mode, "privacy_redacted");
+assert.equal(redactedPage.dom.redaction, "deterministic");
+assert.doesNotMatch(redactedPage.dom.html, /secret-visible-token-123|alice@example\.test|textarea-secret/);
+assert.match(redactedPage.dom.html, /\[REDACTED\]/);
+assert.ok(redactedPage.redaction_manifest.credential >= 1);
+assert.ok(redactedPage.redaction_manifest.form_field >= 1);
+assert.equal(redactedPage.redaction_complete, true);
+assert.ok(redactedPage.redaction_regions.length >= 2, JSON.stringify({count: redactedPage.redaction_regions.length, manifest: redactedPage.redaction_manifest}));
+const screenshotOnlyPage = await captureContext.captureCurrentTab({privacyMode: "screenshot_only"});
+assert.equal(screenshotOnlyPage.privacy_mode, "screenshot_only");
+assert.equal(screenshotOnlyPage.dom.html, "");
+assert.deepEqual(JSON.parse(JSON.stringify(screenshotOnlyPage.dom.elements)), []);
+assert.deepEqual(JSON.parse(JSON.stringify(screenshotOnlyPage.accessibility.snapshot)), []);
 
   const webCryptoContext = {...captureContext, crypto: webcrypto};
   webCryptoContext.TextEncoder = TextEncoder;
@@ -122,8 +171,23 @@ assert.match(page.document_state_token, /^state:sha256:[0-9a-f]{64}$/);
   assert.equal(await webCryptoContext.digestState("\ud800"), "83d544ccc223c057d2bf80d3f2a32982c32c3c0db8e2674820da5064783fb097");
   const webCryptoPage = await webCryptoContext.captureCurrentTab();
 assert.equal(webCryptoPage.document_state_token, page.document_state_token);
+const largeDom = new FakeElement("html");
+const largeBody = largeDom.append(new FakeElement("body"));
+for (let index = 0; index < 1700; index += 1) largeBody.append(new FakeElement("div", {id: `filler-${index}`}));
+const lateTarget = largeBody.append(new FakeElement("button", {id: "late-target", "aria-label": "Submit"}, "Submit"));
+const largeDomContext = {
+  ...captureContext,
+  document: {...captureContext.document, documentElement: largeDom, title: "Large page", querySelectorAll: (selector) => largeDom.querySelectorAll(selector)},
+};
+vm.runInNewContext(captureSource, largeDomContext);
+const largePage = await largeDomContext.captureCurrentTab();
+assert.equal(largePage.dom.coverage_incomplete, true);
+assert.equal(largePage.dom.element_count_total, 1702);
+assert.ok(largePage.dom.elements.some((element) => element.id === "late-target"));
 
-async function runBackground({timeout = null, hubTimeout = null, stageTimeout = false, finalPostTimeout = null, dropFirstCommitResponse = false, disconnectAfterStage = false, queryTimeout = false, getTimeout = false, switchTab = false, switchAfterScreenshot = false, screenshotTimeout = false, closed = false, permission = false, navigateAfterScreenshot = false, mutateDocumentAfterScreenshot = false, missingUrl = false, emptyUrl = false, token = ""} = {}) {
+async function runBackground({timeout = null, hubTimeout = null, stageTimeout = false, finalPostTimeout = null, dropFirstCommitResponse = false, disconnectAfterStage = false, queryTimeout = false, getTimeout = false, switchTab = false, switchAfterScreenshot = false, screenshotTimeout = false, closed = false, permission = false, injectionError = false, unsupportedPage = false, navigateAfterScreenshot = false, mutateDocumentAfterScreenshot = false, mutateBenignDocumentAfterScreenshot = false, mutateTargetAfterScreenshot = false, mutateViewportAfterScreenshot = false, interactionAfterScreenshot = false, incompleteFingerprint = false, missingUrl = false, emptyUrl = false, token = "", privacyMode = "full_local_capture", redactionFailure = false, blockSensitiveOrigins = false, currentUrl = null} = {}) {
+  const revisionState = captureContext.__LOCAL_AI_DOCUMENT_REVISION__;
+  if (revisionState && !revisionState.observer) revisionState.observer = {observe: () => {}};
   let activeId = closed ? null : 7;
   const posts = [];
   const committedPosts = [];
@@ -131,22 +195,51 @@ async function runBackground({timeout = null, hubTimeout = null, stageTimeout = 
   const committedResults = new Map();
   let delayedStageResponses = 0;
   let artifactCommits = 0;
+  let injections = 0;
+  const maskRequests = [];
+  let offscreenReady = false;
   let commitAttempts = 0;
   let aborted = false;
   const currentTab = {id: 7, windowId: 3};
-  if (!missingUrl) currentTab.url = emptyUrl ? "" : page.url;
+  if (!missingUrl) currentTab.url = unsupportedPage ? "chrome://settings" : emptyUrl ? "" : currentUrl || page.url;
   const bgContext = {
     __LOCAL_AI_CAPTURE_TIMEOUT_MS__: timeout || 8000,
     __LOCAL_AI_HUB_REQUEST_TIMEOUT_MS__: hubTimeout || 5000,
     __LOCAL_AI_HUB_API_TOKEN__: token,
     AbortController: FakeAbortController,
     chrome: {
-      runtime: {getURL: () => "chrome-extension://fixture/"},
+      runtime: {
+        id: "fixture",
+        getURL: () => "chrome-extension://fixture/",
+        onMessage: {addListener: () => {}},
+        sendMessage: async (message) => {
+          if (message.type !== "LOCAL_AI_MASK_SCREENSHOT") return undefined;
+          maskRequests.push(message);
+          return redactionFailure ? {success: false, error_code: "screenshot_redaction_failed"}
+            : {success: true, dataUrl: "data:image/png;base64,bWFza2Vk", maskedRegions: message.regions.length};
+        },
+      },
+      offscreen: {
+        hasDocument: async () => offscreenReady,
+        createDocument: async () => { offscreenReady = true; },
+      },
       action: {onClicked: {addListener: () => {}}},
+      scripting: {
+        executeScript: async () => {
+          injections += 1;
+          if (injectionError) throw new Error("Cannot access contents of the page");
+          return [];
+        },
+      },
       tabs: {
         get: async () => { if (getTimeout) return new Promise(() => {}); return {...currentTab}; },
         query: async () => { if (queryTimeout) return new Promise(() => {}); if (permission) throw new Error("permission denied"); return activeId === null ? [] : [{id: activeId, windowId: 3}]; },
         sendMessage: async (tabId, message) => {
+          if (message.type === "LOCAL_AI_CAPTURE_CURRENT_TAB") {
+            const captured = await captureContext.captureCurrentTab({privacyMode: message.privacyMode});
+            if (switchTab) activeId = 8;
+            return captured;
+          }
           if (disconnectAfterStage && message.type === "LOCAL_AI_VERIFY_CURRENT_TAB" && serverStaged.size > 0) {
             throw new Error("The message port closed before a response was received.");
           }
@@ -158,8 +251,28 @@ async function runBackground({timeout = null, hubTimeout = null, stageTimeout = 
             main.append(new FakeElement("p", {}, "DOM changed after screenshot"));
             return {...page, ...(await captureContext.verifyCurrentTab())};
           }
+          if (message.type === "LOCAL_AI_VERIFY_CURRENT_TAB" && mutateTargetAfterScreenshot) {
+            main.children[0].textContent = "Different payment target";
+            return await captureContext.verifyCurrentTab();
+          }
+          if (message.type === "LOCAL_AI_VERIFY_CURRENT_TAB" && mutateBenignDocumentAfterScreenshot) {
+            main.append(new FakeElement("p", {}, "Clock refreshed"));
+            captureContext.__LOCAL_AI_DOCUMENT_REVISION__.content += 1;
+            return await captureContext.verifyCurrentTab();
+          }
+          if (message.type === "LOCAL_AI_VERIFY_CURRENT_TAB" && interactionAfterScreenshot) {
+            captureContext.documentEventListeners.click.forEach((listener) => listener());
+            return await captureContext.verifyCurrentTab();
+          }
+          if (message.type === "LOCAL_AI_VERIFY_CURRENT_TAB" && mutateViewportAfterScreenshot) {
+            captureContext.innerWidth += 1;
+            return await captureContext.verifyCurrentTab();
+          }
+          if (message.type === "LOCAL_AI_VERIFY_CURRENT_TAB" && incompleteFingerprint) {
+            return {...await captureContext.verifyCurrentTab(), relevant_state_complete: false};
+          }
           if (switchTab) activeId = 8;
-          return page;
+          return message.type === "LOCAL_AI_VERIFY_CURRENT_TAB" ? await captureContext.verifyCurrentTab() : page;
         },
         captureVisibleTab: async () => {
           if (screenshotTimeout) return new Promise(() => {});
@@ -234,22 +347,66 @@ async function runBackground({timeout = null, hubTimeout = null, stageTimeout = 
   if (timeout && !screenshotTimeout) {
     bgContext.chrome.tabs.sendMessage = () => new Promise(() => {});
   }
-  const result = await bgContext.captureCurrentTab(tab);
+  const result = await bgContext.captureCurrentTab(tab, {
+    privacyMode,
+    consentAcknowledged: true,
+    fullCaptureAcknowledged: privacyMode === "full_local_capture",
+    blockSensitiveOrigins,
+  });
   if (stageTimeout) await new Promise((resolve) => setTimeout(resolve, 25));
-  return {result, posts, committedPosts, serverStaged, delayedStageResponses, artifactCommits, aborted};
+  return {result, posts, committedPosts, serverStaged, delayedStageResponses, artifactCommits, aborted, injections, maskRequests};
 }
 
   const success = await runBackground();
   assert.equal(success.result.success, true);
+  assert.equal(success.injections, 1);
   assert.equal(success.posts.at(-1).tab_id, 7);
   assert.equal(success.posts.at(-1).window_id, 3);
   const stagedSuccess = success.posts.find((post) => post.screenshot);
   assert.match(stagedSuccess.dom.html, /data-authenticated="true"/);
   assert.equal(stagedSuccess.capture_identity.initial.document_token, "document:1000:0:navigate");
 
+  const redactedCapture = await runBackground({privacyMode: "privacy_redacted"});
+  assert.equal(redactedCapture.result.success, true);
+  const stagedRedacted = redactedCapture.posts.find((post) => post.screenshot);
+  assert.equal(stagedRedacted.privacy_mode, "privacy_redacted");
+  assert.equal(stagedRedacted.screenshot, "data:image/png;base64,bWFza2Vk");
+  assert.doesNotMatch(stagedRedacted.dom.html, /secret-visible-token-123|alice@example\.test/);
+  assert.equal(redactedCapture.maskRequests.length, 1);
+  assert.equal(redactedCapture.maskRequests[0].regions.length, 3);
+
+  const screenshotOnlyCapture = await runBackground({privacyMode: "screenshot_only"});
+  assert.equal(screenshotOnlyCapture.result.success, true);
+  const stagedScreenshotOnly = screenshotOnlyCapture.posts.find((post) => post.screenshot);
+  assert.equal(stagedScreenshotOnly.privacy_mode, "screenshot_only");
+  assert.equal(stagedScreenshotOnly.dom.html, "");
+  assert.deepEqual(JSON.parse(JSON.stringify(stagedScreenshotOnly.dom.elements)), []);
+  assert.equal(screenshotOnlyCapture.maskRequests.length, 0);
+
+  const failedScreenshotMask = await runBackground({privacyMode: "privacy_redacted", redactionFailure: true});
+  assert.equal(failedScreenshotMask.result.error_code, "redaction_failed");
+  assert.equal(failedScreenshotMask.posts.some((post) => post.screenshot), false);
+  const blockedSensitiveOrigin = await runBackground({
+    privacyMode: "privacy_redacted",
+    blockSensitiveOrigins: true,
+    currentUrl: "https://login.fixture.test/authorize",
+  });
+  assert.equal(blockedSensitiveOrigin.result.error_code, "sensitive_origin_blocked");
+  assert.equal(blockedSensitiveOrigin.posts.length, 0);
+  assert.equal(blockedSensitiveOrigin.injections, 0);
+
   const timeout = await runBackground({timeout: 5});
   assert.equal(timeout.result.error_code, "timeout");
   assert.equal(timeout.posts.at(-1).capture_error, "timeout");
+
+  const unsupportedPage = await runBackground({unsupportedPage: true});
+  assert.equal(unsupportedPage.result.error_code, "unsupported");
+  assert.equal(unsupportedPage.injections, 0);
+  assert.equal(unsupportedPage.posts.length, 0);
+
+  const injectionDenied = await runBackground({injectionError: true});
+  assert.equal(injectionDenied.result.error_code, "permission_denied");
+  assert.equal(injectionDenied.injections, 1);
 
   const screenshotTimeout = await runBackground({timeout: 5, screenshotTimeout: true});
   assert.equal(screenshotTimeout.result.error_code, "timeout");
@@ -302,8 +459,24 @@ async function runBackground({timeout = null, hubTimeout = null, stageTimeout = 
   assert.equal(captureContext.history.state.step, 2);
   assert.match(captureContext.document.documentElement.outerHTML, /DOM changed after screenshot/);
   assert.equal(mutated.result.error_code, "target_changed");
-  assert.equal(mutated.posts.at(-1).capture_error, "target_changed");
   assert.equal(mutated.posts.some((post) => post.screenshot), false);
+  const benignMutation = await runBackground({mutateBenignDocumentAfterScreenshot: true});
+  assert.equal(benignMutation.result.success, true);
+  assert.equal(benignMutation.posts.find((post) => post.screenshot).capture_identity.consistency, "changed_but_safe");
+  const changedTarget = await runBackground({mutateTargetAfterScreenshot: true});
+  assert.equal(changedTarget.result.error_code, "target_changed");
+  assert.equal(changedTarget.posts.at(-1).capture_error, "target_changed");
+  assert.equal(changedTarget.posts.some((post) => post.screenshot), false);
+  const interacted = await runBackground({interactionAfterScreenshot: true});
+  assert.equal(interacted.result.error_code, "target_changed");
+  assert.equal(interacted.posts.some((post) => post.screenshot), false);
+  const viewportChanged = await runBackground({mutateViewportAfterScreenshot: true});
+  assert.equal(viewportChanged.result.error_code, "target_changed");
+  assert.equal(viewportChanged.posts.some((post) => post.screenshot), false);
+  captureContext.innerWidth = 1280;
+  const incompleteFingerprintResult = await runBackground({incompleteFingerprint: true});
+  assert.equal(incompleteFingerprintResult.result.error_code, "unverifiable");
+  assert.equal(incompleteFingerprintResult.posts.some((post) => post.screenshot), false);
   for (const options of [{missingUrl: true}, {emptyUrl: true}]) {
     const missingOrEmpty = await runBackground(options);
     assert.equal(missingOrEmpty.result.error_code, "permission_denied");
@@ -321,7 +494,7 @@ async function runBackground({timeout = null, hubTimeout = null, stageTimeout = 
   assert.equal(permissionDenied.artifactCommits, 0);
   const tokenRun = await runBackground({token: "0123456789abcdef"});
   assert.equal(tokenRun.result.success, true);
-  process.stdout.write(JSON.stringify({success: true, fixture: "login-preserving", cases: ["success", "permission-denied-no-capture", "timeout", "screenshot-timeout", "hub-timeout", "final-post-timeout", "query-timeout", "get-timeout", "tab-switch", "same-tab-navigation", "same-url-state-race", "disconnect-after-stage", "missing-tab-url", "empty-tab-url", "password", "timestamp", "origin", "token"]}));
+  process.stdout.write(JSON.stringify({success: true, fixture: "login-preserving", cases: ["success", "permission-denied-no-capture", "unsupported-page-no-injection", "injection-denied", "timeout", "screenshot-timeout", "hub-timeout", "final-post-timeout", "query-timeout", "get-timeout", "tab-switch", "same-tab-navigation", "same-url-state-race", "benign-visual-mutation-safe", "target-mutation-rejected", "interaction-race-rejected", "viewport-race-rejected", "incomplete-fingerprint-unverifiable", "disconnect-after-stage", "missing-tab-url", "empty-tab-url", "password", "timestamp", "origin", "token", "privacy-redacted", "screenshot-only", "mask-failure-no-stage", "sensitive-origin-blocked"]}));
 }
 
 runFixture().catch((error) => { console.error(error); process.exitCode = 1; });

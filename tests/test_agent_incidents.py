@@ -7,6 +7,7 @@ import pytest
 
 from local_ai_hub.agent_events import AgentStateStore
 from local_ai_hub.sqlite_support import DurableSchemaMismatchError
+import local_ai_hub.agent_incidents as agent_incidents_module
 from local_ai_hub.agent_incidents import (
     IncidentFingerprint,
     IncidentRecord,
@@ -42,6 +43,25 @@ def test_incident_store_rejects_incomplete_table_without_losing_rows(tmp_path: P
     assert columns == {"incident_id", "operation_class", "preserved_note"}
     assert row == ("legacy-1", "command", "keep me")
 
+
+def test_incident_schema_initialization_uses_bounded_transaction(tmp_path: Path, monkeypatch):
+    observed = []
+    original_transaction = agent_incidents_module.write_transaction
+
+    def record_transaction(connection, **kwargs):
+        observed.append(kwargs)
+        return original_transaction(connection, **kwargs)
+
+    monkeypatch.setattr(agent_incidents_module, "write_transaction", record_transaction)
+    state_store = AgentStateStore(tmp_path / "agent_state.sqlite3")
+    IncidentStore(state_store)
+
+    assert observed == [
+        {
+            "max_duration_seconds": 5.0,
+            "rollback_label": "agent incident schema initialization",
+        }
+    ]
 def failed_command_outcome(
     error: str, revision: str = "rev-1", *, root: str = ""
 ) -> ToolOutcome:

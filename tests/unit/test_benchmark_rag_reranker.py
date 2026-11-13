@@ -1,14 +1,146 @@
 from __future__ import annotations
 
+import math
+from pathlib import Path
+
 import pytest
 
 from tools.benchmark_rag_reranker import (
     _benchmark_embeddings,
+    _offline_embedding_candidates,
     benchmark_state_dir,
+    load_benchmark_dataset,
     local_embedding_model_path,
+    negative_candidate_summary,
     offline_device_metrics,
+    offline_embedding_rank_summary,
     rank_embeddings,
 )
+
+
+def test_embedding_quality_summary_reports_recall_mrr_and_ndcg() -> None:
+    rows = [
+        {
+            "expected_paths": ["relevant-a", "relevant-b"],
+            "offline_embedding_rank": 2,
+            "offline_embedding_ranked_paths": ["noise", "relevant-a", "relevant-b"],
+            "offline_embedding_metrics": {"successful_repeats": 2},
+        },
+        {
+            "expected_paths": ["relevant-c"],
+            "offline_embedding_rank": 1,
+            "offline_embedding_ranked_paths": ["relevant-c"],
+            "offline_embedding_metrics": {"successful_repeats": 1},
+        },
+        {
+            "expected_paths": ["unmeasured"],
+            "offline_embedding_rank": None,
+            "offline_embedding_ranked_paths": [],
+            "offline_embedding_metrics": {"successful_repeats": 0},
+        },
+    ]
+
+    summary = offline_embedding_rank_summary(rows, model_configured=True)
+
+    assert summary["recall_at_5"] == 1.0
+    assert summary["recall_at_10"] == 1.0
+    assert summary["mrr"] == pytest.approx(0.75)
+    expected_first_ndcg = (
+        1 / math.log2(3) + 1 / math.log2(4)
+    ) / (1 + 1 / math.log2(3))
+    assert summary["ndcg_at_10"] == pytest.approx((expected_first_ndcg + 1) / 2)
+    assert summary["cases"] == 2
+
+
+def test_negative_candidate_summary_counts_only_successful_lexical_queries() -> None:
+    summary = negative_candidate_summary([
+        {"candidate_source": "lexical", "candidate_count": 3},
+        {"candidate_source": "lexical_empty", "candidate_count": 0},
+        {"candidate_source": "rag_fallback", "candidate_count": 5},
+        {"candidate_source": "lexical_unavailable", "candidate_count": 0},
+    ])
+
+    assert summary == {
+        "negative_cases": 4,
+        "lexical_cases_evaluated": 2,
+        "candidate_false_positive_cases": 1,
+        "candidate_false_positive_rate": 0.5,
+    }
+
+
+def test_source_anchored_dataset_covers_bilingual_polyglot_plan() -> None:
+    root = Path(__file__).resolve().parents[2]
+    dataset, cases = load_benchmark_dataset(root)
+    by_id = {case["id"]: case for case in dataset["cases"]}
+
+    assert len(dataset["cases"]) == 50
+    assert len(cases) == 45
+    assert dataset["case_set"] == "agent-search-manual-2026-11-13-v3"
+    assert sum(case["language"] == "cs" for case in cases) == 20
+    assert sum(case["language"] == "en" for case in cases) == 19
+    assert sum(case["language"] == "symbol" for case in cases) == 6
+    assert by_id["english-czech-audit-typescript"]["expected_paths"] == [
+        "docs/AUDIT_ROUND_3_2026-11-08.md",
+    ]
+    assert by_id["czech-cakephp-detection"]["expected_paths"] == [
+        "src/local_ai_hub/repo_tools.py",
+    ]
+    assert by_id["english-php8-outline"]["expected_paths"] == [
+        "tests/test_php_js_ts_support.py",
+    ]
+
+
+class _SearchClient:
+    def __init__(self, response):
+        self.response = response
+        self.calls = []
+
+    def post(self, path, payload, timeout):
+        self.calls.append((path, payload, timeout))
+        return self.response
+
+
+def test_offline_candidates_use_lexical_pool_even_when_rag_has_candidates(tmp_path) -> None:
+    client = _SearchClient({"success": True, "results": [{"path": "lexical.md", "text": "Lexical"}]})
+    source = {"results": [{"path": "rag.md", "text": "RAG"}], "result_source": "rag"}
+
+    candidates, candidate_source = _offline_embedding_candidates(client, tmp_path, "find setup", source)
+
+    assert candidates == client.response["results"]
+    assert candidate_source == "lexical"
+    assert client.calls == [(
+        "/api/search",
+        {"root": str(tmp_path), "query": "find setup", "search_mode": "lexical", "limit": 10, "offset": 0},
+        30,
+    )]
+
+
+def test_offline_candidates_use_rag_when_lexical_search_fails(tmp_path) -> None:
+    client = _SearchClient({"success": False, "results": [], "error": "offline"})
+    source = {"results": [{"path": "rag.md", "text": "RAG"}], "result_source": "rag"}
+
+    candidates, candidate_source = _offline_embedding_candidates(
+        client, tmp_path, "find setup", source,
+    )
+
+    assert candidates == source["results"]
+    assert candidate_source == "rag_fallback"
+    assert client.calls == [(
+        "/api/search",
+        {"root": str(tmp_path), "query": "find setup", "search_mode": "lexical", "limit": 10, "offset": 0},
+        30,
+    )]
+
+
+def test_offline_candidates_distinguish_successful_empty_lexical_results(tmp_path) -> None:
+    client = _SearchClient({"success": True, "results": []})
+
+    candidates, candidate_source = _offline_embedding_candidates(
+        client, tmp_path, "unknown query", {},
+    )
+
+    assert candidates == []
+    assert candidate_source == "lexical_empty"
 
 
 def test_offline_cuda_metrics_report_cpu_fallback_and_successful_throughput() -> None:

@@ -97,7 +97,14 @@ def ast_outline(root: str, path: str) -> OutlineResult:
     if not target.is_file():
         return {"success": False, "error": f"file not found: {path}"}
 
-    content = target.read_text(encoding="utf-8", errors="replace")
+    try:
+        content = target.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return {
+            "success": False,
+            "error": "unable to read source file",
+            "error_code": "source_read_error",
+        }
     try:
         tree = ast.parse(content, filename=str(target))
 

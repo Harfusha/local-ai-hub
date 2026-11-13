@@ -8,11 +8,13 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from local_ai_hub.external_gpu_reservation import ExternalGpuReservationStore
 from local_ai_hub.operation_contracts import operation_contract, validate_operation_arguments
+from local_ai_hub.scheduler import AffinityScheduler
 
 
 def _digest(token: str) -> str:
@@ -57,6 +59,94 @@ def test_internal_claim_reaps_expired_legacy_fence(tmp_path):
 
     assert store.claim_internal(current_digest) is True
     assert path.read_text(encoding="ascii") == current_digest
+
+
+@pytest.mark.parametrize(
+    ("telemetry_updates", "reason"),
+    [
+        ({"telemetry_stale": True}, "vram_telemetry_stale"),
+        ({"telemetry_stale": False, "sample_age_seconds": 5.1}, "vram_telemetry_stale"),
+        ({"telemetry_stale": False, "sample_age_seconds": None}, "vram_telemetry_unavailable"),
+        ({"telemetry_stale": "false", "sample_age_seconds": 0.1}, "vram_telemetry_unavailable"),
+    ],
+)
+def test_scheduler_requires_fresh_gpu_telemetry_before_capacity_lease(tmp_path, telemetry_updates, reason):
+    store = ExternalGpuReservationStore(tmp_path / "external-gpu-reservation")
+    scheduler = object.__new__(AffinityScheduler)
+    resource = {
+        "available": True,
+        "vram_total_mb": 8192,
+        "vram_available_mb": 6144,
+        "sample_age_seconds": 2.5,
+        "telemetry_stale": True,
+    }
+    resource.update(telemetry_updates)
+    scheduler.runtime = SimpleNamespace(resource_status=lambda: resource)
+    scheduler._external_gpu_store = store
+    scheduler._external_gpu_path = None
+    scheduler._internal_gpu_digest = None
+
+    result = scheduler.acquire_gpu_capacity_lease("laya-runtime:test", 1024)
+
+    assert result == {"state": "rejected", "reason": reason}
+    assert not store.capacity_leases_path.exists()
+
+
+def test_internal_claim_removes_its_partial_digest_after_write_failure(tmp_path, monkeypatch):
+    path = tmp_path / "external-gpu-reservation"
+    store = ExternalGpuReservationStore(path, clock=lambda: 100.0)
+
+    def fail_sync(_fd):
+        raise OSError("simulated digest fsync failure")
+
+    monkeypatch.setattr(os, "fsync", fail_sync)
+
+    assert store.claim_internal(_digest("internal-owner")) is False
+    assert not path.exists()
+
+
+def test_internal_claim_removes_partial_digest_when_write_raises(tmp_path, monkeypatch):
+    path = tmp_path / "external-gpu-reservation"
+    store = ExternalGpuReservationStore(path, clock=lambda: 100.0)
+    original_open = Path.open
+
+    class PartialWriter:
+        def __init__(self, stream):
+            self.stream = stream
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return self.stream.__exit__(*args)
+
+        def __getattr__(self, name):
+            return getattr(self.stream, name)
+
+        def write(self, data):
+            self.stream.write(data[:12])
+            raise OSError("simulated partial digest write")
+
+    def fail_after_partial_write(candidate, *args, **kwargs):
+        stream = original_open(candidate, *args, **kwargs)
+        if candidate == path and args and args[0] == "xb":
+            return PartialWriter(stream)
+        return stream
+
+    monkeypatch.setattr(Path, "open", fail_after_partial_write)
+
+    assert store.claim_internal(_digest("internal-owner")) is False
+    assert not path.exists()
+
+
+def test_reserve_removes_digest_when_metadata_commit_fails(tmp_path, monkeypatch):
+    path = tmp_path / "external-gpu-reservation"
+    store = ExternalGpuReservationStore(path, clock=lambda: 100.0)
+    monkeypatch.setattr(store, "_write_metadata", lambda record: False)
+
+    assert store.reserve(_digest("external-owner"), owner="external", owner_vram_budget_bytes=16 * 1024**3) is None
+    assert not path.exists()
+    assert not store.metadata_path.exists()
 
 
 @pytest.mark.parametrize("contents", ["not-a-digest", "g" * 64])

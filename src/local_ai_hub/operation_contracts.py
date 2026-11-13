@@ -1654,9 +1654,17 @@ def operation_output_schema(tool: str, action: str) -> dict[str, Any]:
     elif tool == "local_ai_task" and action == "automation":
         properties.update({
             "error_code": {"type": "string"}, "outcome_unknown": {"type": "boolean"},
+            "network_egress_policy": {"type": "object", "properties": {
+                "requested": {"type": "boolean"}, "status": {"type": "string"},
+                "enforced": {"type": "boolean"},
+            }, "additionalProperties": False},
             "automation": {"type": "object", "properties": {
                 **{name: {"type": "string"} for name in ("session_id", "session_key", "mode", "isolation", "url", "title", "text", "tab_id", "artifact_id", "mime_type")},
                 **{name: {"type": "boolean"} for name in ("closed", "fenced", "network_egress_isolated")},
+                "network_egress_policy": {"type": "object", "properties": {
+                    "requested": {"type": "boolean"}, "status": {"type": "string"},
+                    "enforced": {"type": "boolean"},
+                }, "additionalProperties": False},
                 "expires_in_seconds": {"type": "number"}, "size_bytes": {"type": "integer"},
                 "tabs": {"type": "array", "items": {"type": "object"}},
             }, "additionalProperties": True},

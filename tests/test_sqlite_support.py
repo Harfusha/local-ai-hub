@@ -2,7 +2,7 @@ from pathlib import Path
 import sqlite3
 import pytest
 
-from local_ai_hub.sqlite_support import connect_sqlite, write_transaction
+from local_ai_hub.sqlite_support import begin_write_transaction, connect_sqlite, write_transaction
 
 def test_connect_sqlite_basic(tmp_path: Path):
     db_path = tmp_path / "test_basic.sqlite3"
@@ -94,6 +94,41 @@ def test_write_transaction_rolls_back_when_budget_expires(monkeypatch):
     with pytest.raises(TimeoutError, match="write transaction exceeded"):
         with write_transaction(con, max_duration_seconds=0.5):
             con.execute("INSERT INTO events VALUES (?)", ("discarded",))
+
+    assert not con.in_transaction
+    assert con.execute("SELECT COUNT(*) FROM events").fetchone()[0] == 0
+    con.close()
+
+
+def test_begin_write_transaction_supports_explicit_commit_and_rollback():
+    con = connect_sqlite(":memory:")
+    con.execute("CREATE TABLE events (value TEXT NOT NULL)")
+
+    committed = begin_write_transaction(con)
+    con.execute("INSERT INTO events VALUES (?)", ("committed",))
+    committed.commit()
+    assert not con.in_transaction
+
+    rolled_back = begin_write_transaction(con)
+    con.execute("INSERT INTO events VALUES (?)", ("discarded",))
+    rolled_back.rollback()
+    assert not con.in_transaction
+    assert [row[0] for row in con.execute("SELECT value FROM events")] == ["committed"]
+    con.close()
+
+
+def test_begin_write_transaction_rolls_back_when_budget_expires(monkeypatch):
+    from local_ai_hub import sqlite_support
+
+    con = connect_sqlite(":memory:")
+    con.execute("CREATE TABLE events (value TEXT NOT NULL)")
+    ticks = iter((10.0, 10.6))
+    monkeypatch.setattr(sqlite_support.time, "monotonic", lambda: next(ticks))
+
+    transaction = begin_write_transaction(con, max_duration_seconds=0.5)
+    con.execute("INSERT INTO events VALUES (?)", ("discarded",))
+    with pytest.raises(TimeoutError, match="write transaction exceeded"):
+        transaction.commit()
 
     assert not con.in_transaction
     assert con.execute("SELECT COUNT(*) FROM events").fetchone()[0] == 0

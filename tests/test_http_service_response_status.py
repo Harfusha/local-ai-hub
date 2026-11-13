@@ -4,6 +4,7 @@ import json
 import pytest
 
 from local_ai_hub import http_server
+from local_ai_hub import deterministic as deterministic_module
 from local_ai_hub.deterministic import DeterministicEngine
 
 
@@ -65,6 +66,28 @@ def test_schema_inspect_reports_not_found_status_for_missing_database(tmp_path):
 
     assert result["success"] is False
     assert result["status_code"] == 404
+
+
+@pytest.mark.parametrize("operation", ["schema_inspect", "explain_query"])
+def test_sqlite_discovery_limit_is_reported_as_incomplete_not_not_found(
+    monkeypatch, tmp_path, operation
+):
+    (tmp_path / "a.txt").write_text("a", encoding="utf-8")
+    (tmp_path / "b.txt").write_text("b", encoding="utf-8")
+    monkeypatch.setattr(
+        deterministic_module, "_SQLITE_DISCOVERY_MAX_ENTRIES", 1, raising=False
+    )
+    engine = DeterministicEngine()
+
+    if operation == "schema_inspect":
+        result = engine.schema_inspect(str(tmp_path))
+    else:
+        result = engine.explain_query(str(tmp_path), "SELECT 1")
+
+    assert result["success"] is False
+    assert result["status_code"] == 422
+    assert result["database_search_complete"] is False
+    assert "db_path" in result["error"]
 
 
 def test_explain_query_rejects_empty_query_with_client_error_status(tmp_path):

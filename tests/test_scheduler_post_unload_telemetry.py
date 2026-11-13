@@ -1,3 +1,4 @@
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -19,7 +20,13 @@ def test_mixed_backend_requires_admission_for_initial_or_same_name_switch(active
         def requires_post_unload_admission(self, _model):
             return True
         def resource_status(self):
-            return {"available": True, "vram_total_mb": 8192, "vram_available_mb": 6144}
+            return {
+                "available": True,
+                "vram_total_mb": 8192,
+                "vram_available_mb": 6144,
+                "telemetry_stale": False,
+                "sample_age_seconds": 0.1,
+            }
         def loaded_model_details(self):
             return []
         def prepare_model(self, _model, *, post_unload_admission, **_kwargs):
@@ -78,6 +85,67 @@ def test_required_mixed_admission_fails_closed_without_telemetry():
     assert calls == []
 
 
+@pytest.mark.parametrize("failure_kind", ["admission_rejected", "operation_not_started", "ambiguous"])
+def test_preparation_result_preserves_gpu_certainty(failure_kind):
+    import threading
+    from collections import Counter
+
+    class PreparationFailure(RuntimeError):
+        pass
+
+    class Runtime:
+        def requires_post_unload_admission(self, _model):
+            return failure_kind == "admission_rejected"
+
+        def supports_post_unload_admission(self, _model):
+            return failure_kind == "admission_rejected"
+
+        def loaded_model_details(self):
+            return []
+
+        def resource_status(self):
+            return {"available": True, "vram_total_mb": 8192, "vram_available_mb": 6144}
+
+        def prepare_model(self, _model, *, post_unload_admission=None, **_kwargs):
+            if failure_kind == "admission_rejected":
+                admission = post_unload_admission()
+                admission.update(state="rejected", reason="capacity")
+                exc = PreparationFailure("admission rejected")
+                exc.admission = admission
+            elif failure_kind == "ambiguous":
+                raise PreparationFailure("adapter outcome unavailable")
+            else:
+                exc = PreparationFailure("preparation cancelled")
+                exc.operation_not_started = True
+                exc.preparation_cancelled = True
+            raise exc
+
+    scheduler = object.__new__(AffinityScheduler)
+    scheduler.runtime = Runtime()
+    scheduler.config = {}
+    scheduler._cond = threading.Condition()
+    scheduler._pending = []
+    scheduler._model_vram_bytes = {}
+    scheduler._active_model = "old-model"
+    scheduler._active_since = 1.0
+    scheduler._active_dispatched = 0
+    scheduler._last_switch = 0.0
+    scheduler._switch_sequence = 0
+    scheduler._stats = Counter()
+    scheduler._internal_gpu_uncertain = False
+    scheduler._internal_gpu_uncertain_since = None
+    scheduler._model_blocked_until = {}
+    scheduler._model_last_error = {}
+    scheduler._switch_not_started = False
+    scheduler.switch_failure_cooldown = 1.0
+    scheduler.unload_others = True
+
+    assert scheduler._perform_switch("target-model") is False
+    known_not_started = failure_kind != "ambiguous"
+    assert scheduler._switch_not_started is known_not_started
+    assert scheduler._internal_gpu_uncertain is not known_not_started
+
+
 def scheduler_with_balancer(balancer):
     scheduler = object.__new__(AffinityScheduler)
     scheduler.runtime = SimpleNamespace(vram_balancer=balancer)
@@ -94,7 +162,7 @@ def test_post_unload_waits_for_actual_balancer_sample(monkeypatch):
     monkeypatch.setattr(module, "get_gpu_telemetry", lambda: {
         "available": True, "gpu_name": "Test GPU", "vendor": "nvidia",
         "vram_total_mb": 8192.0, "vram_used_mb": 2048.0,
-        "vram_available_mb": 6144.0,
+        "vram_available_mb": 6144.0, "timestamp": time.time(),
     })
     scheduler = scheduler_with_balancer(VRAMBalancer())
 
@@ -121,6 +189,34 @@ def test_post_unload_rejects_explicitly_unavailable_measurement(sample):
     assert result["reason"] == "post_unload_vram_unavailable"
 
 
+@pytest.mark.parametrize(
+    ("telemetry", "expected_reason"),
+    [
+        ({"telemetry_stale": True, "sample_age_seconds": 0.2}, "vram_telemetry_stale"),
+        ({"telemetry_stale": False, "sample_age_seconds": 5.1}, "vram_telemetry_stale"),
+        ({"telemetry_stale": False}, "vram_telemetry_unavailable"),
+        ({"telemetry_stale": None, "sample_age_seconds": 0.2}, "vram_telemetry_unavailable"),
+        ({"telemetry_stale": False, "sample_age_seconds": float("nan")}, "vram_telemetry_unavailable"),
+    ],
+)
+def test_post_unload_rejects_stale_or_unknown_sample_age(telemetry, expected_reason):
+    class Balancer:
+        def status(self, force=False):
+            return {
+                "available": True,
+                "vram_total_mb": 8192.0,
+                "vram_available_mb": 7168.0,
+                **telemetry,
+            }
+
+    result = scheduler_with_balancer(Balancer())._post_unload_vram_admission("target-model")
+
+    assert result["state"] == "rejected"
+    assert result["reason"] == expected_reason
+    assert result["vram_admission"] == "rejected"
+    assert result["vram_admission_phase"] == "post_unload"
+
+
 def test_normal_admission_rejects_unavailable_stale_vram_capacity():
     class Balancer:
         def status(self, force=False):
@@ -141,7 +237,42 @@ def test_normal_admission_rejects_unavailable_stale_vram_capacity():
     )
 
     assert result["state"] == "rejected"
-    assert result["reason"] == "vram_telemetry_unavailable"
+    assert result["reason"] == "vram_telemetry_stale"
+    assert result["vram_admission"] == "unknown"
+    assert "vram_available_bytes" not in result
+
+
+@pytest.mark.parametrize(
+    ("telemetry", "expected_reason"),
+    [
+        ({"telemetry_stale": True, "sample_age_seconds": 0.2}, "vram_telemetry_stale"),
+        ({"telemetry_stale": False, "sample_age_seconds": 5.1}, "vram_telemetry_stale"),
+        ({"telemetry_stale": False}, "vram_telemetry_unavailable"),
+        ({"telemetry_stale": None, "sample_age_seconds": 0.2}, "vram_telemetry_unavailable"),
+        ({"telemetry_stale": False, "sample_age_seconds": float("nan")}, "vram_telemetry_unavailable"),
+        ({"telemetry_stale": False, "sample_age_seconds": "0.2"}, "vram_telemetry_unavailable"),
+    ],
+)
+def test_normal_admission_rejects_stale_or_unknown_sample_age(telemetry, expected_reason):
+    class Balancer:
+        def status(self, force=False):
+            return {
+                "available": True,
+                "pressure_level": "nominal",
+                "context_budget_factor": 1.0,
+                "throttle_background": False,
+                "vram_total_mb": 8192.0,
+                "vram_available_mb": 7168.0,
+                **telemetry,
+            }
+
+    result = scheduler_with_balancer(Balancer())._admission(
+        background=False,
+        model="target-model",
+    )
+
+    assert result["state"] == "rejected"
+    assert result["reason"] == expected_reason
     assert result["vram_admission"] == "unknown"
     assert "vram_available_bytes" not in result
 

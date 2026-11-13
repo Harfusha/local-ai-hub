@@ -17,7 +17,7 @@ import uuid
 from .agent_tasks import TaskState, TaskStore, CheckpointResponseBudgetError, _canonical_repository_root
 from .task_memory_wire import mcp_wire_tokens
 from .agent_events import AgentEvent
-from .sqlite_support import connect_sqlite, retry_busy
+from .sqlite_support import connect_sqlite, retry_busy, write_transaction
 
 
 class RiskClass(str, Enum):
@@ -769,8 +769,9 @@ class PolicyEngine:
             self._init_table()
 
             def mutate() -> dict[str, Any]:
-                with closing(connect_sqlite(store.db_path)) as con, con:
-                    con.execute("BEGIN IMMEDIATE")
+                with closing(connect_sqlite(store.db_path)) as con, write_transaction(
+                    con, max_duration_seconds=2.0, rollback_label="agent budget increase audit"
+                ):
                     task = con.execute(
                         "SELECT owner,status,checkpoint FROM agent_tasks_projection WHERE task_id=?",
                         (task_id,),
@@ -858,54 +859,54 @@ class PolicyEngine:
 
         def reserve() -> ExternalCallReservation:
             with closing(connect_sqlite(self.state_store.db_path)) as con:
-                con.execute("BEGIN IMMEDIATE")
-                existing = con.execute(
-                    "SELECT task_id FROM agent_external_call_reservations WHERE invocation_id=?",
-                    (invocation_id,),
-                ).fetchone()
-                if existing is not None:
-                    if str(existing[0]) != task_id:
-                        raise ValueError("invocation_id is already bound to another task")
-                    row = con.execute(
-                        "SELECT task_id,max_tokens,used_tokens,max_compute_seconds,used_compute_seconds,max_external_calls,used_external_calls "
-                        "FROM agent_budgets WHERE task_id=?",
-                        (task_id,),
+                with write_transaction(
+                    con, max_duration_seconds=2.0, rollback_label="external-call budget reservation"
+                ):
+                    existing = con.execute(
+                        "SELECT task_id FROM agent_external_call_reservations WHERE invocation_id=?",
+                        (invocation_id,),
                     ).fetchone()
-                    budget = Budget(*row) if row is not None else None
-                    if budget is None:
-                        raise BudgetUnavailableError("reserved task budget is missing")
-                    con.commit()
-                    return ExternalCallReservation(
-                        task_id, invocation_id, reserved=False, duplicate=True,
-                        exhausted=False, budget=budget,
-                    )
-
-                row = con.execute(
-                    "SELECT task_id,max_tokens,used_tokens,max_compute_seconds,used_compute_seconds,max_external_calls,used_external_calls "
-                    "FROM agent_budgets WHERE task_id=?",
-                    (task_id,),
-                ).fetchone()
-                current = Budget(*row) if row is not None else Budget(task_id=task_id)
-                if current.remaining_external_calls() <= 0:
-                    con.rollback()
-                    self._budgets[task_id] = current
-                    return ExternalCallReservation(
-                        task_id, invocation_id, reserved=False, duplicate=False,
-                        exhausted=True, budget=current,
-                    )
-
-                updated = replace(current, used_external_calls=current.used_external_calls + 1)
-                con.execute(
-                    "INSERT INTO agent_external_call_reservations(invocation_id,task_id,reserved_at) VALUES(?,?,?)",
-                    (invocation_id, task_id, time.time()),
-                )
-                self._write_budget(con, updated)
-                con.commit()
-                self._budgets[task_id] = updated
-                return ExternalCallReservation(
-                    task_id, invocation_id, reserved=True, duplicate=False,
-                    exhausted=False, budget=updated,
-                )
+                    if existing is not None:
+                        if str(existing[0]) != task_id:
+                            raise ValueError("invocation_id is already bound to another task")
+                        row = con.execute(
+                            "SELECT task_id,max_tokens,used_tokens,max_compute_seconds,used_compute_seconds,max_external_calls,used_external_calls "
+                            "FROM agent_budgets WHERE task_id=?",
+                            (task_id,),
+                        ).fetchone()
+                        budget = Budget(*row) if row is not None else None
+                        if budget is None:
+                            raise BudgetUnavailableError("reserved task budget is missing")
+                        result = ExternalCallReservation(
+                            task_id, invocation_id, reserved=False, duplicate=True,
+                            exhausted=False, budget=budget,
+                        )
+                    else:
+                        row = con.execute(
+                            "SELECT task_id,max_tokens,used_tokens,max_compute_seconds,used_compute_seconds,max_external_calls,used_external_calls "
+                            "FROM agent_budgets WHERE task_id=?",
+                            (task_id,),
+                        ).fetchone()
+                        current = Budget(*row) if row is not None else Budget(task_id=task_id)
+                        if current.remaining_external_calls() <= 0:
+                            budget = current
+                            result = ExternalCallReservation(
+                                task_id, invocation_id, reserved=False, duplicate=False,
+                                exhausted=True, budget=current,
+                            )
+                        else:
+                            budget = replace(current, used_external_calls=current.used_external_calls + 1)
+                            con.execute(
+                                "INSERT INTO agent_external_call_reservations(invocation_id,task_id,reserved_at) VALUES(?,?,?)",
+                                (invocation_id, task_id, time.time()),
+                            )
+                            self._write_budget(con, budget)
+                            result = ExternalCallReservation(
+                                task_id, invocation_id, reserved=True, duplicate=False,
+                                exhausted=False, budget=budget,
+                            )
+                self._budgets[task_id] = budget
+                return result
 
         try:
             return retry_busy(reserve, retries=5, base_delay_seconds=0.01)
@@ -932,9 +933,10 @@ class PolicyEngine:
                 self._init_table()
 
                 def mutate() -> Budget:
-                    with closing(connect_sqlite(self.state_store.db_path)) as con, con:
+                    with closing(connect_sqlite(self.state_store.db_path)) as con, write_transaction(
+                        con, max_duration_seconds=2.0, rollback_label="agent policy budget"
+                    ):
                         # Serialize the complete read/modify/write across engine instances.
-                        con.execute("BEGIN IMMEDIATE")
                         row = con.execute(
                             "SELECT task_id,max_tokens,used_tokens,max_compute_seconds,used_compute_seconds,max_external_calls,used_external_calls FROM agent_budgets WHERE task_id=?",
                             (task_id,),

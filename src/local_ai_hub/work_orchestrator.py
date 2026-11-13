@@ -33,7 +33,12 @@ class _FinalizationLookupTimeout(TimeoutError):
 from .process_utils import hidden_run_kwargs, is_rooted_path
 from .features import rollout_feature_enabled
 from .response_protocol import project_response
-from .sqlite_support import connect_sqlite, retry_busy
+from .sqlite_support import (
+    begin_write_transaction,
+    connect_sqlite,
+    retry_busy,
+    write_transaction,
+)
 from .work_fencing import (
     FencingLease,
     FencingLeaseStore,
@@ -1127,29 +1132,35 @@ class WorkOrchestrator:
             ).hexdigest(),
         }
         with closing(self._connect()) as con:
-            con.execute("BEGIN IMMEDIATE")
-            row = con.execute(
-                "SELECT result_json,state FROM work_orders WHERE work_id=?",
-                (work_id,),
-            ).fetchone()
-            if row is None or str(row["state"]) not in {
-                "planning", "executing", "verifying", "integrating"
-            }:
-                con.execute("ROLLBACK")
-                return False
-            result = json.loads(str(row["result_json"] or "{}"))
-            result["_recovery_checkpoint"] = checkpoint
-            updated = con.execute(
-                "UPDATE work_orders SET result_json=?,updated_at=? WHERE work_id=? AND state=?",
-                (
-                    json_dumps(result, ensure_ascii=False, separators=(",", ":")),
-                    time.time(),
-                    work_id,
-                    str(row["state"]),
-                ),
+            transaction = begin_write_transaction(
+                con, max_duration_seconds=5.0, rollback_label="work-order recovery checkpoint"
             )
-            con.execute("COMMIT")
-            return int(updated.rowcount or 0) == 1
+            try:
+                row = con.execute(
+                    "SELECT result_json,state FROM work_orders WHERE work_id=?",
+                    (work_id,),
+                ).fetchone()
+                if row is None or str(row["state"]) not in {
+                    "planning", "executing", "verifying", "integrating"
+                }:
+                    transaction.rollback()
+                    return False
+                result = json.loads(str(row["result_json"] or "{}"))
+                result["_recovery_checkpoint"] = checkpoint
+                updated = con.execute(
+                    "UPDATE work_orders SET result_json=?,updated_at=? WHERE work_id=? AND state=?",
+                    (
+                        json_dumps(result, ensure_ascii=False, separators=(",", ":")),
+                        time.time(),
+                        work_id,
+                        str(row["state"]),
+                    ),
+                )
+                transaction.commit()
+                return int(updated.rowcount or 0) == 1
+            except BaseException:
+                transaction.rollback()
+                raise
 
     def _recovery_task_barrier_unresolved(self, payload: Any) -> bool:
         """Do not replay work while its task barrier needs reconciliation."""
@@ -1612,44 +1623,50 @@ class WorkOrchestrator:
                 )
                 with guard:
                     with closing(self._connect()) as con:
-                        con.execute("BEGIN IMMEDIATE")
-                        if recovered and isinstance(recovery_payload, dict) and recovery_payload.get("mode") == "bounded":
-                            current = con.execute(
-                                "SELECT cancel_requested FROM work_orders WHERE work_id=? AND state=?", (work_id, state)
-                            ).fetchone()
-                            cancelled = current is not None and bool(current["cancel_requested"])
-                            result = json_dumps({
-                                "summary": "interrupted bounded work recovered; primary review required",
-                                "error": "interrupted bounded work was not rerun; inspect the workspace and test evidence",
-                                "needs_agent": not cancelled, "requires_primary_review": True, "outcome_unknown": True,
-                            }, separators=(",", ":"))
-                            con.execute(
-                                "UPDATE work_orders SET state=?,result_json=?,updated_at=? WHERE work_id=? AND state=?",
-                                ("cancelled" if cancelled else "needs_agent", result, now, work_id, state),
-                            )
-                        elif recovered:
-                            con.execute(
-                                "UPDATE work_orders SET state='queued',result_json='{}',updated_at=? WHERE work_id=? AND state=?",
-                                (now, work_id, state),
-                            )
-                        else:
-                            recovery_result = {
-                                "summary": "work order recovery failed",
-                                "error": ("task mutation barrier requires reconciliation; manual inspection required"
-                                          if barrier_unresolved else "transaction journal could not be safely restored; manual inspection required"),
-                                "needs_agent": True,
-                            }
-                            if isinstance(recovery_payload, dict) and recovery_payload.get("mode") == "bounded":
-                                recovery_result.update({"outcome_unknown": True, "requires_primary_review": True,
-                                                        "rollback_status": "reconciliation_required"})
-                                if barrier_unresolved:
-                                    recovery_result["task_barrier_status"] = "reconciliation_required"
-                            result = json_dumps(recovery_result, separators=(",", ":"))
-                            con.execute(
-                                "UPDATE work_orders SET state='needs_agent',result_json=?,updated_at=? WHERE work_id=? AND state=?",
-                                (result, now, work_id, state),
-                            )
-                        con.execute("COMMIT")
+                        transaction = begin_write_transaction(
+                            con, max_duration_seconds=5.0, rollback_label="work-order recovery finalization"
+                        )
+                        try:
+                            if recovered and isinstance(recovery_payload, dict) and recovery_payload.get("mode") == "bounded":
+                                current = con.execute(
+                                    "SELECT cancel_requested FROM work_orders WHERE work_id=? AND state=?", (work_id, state)
+                                ).fetchone()
+                                cancelled = current is not None and bool(current["cancel_requested"])
+                                result = json_dumps({
+                                    "summary": "interrupted bounded work recovered; primary review required",
+                                    "error": "interrupted bounded work was not rerun; inspect the workspace and test evidence",
+                                    "needs_agent": not cancelled, "requires_primary_review": True, "outcome_unknown": True,
+                                }, separators=(",", ":"))
+                                con.execute(
+                                    "UPDATE work_orders SET state=?,result_json=?,updated_at=? WHERE work_id=? AND state=?",
+                                    ("cancelled" if cancelled else "needs_agent", result, now, work_id, state),
+                                )
+                            elif recovered:
+                                con.execute(
+                                    "UPDATE work_orders SET state='queued',result_json='{}',updated_at=? WHERE work_id=? AND state=?",
+                                    (now, work_id, state),
+                                )
+                            else:
+                                recovery_result = {
+                                    "summary": "work order recovery failed",
+                                    "error": ("task mutation barrier requires reconciliation; manual inspection required"
+                                              if barrier_unresolved else "transaction journal could not be safely restored; manual inspection required"),
+                                    "needs_agent": True,
+                                }
+                                if isinstance(recovery_payload, dict) and recovery_payload.get("mode") == "bounded":
+                                    recovery_result.update({"outcome_unknown": True, "requires_primary_review": True,
+                                                            "rollback_status": "reconciliation_required"})
+                                    if barrier_unresolved:
+                                        recovery_result["task_barrier_status"] = "reconciliation_required"
+                                result = json_dumps(recovery_result, separators=(",", ":"))
+                                con.execute(
+                                    "UPDATE work_orders SET state='needs_agent',result_json=?,updated_at=? WHERE work_id=? AND state=?",
+                                    (result, now, work_id, state),
+                                )
+                            transaction.commit()
+                        except BaseException:
+                            transaction.rollback()
+                            raise
             except LeaseLostError:
                 self._recovery_retry_requested = True
                 continue
@@ -1899,11 +1916,52 @@ class WorkOrchestrator:
             "keep_failed_workspace": keep_failed,
         }
         now = time.time()
+        # Keep cross-store task validation outside the work-order write transaction.
+        # Preserve idempotent retries for an existing work_id before consulting the
+        # task store, then recheck under the admission transaction before insertion.
+        preexisting = self._row(work_id)
+        if preexisting is not None:
+            existing_payload = json.loads(str(preexisting["payload_json"] or "{}"))
+            if (
+                str(preexisting["root"]) != str(root)
+                or str(preexisting["task"]) != task
+                or existing_payload != normalized
+            ):
+                return {
+                    "success": False,
+                    "error": "work_id already exists with different request",
+                    "work_id": work_id,
+                    "terminal": True,
+                }
+            return self._canonical(preexisting)
+        if mode == "bounded" and task_id and normalized_permissions["edit"]:
+            task_store = getattr(self.verification_store, "task_store", None)
+            if task_store is None:
+                return {"success": False, "error": "bounded work task store is unavailable", "terminal": True}
+            try:
+                from .agent_tasks import TaskStatus, _task_matches_scope, _task_scope_root
+
+                record = task_store.get(task_id)
+                valid_task = (
+                    record is not None
+                    and record.status is TaskStatus.ACTIVE
+                    and bool(str(record.owner or "").strip())
+                    and _task_matches_scope(record, str(root), task_id)
+                    and _task_scope_root(record) == str(root)
+                )
+            except Exception:
+                return {"success": False, "error": "bounded work task state lookup failed",
+                        "operation_not_started": True, "retryable": True, "terminal": False}
+            if not valid_task:
+                return {"success": False, "error": "bounded work requires an active task in the same repository",
+                        "operation_not_started": True, "terminal": True}
         try:
             with closing(self._connect()) as con:
                 # Serialize admission so concurrent submitters cannot all observe the
                 # same free slot and overflow the configured bounded queue.
-                con.execute("BEGIN IMMEDIATE")
+                transaction = begin_write_transaction(
+                    con, max_duration_seconds=5.0, rollback_label="work-order admission"
+                )
                 try:
                     existing = con.execute(
                         "SELECT * FROM work_orders WHERE work_id=?",
@@ -1916,50 +1974,26 @@ class WorkOrchestrator:
                             or str(existing["task"]) != task
                             or existing_payload != normalized
                         ):
-                            con.execute("ROLLBACK")
+                            transaction.rollback()
                             return {
                                 "success": False,
                                 "error": "work_id already exists with different request",
                                 "work_id": work_id,
                                 "terminal": True,
                             }
-                        con.execute("COMMIT")
+                        transaction.commit()
                         return self._canonical(existing)
-                    if mode == "bounded" and task_id and normalized_permissions["edit"]:
-                        task_store = getattr(self.verification_store, "task_store", None)
-                        if task_store is None:
-                            con.execute("ROLLBACK")
-                            return {"success": False, "error": "bounded work task store is unavailable", "terminal": True}
-                        try:
-                            from .agent_tasks import TaskStatus, _task_matches_scope, _task_scope_root
-
-                            record = task_store.get(task_id)
-                            valid_task = (
-                                record is not None
-                                and record.status is TaskStatus.ACTIVE
-                                and bool(str(record.owner or "").strip())
-                                and _task_matches_scope(record, str(root), task_id)
-                                and _task_scope_root(record) == str(root)
-                            )
-                        except Exception:
-                            con.execute("ROLLBACK")
-                            return {"success": False, "error": "bounded work task state lookup failed",
-                                    "operation_not_started": True, "retryable": True, "terminal": False}
-                        if not valid_task:
-                            con.execute("ROLLBACK")
-                            return {"success": False, "error": "bounded work requires an active task in the same repository",
-                                    "operation_not_started": True, "terminal": True}
                     pending = con.execute(
                         "SELECT COUNT(*) FROM work_orders WHERE state IN ('queued','planning','executing','integrating','verifying')"
                     ).fetchone()
                     if pending and int(pending[0]) >= self.max_pending:
-                        con.execute("ROLLBACK")
+                        transaction.rollback()
                         return {"success": False, "error": "work-order queue is full", "retryable": True, "terminal": False}
                     con.execute("INSERT INTO work_orders(work_id,root,task,state,payload_json,created_at,updated_at) VALUES(?,?,?,?,?,?,?)",
                                 (work_id, str(root), task, "queued", json_dumps(normalized, separators=(",", ":")), now, now))
-                    con.execute("COMMIT")
-                except Exception:
-                    con.execute("ROLLBACK")
+                    transaction.commit()
+                except BaseException:
+                    transaction.rollback()
                     raise
         except sqlite3.IntegrityError:
             return {"success": False, "error": "work_id already exists", "work_id": work_id, "terminal": True}
@@ -2295,20 +2329,23 @@ class WorkOrchestrator:
     def _next(self) -> sqlite3.Row | None:
         """Atomically claim one queued order for a worker."""
         with closing(self._connect()) as con:
-            con.execute("BEGIN IMMEDIATE")
-            row = con.execute("SELECT * FROM work_orders WHERE state='queued' ORDER BY created_at LIMIT 1").fetchone()
-            if row is None:
-                con.execute("COMMIT")
-                return None
-            updated = con.execute(
-                "UPDATE work_orders SET state='planning',updated_at=? WHERE work_id=? AND state='queued'",
-                (time.time(), str(row["work_id"])),
-            )
-            if int(updated.rowcount or 0) != 1:
-                con.execute("ROLLBACK")
-                return None
-            con.execute("COMMIT")
-            return row
+            with write_transaction(
+                con,
+                max_duration_seconds=5.0,
+                rollback_label="work-order queue claim",
+            ):
+                row = con.execute(
+                    "SELECT * FROM work_orders WHERE state='queued' ORDER BY created_at LIMIT 1"
+                ).fetchone()
+                if row is None:
+                    return None
+                updated = con.execute(
+                    "UPDATE work_orders SET state='planning',updated_at=? WHERE work_id=? AND state='queued'",
+                    (time.time(), str(row["work_id"])),
+                )
+                if int(updated.rowcount or 0) != 1:
+                    return None
+                return row
 
     def _loop(self) -> None:
         idle_since = time.monotonic()

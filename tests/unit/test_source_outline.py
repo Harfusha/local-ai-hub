@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from local_ai_hub.source_outline import ast_outline, fold_brace_blocks
 
 
@@ -29,6 +31,27 @@ def test_ast_outline_keeps_root_confinement(tmp_path):
     result = ast_outline(str(root), "../outside.py")
 
     assert result == {"success": False, "error": "file is outside project root"}
+
+
+def test_ast_outline_reports_source_read_failure(tmp_path, monkeypatch):
+    source = tmp_path / "example.py"
+    source.write_text("value = 1\n", encoding="utf-8")
+    original_read_text = Path.read_text
+
+    def fail_target_read(path, *args, **kwargs):
+        if path == source:
+            raise OSError("access denied")
+        return original_read_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", fail_target_read)
+
+    result = ast_outline(str(tmp_path), "example.py")
+
+    assert result == {
+        "success": False,
+        "error": "unable to read source file",
+        "error_code": "source_read_error",
+    }
 
 
 def test_ast_outline_uses_brace_language_fallback(tmp_path):

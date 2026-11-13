@@ -15,10 +15,12 @@ from contextlib import closing
 from pathlib import Path
 from typing import Any
 
-from .sqlite_support import connect_sqlite, initialize_wal, retry_busy
+from .sqlite_support import connect_sqlite, initialize_wal, retry_busy, write_transaction
 
 
-DEFAULT_MAX_BINARY_BYTES = 4_000_000
+# Keep enough room for an 8 MiB raw browser capture. Vision transport has a
+# separate 4 MB projection limit and must never decide raw artifact retention.
+DEFAULT_MAX_BINARY_BYTES = 8 * 1024 * 1024
 DEFAULT_MAX_JSON_BYTES = 4_000_000
 _ARTIFACT_TABLE = "artifacts"
 _ARTIFACT_PAGING_TABLE = "artifact_paging_metadata"
@@ -93,54 +95,64 @@ class _ArtifactBatch:
         self._store = store
         self._cancel_check = cancel_check
         self._connection: sqlite3.Connection | None = None
+        self._transaction: Any | None = None
 
     def __enter__(self) -> "_ArtifactBatch":
         def _begin() -> None:
             connection = self._store._connect()
+            transaction = write_transaction(
+                connection,
+                max_duration_seconds=5.0,
+                rollback_label="artifact batch",
+            )
             try:
-                connection.execute("BEGIN IMMEDIATE")
+                transaction.__enter__()
             except BaseException:
                 connection.close()
                 raise
             self._connection = connection
+            self._transaction = transaction
 
         retry_busy(_begin, retries=4)
         try:
             self._store._purge(self._connection)
             self._check_cancelled()
             return self
-        except BaseException:
-            self._rollback_and_close()
+        except BaseException as exc:
+            self._rollback_and_close(exc)
             raise
 
     def __exit__(self, exc_type, exc, traceback) -> bool:
         connection = self._connection
-        if connection is None:
+        transaction = self._transaction
+        if connection is None or transaction is None:
             return False
         try:
             if exc_type is None:
-                self._check_cancelled()
-                connection.commit()
+                try:
+                    self._check_cancelled()
+                except BaseException as cancel_exc:
+                    transaction.__exit__(type(cancel_exc), cancel_exc, cancel_exc.__traceback__)
+                    raise
+                transaction.__exit__(None, None, None)
             else:
-                connection.rollback()
-        except BaseException:
-            if connection.in_transaction:
-                connection.rollback()
-            raise
+                transaction.__exit__(exc_type, exc, traceback)
         finally:
             connection.close()
             self._connection = None
+            self._transaction = None
         return False
 
-    def _rollback_and_close(self) -> None:
+    def _rollback_and_close(self, exc: BaseException) -> None:
         connection = self._connection
-        if connection is not None:
+        transaction = self._transaction
+        if connection is not None and transaction is not None:
             try:
-                if connection.in_transaction:
-                    connection.rollback()
+                transaction.__exit__(type(exc), exc, exc.__traceback__)
             finally:
                 connection.close()
                 self._connection = None
+                self._transaction = None
 
     def _check_cancelled(self) -> None:
         if self._cancel_check is not None and self._cancel_check():
@@ -700,16 +712,19 @@ class ArtifactStore:
                         # Recheck after opening the no-create writer handle, before persistent PRAGMAs.
                         _validate_connection(con)
                     initialize_wal(con)
-                    con.execute("BEGIN IMMEDIATE")
-                    if not fresh_database:
-                        # Recheck under the write lock before mutating artifact state.
-                        _validate_connection(con)
-                    if fresh_database:
-                        con.execute(_ARTIFACTS_SCHEMA_SQL)
-                        con.execute(_ARTIFACT_PAGING_SCHEMA_SQL)
-                    con.execute("CREATE INDEX IF NOT EXISTS idx_artifacts_created ON artifacts(created_at)")
-                    self._table = _ARTIFACT_TABLE
-                    con.commit()
+                    with write_transaction(
+                        con,
+                        max_duration_seconds=5.0,
+                        rollback_label="artifact schema initialization",
+                    ):
+                        if not fresh_database:
+                            # Recheck under the write lock before mutating artifact state.
+                            _validate_connection(con)
+                        if fresh_database:
+                            con.execute(_ARTIFACTS_SCHEMA_SQL)
+                            con.execute(_ARTIFACT_PAGING_SCHEMA_SQL)
+                        con.execute("CREATE INDEX IF NOT EXISTS idx_artifacts_created ON artifacts(created_at)")
+                        self._table = _ARTIFACT_TABLE
             retry_busy(_setup, retries=5, base_delay_seconds=0.02)
             self._initialized = True
 
@@ -1250,3 +1265,65 @@ class ArtifactStore:
                 }
                 for r in rows
             ]
+
+    def purge_browser_capture(self, bundle_artifact_id: str) -> dict[str, Any]:
+        """Delete one current-tab bundle and its unshared capture-owned artifacts."""
+        if not isinstance(bundle_artifact_id, str) or not re.fullmatch(r"art_[0-9a-f]{24}", bundle_artifact_id):
+            return {"success": False, "error_code": "browser_capture_not_found", "bundle_artifact_id": bundle_artifact_id}
+        child_kinds = {
+            "browser-screenshot", "browser-dom", "browser-dom-review-projection",
+            "browser-accessibility", "browser-computed-styles", "browser-runtime",
+        }
+        with self._lock, closing(self._connect()) as con, write_transaction(
+            con, max_duration_seconds=5.0, rollback_label="artifact purge"
+        ):
+            row = con.execute(
+                f"SELECT kind, text FROM {self._table} WHERE artifact_id=?",
+                (bundle_artifact_id,),
+            ).fetchone()
+            if row is None or row[0] != "frontend-review-bundle":
+                return {"success": False, "error_code": "browser_capture_not_found", "bundle_artifact_id": bundle_artifact_id}
+            try:
+                bundle = json.loads(str(row[1] or ""))
+            except (TypeError, ValueError):
+                return {"success": False, "error_code": "browser_capture_bundle_invalid", "bundle_artifact_id": bundle_artifact_id}
+            if not isinstance(bundle, dict) or bundle.get("source") != "current-tab" or not isinstance(bundle.get("capture_id"), str):
+                return {"success": False, "error_code": "browser_capture_not_found", "bundle_artifact_id": bundle_artifact_id}
+
+            refs: list[str] = []
+            for section in ("screenshot", "dom", "accessibility", "computed_styles", "runtime"):
+                item = bundle.get(section)
+                if not isinstance(item, dict):
+                    continue
+                for key, artifact_kind in (("artifact_id", None), ("raw_dom_artifact_id", "browser-dom")):
+                    artifact_id = item.get(key)
+                    if artifact_id is None:
+                        continue
+                    if not isinstance(artifact_id, str) or not re.fullmatch(r"art_[0-9a-f]{24}", artifact_id):
+                        return {"success": False, "error_code": "browser_capture_bundle_invalid", "bundle_artifact_id": bundle_artifact_id}
+                    if artifact_id == bundle_artifact_id:
+                        return {"success": False, "error_code": "browser_capture_bundle_invalid", "bundle_artifact_id": bundle_artifact_id}
+                    kind_row = con.execute(f"SELECT kind FROM {self._table} WHERE artifact_id=?", (artifact_id,)).fetchone()
+                    if kind_row is None or (artifact_kind and kind_row[0] != artifact_kind) or (artifact_kind is None and kind_row[0] not in child_kinds):
+                        return {"success": False, "error_code": "browser_capture_bundle_invalid", "bundle_artifact_id": bundle_artifact_id}
+                    if artifact_id not in refs:
+                        refs.append(artifact_id)
+
+            shared: set[str] = set()
+            for artifact_id in refs:
+                linked = con.execute(
+                    f"SELECT 1 FROM {self._table} WHERE kind='frontend-review-bundle' AND artifact_id<>? AND instr(text,?)>0 LIMIT 1",
+                    (bundle_artifact_id, artifact_id),
+                ).fetchone()
+                if linked:
+                    shared.add(artifact_id)
+            deletable = [artifact_id for artifact_id in refs if artifact_id not in shared]
+            for artifact_id in [bundle_artifact_id, *deletable]:
+                con.execute(f"DELETE FROM {_ARTIFACT_PAGING_TABLE} WHERE artifact_id=?", (artifact_id,))
+                con.execute(f"DELETE FROM {self._table} WHERE artifact_id=?", (artifact_id,))
+            return {
+                "success": True,
+                "bundle_artifact_id": bundle_artifact_id,
+                "deleted_count": 1 + len(deletable),
+                "retained_shared_count": len(shared),
+            }

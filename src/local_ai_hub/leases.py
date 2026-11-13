@@ -19,6 +19,7 @@ from .sqlite_support import (
     readonly_sqlite_connection,
     retry_busy,
     validate_durable_schema,
+    write_transaction,
 )
 
 _COORDINATION_ID_UNSET = object()
@@ -171,8 +172,11 @@ class ScopeLeaseStore:
                         backup_on_mismatch=False,
                     )
                     initialize_wal(con)
-                    con.execute("BEGIN IMMEDIATE")
-                    try:
+                    with write_transaction(
+                        con,
+                        max_duration_seconds=5.0,
+                        rollback_label="lease schema initialization",
+                    ):
                         con.execute(
                             """CREATE TABLE IF NOT EXISTS leases (
                                 lease_id TEXT NOT NULL,
@@ -199,11 +203,6 @@ class ScopeLeaseStore:
                         )
                         con.execute("CREATE INDEX IF NOT EXISTS idx_lease_waits_owner ON lease_waits(owner)")
                         con.execute("CREATE INDEX IF NOT EXISTS idx_lease_waits_blocked ON lease_waits(blocked_by)")
-                        con.execute("COMMIT")
-                    except BaseException:
-                        if con.in_transaction:
-                            con.execute("ROLLBACK")
-                        raise
             retry_busy(_setup, retries=5, base_delay_seconds=0.02)
             self._initialized = True
 
@@ -269,108 +268,110 @@ class ScopeLeaseStore:
 
         def write() -> dict[str, Any]:
             with closing(self._connect()) as con:
-                con.execute("BEGIN IMMEDIATE")
-                con.execute("DELETE FROM leases WHERE expires_at <= ?", (now,))
-                con.execute("DELETE FROM lease_waits WHERE updated_at <= ?", (now - 7200,))
-                if coordination_id is _COORDINATION_ID_UNSET:
-                    existing = con.execute(
-                        "SELECT lease_id,owner,path,purpose,expires_at FROM leases WHERE root_id=? AND owner<>?",
-                        (root_id, owner),
-                    ).fetchall()
-                else:
-                    existing = con.execute(
-                        "SELECT lease_id,owner,path,purpose,expires_at FROM leases "
-                        "WHERE owner<>? AND (root_id=? OR (root_id=? AND root_path=?))",
-                        (owner, root_id, physical_root_id, root_path),
-                    ).fetchall()
-                conflicts = []
-                for requested in rels:
-                    for row in existing:
-                        if _overlap(
-                            requested,
-                            row[2],
-                            case_insensitive=case_insensitive_paths,
-                        ):
-                            conflicts.append({
-                                "requested": requested, "held_path": row[2], "owner": row[1],
-                                "lease_id": row[0], "purpose": row[3], "expires_at": row[4],
-                            })
-                if conflicts:
-                    conflicting_owners = {c["owner"] for c in conflicts if c.get("owner")}
+                with write_transaction(con, max_duration_seconds=5.0, rollback_label="writer lease claim"):
+                    if coordination_id is _COORDINATION_ID_UNSET:
+                        existing = con.execute(
+                            "SELECT lease_id,owner,path,purpose,expires_at FROM leases "
+                            "WHERE root_id=? AND owner<>? AND expires_at>?",
+                            (root_id, owner, now),
+                        ).fetchall()
+                    else:
+                        existing = con.execute(
+                            "SELECT lease_id,owner,path,purpose,expires_at FROM leases "
+                            "WHERE owner<>? AND expires_at>? AND (root_id=? OR (root_id=? AND root_path=?))",
+                            (owner, now, root_id, physical_root_id, root_path),
+                        ).fetchall()
+                    conflicts = []
+                    for requested in rels:
+                        for row in existing:
+                            if _overlap(
+                                requested,
+                                row[2],
+                                case_insensitive=case_insensitive_paths,
+                            ):
+                                conflicts.append({
+                                    "requested": requested, "held_path": row[2], "owner": row[1],
+                                    "lease_id": row[0], "purpose": row[3], "expires_at": row[4],
+                                })
+                    if conflicts:
+                        conflicting_owners = {c["owner"] for c in conflicts if c.get("owner")}
 
-                    # Build wait-for graph from persistent waits and proposed contention
-                    wait_rows = con.execute(
-                        """
-                        SELECT w.owner, w.blocked_by
-                        FROM lease_waits w
-                        WHERE w.root_id = ? AND w.updated_at > ?
-                          AND EXISTS (
-                              SELECT 1 FROM leases l
-                              WHERE l.owner = w.blocked_by AND l.root_id = w.root_id AND l.expires_at > ?
-                          )
-                        """,
-                        (root_id, now - 3600, now),
-                    ).fetchall()
-                    graph: dict[str, set[str]] = {}
-                    for u, v in wait_rows:
-                        graph.setdefault(u, set()).add(v)
-                    for b in conflicting_owners:
-                        graph.setdefault(owner, set()).add(b)
+                        # Build wait-for graph from persistent waits and proposed contention
+                        wait_rows = con.execute(
+                            """
+                            SELECT w.owner, w.blocked_by
+                            FROM lease_waits w
+                            WHERE w.root_id = ? AND w.updated_at > ?
+                              AND EXISTS (
+                                  SELECT 1 FROM leases l
+                                  WHERE l.owner = w.blocked_by AND l.root_id = w.root_id AND l.expires_at > ?
+                              )
+                            """,
+                            (root_id, now - 3600, now),
+                        ).fetchall()
+                        graph: dict[str, set[str]] = {}
+                        for u, v in wait_rows:
+                            graph.setdefault(u, set()).add(v)
+                        for b in conflicting_owners:
+                            graph.setdefault(owner, set()).add(b)
 
-                    # Cycle detection via DFS
-                    def detect_cycle(start_node: str) -> list[str] | None:
-                        visited: set[str] = set()
-                        stack: list[str] = []
+                        # Cycle detection via DFS
+                        def detect_cycle(start_node: str) -> list[str] | None:
+                            visited: set[str] = set()
+                            stack: list[str] = []
 
-                        def dfs(curr: str) -> list[str] | None:
-                            visited.add(curr)
-                            stack.append(curr)
-                            for nxt in graph.get(curr, ()):
-                                if nxt in stack:
-                                    idx = stack.index(nxt)
-                                    return stack[idx:] + [nxt]
-                                if nxt not in visited:
-                                    cyc = dfs(nxt)
-                                    if cyc:
-                                        return cyc
-                            stack.pop()
-                            return None
+                            def dfs(curr: str) -> list[str] | None:
+                                visited.add(curr)
+                                stack.append(curr)
+                                for nxt in graph.get(curr, ()):
+                                    if nxt in stack:
+                                        idx = stack.index(nxt)
+                                        return stack[idx:] + [nxt]
+                                    if nxt not in visited:
+                                        cyc = dfs(nxt)
+                                        if cyc:
+                                            return cyc
+                                stack.pop()
+                                return None
 
-                        return dfs(start_node)
+                            return dfs(start_node)
 
-                    cycle = detect_cycle(owner)
-                    if cycle:
-                        con.execute("ROLLBACK")
+                        cycle = detect_cycle(owner)
+                        if cycle:
+                            return {
+                                "success": False,
+                                "error": "deadlock detected in lease dependency graph",
+                                "deadlock": True,
+                                "cycle": cycle,
+                                "conflicts": conflicts,
+                            }
+
+                        # Cleanup is delayed until after cycle detection so a rejected
+                        # deadlock attempt remains a no-op, as it was before wrapping.
+                        con.execute("DELETE FROM leases WHERE expires_at <= ?", (now,))
+                        con.execute("DELETE FROM lease_waits WHERE updated_at <= ?", (now - 7200,))
+                        # No deadlock: record wait edges and return standard contention error
+                        for c in conflicts:
+                            con.execute(
+                                "INSERT OR REPLACE INTO lease_waits(owner, blocked_by, root_id, requested_path, updated_at) VALUES(?,?,?,?,?)",
+                                (owner, c["owner"], root_id, c["requested"], now),
+                            )
                         return {
                             "success": False,
-                            "error": "deadlock detected in lease dependency graph",
-                            "deadlock": True,
-                            "cycle": cycle,
+                            "error": "write scope overlaps another active agent lease",
+                            "deadlock": False,
                             "conflicts": conflicts,
                         }
 
-                    # No deadlock: record wait edges and return standard contention error
-                    for c in conflicts:
-                        con.execute(
-                            "INSERT OR REPLACE INTO lease_waits(owner, blocked_by, root_id, requested_path, updated_at) VALUES(?,?,?,?,?)",
-                            (owner, c["owner"], root_id, c["requested"], now),
-                        )
-                    con.execute("COMMIT")
-                    return {
-                        "success": False,
-                        "error": "write scope overlaps another active agent lease",
-                        "deadlock": False,
-                        "conflicts": conflicts,
-                    }
-
-                # Successfully acquire all requested paths atomically
-                con.execute("DELETE FROM lease_waits WHERE owner=? AND root_id=?", (owner, root_id))
-                con.executemany(
-                    "INSERT INTO leases(lease_id,owner,root_id,root_path,path,purpose,created_at,expires_at) VALUES(?,?,?,?,?,?,?,?)",
-                    [(lease_id, owner, root_id, root_path, p, purpose[:300], now, expires) for p in rels],
-                )
-                con.execute("COMMIT")
-                return {"success": True, "lease_id": lease_id, "root": root_path, "paths": rels, "expires_at": expires}
+                    con.execute("DELETE FROM leases WHERE expires_at <= ?", (now,))
+                    con.execute("DELETE FROM lease_waits WHERE updated_at <= ?", (now - 7200,))
+                    # Successfully acquire all requested paths atomically
+                    con.execute("DELETE FROM lease_waits WHERE owner=? AND root_id=?", (owner, root_id))
+                    con.executemany(
+                        "INSERT INTO leases(lease_id,owner,root_id,root_path,path,purpose,created_at,expires_at) VALUES(?,?,?,?,?,?,?,?)",
+                        [(lease_id, owner, root_id, root_path, p, purpose[:300], now, expires) for p in rels],
+                    )
+                    return {"success": True, "lease_id": lease_id, "root": root_path, "paths": rels, "expires_at": expires}
 
         return retry_busy(write, retries=4)
 
@@ -414,73 +415,72 @@ class ScopeLeaseStore:
 
         def write() -> int:
             with closing(self._connect()) as con:
-                con.execute("BEGIN IMMEDIATE")
-                released_scopes: list[tuple[str, str]] = []
-                if lease_id is not None:
-                    p_rows = con.execute(
-                        "SELECT root_id,path FROM leases WHERE lease_id=? AND owner=?",
-                        (lease_id, owner),
-                    ).fetchall()
-                    released_scopes = [(str(r[0]), str(r[1])) for r in p_rows]
-                    cur = con.execute(
-                        "DELETE FROM leases WHERE lease_id=? AND owner=?",
-                        (lease_id, owner),
-                    )
-                else:
-                    p_rows = con.execute(
-                        "SELECT DISTINCT root_id,path FROM leases WHERE owner=?",
-                        (owner,),
-                    ).fetchall()
-                    released_scopes = [(str(r[0]), str(r[1])) for r in p_rows]
-                    cur = con.execute("DELETE FROM leases WHERE owner=?", (owner,))
-                count = int(cur.rowcount or 0)
-                # Keep wait dependencies scoped to the released project namespace.
-                roots = {scope_id for scope_id, _ in released_scopes}
-                for scope_id in roots:
-                    con.execute(
-                        "DELETE FROM lease_waits WHERE owner=? AND root_id=?",
-                        (owner, scope_id),
-                    )
-                for scope_id, path in released_scopes:
-                    wait_rows = con.execute(
-                        "SELECT owner,requested_path FROM lease_waits WHERE blocked_by=? AND root_id=?",
-                        (owner, scope_id),
-                    ).fetchall()
-                    active_rows = con.execute(
-                        "SELECT path,root_path FROM leases WHERE owner=? AND root_id=? AND expires_at>?",
-                        (owner, scope_id, time.time()),
-                    ).fetchall()
-                    root_path = next((str(row[1]) for row in active_rows if row[1]), "")
-                    case_insensitive_paths = os.name == "nt" or PureWindowsPath(root_path).is_absolute()
-                    for waiting_owner, requested_path in wait_rows:
-                        if not _overlap(
-                            path, str(requested_path), case_insensitive=case_insensitive_paths
-                        ):
-                            continue
-                        still_blocked = any(
-                            _overlap(
-                                str(requested_path), str(active_path),
-                                case_insensitive=case_insensitive_paths,
-                            )
-                            for active_path, _ in active_rows
+                with write_transaction(con, max_duration_seconds=5.0, rollback_label="writer lease release"):
+                    released_scopes: list[tuple[str, str]] = []
+                    if lease_id is not None:
+                        p_rows = con.execute(
+                            "SELECT root_id,path FROM leases WHERE lease_id=? AND owner=?",
+                            (lease_id, owner),
+                        ).fetchall()
+                        released_scopes = [(str(r[0]), str(r[1])) for r in p_rows]
+                        cur = con.execute(
+                            "DELETE FROM leases WHERE lease_id=? AND owner=?",
+                            (lease_id, owner),
                         )
-                        if not still_blocked:
-                            con.execute(
-                                "DELETE FROM lease_waits WHERE owner=? AND blocked_by=? AND root_id=? AND requested_path=?",
-                                (waiting_owner, owner, scope_id, requested_path),
-                            )
-                for scope_id in roots:
-                    has_active = con.execute(
-                        "SELECT 1 FROM leases WHERE owner=? AND root_id=? LIMIT 1",
-                        (owner, scope_id),
-                    ).fetchone()
-                    if not has_active:
+                    else:
+                        p_rows = con.execute(
+                            "SELECT DISTINCT root_id,path FROM leases WHERE owner=?",
+                            (owner,),
+                        ).fetchall()
+                        released_scopes = [(str(r[0]), str(r[1])) for r in p_rows]
+                        cur = con.execute("DELETE FROM leases WHERE owner=?", (owner,))
+                    count = int(cur.rowcount or 0)
+                    # Keep wait dependencies scoped to the released project namespace.
+                    roots = {scope_id for scope_id, _ in released_scopes}
+                    for scope_id in roots:
                         con.execute(
-                            "DELETE FROM lease_waits WHERE blocked_by=? AND root_id=?",
+                            "DELETE FROM lease_waits WHERE owner=? AND root_id=?",
                             (owner, scope_id),
                         )
-                con.execute("COMMIT")
-                return count
+                    for scope_id, path in released_scopes:
+                        wait_rows = con.execute(
+                            "SELECT owner,requested_path FROM lease_waits WHERE blocked_by=? AND root_id=?",
+                            (owner, scope_id),
+                        ).fetchall()
+                        active_rows = con.execute(
+                            "SELECT path,root_path FROM leases WHERE owner=? AND root_id=? AND expires_at>?",
+                            (owner, scope_id, time.time()),
+                        ).fetchall()
+                        root_path = next((str(row[1]) for row in active_rows if row[1]), "")
+                        case_insensitive_paths = os.name == "nt" or PureWindowsPath(root_path).is_absolute()
+                        for waiting_owner, requested_path in wait_rows:
+                            if not _overlap(
+                                path, str(requested_path), case_insensitive=case_insensitive_paths
+                            ):
+                                continue
+                            still_blocked = any(
+                                _overlap(
+                                    str(requested_path), str(active_path),
+                                    case_insensitive=case_insensitive_paths,
+                                )
+                                for active_path, _ in active_rows
+                            )
+                            if not still_blocked:
+                                con.execute(
+                                    "DELETE FROM lease_waits WHERE owner=? AND blocked_by=? AND root_id=? AND requested_path=?",
+                                    (waiting_owner, owner, scope_id, requested_path),
+                                )
+                    for scope_id in roots:
+                        has_active = con.execute(
+                            "SELECT 1 FROM leases WHERE owner=? AND root_id=? LIMIT 1",
+                            (owner, scope_id),
+                        ).fetchone()
+                        if not has_active:
+                            con.execute(
+                                "DELETE FROM lease_waits WHERE blocked_by=? AND root_id=?",
+                                (owner, scope_id),
+                            )
+                    return count
         return {"success": True, "released_rows": retry_busy(write, retries=4)}
 
     def reap_expired(self, now: float | None = None) -> dict[str, Any]:
@@ -489,13 +489,12 @@ class ScopeLeaseStore:
 
         def write() -> dict[str, int]:
             with closing(self._connect()) as con:
-                con.execute("BEGIN IMMEDIATE")
-                cur1 = con.execute("DELETE FROM leases WHERE expires_at <= ?", (current_time,))
-                reaped_leases = int(cur1.rowcount or 0)
-                cur2 = con.execute("DELETE FROM lease_waits WHERE updated_at <= ?", (current_time - 7200,))
-                reaped_waits = int(cur2.rowcount or 0)
-                con.execute("COMMIT")
-                return {"reaped_leases": reaped_leases, "reaped_waits": reaped_waits}
+                with write_transaction(con, max_duration_seconds=5.0, rollback_label="writer lease reap"):
+                    cur1 = con.execute("DELETE FROM leases WHERE expires_at <= ?", (current_time,))
+                    reaped_leases = int(cur1.rowcount or 0)
+                    cur2 = con.execute("DELETE FROM lease_waits WHERE updated_at <= ?", (current_time - 7200,))
+                    reaped_waits = int(cur2.rowcount or 0)
+                    return {"reaped_leases": reaped_leases, "reaped_waits": reaped_waits}
 
         result = retry_busy(write, retries=4)
         return {"success": True, **result}
@@ -516,21 +515,19 @@ class ScopeLeaseStore:
 
         def write() -> dict[str, Any]:
             with closing(self._connect()) as con:
-                con.execute("BEGIN IMMEDIATE")
-                rows = con.execute(
-                    "SELECT path FROM leases WHERE lease_id=? AND owner=? AND expires_at>?",
-                    (lease_id, owner, now),
-                ).fetchall()
-                if not rows:
-                    con.execute("ROLLBACK")
-                    return {"success": False, "error": "lease not found, expired, or belongs to another owner"}
-                con.execute(
-                    "UPDATE leases SET expires_at=? WHERE lease_id=? AND owner=?",
-                    (new_expires, lease_id, owner),
-                )
-                con.execute("COMMIT")
-                paths = [r[0] for r in rows]
-                return {"success": True, "lease_id": lease_id, "expires_at": new_expires, "paths": paths}
+                with write_transaction(con, max_duration_seconds=5.0, rollback_label="writer lease renew"):
+                    rows = con.execute(
+                        "SELECT path FROM leases WHERE lease_id=? AND owner=? AND expires_at>?",
+                        (lease_id, owner, now),
+                    ).fetchall()
+                    if not rows:
+                        return {"success": False, "error": "lease not found, expired, or belongs to another owner"}
+                    con.execute(
+                        "UPDATE leases SET expires_at=? WHERE lease_id=? AND owner=?",
+                        (new_expires, lease_id, owner),
+                    )
+                    paths = [r[0] for r in rows]
+                    return {"success": True, "lease_id": lease_id, "expires_at": new_expires, "paths": paths}
 
         return retry_busy(write, retries=4)
 

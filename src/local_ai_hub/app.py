@@ -48,7 +48,7 @@ from .learning import UsageLearner
 from .autotune import RuntimeTuner
 from .deterministic import DeterministicEngine
 from .logging_setup import configure_logging, shutdown_logging
-from .sqlite_support import require_canonical_agent_state_database
+from .sqlite_support import require_canonical_agent_state_database, write_transaction
 from .state_lifecycle import ensure_state_version
 from .external_tools import ExternalCodeIntelligence
 from .async_jobs import AsyncJobManager
@@ -557,7 +557,7 @@ class LocalAIApp:
             self.agent_state,
             task_store=self.agent_tasks,
             verification_store=self.agent_verification,
-            memory_store=self.agent_memory,
+            memory_store=getattr(self, "agent_memory", None),
             incident_store=self.agent_incidents,
             lease_store=self.leases,
             blackboard=self.agent_blackboard,
@@ -1587,39 +1587,33 @@ class LocalAIApp:
         if not self.agent_state.db_path.exists():
             return 0
         current_time = float(time.time() if now is None else now)
-        from .sqlite_support import connect_sqlite, retry_busy
+        from .sqlite_support import connect_sqlite, retry_busy, write_transaction
 
         def _cleanup() -> int:
             cnt = 0
             con = connect_sqlite(self.agent_state.db_path, isolation_level=None)
             try:
-                con.execute("BEGIN IMMEDIATE")
-                cur = con.execute(
-                    "DELETE FROM agent_incidents WHERE expires_at IS NOT NULL AND expires_at <= ?",
-                    (current_time,)
-                )
-                cnt += cur.rowcount if cur.rowcount > 0 else 0
+                with write_transaction(
+                    con, max_duration_seconds=2.0, rollback_label="expired agent state cleanup"
+                ):
+                    cur = con.execute(
+                        "DELETE FROM agent_incidents WHERE expires_at IS NOT NULL AND expires_at <= ?",
+                        (current_time,)
+                    )
+                    cnt += cur.rowcount if cur.rowcount > 0 else 0
 
-                cur2 = con.execute(
-                    "DELETE FROM agent_verification_receipts WHERE expires_at IS NOT NULL AND expires_at <= ?",
-                    (current_time,)
-                )
-                cnt += cur2.rowcount if cur2.rowcount > 0 else 0
+                    cur2 = con.execute(
+                        "DELETE FROM agent_verification_receipts WHERE expires_at IS NOT NULL AND expires_at <= ?",
+                        (current_time,)
+                    )
+                    cnt += cur2.rowcount if cur2.rowcount > 0 else 0
 
-                cur3 = con.execute(
-                    "DELETE FROM agent_memory_records WHERE expires_at IS NOT NULL AND expires_at <= ?",
-                    (current_time,)
-                )
-                cnt += cur3.rowcount if cur3.rowcount > 0 else 0
-
-                con.execute("COMMIT")
-                return cnt
-            except Exception:
-                try:
-                    con.execute("ROLLBACK")
-                except Exception:
-                    pass
-                raise
+                    cur3 = con.execute(
+                        "DELETE FROM agent_memory_records WHERE expires_at IS NOT NULL AND expires_at <= ?",
+                        (current_time,)
+                    )
+                    cnt += cur3.rowcount if cur3.rowcount > 0 else 0
+                    return cnt
             finally:
                 con.close()
 
@@ -2358,8 +2352,9 @@ class LocalAIApp:
 
         # Restore root-scoped preprocessor state transactionally. Derived content
         # cards are content-addressed and therefore safe to upsert globally.
-        with capture_import_phase(manifest, "preprocessor", phase_errors), self.preprocessor._db_lock, closing(self.preprocessor._connect()) as con:
-            con.execute("BEGIN IMMEDIATE")
+        with capture_import_phase(manifest, "preprocessor", phase_errors), self.preprocessor._db_lock, closing(self.preprocessor._connect()) as con, write_transaction(
+            con, max_duration_seconds=5.0, rollback_label="bundle import"
+        ):
             for table in ("file_refs", "module_cards", "project_cards", "external_index_state"):
                 assert table in _PREPROCESS_TABLES, f"unexpected table name: {table}"  # defence-in-depth
                 con.execute(f"DELETE FROM {table} WHERE root=?", (root_path,))  # noqa: S608
@@ -2395,13 +2390,13 @@ class LocalAIApp:
             for item in rows("external_index_state"):
                 con.execute("INSERT INTO external_index_state(root,backend,revision_hash,status,updated_at,error) VALUES(?,?,?,?,?,?)",
                             (root_path, str(item.get("backend", "")), str(item.get("revision_hash", "")), str(item.get("status", "complete")), now, item.get("error")))
-            con.commit()
         if phase_errors:
             return incomplete_result(manifest, phase_errors[0])
 
         if self.deterministic is not None:
-            with capture_import_phase(manifest, "deterministic", phase_errors), self.deterministic._lock, closing(self.deterministic._connect()) as con:
-                con.execute("BEGIN IMMEDIATE")
+            with capture_import_phase(manifest, "deterministic", phase_errors), self.deterministic._lock, closing(self.deterministic._connect()) as con, write_transaction(
+                con, max_duration_seconds=5.0, rollback_label="bundle import"
+            ):
                 for table in ("files", "facts", "dependencies", "scripts", "project_state", "query_cache"):
                     assert table in _DET_TABLES, f"unexpected table name: {table}"  # defence-in-depth
                     con.execute(f"DELETE FROM {table} WHERE root=?", (root_path,))  # noqa: S608
@@ -2426,15 +2421,15 @@ class LocalAIApp:
                 for item in rows("scripts"):
                     con.execute("INSERT OR REPLACE INTO scripts(root,source,name,command,purpose) VALUES(?,?,?,?,?)",
                                 (root_path, str(item.get("source", "")), str(item.get("name", "")), str(item.get("command", "")), str(item.get("purpose", ""))))
-                con.commit()
             if phase_errors:
                 return incomplete_result(manifest, phase_errors[0])
         else:
             mark_import_phase(manifest, "deterministic")
 
         if self.rag is not None:
-            with capture_import_phase(manifest, "rag", phase_errors), self.rag._index_lock, closing(self.rag._connect()) as con:
-                con.execute("BEGIN IMMEDIATE")
+            with capture_import_phase(manifest, "rag", phase_errors), self.rag._index_lock, closing(self.rag._connect()) as con, write_transaction(
+                con, max_duration_seconds=5.0, rollback_label="bundle import"
+            ):
                 has_fts = con.execute(
                     "SELECT 1 FROM sqlite_master WHERE type='table' AND name='chunk_fts'"
                 ).fetchone() is not None
@@ -2462,7 +2457,6 @@ class LocalAIApp:
                         "INSERT INTO project_file_owners(workspace,root,path) VALUES(?,?,?)",
                         (workspace, root_path, str(owner.get("path", ""))),
                     )
-                con.commit()
             if phase_errors:
                 return incomplete_result(manifest, phase_errors[0])
         else:
@@ -2752,13 +2746,20 @@ class LocalAIApp:
             "decision_schema_version": "laya-decision-v1",
             "category": request.category.value,
             "state": {key: value for key, value in evidence.model_input().items() if key != "evidence_ids"},
+            "source_record_ids": list(evidence.source_record_ids),
             "options": list(request.options),
             "language": "und",
             "preprocessing": {"name": "laya-runtime", "version": revision},
             "evidence_ids": list(request.evidence_ids),
         })
         self.laya_candidates._validate_context_source_evidence(
-            candidate, evidence_store=self.evidence, canonical_root=canonical_root
+            candidate,
+            evidence_store=self.evidence,
+            canonical_root=canonical_root,
+            memory_store=self.agent_memory,
+            task_id=task_id,
+            session_id=session_id,
+            coordination_id=repository_id,
         )
 
         adapter = self._get_laya_runtime_adapter(
@@ -2881,13 +2882,17 @@ class LocalAIApp:
             expected_method = {
                 DecisionCategory.MODEL_ROUTE: "model_router_classify",
                 DecisionCategory.CONTEXT_BUDGET: "repo_context_token_budget",
+                DecisionCategory.COMPLETION_GAP: "agent_os_completion_gate",
             }.get(request.category)
             supplied_baseline = dict(_server_baseline)
+            baseline_suggestion_valid = supplied_baseline.get("suggestion") in request.options
+            if request.category is DecisionCategory.COMPLETION_GAP:
+                baseline_suggestion_valid = supplied_baseline.get("suggestion") in {"ready", "not_ready"}
             if (
                 expected_method is None
                 or set(supplied_baseline) != {"method", "suggestion", "evidence_id"}
                 or supplied_baseline.get("method") != expected_method
-                or supplied_baseline.get("suggestion") not in request.options
+                or not baseline_suggestion_valid
                 or supplied_baseline.get("evidence_id") not in request.evidence_ids
             ):
                 raise ValueError("server-derived Laya baseline does not match the typed decision")
@@ -3098,8 +3103,62 @@ class LocalAIApp:
                 self.logger.warning("Laya decision queue stopped: %s", type(error).__name__)
 
             future.add_done_callback(observe_dispatch)
+        if operation["outcome"].get("status") == "rejected":
+            self._queue_laya_completion_gap_observation(operation, root)
         self._record_laya_capture_observation("queued", "completion_outcome")
         return {"status": "queued", "reason": "completion_outcome"}
+
+    def _queue_laya_completion_gap_observation(
+        self, operation: Mapping[str, Any], root: str
+    ) -> dict[str, str]:
+        """Queue a redacted shadow decision for a naturally rejected completion gate."""
+        try:
+            from .laya_decisions import DecisionCategory, allowed_decision_options
+
+            task_id = operation["task_id"]
+            canonical_root = str(Path(root).resolve(strict=True))
+            task = self.laya_candidates._find_task(self.agent_tasks, canonical_root, task_id)
+            if self.laya_candidates._session_for_task(task) != operation["session_id"]:
+                return {"status": "skipped", "reason": "completion_scope_unavailable"}
+            checkpoint = getattr(task, "checkpoint", None)
+            evidence_ids = getattr(checkpoint, "evidence_ids", ())
+            evidence_id = next(
+                (item for item in evidence_ids if isinstance(item, str) and item.strip()),
+                None,
+            )
+            if evidence_id is None:
+                self._record_laya_capture_observation("skipped", "decision_evidence_unavailable")
+                return {"status": "skipped", "reason": "decision_evidence_unavailable"}
+
+            outcome = operation["outcome"]
+            mutation_generation = outcome.get("mutation_generation")
+            if type(mutation_generation) is not int or mutation_generation < 0:
+                self._record_laya_capture_observation("skipped", "completion_scope_unavailable")
+                return {"status": "skipped", "reason": "completion_scope_unavailable"}
+            decision_operation = {
+                "action": "evaluate_decision",
+                "task_id": task_id,
+                "decision": {
+                    "category": DecisionCategory.COMPLETION_GAP.value,
+                    "evidence_ids": [evidence_id],
+                    "options": sorted(allowed_decision_options(DecisionCategory.COMPLETION_GAP)),
+                    "state": {
+                        "completion_status": "not_ready",
+                        "reason_code": "completion_gate_rejected",
+                        "mutation_generation": str(mutation_generation),
+                    },
+                    "training_content": {},
+                },
+            }
+            baseline = {
+                "method": "agent_os_completion_gate",
+                "suggestion": "not_ready",
+                "evidence_id": evidence_id,
+            }
+            return self.queue_laya_decision_observation(decision_operation, canonical_root, baseline)
+        except Exception:
+            self._record_laya_capture_observation("skipped", "completion_scope_unavailable")
+            return {"status": "skipped", "reason": "completion_scope_unavailable"}
 
     def queue_laya_decision_observation(
         self,
@@ -3163,13 +3222,17 @@ class LocalAIApp:
             expected_method = {
                 DecisionCategory.MODEL_ROUTE: "model_router_classify",
                 DecisionCategory.CONTEXT_BUDGET: "repo_context_token_budget",
+                DecisionCategory.COMPLETION_GAP: "agent_os_completion_gate",
             }.get(request.category)
             baseline_value = dict(baseline)
+            baseline_suggestion_valid = baseline_value.get("suggestion") in request.options
+            if request.category is DecisionCategory.COMPLETION_GAP:
+                baseline_suggestion_valid = baseline_value.get("suggestion") in {"ready", "not_ready"}
             if (
                 expected_method is None
                 or set(baseline_value) != {"method", "suggestion", "evidence_id"}
                 or baseline_value.get("method") != expected_method
-                or baseline_value.get("suggestion") not in request.options
+                or not baseline_suggestion_valid
                 or baseline_value.get("evidence_id") not in request.evidence_ids
             ):
                 return skipped("decision_invalid")
@@ -3278,6 +3341,19 @@ class LocalAIApp:
         task_id = str(getattr(request, "task_id", "") or "").strip()
         if not task_id:
             return {"status": "skipped", "reason": "task_identity_unavailable"}
+        config = getattr(self, "config", {})
+        laya_cfg = config.get("laya", {}) if isinstance(config, Mapping) else {}
+        runtime_cfg = laya_cfg.get("runtime", {}) if isinstance(laya_cfg, dict) else {}
+        if (
+            not isinstance(runtime_cfg, dict)
+            or not isinstance(runtime_cfg.get("checkpoint_path"), str)
+            or not runtime_cfg.get("checkpoint_path")
+            or not isinstance(runtime_cfg.get("revision"), str)
+            or not runtime_cfg.get("revision")
+            or not isinstance(runtime_cfg.get("expected_sha256"), dict)
+            or not runtime_cfg.get("expected_sha256")
+        ):
+            return {"status": "skipped", "reason": "checkpoint_unavailable"}
         try:
             canonical_root = str(Path(getattr(request, "root", "")).resolve(strict=True))
             task = self.laya_candidates._find_task(self.agent_tasks, canonical_root, task_id)
@@ -3323,6 +3399,91 @@ class LocalAIApp:
                 evidence_id = str(stored[0].get("evidence_id") or "") if stored else None
             if evidence_id:
                 source_rows[source_code] = {"evidence_id": evidence_id, "row": row}
+
+        memory_store = getattr(self, "agent_memory", None)
+        find_memory = getattr(memory_store, "find", None)
+        if callable(find_memory):
+            try:
+                from .agent_identity import AgentScope
+                from .agent_memory import MemoryStatus
+
+                scoped_queries = [
+                    (AgentScope.TASK, {"root": canonical_root, "task_id": task_id}),
+                    (
+                        AgentScope.SESSION,
+                        {"root": canonical_root, "task_id": task_id, "session_id": session_id},
+                    ),
+                ]
+                state_dir = self.config.get("server", {}).get("state_dir")
+                if isinstance(state_dir, str) and state_dir:
+                    try:
+                        from .project_config import resolve_project_context
+
+                        project = resolve_project_context(canonical_root, Path(state_dir))
+                        coordination_id = getattr(project, "coordination_id", None)
+                        if isinstance(coordination_id, str) and coordination_id:
+                            scoped_queries.append((
+                                AgentScope.REPOSITORY,
+                                {"root": canonical_root, "repository_id": coordination_id},
+                            ))
+                    except Exception:
+                        pass
+                memory_records = []
+                for scope, context_args in scoped_queries:
+                    for status in (MemoryStatus.ACTIVE, MemoryStatus.CONFIRMED):
+                        memory_records.extend(find_memory(
+                            scope=scope,
+                            status=status,
+                            semantic=False,
+                            limit=20,
+                            **context_args,
+                        ))
+                used_evidence_ids = {
+                    entry["evidence_id"] for entry in source_rows.values()
+                }
+                for record in memory_records:
+                    record_id = getattr(record, "record_id", None)
+                    record_scope = getattr(getattr(record, "scope", None), "value", None)
+                    record_status = getattr(getattr(record, "status", None), "value", None)
+                    linked_ids = getattr(record, "evidence_ids", ())
+                    value = getattr(record, "value", None)
+                    if (
+                        type(record_id) is not str
+                        or record_scope not in {"repository", "task", "session"}
+                        or record_status not in {"active", "confirmed"}
+                        or getattr(record, "sensitivity", None) != "normal"
+                        or type(linked_ids) not in (tuple, list)
+                        or not isinstance(value, str)
+                        or not value.strip()
+                    ):
+                        continue
+                    for linked_id in linked_ids:
+                        if type(linked_id) is not str or linked_id in used_evidence_ids:
+                            continue
+                        verified = self.evidence.get_many(
+                            [linked_id], verify=True, root=canonical_root,
+                        )
+                        if (
+                            type(verified) is not list
+                            or len(verified) != 1
+                            or verified[0].get("success") is not True
+                            or verified[0].get("evidence_id") != linked_id
+                            or verified[0].get("root") != canonical_root
+                            or verified[0].get("stale") is not False
+                        ):
+                            continue
+                        source_rows["memory"] = {
+                            "evidence_id": linked_id,
+                            "record_id": record_id,
+                            "row": {"text": value},
+                        }
+                        used_evidence_ids.add(linked_id)
+                        break
+                    if "memory" in source_rows:
+                        break
+            except Exception:
+                # Memory is an optional additional source; retrieval remains authoritative.
+                pass
         if len(source_rows) < 2:
             return {"status": "skipped", "reason": "fewer_than_two_verified_sources"}
 
@@ -3332,6 +3493,10 @@ class LocalAIApp:
         lexical = retrieval.get("lexical") if isinstance(retrieval.get("lexical"), dict) else {}
         semantic = retrieval.get("semantic") if isinstance(retrieval.get("semantic"), dict) else {}
         for source_code, _ in sources:
+            if source_code == "memory":
+                freshness.append("current")
+                coverage.append("partial")
+                continue
             metadata = semantic if source_code == "rag" else lexical
             raw_freshness = metadata.get("freshness") if isinstance(metadata.get("freshness"), dict) else {}
             freshness_status = raw_freshness.get("status")
@@ -3352,6 +3517,9 @@ class LocalAIApp:
             "freshness_codes": freshness,
             "coverage_codes": coverage,
             "evidence_ids": [source_rows[source_code]["evidence_id"] for source_code, _ in sources],
+            "source_record_ids": [
+                source_rows[source_code].get("record_id") for source_code, _ in sources
+            ],
         }
         def bounded_laya_text(value: str, limit: int) -> str:
             raw = value.replace("\x00", "").strip().encode("utf-8", errors="replace")[:limit]

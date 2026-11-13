@@ -56,3 +56,32 @@ def test_async_submit_emits_explicit_admission_status(monkeypatch):
     )
 
     assert handler.responses == [(423, {**response, "status_code": 423})]
+
+
+def test_async_submit_keeps_journal_header_out_of_idempotency_payload(monkeypatch):
+    submitted = {}
+
+    class Jobs:
+        ACTIONS = {"reason"}
+
+        @staticmethod
+        def submit(action, payload):
+            submitted.update(action=action, payload=dict(payload))
+            return {"success": True, "job_id": "job-1", "state": "queued"}
+
+    class App:
+        async_jobs = Jobs()
+
+    monkeypatch.setattr(http_server, "APP", App())
+    handler = object.__new__(http_server.Handler)
+    handler.headers = {"X-LocalAI-Request-ID": "journal-id"}
+    handler.responses = []
+    handler._send = lambda status, payload: handler.responses.append((status, payload))
+
+    http_server.Handler._handle_post_async_jobs(
+        handler, {"action": "submit", "job_action": "reason"}
+    )
+
+    assert handler.responses[0][0] == 200
+    assert submitted["action"] == "reason"
+    assert "request_id" not in submitted["payload"]

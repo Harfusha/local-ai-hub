@@ -84,6 +84,7 @@ def test_agent_config_merge_is_idempotent_and_parses_every_supported_host(tmp_pa
         },
     }
     install_dir = tmp_path / "install"
+    install_dir.mkdir()
 
     def configure() -> None:
         setup.configure_agents(install_dir, Path(sys.executable), None, cfg, include_companion=False)

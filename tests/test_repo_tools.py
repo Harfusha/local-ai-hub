@@ -739,3 +739,19 @@ def test_read_snapshot_with_max_bytes_reuses_verified_content(tmp_path: Path, mo
     assert updated_hash == hashlib.sha256(updated).hexdigest()
     assert updated_lines == ["answer = 43"]
     assert reads == [source, source]
+
+
+def test_search_paths_reuses_recent_git_inventory(tmp_path: Path):
+    root = tmp_path / "repo"
+    root.mkdir()
+    source = root / "module.py"
+    source.write_text("needle = 1\n", encoding="utf-8")
+    subprocess.run(["git", "init", "-q", str(root)], check=True)
+
+    tools = RepositoryTools(_cfg(tmp_path))
+    first = tools.search_paths(str(root), "needle", ["module.py"])
+    second = tools.search_paths(str(root), "needle", ["module.py"])
+
+    assert first["success"] and second["success"]
+    assert tools._git_stats["file_list_misses"] == 1
+    assert tools._git_stats["file_list_hits"] == 1

@@ -38,7 +38,7 @@ def test_uninstall_clean_json_array_payload(tmp_path: Path) -> None:
     clean_json(json_file)
     assert json.loads(json_file.read_text(encoding="utf-8")) == [1, 2, 3]
 
-    # Valid mcpServers dict gets cleaned
+    # Same-name entries without install provenance belong to the user and stay.
     config = {
         "mcpServers": {
             "local-ai": {"command": "python"},
@@ -49,8 +49,8 @@ def test_uninstall_clean_json_array_payload(tmp_path: Path) -> None:
     json_file.write_text(json.dumps(config), encoding="utf-8")
     clean_json(json_file)
     cleaned = json.loads(json_file.read_text(encoding="utf-8"))
-    assert "local-ai" not in cleaned["mcpServers"]
-    assert "serena-local" not in cleaned["mcpServers"]
+    assert "local-ai" in cleaned["mcpServers"]
+    assert "serena-local" in cleaned["mcpServers"]
     assert "keep-me" in cleaned["mcpServers"]
 
     # Non-existent file
@@ -65,11 +65,11 @@ def test_uninstall_clean_codex_and_policy(tmp_path: Path) -> None:
     )
     clean_codex(codex_file)
     content = codex_file.read_text(encoding="utf-8")
-    assert "some managed content" not in content
+    assert "some managed content" in content
     assert "before" in content
     assert "after" in content
 
-    # Policy cleaning
+    # Policy blocks without an install ownership manifest remain untouched.
     policy_file = tmp_path / "AGENTS.md"
     policy_file.write_text(
         f"Intro\n{POLICY_BEGIN}\nManaged policy\n{POLICY_END}\nOutro\n",
@@ -77,7 +77,7 @@ def test_uninstall_clean_codex_and_policy(tmp_path: Path) -> None:
     )
     clean_policy(policy_file)
     policy_content = policy_file.read_text(encoding="utf-8")
-    assert "Managed policy" not in policy_content
+    assert "Managed policy" in policy_content
     assert "Intro" in policy_content
     assert "Outro" in policy_content
 

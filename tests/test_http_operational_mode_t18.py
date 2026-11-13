@@ -284,6 +284,9 @@ def test_context_pack_is_gated_in_both_paused_modes(monkeypatch, mode: str) -> N
     ("/api/async-jobs", {"job_action": "status", "job_id": "job-1"}),
     ("/api/async-jobs", {"job_action": "result", "job_id": "job-1"}),
     ("/api/async-jobs", {"job_action": "cancel", "job_id": "job-1"}),
+    ("/api/async-jobs", {"action": "status", "job_id": "job-1"}),
+    ("/api/async-jobs", {"action": "result", "job_id": "job-1"}),
+    ("/api/async-jobs", {"action": "cancel", "job_id": "job-1"}),
     ("/api/work-orders", {"action": "status", "id": "work-1"}),
     ("/api/work-orders", {"action": "wait", "id": "work-1"}),
     ("/api/work-orders", {"action": "get", "id": "work-1"}),
@@ -307,6 +310,22 @@ def test_maintenance_policy_blocks_all_existing_job_actions(
     ):
         assert rejection is not None
         assert rejection["error_code"] == "operational_mode_blocked"
+
+
+@pytest.mark.parametrize("action_field", ["action", "job_action"])
+def test_gaming_mode_allows_existing_async_job_result(
+    monkeypatch, tmp_path: Path, action_field: str
+) -> None:
+    _install_mode_api(monkeypatch, "gaming")
+    monkeypatch.setattr(
+        http_server,
+        "APP",
+        SimpleNamespace(config={"server": {"state_dir": str(tmp_path)}}),
+    )
+    payload = {action_field: "result", "job_id": "job-1"}
+
+    assert http_server._http_mode_policy("POST", "/api/async-jobs", payload) == "existing_job"
+    assert http_server._http_mode_gate_error("POST", "/api/async-jobs", payload) is None
 
 
 @pytest.mark.parametrize(("path", "payload"), [

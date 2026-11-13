@@ -10,7 +10,28 @@ from pathlib import Path
 from types import SimpleNamespace
 import pytest
 
-from local_ai_hub.agent_events import AgentEvent, AgentStateStore, AppendResult, SwarmPubSub
+from local_ai_hub.agent_events import AgentEvent, AgentStateStore, SwarmPubSub
+
+
+def test_agent_event_schema_initialization_uses_bounded_transaction(tmp_path, monkeypatch):
+    from local_ai_hub import agent_events
+    from local_ai_hub.sqlite_support import write_transaction
+
+    observed = []
+
+    def record_transaction(connection, **kwargs):
+        observed.append(kwargs)
+        return write_transaction(connection, **kwargs)
+
+    monkeypatch.setattr(agent_events, "write_transaction", record_transaction)
+
+    store = AgentStateStore(tmp_path / "events.sqlite3")
+    store._ensure_schema()
+
+    assert store.db_path.exists()
+    assert observed == [
+        {"max_duration_seconds": 5.0, "rollback_label": "agent event schema initialization"}
+    ]
 
 
 @pytest.mark.parametrize("message", [None, False, 0, "", [], {}, "hello", [0], {"nested": False}])

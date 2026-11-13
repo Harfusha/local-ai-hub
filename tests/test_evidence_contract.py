@@ -199,3 +199,37 @@ def test_get_does_not_return_database_error_details(tmp_path):
 
     assert result == {"success": False, "error": "evidence store unavailable"}
     assert str(tmp_path) not in repr(result)
+
+
+def test_source_provenance_write_uses_bounded_transaction(tmp_path, monkeypatch):
+    from local_ai_hub.sqlite_support import write_transaction
+
+    root = tmp_path / "repo"
+    root.mkdir()
+    source = root / "sample.py"
+    source.write_text("value = 1\n", encoding="utf-8")
+    file_hash = hashlib.sha256(source.read_bytes()).hexdigest()
+    store = EvidenceStore(tmp_path / "state")
+    evidence_id = store.put(
+        str(root),
+        {
+            "path": "sample.py",
+            "file_sha256": file_hash,
+            "start_line": 1,
+            "end_line": 1,
+            "text": "value = 1",
+        },
+    )
+    assert evidence_id is not None
+    observed: list[dict[str, object]] = []
+
+    def record_transaction(connection, **kwargs):
+        observed.append(kwargs)
+        return write_transaction(connection, **kwargs)
+
+    monkeypatch.setattr(evidence_module, "write_transaction", record_transaction, raising=False)
+
+    assert store.record_source_provenance(evidence_id, root=str(root), source_code="indexed") is True
+    assert len(observed) == 1
+    assert observed[0]["max_duration_seconds"] == 5.0
+    assert observed[0]["rollback_label"] == "evidence provenance"

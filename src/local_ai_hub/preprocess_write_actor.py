@@ -8,11 +8,15 @@ import sqlite3
 import threading
 from typing import Any, Callable
 
-from .sqlite_support import connect_sqlite
+from .sqlite_support import connect_sqlite, write_transaction
 
 logger = logging.getLogger(__name__)
 
 _SENTINEL = object()
+
+
+class _BatchOperationFailed(Exception):
+    """Signal that an atomic batch must roll back before isolated retries."""
 
 
 class PreprocessWriteActor:
@@ -83,16 +87,8 @@ class PreprocessWriteActor:
                 row_factory=sqlite3.Row,
             )
             try:
-                con.execute("BEGIN IMMEDIATE")
-                res = operation(con)
-                con.commit()
-                return res
-            except Exception:
-                try:
-                    con.rollback()
-                except Exception:
-                    pass
-                raise
+                with write_transaction(con, max_duration_seconds=5.0, rollback_label="preprocess write actor"):
+                    return operation(con)
             finally:
                 con.close()
 
@@ -139,58 +135,41 @@ class PreprocessWriteActor:
                     op, fut = batch[0]
                     if fut.set_running_or_notify_cancel():
                         try:
-                            con.execute("BEGIN IMMEDIATE")
-                            res = op(con)
-                            con.commit()
+                            with write_transaction(con, max_duration_seconds=5.0, rollback_label="preprocess write actor"):
+                                res = op(con)
                             fut.set_result(res)
                         except Exception as exc:
-                            try:
-                                con.rollback()
-                            except Exception:
-                                pass
                             fut.set_exception(exc)
                     self._queue.task_done()
                     continue
 
                 # Multi-item batch with isolated fallback on individual failure
                 results: list[tuple[concurrent.futures.Future[Any], Any]] = []
-                has_error = False
                 try:
-                    con.execute("BEGIN IMMEDIATE")
-                    for op, fut in batch:
-                        if not fut.set_running_or_notify_cancel():
-                            continue
-                        try:
-                            res = op(con)
-                            results.append((fut, res))
-                        except Exception:
-                            has_error = True
-                            break
-                    if has_error:
-                        con.rollback()
+                    with write_transaction(con, max_duration_seconds=5.0, rollback_label="preprocess write actor batch"):
                         for op, fut in batch:
-                            if fut.done():
+                            if not fut.set_running_or_notify_cancel():
                                 continue
                             try:
-                                con.execute("BEGIN IMMEDIATE")
                                 res = op(con)
-                                con.commit()
-                                fut.set_result(res)
-                            except Exception as indiv_exc:
-                                try:
-                                    con.rollback()
-                                except Exception:
-                                    pass
-                                fut.set_exception(indiv_exc)
-                    else:
-                        con.commit()
-                        for fut, res in results:
+                                results.append((fut, res))
+                            except Exception as op_exc:
+                                raise _BatchOperationFailed from op_exc
+                    for fut, res in results:
+                        fut.set_result(res)
+                except _BatchOperationFailed:
+                    # The shared transaction has rolled back; replay each operation
+                    # independently so one bad write does not discard good neighbors.
+                    for op, fut in batch:
+                        if fut.done():
+                            continue
+                        try:
+                            with write_transaction(con, max_duration_seconds=5.0, rollback_label="preprocess write actor retry"):
+                                res = op(con)
                             fut.set_result(res)
+                        except Exception as indiv_exc:
+                            fut.set_exception(indiv_exc)
                 except Exception as tx_exc:
-                    try:
-                        con.rollback()
-                    except Exception:
-                        pass
                     for _, fut in batch:
                         if not fut.done():
                             fut.set_exception(tx_exc)

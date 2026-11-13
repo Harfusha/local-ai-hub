@@ -49,6 +49,29 @@ wildcards, credentials and ambiguous paths reject. A hostname grants that hostna
 not a pinned IP identity; use literal IP rules when that is the intended identity.
 Configured extension-origin permissions for the old capture bridge are separate.
 
+## Current-tab capture privacy
+
+The current-tab extension asks before each capture. Its default mode is
+`privacy_redacted`; `screenshot_only` omits DOM, accessibility, styles and
+resource references. `full_local_capture` stores unredacted page evidence and
+requires a separate confirmation on every capture. The popup explains local
+loopback transfer, configured artifact retention, and the need to inspect an
+artifact before exporting or sharing it.
+
+Redacted mode masks form values and deterministic matches for common credential,
+token and email patterns in captured text. It also paints opaque black rectangles
+over detected page regions in a PNG copy of the screenshot before staging. A
+missing, invalid or incomplete region list fails closed. Detection can miss
+unknown secrets, images containing text, and secrets outside supported patterns;
+inspect the result before sharing. Artifact retention uses the Hub's configured
+lifetime. The extension does not claim OS or network isolation. Capture data is
+sent to the Hub over loopback; web content's ordinary network access is unaffected.
+
+The extension requests `activeTab`, `scripting`, `storage` and `offscreen`; it
+does not register global content scripts. An optional sensitive-origin block
+rejects likely account, payment, health and identity hosts before capture. It is
+a conservative hostname check, not a complete sensitive-site classifier.
+
 Install Microsoft's [Playwright extension](https://playwright.dev/mcp/configuration/browser-extension)
 for personal Chrome. The extension owns its browser connection/selection prompt.
 The selected page must exactly match the requested initial URL. The Hub does not
@@ -69,6 +92,16 @@ Open:
 ```json
 {"op":"open","mode":"isolated","url":"http://127.0.0.1:8765/"}
 ```
+
+The `allowed_targets` list is a `navigation_allowlist` for top-level document
+navigation, including redirects. It does not limit iframe documents or ordinary
+subresource egress such as fetch/XHR, WebSockets, or uploads. The response reports
+`network_egress_policy` separately and keeps `network_egress_isolated=false`.
+Pass `require_network_egress_isolation=true` only when the caller needs a strict
+network boundary; the Hub currently has no enforcing process, proxy, or firewall
+backend, so it returns `error_code="isolation_not_proven"` before creating a
+session. It never treats the browser context or navigation allowlist as egress
+isolation. Download size limits are data handling controls, not network controls.
 
 For personal Chrome use `mode="extension"`. Keep the returned `session_id` and
 `session_key` private to this task. Act:
@@ -134,8 +167,11 @@ provision or reset a VM, install guest agents, or silently switch to the host.
 Windows Sandbox is one shared guest, not a separate VM per agent. Separate VMs
 are required for mutually untrusted desktop workflows. A browser context likewise
 isolates browser state, not the OS or network. Web subresources retain normal
-network access: `network_egress_isolated=false`. Strong egress isolation requires
-external VM/network policy; it is never inferred from an origin filter.
+network access: `network_egress_isolated=false`. The session response identifies
+`navigation_policy` as a `navigation_allowlist` for `top_level_navigation` only,
+and reports `network_egress_policy.status="isolation_not_proven"` with
+`enforced=false`. Strong egress isolation requires external VM/network policy; it
+is never inferred from an origin filter.
 
 ## Validation
 
@@ -147,3 +183,10 @@ installed CLI path) and optional `LOCAL_AI_AUTOMATION_NODE`. Run
 headless sessions and local fixture servers, never personal-profile connections.
 Extension, native Windows UI and prepared Sandbox acceptance require actual
 operator-owned sessions; fake adapters do not establish those results.
+
+The extension popup can delete the exact capture bundle it created while the
+popup remains open. Deletion requires a fresh one-use capability bound to the
+extension origin and active tab. The Hub removes the bundle and only unshared
+child artifacts; content-addressed evidence still referenced by another capture
+is retained. This path has focused harness coverage, but has not been accepted
+in a real Chrome session.

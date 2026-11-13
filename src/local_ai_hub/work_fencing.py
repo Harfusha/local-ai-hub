@@ -2,6 +2,8 @@
 
 The lease store is authoritative only when every writer uses the same database
 and enters ``commit_guard`` around its final write-set import and journal commit.
+That guard and every lease mutation share a stable cross-process file lock, so
+the SQLite writer lock stays short and never spans the protected file writes.
 ``assert_current`` is a preflight check; it does not by itself protect a later
 write from a lease expiry/reacquisition race.
 """
@@ -21,10 +23,22 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, Callable, Iterator, Sequence
 from uuid import uuid4
 
-from .sqlite_support import connect_sqlite, initialize_wal, retry_busy, readonly_sqlite_connection
+from .file_locks import exclusive_file_update
+from .sqlite_support import (
+    begin_write_transaction,
+    connect_sqlite,
+    initialize_wal,
+    retry_busy,
+    readonly_sqlite_connection,
+)
 
 
 MAX_TTL_SECONDS = 24 * 60 * 60
+
+
+def _rollback_fencing_transaction(transaction: Any | None) -> None:
+    if transaction is not None:
+        transaction.rollback()
 
 
 _FENCE_TABLE_DDL = {
@@ -258,9 +272,9 @@ class FencingLeaseStore:
     """SQLite-backed, cross-process lease and commit fence.
 
     Tokens increase monotonically per canonical resource. Disjoint path scopes
-    may hold live leases together. The SQLite ``BEGIN IMMEDIATE`` transaction in
-    ``commit_guard`` serializes lease changes with the caller's protected write
-    and remains open until the caller's write/journal commit finishes.
+    may hold live leases together. The stable sidecar lock in ``commit_guard``
+    serializes lease changes with the caller's protected write without keeping
+    a SQLite writer transaction open during filesystem or journal work.
     """
 
     def __init__(
@@ -279,6 +293,10 @@ class FencingLeaseStore:
     def _connect(self) -> sqlite3.Connection:
         return connect_sqlite(self.path, timeout_seconds=5.0, isolation_level=None)
 
+    def _serialized_write(self, operation: Callable[[], Any]) -> Any:
+        with exclusive_file_update(self.path, timeout=5.0, reentrant=True):
+            return operation()
+
     def _initialize(self) -> None:
         if self._initialized:
             return
@@ -291,20 +309,19 @@ class FencingLeaseStore:
                 with closing(self._connect()) as con:
                     _validate_fence_schema(con)
                     initialize_wal(con)
-                    con.execute("BEGIN IMMEDIATE")
+                    transaction = begin_write_transaction(con, max_duration_seconds=5.0, rollback_label="fencing schema")
                     try:
                         _validate_fence_schema(con)
                         for ddl in _FENCE_TABLE_DDL.values():
                             con.execute(ddl)
                         for ddl in _FENCE_INDEX_DDL.values():
                             con.execute(ddl)
-                        con.execute("COMMIT")
+                        transaction.commit()
                     except BaseException:
-                        if con.in_transaction:
-                            con.execute("ROLLBACK")
+                        _rollback_fencing_transaction(transaction)
                         raise
 
-            retry_busy(setup, retries=5, base_delay_seconds=0.02)
+            retry_busy(lambda: self._serialized_write(setup), retries=5, base_delay_seconds=0.02)
             self._initialized = True
 
     @staticmethod
@@ -334,19 +351,11 @@ class FencingLeaseStore:
 
     @contextmanager
     def attempt_guard(self, attempt: WorkAttemptFence) -> Iterator[None]:
-        """Fence one durable work-order state transition against attempt expiry."""
-        con = self._connect()
-        try:
-            con.execute("BEGIN IMMEDIATE")
-            self._assert_attempt(con, attempt)
+        """Fence one durable state transition without holding a SQLite writer lock."""
+        with exclusive_file_update(self.path, timeout=5.0, reentrant=True):
+            self.assert_attempt_current(attempt)
             yield
-            con.execute("COMMIT")
-        except BaseException:
-            if con.in_transaction:
-                con.execute("ROLLBACK")
-            raise
-        finally:
-            con.close()
+            self.assert_attempt_current(attempt)
 
     def assert_attempt_current(self, attempt: WorkAttemptFence) -> None:
         """Check an execution epoch before starting work with external side effects."""
@@ -388,7 +397,7 @@ class FencingLeaseStore:
 
         def write() -> WorkAttemptFence:
             with closing(self._connect()) as con:
-                con.execute("BEGIN IMMEDIATE")
+                transaction = begin_write_transaction(con, max_duration_seconds=5.0, rollback_label="fencing attempt claim")
                 try:
                     con.execute(
                         "UPDATE writer_fence_attempts SET active=0 "
@@ -429,14 +438,13 @@ class FencingLeaseStore:
                         ) VALUES(?,?,?,?,?,?,?,1)""",
                         (attempt_id, root_id, scope_id, work, owner, token, expires_at),
                     )
-                    con.execute("COMMIT")
+                    transaction.commit()
                     return WorkAttemptFence(root_id, work, attempt_id, owner, token, expires_at, scope_id)
                 except BaseException:
-                    if con.in_transaction:
-                        con.execute("ROLLBACK")
+                    _rollback_fencing_transaction(transaction)
                     raise
 
-        return retry_busy(write, retries=5, base_delay_seconds=0.02)
+        return retry_busy(lambda: self._serialized_write(write), retries=5, base_delay_seconds=0.02)
 
     def renew_attempt(
         self,
@@ -450,7 +458,7 @@ class FencingLeaseStore:
 
         def write() -> WorkAttemptFence:
             with closing(self._connect()) as con:
-                con.execute("BEGIN IMMEDIATE")
+                transaction = begin_write_transaction(con, max_duration_seconds=5.0, rollback_label="fencing attempt renewal")
                 try:
                     self._assert_attempt(con, attempt)
                     updated = con.execute(
@@ -460,20 +468,19 @@ class FencingLeaseStore:
                     )
                     if int(updated.rowcount or 0) != 1:
                         raise LeaseLostError("work attempt fence could not be renewed")
-                    con.execute("COMMIT")
+                    transaction.commit()
                     return replace(attempt, expires_at=expires_at)
                 except BaseException:
-                    if con.in_transaction:
-                        con.execute("ROLLBACK")
+                    _rollback_fencing_transaction(transaction)
                     raise
 
-        return retry_busy(write, retries=5, base_delay_seconds=0.02)
+        return retry_busy(lambda: self._serialized_write(write), retries=5, base_delay_seconds=0.02)
 
     def release_attempt(self, attempt: WorkAttemptFence) -> bool:
         """Release this exact attempt; a stale token cannot release a newer epoch."""
         def write() -> bool:
             with closing(self._connect()) as con:
-                con.execute("BEGIN IMMEDIATE")
+                transaction = begin_write_transaction(con, max_duration_seconds=5.0, rollback_label="fencing attempt release")
                 try:
                     updated = con.execute(
                         "UPDATE writer_fence_attempts SET active=0 "
@@ -487,14 +494,13 @@ class FencingLeaseStore:
                             attempt.fencing_token,
                         ),
                     )
-                    con.execute("COMMIT")
+                    transaction.commit()
                     return int(updated.rowcount or 0) == 1
                 except BaseException:
-                    if con.in_transaction:
-                        con.execute("ROLLBACK")
+                    _rollback_fencing_transaction(transaction)
                     raise
 
-        return retry_busy(write, retries=5, base_delay_seconds=0.02)
+        return retry_busy(lambda: self._serialized_write(write), retries=5, base_delay_seconds=0.02)
 
     @staticmethod
     def _ttl(ttl_seconds: float) -> float:
@@ -542,7 +548,7 @@ class FencingLeaseStore:
 
         def write() -> FencingLease:
             with closing(self._connect()) as con:
-                con.execute("BEGIN IMMEDIATE")
+                transaction = begin_write_transaction(con, max_duration_seconds=5.0, rollback_label="fencing lease claim")
                 try:
                     if attempt.resource != root_id or (attempt.scope_id or attempt.resource) != scope_id:
                         raise LeaseLostError("work attempt resource does not match path lease")
@@ -628,7 +634,7 @@ class FencingLeaseStore:
                             scope_id,
                         ),
                     )
-                    con.execute("COMMIT")
+                    transaction.commit()
                     return FencingLease(
                         root_id,
                         lease_id,
@@ -641,11 +647,10 @@ class FencingLeaseStore:
                         scope_id,
                     )
                 except BaseException:
-                    if con.in_transaction:
-                        con.execute("ROLLBACK")
+                    _rollback_fencing_transaction(transaction)
                     raise
 
-        return retry_busy(write, retries=5, base_delay_seconds=0.02)
+        return retry_busy(lambda: self._serialized_write(write), retries=5, base_delay_seconds=0.02)
 
     def _assert_current(
         self,
@@ -729,29 +734,22 @@ class FencingLeaseStore:
         lease: FencingLease,
         actual_paths: Sequence[str],
     ) -> Iterator[None]:
-        """Fence a complete write/journal commit against expiry and reacquisition.
+        """Fence a complete write/journal commit without holding a SQLite writer lock.
 
         The caller must perform every protected filesystem write and durable
-        journal transition before leaving this context. Other lease operations
-        use the same SQLite database and cannot change ownership until it exits.
+        journal transition before leaving this context. Every lease mutation uses
+        the same stable cross-process lock, so ownership cannot change until exit.
         """
         if not actual_paths:
             raise ValueError("commit_guard requires the exact non-empty write set")
         if not lease.attempt_id or lease.attempt_token <= 0:
             raise LeaseLostError("commit requires a parent work attempt fencing token")
-        con = self._connect()
-        try:
-            con.execute("BEGIN IMMEDIATE")
-            self._assert_current(con, lease, actual_paths)
+        with exclusive_file_update(self.path, timeout=5.0, reentrant=True):
+            with closing(self._connect()) as con:
+                self._assert_current(con, lease, actual_paths)
             yield
-            self._assert_current(con, lease, actual_paths)
-            con.execute("COMMIT")
-        except BaseException:
-            if con.in_transaction:
-                con.execute("ROLLBACK")
-            raise
-        finally:
-            con.close()
+            with closing(self._connect()) as con:
+                self._assert_current(con, lease, actual_paths)
 
     def renew(self, lease: FencingLease, *, ttl_seconds: float) -> FencingLease:
         now = float(self._clock())
@@ -759,7 +757,7 @@ class FencingLeaseStore:
 
         def write() -> FencingLease:
             with closing(self._connect()) as con:
-                con.execute("BEGIN IMMEDIATE")
+                transaction = begin_write_transaction(con, max_duration_seconds=5.0, rollback_label="fencing lease renewal")
                 try:
                     self._assert_current(con, lease, ())
                     updated = con.execute(
@@ -769,19 +767,18 @@ class FencingLeaseStore:
                     )
                     if int(updated.rowcount or 0) != 1:
                         raise LeaseLostError("writer lease could not be renewed")
-                    con.execute("COMMIT")
+                    transaction.commit()
                     return replace(lease, expires_at=expires_at)
                 except BaseException:
-                    if con.in_transaction:
-                        con.execute("ROLLBACK")
+                    _rollback_fencing_transaction(transaction)
                     raise
 
-        return retry_busy(write, retries=5, base_delay_seconds=0.02)
+        return retry_busy(lambda: self._serialized_write(write), retries=5, base_delay_seconds=0.02)
 
     def release(self, lease: FencingLease) -> bool:
         def write() -> bool:
             with closing(self._connect()) as con:
-                con.execute("BEGIN IMMEDIATE")
+                transaction = begin_write_transaction(con, max_duration_seconds=5.0, rollback_label="fencing lease release")
                 try:
                     updated = con.execute(
                         "UPDATE writer_fence_leases SET active=0 "
@@ -789,14 +786,13 @@ class FencingLeaseStore:
                         "AND fencing_token=? AND active=1",
                         (lease.lease_id, lease.resource, lease.owner_id, lease.fencing_token),
                     )
-                    con.execute("COMMIT")
+                    transaction.commit()
                     return int(updated.rowcount or 0) == 1
                 except BaseException:
-                    if con.in_transaction:
-                        con.execute("ROLLBACK")
+                    _rollback_fencing_transaction(transaction)
                     raise
 
-        return retry_busy(write, retries=5, base_delay_seconds=0.02)
+        return retry_busy(lambda: self._serialized_write(write), retries=5, base_delay_seconds=0.02)
 
     def get_active_attempt(
         self,
@@ -894,7 +890,7 @@ class FencingLeaseStore:
 
         def write() -> int:
             with closing(self._connect()) as con:
-                con.execute("BEGIN IMMEDIATE")
+                transaction = begin_write_transaction(con, max_duration_seconds=5.0, rollback_label="fencing expiration cleanup")
                 try:
                     cur1 = con.execute(
                         "UPDATE writer_fence_attempts SET active=0 WHERE active=1 AND expires_at<=?",
@@ -904,12 +900,11 @@ class FencingLeaseStore:
                         "UPDATE writer_fence_leases SET active=0 WHERE active=1 AND expires_at<=?",
                         (now,),
                     )
-                    con.execute("COMMIT")
+                    transaction.commit()
                     return int(cur1.rowcount or 0) + int(cur2.rowcount or 0)
                 except BaseException:
-                    if con.in_transaction:
-                        con.execute("ROLLBACK")
+                    _rollback_fencing_transaction(transaction)
                     raise
 
-        return retry_busy(write, retries=5, base_delay_seconds=0.02)
+        return retry_busy(lambda: self._serialized_write(write), retries=5, base_delay_seconds=0.02)
 

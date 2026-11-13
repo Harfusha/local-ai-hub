@@ -265,6 +265,17 @@ def prepare_vision_inputs(
                     "vision_bundle_invalid",
                 )
             return "", exc.as_result()
+        if bundle.get("capture_success") is True and bundle.get("review_ready") is False:
+            return "", {
+                "success": False,
+                "terminal": True,
+                "retryable": False,
+                "error_code": "vision_review_not_ready",
+                "error": "Capture was saved, but its projection is outside the vision review limits.",
+                "reasons": list(bundle.get("review_not_ready_reasons", []))[:8],
+                "bundle_artifact_id": bundle.get("bundle_artifact_id", ""),
+                "recovery": "Use a smaller screenshot or recapture with a viewport and DOM projection within the vision limits.",
+            }
         resolved = dict(bundle)
         screenshot = resolved.get("screenshot")
         screenshot_ref = screenshot.get("artifact_id", "") if isinstance(screenshot, dict) else ""
@@ -435,8 +446,26 @@ def prepare_vision_inputs(
             accessibility_value = frontend_bundle.get("accessibility") or {}
             styles_value = frontend_bundle.get("computed_styles") or {}
             runtime_value = frontend_bundle.get("runtime") or {}
+            review_prompt = prompt
+            if isinstance(dom_value, dict) and (
+                dom_value.get("review_completeness") == "partial"
+                or dom_value.get("projection_truncated") is True
+                or dom_value.get("coverage_incomplete") is True
+            ):
+                review_prompt = (
+                    f"{prompt}\n\n"
+                    "Evidence scope: the captured DOM is a partial projection. Review only the included evidence, "
+                    "do not infer that omitted page content is absent, and state that conclusions are limited to "
+                    "the captured projection."
+                )
+            if isinstance(dom_value, dict) and dom_value.get("redaction") == "deterministic":
+                review_prompt = (
+                    f"{review_prompt}\n\n"
+                    "Privacy scope: deterministic redaction masked recognized values. Masked values are unknown; "
+                    "do not infer or reconstruct them. Conclusions cannot depend on redacted text."
+                )
             model_context = build_model_context(
-                prompt=prompt,
+                prompt=review_prompt,
                 screenshot_data_url=images[0] if images else "",
                 dom=dom_value if isinstance(dom_value, dict) else parse_context_value("dom", dom_value),
                 accessibility=accessibility_value if isinstance(accessibility_value, dict) else parse_context_value("accessibility", accessibility_value),

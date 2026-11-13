@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterator
 
 from .cache import stable_hash
-from .sqlite_support import connect_sqlite, initialize_wal, retry_busy
+from .sqlite_support import connect_sqlite, initialize_wal, retry_busy, write_transaction
 from .process_utils import terminate_tree
 
 
@@ -167,8 +167,11 @@ class AsyncJobManager:
                         if actual_progress_columns != expected_progress_columns:
                             raise RuntimeError("unsupported async_job_progress schema; offline conversion required; database preserved")
                     initialize_wal(con)
-                    con.execute("BEGIN IMMEDIATE")
-                    try:
+                    with write_transaction(
+                        con,
+                        max_duration_seconds=5.0,
+                        rollback_label="async job schema initialization",
+                    ):
                         existing = {str(row[0]) for row in con.execute("SELECT name FROM sqlite_master WHERE type='table'")}
                         if "async_jobs" in existing:
                             actual_columns = [str(row[1]) for row in con.execute("PRAGMA table_info(async_jobs)")]
@@ -197,11 +200,6 @@ class AsyncJobManager:
                         )""")
                         con.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_async_jobs_active_dedupe ON async_jobs(request_hash) WHERE state IN ('queued','running')")
                         con.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_async_jobs_request_id ON async_jobs(json_extract(payload_json, '$.request_id')) WHERE json_valid(payload_json) AND json_type(payload_json, '$.request_id')='text' AND json_extract(payload_json, '$.request_id')<>''")
-                        con.commit()
-                    except Exception:
-                        if con.in_transaction:
-                            con.rollback()
-                        raise
             retry_busy(_setup, retries=5, base_delay_seconds=0.02)
             self._initialized = True
 
@@ -338,7 +336,8 @@ class AsyncJobManager:
                 isinstance(root, str)
                 and bool(root.strip())
                 and os.path.isabs(root)
-                and (workspace is None or (isinstance(workspace, str) and bool(workspace.strip())))
+                and isinstance(workspace, str)
+                and bool(workspace.strip())
                 and 0 < attempt_count < self.max_attempts
             )
         return (
@@ -1148,6 +1147,7 @@ class AsyncJobManager:
     def _release_for_retry(self, job_id: str, error: str) -> None:
         trace_id = ""
         already_terminal = False
+        transitioned = False
         with self._lock:
             if self._shutdown.is_set():
                 return
@@ -1173,14 +1173,16 @@ class AsyncJobManager:
                     state = "outcome_unknown"
                     detail = f"async job outcome unknown after interrupted attempt: {error}"[:500]
                 if not already_terminal:
-                    con.execute(
-                        "UPDATE async_jobs SET state=?,attempts=?,lease_until=0,error=?,updated_at=? WHERE job_id=?",
-                        (state, attempts, detail, time.time(), job_id),
+                    updated = con.execute(
+                        "UPDATE async_jobs SET state=?,attempts=?,lease_until=0,error=?,updated_at=? "
+                        "WHERE job_id=? AND state=? AND attempts=? AND cancel_requested=?",
+                        (state, attempts, detail, time.time(), job_id, current_state, attempts, int(cancelled)),
                     )
                     con.commit()
-                    if state == "cancelled":
+                    transitioned = updated.rowcount == 1
+                    if transitioned and state == "cancelled":
                         self._stats["cancelled"] += 1
-        if not already_terminal and self.debug_traces is not None and trace_id:
+        if transitioned and self.debug_traces is not None and trace_id:
             try:
                 self.debug_traces.event(trace_id, "retry" if state == "queued" else state, {"attempts": attempts})
                 if state in {"cancelled", "outcome_unknown"}:
@@ -1190,7 +1192,7 @@ class AsyncJobManager:
         # A running job is only cancellation-requested, not terminal yet. Wake
         # waiters only for the queued->cancelled transition; the worker signals
         # its event after it records the final cancelled state.
-        if state == "queued":
+        if transitioned and state == "queued":
             self._event(job_id).set()
 
 
@@ -1323,6 +1325,7 @@ class AsyncJobManager:
             cleanup_confirmed = self._cleanup_processes(job_id, attempt=int(row["attempts"]) + 1)
         deferred_for_resource_release = False
         artifact_id = ""
+        pre_artifact_available = False
         final = {}
         if type(result.get("success")) is not bool:
             result = {"success": False, "error": "async executor success must be an explicit boolean", "retryable": False}
@@ -1359,14 +1362,29 @@ class AsyncJobManager:
                         kind="async-job",
                     )
                     pre_artifact_id = str(stored_id or "").strip()
+                    pre_artifact_available = self._result_artifact_available(pre_artifact_id)
                 except Exception:
                     pass
 
         # N06 Phase 2: Short atomic SQLite update transaction
-        with self._lock, closing(self._connect()) as con:
+        task_failure_reason: str | None = None
+        stats_counter: str | None = None
+        notify_expiration_after_commit = False
+
+        @contextmanager
+        def _finalization_transaction(con: sqlite3.Connection) -> Iterator[None]:
+            with write_transaction(
+                con,
+                max_duration_seconds=2.0,
+                rollback_label="async job finalization",
+            ):
+                yield
+            if notify_expiration_after_commit:
+                self._event(job_id).set()
+
+        with self._lock, closing(self._connect()) as con, _finalization_transaction(con):
             # Hold the SQLite writer fence through validation and final persistence.
             # A process-local lock alone cannot exclude another manager instance.
-            con.execute("BEGIN IMMEDIATE")
             owner = con.execute(
                 "SELECT state,attempts,lease_until,expires_at FROM async_jobs WHERE job_id=?",
                 (job_id,),
@@ -1381,6 +1399,7 @@ class AsyncJobManager:
                     not cleanup_confirmed or result.get("cleanup_unconfirmed")
                     or result.get("outcome_unknown")
                 )
+                notify_expiration_after_commit = True
                 return self._expire_owned_attempt(
                     con, job_id=job_id, attempt=int(row["attempts"]) + 1,
                     now=now, cleanup_unknown=bool(cleanup_unknown),
@@ -1407,19 +1426,13 @@ class AsyncJobManager:
                     (json_dumps(final, ensure_ascii=False, separators=(",", ":")), final["error"], time.time(), job_id),
                 )
                 if task_id and self.task_store is not None:
-                    try:
-                        self.task_store.fail(task_id, reason=final["error"])
-                    except Exception:
-                        pass
+                    task_failure_reason = final["error"]
             elif cancelled:
                 con.execute("UPDATE async_jobs SET state='cancelled',lease_until=0,updated_at=? WHERE job_id=?", (time.time(), job_id))
-                self._stats["cancelled"] += 1
+                stats_counter = "cancelled"
                 final = {"success": False, "error": "async job cancelled", "terminal": True, "retryable": False}
                 if task_id and self.task_store is not None:
-                    try:
-                        self.task_store.fail(task_id, reason="async job cancelled")
-                    except Exception:
-                        pass
+                    task_failure_reason = "async job cancelled"
             elif result.get("error_code") == "resource_release_in_progress":
                 final = {
                     **result,
@@ -1452,27 +1465,25 @@ class AsyncJobManager:
                         job_id,
                     ),
                 )
-                self._stats["failed"] += 1
+                stats_counter = "failed"
                 if task_id and self.task_store is not None:
-                    try:
-                        self.task_store.fail(task_id, reason=str(final.get("error", "GPU admission unavailable")))
-                    except Exception:
-                        pass
+                    task_failure_reason = str(final.get("error", "GPU admission unavailable"))
             elif result.get("success") is True:
                 artifact_id = pre_artifact_id
                 now = time.time()
                 if now >= float(owner[3]):
+                    notify_expiration_after_commit = True
                     return self._expire_owned_attempt(
                         con, job_id=job_id, attempt=int(row["attempts"]) + 1, now=now,
                     )
                 if now >= float(owner[2]):
                     return {"success": False, "job_id": job_id, "error": "async job attempt expired during finalization", "error_code": "stale_attempt", "terminal": True, "retryable": False}
-                if not self._result_artifact_available(artifact_id):
+                if not pre_artifact_available:
                     final = {"success": False, "state": "outcome_unknown", "outcome_unknown": True, "error": "async job result artifact unavailable", "terminal": True, "retryable": False}
                     con.execute("UPDATE async_jobs SET state='outcome_unknown',result_json=?,artifact_id='',error=?,lease_until=0,updated_at=? WHERE job_id=?", (json_dumps(final, ensure_ascii=False, separators=(",", ":")), final["error"], time.time(), job_id))
                 else:
                     con.execute("UPDATE async_jobs SET state='done',result_json=?,artifact_id=?,lease_until=0,updated_at=? WHERE job_id=?", (json_dumps(result, ensure_ascii=False, separators=(",", ":")), artifact_id, time.time(), job_id))
-                    self._stats["completed"] += 1
+                    stats_counter = "completed"
                     final = result
             else:
                 con.row_factory = sqlite3.Row
@@ -1495,16 +1506,20 @@ class AsyncJobManager:
                     con.execute("UPDATE async_jobs SET state='outcome_unknown',result_json=?,error=?,lease_until=0,updated_at=? WHERE job_id=?", (json_dumps(final, ensure_ascii=False, separators=(",", ":")), final["error"][:500], time.time(), job_id))
                 else:
                     con.execute("UPDATE async_jobs SET state='failed',result_json=?,error=?,lease_until=0,updated_at=? WHERE job_id=?", (json_dumps(result, ensure_ascii=False, separators=(",", ":")), str(result.get("error", "async job failed"))[:500], time.time(), job_id))
-                    self._stats["failed"] += 1
+                    stats_counter = "failed"
                     final = result
                     if task_id and self.task_store is not None:
-                        try:
-                            self.task_store.fail(task_id, reason=str(result.get("error", "async job failed")))
-                        except Exception:
-                            pass
-            con.commit()
+                        task_failure_reason = str(result.get("error", "async job failed"))
+        if stats_counter is not None:
+            with self._lock:
+                self._stats[stats_counter] += 1
 
         # N06 Phase 3: External task and verification callbacks outside SQLite transaction
+        if task_failure_reason is not None and task_id and self.task_store is not None:
+            try:
+                self.task_store.fail(task_id, reason=task_failure_reason)
+            except Exception:
+                pass
         if final and (final.get("state") == "done" or final.get("success") is True):
             if task_id and self.task_store is not None:
                 try:
@@ -1570,8 +1585,6 @@ class AsyncJobManager:
         if changed != 1:
             return {"success": False, "job_id": job_id, "error": "async job attempt ownership lost",
                     "error_code": "stale_attempt", "terminal": True, "retryable": False}
-        con.commit()
-        self._event(job_id).set()
         return final
 
     def _invoke_executor_if_allowed(
@@ -1712,7 +1725,7 @@ class AsyncJobManager:
         if state == "expired" or (float(row["expires_at"]) <= time.time() and state in self.TERMINAL_STATES):
             return {"success": False, "job_id": job_id, "state": "expired", "error": "async job result expired", "terminal": True, "retryable": False}
         if row["state"] != "done":
-            result = {"success": False, "job_id": job_id, "state": state, "error": str(row["error"] or "async job is not complete"), "outcome_unknown": state == "outcome_unknown", "terminal": state in self.TERMINAL_STATES, "retryable": state in {"queued", "running"}}
+            result = {"success": False, "job_id": job_id, "state": state, "error": str(row["error"] or "async job is not complete"), "outcome_unknown": state == "outcome_unknown", "in_progress": state in {"queued", "running"}, "terminal": state in self.TERMINAL_STATES, "retryable": state in {"queued", "running"}}
             if state == "outcome_unknown":
                 try:
                     retained = json.loads(str(row["result_json"] or "{}"))
@@ -1732,8 +1745,9 @@ class AsyncJobManager:
 
     def cancel(self, job_id: str, **fields: Any) -> dict[str, Any]:
         self._reject_retired_fields(fields)
-        with self._lock, closing(self._connect()) as con:
-            con.execute("BEGIN IMMEDIATE")
+        with self._lock, closing(self._connect()) as con, write_transaction(
+            con, max_duration_seconds=5.0, rollback_label="async job cancellation"
+        ):
             row = con.execute("SELECT state,trace_id FROM async_jobs WHERE job_id=?", (job_id,)).fetchone()
             if not row: return {"success": False, "error": "async job not found", "terminal": True, "retryable": False}
             state = str(row[0])
@@ -1746,16 +1760,16 @@ class AsyncJobManager:
             if delayed is not None:
                 delayed.cancel()
             changed = con.execute("UPDATE async_jobs SET cancel_requested=1,state=CASE WHEN state='queued' THEN 'cancelled' ELSE state END,dispatch_not_before=0,updated_at=? WHERE job_id=? AND cancel_requested=0", (time.time(), job_id)).rowcount
-            con.commit()
         cleanup_confirmed = self._cleanup_processes(job_id)
         if state == "queued" and not cleanup_confirmed:
             error = "async process cleanup unconfirmed"
-            with self._lock, closing(self._connect()) as con:
+            with self._lock, closing(self._connect()) as con, write_transaction(
+                con, max_duration_seconds=5.0, rollback_label="async job cancellation recovery"
+            ):
                 con.execute(
                     "UPDATE async_jobs SET state='outcome_unknown',error=?,lease_until=0,updated_at=? WHERE job_id=?",
                     (error, time.time(), job_id),
                 )
-                con.commit()
         if changed and cleanup_confirmed:
             self._stats["cancelled"] += 1
         # Running cancellation is only a request until the worker records its

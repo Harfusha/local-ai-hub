@@ -41,6 +41,60 @@ def test_preview_postimages_recounts_hunk_line_counts(tmp_path):
     assert postimages[0].data == newline.join((b"new", b"same")) + newline
 
 
+def test_bounded_submit_validates_task_without_holding_work_order_write_lock(tmp_path, monkeypatch):
+    import sqlite3
+
+    from local_ai_hub import agent_tasks
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "a.py").write_text("value = 1\n", encoding="utf-8")
+    state_dir = tmp_path / "state"
+    record = SimpleNamespace(status=TaskStatus.ACTIVE, owner="operator")
+    task_store = SimpleNamespace()
+    orchestrator = WorkOrchestrator(
+        {"work_orchestrator": {"enabled": True}},
+        state_dir,
+        SimpleNamespace(),
+        SimpleNamespace(),
+        FakeLeases(),
+        FakeArtifacts(),
+        verification_store=SimpleNamespace(task_store=task_store),
+    )
+    orchestrator._ensure_workers = lambda: None
+    monkeypatch.setattr(agent_tasks, "_task_matches_scope", lambda *_args: True)
+    monkeypatch.setattr(agent_tasks, "_task_scope_root", lambda _record: str(repo))
+
+    def get_task(_task_id):
+        # A second process must be able to acquire the database write lock while
+        # task validation reads the independent Agent OS task store.
+        con = sqlite3.connect(orchestrator.path, timeout=0.05)
+        try:
+            con.execute("BEGIN IMMEDIATE")
+            con.rollback()
+        finally:
+            con.close()
+        return record
+
+    task_store.get = get_task
+    result = orchestrator.submit({
+        "root": str(repo),
+        "task": "bounded task",
+        "work_id": "bounded-lock-test",
+        "task_id": "task-1",
+        "mode": "bounded",
+        "allowed_paths": ["a.py"],
+        "approved_commands": ["python -m pytest -q"],
+        "acceptance_criteria": ["The bounded task is accepted."],
+        "permissions": {"edit": True, "tests": True, "build": True},
+        "budget": {"max_steps": 1, "max_seconds": 30, "max_commands": 1},
+    })
+
+    assert result["success"] is True
+    assert result["status"] == "queued"
+    orchestrator.close()
+
+
 class FakeArtifacts:
     def __init__(self): self.data = {}
     def put(self, text, *, kind):
@@ -1271,3 +1325,55 @@ def test_local_service_forwards_receipt_opt_out_and_keeps_work_id():
     assert result["success"] is True
     assert broker.kwargs["record_verification"] is False
     assert broker.kwargs["task_id"] == "work-order-1"
+
+
+def test_work_order_claim_uses_bounded_write_transaction(tmp_path, monkeypatch):
+    from contextlib import closing
+    import sqlite3
+
+    from local_ai_hub import work_orchestrator
+
+    database = tmp_path / "work-orders.sqlite3"
+    with closing(sqlite3.connect(database)) as con:
+        con.execute(
+            "CREATE TABLE work_orders (work_id TEXT PRIMARY KEY, state TEXT NOT NULL, "
+            "created_at REAL NOT NULL, updated_at REAL NOT NULL)"
+        )
+        con.execute(
+            "INSERT INTO work_orders VALUES (?, ?, ?, ?)",
+            ("work-1", "queued", 1.0, 1.0),
+        )
+        con.commit()
+
+    orchestrator = object.__new__(WorkOrchestrator)
+
+    def connect():
+        con = sqlite3.connect(database)
+        con.row_factory = sqlite3.Row
+        return con
+
+    orchestrator._connect = connect
+    transaction_calls = []
+    write_transaction = work_orchestrator.write_transaction
+
+    def tracked_write_transaction(con, **kwargs):
+        transaction_calls.append(kwargs)
+        return write_transaction(con, **kwargs)
+
+    monkeypatch.setattr(
+        work_orchestrator, "write_transaction", tracked_write_transaction
+    )
+
+    claimed = orchestrator._next()
+
+    assert claimed is not None
+    assert claimed["work_id"] == "work-1"
+    assert claimed["state"] == "queued"
+    assert transaction_calls == [
+        {"max_duration_seconds": 5.0, "rollback_label": "work-order queue claim"}
+    ]
+    with closing(sqlite3.connect(database)) as con:
+        state = con.execute(
+            "SELECT state FROM work_orders WHERE work_id = ?", ("work-1",)
+        ).fetchone()[0]
+    assert state == "planning"

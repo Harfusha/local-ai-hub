@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import hashlib
+from local_ai_hub import sqlite_support
 import local_ai_hub.agent_verification as agent_verification_module
 from typing import Any
 from contextlib import closing
@@ -36,6 +37,26 @@ def stores(tmp_path: Path) -> tuple[TaskStore, VerificationStore]:
     artifact_store = ArtifactStore(tmp_path / "artifacts")
     verif_store = VerificationStore(state_store, task_store=task_store, artifact_store=artifact_store)
     return task_store, verif_store
+
+
+def test_verification_schema_initialization_uses_bounded_transaction(tmp_path: Path, monkeypatch):
+    observed = []
+    original_transaction = agent_verification_module.write_transaction
+
+    def record_transaction(connection, **kwargs):
+        observed.append(kwargs)
+        return original_transaction(connection, **kwargs)
+
+    monkeypatch.setattr(agent_verification_module, "write_transaction", record_transaction)
+    state_store = AgentStateStore(tmp_path / "agent_state.sqlite3")
+    VerificationStore(state_store)
+
+    assert observed == [
+        {
+            "max_duration_seconds": 5.0,
+            "rollback_label": "agent verification schema initialization",
+        }
+    ]
 
 
 def receipt_for(
@@ -665,6 +686,30 @@ def test_verifier_projection_rolls_back_when_event_projection_write_fails(
         with closing(connect_sqlite(state_store.db_path, isolation_level=None)) as con:
             assert con.execute("SELECT COUNT(*) FROM agent_outcomes").fetchone()[0] == 0
     assert state_store.events(stream_id=stream_id) == []
+
+
+def test_change_and_outcome_projection_use_bounded_write_transactions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    state_store = AgentStateStore(tmp_path / "bounded-verification.sqlite3")
+    verifier = VerificationStore(state_store)
+    observed: list[dict[str, object]] = []
+    real_write_transaction = sqlite_support.write_transaction
+
+    def record_transaction(connection, **kwargs):
+        observed.append(kwargs)
+        return real_write_transaction(connection, **kwargs)
+
+    monkeypatch.setattr(agent_verification_module, "write_transaction", record_transaction)
+    change = ChangeIntent.create("bounded-record", ["src/app.py"])
+    verifier.record_change(change)
+    verifier.record_outcome(OutcomeRecord.accepted(change.change_id, task_id=change.task_id))
+
+    assert [item["rollback_label"] for item in observed] == [
+        "verification change intent",
+        "verification outcome",
+    ]
+    assert all(item["max_duration_seconds"] == 5.0 for item in observed)
 
 
 def test_separate_task_receipt_projection_recovers_from_durable_outbox(

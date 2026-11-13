@@ -134,6 +134,21 @@ def test_mcp_curate_dataset_forwards_nested_laya_operation(monkeypatch, tmp_path
     task_calls = [call for call in calls if call[0] == "/api/agent-state/tasks"]
     assert task_calls[-1][1]["laya_operation"] == history_operation
 
+    page_operation = {
+        "action": "list",
+        "status": "pending",
+        "limit": 25,
+        "after_candidate_id": "laya-cursor-1",
+    }
+    page_result = mcp_server.local_ai_coord(
+        action="curate_dataset",
+        root=str(tmp_path),
+        laya_operation=page_operation,
+    )
+    assert page_result["success"] is True
+    task_calls = [call for call in calls if call[0] == "/api/agent-state/tasks"]
+    assert task_calls[-1][1]["laya_operation"] == page_operation
+
 
 @pytest.mark.parametrize("laya_action", ["model_review", "model_review_history"])
 def test_laya_local_model_review_uses_existing_non_diagnostic_curation_surface(laya_action):
@@ -163,6 +178,17 @@ def test_http_curate_dataset_forwards_laya_local_review_operations(monkeypatch, 
             "action": "model_review_history",
             "candidate_id": "laya-candidate-1",
         },
+        {
+            "action": "label",
+            "candidate_id": "laya-candidate-1",
+            "target": "fast",
+        },
+        {
+            "action": "list",
+            "status": "pending",
+            "limit": 25,
+            "after_candidate_id": "laya-cursor-1",
+        },
     ]
     for operation in operations:
         response = _http_post_via_handler(
@@ -174,6 +200,7 @@ def test_http_curate_dataset_forwards_laya_local_review_operations(monkeypatch, 
         assert response == (200, {"success": True}), response
         assert calls[-1][0] == operation
         assert calls[-1][1]["root"] == str(tmp_path)
+        assert calls[-1][1]["task_store"] is http_server.APP.agent_tasks
         assert diagnostic_http_operation(
             "POST",
             "/api/agent-state/tasks",

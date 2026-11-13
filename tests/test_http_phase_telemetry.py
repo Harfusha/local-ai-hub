@@ -98,3 +98,54 @@ def test_html_response_records_live_http_completion(monkeypatch):
     assert events[0]["request_id"] == "request-123"
     assert events[0]["status_code"] == 200
     assert events[0]["response_bytes"] > 0
+
+
+def test_json_response_records_safe_project_name_in_http_history(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    import time
+
+    import local_ai_hub.http_server as http_server
+    from local_ai_hub.telemetry import TelemetryStore
+
+    store = TelemetryStore(tmp_path / "telemetry", enabled=True, flush_interval_seconds=0.01)
+    monkeypatch.setattr(http_server, "APP", SimpleNamespace(
+        telemetry=store,
+        config={"observability": {"exclude_http_paths": []}},
+        debug_traces=None,
+    ))
+
+    handler = object.__new__(Handler)
+    handler.headers = {}
+    handler.command = "POST"
+    handler.path = "/api/repo/state"
+    handler._request_path = handler.path
+    handler._request_started = time.perf_counter()
+    handler._telemetry_finished = False
+    handler._trace_request_id = "request-project-scope"
+    handler._trace_id = "trace-project-scope"
+    handler._finish_debug_trace = lambda *_args, **_kwargs: None
+    handler._close_trace_context = lambda: None
+    handler._agent = lambda: "codex"
+    handler.close_connection = False
+    handler.wfile = SimpleNamespace(write=lambda body: len(body))
+    handler.send_response = lambda _status: None
+    handler.send_header = lambda _name, _value: None
+    handler.end_headers = lambda: None
+    handler._common_headers = lambda **_kwargs: None
+
+    try:
+        handler._send(200, {"success": True, "root": "C:\\Users\\Adam\\.local-ai-hub"})
+        assert store.flush(1)
+        recent = store.recent_http()
+        assert recent[0]["root"] == ".local-ai-hub"
+        con = store._connect()
+        try:
+            row = con.execute(
+                "SELECT root FROM events WHERE event_type='http' AND action=?",
+                ("/api/repo/state",),
+            ).fetchone()
+        finally:
+            con.close()
+        assert row == (".local-ai-hub",)
+    finally:
+        store.close()

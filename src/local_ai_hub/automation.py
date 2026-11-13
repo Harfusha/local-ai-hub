@@ -22,6 +22,10 @@ AUTOMATION_REQUEST_SCHEMA = {
         **{name: {"type": "string", "maxLength": 12000} for name in
            ("url", "session_id", "session_key", "request_id", "command", "selector", "text", "key", "option", "destination", "application")},
         **{name: {"type": "boolean"} for name in ("checked", "accept")},
+        "require_network_egress_isolation": {
+            "type": "boolean",
+            "description": "Fail closed unless network egress isolation is actually enforced.",
+        },
         **{name: {"type": "number", "minimum": -10000, "maximum": 10000} for name in ("x", "y")},
         "window_id": {"type": "integer", "minimum": 1, "maximum": (1 << 63) - 1},
         "timeout_seconds": {"type": "number", "exclusiveMinimum": 0, "maximum": 120},
@@ -195,9 +199,11 @@ class AutomationBroker:
                 raise ValueError("automation request must be an object")
             allowed = {"op", "mode", "url", "session_id", "session_key", "request_id", "command", "selector",
                        "text", "key", "option", "checked", "destination", "x", "y", "accept", "files",
-                       "window_id", "application", "timeout_seconds"}
+                       "window_id", "application", "timeout_seconds", "require_network_egress_isolation"}
             if set(request) - allowed:
                 raise ValueError("unknown automation request field")
+            if "require_network_egress_isolation" in request and request.get("op") != "open":
+                raise ValueError("require_network_egress_isolation is only valid for open")
             timeout = request.get("timeout_seconds", self.config.get("timeout_seconds", 20))
             if type(timeout) not in (int, float) or not math.isfinite(timeout) or not 0 < timeout <= self.config.get("timeout_seconds", 20):
                 raise ValueError("timeout_seconds exceeds configured deadline or is invalid")
@@ -242,11 +248,23 @@ class AutomationBroker:
             return error("invalid_automation_request", str(exc)[:300])
 
     def _open(self, owner, request):
-        if set(request) - {"op", "mode", "url", "window_id", "application", "timeout_seconds"}:
+        if set(request) - {"op", "mode", "url", "window_id", "application", "timeout_seconds",
+                           "require_network_egress_isolation"}:
             raise ValueError("open accepts only mode, URL/window target and timeout")
         mode = request.get("mode")
         if mode not in {"isolated", "extension", "desktop", "desktop_sandbox"}:
             raise ValueError("unsupported automation mode")
+        require_network_isolation = request.get("require_network_egress_isolation", False)
+        if type(require_network_isolation) is not bool:
+            raise ValueError("require_network_egress_isolation must be boolean")
+        if require_network_isolation:
+            return error(
+                "isolation_not_proven",
+                "network egress isolation is not enforced by an available automation backend",
+                503,
+                network_egress_isolated=False,
+                network_egress_policy={"requested": True, "status": "isolation_not_proven", "enforced": False},
+            )
         if mode in {"desktop", "desktop_sandbox"} and (
                 type(request.get("window_id")) is not int or not 0 < request["window_id"] < 1 << 63 or
                 not isinstance(request.get("application"), str) or not request["application"]):
@@ -283,7 +301,10 @@ class AutomationBroker:
         return {"success": True, "automation": {"session_id": identity, "session_key": key, "mode": mode,
                 "expires_in_seconds": self.config.get("session_ttl_seconds", 900),
                 "isolation": "browser_context" if mode == "isolated" else mode,
-                "network_egress_isolated": False}}
+                "network_egress_isolated": False,
+                "navigation_policy": {"name": "navigation_allowlist", "scope": "top_level_navigation",
+                                      "configured_target_count": len(self.policy.rules)},
+                "network_egress_policy": {"status": "isolation_not_proven", "enforced": False}}}
 
     def _act(self, session, request, timeout):
         identity = request.get("request_id")

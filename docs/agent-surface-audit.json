@@ -5515,7 +5515,7 @@
       "decision": "retain",
       "role": "agent",
       "reason": "Explicit owned UI automation using installed Playwright MCP or winapp, with write authorization, active task/root binding, default-deny targets and session keys. This is agent work, not diagnostic model execution.",
-      "response_policy": "Preserve automation session identity/key only for its requesting owner, bounded UI work output and artifact pointers, actionable errors, cancellation and outcome_unknown. Never expose raw upstream MCP snapshots/prose or inline binary payloads; detailed traces remain dashboard-controlled.",
+      "response_policy": "Preserve requesting-owner session identity/key, bounded UI output, artifact pointers, cancellation/outcome_unknown, and requested/enforced network-egress policy status. Never expose raw upstream snapshots/prose or inline binary; detailed traces remain dashboard-controlled.",
       "source_contract": {
         "source": "src/local_ai_hub/operation_contracts.py",
         "selector": "action",
@@ -5529,6 +5529,10 @@
           "automation.mime_type",
           "automation.mode",
           "automation.network_egress_isolated",
+          "automation.network_egress_policy",
+          "automation.network_egress_policy.enforced",
+          "automation.network_egress_policy.requested",
+          "automation.network_egress_policy.status",
           "automation.session_id",
           "automation.session_key",
           "automation.size_bytes",
@@ -5544,6 +5548,10 @@
           "error",
           "error_code",
           "evidence_ids",
+          "network_egress_policy",
+          "network_egress_policy.enforced",
+          "network_egress_policy.requested",
+          "network_egress_policy.status",
           "outcome_unknown",
           "retryable",
           "stale",
@@ -6620,7 +6628,7 @@
       "decision": "retain",
       "role": "agent",
       "reason": "Scoped task/memory/verification/event/board/lease coordination backing MCP and dashboard. Caller-owned records and actionable lifecycle state must survive projection.",
-      "response_policy": "Preserve work result, errors/retry/cancellation, identities, evidence and pagination; project_agent_response removes internal observations outside dashboard detail; caller documents remain opaque.",
+      "response_policy": "Preserve task and question results, runtime/service availability, model residency, errors/retry/cancellation, identities, evidence and pagination; project_agent_response removes internal observations outside dashboard detail.",
       "source_contract": {
         "source": "src/local_ai_hub/http_route_registry.py",
         "handler": "post_agent_state_tasks_1",
@@ -6893,8 +6901,10 @@
         "handler": "post_browser_capture_abandon_1",
         "literal_response_fields": [],
         "response_producers": [
+          "APP.artifacts.purge_browser_capture",
           "abandon_staged_capture",
           "commit_staged_capture",
+          "local:checked",
           "local:result",
           "stage_capture"
         ],
@@ -6911,8 +6921,10 @@
         "handler": "post_browser_capture_abandon_1",
         "literal_response_fields": [],
         "response_producers": [
+          "APP.artifacts.purge_browser_capture",
           "abandon_staged_capture",
           "commit_staged_capture",
+          "local:checked",
           "local:result",
           "stage_capture"
         ],
@@ -6929,8 +6941,10 @@
         "handler": "post_browser_capture_abandon_1",
         "literal_response_fields": [],
         "response_producers": [
+          "APP.artifacts.purge_browser_capture",
           "abandon_staged_capture",
           "commit_staged_capture",
+          "local:checked",
           "local:result",
           "stage_capture"
         ],
@@ -9859,6 +9873,26 @@
         "response_producers": [
           "APP.debug_traces.purge",
           "local:result"
+        ],
+        "action_literals": []
+      }
+    },
+    "POST /api/browser/capture/purge": {
+      "decision": "retain",
+      "role": "agent",
+      "reason": "Explicit capability-gated deletion of a current-tab capture bundle; only unshared capture-owned artifacts are removed and shared children remain available to other bundles.",
+      "response_policy": "Preserve success/error_code, bundle_artifact_id, deleted_count and retained_shared_count. Do not imply shared child artifacts were deleted; never expose raw capture payloads.",
+      "source_contract": {
+        "source": "src/local_ai_hub/http_route_registry.py",
+        "handler": "post_browser_capture_abandon_1",
+        "literal_response_fields": [],
+        "response_producers": [
+          "APP.artifacts.purge_browser_capture",
+          "abandon_staged_capture",
+          "commit_staged_capture",
+          "local:checked",
+          "local:result",
+          "stage_capture"
         ],
         "action_literals": []
       }

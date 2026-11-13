@@ -13,7 +13,7 @@ from contextlib import closing
 from pathlib import Path
 from typing import Any
 
-from .sqlite_support import connect_sqlite, initialize_wal, is_busy_error, retry_busy
+from .sqlite_support import connect_sqlite, initialize_wal, is_busy_error, retry_busy, write_transaction
 
 
 def _compact_project_label(value: Any) -> str:
@@ -313,19 +313,18 @@ class DebugTraceStore:
             return False
         value = str(text)
         try:
-            with closing(self._connect()) as con:
-                con.execute("BEGIN IMMEDIATE")
+            with closing(self._connect()) as con, write_transaction(
+                con, max_duration_seconds=2.0, rollback_label="debug trace output append"
+            ):
                 meta = con.execute(
                     "SELECT total_chars,total_bytes,storage_truncated FROM trace_content_meta "
                     "WHERE trace_id=? AND content_field='output' AND event_seq=0",
                     (trace_id,),
                 ).fetchone()
                 if not meta:
-                    con.rollback()
                     return False
                 if bool(meta[2]):
                     con.execute("DELETE FROM traces WHERE trace_id=?", (trace_id,))
-                    con.commit()
                     return False
                 total_chars = int(meta[0] or 0)
                 other_bytes = int(con.execute(
@@ -336,7 +335,6 @@ class DebugTraceStore:
                 byte_count = len(value.encode("utf-8"))
                 if other_bytes + int(meta[1] or 0) + byte_count > self.max_session_text_bytes:
                     con.execute("DELETE FROM traces WHERE trace_id=?", (trace_id,))
-                    con.commit()
                     return False
                 remaining = value
                 if total_chars % self.CONTENT_CHUNK_CHARS:
@@ -382,7 +380,6 @@ class DebugTraceStore:
                         "UPDATE traces SET text_bytes=text_bytes+?,updated_at=? WHERE trace_id=?",
                         (byte_count, time.time(), trace_id),
                     )
-                con.commit()
                 return True
         except sqlite3.Error:
             return False
@@ -393,7 +390,9 @@ class DebugTraceStore:
         trace_id = trace_id or uuid.uuid4().hex
         now = time.time()
         def _do_start() -> str:
-            with closing(self._connect()) as con:
+            with closing(self._connect()) as con, write_transaction(
+                con, max_duration_seconds=2.0, rollback_label="debug trace start"
+            ):
                 con.execute("""INSERT INTO traces(trace_id,kind,agent,action,source,model,request_id,state,created_at,updated_at,expires_at)
                     VALUES(?,?,?,?,?,?,?,?,?,?,?)""", (trace_id, str(kind), str(agent), str(action), str(source), str(model), str(request_id), "queued", now, now, now + self.terminal_ttl_seconds))
                 for content_field, encoding in (
@@ -406,7 +405,6 @@ class DebugTraceStore:
                 retained = True
                 if initial_event is not None:
                     retained = self._append_event(con, trace_id, *initial_event) is not None
-                con.commit()
             return trace_id if retained else ""
         try:
             return retry_busy(_do_start, retries=3)
@@ -418,9 +416,10 @@ class DebugTraceStore:
             return False
         values = (str(request_id), str(async_job_id), str(scheduler_job_id), time.time(), trace_id)
         try:
-            with closing(self._connect()) as con:
+            with closing(self._connect()) as con, write_transaction(
+                con, max_duration_seconds=2.0, rollback_label="debug trace link"
+            ):
                 cur = con.execute("UPDATE traces SET request_id=COALESCE(NULLIF(?,''),request_id), async_job_id=COALESCE(NULLIF(?,''),async_job_id), scheduler_job_id=COALESCE(NULLIF(?,''),scheduler_job_id), updated_at=? WHERE trace_id=?", values)
-                con.commit()
                 return cur.rowcount > 0
         except sqlite3.Error:
             return False
@@ -483,10 +482,10 @@ class DebugTraceStore:
         safe_payload = _normalize_trace_content(payload)
         try:
             with closing(self._connect()) as con:
-                con.execute("BEGIN IMMEDIATE")
-                seq = self._append_event(con, trace_id, event_type, safe_payload)
-                con.commit()
-                return seq
+                with write_transaction(
+                    con, max_duration_seconds=2.0, rollback_label="debug trace event"
+                ):
+                    return self._append_event(con, trace_id, event_type, safe_payload)
         except sqlite3.Error:
             return None
 
@@ -568,11 +567,11 @@ class DebugTraceStore:
         values.append(now)
         values.append(trace_id)
         try:
-            with closing(self._connect()) as con:
-                con.execute("BEGIN IMMEDIATE")
+            with closing(self._connect()) as con, write_transaction(
+                con, max_duration_seconds=2.0, rollback_label="debug trace update"
+            ):
                 if session_oversize:
                     con.execute("DELETE FROM traces WHERE trace_id=?", (trace_id,))
-                    con.commit()
                     return False
                 cur = con.execute(f"UPDATE traces SET {', '.join(updates)} WHERE trace_id=?", values)
                 for key, (content, truncated) in content_inputs.items():
@@ -592,7 +591,6 @@ class DebugTraceStore:
                     (trace_id,),
                 ).fetchone()[0] or 0)
                 con.execute("UPDATE traces SET text_bytes=? WHERE trace_id=?", (total_text_bytes, trace_id))
-                con.commit()
                 return cur.rowcount > 0
         except sqlite3.Error:
             return False
@@ -618,8 +616,9 @@ class DebugTraceStore:
         # because one SQLite writer briefly won the race.
         for attempt in range(4):
             try:
-                with closing(self._connect()) as con:
-                    con.execute("BEGIN IMMEDIATE")
+                with closing(self._connect()) as con, write_transaction(
+                    con, max_duration_seconds=2.0, rollback_label="debug trace finish"
+                ):
                     fields = ["state=?", "updated_at=?", "finished_at=?", "expires_at=?"]
                     values: list[Any] = [state, now, now, now + self.terminal_ttl_seconds]
                     if error:
@@ -633,7 +632,6 @@ class DebugTraceStore:
                             "UPDATE traces SET updated_at=?,finished_at=?,expires_at=? WHERE trace_id=?",
                             (terminal_at, terminal_at, terminal_at + self.terminal_ttl_seconds, trace_id),
                         )
-                    con.commit()
                     return cur.rowcount > 0
             except sqlite3.Error as exc:
                 if is_busy_error(exc) and attempt < 3:
@@ -660,9 +658,11 @@ class DebugTraceStore:
         if not self.enabled:
             return result
         now = time.time()
+        recovered_count = 0
         try:
-            with closing(self._connect()) as con:
-                con.execute("BEGIN IMMEDIATE")
+            with closing(self._connect()) as con, write_transaction(
+                con, max_duration_seconds=2.0, rollback_label="debug trace incomplete recovery"
+            ):
                 rows = con.execute("SELECT trace_id FROM traces WHERE state IN ('queued','running')").fetchall()
                 for (trace_id,) in rows:
                     cur = con.execute(
@@ -672,10 +672,10 @@ class DebugTraceStore:
                     )
                     if cur.rowcount:
                         self._append_event(con, str(trace_id), "failed", {"state": "failed", "reason": str(reason)[:1000]})
-                        result["recovered_sessions"] += 1
-                con.commit()
+                        recovered_count += 1
         except sqlite3.Error:
             return result
+        result["recovered_sessions"] = recovered_count
         return result
 
     def _session(self, row: sqlite3.Row) -> dict[str, Any]:
@@ -1187,16 +1187,19 @@ class DebugTraceStore:
         try:
             with closing(self._connect()) as con:
                 con.execute("PRAGMA foreign_keys=ON")
-                con.execute("BEGIN IMMEDIATE")
-                sessions = int(con.execute("SELECT COUNT(*) FROM traces").fetchone()[0])
-                events = int(con.execute("SELECT COUNT(*) FROM trace_events").fetchone()[0])
-                con.execute("DELETE FROM traces")
-                con.commit()
+                with write_transaction(
+                    con, max_duration_seconds=5.0, rollback_label="debug trace purge"
+                ):
+                    sessions = int(con.execute("SELECT COUNT(*) FROM traces").fetchone()[0])
+                    events = int(con.execute("SELECT COUNT(*) FROM trace_events").fetchone()[0])
+                    con.execute("DELETE FROM traces")
                 try:
                     con.execute("PRAGMA wal_checkpoint(TRUNCATE)")
                 except sqlite3.Error:
                     pass
             return {"success": True, "deleted_sessions": sessions, "deleted_events": events}
+        except TimeoutError:
+            return {"success": False, "error": "trace purge exceeded its transaction budget", "retryable": True}
         except sqlite3.Error as exc:
             if is_busy_error(exc):
                 return {"success": False, "error": "trace store is busy", "retryable": True}
@@ -1210,25 +1213,35 @@ class DebugTraceStore:
         try:
             with closing(self._connect()) as con:
                 con.execute("PRAGMA foreign_keys=ON")
-                total_count = int(con.execute("SELECT COUNT(*) FROM traces").fetchone()[0])
-                candidates = con.execute("SELECT trace_id,expires_at FROM traces ORDER BY updated_at ASC").fetchall()
-                deleted = 0
-                for trace_id, expires_at in candidates:
-                    if deleted >= self.cleanup_batch_size:
-                        break
-                    if not (float(expires_at) <= now or total_count > self.max_sessions or self._file_bytes() > self.max_bytes):
-                        continue
-                    event_count = int(con.execute("SELECT COUNT(*) FROM trace_events WHERE trace_id=?", (trace_id,)).fetchone()[0])
-                    con.execute("DELETE FROM traces WHERE trace_id=?", (trace_id,))
-                    result["deleted_sessions"] += 1
-                    result["deleted_events"] += event_count
-                    deleted += 1
-                    total_count -= 1
-                con.commit()
+                deleted_sessions = 0
+                deleted_events = 0
+                with write_transaction(
+                    con, max_duration_seconds=2.0, rollback_label="debug trace cleanup"
+                ):
+                    total_count = int(con.execute("SELECT COUNT(*) FROM traces").fetchone()[0])
+                    candidates = con.execute("SELECT trace_id,expires_at FROM traces ORDER BY updated_at ASC").fetchall()
+                    for trace_id, expires_at in candidates:
+                        if deleted_sessions >= self.cleanup_batch_size:
+                            break
+                        if not (
+                            float(expires_at) <= now
+                            or total_count > self.max_sessions
+                            or result["bytes"] > self.max_bytes
+                        ):
+                            continue
+                        event_count = int(con.execute("SELECT COUNT(*) FROM trace_events WHERE trace_id=?", (trace_id,)).fetchone()[0])
+                        con.execute("DELETE FROM traces WHERE trace_id=?", (trace_id,))
+                        deleted_sessions += 1
+                        deleted_events += event_count
+                        total_count -= 1
+                result["deleted_sessions"] = deleted_sessions
+                result["deleted_events"] = deleted_events
                 try:
                     con.execute("PRAGMA wal_checkpoint(TRUNCATE)")
                 except sqlite3.Error:
                     pass
+        except TimeoutError:
+            result["busy"] = True
         except sqlite3.Error as exc:
             if is_busy_error(exc):
                 result["busy"] = True

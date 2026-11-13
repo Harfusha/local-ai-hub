@@ -3329,14 +3329,14 @@ class TelemetryStore:
         limit = max(1, min(int(limit), 200))
         with closing(self._connect()) as con:
             rows = con.execute(
-                """SELECT id,created_at,request_id,agent,action,status_code,duration_ms,success,error_type
+                """SELECT id,created_at,request_id,agent,root,action,status_code,duration_ms,success,error_type
                    FROM events WHERE event_type='http' ORDER BY id DESC LIMIT ?""", (limit,)
             ).fetchall()
         return [
             {
                 "id": int(row[0]), "created_at": float(row[1]), "request_id": row[2], "agent": row[3],
-                "action": row[4], "status_code": int(row[5] or 0),
-                "duration_ms": float(row[6] or 0), "success": bool(row[7]), "error_type": row[8],
+                "root": row[4], "action": row[5], "status_code": int(row[6] or 0),
+                "duration_ms": float(row[7] or 0), "success": bool(row[8]), "error_type": row[9],
             }
             for row in rows
         ]

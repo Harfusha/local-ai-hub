@@ -640,17 +640,70 @@ def retry_busy(
     raise AssertionError("unreachable")
 
 
-@contextmanager
-def write_transaction(
+class BoundedWriteTransaction:
+    """Control a bounded write transaction when callers need an early commit."""
+
+    def __init__(
+        self,
+        con: sqlite3.Connection,
+        *,
+        max_duration_seconds: float,
+        rollback_label: str,
+        on_rollback_failure: Callable[[Exception], None] | None,
+    ) -> None:
+        self.con = con
+        self.max_duration_seconds = max_duration_seconds
+        self.rollback_label = rollback_label
+        self.on_rollback_failure = on_rollback_failure
+        self.started = time.monotonic()
+        self.active = True
+
+    def _rollback(self) -> None:
+        if not self.active:
+            return
+        if bool(getattr(self.con, "in_transaction", True)):
+            try:
+                self.con.execute("ROLLBACK")
+            except Exception as rollback_error:
+                if self.on_rollback_failure is not None:
+                    try:
+                        self.on_rollback_failure(rollback_error)
+                    except Exception:
+                        _LOGGER.warning("%s rollback error handler failed", self.rollback_label)
+                else:
+                    _LOGGER.warning(
+                        "%s rollback failed (%s)", self.rollback_label,
+                        type(rollback_error).__name__,
+                    )
+        self.active = False
+
+    def commit(self) -> None:
+        if not self.active:
+            raise RuntimeError("write transaction is no longer active")
+        if time.monotonic() - self.started > self.max_duration_seconds:
+            self._rollback()
+            raise TimeoutError("SQLite write transaction exceeded its duration budget")
+        try:
+            self.con.execute("COMMIT")
+        except BaseException:
+            self._rollback()
+            raise
+        self.active = False
+
+    def rollback(self) -> None:
+        self._rollback()
+
+
+def begin_write_transaction(
     con: sqlite3.Connection,
     *,
     max_duration_seconds: float = 5.0,
     rollback_label: str = "SQLite",
     on_rollback_failure: Callable[[Exception], None] | None = None,
-) -> Iterator[sqlite3.Connection]:
-    """Run one bounded write transaction and roll back work that exceeds its budget."""
+) -> BoundedWriteTransaction:
+    """Begin a bounded write transaction for code that must commit before returning."""
     if bool(getattr(con, "in_transaction", False)):
-        raise RuntimeError("write_transaction requires an idle connection")
+        raise RuntimeError("begin_write_transaction requires an idle connection")
     if isinstance(max_duration_seconds, bool):
         raise ValueError("max_duration_seconds must be finite and positive")
     try:
@@ -661,25 +714,34 @@ def write_transaction(
         raise ValueError("max_duration_seconds must be finite and positive")
 
     con.execute("BEGIN IMMEDIATE")
-    transaction_started = True
-    started = time.monotonic()
+    return BoundedWriteTransaction(
+        con,
+        max_duration_seconds=budget,
+        rollback_label=rollback_label,
+        on_rollback_failure=on_rollback_failure,
+    )
+
+
+@contextmanager
+def write_transaction(
+    con: sqlite3.Connection,
+    *,
+    max_duration_seconds: float = 5.0,
+    rollback_label: str = "SQLite",
+    on_rollback_failure: Callable[[Exception], None] | None = None,
+) -> Iterator[sqlite3.Connection]:
+    """Run one bounded write transaction and roll back work that exceeds its budget."""
+    transaction = begin_write_transaction(
+        con,
+        max_duration_seconds=max_duration_seconds,
+        rollback_label=rollback_label,
+        on_rollback_failure=on_rollback_failure,
+    )
     try:
         yield con
-        if time.monotonic() - started > budget:
-            raise TimeoutError("SQLite write transaction exceeded its duration budget")
-        con.execute("COMMIT")
+        transaction.commit()
     except BaseException:
-        if transaction_started and bool(getattr(con, "in_transaction", True)):
-            try:
-                con.execute("ROLLBACK")
-            except Exception as rollback_error:
-                if on_rollback_failure is not None:
-                    try:
-                        on_rollback_failure(rollback_error)
-                    except Exception:
-                        _LOGGER.warning("%s rollback error handler failed", rollback_label)
-                else:
-                    _LOGGER.warning("%s rollback failed (%s)", rollback_label, type(rollback_error).__name__)
+        transaction.rollback()
         raise
 
 

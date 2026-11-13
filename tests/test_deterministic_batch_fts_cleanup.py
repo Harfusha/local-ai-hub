@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+from local_ai_hub import deterministic as deterministic_module, sqlite_support
 from local_ai_hub.deterministic import DeterministicEngine
 from local_ai_hub.repo_tools import RepositoryTools
 
@@ -56,6 +57,116 @@ def _assert_facts_match_fts(engine):
         ordinary = sorted(tuple(row) for row in con.execute(f"SELECT {columns} FROM facts"))
         fts = sorted(tuple(row) for row in con.execute(f"SELECT {columns} FROM fact_fts"))
     assert ordinary == fts
+
+
+def test_query_cache_write_uses_bounded_transaction(engine, tmp_path, monkeypatch):
+    observed = []
+    real_write_transaction = sqlite_support.write_transaction
+
+    def record_transaction(connection, **kwargs):
+        observed.append(kwargs)
+        return real_write_transaction(connection, **kwargs)
+
+    monkeypatch.setattr(deterministic_module, "write_transaction", record_transaction)
+    root = str((tmp_path / "repo").resolve())
+
+    engine._query_cache_put(root, 0, "lookup", {"result": "cached"})
+
+    cache_transactions = [
+        item for item in observed if item.get("rollback_label") == "deterministic query cache"
+    ]
+    assert len(cache_transactions) == 1
+    assert cache_transactions[0]["max_duration_seconds"] == 1.0
+
+
+def test_deterministic_file_and_batch_writes_use_bounded_transactions(
+    engine, tmp_path, monkeypatch
+):
+    observed = []
+    real_write_transaction = sqlite_support.write_transaction
+
+    def record_transaction(connection, **kwargs):
+        observed.append(kwargs)
+        return real_write_transaction(connection, **kwargs)
+
+    monkeypatch.setattr(deterministic_module, "write_transaction", record_transaction)
+    root = tmp_path / "repo"
+    _write(root, "single.py", "single")
+    single = engine.update_file(str(root), "single.py")
+    _write(root, "batch.py", "batch")
+    batch = engine.update_files_batch(str(root), ["batch.py"])
+
+    assert single["success"] is True
+    assert batch["success"] is True
+    labels = {item.get("rollback_label"): item for item in observed}
+    assert labels["deterministic update file"]["max_duration_seconds"] == 5.0
+    assert labels["deterministic batch update"]["max_duration_seconds"] == 5.0
+
+
+def test_manifest_refresh_uses_bounded_transaction(engine, tmp_path, monkeypatch):
+    observed = []
+    real_write_transaction = sqlite_support.write_transaction
+
+    def record_transaction(connection, **kwargs):
+        observed.append(kwargs)
+        return real_write_transaction(connection, **kwargs)
+
+    monkeypatch.setattr(deterministic_module, "write_transaction", record_transaction)
+    root = tmp_path / "manifest-repo"
+    root.mkdir()
+    (root / "pyproject.toml").write_text(
+        '[project]\nname = "sample"\nversion = "1.0"\ndependencies = ["sample-dep>=1"]\n',
+        encoding="utf-8",
+    )
+
+    result = engine.refresh_manifests(str(root))
+
+    assert result["success"] is True
+    transaction = next(
+        item for item in observed if item.get("rollback_label") == "deterministic manifest refresh"
+    )
+    assert transaction["max_duration_seconds"] == 5.0
+
+
+def test_deterministic_projection_cache_and_prune_writes_are_bounded(
+    engine, tmp_path, monkeypatch
+):
+    observed = []
+    real_write_transaction = sqlite_support.write_transaction
+
+    def record_transaction(connection, **kwargs):
+        observed.append(kwargs)
+        return real_write_transaction(connection, **kwargs)
+
+    monkeypatch.setattr(deterministic_module, "write_transaction", record_transaction)
+    root = str((tmp_path / "repo").resolve())
+    engine.record_test_source_links(root, [("src/app.py", "tests/test_app.py", 1.0)])
+    engine._fact_blob_put("fact-hash", "python", [{"kind": "class", "name": "App"}])
+    engine._manifest_blob_put("manifest-hash", "pyproject.toml", [], [])
+    with closing(engine._connect()) as con:
+        con.execute(
+            "INSERT INTO files(root,path,content_hash,language,is_test,updated_at) VALUES(?,?,?,?,?,?)",
+            (root, "stale.py", "stale-hash", "python", 0, 1.0),
+        )
+        con.commit()
+    assert engine.prune(root, []) == 1
+    monkeypatch.setattr(
+        engine,
+        "detect_dead_code",
+        lambda _root, limit=500: {"success": True, "dead_symbols": [{"path": "a.py", "name": "unused", "kind": "function"}]},
+    )
+    assert engine.precompute_dead_code(root)["count"] == 1
+
+    labels = {item.get("rollback_label"): item for item in observed}
+    expected = {
+        "deterministic test source links": 5.0,
+        "deterministic fact blob cache": 1.0,
+        "deterministic manifest blob cache": 1.0,
+        "deterministic prune": 5.0,
+        "deterministic dead-code projection": 5.0,
+    }
+    for label, duration in expected.items():
+        assert labels[label]["max_duration_seconds"] == duration
 
 
 @pytest.mark.parametrize("paths", [None, []], ids=["omitted", "empty"])

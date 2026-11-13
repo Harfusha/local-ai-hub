@@ -267,11 +267,26 @@ def project_live_dom(payload: dict[str, Any], *, max_chars: int) -> dict[str, An
             "missing_dom_redaction",
             "DOM-aware context requires an explicit redaction=none marker",
         ).as_result()
-    if "redaction" in projected and projected.get("redaction") != "none":
+    redaction_mode = projected.get("redaction")
+    if "redaction" in projected and (type(redaction_mode) is not str or redaction_mode not in {"none", "deterministic"}):
         return FrontendReviewError(
             "semantic_dom_redaction_not_allowed",
-            "live DOM redaction must be explicitly none; semantic redaction is not allowed",
+            "live DOM redaction must be none or deterministic with a manifest",
         ).as_result()
+    if redaction_mode == "deterministic":
+        manifest = projected.get("redaction_manifest")
+        allowed_manifest_keys = {
+            "credential", "personal", "form_field", "sensitive_attribute", "url_path_segments",
+            "url_query", "url_fragment", "screenshot_regions",
+        }
+        if not isinstance(manifest, dict) or any(
+            key not in allowed_manifest_keys or type(count) is not int or count < 0 or count > 1_000_000
+            for key, count in manifest.items()
+        ):
+            return FrontendReviewError(
+                "redaction_manifest_invalid",
+                "deterministically redacted DOM requires bounded redaction category counts",
+            ).as_result()
     elements = projected.get("elements")
     if "html" in projected and elements is None:
         return FrontendReviewError(

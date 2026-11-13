@@ -148,14 +148,15 @@ def test_t3_05_source_slice_empty_file_line_bounds(tmp_path: Path):
     empty_file = tmp_path / "empty.py"
     empty_file.write_text("", encoding="utf-8")
 
-    # Empty files have no line 1, so reject every requested source line.
-    res_ok = read_source_slice(str(tmp_path), "empty.py", line_start=1)
-    assert res_ok["success"] is False
-
-    # line_start=5 on empty file must fail
-    res_err = read_source_slice(str(tmp_path), "empty.py", line_start=5)
+    # An empty file has no valid source line, including line 1.
+    res_err = read_source_slice(str(tmp_path), "empty.py", line_start=1)
     assert res_err["success"] is False
     assert "exceeds" in res_err["error"].lower()
+
+    # line_start=5 also fails because it exceeds the empty source.
+    res_far = read_source_slice(str(tmp_path), "empty.py", line_start=5)
+    assert res_far["success"] is False
+    assert "exceeds" in res_far["error"].lower()
 
 
 def test_t3_06_semaphore_acquire_respects_capacity(tmp_path: Path):

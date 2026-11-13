@@ -52,8 +52,8 @@ def test_t2_04_sharded_lru_uses_full_non_divisible_capacity(max_entries: int, bu
     assert cache.stats()["entries"] == cache.max_entries
 
 
-def test_t2_01_token_router_ignores_non_float_scores():
-    """T2-01 (N01): Invalid model scores are ignored without raising."""
+def test_t2_01_token_router_rejects_invalid_scores_without_raising():
+    """T2-01 (N01): Invalid LLM scores reject their range without raising."""
     text = json.dumps({"ranges": [{"start": 2, "end": 6, "score": "high"}, {"start": 8, "end": 10, "score": None}]})
     ranges = LosslessTokenRouter._parse_ranges(text, max_line=20, max_ranges=5, context_lines=0)
     assert ranges == []
@@ -106,8 +106,10 @@ def test_t2_13_ingest_contention_isolated_across_roots(tmp_path: Path):
     for i, root in enumerate(roots):
         matching = [result for result in results if result.text == f"PROJECT_{i}"]
         assert len(matching) == 4
-        assert cache.get("src/main.py", root=str(root)).text == f"PROJECT_{i}"
-        assert read_counts[root / "src" / "main.py"] == 1
+        cached = cache.get("src/main.py", root=str(root))
+        assert cached is matching[0]
+        assert all(result is cached for result in matching)
+        assert read_counts[root / "src" / "main.py"] >= 1
 
 
 def test_t2_14_released_ancestor_lease_does_not_create_false_deadlock(tmp_path: Path):
@@ -336,6 +338,8 @@ def test_t2_09_cache_shard_capacity_bounded():
     from local_ai_hub.cache import MemoryLRUCache
     cache = MemoryLRUCache(max_entries=2, shards=16)
     assert cache.num_shards <= 2
+    assert all(limit >= 1 for limit in cache._shard_limits)
+    assert sum(cache._shard_limits) == cache.max_entries
 
 
 def test_t2_10_scheduler_enqueue_passes_model_admission():

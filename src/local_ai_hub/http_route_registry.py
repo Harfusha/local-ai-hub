@@ -23,7 +23,7 @@ POST_ROUTE_REGISTRY: tuple[RouteRule, ...] = (
     RouteRule('post_work_orders_1', frozenset(('/api/work-orders',))),
     RouteRule('post_config_update_1', frozenset(('/api/config/update',))),
     RouteRule('post_browser_capability_1', frozenset(('/api/browser/capability',))),
-    RouteRule('post_browser_capture_abandon_1', frozenset(('/api/browser/capture/stage', '/api/browser/capture/commit', '/api/browser/capture/abandon'))),
+    RouteRule('post_browser_capture_abandon_1', frozenset(('/api/browser/capture/stage', '/api/browser/capture/commit', '/api/browser/capture/abandon', '/api/browser/capture/purge'))),
     RouteRule('post_browser_capture_1', frozenset(('/api/browser/capture',))),
     RouteRule('post_delegate_1', frozenset(('/api/delegate',))),
     RouteRule('post_conversations_continue_1', frozenset(('/api/conversations/continue',))),

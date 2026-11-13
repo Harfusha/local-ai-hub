@@ -60,7 +60,12 @@ def test_mcp_rag_index_forwards_root_and_workspace(monkeypatch: Any, tmp_path: A
     result = mcp_server.local_ai_rag(action="index", root=str(tmp_path))
 
     assert backend.calls == [
-        ("POST", "/api/rag/index", {"root": str(tmp_path), "workspace": mcp_server.canonical_workspace_id(str(tmp_path)), "delivery": "auto", "latency_budget_ms": 30000}, {"timeout": 77.0})
+        ("POST", "/api/rag/index", {
+            "root": str(tmp_path),
+            "workspace": mcp_server.canonical_workspace_id(str(tmp_path)),
+            "delivery": "auto",
+            "latency_budget_ms": 30_000,
+        }, {"timeout": 77.0})
     ]
     _assert_response_fields(result, response)
     assert result["success"] is True

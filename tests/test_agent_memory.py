@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import pytest
 
+from local_ai_hub import agent_memory, sqlite_support
 from local_ai_hub.agent_events import AgentEvent, AgentStateStore
 from local_ai_hub.agent_identity import AgentScope
 from local_ai_hub.agent_memory import (
@@ -29,6 +30,26 @@ def memory_event_stream_id(scope: AgentScope, scope_id: str | None, key: str) ->
 def store(tmp_path: Path) -> MemoryStore:
     state_store = AgentStateStore(tmp_path / "agent_state.sqlite3")
     return MemoryStore(state_store)
+
+
+def test_agent_memory_schema_initialization_uses_bounded_transaction(tmp_path: Path, monkeypatch) -> None:
+    observed = []
+    original_transaction = agent_memory.write_transaction
+
+    def record_transaction(connection, **kwargs):
+        observed.append(kwargs)
+        return original_transaction(connection, **kwargs)
+
+    monkeypatch.setattr(agent_memory, "write_transaction", record_transaction)
+    state_store = AgentStateStore(tmp_path / "agent_state.sqlite3")
+    MemoryStore(state_store)
+
+    assert observed == [
+        {
+            "max_duration_seconds": 5.0,
+            "rollback_label": "agent memory schema initialization",
+        }
+    ]
 
 
 def test_memory_store_falls_back_when_sqlite_lacks_fts5(tmp_path: Path, monkeypatch) -> None:
@@ -1285,6 +1306,41 @@ def test_conflicting_high_confidence_records_are_quarantined(store: MemoryStore)
     assert "conflict" in (saved_r2.quarantine_reason or "").lower()
 
 
+def test_quarantine_record_and_event_roll_back_when_transaction_budget_expires(
+    store: MemoryStore, monkeypatch
+):
+    record = MemoryRecord.create(
+        kind=MemoryKind.FACT,
+        scope=AgentScope.GLOBAL,
+        key="quarantine-timeout",
+        value="keep the original value",
+        status=MemoryStatus.CONFIRMED,
+    )
+    store.record(record, actor="user", idempotency_key="quarantine-timeout-create")
+
+    def _expired_transaction(con, **kwargs):
+        kwargs.pop("max_duration_seconds", None)
+        return sqlite_support.write_transaction(
+            con, max_duration_seconds=1e-12, **kwargs
+        )
+
+    monkeypatch.setattr(agent_memory, "write_transaction", _expired_transaction)
+    with pytest.raises(TimeoutError, match="duration budget"):
+        store.quarantine(
+            record.record_id,
+            "injected timeout",
+            actor="user",
+            scope=AgentScope.GLOBAL,
+            scope_id="",
+        )
+
+    current = store.get(record.record_id, scope=AgentScope.GLOBAL, scope_id="")
+    assert current is not None
+    assert current.status is MemoryStatus.CONFIRMED
+    events = store.state_store.events(memory_event_stream_id(AgentScope.GLOBAL, "", record.key))
+    assert not any(event.kind == "memory.quarantined" for event in events)
+
+
 @pytest.mark.parametrize("scope", [AgentScope.TASK, AgentScope.SESSION])
 def test_conflicts_are_isolated_by_scope_id(store: MemoryStore, scope: AgentScope):
     first = store.record(
@@ -2181,4 +2237,70 @@ def test_get_global_requires_unowned_or_matching_scope(store: MemoryStore, tmp_p
     assert store.delete(global_rooted.record_id, scope=AgentScope.GLOBAL, root=str(tmp_path / "other")) is False
     assert store.delete(global_rooted.record_id, scope=AgentScope.GLOBAL, root=root) is True
     assert store.delete(global_scoped_id.record_id, scope=AgentScope.GLOBAL, scope_id="global-contract") is False
+
+
+def test_mark_stale_for_revision_uses_bounded_write_transaction(store: MemoryStore, tmp_path: Path, monkeypatch) -> None:
+    record = MemoryRecord.create(
+        kind=MemoryKind.FACT,
+        scope=AgentScope.REPOSITORY,
+        key="bounded-revision-memory",
+        value="revision-scoped memory",
+        provenance={
+            "root": str(tmp_path),
+            "repository_revision": "rev-old",
+            "path_refs": ["src/file.py"],
+        },
+    )
+    store.record(record, actor="test")
+    observed: list[dict[str, object]] = []
+    real_write_transaction = sqlite_support.write_transaction
+
+    def record_transaction(connection, **kwargs):
+        observed.append(kwargs)
+        return real_write_transaction(connection, **kwargs)
+
+    monkeypatch.setattr(agent_memory, "write_transaction", record_transaction, raising=False)
+
+    assert store.mark_stale_for_revision(str(tmp_path), "rev-new", ["src/file.py"]) == 1
+    assert len(observed) == 1
+    assert observed[0]["max_duration_seconds"] == 5.0
+    assert observed[0]["rollback_label"] == "agent memory revision"
+
+
+def test_memory_projection_save_paths_use_bounded_transactions(store: MemoryStore, monkeypatch) -> None:
+    observed: list[dict[str, object]] = []
+    real_write_transaction = sqlite_support.write_transaction
+
+    def record_transaction(connection, **kwargs):
+        observed.append(kwargs)
+        return real_write_transaction(connection, **kwargs)
+
+    monkeypatch.setattr(agent_memory, "write_transaction", record_transaction, raising=False)
+    plain = MemoryRecord.create(
+        kind=MemoryKind.FACT,
+        scope=AgentScope.REPOSITORY,
+        key="plain-projection-save",
+        value="projection only",
+        provenance={"root": "C:/repo"},
+    )
+    store._save_record(plain)
+
+    with_event = MemoryRecord.create(
+        kind=MemoryKind.FACT,
+        scope=AgentScope.REPOSITORY,
+        key="event-projection-save",
+        value="projection plus event",
+        provenance={"root": "C:/repo"},
+    )
+    event = AgentEvent.create(
+        stream_id=memory_event_stream_id(AgentScope.REPOSITORY, None, with_event.key),
+        kind="memory.created",
+        payload={"record_id": with_event.record_id},
+        idempotency_key="test-memory-projection-save",
+        actor="test",
+    )
+    store._save_record_and_event(with_event, event)
+
+    assert [item["rollback_label"] for item in observed] == ["agent memory projection", "agent memory projection event"]
+    assert all(item["max_duration_seconds"] == 5.0 for item in observed)
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import closing
 import re
 
 from local_ai_hub import async_jobs as async_jobs_module
@@ -16,6 +17,27 @@ class _EmbeddingStub:
             "space_id": self.space_id,
             "embeddings": [[1.0, 0.0, 0.0] for _ in texts],
         }
+
+
+def test_indexed_paths_reports_only_persisted_workspace_files(tmp_path):
+    store = RAGStore(
+        {
+            "server": {"state_dir": str(tmp_path / "state")},
+            "models": {"embedding": "test-embedding", "embedding_dimension": 3},
+            "rag": {"dedup_near_duplicates": False},
+        },
+        services=_EmbeddingStub(),
+    )
+    with closing(store._connect()) as con:
+        con.executemany(
+            "INSERT INTO files(workspace,path,mtime_ns,size,content_hash) VALUES(?,?,?,?,?)",
+            [("ws", "guide.md", 1, 10, "hash"), ("other", "else.md", 1, 10, "hash")],
+        )
+        con.commit()
+
+    assert store.indexed_paths(
+        workspace="ws", paths=["guide.md", "missing.py", "else.md"],
+    ) == {"guide.md"}
 
 
 def test_unchanged_index_does_not_read_all_embedding_blobs(tmp_path, monkeypatch):

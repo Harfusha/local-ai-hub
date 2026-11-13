@@ -156,6 +156,52 @@ def test_budget_consumption(engine: PolicyEngine):
     assert updated.used_external_calls == 2
 
 
+def test_persisted_budget_mutation_uses_bounded_write_transaction(monkeypatch, tmp_path):
+    store = type(
+        "StateStore",
+        (),
+        {"enabled": True, "db_path": str(tmp_path / "state.sqlite3")},
+    )()
+    engine = PolicyEngine(store)
+    observed: list[dict[str, object]] = []
+    write_transaction = agent_policy.write_transaction
+
+    def record_transaction(con, **kwargs):
+        observed.append(kwargs)
+        return write_transaction(con, **kwargs)
+
+    monkeypatch.setattr(agent_policy, "write_transaction", record_transaction)
+
+    updated = engine.consume("task-bounded", BudgetCost(tokens=7))
+
+    assert updated.used_tokens == 7
+    assert any(call.get("max_duration_seconds") == 2.0 for call in observed)
+
+
+def test_external_call_reservation_uses_bounded_write_transaction(monkeypatch, tmp_path):
+    store = type(
+        "StateStore",
+        (),
+        {"enabled": True, "db_path": str(tmp_path / "state.sqlite3")},
+    )()
+    engine = PolicyEngine(store)
+    observed: list[dict[str, object]] = []
+    write_transaction = agent_policy.write_transaction
+
+    def record_transaction(con, **kwargs):
+        observed.append(kwargs)
+        return write_transaction(con, **kwargs)
+
+    monkeypatch.setattr(agent_policy, "write_transaction", record_transaction)
+
+    result = engine.reserve_external_call("task-bounded", "0123456789abcdef0123456789abcdef")
+
+    assert result.reserved is True
+    assert result.budget is not None
+    assert result.budget.used_external_calls == 1
+    assert any(call.get("max_duration_seconds") == 2.0 for call in observed)
+
+
 def test_budget_exhaustion_diagnostic_includes_external_call_channel(engine):
     task = active_task()
     engine.set_budget(task.task_id, max_external_calls=1)

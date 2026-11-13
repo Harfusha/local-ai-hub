@@ -4136,7 +4136,7 @@ class RepositoryTools:
             }
         if git_inventory is _UNSET_GIT_INVENTORY:
             try:
-                git_inventory = self._git_files(base, max_files=MAX_EXACT_GIT_PATHS, force=True)
+                git_inventory = self._git_files(base, max_files=MAX_EXACT_GIT_PATHS)
             except TypeError:
                 git_inventory = self._git_files(base)
         git_metadata = base / ".git"

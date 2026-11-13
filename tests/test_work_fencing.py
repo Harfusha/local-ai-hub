@@ -3,6 +3,7 @@ from __future__ import annotations
 import multiprocessing
 import json
 import os
+import sqlite3
 import stat
 import subprocess
 import sys
@@ -167,6 +168,28 @@ def test_cross_process_successor_cannot_supersede_writer_inside_commit_guard(
     assert successor_result[3] > writer_result[3]
     assert writer_result[4] < successor_result[4]
     assert (root / "artifact.txt").read_text(encoding="utf-8") == "successor\n"
+
+
+def test_commit_guard_does_not_hold_sqlite_writer_lock(tmp_path: Path) -> None:
+    root = tmp_path / "repo"
+    root.mkdir()
+    db_path = tmp_path / "fences.sqlite3"
+    store = FencingLeaseStore(db_path)
+    attempt = store.claim_attempt(root, "work-a", "owner-a", ttl_seconds=60)
+    lease = store.acquire(root, "owner-a", ["file.py"], ttl_seconds=60, attempt=attempt)
+    with closing(sqlite3.connect(db_path)) as con:
+        con.execute("CREATE TABLE lock_probe (value INTEGER NOT NULL)")
+        con.commit()
+
+    try:
+        with store.commit_guard(lease, ["file.py"]):
+            with closing(sqlite3.connect(db_path, timeout=0.05, isolation_level=None)) as con:
+                con.execute("BEGIN IMMEDIATE")
+                con.execute("INSERT INTO lock_probe VALUES (1)")
+                con.execute("COMMIT")
+    finally:
+        store.release(lease)
+        store.release_attempt(attempt)
 
 
 def test_disjoint_paths_can_coexist_but_overlapping_paths_cannot(tmp_path: Path) -> None:

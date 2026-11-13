@@ -14,12 +14,12 @@
         "HUB-014: state stores use consistent SQLite connection, transaction, retry, and fencing boundaries; write-lock time is bounded; no filesystem I/O inside write transactions; integrity and repair behavior are proven.",
         "HUB-015: public surface remains seven MCP tools; schemas remain compatible; compact responses retain evidence; token budget has E2E measurements and schema drift alert."
       ],
-      "blocker": "Repository-wide SQLite boundary acceptance remains open: direct transactions persist in agent_tasks and other stores; no-filesystem-I/O/fencing proof, stronger timeout enforcement, integrity and repair behavior are incomplete. Remote CI remains unverified.",
+      "blocker": "HUB-014 full no-I/O and integrity/repair audit remains open because indexed impact coverage is incomplete and semantic review is unavailable. Remote CI, Linux/macOS, immutable wheel provenance, and HUB-008 unload proof remain outstanding.",
       "clarifications": [],
       "depends_on": [],
-      "description": "Operation registry, safe modular slices, typing, SQLite boundaries, tool budgets.",
+      "description": "HUB-011 schema/operation inventory remains source-derived. HUB-014 runtime fencing and orchestrator writes now use shared locks and bounded 5s SQLite transactions; cross-store task validation is outside the writer lock. HUB-015 public schema/response budgets reconciled: 7 tools retain budget controls, 699 coverage rows match generated artifacts, schema drift dispositions include current automation/task/capture contracts.",
       "kind": "code",
-      "next_action": "HUB-012/013 remain locally complete; remote CI unverified. HUB-014 partial: shared write_transaction migrated to BlackboardStore update/merge/delete, ContextCompiler knowledge-link save/invalidate, AgentStateStore append/snapshot, IncidentStore save, LearningStore save/event projection, and TaskStore ask/answer question plus add_verification_receipt. Forced-timeout tests prove question writes and receipt projection/event both roll back; red confirmed before each migration. Question + TaskStore cohort: 92 passed; receipt/task/CAS cohort: 65 passed. Changed-file pyflakes and diff-check pass. Remaining: inspect _commit_create/_commit_update filesystem effects, direct transaction inventory, repository-wide fencing/no-filesystem-I/O proof, stronger timeout enforcement, integrity/repair acceptance, then HUB-015.",
+      "next_action": "Complete HUB-014 repository-wide transaction, integrity and repair audit; then reconcile HUB-012 modular slices and HUB-013 strict typing.",
       "title": "Architecture HUB-011–015",
       "work_status": "in_progress"
     },
@@ -42,12 +42,12 @@
         "HUB-004: release status is honest; installed-wheel smoke records wheel SHA-256 and binds receipt to source commit; fresh-environment smoke and update rollback are validated.",
         "P0-A CI separates lint, typing, fast-contract, critical-coverage, platform-smoke, integration, package and release gates; release cannot skip required branches."
       ],
-      "blocker": "Linux/macOS clone/cleanup and remote CI for the current uncommitted tree remain unverified. Strict local release_check was previously blocked by managed/dirty checkout state; preserve it. Commit, push and release remain unauthorized.",
+      "blocker": "Linux/macOS clean-clone/cleanup and remote CI remain unverified. The temporary wheel installed and reported version 6.0.0, but local MCP smoke failed because managed dependencies lack pywintypes; pip check also reports the existing Laya/vegaml mismatch. This does not establish installed-wheel smoke acceptance. Preserve working checkout and build/. Commit, push and release remain unauthorized.",
       "clarifications": [],
       "depends_on": [],
       "description": "Reconcile current source, fix only confirmed defects, test exact SHA.",
       "kind": "code",
-      "next_action": "HUB-001: added status regression for no reservation, exclusive legacy fence, and budgeted sharing; scheduler/external-fence cohort passes 4 tests; pyflakes src tools passes. HUB-002: fixture gitlink removal is staged; local gitlink contract test passes, but fresh clone and Linux/macOS acceptance remain unverified. HUB-003: current Windows critical cohort passes 827 tests with 1 symlink-privilege skip; coverage ratchet success=true; pyflakes and staged/unstaged diff checks pass. HUB-004: RELEASE.json remains release-candidate; update rollback, release inventory and wheel-smoke contract cohort passes 36 tests with 1 symlink-privilege skip. CI source builds and smokes an installed wheel and binds SHA-256 to GITHUB_SHA, but real wheel smoke on this dirty tree is unverified. Continue P0 local package/clone validation; keep candidate status.",
+      "next_action": "HUB-001 reservation/status tests pass. HUB-002 Windows clean-clone/checkout/submodule/ignored cleanup pass; Linux/macOS unverified. HUB-003 fixed Windows critical cohort now 931 passed, 1 symlink-privilege skip; coverage baseline success=true. P0-A CI gates validate. HUB-004 release_check allow_installed no longer bypasses build/; release cohort 43 passed, 1 Linux /proc skip. Wheel build/install and CLI version pass, MCP smoke lacks pywintypes; pip check reports existing laya/vegaml mismatch, no SHA-bound receipt. RELEASE.json remains release-candidate. Preserve build/. Remote CI, Linux/macOS and exact-commit wheel evidence remain outstanding; no commit/push/release.",
       "title": "Release blockers HUB-001–004",
       "work_status": "in_progress"
     },

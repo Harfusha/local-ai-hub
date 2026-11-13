@@ -109,18 +109,30 @@ def test_browser_capability_capture_and_review_routes_are_explicit_and_origin_sc
                 "url": "https://fixture.test/checkout?session=preserved",
                 "target_origin": "https://fixture.test",
                 "captured_at": "2026-09-18T10:20:30.123Z",
+                "privacy_notice_acknowledged": True,
+                "full_capture_acknowledged": True,
                 "capture_identity": {
                     "initial": {
                         "url": "https://fixture.test/checkout?session=preserved",
                         "target_origin": "https://fixture.test",
                         "document_token": "document:fixture:1",
                         "document_state_token": "state:fixture:1",
+                        "relevant_state_token": "sha256:" + "a" * 64,
+                        "relevant_state_complete": True,
+                        "history_state_token": "b" * 64,
+                        "viewport_token": "1280x720@1",
+                        "interaction_observed": True,
                     },
                     "final": {
                         "url": "https://fixture.test/checkout?session=preserved",
                         "target_origin": "https://fixture.test",
                         "document_token": "document:fixture:1",
                         "document_state_token": "state:fixture:1",
+                        "relevant_state_token": "sha256:" + "a" * 64,
+                        "relevant_state_complete": True,
+                        "history_state_token": "b" * 64,
+                        "viewport_token": "1280x720@1",
+                        "interaction_observed": True,
                     },
                 },
                 "title": "Signed-in checkout",
@@ -136,7 +148,7 @@ def test_browser_capability_capture_and_review_routes_are_explicit_and_origin_sc
                 "viewport": {"width": 1280, "height": 720, "device_scale_factor": 1},
             },
         )
-        assert captured["success"] is True
+        assert captured["success"] is True, captured
         assert captured["page"]["url"] == "https://fixture.test/checkout"
         assert captured["bundle_artifact_id"]
 
@@ -156,18 +168,30 @@ def test_browser_capability_capture_and_review_routes_are_explicit_and_origin_sc
                 "url": "https://fixture.test/checkout",
                 "target_origin": "https://spoofed.test",
                 "captured_at": "2026-09-18T10:20:30.123Z",
+                "privacy_notice_acknowledged": True,
+                "full_capture_acknowledged": True,
                 "capture_identity": {
                     "initial": {
                         "url": "https://fixture.test/checkout",
                         "target_origin": "https://fixture.test",
                         "document_token": "document:fixture:2",
                         "document_state_token": "state:fixture:2",
+                        "relevant_state_token": "sha256:" + "a" * 64,
+                        "relevant_state_complete": True,
+                        "history_state_token": "b" * 64,
+                        "viewport_token": "1280x720@1",
+                        "interaction_observed": True,
                     },
                     "final": {
                         "url": "https://fixture.test/checkout",
                         "target_origin": "https://fixture.test",
                         "document_token": "document:fixture:2",
                         "document_state_token": "state:fixture:2",
+                        "relevant_state_token": "sha256:" + "a" * 64,
+                        "relevant_state_complete": True,
+                        "history_state_token": "b" * 64,
+                        "viewport_token": "1280x720@1",
+                        "interaction_observed": True,
                     },
                 },
                 "screenshot": "data:image/png;base64," + base64.b64encode(b"png-fixture").decode("ascii"),
@@ -249,25 +273,37 @@ def test_browser_stage_commit_and_abandon_http_lifecycle(tmp_path: Path, monkeyp
             "request_id": "http-staged-commit",
             "url": "https://fixture.test/checkout",
             "target_origin": "https://fixture.test",
+            "privacy_notice_acknowledged": True,
+            "full_capture_acknowledged": True,
             "capture_identity": {
                 "initial": {
                     "url": "https://fixture.test/checkout",
                     "target_origin": "https://fixture.test",
                     "document_token": "document:http:1",
                     "document_state_token": "state:http:1",
+                    "relevant_state_token": "sha256:" + "a" * 64,
+                    "relevant_state_complete": True,
+                    "history_state_token": "b" * 64,
+                    "viewport_token": "1280x720@1",
+                    "interaction_observed": True,
                 },
                 "final": {
                     "url": "https://fixture.test/checkout",
                     "target_origin": "https://fixture.test",
                     "document_token": "document:http:1",
                     "document_state_token": "state:http:1",
+                    "relevant_state_token": "sha256:" + "a" * 64,
+                    "relevant_state_complete": True,
+                    "history_state_token": "b" * 64,
+                    "viewport_token": "1280x720@1",
+                    "interaction_observed": True,
                 },
             },
             "screenshot": "data:image/png;base64," + base64.b64encode(b"png-fixture").decode("ascii"),
             "dom": {"redaction": "none", "html": "<main />", "elements": [{"element_id": "e0", "tag": "main"}]},
         }
         staged = _post(f"{base}/api/browser/capture/stage", payload)
-        assert staged["success"] is True
+        assert staged["success"] is True, staged
         assert staged["staged"] is True
         assert "bundle_artifact_id" not in staged
 

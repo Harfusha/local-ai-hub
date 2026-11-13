@@ -1,7 +1,7 @@
 import json
 import hashlib
 import sqlite3
-from contextlib import closing
+from contextlib import closing, contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -58,6 +58,34 @@ def _capture(*, state="A short approved state", **changes):
     return operation
 
 
+def test_candidate_store_initializes_laya_schema_once_per_database(candidate_env, monkeypatch):
+    _repo, _state, task_store, store = candidate_env
+    original_connect = candidates_module.connect_sqlite
+    schema_scripts = []
+
+    class CountingConnection:
+        def __init__(self, connection):
+            self._connection = connection
+
+        def executescript(self, script):
+            schema_scripts.append(script)
+            return self._connection.executescript(script)
+
+        def __getattr__(self, name):
+            return getattr(self._connection, name)
+
+    def connect(*args, **kwargs):
+        return CountingConnection(original_connect(*args, **kwargs))
+
+    monkeypatch.setattr(candidates_module, "connect_sqlite", connect)
+
+    for _ in range(3):
+        with closing(store._connect(task_store)) as connection:
+            connection.execute("SELECT 1").fetchone()
+
+    assert len(schema_scripts) == 1
+
+
 def test_capture_persists_only_real_runtime_candidate(candidate_env):
     repo, _state, task_store, store = candidate_env
     captured = store.handle(_capture(), root=str(repo), task_store=task_store)
@@ -76,6 +104,46 @@ def test_capture_persists_only_real_runtime_candidate(candidate_env):
     assert "per_example_consented" not in candidate_json
     assert '"annotations"' not in candidate_json
     assert consent_table is None
+
+
+def test_candidate_capture_uses_bounded_write_transaction(candidate_env, monkeypatch):
+    repo, _state, task_store, store = candidate_env
+    original = candidates_module.write_transaction
+    labels = []
+
+    @contextmanager
+    def observed_transaction(connection, **kwargs):
+        labels.append(kwargs.get("rollback_label"))
+        with original(connection, **kwargs) as transaction:
+            yield transaction
+
+    monkeypatch.setattr(candidates_module, "write_transaction", observed_transaction)
+
+    captured = store.handle(_capture(), root=str(repo), task_store=task_store)
+
+    assert captured["success"] is True
+    assert labels == ["Laya candidate capture"]
+
+
+def test_capture_accepts_bounded_raw_content_alongside_typed_state(candidate_env):
+    repo, _state, task_store, store = candidate_env
+    state = {
+        "route_code": "generic",
+        "raw_task_input": "x" * 8192,
+        "raw_model_response": "y" * 8192,
+    }
+
+    captured = store.handle(_capture(state=state), root=str(repo), task_store=task_store)
+
+    assert captured["success"] is True
+    with closing(sqlite3.connect(store.path)) as con:
+        payload = con.execute(
+            "SELECT candidate_json FROM laya_candidates WHERE candidate_id=?",
+            (captured["candidate_id"],),
+        ).fetchone()[0]
+    candidate = json.loads(payload)
+    assert len(candidate["state"]["raw_task_input"]) == 8192
+    assert len(candidate["state"]["raw_model_response"]) == 8192
 
 
 def test_default_candidate_store_accepts_one_local_operator_label(candidate_env):
@@ -208,6 +276,41 @@ def test_decision_candidate_accepts_typed_raw_and_capture_metadata_fields():
     })
 
     assert len(candidate["state"]) == 39
+
+
+def test_redacted_raw_decision_content_survives_to_train_export(candidate_env, monkeypatch):
+    repo, _state, task_store, store = candidate_env
+    decision_input = DecisionInput.from_mapping({
+        "state": {"complexity": "heavy"},
+        "training_content": {
+            "task_input": "Inspect route for token=secret-value",
+            "model_response": "Authorization: Bearer sk-1234567890abcdef",
+            "tool_output_excerpt": "status=503 token=tool-secret-value",
+        },
+    })
+    operation = _capture(state=decision_input.model_state())
+    captured = store.handle(operation, root=str(repo), task_store=task_store)
+    candidate_id = captured["candidate_id"]
+    store.handle(
+        {"action": "label", "candidate_id": candidate_id, "target": "fast"},
+        root=str(repo),
+        task_store=task_store,
+    )
+    monkeypatch.setattr(candidates_module, "_split_for_group", lambda _group: "train")
+    snapshot = store.handle({"action": "prepare_splits"}, root=str(repo), task_store=task_store)
+
+    payload = store.export_train_payload(
+        {"snapshot_id": snapshot["snapshot_id"]}, root=str(repo), task_store=task_store,
+    )
+    rows = [json.loads(line) for line in payload.decode("utf-8").splitlines()]
+    assert len(rows) == 1
+    exported_state = json.loads(rows[0]["state"])
+    assert exported_state["raw_task_input"] == "Inspect route for token=[REDACTED]"
+    assert exported_state["raw_model_response"] == "Authorization: [REDACTED]"
+    assert exported_state["raw_tool_output_excerpt"] == "status=503 token=[REDACTED]"
+    assert "secret-value" not in rows[0]["state"]
+    assert "sk-1234567890abcdef" not in rows[0]["state"]
+    assert "tool-secret-value" not in rows[0]["state"]
 
 
 def test_laya_reviewer_public_key_config_rejects_retired_ssh_reviewers():
@@ -495,6 +598,77 @@ def test_runtime_outcome_records_server_derived_baseline_for_typed_category(cand
         )
 
 
+@pytest.mark.parametrize(
+    ("category", "method", "options", "suggestion"),
+    [
+        ("model_route", "model_router_classify", ["fast", "smart", "generic"], "fast"),
+        ("context_budget", "repo_context_token_budget", ["compact", "standard", "expanded"], "standard"),
+    ],
+)
+def test_runtime_outcome_accepts_registered_automatic_category_baselines(
+    candidate_env, category, method, options, suggestion
+):
+    repo, _state, task_store, store = candidate_env
+    evidence_id = "E" + "e" * 20
+    decision_input = DecisionInput.from_mapping({
+        "state": {"task_type": "general", "complexity": "moderate"},
+        "training_content": {"task_input": "Summarize the current evidence."},
+    })
+    request = DecisionRequest.from_mapping(
+        {"category": category, "evidence_ids": [evidence_id], "options": options},
+        decision_id=f"decision-{category}",
+        mode=DecisionMode.SHADOW,
+        repository_id="repo-1",
+        task_id="task-1",
+        session_id="session-1",
+    )
+    decision = DecisionResult.from_mapping(request, {
+        "success": True,
+        "status": "success",
+        "suggestion": suggestion,
+        "reason_codes": ["EVIDENCE_SUFFICIENT"],
+    })
+    runtime = SimpleNamespace(
+        runtime_version="fixture", model_id="laya", revision="rev", provider="mock",
+        device="cpu", device_class="cpu", device_name="mock", parameter_device="cpu",
+        execution_verification="NOT_VERIFIED", quality_status="NOT_EVALUATED",
+        latency_ms=3.0, input_tokens=12, output_tokens=2, fallback_reason="",
+    )
+
+    captured = store.capture_runtime_outcome(
+        request,
+        decision_input,
+        SimpleNamespace(decision=decision, runtime=runtime),
+        root=str(repo),
+        task_store=task_store,
+        evidence_store=_evidence_store(),
+        baseline={"method": method, "suggestion": suggestion, "evidence_id": evidence_id},
+    )
+
+    with closing(sqlite3.connect(store.path)) as con:
+        payload = con.execute(
+            "SELECT metadata_json FROM laya_candidate_events WHERE candidate_id=? AND action='runtime_output'",
+            (captured["candidate_id"],),
+        ).fetchone()[0]
+    assert json.loads(payload)["baseline"] == {
+        "status": "recorded",
+        "method": method,
+        "suggestion": suggestion,
+        "evidence_id": evidence_id,
+    }
+
+    with pytest.raises(ValueError, match="baseline suggestion is not allowed"):
+        store.capture_runtime_outcome(
+            request,
+            decision_input,
+            SimpleNamespace(decision=decision, runtime=runtime),
+            root=str(repo),
+            task_store=task_store,
+            evidence_store=_evidence_store(),
+            baseline={"method": method, "suggestion": "unsupported", "evidence_id": evidence_id},
+        )
+
+
 def test_duplicate_capture_is_not_stored_twice(candidate_env):
     repo, _state, task_store, store = candidate_env
     first = store.handle(_capture(state="same"), root=str(repo), task_store=task_store)
@@ -578,6 +752,244 @@ def test_context_source_capture_rejects_codes_without_matching_stored_provenance
             candidate,
             evidence_store=_evidence_store(source_codes=["indexed", "rag"]),
             canonical_root=str(repo),
+        )
+
+
+def test_context_source_memory_provenance_accepts_scoped_memory_record(candidate_env):
+    from types import SimpleNamespace
+
+    repo, _state, _task_store, _store = candidate_env
+    operation = _context_source_capture(
+        state={
+            "gap_code": "unresolved_evidence_gap",
+            "source_codes": ["memory", "indexed"],
+            "freshness_codes": ["current", "current"],
+            "coverage_codes": ["partial", "complete"],
+        },
+        evidence_ids=["E" + "0" * 20, "E" + "1" * 20],
+    )
+    operation["candidate"]["options"] = ["memory", "indexed", "more_evidence"]
+    operation["candidate"]["source_record_ids"] = ["mem_task_1", None]
+    candidate = LayaCandidateStore._candidate_input(operation["candidate"])
+    record = SimpleNamespace(
+        record_id="mem_task_1",
+        scope=SimpleNamespace(value="task"),
+        evidence_ids=("E" + "0" * 20,),
+    )
+
+    class MemoryStore:
+        def find(self, **kwargs):
+            assert kwargs["root"] == str(repo)
+            assert kwargs["task_id"] == "task_1"
+            if kwargs["scope"].value == "session":
+                assert kwargs["session_id"] == "session_1"
+            return [record]
+
+    LayaCandidateStore._validate_context_source_evidence(
+        candidate,
+        evidence_store=_evidence_store(source_codes=["indexed"]),
+        canonical_root=str(repo),
+        memory_store=MemoryStore(),
+        task_id="task_1",
+        session_id="session_1",
+    )
+
+
+def test_context_source_memory_provenance_rejects_global_memory_record(candidate_env):
+    from types import SimpleNamespace
+
+    repo, _state, _task_store, _store = candidate_env
+    operation = _context_source_capture(
+        state={
+            "gap_code": "unresolved_evidence_gap",
+            "source_codes": ["memory", "indexed"],
+            "freshness_codes": ["current", "current"],
+            "coverage_codes": ["partial", "complete"],
+        },
+        evidence_ids=["E" + "0" * 20, "E" + "1" * 20],
+    )
+    operation["candidate"]["options"] = ["memory", "indexed", "more_evidence"]
+    operation["candidate"]["source_record_ids"] = ["mem_global_1", None]
+    candidate = LayaCandidateStore._candidate_input(operation["candidate"])
+    record = SimpleNamespace(
+        record_id="mem_global_1",
+        scope=SimpleNamespace(value="global"),
+        evidence_ids=("E" + "0" * 20,),
+    )
+
+    class MemoryStore:
+        def find(self, **kwargs):
+            return [record]
+
+    with pytest.raises(ValueError, match="memory source provenance"):
+        LayaCandidateStore._validate_context_source_evidence(
+            candidate,
+            evidence_store=_evidence_store(source_codes=["indexed"]),
+            canonical_root=str(repo),
+            memory_store=MemoryStore(),
+            task_id="task_1",
+            session_id="session_1",
+        )
+
+
+def test_context_source_memory_provenance_rejects_unlinked_evidence_id(candidate_env):
+    from types import SimpleNamespace
+
+    repo, _state, _task_store, _store = candidate_env
+    operation = _context_source_capture(
+        state={
+            "gap_code": "unresolved_evidence_gap",
+            "source_codes": ["memory", "indexed"],
+            "freshness_codes": ["current", "current"],
+            "coverage_codes": ["partial", "complete"],
+        },
+        evidence_ids=["E" + "0" * 20, "E" + "1" * 20],
+    )
+    operation["candidate"]["options"] = ["memory", "indexed", "more_evidence"]
+    operation["candidate"]["source_record_ids"] = ["mem_task_1", None]
+    candidate = LayaCandidateStore._candidate_input(operation["candidate"])
+    record = SimpleNamespace(
+        record_id="mem_task_1",
+        scope=SimpleNamespace(value="task"),
+        evidence_ids=("E" + "9" * 20,),
+    )
+
+    class MemoryStore:
+        def find(self, **kwargs):
+            return [record]
+
+    with pytest.raises(ValueError, match="memory source provenance"):
+        LayaCandidateStore._validate_context_source_evidence(
+            candidate,
+            evidence_store=_evidence_store(source_codes=["indexed"]),
+            canonical_root=str(repo),
+            memory_store=MemoryStore(),
+            task_id="task_1",
+            session_id="session_1",
+        )
+
+
+def test_runtime_capture_rejects_unstored_memory_record_id(candidate_env):
+    repo, _state, task_store, store = candidate_env
+    operation = _context_source_capture(
+        state={
+            "gap_code": "unresolved_evidence_gap",
+            "source_codes": ["memory", "indexed"],
+            "freshness_codes": ["current", "current"],
+            "coverage_codes": ["partial", "complete"],
+        },
+        evidence_ids=["E" + "0" * 20, "E" + "1" * 20],
+    )
+    operation["candidate"]["options"] = ["memory", "indexed", "more_evidence"]
+    operation["candidate"]["source_record_ids"] = ["mem_forged", None]
+
+    with pytest.raises(ValueError, match="memory source provenance"):
+        store.handle(
+            operation,
+            root=str(repo),
+            task_store=task_store,
+            evidence_store=_evidence_store(source_codes=["indexed"]),
+        )
+
+
+def test_runtime_capture_accepts_fresh_evidence_linked_to_real_scoped_memory(candidate_env):
+    from local_ai_hub.agent_identity import AgentScope
+    from local_ai_hub.agent_memory import MemoryKind, MemoryRecord, MemoryStatus, MemoryStore
+
+    repo, _state, task_store, store = candidate_env
+    evidence_id = "E" + "0" * 20
+    memory_store = MemoryStore(task_store.state_store)
+    memory_record = memory_store.record(
+        MemoryRecord.create(
+            kind=MemoryKind.FINDING,
+            scope=AgentScope.TASK,
+            scope_id="task-1",
+            key="laya-source",
+            value="Relevant task-scoped memory.",
+            status=MemoryStatus.CONFIRMED,
+            source="user",
+            evidence_ids=(evidence_id,),
+            provenance={"root": str(repo)},
+        ),
+        actor="user",
+        idempotency_key="laya-memory-source",
+    )
+    operation = _context_source_capture(
+        state={
+            "gap_code": "unresolved_evidence_gap",
+            "source_codes": ["memory", "indexed"],
+            "freshness_codes": ["current", "current"],
+            "coverage_codes": ["partial", "complete"],
+        },
+        evidence_ids=[evidence_id, "E" + "1" * 20],
+    )
+    operation["candidate"]["options"] = ["memory", "indexed", "more_evidence"]
+    operation["candidate"]["source_record_ids"] = [memory_record.record_id, None]
+
+    captured = store.handle(
+        operation,
+        root=str(repo),
+        task_store=task_store,
+        evidence_store=_evidence_store(source_codes=["indexed"]),
+    )
+
+    assert captured["success"] is True
+
+
+def test_context_source_export_revalidates_scoped_memory_provenance(candidate_env, monkeypatch):
+    from local_ai_hub.agent_identity import AgentScope
+    from local_ai_hub.agent_memory import MemoryKind, MemoryRecord, MemoryStatus, MemoryStore
+
+    repo, _state, task_store, store = candidate_env
+    evidence_id = "E" + "0" * 20
+    memory_store = MemoryStore(task_store.state_store)
+    memory_record = memory_store.record(
+        MemoryRecord.create(
+            kind=MemoryKind.FINDING,
+            scope=AgentScope.TASK,
+            scope_id="task-1",
+            key="laya-export-source",
+            value="Task-scoped export source.",
+            status=MemoryStatus.CONFIRMED,
+            source="user",
+            evidence_ids=(evidence_id,),
+            provenance={"root": str(repo)},
+        ),
+        actor="user",
+        idempotency_key="laya-export-memory-source",
+    )
+    operation = _context_source_capture(
+        state={
+            "gap_code": "unresolved_evidence_gap",
+            "source_codes": ["memory", "indexed"],
+            "freshness_codes": ["current", "current"],
+            "coverage_codes": ["partial", "complete"],
+        },
+        evidence_ids=[evidence_id, "E" + "1" * 20],
+    )
+    operation["candidate"]["options"] = ["memory", "indexed", "more_evidence"]
+    operation["candidate"]["source_record_ids"] = [memory_record.record_id, None]
+    captured = store.handle(
+        operation,
+        root=str(repo),
+        task_store=task_store,
+        evidence_store=_evidence_store(source_codes=["indexed"]),
+    )
+    store.handle(
+        {"action": "label", "candidate_id": captured["candidate_id"], "target": "memory"},
+        root=str(repo),
+        task_store=task_store,
+    )
+    monkeypatch.setattr(candidates_module, "_split_for_group", lambda _group: "train")
+    snapshot = store.handle({"action": "prepare_splits"}, root=str(repo), task_store=task_store)
+    monkeypatch.setattr(MemoryStore, "find", lambda *_args, **_kwargs: [])
+
+    with pytest.raises(ValueError, match="memory source provenance"):
+        store.handle(
+            {"action": "export", "snapshot_id": snapshot["snapshot_id"]},
+            root=str(repo),
+            task_store=task_store,
+            evidence_store=_evidence_store(source_codes=["indexed"]),
         )
 
 
@@ -909,6 +1321,61 @@ def test_legacy_multi_reviewer_api_actions_are_retired(candidate_env):
     assert store.handle({"action": "list", "status": "pending"}, root=str(repo), task_store=task_store)["count"] == 1
 
 
+def test_candidate_list_uses_bounded_scoped_cursor_pages(candidate_env):
+    repo, _state, task_store, store = candidate_env
+    for index in range(3):
+        store.handle(_capture(state=f"distinct state {index}"), root=str(repo), task_store=task_store)
+
+    first = store.handle({"action": "list", "limit": 2}, root=str(repo), task_store=task_store)
+    assert first["count"] == 2
+    assert len(first["candidates"]) == 2
+    assert first["has_more"] is True
+    assert first["next_candidate_id"] == first["candidates"][-1]["candidate_id"]
+
+    second = store.handle(
+        {"action": "list", "limit": 2, "after_candidate_id": first["next_candidate_id"]},
+        root=str(repo),
+        task_store=task_store,
+    )
+    assert second["count"] == 1
+    assert second["has_more"] is False
+    assert second["next_candidate_id"] is None
+    assert not ({row["candidate_id"] for row in first["candidates"]} &
+                {row["candidate_id"] for row in second["candidates"]})
+
+
+def test_candidate_list_rejects_invalid_page_limits_and_cursors(candidate_env):
+    repo, _state, task_store, store = candidate_env
+    with pytest.raises(ValueError, match="list limit invalid"):
+        store.handle({"action": "list", "limit": True}, root=str(repo), task_store=task_store)
+    with pytest.raises(ValueError, match="cursor is outside the authorized repository scope"):
+        store.handle(
+            {"action": "list", "after_candidate_id": "laya_" + "0" * 32},
+            root=str(repo),
+            task_store=task_store,
+        )
+
+
+def test_candidate_list_cursor_cannot_cross_task_filter(candidate_env):
+    repo, _state, task_store, store = candidate_env
+    first_task = task_store.list_tasks()[0]
+    second_task = SimpleNamespace(task_id="task-2", context=SimpleNamespace(session_id="session-2"))
+    task_store.list_tasks = lambda **_kwargs: [first_task, second_task]
+
+    first = store.handle(_capture(), root=str(repo), task_store=task_store)
+    second_operation = _capture(state="second task state")
+    second_operation["task_id"] = "task-2"
+    second_operation["session_id"] = "session-2"
+    store.handle(second_operation, root=str(repo), task_store=task_store)
+
+    with pytest.raises(ValueError, match="cursor is outside the authorized repository scope"):
+        store.handle(
+            {"action": "list", "task_id": "task-2", "after_candidate_id": first["candidate_id"]},
+            root=str(repo),
+            task_store=task_store,
+        )
+
+
 def test_configured_ed25519_keys_are_rejected_for_local_only_review(tmp_path):
     with pytest.raises(ValueError, match="SSH reviewer keys are retired"):
         LayaCandidateStore(tmp_path, reviewer_public_keys=["ssh-ed25519 AAAA test"])
@@ -1068,9 +1535,30 @@ def test_candidate_delete_purges_private_events_and_invalidates_export(candidate
     with closing(store._connect(task_store)) as con:
         store._event(con, cid, "scope", "task-1", "runtime_output", {"suggestion": "private model output"}, 1.0)
 
+    original_purge = store._purge_snapshot_export
+    purge_observations = []
+
+    def assert_committed_before_purge(snapshot_id):
+        with closing(sqlite3.connect(store.path)) as probe:
+            snapshot_status = probe.execute(
+                "SELECT status FROM laya_dataset_snapshots WHERE snapshot_id=?",
+                (snapshot_id,),
+            ).fetchone()[0]
+            remaining_candidates = probe.execute(
+                "SELECT COUNT(*) FROM laya_candidates WHERE candidate_id=?",
+                (cid,),
+            ).fetchone()[0]
+        assert snapshot_status == "invalidated"
+        assert remaining_candidates == 0
+        purge_observations.append(snapshot_id)
+        original_purge(snapshot_id)
+
+    monkeypatch.setattr(store, "_purge_snapshot_export", assert_committed_before_purge)
+
     result = store.handle({"action": "delete", "candidate_id": cid}, root=str(repo), task_store=task_store)
 
     assert result["deleted"] is True
+    assert purge_observations == [snapshot["snapshot_id"]]
     assert not output_path.exists()
     assert store.handle({"action": "list"}, root=str(repo), task_store=task_store)["count"] == 0
     with closing(sqlite3.connect(store.path)) as con:
@@ -1080,6 +1568,71 @@ def test_candidate_delete_purges_private_events_and_invalidates_export(candidate
     serialized_events = json.dumps(rows)
     assert "private example payload" not in serialized_events
     assert "private model output" not in serialized_events
+
+
+def test_candidate_delete_can_retry_export_cleanup_after_database_commit(candidate_env, monkeypatch):
+    repo, _state, task_store, store = candidate_env
+    monkeypatch.setattr(candidates_module, "_split_for_group", lambda _group: "train")
+    operation = _capture(state="private example payload")
+    cid = _capture_and_verify(store, repo, task_store, "task-1", "session-1", operation["candidate"]["state"], "delete-retry")
+    snapshot = store.handle({"action": "prepare_splits"}, root=str(repo), task_store=task_store)
+    exported = store.handle(
+        {"action": "export", "snapshot_id": snapshot["snapshot_id"]},
+        root=str(repo), task_store=task_store,
+    )
+    output_path = Path(exported["output_path"])
+
+    def fail_purge(_snapshot_id):
+        raise OSError("busy file")
+
+    monkeypatch.setattr(store, "_purge_snapshot_export", fail_purge)
+    deleted = store.handle({"action": "delete", "candidate_id": cid}, root=str(repo), task_store=task_store)
+
+    assert deleted["success"] is False
+    assert deleted["deleted"] is True
+    assert deleted["cleanup_pending"] is True
+    assert output_path.is_file()
+
+    def purge_snapshot(snapshot_id):
+        candidates_module.LayaCandidateStore._purge_snapshot_export(store, snapshot_id)
+
+    monkeypatch.setattr(store, "_purge_snapshot_export", purge_snapshot)
+    retried = store.handle({"action": "delete", "candidate_id": cid}, root=str(repo), task_store=task_store)
+
+    assert retried["success"] is True
+    assert retried["deleted"] is True
+    assert retried["cleanup_pending"] is False
+    assert not output_path.exists()
+
+
+def test_candidate_export_removes_output_when_final_database_transition_fails(candidate_env, monkeypatch):
+    repo, _state, task_store, store = candidate_env
+    monkeypatch.setattr(candidates_module, "_split_for_group", lambda _group: "train")
+    _capture_and_verify(store, repo, task_store, "task-1", "session-1", "verified export", "export-failure")
+    snapshot = store.handle({"action": "prepare_splits"}, root=str(repo), task_store=task_store)
+    output_path = (
+        _state / "experiments" / "model-training" / "data"
+        / f"laya-{snapshot['snapshot_id']}.train.jsonl"
+    )
+    original_write_transaction = candidates_module.write_transaction
+
+    @contextmanager
+    def fail_export_transition(connection, **kwargs):
+        if kwargs.get("rollback_label") == "Laya candidate export":
+            raise sqlite3.OperationalError("injected export transition failure")
+            yield
+        with original_write_transaction(connection, **kwargs):
+            yield
+
+    monkeypatch.setattr(candidates_module, "write_transaction", fail_export_transition)
+
+    with pytest.raises(sqlite3.OperationalError, match="injected export transition failure"):
+        store.handle(
+            {"action": "export", "snapshot_id": snapshot["snapshot_id"]},
+            root=str(repo), task_store=task_store,
+        )
+
+    assert not output_path.exists()
 
 
 @pytest.mark.parametrize("changes", [
@@ -1756,3 +2309,44 @@ def test_runtime_output_history_remains_readable_after_local_model_review(candid
 
     assert history["success"] is True
     assert [event["event_type"] for event in history["events"]] == ["completion_outcome"]
+
+
+def test_local_model_review_hides_laya_output_from_reviewer(candidate_env):
+    repo, state, task_store, _store = candidate_env
+    observed = {}
+
+    def reviewer(request):
+        observed.update(request)
+        return LocalModelReviewResult(
+            decision="fast",
+            confidence=0.9,
+            provider="ollama",
+            model_id="local-reviewer",
+            model_revision="sha256:" + "a" * 64,
+            runtime_version="test-runtime",
+            device="cpu",
+            is_local=True,
+        )
+
+    store = LayaCandidateStore(state, local_model_reviewer=reviewer)
+    captured = store.handle(_capture(), root=str(repo), task_store=task_store)
+    with closing(sqlite3.connect(store.path)) as con:
+        row = con.execute(
+            "SELECT candidate_json FROM laya_candidates WHERE candidate_id=?",
+            (captured["candidate_id"],),
+        ).fetchone()
+        candidate = json.loads(row[0])
+        candidate["model_output"] = {"suggestion": "smart", "reason": "Laya's prior answer"}
+        con.execute(
+            "UPDATE laya_candidates SET candidate_json=? WHERE candidate_id=?",
+            (json.dumps(candidate, separators=(",", ":")), captured["candidate_id"]),
+        )
+
+    result = store.handle(
+        {"action": "model_review", "candidate_id": captured["candidate_id"]},
+        root=str(repo),
+        task_store=task_store,
+    )
+
+    assert result["success"] is True
+    assert "model_output" not in observed["candidate"]

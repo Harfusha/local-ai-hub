@@ -24,6 +24,7 @@ BOOLEAN_CHOICES = (
     "agent_config",
     "service",
     "companion_skills",
+    "antigravity_style_policy",
     "agent_codex",
     "agent_claude",
     "agent_gemini",
@@ -147,6 +148,7 @@ def defaults_from_config(cfg: dict[str, Any]) -> dict[str, Any]:
         "agent_config": bool(setup.get("install_agent_configs", True)),
         "service": bool(setup.get("install_service", True) and cfg.get("headless", {}).get("enabled", True)),
         "companion_skills": bool(setup.get("install_companion_skills", True)),
+        "antigravity_style_policy": bool(setup.get("install_antigravity_style_policy", False)),
         **{
             choice: bool(agents.get(agent, True))
             for choice, agent in AGENT_CHOICE_KEYS.items()
@@ -212,6 +214,7 @@ def collect_choices(cfg: dict[str, Any], saved: dict[str, Any]) -> dict[str, Any
         "agent_config": "Nastavit MCP, skills a instrukce pro vybrané agenty",
         "service": "Nainstalovat službu spouštěnou při přihlášení",
         "companion_skills": "Instalovat doprovodné skills a podporované Superpowers součásti",
+        "antigravity_style_policy": "Přidat volitelnou stylistickou politiku do Gemini / Antigravity",
         "agent_codex": "Nastavit Codex",
         "agent_claude": "Nastavit Claude Code",
         "agent_gemini": "Nastavit Gemini CLI",
@@ -295,6 +298,8 @@ def apply_choices(args: Any, cfg: dict[str, Any], choices: dict[str, Any]) -> No
         setup["install_service"] = bool(choices["service"])
     if "companion_skills" in choices:
         setup["install_companion_skills"] = bool(choices["companion_skills"])
+    if "antigravity_style_policy" in choices:
+        setup["install_antigravity_style_policy"] = bool(choices["antigravity_style_policy"])
 
 
 def configure(args: Any, cfg: dict[str, Any], install_dir: Path, *, argv: list[str]) -> dict[str, Any]:

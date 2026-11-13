@@ -4,8 +4,26 @@ from pathlib import Path
 
 import pytest
 
+import local_ai_hub.leases as leases_module
 from local_ai_hub.leases import ScopeLeaseStore, _norm_rel, _overlap
 from local_ai_hub.process_utils import is_valid_pid, pid_alive, clean_git_env
+
+
+def test_lease_schema_initialization_uses_bounded_transaction(tmp_path, monkeypatch):
+    observed = []
+    original_transaction = leases_module.write_transaction
+
+    def record_transaction(connection, **kwargs):
+        observed.append(kwargs)
+        return original_transaction(connection, **kwargs)
+
+    monkeypatch.setattr(leases_module, "write_transaction", record_transaction)
+    store = ScopeLeaseStore(tmp_path / "leases")
+
+    assert store.path.exists()
+    assert observed == [
+        {"max_duration_seconds": 5.0, "rollback_label": "lease schema initialization"}
+    ]
 
 
 def test_norm_rel_hardening():

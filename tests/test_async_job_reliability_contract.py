@@ -10,6 +10,7 @@ import pytest
 
 from local_ai_hub.async_jobs import AsyncJobManager
 from local_ai_hub.execution_pool import ExecutionPool
+from local_ai_hub.http_server import _telemetry_http_outcome
 
 
 class _ArtifactStore:
@@ -82,6 +83,44 @@ def _cancel_delayed_dispatch(manager: AsyncJobManager, job_id: str) -> None:
     timer = manager._delayed_dispatch.pop(job_id, None)
     if timer is not None:
         timer.cancel()
+
+
+@pytest.mark.parametrize("state", ["queued", "running"])
+def test_pending_async_result_is_not_counted_as_endpoint_failure(manager_factory, state: str) -> None:
+    manager = manager_factory(lambda *_: {"success": True})
+    now = time.time()
+    job_id = f"pending-result-{state}"
+    with closing(manager._connect()) as con:
+        con.execute(
+            "INSERT INTO async_jobs(job_id,action,request_hash,payload_json,state,created_at,updated_at,expires_at) VALUES(?,?,?,?,?,?,?,?)",
+            (job_id, "reason", job_id, "{}", state, now, now, now + 600),
+        )
+        con.commit()
+
+    result = manager.result(job_id)
+
+    assert result["success"] is False
+    assert result["in_progress"] is True
+    assert result["terminal"] is False
+    assert result["retryable"] is True
+    assert _telemetry_http_outcome(200, result, "/api/async-jobs") == (True, "in_progress", False)
+
+
+def test_unknown_async_result_remains_failed_in_telemetry(manager_factory) -> None:
+    manager = manager_factory(lambda *_: {"success": True})
+    now = time.time()
+    with closing(manager._connect()) as con:
+        con.execute(
+            "INSERT INTO async_jobs(job_id,action,request_hash,payload_json,state,created_at,updated_at,expires_at) VALUES(?,?,?,?,?,?,?,?)",
+            ("unknown-result", "reason", "unknown-result", "{}", "outcome_unknown", now, now, now + 600),
+        )
+        con.commit()
+
+    result = manager.result("unknown-result")
+
+    assert result["outcome_unknown"] is True
+    assert result["in_progress"] is False
+    assert _telemetry_http_outcome(200, result, "/api/async-jobs") == (False, "outcome_unknown", True)
 
 
 def test_async_job_runs_on_shared_io_pool(manager_factory) -> None:

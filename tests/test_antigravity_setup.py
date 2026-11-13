@@ -169,7 +169,10 @@ def test_gemini_setup_enables_global_policy_and_preserves_existing_rules(tmp_pat
     monkeypatch.setattr(setup, "sync_antigravity_mcp_config", lambda *a, **k: None)
     monkeypatch.setattr(setup, "sync_antigravity_config_json", lambda *a, **k: None)
     monkeypatch.setattr(setup, "build_mcp_entries", lambda *a, **k: {})
-    setup.configure_gemini_instance(gemini, tmp_path / "install", Path("python"), None, {}, False, True,
+    install = tmp_path / "install"
+    install.mkdir()
+    setup.configure_gemini_instance(gemini, install, Path("python"), None,
+                                    {"setup": {"install_antigravity_style_policy": True}}, False, True,
                                     project_root=tmp_path / "project")
     assert gemini / "skills" in calls
     assert "Existing user rules." in rules.read_text(encoding="utf-8")
@@ -196,8 +199,11 @@ def test_project_and_global_rules_are_idempotent_and_preserve_unmanaged_skills(t
         monkeypatch.setattr(setup, name, lambda *a, **k: None)
     monkeypatch.setattr(setup, "build_mcp_entries", lambda *a, **k: {})
 
+    install = tmp_path / "install"
+    install.mkdir()
     for _ in range(2):
-        setup.configure_gemini_instance(gemini, tmp_path / "install", Path("python"), None, {}, False, True,
+        setup.configure_gemini_instance(gemini, install, Path("python"), None,
+                                         {"setup": {"install_antigravity_style_policy": True}}, False, True,
                                          project_root=project)
 
     global_rules = (gemini / "AGENTS.md").read_bytes()
@@ -238,7 +244,8 @@ def test_gemini_clean_install_and_repeat_install_real_skills(tmp_path, monkeypat
     (gemini / "GEMINI.md").write_bytes(b"User rule one.\r\nUser rule two.\n")
     project = tmp_path / "project"
     for _ in range(2):
-        setup.configure_gemini_instance(gemini, install, Path("python"), None, {}, False, True,
+        setup.configure_gemini_instance(gemini, install, Path("python"), None,
+                                        {"setup": {"install_antigravity_style_policy": True}}, False, True,
                                         project_root=project)
     global_skills = gemini / "config" / "skills"
     assert (gemini / "skills" / "using-superpowers" / "SKILL.md").read_text(encoding="utf-8") == "bootstrap"

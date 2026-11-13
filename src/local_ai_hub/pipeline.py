@@ -44,6 +44,120 @@ def _safe_float(val: Any, default: float, min_val: float | None = None, max_val:
     return res
 
 
+def _queue_laya_context_budget_shadow(
+    services: Any,
+    args: Any,
+    *,
+    root: str,
+    task: str,
+    route: Any,
+    risk_score: float,
+    budget: int,
+    packed: Any,
+    deterministic: Any,
+    preliminary: Any,
+    response: Any,
+) -> bool:
+    """Queue a completed delegated response for an automatically selected context budget."""
+    if (
+        type(args) is not dict
+        or args.get("context_tokens") not in (None, 0, "")
+        or not isinstance(args.get("task_id"), str)
+        or not args["task_id"].strip()
+        or not isinstance(root, str)
+        or not root.strip()
+        or not isinstance(task, str)
+        or not task.strip()
+        or type(budget) is not int
+        or budget <= 0
+        or not isinstance(packed, dict)
+        or packed.get("success") is not True
+        or not isinstance(response, dict)
+        or response.get("success") is not True
+    ):
+        return False
+    queue = getattr(services, "_queue_laya_shadow_observation", None)
+    if not callable(queue):
+        return False
+
+    evidence_ids: list[str] = []
+    for result in (packed, deterministic if isinstance(deterministic, dict) else {}):
+        evidence = result.get("evidence")
+        if not isinstance(evidence, (list, tuple)):
+            continue
+        for item in evidence:
+            evidence_id = item.get("evidence_id") if isinstance(item, dict) else None
+            if isinstance(evidence_id, str) and evidence_id.strip() and evidence_id not in evidence_ids:
+                evidence_ids.append(evidence_id)
+                if len(evidence_ids) == 64:
+                    break
+        if len(evidence_ids) == 64:
+            break
+    if not evidence_ids:
+        return False
+
+    if budget <= 1200:
+        suggestion = "compact"
+    elif budget <= 2500:
+        suggestion = "standard"
+    else:
+        suggestion = "expanded"
+
+    complexity = route.get("complexity") if isinstance(route, dict) else None
+    if not isinstance(complexity, str) or complexity not in {"fast", "heavy", "moderate"}:
+        complexity = "unknown"
+    confidence = preliminary.get("confidence") if isinstance(preliminary, dict) else 0.0
+    confidence_value = _safe_float(confidence, 0.0, min_val=0.0, max_val=1.0)
+    confidence_bucket = "high" if confidence_value >= 0.9 else "medium" if confidence_value >= 0.65 else "low"
+    context_source = packed.get("context_source")
+    if not isinstance(context_source, str) or context_source not in {"deterministic", "hybrid"}:
+        context_source = "unknown"
+
+    task_input = task.encode("utf-8", errors="replace")[:8192].decode("utf-8", errors="ignore").strip()
+    response_text = response.get("text")
+    model_response = (
+        response_text.encode("utf-8", errors="replace")[:8192].decode("utf-8", errors="ignore").strip()
+        if isinstance(response_text, str)
+        else ""
+    )
+    observed_args = dict(args)
+    observed_args["evidence_ids"] = evidence_ids
+    packed_evidence = packed.get("evidence")
+    deterministic_evidence = deterministic.get("evidence") if isinstance(deterministic, dict) else None
+    state = {
+        "route_complexity": complexity,
+        "risk_score": str(round(_safe_float(risk_score, 0.0, min_val=0.0, max_val=100.0), 3)),
+        "confidence_bucket": confidence_bucket,
+        "budget_tokens": str(budget),
+        "packed_evidence_count": str(len(packed_evidence)) if isinstance(packed_evidence, (list, tuple)) else "0",
+        "deterministic_evidence_count": str(len(deterministic_evidence)) if isinstance(deterministic_evidence, (list, tuple)) else "0",
+        "context_source": context_source,
+    }
+    try:
+        return bool(queue(
+            observed_args,
+            root=root,
+            category="context_budget",
+            options=["compact", "standard", "expanded"],
+            state=state,
+            training_content={
+                key: value
+                for key, value in (
+                    ("task_input", task_input),
+                    ("model_response", model_response),
+                )
+                if value
+            },
+            baseline={
+                "method": "repo_context_token_budget",
+                "suggestion": suggestion,
+                "evidence_id": evidence_ids[0],
+            },
+        ))
+    except Exception:
+        return False
+
+
 def _is_repetition_loop(response: Any) -> bool:
     return isinstance(response, dict) and bool(
         response.get("repetition_loop_detected") or response.get("_lah_repetition_loop_detected")
@@ -566,7 +680,7 @@ class LocalAgentPipeline:
         if len(canonical_text) > self.max_final_chars:
             canonical_text = canonical_text[: self.max_final_chars] + "\n[…canonical detail stored in stage cache/artifacts…]"
 
-        return {
+        result = {
             "success": True,
             "text": canonical_text,
             "tool_evidence": {
@@ -600,6 +714,23 @@ class LocalAgentPipeline:
                 "stages": pipeline_stages,
             },
         }
+        worker_text = worker.get("text")
+        if not isinstance(worker_text, str) or not worker_text.strip():
+            worker_text = worker_structured.get("summary", "") if worker_structured else ""
+        _queue_laya_context_budget_shadow(
+            self.services,
+            args,
+            root=root,
+            task=task,
+            route=route,
+            risk_score=risk_score,
+            budget=budget,
+            packed=packed,
+            deterministic=deterministic,
+            preliminary=preliminary,
+            response={"success": worker.get("success") is True, "text": worker_text},
+        )
+        return result
 
     def stats(self) -> dict[str, Any]:
         return {

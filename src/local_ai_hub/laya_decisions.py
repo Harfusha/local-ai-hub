@@ -60,11 +60,18 @@ _RAW_CONTENT_FIELDS = frozenset({
 _CONTEXT_SOURCE_CONTENT_FIELDS = frozenset({"task_input", "context_excerpt"})
 _SECRET_PATTERNS = (
     re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]+"),
-    re.compile(r"(?i)\b(api[_-]?key|access[_-]?token|refresh[_-]?token|token|password|passwd|secret|authorization)(\s*[:=]\s*)([^\s,;]+)"),
-    re.compile(r"\b(?:sk-[A-Za-z0-9_-]{16,}|gh[pousr]_[A-Za-z0-9]{20,}|AKIA[0-9A-Z]{16})\b"),
+    re.compile(r"(?i)[a-z][a-z0-9+.-]*://[^:/@\s]+:[^/@\s]+(?=@)"),
+    re.compile(r"(?i)(\b(?:set-cookie|cookie)\s*:)(\s*)([^\r\n]*)"),
+    re.compile(r"(?i)(\bcredentials?\s*[:=])(\s*)([^\r\n]*)"),
+    re.compile(r"(?is)\b([a-z0-9_-]*(?:api[_-]?key|access[_-]?token|refresh[_-]?token|session[_-]?id|session[_-]?key|cookie|csrf|xsrf|signature|token|password|passwd|secret|private[_-]?key|encryption[_-]?key|signing[_-]?key|authorization)[a-z0-9_-]*)(\s*[:=]\s*)([\"'])((?:\\.|(?!\3).)*)(\3)"),
+    re.compile(r"(?i)\b([a-z0-9_-]*(?:api[_-]?key|access[_-]?token|refresh[_-]?token|session[_-]?id|session[_-]?key|cookie|csrf|xsrf|signature|token|password|passwd|secret|private[_-]?key|encryption[_-]?key|signing[_-]?key|authorization)[a-z0-9_-]*)(\s*[:=]\s*)(?![\"'])([^\s,;]+)"),
+    re.compile(r"(?i)([\"'][a-z0-9_-]*(?:api[_-]?key|access[_-]?token|refresh[_-]?token|session[_-]?id|session[_-]?key|cookie|csrf|xsrf|signature|token|password|passwd|secret|private[_-]?key|encryption[_-]?key|signing[_-]?key|authorization)[a-z0-9_-]*)([\"']\s*:\s*[\"'])((?:\\.|[^\"\\])*)([\"'])"),
+    re.compile(r"\b(?:sk-[A-Za-z0-9_-]{16,}|gh[pousr]_[A-Za-z0-9]{20,}|(?:AKIA|ASIA)[0-9A-Z]{16})\b"),
+    re.compile(r"\b(?:github_pat_[A-Za-z0-9_]{20,}|glpat-[A-Za-z0-9_-]{20,}|xox[baprs]-[A-Za-z0-9-]{20,}|AIza[0-9A-Za-z_-]{35})\b"),
+    re.compile(r"\beyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\b"),
     re.compile(r"(?i)\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b"),
     re.compile(
-        r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----.*?-----END [A-Z0-9 ]*PRIVATE KEY-----",
+        r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----.*?(?:-----END [A-Z0-9 ]*PRIVATE KEY-----|\Z)",
         re.DOTALL,
     ),
 )
@@ -158,6 +165,7 @@ class ContextSourceEvidence:
     freshness_codes: tuple[ContextSourceFreshness, ...]
     coverage_codes: tuple[ContextSourceCoverage, ...]
     evidence_ids: tuple[str, ...]
+    source_record_ids: tuple[str | None, ...] = ()
     training_content: Mapping[str, str] = field(default_factory=dict)
     redacted_fields: tuple[str, ...] = ()
 
@@ -184,6 +192,16 @@ class ContextSourceEvidence:
             raise ValueError("invalid context source evidence IDs")
         if len(set(self.evidence_ids)) != len(self.evidence_ids):
             raise ValueError("duplicate context source evidence ID")
+        source_record_ids = self.source_record_ids or (None,) * len(self.source_codes)
+        if not isinstance(source_record_ids, tuple) or len(source_record_ids) != len(self.source_codes):
+            raise ValueError("context source record IDs must align with source codes")
+        for source_code, record_id in zip(self.source_codes, source_record_ids, strict=True):
+            if source_code == "memory":
+                if not isinstance(record_id, str) or not _IDENTIFIER.fullmatch(record_id):
+                    raise ValueError("memory context sources require a source record ID")
+            elif record_id is not None:
+                raise ValueError("non-memory context sources cannot have a source record ID")
+        object.__setattr__(self, "source_record_ids", source_record_ids)
         if not isinstance(self.training_content, Mapping) or set(self.training_content) - _CONTEXT_SOURCE_CONTENT_FIELDS:
             raise ValueError("context source training content fields invalid")
         decision_input = DecisionInput.from_mapping({
@@ -197,7 +215,8 @@ class ContextSourceEvidence:
     def from_mapping(cls, value: Mapping[str, Any]) -> "ContextSourceEvidence":
         """Validate typed signals and optional bounded training text without inferring authorization."""
         fields = {"gap_code", "source_codes", "freshness_codes", "coverage_codes", "evidence_ids"}
-        if type(value) is not dict or set(value) not in (fields, fields | {"training_content"}):
+        optional_fields = {"training_content", "source_record_ids"}
+        if type(value) is not dict or not fields <= set(value) or set(value) - (fields | optional_fields):
             raise ValueError("context source evidence fields invalid")
         if value["gap_code"] != "unresolved_evidence_gap":
             raise ValueError("invalid context source gap code")
@@ -218,12 +237,17 @@ class ContextSourceEvidence:
         evidence_ids = _string_list(value["evidence_ids"], "evidence_ids", _IDENTIFIER, maximum=4)
         if len(evidence_ids) != len(source_codes):
             raise ValueError("context source evidence IDs must align with source codes")
+        raw_source_record_ids = value.get("source_record_ids", [None] * len(source_codes))
+        if type(raw_source_record_ids) is not list or len(raw_source_record_ids) != len(source_codes):
+            raise ValueError("context source record IDs must align with source codes")
+        source_record_ids = tuple(raw_source_record_ids)
         return cls(
             gap_code=value["gap_code"],
             source_codes=source_codes,
             freshness_codes=freshness_codes,
             coverage_codes=coverage_codes,
             evidence_ids=evidence_ids,
+            source_record_ids=source_record_ids,
             training_content=value.get("training_content", {}),
         )
 
@@ -369,8 +393,18 @@ class DecisionInput:
                 raise ValueError("training_content field is too large")
             cleaned = text
             for pattern in _SECRET_PATTERNS:
-                if pattern.groups == 3:
+                if pattern.groups == 5:
+                    cleaned, count = pattern.subn(
+                        lambda match: f"{match.group(1)}{match.group(2)}{match.group(3)}[REDACTED]{match.group(5)}",
+                        cleaned,
+                    )
+                elif pattern.groups == 3:
                     cleaned, count = pattern.subn(lambda match: f"{match.group(1)}{match.group(2)}[REDACTED]", cleaned)
+                elif pattern.groups == 4:
+                    cleaned, count = pattern.subn(
+                        lambda match: f"{match.group(1)}{match.group(2)}[REDACTED]{match.group(4)}",
+                        cleaned,
+                    )
                 else:
                     cleaned, count = pattern.subn("[REDACTED]", cleaned)
                 if count:
@@ -382,12 +416,13 @@ class DecisionInput:
         return cls(state=dict(state), training_content=sanitized, redacted_fields=tuple(redacted))
 
     def model_state(self) -> dict[str, str]:
-        allowed_content_fields = ("task_input", "context_excerpt")
+        allowed_content_fields = tuple(sorted(_RAW_CONTENT_FIELDS))
         missing_fields = [key for key in allowed_content_fields if key not in self.training_content]
         redacted_fields = sorted(self.redacted_fields)
         missing_reason = (
             "none" if not missing_fields
-            else "both_raw_fields_unavailable" if len(missing_fields) == 2
+            else "all_raw_fields_unavailable" if len(missing_fields) == len(allowed_content_fields)
+            else "multiple_raw_fields_unavailable" if len(missing_fields) > 1
             else f"{missing_fields[0]}_unavailable"
         )
         return {
