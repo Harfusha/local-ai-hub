@@ -55,9 +55,11 @@ def test_setup_skip_service_still_restarts_hub_without_registering_service(tmp_p
 
     monkeypatch.setattr(setup, "select_config_source", lambda _path: (config_source, config, install_dir))
 
-    def copy_install_tree(destination, _source, *, before_commit=None):
+    def copy_install_tree(destination, _source, *, before_commit=None, after_swap=None):
         destination.mkdir(parents=True, exist_ok=True)
         (destination / "config.toml").write_text("[hardware]\nprofile = \"auto\"\n", encoding="utf-8")
+        if after_swap is not None:
+            assert after_swap()[0] is True
         return True
 
     monkeypatch.setattr(setup, "copy_install_tree", copy_install_tree)
@@ -66,7 +68,7 @@ def test_setup_skip_service_still_restarts_hub_without_registering_service(tmp_p
     monkeypatch.setattr(setup, "install_requirements", lambda *_args, **_kwargs: True)
     monkeypatch.setattr(setup, "write_generated_agent_manifests", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(setup, "ensure_ollama_for_setup", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(setup, "pull_ollama_models", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(setup, "pull_ollama_models", lambda *_args, **_kwargs: {"unavailable": []})
     monkeypatch.setattr(setup, "ensure_llama_cpp_for_setup", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(setup, "run", lambda command, **_kwargs: commands.append([str(part) for part in command]))
     monkeypatch.setattr(sys, "argv", [
@@ -99,7 +101,7 @@ def test_setup_stop_failure_skips_runtime_setup_and_service_start(tmp_path, monk
 
     monkeypatch.setattr(setup, "stop_existing_runtime", fail_to_stop)
 
-    def copy_install_tree(_destination, _source, *, before_commit=None):
+    def copy_install_tree(_destination, _source, *, before_commit=None, after_swap=None):
         assert before_commit is not None
         stopped, _detail = before_commit()
         return stopped
@@ -107,7 +109,7 @@ def test_setup_stop_failure_skips_runtime_setup_and_service_start(tmp_path, monk
     monkeypatch.setattr(setup, "copy_install_tree", copy_install_tree)
     monkeypatch.setattr(setup, "ensure_venv", lambda _path: events.append("venv"))
     monkeypatch.setattr(setup, "run", lambda command, **_kwargs: events.append(command))
-    monkeypatch.setattr(sys, "argv", ["setup.py", "--config", str(config_source)])
+    monkeypatch.setattr(sys, "argv", ["setup.py", "--config", str(config_source), "--profile", "cpu"])
 
     assert setup.main() == 1
     assert stop_attempts == [True]
@@ -526,7 +528,7 @@ def test_skip_service_uses_hubctl_fallback_without_managed_service(tmp_path: Pat
     monkeypatch.setattr(setup, "ensure_venv", lambda _venv: tmp_path / "python.exe")
     monkeypatch.setattr(setup, "install_requirements", lambda *_args, **_kwargs: True)
     monkeypatch.setattr(setup, "ensure_ollama_for_setup", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(setup, "pull_ollama_models", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(setup, "pull_ollama_models", lambda *_args, **_kwargs: {"unavailable": []})
     monkeypatch.setattr(setup, "ensure_llama_cpp_for_setup", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(setup, "write_generated_agent_manifests", lambda *_args, **_kwargs: None)
     commands = []
@@ -575,7 +577,7 @@ def test_setup_starts_hub_before_configuring_http_mcp(tmp_path: Path, monkeypatc
     monkeypatch.setattr(setup, "ensure_venv", lambda _venv: tmp_path / "python.exe")
     monkeypatch.setattr(setup, "install_requirements", lambda *_args, **_kwargs: True)
     monkeypatch.setattr(setup, "ensure_ollama_for_setup", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(setup, "pull_ollama_models", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(setup, "pull_ollama_models", lambda *_args, **_kwargs: {"unavailable": []})
     monkeypatch.setattr(setup, "ensure_llama_cpp_for_setup", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(setup, "write_generated_agent_manifests", lambda *_args, **_kwargs: None)
     events = []
@@ -587,6 +589,7 @@ def test_setup_starts_hub_before_configuring_http_mcp(tmp_path: Path, monkeypatc
     def configure_agents(*_args, **_kwargs):
         assert events == ["service-ready", "hub-restarted"]
         events.append("agents-configured")
+        return []
 
     def run(command, **_kwargs):
         if command[-1:] == ["restart"] and any(

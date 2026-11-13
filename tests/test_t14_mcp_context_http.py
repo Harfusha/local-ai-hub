@@ -9,6 +9,7 @@ import urllib.request
 from pathlib import Path
 
 from local_ai_hub import app as app_module, http_server, mcp_server, project_config, retrieval, services, task_context
+from local_ai_hub.agent_context import CompiledContext, ContextElement
 from local_ai_hub.budget import estimate_tokens
 from local_ai_hub.operation_contracts import (
     _ACTION_SCOPED_FIELDS,
@@ -328,6 +329,9 @@ def test_slow_serena_deadline_keeps_adaptive_http_content_and_coalesces_backend(
         encoding="utf-8",
     )
     app = app_module.LocalAIApp(str(cfg_path))
+    # This test exercises retrieval fallback and cache coalescing; its local
+    # task-state gate is stubbed to represent an active task.
+    monkeypatch.setattr(app.services, "_guard_task_state", lambda *_args, **_kwargs: ("active", False))
     slow_backend = SlowExternalTools()
     app.services.external_tools = slow_backend
     monkeypatch.setattr(
@@ -349,6 +353,17 @@ def test_slow_serena_deadline_keeps_adaptive_http_content_and_coalesces_backend(
         app.services.repo_tools, "git_diff",
         lambda *_args, **_kwargs: {"success": True, "diff": ""},
     )
+    monkeypatch.setattr(
+        app.agent_context, "compile",
+        lambda request: CompiledContext(
+            elements=[ContextElement(
+                element_id="slow-serena-task-goal", source_kind="task_goal",
+                content="Task Goal: test slow Serena fallback", estimated_tokens=7,
+                reason="task goal",
+            )], estimated_tokens=7, token_budget=request.token_budget,
+            repo_revision="test-revision",
+        ),
+    )
     previous_app = http_server.APP
     http_server.APP = app
     server = http_server.LocalAIHTTPServer(("127.0.0.1", 0), http_server.Handler)
@@ -364,13 +379,17 @@ def test_slow_serena_deadline_keeps_adaptive_http_content_and_coalesces_backend(
             f"http://127.0.0.1:{server.server_address[1]}/api/context/pack",
             data=json.dumps({
                 "root": str(repo), "query": query, "mode": "adaptive", "max_tokens": 256,
+                "task_id": "slow-serena-context-test",
                 "guarded": True, "phase": "edit", "focus": ["SlowBackendMarker"],
             }).encode("utf-8"),
             headers={"Content-Type": "application/json"},
             method="POST",
         )
-        with urllib.request.urlopen(request, timeout=15) as response:
-            return json.loads(response.read().decode("utf-8"))
+        try:
+            with urllib.request.urlopen(request, timeout=15) as response:
+                return json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as error:
+            raise AssertionError(error.read().decode("utf-8")) from error
 
     try:
         started_at = time.perf_counter()

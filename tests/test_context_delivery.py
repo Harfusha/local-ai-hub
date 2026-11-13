@@ -1583,15 +1583,18 @@ def test_context_http_preserves_terminal_pack_failure_with_and_without_task_cont
             return error.code, json.loads(error.read().decode("utf-8"))
 
     try:
-        payload = {"root": str(tmp_path), "query": "bounded context", "guarded": True, "max_tokens": 512}
+        payload = {
+            "root": str(tmp_path), "query": "bounded context", "guarded": True,
+            "max_tokens": 512,
+        }
         status, body = post(payload)
-        assert status == 500
-        assert body["stop_code"] == terminal_failure["stop_code"]
+        assert status == 400
+        assert body["error"] == "guarded context requires a non-empty task_id"
 
         payload["task_id"] = "context-pack-terminal-failure"
         status, body = post(payload)
-        assert status == 503
-        assert body["stop_code"] == "context_task_context_incomplete"
+        assert status == 500
+        assert body["stop_code"] == terminal_failure["stop_code"]
         assert body["terminal"] is True
         assert body["retryable"] is False
         assert body["task_context"]["repository"]["stop_code"] == terminal_failure["stop_code"]
@@ -1603,7 +1606,10 @@ def test_context_http_preserves_terminal_pack_failure_with_and_without_task_cont
             "stop_code": "context_backend_busy",
         }
         app.services.adaptive_context_pack = lambda *_args, **_kwargs: dict(retryable_failure)
-        status, body = post({"root": str(tmp_path), "query": "bounded context", "guarded": True, "max_tokens": 512})
+        status, body = post({
+            "root": str(tmp_path), "query": "bounded context", "guarded": True,
+            "task_id": "context-pack-terminal-failure", "max_tokens": 512,
+        })
         assert body["stop_code"] == retryable_failure["stop_code"]
         assert body["retryable"] is True
         assert status == 503

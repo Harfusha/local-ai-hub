@@ -8875,6 +8875,11 @@ class Handler(BaseHTTPRequestHandler):
                                 and provenance.get("status") == "success"
                             )
                             if not receipt_complete:
+                                if repository_failed and not auto_injected_task:
+                                    if isinstance(result, dict):
+                                        result["task_context"] = unified if isinstance(unified, dict) else {}
+                                    status_code = 503 if isinstance(result, dict) and result.get("retryable") is True else 500
+                                    self._send(status_code, result); return
                                 if not auto_injected_task:
                                     self._send(503, {
                                         "success": False, "terminal": True, "retryable": False,

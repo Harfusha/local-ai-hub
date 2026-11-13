@@ -82,15 +82,14 @@ On Windows, the preferred persistent service identity is Task Scheduler task `Lo
 | Extra | Declared packages |
 | --- | --- |
 | `ast-index` | `tree-sitter-language-pack` |
-| `laya-runtime` | `laya`, `vegaml` |
 | `local-nlp` | `sentence-transformers` |
 | `intel-accelerators` | `sentence-transformers[openvino]`, `openvino` |
 | `laya-runtime` | `laya`, `vegaml` (only for selected Laya inference) |
 | `token-economy` | `tiktoken`, `files-to-prompt`, `grep-ast` |
 | `performance` | `orjson`, `msgspec`, `Cython` |
-| `native` | `Cython` build dependency; also included in `performance`. The experimental native module is built separately. |
+| `native` | `Cython` build dependency; also included in the performance extra. The experimental native module is built separately. |
 | `profiling` | `py-spy`, `scalene` |
-| `dev` | `pytest`, `pyflakes`, `coverage[toml]`, `psutil`, `numpy`, `setuptools`, `wheel` |
+| `dev` | `pytest`, `pyflakes`, `mypy`, `coverage[toml]`, `psutil`, `numpy`, `setuptools`, `wheel` |
 
 ## Verification
 

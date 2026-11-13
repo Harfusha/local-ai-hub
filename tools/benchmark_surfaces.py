@@ -147,10 +147,24 @@ def _async_job_thread_groups(app: Any) -> tuple[tuple[threading.Thread, ...], ..
             delayed_handles = tuple(delayed.values()) if hasattr(delayed, "values") else ()
             dispatchers = tuple(getattr(manager, "_dispatchers", ()))
             workers = tuple(getattr(manager, "_workers", ()))
+    # Shared execution pools store Futures in AsyncJobManager._workers. The
+    # Future does not expose its running thread, so also snapshot the pool's
+    # IO executor threads to keep benchmark scratch alive for late workers.
+    pool_workers: tuple[threading.Thread, ...] = ()
+    execution_pool = getattr(manager, "execution_pool", None)
+    executors = getattr(execution_pool, "_executors", {})
+    io_executor = executors.get("io") if isinstance(executors, dict) else None
+    try:
+        pool_workers = tuple(
+            thread for thread in getattr(io_executor, "_threads", ())
+            if isinstance(thread, threading.Thread)
+        )
+    except (RuntimeError, TypeError):
+        pool_workers = ()
     return (
         snapshot(delayed_handles),
         snapshot(dispatchers),
-        snapshot(workers),
+        tuple(dict.fromkeys((*snapshot(workers), *pool_workers))),
     )
 
 

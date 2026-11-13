@@ -659,7 +659,21 @@ def test_hundred_plus_durable_jobs_stay_within_configured_worker_bounds(manager_
     finally:
         release.set()
 
-    assert completed.wait(30), "durable backlog did not drain after workers were released"
+    # This is a durability/worker-bound contract, not a sub-30-second latency
+    # target; allow slower Windows SQLite/filesystem hosts a bounded drain.
+    if not completed.wait(60):
+        with closing(manager._connect()) as con:
+            state_counts = dict(con.execute(
+                "SELECT state, COUNT(*) FROM async_jobs GROUP BY state"
+            ).fetchall())
+        with manager._lock:
+            worker_count = len(manager._workers)
+            dispatcher_count = len(manager._dispatchers)
+        pytest.fail(
+            "durable backlog did not drain after workers were released: "
+            f"completed={completed_count}/{job_count}, states={state_counts}, "
+            f"workers={worker_count}, dispatchers={dispatcher_count}"
+        )
     assert max_running == 4
 
 

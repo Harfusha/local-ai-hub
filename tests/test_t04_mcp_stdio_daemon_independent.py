@@ -275,12 +275,14 @@ def test_stdio_handshake_timeout_reaps_owned_hub_child(tmp_path: Path) -> None:
     child_log = tmp_path / "children.jsonl"
     config_path, state_dir = _config(tmp_path, startup_wait=8)
     parameters = _stdio_parameters(
-        source_root, probe_dir, config_path, child_log, delay_child_seconds=20,
+        source_root, probe_dir, config_path, child_log, delay_child_seconds=60,
         keep_hub_after_client_exit=True,
     )
 
     try:
-        result = asyncio.run(asyncio.wait_for(_mcp_status(parameters), timeout=16))
+        # The configured cold-start budget is 8s plus a bounded HTTP request
+        # probe; allow the full startup contract before asserting child cleanup.
+        result = asyncio.run(asyncio.wait_for(_mcp_status(parameters), timeout=30))
         assert result["success"] is False
         rows = _launches(child_log)
         state_files = sorted(path.name for path in state_dir.iterdir()) if state_dir.exists() else []

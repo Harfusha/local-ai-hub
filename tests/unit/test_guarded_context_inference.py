@@ -169,7 +169,10 @@ def test_http_context_keeps_activation_field_validation(context_http_hub, field)
 
     status, response = _post_context(
         base_url,
-        {"root": str(root), "query": "test context", "guarded": True, field: "not-a-list"},
+        {
+            "root": str(root), "query": "test context", "guarded": True,
+            "task_id": "invalid-context-field-test", field: "not-a-list",
+        },
     )
 
     assert status == 400, response

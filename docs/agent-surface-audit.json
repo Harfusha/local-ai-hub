@@ -6627,6 +6627,7 @@
         "literal_response_fields": [
           "error",
           "error_code",
+          "model_resident",
           "mutation_applied",
           "operation_not_started",
           "question",
@@ -6635,6 +6636,8 @@
           "required_tokens",
           "response_budget",
           "retryable",
+          "runtime",
+          "service_available",
           "success",
           "task",
           "tasks",

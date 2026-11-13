@@ -1165,9 +1165,12 @@ def test_run_benchmark_retains_busy_scratch_without_cleanup_watcher(
             if isinstance(worker_thread, threading.Thread):
                 threads.append(worker_thread)
             if isinstance(manager, AsyncJobManager):
-                threads.extend(manager._delayed_dispatch.values())
-                threads.extend(manager._dispatchers)
-                threads.extend(manager._workers)
+                threads.extend(
+                    thread for thread in manager._delayed_dispatch.values()
+                    if isinstance(thread, threading.Thread)
+                )
+                threads.extend(thread for thread in manager._dispatchers if isinstance(thread, threading.Thread))
+                threads.extend(thread for thread in manager._workers if isinstance(thread, threading.Thread))
             for _, _, retained_groups, _, _ in surface_benchmarks._RETAINED_BENCHMARK_SCRATCH:
                 threads.extend(thread for group in retained_groups for thread in group)
             threads.extend(

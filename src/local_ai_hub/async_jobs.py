@@ -1073,7 +1073,8 @@ class AsyncJobManager:
             if len(self._workers) >= self.max_workers:
                 return
         with self._mode_transition_lock:
-            self._cancel_jobs_blocked_by_mode(self._operational_mode_snapshot())
+            # Mode-change handling cancels queued work globally; executor
+            # admission checks this job again immediately before execution.
             with self._lock, closing(self._connect()) as con:
                 self._delayed_dispatch.pop(job_id, None)
                 con.row_factory = sqlite3.Row
@@ -1257,7 +1258,8 @@ class AsyncJobManager:
         return update
 
     def _execute(self, job_id: str) -> dict[str, Any]:
-        self._cancel_jobs_blocked_by_mode(self._operational_mode_snapshot())
+        # The mode-change hook cancels affected queued/running jobs, and executor
+        # admission is authoritative. Do not rescan the entire queue per job.
         with self._lock, closing(self._connect()) as con:
             con.row_factory = sqlite3.Row
             row = con.execute("SELECT * FROM async_jobs WHERE job_id=?", (job_id,)).fetchone()

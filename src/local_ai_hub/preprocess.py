@@ -1082,7 +1082,9 @@ class ProjectPreprocessor:
         )
 
     def _get_cached_project_extensions(self, root: Path) -> set[str]:
-        root_key = str(root.resolve(strict=False))
+        # Watcher roots are canonicalized at registration/event dispatch; avoid
+        # another filesystem-resolving realpath call for every file event.
+        root_key = str(root)
         sig = self._project_config_watch_signature(root)
         with getattr(self, "_watch_cache_lock", threading.Lock()):
             if not hasattr(self, "_watch_extensions_cache"):

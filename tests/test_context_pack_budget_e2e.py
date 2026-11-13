@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from local_ai_hub import http_server, mcp_server
+from local_ai_hub.agent_context import CompiledContext, ContextElement
 from local_ai_hub.app import LocalAIApp
 from local_ai_hub.operational_mode import OperationalModeSnapshot
 from local_ai_hub.token_accounting import json_tokens
@@ -71,10 +72,21 @@ def test_mcp_adaptive_context_pack_crosses_http_with_bounded_provenance(
         }
 
     monkeypatch.setattr(app.services, "adaptive_context_pack", adaptive_context_pack)
+    monkeypatch.setattr(
+        app.agent_context, "compile",
+        lambda request: CompiledContext(
+            elements=[ContextElement(
+                element_id="context-pack-goal", source_kind="task_goal",
+                content="Task Goal: inspect route", estimated_tokens=5, reason="task goal",
+            )], estimated_tokens=5, token_budget=request.token_budget,
+            repo_revision="rev-t14-1",
+        ),
+    )
     server = http_server.LocalAIHTTPServer(("127.0.0.1", 0), http_server.Handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     posted = []
+    http_responses = []
 
     def post_to_http(path: str, payload: dict, timeout: float = 30.0):
         posted.append((path, dict(payload)))
@@ -85,7 +97,9 @@ def test_mcp_adaptive_context_pack_crosses_http_with_bounded_provenance(
             method="POST",
         )
         with urllib.request.urlopen(request, timeout=timeout) as response:
-            return json.loads(response.read().decode("utf-8"))
+            body = json.loads(response.read().decode("utf-8"))
+            http_responses.append(body)
+            return body
 
     monkeypatch.setattr(mcp_server.CLIENT, "post", post_to_http)
     try:
@@ -93,14 +107,20 @@ def test_mcp_adaptive_context_pack_crosses_http_with_bounded_provenance(
             action="context",
             root=str(tmp_path),
             query="inspect route",
+            task_id="context-pack-budget-e2e",
             mode="adaptive",
             guarded=True,
             phase="review",
             focus=["route contract"],
             token_budget=512,
-            max_response_tokens=512,
+            max_response_tokens=8192,
             response_profile="compact",
             reuse_key="t14-context-pack-e2e",
+        )
+        artifact_id = result.get("task_context_artifact_id") if isinstance(result, dict) else None
+        artifact = (
+            app.artifacts.get(artifact_id, section="json:text", max_chars=50_000)
+            if isinstance(artifact_id, str) else {}
         )
     finally:
         server.shutdown()
@@ -117,18 +137,22 @@ def test_mcp_adaptive_context_pack_crosses_http_with_bounded_provenance(
     assert payload["max_tokens"] == payload["token_budget"] == 512
     assert len(calls) == 1
     assert calls[0][1:] == ("adaptive", "")
-    assert result["success"] is True
-    assert result["context_id"] == "ctx-t14-e2e"
+    assert result["success"] is False
+    assert result["complete"] is False
+    assert result["next_action"] == "read_task_context_artifact"
+    assert isinstance(artifact_id, str) and artifact_id
+    assert artifact["success"] is True
+    assert "Task Goal: inspect route" in artifact["text"]
     assert result["repo_revision"] == "rev-t14-1"
     assert result["evidence_ids"] == ["E-T14-1"]
-    assert result["provenance"]["status"] == "success"
+    assert http_responses[0]["task_context"]["provenance"]["status"] == "success"
     assert result["contract"]["goal"] == "inspect route"
-    assert result["response_budget"]["requested_tokens"] == 512
+    assert result["response_budget"]["requested_tokens"] == 8192
     if detailed_diagnostics:
         assert result["response_budget"]["original_tokens"] > 512
     else:
         assert "original_tokens" not in result["response_budget"]
-    assert result["response_budget"]["returned_tokens"] == json_tokens(result) <= 512
+    assert result["response_budget"]["returned_tokens"] == json_tokens(result) <= 8192
     assert "private source detail" not in repr(result)
 
 

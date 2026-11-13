@@ -2028,7 +2028,8 @@ def test_config_update_error_does_not_disclose_host_path(monkeypatch, tmp_path):
     assert responses[0][1]["error"] == "configuration update rejected"
     assert private_path not in str(responses[0][1])
     assert private_path not in str(log_calls)
-    assert log_calls[0][0] == ("config update rejected error_type=%s", "OSError")
+    assert log_calls[0][0][0] == "config update rejected stage=%s error_type=%s"
+    assert log_calls[0][0][-1] == "OSError"
 
 
 @pytest.mark.parametrize(("path", "expected_status"), [

@@ -157,8 +157,6 @@ def _iter_release_hygiene_violations(
         ):
             continue
         if allow_installed:
-            if parts and parts[0] == "build":
-                continue
             if parts and parts[0] in _INSTALLED_ENV_DIRS:
                 continue
             if parts and parts[0] in {"generated", "data"}:

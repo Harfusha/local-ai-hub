@@ -1134,6 +1134,7 @@ def test_check_mode_infers_task_id_and_preserves_matching_document(tmp_path, cap
 
 def test_check_mode_with_real_schema_generator_does_not_write_coverage(tmp_path, monkeypatch, capsys):
     make_repo(tmp_path)
+    write(tmp_path, "defaults.toml", (ROOT / "defaults.toml").read_text(encoding="utf-8"))
     coverage_path = tmp_path / "docs" / "API_COVERAGE.md"
     schema_dir = tmp_path / "generated" / "schemas"
     for schema_path in schema_dir.glob("*.json"):
