@@ -34,8 +34,8 @@ def run_prefetch_local_nlp(
 
     report: dict[str, Any] = {
         "success": True,
-        "embedding": {"status": "not_selected"},
-        "reranker": {"status": "not_selected"},
+        "embedding": None,
+        "reranker": None,
         "downloads_enabled": models.get("allow_hf_downloads") is True,
     }
 
@@ -73,6 +73,8 @@ def run_prefetch_local_nlp(
             }
         else:
             rr_status = rr.status()
+            if not isinstance(rr_status, dict):
+                rr_status = {}
             report["reranker"] = {
                 "status": "ready",
                 "model": rr_status.get("model", rr.model_name),

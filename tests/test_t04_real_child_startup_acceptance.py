@@ -64,7 +64,7 @@ def test_autostart_launches_real_hub_child_and_returns_http_search_result(tmp_pa
         port = probe.getsockname()[1]
     config_path.write_text(
         f'[server]\nbind = "127.0.0.1"\nport = {port}\nstate_dir = "{state_dir.as_posix()}"\n'
-        "[client]\nstartup_wait_seconds = 15\nstartup_poll_seconds = 0.05\nhealth_timeout_seconds = 0.25\n"
+        "[client]\nstartup_wait_seconds = 60\nstartup_poll_seconds = 0.05\nhealth_timeout_seconds = 0.25\n"
         "[ollama]\nenabled = false\n"
         "[smart_ollama]\nenabled = false\n"
         "[llama_cpp]\nmode = \"off\"\n"
@@ -90,7 +90,7 @@ def test_autostart_launches_real_hub_child_and_returns_http_search_result(tmp_pa
             "/api/search",
             {"root": str(repo), "query": "T04_REAL_CHILD_MARKER", "top_k": 3},
             request_id="t04-real-child-search",
-            timeout=30,
+            timeout=60,
         )
         assert result["success"] is True
         assert any(

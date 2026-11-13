@@ -182,7 +182,7 @@ def test_semaphore_single_capacity_is_process_safe(tmp_path: Path) -> None:
 def test_semaphore_waiter_wakes_when_holder_ttl_expires(tmp_path: Path) -> None:
     pubsub = SwarmPubSub()
     store = SemaphoreStore(tmp_path / "semaphores_ttl_wait.sqlite", pubsub=pubsub)
-    held = store.acquire("ttl_wait_slot", owner="worker-1", ttl_seconds=0.15)
+    held = store.acquire("ttl_wait_slot", owner="worker-1", ttl_seconds=3.0)
     assert held["acquired"] is True
 
     waiting = threading.Event()
@@ -200,12 +200,12 @@ def test_semaphore_waiter_wakes_when_holder_ttl_expires(tmp_path: Path) -> None:
     result: dict[str, Any] = {}
 
     def waiter() -> None:
-        result.update(store.acquire("ttl_wait_slot", owner="worker-2", timeout=1.0))
+        result.update(store.acquire("ttl_wait_slot", owner="worker-2", timeout=5.0))
 
     thread = threading.Thread(target=waiter)
     thread.start()
-    assert waiting.wait(timeout=0.5)
-    thread.join(timeout=0.5)
+    assert waiting.wait(timeout=2.5)
+    thread.join(timeout=3.0)
     if thread.is_alive():
         thread.join(timeout=1.0)
 

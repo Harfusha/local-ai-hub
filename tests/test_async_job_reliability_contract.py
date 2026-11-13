@@ -744,9 +744,9 @@ def test_hundred_plus_durable_jobs_stay_within_configured_worker_bounds(manager_
     finally:
         release.set()
 
-    # This is a durability/worker-bound contract, not a sub-30-second latency
-    # target; allow slower Windows SQLite/filesystem hosts a bounded drain.
-    if not completed.wait(60):
+    # This is a durability/worker-bound contract, not a latency target. Windows
+    # SQLite/filesystem hosts need a bounded drain window for 120 job records.
+    if not completed.wait(120):
         with closing(manager._connect()) as con:
             state_counts = dict(con.execute(
                 "SELECT state, COUNT(*) FROM async_jobs GROUP BY state"

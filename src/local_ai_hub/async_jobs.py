@@ -1075,6 +1075,11 @@ class AsyncJobManager:
             # Mode-change handling cancels queued work globally; executor
             # admission checks this job again immediately before execution.
             with self._lock, closing(self._connect()) as con:
+                # The fast-path check above can become stale while several
+                # dispatchers wait for the mode-transition lock. Recheck while
+                # holding the lock that guards worker admission.
+                if len(self._workers) >= self.max_workers:
+                    return
                 self._delayed_dispatch.pop(job_id, None)
                 con.row_factory = sqlite3.Row
                 row = con.execute("SELECT * FROM async_jobs WHERE job_id=?", (job_id,)).fetchone()
@@ -1085,6 +1090,13 @@ class AsyncJobManager:
                     or row["cancel_requested"]
                     or float(row["lease_until"] or 0) > now
                 ):
+                    return
+                # Mode can change after submit but before this job's delayed
+                # dispatch. Recheck only this row here; a full queue scan for
+                # every dispatcher starves large backlogs.
+                mode_snapshot = self._operational_mode_snapshot()
+                if str(row["action"]) in self._mode_blocked_actions(mode_snapshot):
+                    self.cancel(job_id)
                     return
                 dispatch_not_before = float(row["dispatch_not_before"] or 0)
                 if dispatch_not_before > now:
