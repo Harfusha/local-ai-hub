@@ -4,8 +4,23 @@ import threading
 from concurrent.futures import Future
 from types import SimpleNamespace
 
-from local_ai_hub.app import LocalAIApp
+from local_ai_hub.app import LocalAIApp, _redact_laya_training_text
 from local_ai_hub.laya_decisions import DecisionResult, DecisionStatus
+
+
+def test_laya_training_text_redacts_common_credentials():
+    value = (
+        "Authorization: Bearer bearer-secret "
+        "https://user:url-secret@example.test/path "
+        "sk-proj-abcdefghijklmnopqrstuvwxyz123456 "
+        "-----BEGIN PRIVATE KEY-----\nprivate-secret\n-----END PRIVATE KEY-----"
+    )
+
+    redacted = _redact_laya_training_text(value)
+
+    for secret in ("bearer-secret", "url-secret", "sk-proj-", "private-secret"):
+        assert secret not in redacted
+    assert redacted.count("[REDACTED]") == 4
 
 
 def test_ordinary_context_shadow_capture_runs_without_legacy_flag_or_consent(tmp_path):

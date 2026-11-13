@@ -260,7 +260,8 @@ def test_terminal_task_callbacks_run_outside_async_job_write_lock(
         status = _wait_for_terminal(manager, submitted["job_id"], expected_state)
 
         assert status["state"] == expected_state
-        assert callback_lock_was_free == [True]
+        expected_callback = [True] if expected_state == "failed" else []
+        assert callback_lock_was_free == expected_callback
     finally:
         manager.close()
 
