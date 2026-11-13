@@ -36,7 +36,7 @@ def test_ordinary_context_shadow_capture_runs_without_legacy_flag_or_consent(tmp
         status=SimpleNamespace(value="active"),
         sensitivity="normal",
         evidence_ids=("ev-memory",),
-        value="Verified task memory excerpt",
+        value="Verified task memory excerpt; password=memory-secret",
     )
     app.agent_memory = SimpleNamespace(
         find=lambda *, scope, **_kwargs: [memory_record] if scope.value == "task" else []
@@ -64,7 +64,8 @@ def test_ordinary_context_shadow_capture_runs_without_legacy_flag_or_consent(tmp
 
     app.evaluate_laya_context_source = evaluate
     request = SimpleNamespace(
-        root=str(tmp_path), task_id="task-1", session_id="session-1"
+        root=str(tmp_path), task_id="task-1", session_id="session-1",
+        query="Find missing evidence. api_key=query-secret",
     )
     result = {
         "success": True,
@@ -81,7 +82,11 @@ def test_ordinary_context_shadow_capture_runs_without_legacy_flag_or_consent(tmp
             },
         },
         "evidence": [
-            {"path": "indexed.py", "content_hash": "a" * 64, "text": "indexed"},
+            {
+                "path": "indexed.py",
+                "content_hash": "a" * 64,
+                "text": "indexed source; token=source-secret",
+            },
             {
                 "path": "rag.py",
                 "content_hash": "b" * 64,
@@ -103,7 +108,12 @@ def test_ordinary_context_shadow_capture_runs_without_legacy_flag_or_consent(tmp
     assert operation["evidence"]["source_codes"] == ["indexed", "rag", "memory"]
     assert operation["evidence"]["source_record_ids"] == [None, None, "mem-task"]
     assert operation["evidence"]["evidence_ids"] == ["ev-indexed", "ev-rag", "ev-memory"]
-    assert "Verified task memory excerpt" in operation["evidence"]["training_content"]["context_excerpt"]
+    training_text = " ".join(operation["evidence"]["training_content"].values())
+    assert "Verified task memory excerpt" in training_text
+    assert "[REDACTED]" in training_text
+    assert "query-secret" not in training_text
+    assert "source-secret" not in training_text
+    assert "memory-secret" not in training_text
     assert set(operation) == {"action", "task_id", "session_id", "evidence"}
     assert "per_example_consented" not in operation["evidence"]
     assert "consent_receipt_id" not in operation["evidence"]

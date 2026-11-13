@@ -5,6 +5,7 @@ from .json_utils import dumps as json_dumps
 import stat
 import io
 import json
+import re
 import sqlite3
 import threading
 import time
@@ -76,6 +77,25 @@ from .swarm import SwarmCoordinator
 from .benchmark import HardwareBenchmarkRunner
 from .work_orchestrator import WorkOrchestrator
 from .status_executor import StatusDependencyExecutor
+
+
+_LAYA_SECRET_PATTERNS = (
+    re.compile(r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----.*?-----END [A-Z0-9 ]*PRIVATE KEY-----", re.DOTALL),
+    re.compile(
+        r"\b((?:api[_-]?key|access[_-]?token|refresh[_-]?token|client[_-]?secret|password|passwd|secret|token|authorization|credential)\b\s*[:=]\s*)(?:\"[^\"]*\"|'[^']*'|[^\s,;]+)",
+        re.IGNORECASE,
+    ),
+    re.compile(r"\b(Bearer|Basic)\s+[A-Za-z0-9._~+/=-]+", re.IGNORECASE),
+    re.compile(r"\b(?:gh[pousr]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-(?:proj-)?[A-Za-z0-9_-]{20,})\b"),
+    re.compile(r"(https?://[^/\s:@]+:)[^@\s/]+(@)", re.IGNORECASE),
+)
+
+
+def _redact_laya_training_text(value: str) -> str:
+    redacted = value
+    for pattern in _LAYA_SECRET_PATTERNS:
+        redacted = pattern.sub("[REDACTED]", redacted)
+    return redacted
 
 
 _STATUS_DEPENDENCY_TIMEOUT_SECONDS = 0.25
@@ -3522,7 +3542,8 @@ class LocalAIApp:
             ],
         }
         def bounded_laya_text(value: str, limit: int) -> str:
-            raw = value.replace("\x00", "").strip().encode("utf-8", errors="replace")[:limit]
+            redacted = _redact_laya_training_text(value)
+            raw = redacted.replace("\x00", "").strip().encode("utf-8", errors="replace")[:limit]
             return raw.decode("utf-8", errors="ignore").strip()
 
         task_input = getattr(request, "query", "")
