@@ -250,7 +250,7 @@ def test_release_hygiene_still_rejects_build_outputs(tmp_path: Path) -> None:
     (tmp_path / "dist").mkdir()
     (tmp_path / "stale.whl").write_bytes(b"wheel")
 
-    violations = list(_iter_release_hygiene_violations(tmp_path, allow_installed=True))
+    violations = list(_iter_release_hygiene_violations(tmp_path))
     assert "forbidden directory: build/" in violations
     assert "forbidden directory: dist/" in violations
     assert "runtime/build payload: stale.whl" in violations

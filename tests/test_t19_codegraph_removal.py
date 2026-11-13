@@ -4,7 +4,7 @@ import json
 import ast
 from pathlib import Path
 
-from tools import uninstall
+from tools import setup, uninstall
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -95,14 +95,16 @@ def test_optional_codegraph_docs_use_current_gcf_extra_without_hub_integration()
     assert "it is not part of the Hub's `local-ai` MCP entry" in standalone
 
 
-def test_uninstall_preserves_standalone_codegraph_mcp_entry(tmp_path: Path) -> None:
+def test_uninstall_preserves_standalone_codegraph_mcp_entry(tmp_path: Path, monkeypatch) -> None:
     config_path = tmp_path / "mcp.json"
+    install = tmp_path / "install"
+    install.mkdir()
+    setup.write_install_manifest(install)
+    monkeypatch.setattr(setup, "_ACTIVE_INSTALL_ROOT", install)
     config_path.write_text(
         json.dumps(
             {
                 "mcpServers": {
-                    "local-ai": {"command": "hub"},
-                    "serena-local": {"command": "serena"},
                     "codegraph-local": {"command": "codegraph"},
                     "other-tool": {"command": "other"},
                 }
@@ -111,7 +113,11 @@ def test_uninstall_preserves_standalone_codegraph_mcp_entry(tmp_path: Path) -> N
         encoding="utf-8",
     )
 
-    uninstall.clean_json(config_path)
+    setup.json_mcp_merge(config_path, {
+        "local-ai": {"command": "hub"},
+        "serena-local": {"command": "serena"},
+    }, False)
+    uninstall.clean_json(config_path, install)
 
     servers = json.loads(config_path.read_text(encoding="utf-8"))["mcpServers"]
     assert set(servers) == {"codegraph-local", "other-tool"}

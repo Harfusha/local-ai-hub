@@ -100,7 +100,12 @@ def test_context_capture_is_not_disabled_by_runtime_flag_and_skips_missing_task(
 
 def test_ordinary_context_capture_queues_without_per_example_consent(tmp_path):
     app = LocalAIApp.__new__(LocalAIApp)
-    app.config = {"laya": {"runtime": {"enabled": False}}}
+    app.config = {"laya": {"runtime": {
+        "enabled": False,
+        "checkpoint_path": "pinned-local-checkpoint",
+        "revision": "pinned-revision",
+        "expected_sha256": {"model.safetensors": "a" * 64},
+    }}}
     telemetry_events = []
     log_warnings = []
     app.telemetry = SimpleNamespace(record_stage=lambda **event: telemetry_events.append(event))
@@ -182,7 +187,12 @@ def test_ordinary_context_capture_queues_without_per_example_consent(tmp_path):
 
 def test_ordinary_context_capture_queues_concurrent_requests_serially_and_bounded(tmp_path):
     app = LocalAIApp.__new__(LocalAIApp)
-    app.config = {"laya": {"runtime": {"enabled": True}}}
+    app.config = {"laya": {"runtime": {
+        "enabled": True,
+        "checkpoint_path": "pinned-local-checkpoint",
+        "revision": "pinned-revision",
+        "expected_sha256": {"model.safetensors": "a" * 64},
+    }}}
     telemetry_events = []
     app.telemetry = SimpleNamespace(record_stage=lambda **event: telemetry_events.append(event))
     app.logger = SimpleNamespace(warning=lambda *_args: None)

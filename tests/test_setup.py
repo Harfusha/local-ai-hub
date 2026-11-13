@@ -231,16 +231,23 @@ def test_direct_agent_serena_context_matches_gemini(tmp_path: Path):
     assert entries["serena"]["args"][1:3] == ["--context", "gemini"]
 
 
-def test_antigravity_mcp_sync_uses_gemini_and_prunes_stale_backends(tmp_path: Path):
+def test_antigravity_mcp_sync_uses_gemini_and_prunes_stale_backends(tmp_path: Path, monkeypatch):
     path = tmp_path / "mcp_config.json"
     serena = tmp_path / "serena.exe"
+    install = tmp_path / "install"
+    install.mkdir()
+    setup.write_install_manifest(install)
+    monkeypatch.setattr(setup, "_ACTIVE_INSTALL_ROOT", install)
     path.write_text(json.dumps({"mcpServers": {
         "user-server": {"command": "keep"},
-        "serena": {"command": str(serena), "args": ["start-mcp-server"]},
     }}), encoding="utf-8")
 
     setup.sync_antigravity_mcp_config(
-        path, tmp_path / "install", tmp_path / "python", serena,
+        path, install, tmp_path / "python", serena,
+        {"code_intelligence": {"direct_agent_mcp": True, "serena_enabled": True}}, False,
+    )
+    setup.sync_antigravity_mcp_config(
+        path, install, tmp_path / "python", serena,
         {"code_intelligence": {"direct_agent_mcp": False}}, False,
     )
 

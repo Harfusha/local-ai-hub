@@ -23,7 +23,7 @@ def test_t12_cross_model_admission_defers_to_post_unload_check() -> None:
 
         def resource_status(self) -> dict[str, Any]:
             return {
-                "available": True,
+                "available": True, "telemetry_stale": False, "sample_age_seconds": 0.0,
                 "pressure_level": "nominal",
                 "vram_total_mb": 8192.0,
                 "vram_available_mb": 1024.0,
@@ -169,7 +169,7 @@ def test_app_connects_vram_balancer_to_scheduler(tmp_path: Path, monkeypatch: An
     from local_ai_hub import app as app_module
 
     expected = {
-        "available": True,
+        "available": True, "telemetry_stale": False, "sample_age_seconds": 0.0,
         "pressure_level": "nominal",
         "context_budget_factor": 1.0,
         "throttle_background": False,
@@ -260,7 +260,7 @@ def test_t12_scheduler_admission_reports_observed_vram_budget() -> None:
 
         def resource_status(self) -> dict[str, Any]:
             return {
-                "available": True,
+                "available": True, "telemetry_stale": False, "sample_age_seconds": 0.0,
                 "pressure_level": self.pressure,
                 "context_budget_factor": 1.0,
                 "throttle_background": self.throttle,
@@ -298,7 +298,7 @@ def test_t12_model_switch_admission_does_not_overstate_measured_reclaimable_vram
     class Runtime:
         def resource_status(self) -> dict[str, Any]:
             return {
-                "available": True,
+                "available": True, "telemetry_stale": False, "sample_age_seconds": 0.0,
                 "pressure_level": "critical",
                 "context_budget_factor": 0.25,
                 "throttle_background": False,
@@ -334,7 +334,7 @@ def test_t12_scheduler_uses_explicit_cold_model_vram_estimate() -> None:
 
         def resource_status(self) -> dict[str, Any]:
             return {
-                "available": True,
+                "available": True, "telemetry_stale": False, "sample_age_seconds": 0.0,
                 "pressure_level": "nominal",
                 "context_budget_factor": 1.0,
                 "throttle_background": False,
@@ -372,7 +372,7 @@ def test_t12_scheduler_does_not_count_unobserved_configured_resident_vram_as_rec
     class Runtime:
         def resource_status(self) -> dict[str, Any]:
             return {
-                "available": True,
+                "available": True, "telemetry_stale": False, "sample_age_seconds": 0.0,
                 "pressure_level": "nominal",
                 "context_budget_factor": 1.0,
                 "throttle_background": False,
@@ -407,7 +407,7 @@ def test_t12_scheduler_labels_unestimated_cold_model_without_fabricated_size() -
     class Runtime:
         def resource_status(self) -> dict[str, Any]:
             return {
-                "available": True,
+                "available": True, "telemetry_stale": False, "sample_age_seconds": 0.0,
                 "pressure_level": "nominal",
                 "context_budget_factor": 1.0,
                 "throttle_background": False,

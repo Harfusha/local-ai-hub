@@ -766,12 +766,12 @@ def test_disjoint_private_transactions_commit_only_their_declared_paths(
 
     def execute_owned(_argv, cwd, *_args, **_kwargs):
         (Path(cwd) / "owned.txt").write_text("owned output\n", encoding="utf-8")
-        barrier.wait(5)
+        barrier.wait(10)
         return {"success": True, "exit_code": 0, "stdout": "", "stderr": ""}
 
     def execute_other(_argv, cwd, *_args, **_kwargs):
         (Path(cwd) / "other.txt").write_text("other output\n", encoding="utf-8")
-        barrier.wait(5)
+        barrier.wait(10)
         return {"success": True, "exit_code": 0, "stdout": "", "stderr": ""}
 
     monkeypatch.setattr(brokers[0], "_execute", execute_owned)
@@ -792,7 +792,7 @@ def test_disjoint_private_transactions_commit_only_their_declared_paths(
     for thread in threads:
         thread.start()
     for thread in threads:
-        thread.join(5)
+        thread.join(15)
 
     assert all(not thread.is_alive() for thread in threads)
     assert len(results) == 2

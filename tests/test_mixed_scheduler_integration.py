@@ -77,7 +77,7 @@ def test_scheduler_prepares_fallback_before_inference_and_releases_on_unload(tmp
     def telemetry(force=False):
         if force:
             state["admission_loaded"].append(state["loaded"])
-        return {"available": True, "vram_total_mb": 8192, "vram_available_mb": available_mb if force else 6144}
+        return {"available": True, "telemetry_stale": False, "sample_age_seconds": 0.0, "vram_total_mb": 8192, "vram_available_mb": available_mb if force else 6144}
 
     runtime.vram_balancer = SimpleNamespace(status=telemetry)
     scheduler = None
@@ -234,7 +234,7 @@ def test_scheduler_dispatch_coadmits_around_resident_capacity_lease(tmp_path, re
     unloaded = []
     runtime.unload_model = lambda *args, **kwargs: unloaded.append((args, kwargs)) or True
     runtime.vram_balancer = SimpleNamespace(status=lambda force=False: {
-        "available": True, "vram_total_mb": 16 * 1024, "vram_available_mb": 8 * 1024,
+        "available": True, "telemetry_stale": False, "sample_age_seconds": 0.0, "vram_total_mb": 16 * 1024, "vram_available_mb": 8 * 1024,
         "pressure_level": "nominal", "context_budget_factor": 1.0,
     })
     scheduler = AffinityScheduler(runtime, config)
@@ -283,7 +283,7 @@ def test_scheduler_admission_uses_measured_free_capacity_not_reservation_budget(
     }
     runtime = OllamaRuntime(config)
     runtime.vram_balancer = SimpleNamespace(status=lambda force=False: {
-        "available": True, "vram_total_mb": 16 * 1024, "vram_available_mb": 8 * 1024,
+        "available": True, "telemetry_stale": False, "sample_age_seconds": 0.0, "vram_total_mb": 16 * 1024, "vram_available_mb": 8 * 1024,
         "pressure_level": "nominal", "context_budget_factor": 1.0,
     })
     scheduler = AffinityScheduler(runtime, config)
@@ -307,7 +307,7 @@ def test_laya_capacity_lease_coadmits_legacy_reservation_from_measured_free_vram
     }
     runtime = OllamaRuntime(config)
     runtime.vram_balancer = SimpleNamespace(status=lambda force=False: {
-        "available": True, "vram_total_mb": 16 * 1024, "vram_available_mb": 8 * 1024,
+        "available": True, "telemetry_stale": False, "sample_age_seconds": 0.0, "vram_total_mb": 16 * 1024, "vram_available_mb": 8 * 1024,
         "pressure_level": "nominal", "context_budget_factor": 1.0,
     })
     scheduler = AffinityScheduler(runtime, config)
@@ -335,7 +335,7 @@ def test_internal_digest_reservation_is_not_shared_capacity(tmp_path):
     }
     runtime = OllamaRuntime(config)
     runtime.vram_balancer = SimpleNamespace(status=lambda force=False: {
-        "available": True, "vram_total_mb": 16 * 1024, "vram_available_mb": 8 * 1024,
+        "available": True, "telemetry_stale": False, "sample_age_seconds": 0.0, "vram_total_mb": 16 * 1024, "vram_available_mb": 8 * 1024,
         "pressure_level": "nominal", "context_budget_factor": 1.0,
     })
     scheduler = AffinityScheduler(runtime, config)
@@ -354,7 +354,7 @@ def test_laya_capacity_lease_coadmits_during_owned_internal_digest(tmp_path):
     }
     runtime = OllamaRuntime(config)
     runtime.vram_balancer = SimpleNamespace(status=lambda force=False: {
-        "available": True, "vram_total_mb": 16 * 1024, "vram_available_mb": 8 * 1024,
+        "available": True, "telemetry_stale": False, "sample_age_seconds": 0.0, "vram_total_mb": 16 * 1024, "vram_available_mb": 8 * 1024,
         "pressure_level": "nominal", "context_budget_factor": 1.0,
     })
     scheduler = AffinityScheduler(runtime, config)
@@ -402,7 +402,7 @@ def test_scheduler_switch_preserves_other_resident_when_shared_capacity_fits(tmp
     runtime.prepare_model = lambda model, **kwargs: (prepare_calls.append((model, kwargs)) or residents.add(model) or [])
     runtime.unload_model = lambda *args, **kwargs: unload_calls.append((args, kwargs)) or True
     runtime.vram_balancer = SimpleNamespace(status=lambda force=False: {
-        "available": True, "vram_total_mb": 16 * 1024, "vram_available_mb": 8 * 1024,
+        "available": True, "telemetry_stale": False, "sample_age_seconds": 0.0, "vram_total_mb": 16 * 1024, "vram_available_mb": 8 * 1024,
         "pressure_level": "nominal", "context_budget_factor": 1.0,
     })
     scheduler = AffinityScheduler(runtime, config)
@@ -435,7 +435,7 @@ def test_capacity_deferred_model_does_not_block_admitted_active_model_job(tmp_pa
     }
     runtime = OllamaRuntime(config)
     runtime.vram_balancer = SimpleNamespace(status=lambda force=False: {
-        "available": True, "vram_total_mb": 16 * 1024, "vram_available_mb": 8 * 1024,
+        "available": True, "telemetry_stale": False, "sample_age_seconds": 0.0, "vram_total_mb": 16 * 1024, "vram_available_mb": 8 * 1024,
         "pressure_level": "nominal", "context_budget_factor": 1.0,
     })
     scheduler = AffinityScheduler(runtime, config)
@@ -612,7 +612,7 @@ def test_scheduler_routes_cuda_only_after_ollama_unload_and_admission(tmp_path, 
     def telemetry(force=False):
         if force:
             state["events"].append("admit_while_loaded" if state["ollama_loaded"] else "admit")
-        return {"available": True, "vram_total_mb": 8192, "vram_available_mb": available_mb if force else 6144}
+        return {"available": True, "telemetry_stale": False, "sample_age_seconds": 0.0, "vram_total_mb": 8192, "vram_available_mb": available_mb if force else 6144}
     runtime.vram_balancer = SimpleNamespace(status=telemetry)
     scheduler = None
     try:

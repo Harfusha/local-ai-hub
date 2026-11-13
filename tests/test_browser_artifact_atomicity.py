@@ -69,6 +69,8 @@ class _FailingConnection:
             self.inserts += 1
             if self.inserts == self._fail_insert:
                 raise sqlite3.OperationalError("injected insert failure")
+        if self._fail_commit and sql.strip().upper() == "COMMIT":
+            raise sqlite3.OperationalError("injected commit failure")
         return self._connection.execute(sql, parameters)
 
     def commit(self):

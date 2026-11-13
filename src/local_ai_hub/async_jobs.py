@@ -1437,8 +1437,6 @@ class AsyncJobManager:
                     "UPDATE async_jobs SET state='outcome_unknown',result_json=?,error=?,lease_until=0,updated_at=? WHERE job_id=?",
                     (json_dumps(final, ensure_ascii=False, separators=(",", ":")), final["error"], time.time(), job_id),
                 )
-                if task_id and self.task_store is not None:
-                    task_failure_reason = final["error"]
             elif cancelled:
                 con.execute("UPDATE async_jobs SET state='cancelled',lease_until=0,updated_at=? WHERE job_id=?", (time.time(), job_id))
                 stats_counter = "cancelled"

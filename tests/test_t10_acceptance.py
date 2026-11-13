@@ -675,18 +675,25 @@ def test_preprocessor_queues_unchanged_files_after_analyzer_version_change(tmp_p
     assert index._parse_blob_get_with_report(content_hash, "python") is not None
 
 
-def test_uninstall_preserves_standalone_codegraph_mcp_entry(tmp_path: Path) -> None:
+def test_uninstall_preserves_standalone_codegraph_mcp_entry(tmp_path: Path, monkeypatch) -> None:
     from tools.uninstall import clean_json
+    from tools import setup as setup_module
 
     config_path = tmp_path / "mcp.json"
+    install = tmp_path / "install"
+    install.mkdir()
+    setup_module.write_install_manifest(install)
+    monkeypatch.setattr(setup_module, "_ACTIVE_INSTALL_ROOT", install)
     config_path.write_text(json.dumps({"mcpServers": {
-        "local-ai": {"command": "hub"},
-        "serena-local": {"command": "serena"},
         "codegraph-local": {"command": "codegraph"},
         "user-server": {"command": "keep"},
     }}), encoding="utf-8")
 
-    clean_json(config_path)
+    setup_module.json_mcp_merge(config_path, {
+        "local-ai": {"command": "hub"},
+        "serena-local": {"command": "serena"},
+    }, False)
+    clean_json(config_path, install)
 
     servers = json.loads(config_path.read_text(encoding="utf-8"))["mcpServers"]
     assert set(servers) == {"codegraph-local", "user-server"}
