@@ -1,7 +1,7 @@
 """Deterministic helpers for test-path and test-matrix policy."""
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor
+import concurrent.futures
 import re
 from collections.abc import Callable, Iterable
 from pathlib import Path
@@ -181,7 +181,7 @@ def run_test_matrix_workers(
     """Run per-file matrix workers with a bounded pool and input-order results."""
     if not items:
         return []
-    with ThreadPoolExecutor(max_workers=min(max_workers, len(items))) as pool:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=min(max_workers, len(items))) as pool:
         return list(pool.map(worker, items))
 
 

@@ -31,6 +31,9 @@ def test_test_matrix_reads_files_with_thread_pool(tmp_path: Path, monkeypatch: p
     import local_ai_hub.deterministic as det_mod
     if hasattr(det_mod, "ThreadPoolExecutor"):
         monkeypatch.setattr(det_mod, "ThreadPoolExecutor", TrackedThreadPoolExecutor)
+    import local_ai_hub.deterministic_test_paths as det_test_mod
+    if hasattr(det_test_mod, "ThreadPoolExecutor"):
+        monkeypatch.setattr(det_test_mod, "ThreadPoolExecutor", TrackedThreadPoolExecutor)
 
     engine = DeterministicEngine({"server": {"state_dir": str(tmp_path / "state")}})
     result = engine.test_matrix(str(tmp_path))
