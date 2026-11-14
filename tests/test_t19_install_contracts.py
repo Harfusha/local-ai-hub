@@ -144,9 +144,6 @@ def test_dry_install_copy_keeps_portable_toml_version_models_policy_and_schemas(
     assert project["tool"]["setuptools"]["package-data"]["local_ai_hub"] == [
         "defaults.toml",
         "automation_browser.js",
-        "ui_static/*.html",
-        "ui_static/*.js",
-        "ui_static/*.css",
     ]
     assert (install_dir / "src" / "local_ai_hub" / "automation_browser.js").read_bytes() == (
         ROOT / "src" / "local_ai_hub" / "automation_browser.js"

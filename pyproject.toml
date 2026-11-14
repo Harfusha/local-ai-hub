@@ -55,7 +55,7 @@ package-dir = {"" = "src"}
 where = ["src"]
 
 [tool.setuptools.package-data]
-local_ai_hub = ["defaults.toml", "automation_browser.js", "ui_static/*.html", "ui_static/*.js", "ui_static/*.css"]
+local_ai_hub = ["defaults.toml", "automation_browser.js"]
 "local_ai_hub.repo_plan" = ["repo-plan.v1.schema.json"]
 
 [tool.setuptools.data-files]
