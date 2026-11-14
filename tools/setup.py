@@ -1661,11 +1661,19 @@ def _configure_agents_impl(
                     manual_actions.append(manual_action)
                     log(f"Manual agent setup required: {manual_action}")
             if _agent_component_enabled(agent_components, "codex", "mcp"):
-                codex_mcp_merge(
-                    codex_home / "config.toml", codex_entries, backup_enabled,
-                    startup_timeout=int(cfg.get("client", {}).get("startup_wait_seconds", 15)) + 15,
-                    tool_timeout=int(cfg.get("mcp", {}).get("host_tool_timeout_seconds", 900)),
-                )
+                codex_config = codex_home / "config.toml"
+                try:
+                    codex_mcp_merge(
+                        codex_config, codex_entries, backup_enabled,
+                        startup_timeout=int(cfg.get("client", {}).get("startup_wait_seconds", 15)) + 15,
+                        tool_timeout=int(cfg.get("mcp", {}).get("host_tool_timeout_seconds", 900)),
+                    )
+                except ValueError as exc:
+                    if "external block has no ownership record" not in str(exc):
+                        raise
+                    manual_action = f"Codex MCP config preserved: {codex_config} ({exc})"
+                    manual_actions.append(manual_action)
+                    log(f"Manual agent setup required: {manual_action}")
     if agents_cfg.get("claude", True):
         if _agent_component_enabled(agent_components, "claude", "skills"):
             install_agent_skills(install_dir, Path.home() / ".claude" / "skills", include_companion=include_companion)

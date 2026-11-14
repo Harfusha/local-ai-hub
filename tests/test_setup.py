@@ -312,7 +312,7 @@ def test_codex_mcp_merge_writes_stable_working_directory(tmp_path: Path):
     assert f"cwd = {setup.toml_quote(str(tmp_path / 'hub'))}" in text
 
 
-def test_codex_unowned_instructions_do_not_block_other_profile_setup(tmp_path: Path, monkeypatch):
+def test_codex_unowned_files_do_not_block_other_profile_setup(tmp_path: Path, monkeypatch):
     root_home = tmp_path / "root"
     profile_home = tmp_path / "profile"
     install_dir = tmp_path / "install"
@@ -335,7 +335,12 @@ def test_codex_unowned_instructions_do_not_block_other_profile_setup(tmp_path: P
     monkeypatch.setattr(setup, "merge_global_policy", merge_global_policy)
     monkeypatch.setattr(setup, "merge_token_economy_policy", lambda *args, **kwargs: None)
     monkeypatch.setattr(setup, "merge_autosetup_policy", lambda *args, **kwargs: None)
-    monkeypatch.setattr(setup, "codex_mcp_merge", lambda path, *_args, **_kwargs: mcp_paths.append(path))
+    def merge_codex_mcp(path, *_args, **_kwargs):
+        if path == root_home / ".codex" / "config.toml":
+            raise ValueError("external block has no ownership record")
+        mcp_paths.append(path)
+
+    monkeypatch.setattr(setup, "codex_mcp_merge", merge_codex_mcp)
 
     manual_actions = setup._configure_agents_impl(
         install_dir,
@@ -357,7 +362,7 @@ def test_codex_unowned_instructions_do_not_block_other_profile_setup(tmp_path: P
     )
 
     assert "external block has no ownership record" in " ".join(manual_actions)
-    assert mcp_paths == [root_home / ".codex" / "config.toml", profile_home / ".codex" / "config.toml"]
+    assert mcp_paths == [profile_home / ".codex" / "config.toml"]
     assert profile_home / ".codex" / "AGENTS.md" in policy_paths
 
 
