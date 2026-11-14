@@ -54,3 +54,77 @@ def test_evidence_merge_prefers_file_snapshot_when_root_contains_path(tmp_path):
     )
 
     assert merged[0]["text"] == "line 2\nline 3"
+
+
+def test_evidence_merge_rejects_parent_and_absolute_paths(tmp_path):
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / "safe.py").write_text("safe line\n", encoding="utf-8")
+    outside = tmp_path / "outside.txt"
+    outside.write_text("secret\n", encoding="utf-8")
+
+    evidence = [
+        {"path": "../outside.txt", "start_line": 1, "end_line": 1, "text": "bad"},
+        {"path": "/etc/passwd", "start_line": 1, "end_line": 1, "text": "bad"},
+        {"path": "C:\\Windows\\System32\\cmd.exe", "start_line": 1, "end_line": 1, "text": "bad"},
+        {"path": "safe.py", "start_line": 1, "end_line": 1, "text": "safe line"},
+    ]
+
+    merged = merge_overlapping_evidence(evidence, root=root)
+    assert len(merged) == 1
+    assert merged[0]["path"] == "safe.py"
+
+
+def test_evidence_merge_does_not_merge_across_different_revisions():
+    evidence = [
+        {"path": "src/a.py", "start_line": 1, "end_line": 2, "text": "v1", "repository_revision": "rev_A"},
+        {"path": "src/a.py", "start_line": 2, "end_line": 3, "text": "v2", "repository_revision": "rev_B"},
+    ]
+    merged = merge_overlapping_evidence(evidence)
+    assert len(merged) == 2
+    assert merged[0]["repository_revision"] == "rev_A"
+    assert merged[1]["repository_revision"] == "rev_B"
+
+
+def test_evidence_merge_does_not_merge_across_different_content_hashes():
+    evidence = [
+        {"path": "src/a.py", "start_line": 1, "end_line": 2, "text": "v1", "content_hash": "hash1"},
+        {"path": "src/a.py", "start_line": 2, "end_line": 3, "text": "v2", "content_hash": "hash2"},
+    ]
+    merged = merge_overlapping_evidence(evidence)
+    assert len(merged) == 2
+    assert merged[0]["content_hash"] == "hash1"
+    assert merged[1]["content_hash"] == "hash2"
+
+
+def test_evidence_merge_lineage_and_id_provenance():
+    evidence = [
+        {"path": "src/a.py", "start_line": 1, "end_line": 2, "text": "line1\nline2", "evidence_id": "ev1", "score": 0.5},
+        {"path": "src/a.py", "start_line": 2, "end_line": 3, "text": "line2\nline3", "evidence_id": "ev2", "score": 0.9},
+    ]
+    merged = merge_overlapping_evidence(evidence)
+    assert len(merged) == 1
+    assert merged[0]["evidence_id"].startswith("merged-")
+    assert merged[0]["parent_evidence_ids"] == ["ev1", "ev2"]
+    assert merged[0]["merged_from_count"] == 2
+    assert merged[0]["score"] == 0.9
+
+
+def test_evidence_merge_falls_back_when_disk_hash_mismatches(tmp_path):
+    import hashlib
+
+    source = tmp_path / "src" / "a.py"
+    source.parent.mkdir()
+    source.write_text("modified on disk line 1\nmodified line 2\n", encoding="utf-8")
+
+    stale_hash = hashlib.sha256(b"original content").hexdigest()
+    evidence = [
+        {"path": "src/a.py", "start_line": 1, "end_line": 1, "text": "orig1", "content_hash": stale_hash},
+        {"path": "src/a.py", "start_line": 2, "end_line": 2, "text": "orig2", "content_hash": stale_hash},
+    ]
+
+    merged = merge_overlapping_evidence(evidence, root=tmp_path)
+    assert len(merged) == 1
+    # Since disk file does not match stale_hash, disk must NOT be read, in-memory lines must be used
+    assert merged[0]["text"] == "orig1\norig2"
+

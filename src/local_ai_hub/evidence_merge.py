@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
-from pathlib import Path
+import hashlib
+from pathlib import Path, PurePosixPath
 from typing import cast
+
+from .process_utils import is_rooted_path, is_safe_path
 
 
 EvidenceRecord = dict[str, object]
@@ -36,32 +39,73 @@ def merge_overlapping_line_ranges(
     return merged
 
 
+def _is_safe_relative_path(path: str) -> bool:
+    """Validate that path is relative and does not escape root lexically."""
+    if not is_safe_path(path) or is_rooted_path(path):
+        return False
+    try:
+        norm = PurePosixPath(path.replace("\\", "/"))
+        return ".." not in norm.parts and bool(norm.parts)
+    except Exception:
+        return False
+
+
+def _is_confined_to_root(resolved_root: Path, path: str) -> bool:
+    """Ensure target path resolves strictly within resolved root."""
+    if not _is_safe_relative_path(path):
+        return False
+    try:
+        target = (resolved_root / path).resolve(strict=False)
+        target.relative_to(resolved_root)
+        return True
+    except (ValueError, OSError):
+        return False
+
+
 def merge_overlapping_evidence(
     evidence: list[EvidenceRecord], root: str | Path | None = None
 ) -> list[EvidenceRecord]:
-    """Group evidence by file path and merge overlapping or adjacent line ranges."""
+    """Group evidence by file path and snapshot identity, merging overlapping line ranges."""
     if not evidence:
         return []
 
-    by_path: dict[str, list[EvidenceRecord]] = {}
-    path_keys: list[str] = []
+    resolved_root: Path | None = None
+    if root:
+        try:
+            resolved_root = Path(root).expanduser().resolve(strict=False)
+        except Exception:
+            resolved_root = None
+
+    # Group by (path, revision, content_hash, workspace, source_kind)
+    # to guarantee content-addressed merging and reject mixing disparate revisions.
+    by_key: dict[tuple[str, str, str, str, str], list[EvidenceRecord]] = {}
+    group_keys: list[tuple[str, str, str, str, str]] = []
 
     for item in evidence:
         if not isinstance(item, dict):
             continue
-        path = str(item.get("path") or "").strip().replace("\\", "/")
-        if not path:
+        raw_path = str(item.get("path") or "").strip().replace("\\", "/")
+        if not _is_safe_relative_path(raw_path):
             continue
-        if path not in by_path:
-            by_path[path] = []
-            path_keys.append(path)
-        by_path[path].append(dict(item))
+        if resolved_root is not None and not _is_confined_to_root(resolved_root, raw_path):
+            continue
 
-    resolved_root = Path(root).expanduser().resolve(strict=False) if root else None
+        rev = str(item.get("repository_revision") or item.get("revision") or "").strip()
+        chash = str(item.get("content_hash") or "").strip()
+        ws = str(item.get("workspace") or "").strip()
+        source = str(item.get("source_kind") or item.get("source") or "").strip()
+
+        key = (raw_path, rev, chash, ws, source)
+        if key not in by_key:
+            by_key[key] = []
+            group_keys.append(key)
+        by_key[key].append(dict(item))
+
     result: list[EvidenceRecord] = []
 
-    for path in path_keys:
-        items = by_path[path]
+    for key in group_keys:
+        path, rev, chash, _ws, _source = key
+        items = by_key[key]
         if len(items) == 1:
             result.append(items[0])
             continue
@@ -107,14 +151,16 @@ def merge_overlapping_evidence(
             merged_symbol = ", ".join(symbols) if symbols else ""
 
             merged_text = ""
-            file_on_disk = (resolved_root / path) if resolved_root else None
+            file_on_disk = (resolved_root / path) if (resolved_root and _is_confined_to_root(resolved_root, path)) else None
             if file_on_disk and file_on_disk.is_file():
                 try:
-                    all_lines = file_on_disk.read_text(
-                        encoding="utf-8", errors="replace"
-                    ).splitlines()
-                    slice_lines = all_lines[max(0, cluster_start - 1) : cluster_end]
-                    merged_text = "\n".join(slice_lines)
+                    raw_bytes = file_on_disk.read_bytes()
+                    # Content-addressed guard: if cluster expects a specific hash, verify disk file matches it
+                    disk_hash = hashlib.sha256(raw_bytes).hexdigest()
+                    if not chash or disk_hash == chash:
+                        all_lines = raw_bytes.decode("utf-8", errors="replace").splitlines()
+                        slice_lines = all_lines[max(0, cluster_start - 1) : cluster_end]
+                        merged_text = "\n".join(slice_lines)
                 except Exception:
                     merged_text = ""
 
@@ -147,6 +193,15 @@ def merge_overlapping_evidence(
                 merged_item["content"] = merged_text
             if merged_symbol:
                 merged_item["symbol"] = merged_symbol
+
+            parent_ids = [str(item["evidence_id"]) for item in cluster if item.get("evidence_id")]
+            if parent_ids:
+                merged_item["parent_evidence_ids"] = parent_ids
+                lineage = "+".join(sorted(parent_ids))
+                digest = hashlib.sha256(f"{path}:{cluster_start}:{cluster_end}:{lineage}".encode("utf-8")).hexdigest()[:16]
+                merged_item["evidence_id"] = f"merged-{digest}"
+
+            merged_item["merged_from_count"] = len(cluster)
             result.append(merged_item)
 
     return result
