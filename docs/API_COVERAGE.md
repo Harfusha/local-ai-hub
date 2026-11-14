@@ -1,8 +1,8 @@
 # API surface coverage
 
 Deterministic source inventory. Status describes static evidence, not runtime health or asserted behavior. Full contracts, fixtures, provenance, and coverage details live in `API_COVERAGE.json`.
-Reproduce with `python tools/surface_inventory.py --check --task-id task_b206b2c34111`.
-<!-- coverage-task-id: task_b206b2c34111 -->
+Reproduce with `python tools/surface_inventory.py --check`.
+<!-- coverage-task-id:  -->
 
 | Surface | Name | Evidence status | Owner | Operation ID |
 |---|---|---|---|---|
@@ -83,6 +83,7 @@ Reproduce with `python tools/surface_inventory.py --check --task-id task_b206b2c
 | HTTP GET | /dashboard-assets/ | conditional | src/local_ai_hub/http_server.py | op-ed30dc86185d |
 | HTTP GET | /dashboard-assets/app.css | confirmed | src/local_ai_hub/http_server.py | op-fb3a808593b2 |
 | HTTP GET | /dashboard-assets/app.js | confirmed | src/local_ai_hub/http_server.py | op-5835050c112b |
+| HTTP GET | /dashboard/legacy | conditional | src/local_ai_hub/http_server.py | op-571e2e1bff71 |
 | HTTP GET | /dashboard/next | conditional | src/local_ai_hub/http_server.py | op-bb3baf2ce868 |
 | HTTP GET | /favicon.ico | confirmed | src/local_ai_hub/http_server.py | op-85e915b2262e |
 | HTTP GET | /health | confirmed | src/local_ai_hub/http_server.py | op-fdaca5a0d036 |

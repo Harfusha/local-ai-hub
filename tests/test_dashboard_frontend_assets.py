@@ -268,3 +268,26 @@ def test_settings_preview_reads_only_redacted_config_and_does_not_mutate():
     assert "Redacted configuration snapshot loaded. No values were changed." in script
     assert "does not edit, import, export, or restart the Hub." in html
     assert 'href="/dashboard#config"' in html
+
+
+def test_dashboard_legacy_alias_serves_legacy_dashboard(monkeypatch):
+    monkeypatch.setattr(http_server, "APP", SimpleNamespace(config={
+        "monitoring": {"dashboard_enabled": True},
+        "features": {"dashboard": True},
+    }))
+    handler = http_server.Handler.__new__(http_server.Handler)
+    handler.path = "/dashboard/legacy"
+    handler.client_address = ("127.0.0.1", 12345)
+    handler.headers = {"Content-Type": "application/json"}
+    handler._begin_trace = lambda _path: None
+    handler._require_authorized = lambda: pytest.fail("dashboard legacy route must remain public")
+    handler.responses = []
+    handler._send = lambda status, data: handler.responses.append((status, data))
+    handler._send_html = lambda status, html, **kwargs: handler.responses.append((status, html, kwargs))
+
+    handler.do_GET()
+
+    assert handler.responses[0][0] == 200
+    assert "New dashboard preview" in handler.responses[0][1]
+    assert "/dashboard/legacy" in http_server.MONITOR_PATHS
+

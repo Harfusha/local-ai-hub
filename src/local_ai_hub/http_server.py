@@ -453,7 +453,7 @@ def _invoke_cancellable_request(
 # Monitoring/control reads must never appear as workload. Keep this hard safety set
 # independent of user config so a dashboard refresh cannot create immortal active jobs.
 MONITOR_PATHS = {
-    "/health", "/ready", "/dashboard", "/favicon.ico", "/api/live", "/api/live/status",
+    "/health", "/ready", "/dashboard", "/dashboard/legacy", "/dashboard/next", "/favicon.ico", "/api/live", "/api/live/status",
     "/api/status", "/api/mode", "/api/capabilities", "/api/metrics", "/api/adoption",
     "/api/telemetry/report", "/api/telemetry/tool-accounting", "/api/telemetry/timeline",
     "/api/telemetry/endpoint-stats",
@@ -2816,7 +2816,7 @@ class Handler(BaseHTTPRequestHandler):
             or (path == "/api/mode" and not read_only)
         ):
             return "admin:read" if read_only else "admin:write"
-        if path in {"/", "/dashboard", "/api/metrics", "/api/status"}:
+        if path in {"/", "/dashboard", "/dashboard/legacy", "/dashboard/next", "/api/metrics", "/api/status"}:
             return "dashboard:read"
         return "api:read" if read_only else "api:write"
 
@@ -4514,7 +4514,7 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/api/mode":
             if not self._validate_host_and_origin():
                 return
-        elif path not in {"/", "/dashboard", "/dashboard/next", "/favicon.ico", "/dashboard-assets/app.css", "/dashboard-assets/app.js"} and not self._require_authorized():
+        elif path not in {"/", "/dashboard", "/dashboard/legacy", "/dashboard/next", "/favicon.ico", "/dashboard-assets/app.css", "/dashboard-assets/app.js"} and not self._require_authorized():
             return
         mode_error = _http_mode_gate_error("GET", path)
         if mode_error is not None:
@@ -4602,7 +4602,7 @@ class Handler(BaseHTTPRequestHandler):
             if get_handler_name is not None:
                 getattr(self, get_handler_name)(query)
                 return
-            if path in {"/", "/dashboard"}:
+            if path in {"/", "/dashboard", "/dashboard/legacy"}:
                 if not bool(APP.config.get("monitoring", {}).get("dashboard_enabled", True)) or not bool(APP.config.get("features", {}).get("dashboard", True)):
                     self._send(404, {"error": "dashboard disabled"}); return
                 self._send_html(200, _dashboard_html_with_trace_notice()); return
