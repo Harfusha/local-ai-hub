@@ -440,6 +440,22 @@
       "title": "HUB-028 P1: True local model capability matrix",
       "work_status": "completed"
     },
+    "task_hub_029": {
+      "acceptance_criteria": [
+        "Comprehensive documentation in README, docs/INSTALL_PROMPT.md, docs/UPDATE_PROMPT.md",
+        "API cookbook and registry in docs/API_REGISTRY.md and docs/HTTP_API.md",
+        "Clear distinction between stable features and experimental endpoints"
+      ],
+      "blocker": null,
+      "clarifications": [],
+      "depends_on": [],
+      "description": "Docs and release onboarding. Maintained canonical install/update prompts, API documentation, and security troubleshooting guide.",
+      "kind": "code",
+      "next_action": "",
+      "order": 29,
+      "title": "HUB-029 P2: Docs and release onboarding",
+      "work_status": "completed"
+    },
     "task_roadmap_001_030": {
       "acceptance_criteria": [
         "Record exact baseline revision, dirty paths and ownership before edits; preserve all pre-existing changes.",
