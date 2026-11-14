@@ -187,6 +187,32 @@ def test_kill_hub_ignores_dead_stale_listener_pid(tmp_path, monkeypatch):
     assert stopped == [launcher_pid]
 
 
+def test_kill_hub_accepts_process_exiting_after_terminate_failure(tmp_path, monkeypatch):
+    module = importlib.util.spec_from_file_location(
+        "test_hub_service_terminate_race", Path(__file__).parents[1] / "tools" / "service.py"
+    )
+    service = importlib.util.module_from_spec(module)
+    module.loader.exec_module(service)
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    pid = 101
+    owner = {
+        "pid": pid,
+        "role": "hub",
+        "state_dir": str(state_dir),
+        "executable": "launcher.exe",
+    }
+    (state_dir / "hub.owner.json").write_text(json.dumps(owner), encoding="utf-8")
+    (state_dir / "hub.pid").write_text(str(pid), encoding="utf-8")
+    monkeypatch.setattr(service, "STATE", state_dir)
+    monkeypatch.setattr(service, "find_listening_pid", lambda _port: None)
+    monkeypatch.setattr(service, "process_owner_state", lambda *_args: "owned")
+    monkeypatch.setattr(service, "pid_alive", lambda _pid: False)
+    monkeypatch.setattr(service, "terminate_owned_process", lambda *_args, **_kwargs: False)
+
+    assert service.kill_hub() is True
+
+
 def test_kill_hub_does_not_signal_unverified_listener_child(tmp_path, monkeypatch):
     spec = importlib.util.spec_from_file_location(
         "test_hub_service_unverified_child",

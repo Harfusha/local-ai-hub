@@ -235,13 +235,14 @@ def kill_hub() -> bool:
             if (
                 listener_owner is None
                 or process_owner_state(listener_owner, STATE, "hub") != "owned"
-                or not terminate_owned_process(
-                    listener_owner, STATE, "hub", grace_seconds=5.0
-                )
             ):
                 return False
+            if not terminate_owned_process(
+                listener_owner, STATE, "hub", grace_seconds=5.0
+            ) and not _role_stopped("hub"):
+                return False
         if not terminate_owned_process(owner, STATE, "hub", grace_seconds=5.0):
-            return False
+            return _role_stopped("hub")
     return _role_stopped("hub")
 
 def stop_managed_ollama() -> bool:
