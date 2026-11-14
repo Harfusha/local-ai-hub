@@ -7730,3 +7730,11 @@ These are isolated prompt-evaluation records, not runtime/release acceptance. Pr
   - *Syntetický benchmark:* A13 privátní index NTFS test (7.820× medián zrychlení na 250 souborech).
   - *Runtime / live MCP:* CASE132/133/134/135 protokolová ověření (obsah zůstává agent-reported bez raw payloadu).
   - *Installed / release:* NOT RUN.
+
+### Integrace worktree do hlavní větve (master) — 2026-11-14
+
+- Všechny auditní opravy kol 1–6, modularizace `commands`/`deterministic` a eval prompty byly commitnuty na větvi `worktree/eval-case132-audit-fixes` (`fd7ad085`).
+- Větev byla řádně sloučena do hlavní větve `master` v repozitáři `C:\Users\Adam\.local-ai-hub` (merge commit `6ebda824`).
+- Všechny překryvy byly vyřešeny při zachování funkčnosti obou stran; plná regresní sada (105 testů napříč koly 2–6, manifesty balíčků a prompt kontrakty) prochází na `master` zeleně (**105 passed in 22.45s**).
+- Pracovní strom repozitáře `master` je stabilní a čistý.
+

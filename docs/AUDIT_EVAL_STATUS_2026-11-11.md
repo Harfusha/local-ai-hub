@@ -795,3 +795,22 @@ Extracted the pure symbol call-graph reachability calculation from `Deterministi
 - **Syntetické benchmarky:** A13 optimalizace privátního indexu — NTFS benchmark na 250 souborech vykázal medián 1.5114s vs 11.8192s (zrychlení 7.820×); neprezentováno jako produkční důkaz.
 - **Runtime / live MCP ověření:** CASE132 čistý běh (13 volání, protokol PASS), CASE133 (6 volání s 503 před dispatch, protokol PASS), CASE134 (4 volání v GPT-6 Luna Low, protokol PASS), CASE135 (1 volání, protokol PASS); obsah zůstává agent-reported / unverified bez raw payloadů.
 - **Installed-server / release důkazy:** NOT RUN (vyžadují dohodnuté stabilní okno a čistý strom).
+
+---
+
+### 6. Integrace do hlavní větve (master) a závěrečná verifikace — 2026-11-14
+
+- **Výchozí worktree:** `C:\Users\Adam\.codex\worktrees\eval-case132\.local-ai-hub` na větvi `worktree/eval-case132-audit-fixes`.
+  - Všechny úpravy auditů 1–6, modularizace `commands`/`deterministic` a eval prompt kontrakty byly uloženy v commitu `fd7ad085`.
+- **Příprava `master` (`C:\Users\Adam\.local-ai-hub`):**
+  - Rozpracovaný stav byl bezpečně uložen v commitu `38108d8e` dle pravidla 11 `docs/WORKTREE_INTEGRATION.md` (žádný reset, clean ani stash).
+- **Merge do `master`:**
+  - Větev `worktree/eval-case132-audit-fixes` byla sloučena v commitu `6ebda824`.
+  - 14 souborů s překryvy (`token_router.py`, `commands.py`, `deterministic.py`, regresní testy kol 2, 4, 5, prompt kontrakty, plány a dokumentace) bylo bezpečně sloučeno bez ztráty funkcionality.
+- **Validační důkazy na `master`:**
+  - `python -m pytest -q tests/test_audit_round2_regressions.py tests/test_audit_round3_regressions.py tests/test_audit_round4_regressions.py tests/test_audit_round5_regressions.py tests/test_audit_round6_regressions.py tests/test_manifest_packages.py tests/test_case132_prompt_contract.py tests/test_case135_prompt_contract.py tests/test_case136_prompt_contract.py tests/unit/test_test_matrix_validation.py`:
+    **105 passed in 22.45s** (100% green).
+  - `python -m compileall -q src tests tools`: exit 0.
+  - `git diff --check`: exit 0, bez chyb a konfliktů.
+  - Pracovní strom `master` je čistý (`fbbea6bb` / `3d0f220c`).
+
