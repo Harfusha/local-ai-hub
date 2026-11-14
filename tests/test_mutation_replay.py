@@ -1883,10 +1883,10 @@ def test_wait_observation_failure_is_unknown_without_rewriting_committed_outcome
     assert stored["response"] == committed
 
 @pytest.mark.parametrize(
-    ("headers", "expected_request_id"),
-    [({"X-LocalAI-Request-ID": "caller-request-1"}, "caller-request-1"), ({}, None)],
+    "headers",
+    [{"X-LocalAI-Request-ID": "caller-request-1"}, {}],
 )
-def test_async_delivery_uses_only_caller_request_id(monkeypatch, headers, expected_request_id) -> None:
+def test_async_delivery_keeps_journal_request_id_out_of_job_payload(monkeypatch, headers) -> None:
     submitted: list[dict[str, Any]] = []
     app = SimpleNamespace(
         config={},
@@ -1908,7 +1908,7 @@ def test_async_delivery_uses_only_caller_request_id(monkeypatch, headers, expect
 
     assert status == 200
     assert len(submitted) == 1
-    assert submitted[0].get("request_id") == expected_request_id
+    assert submitted[0].get("request_id") is None
 
 def test_direct_async_submit_keeps_journal_request_id_out_of_job_payload(tmp_path, monkeypatch) -> None:
     from local_ai_hub.resilience import RecoveryJournal
