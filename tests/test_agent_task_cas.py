@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 import sqlite3
+import time
 from threading import Barrier, local
 from contextlib import closing
 
@@ -221,3 +222,29 @@ def test_task_creation_rolls_back_projection_when_event_insert_fails(tmp_path):
 
     assert tasks.get("atomic-create") is None
     assert state_store.events(stream_id="task:atomic-create") == []
+
+
+def test_checkpoint_write_budget_survives_brief_sqlite_contention(tmp_path, monkeypatch):
+    state_store = AgentStateStore(tmp_path / "agent-state.sqlite3")
+    tasks = TaskStore(state_store)
+    task = tasks.create(
+        GoalContract(goal="bounded checkpoint write"),
+        ScopeContext(task_id="bounded-checkpoint"),
+        task_id="bounded-checkpoint",
+    )
+
+    original_refresh = tasks._refresh_task_search_index
+
+    def delayed_refresh(con, task_id):
+        time.sleep(0.35)
+        return original_refresh(con, task_id)
+
+    monkeypatch.setattr(tasks, "_refresh_task_search_index", delayed_refresh)
+    result = tasks.checkpoint(
+        task.task_id,
+        TaskCheckpoint(phase="test"),
+        actor="test",
+        idempotency_key="slow-but-valid-checkpoint",
+    )
+
+    assert result.checkpoint.phase == "test"

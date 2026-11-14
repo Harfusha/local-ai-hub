@@ -201,6 +201,8 @@ class LayaRuntimeMetadata:
     execution_verification: str
     quality_status: str
     latency_ms: float
+    adapter_queue_wait_ms: float
+    inference_latency_ms: float
     input_tokens: int | None
     output_tokens: int | None
     fallback_reason: str | None
@@ -636,18 +638,14 @@ class LayaRuntimeAdapter:
                 reason_codes=("DISABLED",),
             )
             return LayaRuntimeOutcome(decision=skipped, runtime=None)
-        if not self._call_lock.acquire(blocking=False):
-            overloaded = DecisionResult(
-                request=request,
-                success=False,
-                status=DecisionStatus.SKIPPED,
-                suggestion=None,
-                reason_codes=("OVERLOADED",),
-            )
-            return LayaRuntimeOutcome(decision=overloaded, runtime=None)
-
         started = self._clock()
+        self._call_lock.acquire()
+
         try:
+            acquired = self._clock()
+            queue_wait = max(0.0, (acquired - started) * 1000.0)
+            if not math.isfinite(queue_wait):
+                queue_wait = 0.0
             lifecycle_status = getattr(session_lifecycle, "status", None)
             provider_close_configured = (
                 lifecycle_status.get("provider_close_configured") is True
@@ -661,7 +659,66 @@ class LayaRuntimeAdapter:
                 bind_close_session(self._close_with_capacity)
             with session_lifecycle.inference_session(self._load) as model:
                 state, questions = self._decision_input(request, decision_input)
-                result = model.predict(state, questions)
+                inference_started = self._clock()
+                try:
+                    result = model.predict(state, questions)
+                except Exception as exc:
+                    failure_signature = f"{type(exc).__name__} {exc}".casefold()
+                    capacity_failure = isinstance(exc, MemoryError) or any(
+                        marker in failure_signature
+                        for marker in ("out of memory", "outofmemory", "allocation failed", "resource exhausted")
+                    )
+                    if capacity_failure:
+                        raise
+                    inference_elapsed = max(0.0, (self._clock() - inference_started) * 1000.0)
+                    if not math.isfinite(inference_elapsed):
+                        inference_elapsed = 0.0
+                    elapsed = max(0.0, (self._clock() - started) * 1000.0)
+                    if not math.isfinite(elapsed):
+                        elapsed = 0.0
+                    selected = self._selected_device
+                    if selected is None:
+                        raise
+                    failed = DecisionResult(
+                        request=request,
+                        success=False,
+                        status=DecisionStatus.ERROR,
+                        suggestion=None,
+                        reason_codes=("MODEL_UNAVAILABLE",),
+                    )
+                    runtime = LayaRuntimeMetadata(
+                        model_id="convaiinnovations/laya-multilingual",
+                        revision=self.revision,
+                        provider=selected.provider,
+                        runtime_version=selected.runtime_version,
+                        device=selected.device,
+                        device_class=selected.device_class,
+                        device_name=selected.device_name,
+                        parameter_device=selected.device,
+                        execution_verification="NOT_VERIFIED",
+                        quality_status="NOT_EVALUATED",
+                        latency_ms=elapsed,
+                        adapter_queue_wait_ms=queue_wait,
+                        inference_latency_ms=inference_elapsed,
+                        input_tokens=None,
+                        output_tokens=None,
+                        fallback_reason="PREDICTION_FAILED",
+                    )
+                    outcome = LayaRuntimeOutcome(decision=failed, runtime=runtime)
+                    if outcome_recorder is not None:
+                        try:
+                            outcome_recorder(request, decision_input, outcome)
+                            outcome = LayaRuntimeOutcome(
+                                decision=failed, runtime=runtime, capture_status="captured"
+                            )
+                        except Exception:
+                            outcome = LayaRuntimeOutcome(
+                                decision=failed, runtime=runtime, capture_status="failed"
+                            )
+                    return outcome
+                inference_elapsed = max(0.0, (self._clock() - inference_started) * 1000.0)
+                if not math.isfinite(inference_elapsed):
+                    inference_elapsed = 0.0
                 elapsed = max(0.0, (self._clock() - started) * 1000.0)
                 if not math.isfinite(elapsed):
                     elapsed = 0.0
@@ -681,6 +738,8 @@ class LayaRuntimeAdapter:
                     execution_verification="NOT_VERIFIED",
                     quality_status="NOT_EVALUATED",
                     latency_ms=elapsed,
+                    adapter_queue_wait_ms=queue_wait,
+                    inference_latency_ms=inference_elapsed,
                     input_tokens=self._tokens(result, "input_tokens") if isinstance(result, Mapping) else None,
                     output_tokens=self._tokens(result, "output_tokens") if isinstance(result, Mapping) else None,
                     fallback_reason=("EARLIER_DEVICE_UNAVAILABLE" if self._failed_devices else None),

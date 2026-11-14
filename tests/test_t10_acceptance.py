@@ -686,7 +686,18 @@ def test_uninstall_preserves_standalone_codegraph_mcp_entry(tmp_path: Path) -> N
         "user-server": {"command": "keep"},
     }}), encoding="utf-8")
 
-    clean_json(config_path)
+    from tools import install_ownership
+
+    install_dir = tmp_path / "install"
+    install_dir.mkdir()
+    install_ownership.write_install_manifest(install_dir, [])
+    for name, value in (("local-ai", {"command": "hub"}), ("serena-local", {"command": "serena"})):
+        install_ownership.record_external_json_key(
+            install_dir, config_path, container="mcpServers", key=name,
+            preimage=None, postimage=value,
+        )
+
+    clean_json(config_path, install_dir)
 
     servers = json.loads(config_path.read_text(encoding="utf-8"))["mcpServers"]
     assert set(servers) == {"codegraph-local", "user-server"}

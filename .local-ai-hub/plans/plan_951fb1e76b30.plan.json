@@ -12,12 +12,12 @@
         "DOM selection is relevant, bounded, stable per revision, and reports incompleteness.",
         "Privacy modes, redaction metadata, retention, extension permissions, and navigation/network policy are explicit and tested."
       ],
-      "blocker": "N2-14 now has an explicit strict egress request contract that fails before backend/session creation with isolation_not_proven; successful sessions report navigation_allowlist separately from network_egress_policy. The mocked automation/contract suite passes (155 passed), but the opt-in headless runtime tests are skipped because LOCAL_AI_AUTOMATION_MCP_CLI is absent. Redirect/iframe/popup/fetch-XHR/WebSocket/download-upload runtime behavior and actual external isolation remain NOT_RUN. Real Chrome extension permission confirmation and N2-06 live clock/spinner/SPA/overhead measurement also remain pending.",
+      "blocker": "N2-14 remains strict-fail-closed without network enforcement. Mock contract tests pass (155), but live subresource/egress tests remain NOT_RUN. Chrome binary exists at C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe, but action-time confirmation for the real extension permission test is still pending. LOCAL_AI_AUTOMATION_MCP_CLI is unset and playwright-mcp is absent. WSL reports Ubuntu/WSL2 but execution fails HCS_E_HYPERV_NOT_INSTALLED; Docker CLI exists but Docker Linux engine pipe is absent. No Linux or live browser validation ran.",
       "clarifications": [],
       "depends_on": [],
       "description": "Align capture with vision projection; improve DOM selection and identity; add privacy controls, narrow extension grants, and truthful automation egress guarantees.",
       "kind": "code",
-      "next_action": "When an installed Playwright MCP CLI is available, run owned headless local-fixture coverage for redirect, iframe, popup, fetch/XHR, WebSocket, download and upload. Separately complete N2-06 against actual Chrome only after the required action-time confirmation. Keep strict egress requests refused until an actual process/proxy/firewall enforcement backend exists.",
+      "next_action": "Do not launch or interact with live Chrome until required action-time confirmation. Run owned headless fixtures only when the configured Playwright MCP CLI exists. Keep strict egress requests refused until an actual enforcement backend exists. Recheck Linux/browser environment only after an external change.",
       "title": "HUB-036–042 Browser evidence, privacy, and permission contracts",
       "work_status": "in_progress"
     },
@@ -27,12 +27,12 @@
         "Default changes only after repeated measured evaluation with no English regression and acceptable resource use.",
         "Acceptance suite covers implemented findings and documents unrun runtime/platform evidence."
       ],
-      "blocker": "Full v3 and focused evaluation are documented. A full run previously reached 1,952 passed/2 skipped before exposing pyflakes findings; both are fixed. Targeted uninstall/trace/pyflakes validation: 18 passed, 1 Windows symlink skip; standalone pyflakes passes. A fresh full -x pytest rerun is active at 4% with no failures (PID 64244; logs in %TEMP%). Browser runtime, real Chrome permission/egress, and Linux/macOS gates remain unrun.",
+      "blocker": "Current HUB-048 acceptance rerun passed 23 tests with 1 Windows symlink privilege skip (WinError 1314); browser cases are harness-based. Resolved 29 async admission failures in test_async_*.py. Full suite run without -x queued to capture all failures. Full Ollama inventory has no embedding model. WSL Linux execution fails HCS_E_HYPERV_NOT_INSTALLED; Playwright MCP CLI is absent and Chrome action-time confirmation remains pending.",
       "clarifications": [],
       "depends_on": [],
       "description": "Add bilingual source-anchored retrieval evaluation without downloads; qualify supported defaults from evidence and add targeted acceptance coverage.",
       "kind": "code",
-      "next_action": "Poll PID 64244 and its stdout/stderr logs to terminal outcome; fix any newly exposed failures with focused regression coverage, then update docs/AUDIT_ROUND2_ACCEPTANCE.md and rerun applicable checks. Keep external browser and platform gates explicit; do not repeat the 50-case benchmark.",
+      "next_action": "Run full pytest suite without -x into temporary scratch log. Keep suite-only T6 behavior and harness/runtime distinctions explicit. Remaining external gates: live Chrome permission/SPA/egress validation, Linux/macOS confirmation, and embedding comparison/resource/cold-warm qualification.",
       "title": "HUB-046, 048 Embedding qualification and second-round acceptance",
       "work_status": "in_progress"
     },

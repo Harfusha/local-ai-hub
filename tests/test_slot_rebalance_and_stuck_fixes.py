@@ -51,6 +51,54 @@ def test_rebalance_processing_slots_promotes_preferred_root(tmp_path: Path) -> N
         prep.close()
 
 
+def test_retry_cooldown_does_not_consume_a_preprocessing_slot(tmp_path: Path) -> None:
+    cfg = {
+        "server": {"state_dir": str(tmp_path / "state")},
+        "preprocessing": {"enabled": True, "max_preprocessing_projects": 2},
+    }
+    prep = ProjectPreprocessor(
+        cfg,
+        services=MagicMock(),
+        rag=MagicMock(),
+        scheduler=MagicMock(),
+        runtime=MagicMock(),
+        repo_tools=MagicMock(),
+    )
+    try:
+        now = time.time()
+        roots = [tmp_path / name for name in ("cooldown", "waiting1", "waiting2")]
+        for root in roots:
+            root.mkdir()
+        with closing(prep._connect()) as con:
+            for index, root in enumerate(roots):
+                status = "error" if index == 0 else "waiting"
+                updated_at = now + 10 if index == 0 else now - index
+                retry_after = now + 60 if index == 0 else 0
+                con.execute(
+                    """INSERT INTO projects(
+                           root, workspace, status, phase, generation, force_refresh,
+                           registered_at, updated_at, next_check_at, paused,
+                           last_requested_at, registration_source, retry_after
+                       ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    (
+                        str(root), f"ws-{root.name}", status, "hash", 0, 0,
+                        now, updated_at, now, 0, updated_at, "agent", retry_after,
+                    ),
+                )
+            prep._rebalance_processing_slots(con)
+            con.commit()
+
+            states = {Path(row["root"]).name: row["status"] for row in con.execute(
+                "SELECT root,status FROM projects"
+            ).fetchall()}
+
+        assert states["cooldown"] == "error"
+        assert states["waiting1"] == "queued"
+        assert states["waiting2"] == "queued"
+    finally:
+        prep.close()
+
+
 def test_repair_registry_resets_orphaned_running_status(tmp_path: Path) -> None:
     cfg = {
         "server": {"state_dir": str(tmp_path / "state")},

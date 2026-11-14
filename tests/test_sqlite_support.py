@@ -91,10 +91,14 @@ def test_write_transaction_rolls_back_when_budget_expires(monkeypatch):
     ticks = iter((10.0, 10.6))
     monkeypatch.setattr(sqlite_support.time, "monotonic", lambda: next(ticks))
 
-    with pytest.raises(TimeoutError, match="write transaction exceeded"):
-        with write_transaction(con, max_duration_seconds=0.5):
+    with pytest.raises(TimeoutError, match="write transaction exceeded.*RAG index publish") as exc_info:
+        with write_transaction(
+            con, max_duration_seconds=0.5, rollback_label="RAG index publish",
+        ):
             con.execute("INSERT INTO events VALUES (?)", ("discarded",))
 
+    assert "elapsed_ms=600" in str(exc_info.value)
+    assert "budget_ms=500" in str(exc_info.value)
     assert not con.in_transaction
     assert con.execute("SELECT COUNT(*) FROM events").fetchone()[0] == 0
     con.close()
@@ -127,8 +131,11 @@ def test_begin_write_transaction_rolls_back_when_budget_expires(monkeypatch):
 
     transaction = begin_write_transaction(con, max_duration_seconds=0.5)
     con.execute("INSERT INTO events VALUES (?)", ("discarded",))
-    with pytest.raises(TimeoutError, match="write transaction exceeded"):
+    with pytest.raises(TimeoutError, match="write transaction exceeded") as exc_info:
         transaction.commit()
+
+    assert "elapsed_ms=600" in str(exc_info.value)
+    assert "budget_ms=500" in str(exc_info.value)
 
     assert not con.in_transaction
     assert con.execute("SELECT COUNT(*) FROM events").fetchone()[0] == 0

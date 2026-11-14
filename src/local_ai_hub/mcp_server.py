@@ -86,6 +86,7 @@ from local_ai_hub.mcp_tool_descriptions import (
     describe_task,
     describe_work,
 )
+from local_ai_hub.mcp_normalization import _normalize_deterministic
 from local_ai_hub.operation_contracts import (
     operation_contract,
     operation_actions,
@@ -582,18 +583,6 @@ def _bounded_search_summary_input(
     payload["coverage_note"] = coverage_note(len(payload["matches"]))
     serialized = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
     return serialized, sources
-
-
-def _normalize_deterministic(val: Any) -> Any:
-    """Sort dictionary keys and normalize microsecond timestamps to maintain stable prompt caches."""
-    if isinstance(val, dict):
-        out = {}
-        for k in sorted(val.keys()):
-            out[k] = _normalize_deterministic(val[k])
-        return out
-    if isinstance(val, list):
-        return [_normalize_deterministic(x) for x in val]
-    return val
 
 
 mcp = FastMCP("Local AI Hub (compact)") if FastMCP is not None else _MissingMCP("Local AI Hub (compact)")
@@ -3422,6 +3411,8 @@ def _validate_context_pack_inputs(
         return _context_input_error("include_diagnostics must be boolean")
     if token_budget and max_tokens and token_budget != max_tokens:
         return _context_input_error("token_budget and max_tokens must match when both are provided")
+    if (guarded or focus or changed_paths) and not task_id.strip():
+        return _context_input_error("guarded context requires a non-empty task_id")
     guarded_requested = (
         guarded or bool(task_id.strip()) or bool(phase.strip()) or bool(session_id.strip())
         or bool(str(clone_id).strip()) or bool(str(worktree_id).strip()) or bool(str(branch).strip())

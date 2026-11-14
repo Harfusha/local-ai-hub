@@ -152,3 +152,41 @@ def test_fallback_impact_reports_inventory_deadline_timeout(tmp_path, monkeypatc
         "limit": 8_000,
         "truncated_reason": "deadline",
     }
+
+
+def test_repo_impact_reuses_diff_when_code_index_falls_back(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from local_ai_hub.services import LocalAIServices
+
+    root = tmp_path / "repo"
+    source = root / "src" / "target.py"
+    source.parent.mkdir(parents=True)
+    source.write_text("def SharedNeedle(): return True\n", encoding="utf-8")
+
+    tools = RepositoryTools({"server": {"state_dir": str(tmp_path / "state")}})
+    diff = {
+        "success": True,
+        "changed_files": ["src/target.py"],
+        "truncated": False,
+        "diff_sha256": "test-digest",
+    }
+    diff_calls = []
+
+    def git_diff(*_args, **_kwargs):
+        diff_calls.append(1)
+        return diff
+
+    monkeypatch.setattr(tools, "git_diff", git_diff)
+    monkeypatch.setattr(tools, "_rg", None)
+    service = LocalAIServices.__new__(LocalAIServices)
+    service.repo_tools = tools
+    service.code_index = SimpleNamespace(impact=lambda *_args, **_kwargs: {"success": False})
+    service.deterministic = None
+    service._repo_cached = lambda _op, _root, _params, compute: compute()
+
+    result = service.repo_impact(str(root))
+
+    assert result["success"] is True
+    assert result["method"] == "scan-fallback"
+    assert len(diff_calls) == 1

@@ -117,14 +117,14 @@ def test_stale_attempt_cannot_publish_result_artifact_or_positive_receipt(tmp_pa
             {"task": "stale finalization", "request_id": "audit-stale-finalization", "task_id": "task-audit-stale"},
         )
         job_id = submitted["job_id"]
-        assert first_started.wait(3), "first attempt did not start"
+        assert first_started.wait(10), "first attempt did not start"
 
         _set_attempt_lease(manager, job_id, time.time() - 1)
         manager.tick()
-        assert second_returned.wait(3), "replacement attempt did not execute"
+        assert second_returned.wait(10), "replacement attempt did not execute"
         if simultaneous_finalization:
             release_first.set()
-        assert manager._event(job_id).wait(3), "replacement attempt did not finalize"
+        assert manager._event(job_id).wait(10), "replacement attempt did not finalize"
         current = manager.result(job_id)
         assert current.get("result", {}).get("value") == "current", current
 

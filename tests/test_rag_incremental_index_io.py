@@ -149,3 +149,34 @@ def test_index_progress_retry_phase_is_offset_and_monotonic(tmp_path, monkeypatc
     stages = [stage for _percent, stage in progress]
     assert percentages == sorted(percentages)
     assert any(stage.startswith("identity retry:") for stage in stages)
+
+
+def test_index_paths_step_preserves_sqlite_publish_timeout_detail(tmp_path, monkeypatch):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "guide.md").write_text("A short document for timeout diagnostics.\n", encoding="utf-8")
+    store = RAGStore(
+        {
+            "server": {"state_dir": str(tmp_path / "state")},
+            "models": {"embedding": "test-embedding", "embedding_dimension": 3},
+            "rag": {"dedup_near_duplicates": False},
+        },
+        services=_EmbeddingStub(),
+    )
+    original_write_transaction = rag_module.write_transaction
+    timeout_message = "SQLite write transaction exceeded its duration budget (RAG batch index publish)"
+
+    def fail_publish_transaction(connection, **kwargs):
+        if kwargs.get("rollback_label") == "RAG batch index publish":
+            raise TimeoutError(timeout_message)
+        return original_write_transaction(connection, **kwargs)
+
+    monkeypatch.setattr(rag_module, "write_transaction", fail_publish_transaction)
+
+    result = store.index_paths_step(
+        str(repo), workspace=store.workspace_id(str(repo)), paths=["guide.md"],
+    )
+
+    assert result["success"] is False
+    assert result["error"] == "publish_failed"
+    assert result["error_detail"] == timeout_message

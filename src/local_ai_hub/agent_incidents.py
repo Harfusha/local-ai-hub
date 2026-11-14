@@ -1151,6 +1151,23 @@ class IncidentStore:
 
         return retry_busy(_count, retries=5, base_delay_seconds=0.02)
 
+    def summary_count(self) -> int:
+        if not self.state_store.enabled or not self.state_store.db_path.exists():
+            return 0
+        self._init_table()
+
+        def _count() -> int:
+            with closing(connect_sqlite(self.state_store.db_path)) as con:
+                row = con.execute(
+                    "SELECT COUNT(1) FROM ("
+                    "SELECT 1 FROM agent_incidents "
+                    "GROUP BY operation_class, error_class, signature_hash, repository_key"
+                    ")"
+                ).fetchone()
+                return int(row[0]) if row else 0
+
+        return retry_busy(_count, retries=5, base_delay_seconds=0.02)
+
     def _save_record(self, record: IncidentRecord) -> None:
         if not self.state_store.enabled:
             return

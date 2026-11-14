@@ -296,11 +296,8 @@ class FeatureSet:
         task_actions = set(self.supported_task_actions())
         semantic_actions = task_actions & {"delegate", "explore", "reason", "review", "second_opinion", "compress"}
         if semantic_actions:
-            action_list = "|".join(f'"{action}"' for action in (
-                "delegate", "explore", "reason", "review", "second_opinion", "compress"
-            ) if action in semantic_actions)
             lines.append(
-                f"- second-pass semantic QA after evidence, when exposed and qualified: `local_ai_task(action={action_list})`"
+                "- second-pass semantic QA after evidence, when exposed and qualified: use an exposed semantic action"
             )
         work_actions = set(self.supported_work_actions())
         if self.work_orchestrator and "submit" in work_actions:
@@ -387,7 +384,7 @@ class FeatureSet:
             available = set(self.supported_task_actions())
             semantic = [action for action in ("review", "second_opinion", "explore", "reason", "compress") if action in available]
             if semantic:
-                lines.append(f"- Recipe — Semantic work: use exposed `local_ai_task` actions ({'|'.join(semantic)}) after deterministic/indexed evidence.")
+                lines.append("- Recipe — Semantic work: use exposed `local_ai_task` semantic actions after deterministic/indexed evidence.")
         if self.agent_os:
             receipt_part = "attach explicit verification receipts; "
             lines.append(f"- Recipe — Agent OS Execution (Default for Non-Trivial Tasks): Initialize a task contract via `local_ai_coord(action=\"task_create\")` with concrete acceptance criteria; query existing memory via `memory_find`; checkpoint milestones via `task_checkpoint`; persist reusable findings via `memory_record`; record failures via `negative_knowledge_record`; {receipt_part}and verify completion (`verify_completion`) before closure.")
@@ -398,7 +395,7 @@ class FeatureSet:
         lines.append("- Apply the matching Hub route by default. Skip only when irrelevant, unavailable in the active schema/config, or fresh sufficient evidence already exists; after one terminal Hub failure, use one bounded native fallback and continue without retries.")
         return lines
 
-    def selection_guide(self) -> str:
+    def selection_guide(self, *, include_task_actions: bool = True) -> str:
         """Single-sentence selection guide for GLOBAL_POLICY and skills."""
         parts: list[str] = []
         if self.repo:
@@ -406,8 +403,11 @@ class FeatureSet:
             review = "including `review_diff` and `security_audit`" if "review_diff" in actions else "including `security_audit`"
             parts.append(f"`local_ai_repo` for bounded repository facts and checks ({review})")
         if self.tasks and self.has_any_model():
-            actions = self.supported_task_actions()
-            parts.append(f"`local_ai_task` for exposed bounded local actions ({'|'.join(actions)})")
+            if include_task_actions:
+                actions = self.supported_task_actions()
+                parts.append(f"`local_ai_task` for exposed bounded local actions ({'|'.join(actions)})")
+            else:
+                parts.append("`local_ai_task` for exposed bounded local actions (see tier-available actions above)")
         if self.work_orchestrator and "submit" in self.supported_work_actions():
             parts.append("`local_ai_work` only for explicitly requested closed delegation with primary-agent review")
         elif self.work_orchestrator:

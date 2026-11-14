@@ -1,0 +1,189 @@
+{
+  "default_target_ref": "refs/heads/master",
+  "description": "Complete Local AI Hub audit roadmap HUB-001–030 in dependency order per C:/Users/Adam/Downloads/local_ai_hub_audit_roadmap_2026-11-12.md bound to task_b206b2c34111.",
+  "id": "plan_8a8d211b8ccc",
+  "lifecycle": "active",
+  "schema_version": 1,
+  "spec_refs": [],
+  "tasks": {
+    "task_hub_001": {
+      "acceptance_criteria": [
+        "pyflakes src tools returns 0 errors",
+        "scheduler status regression test passes with and without external reservation"
+      ],
+      "blocker": null,
+      "clarifications": [],
+      "depends_on": [],
+      "description": "Fix unused _external_gpu_reserved() call in AffinityScheduler.status(). Ensure pyflakes clean.",
+      "kind": "code",
+      "next_action": "",
+      "order": 1,
+      "title": "HUB-001 P0: CI pyflakes fail in scheduler",
+      "work_status": "completed"
+    },
+    "task_hub_002": {
+      "acceptance_criteria": [
+        "clean git clone, checkout, git submodule status, and cleanup without error No url found for submodule path",
+        "all fixture files are 100644 with 0 gitlinks"
+      ],
+      "blocker": "Linux/macOS clean clone verification requires external runner; local Windows verification passed with 0 gitlinks and empty submodule status",
+      "clarifications": [],
+      "depends_on": [],
+      "description": "Ensure docs/agent-evaluation/fixtures/case132_patch_20261109 has regular files (100644), no unexpected gitlink (160000) or missing .gitmodules entry. Clean clone and submodule status verification.",
+      "kind": "code",
+      "next_action": "",
+      "order": 2,
+      "title": "HUB-002 P0: Gitlink fixture without submodule manifest",
+      "work_status": "blocked"
+    },
+    "task_hub_005": {
+      "acceptance_criteria": [
+        "cache key includes canonical root, rel_path, and content_hash",
+        "e2e two projects with same file name and no-watcher edit verified",
+        "pyflakes clean and targeted tests pass"
+      ],
+      "blocker": null,
+      "clarifications": [],
+      "depends_on": [],
+      "description": "SinglePassIngestCache key includes (root, rel_path, content_hash). Hash phase and lexical mismatch invalidate cache. No-watcher cross-root e2e verification.",
+      "kind": "code",
+      "next_action": "",
+      "order": 5,
+      "title": "HUB-005 P1: Preprocess cache identity / invalidation",
+      "work_status": "completed"
+    },
+    "task_hub_006": {
+      "acceptance_criteria": [
+        "100+ parallel synthetic jobs processed without exceeding max_workers bounds",
+        "queue limit backpressure returns retryable rejection when full",
+        "priority + starvation aging contract implemented and verified",
+        "durability across restart verified without job loss"
+      ],
+      "blocker": null,
+      "clarifications": [],
+      "depends_on": [],
+      "description": "Bounded worker pool, durable SQLite queue backpressure, priority + starvation aging selection, crash restart durability.",
+      "kind": "code",
+      "next_action": "",
+      "order": 6,
+      "title": "HUB-006 P1: Bounded workers / admission",
+      "work_status": "completed"
+    },
+    "task_hub_007": {
+      "acceptance_criteria": [
+        "CAS/fencing across state transitions and mutation generations verified",
+        "5 failure points injected and verified: pre-fence failure, in-guard write failure, unfinalized barrier crash, stale fence token injection, finalization callback failure",
+        "No double commit proven",
+        "Interrupted or unknown states never report success (outcome_unknown=True)",
+        "Recovery receipt records attempt_id and mutation_generation",
+        "Semaphore crash and expiry recovery without double-allocation"
+      ],
+      "blocker": null,
+      "clarifications": [],
+      "depends_on": [],
+      "description": "Atomic state lifecycle and crash recovery in work_orchestrator.py, agent_tasks.py, resilience.py, and agent_semaphores.py. Verified with 5 injected failure points, crash restart durability, and safe fencing recovery.",
+      "kind": "code",
+      "next_action": "",
+      "order": 7,
+      "title": "HUB-007 P1: Atomic state lifecycle / crash recovery",
+      "work_status": "completed"
+    },
+    "task_hub_008": {
+      "acceptance_criteria": [
+        "External GPU reservation blocks and budgeted sharing verified",
+        "Expired external reservation safely reaped without deadlocks",
+        "Actual model unload observation tested separately from reservation",
+        "Graceful fallback without OOM loop verified on critical VRAM pressure",
+        "No automatic model pulls on missing model verified"
+      ],
+      "blocker": null,
+      "clarifications": [],
+      "depends_on": [],
+      "description": "GPU/CPU/NPU inference admission, external reservation coordination, actual model unload observation separately, and graceful VRAM fallback without OOM loop in scheduler.py, vram_balancer.py, and laya_lifecycle.py.",
+      "kind": "code",
+      "next_action": "",
+      "order": 8,
+      "title": "HUB-008 P1: GPU/CPU/NPU inference admission & unload",
+      "work_status": "completed"
+    },
+    "task_hub_009": {
+      "acceptance_criteria": [
+        "Stale receipts with older mutation generation rejected",
+        "Receipts with wrong owner or scope rejected",
+        "Receipts referencing missing or deleted artifacts rejected",
+        "Tampered hash or mismatched repository revision rejected",
+        "Incomplete criteria rejected when criteria missing",
+        "Strong receipt schema with source revision and artifact evidence passes cleanly"
+      ],
+      "blocker": null,
+      "clarifications": [],
+      "depends_on": [],
+      "description": "Evidence and verification integrity in agent_verification.py, evidence.py, artifacts.py, and agent_tasks.py. Rejects stale, wrong scope, deleted artifact, tampered hash, and incomplete verification; validates strong receipt schema bound to source revision.",
+      "kind": "code",
+      "next_action": "",
+      "order": 9,
+      "title": "HUB-009 P1: Evidence/verification integrity",
+      "work_status": "completed"
+    },
+    "task_hub_010": {
+      "acceptance_criteria": [
+        "Origin/host validation blocks DNS rebinding and cross-origin dashboard requests",
+        "Strict root validation and patch traversal rejection prevent escape outside project root and TOCTOU directory swaps",
+        "No LAN bind by default verified in defaults.toml and validate_network_security runtime enforcement",
+        "Debug trace purge clears all records atomically",
+        "Debug trace export redacts bearer tokens, passwords, authorization headers, and paths"
+      ],
+      "blocker": null,
+      "clarifications": [],
+      "depends_on": [],
+      "description": "Local security and debug data protection in http_server.py, debug_traces.py, and command_policy.py. Verified loopback-only binding, cross-origin/Host protection, traversal and TOCTOU resistance, atomic purge, and credential/path redacting export.",
+      "kind": "code",
+      "next_action": "",
+      "order": 10,
+      "title": "HUB-010 P1: Local security and debug data protection",
+      "work_status": "completed"
+    },
+    "task_hub_011": {
+      "acceptance_criteria": [
+        "All 7 public MCP tools documented with action contracts, invariants, and argument validations",
+        "Canonical HTTP POST routes and authorization fields documented in http_route_registry.py and docs/API_REGISTRY.md",
+        "Dispatch routing parity verified across MCP and HTTP boundaries",
+        "Negative path guards and fail-closed scope binding verified",
+        "Full suite of 335 API registry, canonical route, and public contract tests passing green"
+      ],
+      "blocker": null,
+      "clarifications": [],
+      "depends_on": [],
+      "description": "API schema and operation registry in operation_contracts.py, http_route_registry.py, mcp_server.py, and docs/API_REGISTRY.md. All 7 tools, subactions, and HTTP routes documented with invariants, state transitions, and verified parity tests without breaking changes.",
+      "kind": "code",
+      "next_action": "",
+      "order": 11,
+      "title": "HUB-011 P1: API schema and operation registry",
+      "work_status": "completed"
+    },
+    "task_roadmap_001_030": {
+      "acceptance_criteria": [
+        "Record exact baseline revision, dirty paths and ownership before edits; preserve all pre-existing changes.",
+        "Complete HUB-001–004 P0 acceptance with evidence bound to one immutable SHA: lint, behavior/coverage, gitlink/clean-checkout evidence, release provenance, version mismatch behavior and release smoke/rollback.",
+        "Complete HUB-005–010 with focused correctness, security, admission, unload and recovery evidence; unknown states remain NOT_VERIFIED.",
+        "Complete HUB-011–015 with API inventory, compatibility, typing, SQLite boundary and token-budget evidence.",
+        "Complete HUB-016–026 with packaged offline UI, parity, accessibility, responsive UX, onboarding, integration diagnostics and safe update/rollback evidence.",
+        "Complete HUB-027–030 with reproducible evaluation, installed-model capability evidence, accurate docs, clean repository hygiene and required CI gates.",
+        "Keep public MCP and HTTP contracts compatible; no silent model pulls, fabricated receipts, unverified completion, or destructive cleanup.",
+        "Run targeted tests, static checks, integration and installed-wheel smoke required by the roadmap; preserve logs/artifacts and do not claim beyond evidence.",
+        "Update durable task checkpoints and verify completion against every roadmap ticket; leave all unrelated dirty work untouched."
+      ],
+      "blocker": null,
+      "clarifications": [],
+      "depends_on": [],
+      "description": "Complete the entire Local AI Hub roadmap HUB-001 through HUB-030 in dependency order per C:/Users/Adam/Downloads/local_ai_hub_audit_roadmap_2026-11-12.md.",
+      "kind": "code",
+      "next_action": "Execute HUB-012 Deconstruct monoliths in 5 independent slices",
+      "order": 1,
+      "title": "Local AI Hub HUB-001–030 Roadmap Execution",
+      "work_phase": "implementation",
+      "work_status": "in_progress"
+    }
+  },
+  "title": "Local AI Hub HUB-001–030 Audit Roadmap Implementation"
+}

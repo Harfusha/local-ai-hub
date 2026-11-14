@@ -59,3 +59,35 @@ def test_post_find_symbol_rejects_string_boolean(monkeypatch) -> None:
 
     assert calls == []
     assert responses[0][0] == 400
+
+
+def test_post_repo_code_index_rejects_string_boolean_before_service_call(monkeypatch) -> None:
+    calls: list[tuple[object, ...]] = []
+    responses: list[tuple[int, object]] = []
+    monkeypatch.setattr(
+        http_server,
+        "APP",
+        SimpleNamespace(
+            services=SimpleNamespace(code_query=lambda *args: calls.append(args) or {"success": True}),
+            recovery=None,
+            logger=logging.getLogger(__name__),
+        ),
+    )
+    monkeypatch.setattr(http_server, "_http_mode_gate_error", lambda *_args: None)
+
+    handler = object.__new__(http_server.Handler)
+    handler.path = "/api/repo/code-index"
+    handler.headers = {"Content-Type": "application/json"}
+    handler._require_authorized = lambda: True
+    handler._bind_repository_root_payload = lambda *_args, **_kwargs: True
+    handler._begin_trace = lambda _path: None
+    handler._read_json = lambda: {"root": "C:\\repo", "query": "Widget", "include_code": "false"}
+    handler._claim_recovery = lambda *_args: True
+    handler._agent = lambda: "agent-test"
+    handler._send = lambda status, body, **_kwargs: responses.append((status, body))
+
+    handler.do_POST()
+
+    assert calls == []
+    assert responses[0][0] == 400
+    assert responses[0][1]["error"] == "include_code must be a boolean"

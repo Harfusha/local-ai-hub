@@ -8,6 +8,9 @@ from local_ai_hub.laya_decisions import (
     DecisionRequest,
     DecisionResult,
     DecisionStatus,
+    derive_watchdog_lifecycle_baseline,
+    filter_available_model_route_options,
+    filter_verified_model_route_options,
 )
 
 
@@ -592,6 +595,55 @@ def test_model_route_options_use_existing_hub_tiers():
     assert request.options == ("smart",)
 
 
+def test_model_route_options_are_intersected_with_server_verified_availability():
+    assert filter_available_model_route_options(
+        {"fast", "vision", "caller_injected_route"}
+    ) == frozenset({"fast", "vision"})
+    assert filter_available_model_route_options({"smart"}) == frozenset()
+
+
+@pytest.mark.parametrize("availability", [None, "fast", 1, {}, ["fast", 1]])
+def test_model_route_options_fail_closed_for_unknown_or_malformed_availability(availability):
+    assert filter_available_model_route_options(availability) == frozenset()
+
+
+def test_verified_model_route_options_follow_current_role_and_distinct_installed_models():
+    models_by_role = {
+        "fast_code": "fast-v1",
+        "heavy_code": "heavy-v1",
+        "reasoning": "reason-v1",
+        "general": "general-v1",
+    }
+    installed_digests = {
+        "fast-v1": "a" * 64,
+        "reason-v1": "b" * 64,
+        "general-v1": "c" * 64,
+    }
+
+    assert filter_verified_model_route_options(
+        models_by_role, installed_digests, "reasoning"
+    ) == frozenset({"fast", "smart", "generic"})
+    assert filter_verified_model_route_options(
+        models_by_role, {"fast-v1": "a" * 64}, "fast_code"
+    ) == frozenset()
+
+
+def test_verified_model_route_options_reject_invalid_digests_and_duplicate_routes():
+    models_by_role = {
+        "fast_code": "same-model",
+        "heavy_code": "same-model",
+        "reasoning": "same-model",
+        "general": "same-model",
+    }
+
+    assert filter_verified_model_route_options(
+        models_by_role, {"same-model": "not-a-sha256"}, "fast_code"
+    ) == frozenset()
+    assert filter_verified_model_route_options(
+        models_by_role, {"same-model": "a" * 64}, "fast_code"
+    ) == frozenset()
+
+
 def test_non_success_result_requires_a_reason_code():
     request = DecisionRequest.from_mapping(
         {"category": "next_step", "evidence_ids": [], "options": ["inspect_source"]},
@@ -624,3 +676,47 @@ def test_context_source_memory_record_ids_are_required_and_kept_out_of_model_inp
 
     assert parsed.source_record_ids == ("mem_task_1", None)
     assert "source_record_ids" not in parsed.model_input()
+
+
+@pytest.mark.parametrize(
+    ("status", "suggestion"),
+    [
+        ("draft", "recommend_continue"),
+        ("planned", "recommend_continue"),
+        ("active", "recommend_continue"),
+        ("verifying", "recommend_continue"),
+        ("blocked", "recommend_human_review"),
+        ("waiting", "recommend_human_review"),
+        ("failed", "recommend_human_review"),
+        ("abandoned", "recommend_human_review"),
+        ("completed", "recommend_stop"),
+        ("cancelled", "recommend_stop"),
+    ],
+)
+def test_watchdog_lifecycle_baseline_uses_only_linked_evidence_and_supported_option(status, suggestion):
+    assert derive_watchdog_lifecycle_baseline(
+        status=status,
+        request_evidence_ids=("ev-unlinked", "ev-linked"),
+        checkpoint_evidence_ids=("ev-linked",),
+        options=("recommend_continue", "recommend_stop", "recommend_human_review"),
+    ) == {
+        "method": "agent_os_task_lifecycle",
+        "suggestion": suggestion,
+        "evidence_id": "ev-linked",
+    }
+
+
+def test_watchdog_lifecycle_baseline_fails_closed_on_unknown_or_unlinked_inputs():
+    common = {
+        "request_evidence_ids": ("ev-1",),
+        "checkpoint_evidence_ids": ("ev-1",),
+        "options": ("recommend_stop",),
+    }
+    assert derive_watchdog_lifecycle_baseline(status="unknown", **common) is None
+    assert derive_watchdog_lifecycle_baseline(status="active", **common) is None
+    assert derive_watchdog_lifecycle_baseline(
+        status="active",
+        request_evidence_ids=("ev-1",),
+        checkpoint_evidence_ids=("ev-other",),
+        options=("recommend_continue",),
+    ) is None

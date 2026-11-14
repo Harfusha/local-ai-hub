@@ -330,8 +330,9 @@ def test_slow_serena_deadline_keeps_adaptive_http_content_and_coalesces_backend(
     )
     app = app_module.LocalAIApp(str(cfg_path))
     # This test exercises retrieval fallback and cache coalescing; its local
-    # task-state gate is stubbed to represent an active task.
+    # task-state gates are stubbed to represent an active task.
     monkeypatch.setattr(app.services, "_guard_task_state", lambda *_args, **_kwargs: ("active", False))
+    monkeypatch.setattr(app.services, "preflight_guard_task_state", lambda *_args, **_kwargs: None)
     slow_backend = SlowExternalTools()
     app.services.external_tools = slow_backend
     monkeypatch.setattr(
@@ -396,6 +397,7 @@ def test_slow_serena_deadline_keeps_adaptive_http_content_and_coalesces_backend(
         first = post("SlowBackendMarker")
         first_elapsed = time.perf_counter() - started_at
         assert first["success"] is True, first
+        assert first["phase_timings_ms"]["post_retrieval_ms"] >= 0
         assert first_elapsed < 8.0, first_elapsed
         assert slow_backend.started_event.wait(0.2)
         assert first["retrieval"]["backend_states"]["serena"] == "degraded"

@@ -113,8 +113,24 @@ def handle_post_repository_analysis(
 
     if route_id == "post_git_diff_1":
         path = payload.get("path")
-        staged = bool(payload.get("staged", False))
-        max_lines = int(payload.get("max_lines", 1000))
+        staged = payload.get("staged", False)
+        if not isinstance(staged, bool):
+            handler._send(400, {
+                "success": False,
+                "error": "staged must be a boolean",
+                "terminal": True,
+                "retryable": False,
+            })
+            return True
+        max_lines = payload.get("max_lines", 1000)
+        if isinstance(max_lines, bool) or not isinstance(max_lines, int) or not 1 <= max_lines <= 10000:
+            handler._send(400, {
+                "success": False,
+                "error": "max_lines must be an integer from 1 to 10000",
+                "terminal": True,
+                "retryable": False,
+            })
+            return True
         if app.deterministic is not None:
             revisions = {key: payload[key] for key in ("rev1", "rev2") if key in payload}
             base = payload.get("base")

@@ -448,6 +448,7 @@ button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-vis
     </div>
     <span id="conn" class="pill warn-t"><span class="pulse-dot"></span>connecting</span>
     <span id="activityModeBadge" class="pill warn-t" data-mode="unknown">Mode: Unknown</span>
+    <span id="versionBadge" class="pill warn-t">Running code … · Installed package …</span>
     <span id="updated" class="tiny"></span>
     <label class="tiny">Metrics period <select id="sloScope"><option value="process" selected>Since restart</option><option value="window">Last 30 days</option></select></label>
     <span id="featSummary" class="pill tiny"></span>
@@ -5522,11 +5523,32 @@ async function pollTraces(isCurrent=()=>document.visibilityState!=='hidden'){
 $('traceRefresh')?.addEventListener('click',()=>pollTraces());$('traceKind')?.addEventListener('change',()=>renderTraceList(lastTraces));
 $('traceHistorySearch')?.addEventListener('input',()=>renderTraceList(lastTraces));$('traceHistoryState')?.addEventListener('change',()=>renderTraceList(lastTraces));
 
+function renderVersionBadge(running, installed){
+  const el = $('versionBadge');
+  const run = (running === null || running === undefined || running === '') ? 'unknown' : String(running);
+  const inst = (installed === null || installed === undefined || installed === '') ? 'unknown' : String(installed);
+  const text = `Running code ${run} · Installed package ${inst}`;
+  const isMatch = Boolean(running && installed && running === installed);
+  const cls = isMatch ? 'ok' : 'warn-t';
+  if(el){
+    el.textContent = text;
+    el.className = 'pill ' + cls;
+  }
+  return {text: text, level: cls, match: isMatch};
+}
+
 async function probeHealth(){
   try{
     const r=await nativeFetch('/health',{cache:'no-store'});
-    if(r.ok&&!hasLiveStatus){$('conn').textContent='online';$('conn').className='pill ok'}
-  }catch(e){if(!hasLiveStatus){$('conn').textContent='offline';$('conn').className='pill bad-t'}}
+    if(r.ok){
+      const data=await r.json();
+      if(!hasLiveStatus){$('conn').textContent='online';$('conn').className='pill ok'}
+      renderVersionBadge(data.version, data.installed_version);
+    }
+  }catch(e){
+    if(!hasLiveStatus){$('conn').textContent='offline';$('conn').className='pill bad-t'}
+    renderVersionBadge(null, null);
+  }
 }
 async function pollStatus(isCurrent=()=>document.visibilityState!=='hidden'){
   if(document.visibilityState==='hidden'||!isCurrent())return false;

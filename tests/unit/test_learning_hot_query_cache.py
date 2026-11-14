@@ -54,6 +54,21 @@ def test_record_does_not_wait_for_an_in_process_learning_lock(tmp_path):
     assert elapsed < 0.5
 
 
+def test_record_resolved_skips_filesystem_canonicalization(tmp_path, monkeypatch):
+    root = tmp_path / "repo"
+    root.mkdir()
+    learner = UsageLearner({"server": {"state_dir": str(tmp_path / "state")}})
+
+    def unexpected_resolution(_root):
+        raise AssertionError("resolved root should not be canonicalized again")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(learning, "_resolve_root", unexpected_resolution)
+        learner.record_resolved(root, "resolved root query")
+
+    assert learner.hot_queries(str(root), 4) == ["resolved root query"]
+
+
 def test_hot_query_cache_reuses_reads_and_record_invalidates_immediately(tmp_path, monkeypatch):
     root = tmp_path / "repo"
     root.mkdir()

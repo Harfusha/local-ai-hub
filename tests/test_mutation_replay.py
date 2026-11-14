@@ -1910,7 +1910,7 @@ def test_async_delivery_uses_only_caller_request_id(monkeypatch, headers, expect
     assert len(submitted) == 1
     assert submitted[0].get("request_id") == expected_request_id
 
-def test_direct_async_submit_carries_caller_request_id(tmp_path, monkeypatch) -> None:
+def test_direct_async_submit_keeps_journal_request_id_out_of_job_payload(tmp_path, monkeypatch) -> None:
     from local_ai_hub.resilience import RecoveryJournal
 
     submitted: list[dict[str, Any]] = []
@@ -1957,4 +1957,4 @@ def test_direct_async_submit_carries_caller_request_id(tmp_path, monkeypatch) ->
     assert [status for status, _body in responses] == [200, 200]
     assert responses[1][1] == responses[0][1]
     assert len(submitted) == 1
-    assert submitted[0]["request_id"] == "caller-request-2"
+    assert "request_id" not in submitted[0]

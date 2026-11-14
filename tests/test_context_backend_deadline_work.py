@@ -9,6 +9,7 @@ import pytest
 
 from local_ai_hub.rag import RAGStore
 from local_ai_hub.sqlite_support import connect_sqlite
+from local_ai_hub.services import LocalAIServices
 
 
 @pytest.fixture
@@ -91,3 +92,51 @@ def test_rag_search_normal_without_deadline(rag_with_many_chunks: tuple[RAGStore
     assert result["success"] is True
     assert len(result["results"]) > 0
     assert "deadline_exceeded" not in result.get("fallbacks", [])
+
+
+def test_hybrid_context_starts_optional_backend_deadline_after_sync_preparation(tmp_path: Path):
+    class SlowCodeIndex:
+        def related_paths(self, root, query, *, limit):
+            time.sleep(0.05)
+            return []
+
+    class CapturingRAG:
+        def __init__(self):
+            self.remaining_at_search = None
+
+        def search(self, query, *, workspace, top_k, use_reranker, deadline, cancel_event):
+            self.remaining_at_search = deadline - time.perf_counter()
+            return {"success": True, "results": [], "fallbacks": []}
+
+    rag = CapturingRAG()
+    services = object.__new__(LocalAIServices)
+    services.config = {
+        "features": {"rag": True},
+        "rag": {"use_reranker": False},
+        "search": {
+            "context_backend_timeout_seconds": 0.01,
+            "context_rag_timeout_seconds": 0.01,
+        },
+    }
+    services.rag = rag
+    services.reranker = None
+    services.evidence_store = None
+    services.learner = None
+    services.deterministic = None
+    services.code_index = SlowCodeIndex()
+    services.preprocessor = None
+    services.external_tools = None
+
+    result = services._hybrid_context_uncached(
+        str(tmp_path),
+        "find relevant source",
+        workspace="test-workspace",
+        max_tokens=128,
+        quality_first=True,
+        rag_revision="revision-1",
+        rag_revision_available=True,
+    )
+
+    assert rag.remaining_at_search is not None
+    assert rag.remaining_at_search > 0
+    assert result["retrieval"]["backend_selection"]["preparation_ms"] >= 50

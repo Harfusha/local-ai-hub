@@ -140,6 +140,14 @@ class AsyncJobManager:
     def _connect(self) -> sqlite3.Connection:
         return connect_sqlite(self.path, timeout_seconds=0.75)
 
+    def _connect_for_progress(self) -> sqlite3.Connection:
+        # Progress is best-effort; it must not stall RAG work behind a busy writer.
+        return connect_sqlite(self.path, timeout_seconds=0.05)
+
+    def _connect_for_finalization(self) -> sqlite3.Connection:
+        # Match the bounded writer-lock wait to the finalization transaction budget.
+        return connect_sqlite(self.path, timeout_seconds=2.0)
+
     def _init_db(self) -> None:
         if self._initialized:
             return
@@ -373,18 +381,29 @@ class AsyncJobManager:
     def _resource_admission(self) -> dict[str, Any]:
         provider = getattr(self.scheduler, "resource_status", None) or getattr(self.scheduler, "_resource_status", None)
         resource: dict[str, Any] = {}
+        telemetry_error = "sample_unavailable" if not callable(provider) else None
         if callable(provider):
             try:
                 value = provider()
                 if isinstance(value, dict):
                     resource = value
+                else:
+                    telemetry_error = "sample_invalid"
             except Exception:
+                telemetry_error = "sample_failed"
+        pressure_value = resource.get("pressure_level")
+        pressure = pressure_value.strip().lower() if isinstance(pressure_value, str) else "unknown"
+        factor_value = resource.get("context_budget_factor", 1.0)
+        factor: float | None = None
+        factor_valid = False
+        if isinstance(factor_value, (int, float)) and not isinstance(factor_value, bool):
+            try:
+                candidate_factor = float(factor_value)
+                factor_valid = math.isfinite(candidate_factor) and 0.0 <= candidate_factor <= 1.0
+                if factor_valid:
+                    factor = candidate_factor
+            except (OverflowError, ValueError):
                 pass
-        pressure = str(resource.get("pressure_level", "nominal") or "nominal").lower()
-        try:
-            factor = max(0.0, min(1.0, float(resource.get("context_budget_factor", 1.0))))
-        except (TypeError, ValueError, OverflowError):
-            factor = 1.0
         def measured_number(key: str) -> float | None:
             if key not in {"sample_timestamp", "sample_age_seconds"} and resource.get("available") is not True:
                 return None
@@ -396,6 +415,7 @@ class AsyncJobManager:
                     return None
             return None
 
+        throttle_background = resource.get("throttle_background", False)
         # Capture the exact provider response used above, never a second sample.
         sample = {
             "provider": (getattr(provider, "__qualname__", type(provider).__name__)[:256]
@@ -405,14 +425,14 @@ class AsyncJobManager:
             "telemetry_error": resource.get("telemetry_error") if isinstance(resource.get("telemetry_error"), str) and resource.get("telemetry_error") in {
                 "sample_failed", "sample_wait_timeout", "sample_pending", "sample_start_failed",
                 "sample_invalid", "sample_unavailable",
-            } else None,
+            } else telemetry_error,
             "measurement_basis": resource.get("policy_measurement_basis") if isinstance(resource.get("policy_measurement_basis"), str) and resource.get("policy_measurement_basis") in {
                 "dedicated_observed", "shared_unified_observed", "unmeasured",
             } else None,
             "sample_timestamp": measured_number("sample_timestamp"),
             "sample_age_seconds": measured_number("sample_age_seconds"),
             "pressure_level": pressure if pressure in {"nominal", "moderate", "high", "critical", "unknown"} else "other",
-            "throttle_background": bool(resource.get("throttle_background", False)),
+            "throttle_background": throttle_background if type(throttle_background) is bool else None,
             "context_budget_factor": factor,
             "measured_basis": {key: measured_number(key) for key in (
                 "vram_total_mb", "vram_used_mb", "vram_available_mb", "vram_used_pct",
@@ -420,7 +440,17 @@ class AsyncJobManager:
                 "policy_pressure_pct", "policy_headroom_mb",
             )},
         }
-        if pressure == "critical" or (pressure == "high" and bool(resource.get("throttle_background", False))):
+        if resource.get("available") is False:
+            return {**self._admission("rejected", "resource_telemetry_unavailable", retryable=True), "pressure_level": pressure, "context_budget_factor": factor, "resource_sample": sample}
+        if resource.get("available") is not True or telemetry_error is not None or bool(resource.get("telemetry_error")):
+            return {**self._admission("degraded", "resource_telemetry_unavailable", retryable=False), "pressure_level": pressure, "context_budget_factor": factor, "resource_sample": sample}
+        if (
+            pressure not in {"nominal", "moderate", "high", "critical"}
+            or not factor_valid
+            or ("throttle_background" in resource and type(resource.get("throttle_background")) is not bool)
+        ):
+            return {**self._admission("rejected", "resource_telemetry_invalid", retryable=True), "pressure_level": pressure, "context_budget_factor": factor, "resource_sample": sample}
+        if pressure == "critical" or (pressure == "high" and resource.get("throttle_background") is True):
             return {**self._admission("rejected", "resource_pressure", retryable=True), "pressure_level": pressure, "context_budget_factor": factor, "resource_sample": sample}
         if pressure in {"moderate", "high"} or factor < 1.0:
             return {**self._admission("degraded", "resource_pressure", retryable=False), "pressure_level": pressure, "context_budget_factor": factor, "resource_sample": sample}
@@ -927,8 +957,13 @@ class AsyncJobManager:
                 with closing(self._connect()) as con:
                     now = time.time()
                     row = con.execute(
-                        "SELECT job_id FROM async_jobs WHERE state='queued' AND cancel_requested=0 AND lease_until<=? AND dispatch_not_before<=? ORDER BY created_at ASC LIMIT 1",
-                        (now, now),
+                        """SELECT job_id FROM async_jobs
+                           WHERE state='queued' AND cancel_requested=0 AND lease_until<=? AND dispatch_not_before<=?
+                           ORDER BY (
+                               COALESCE(CAST(json_extract(payload_json, '$.priority') AS INTEGER), 0) +
+                               MIN(9, MAX(0, CAST((? - created_at) / 30.0 AS INTEGER)))
+                           ) DESC, created_at ASC LIMIT 1""",
+                        (now, now, now),
                     ).fetchone()
                     if row:
                         self._dispatch_background(str(row[0]))
@@ -951,6 +986,53 @@ class AsyncJobManager:
             worker = threading.Thread(target=run, name=f"async-dispatch-{job_id[:8]}", daemon=True)
             self._dispatchers.add(worker)
         worker.start()
+
+    @staticmethod
+    def _expired_job_response(
+        job_id: str,
+        previous_state: str,
+        previous_error: str,
+        result_json: str = "",
+    ) -> dict[str, Any]:
+        if previous_state == "expired" and result_json:
+            try:
+                result_value = json.loads(result_json)
+                expiry = result_value.get("_async_expiry") if isinstance(result_value, dict) else None
+                if isinstance(expiry, dict):
+                    previous_state = str(expiry.get("state") or previous_state)
+                    previous_error = str(expiry.get("error") or previous_error)
+            except (TypeError, ValueError):
+                pass
+        response = {
+            "success": False,
+            "job_id": job_id,
+            "state": "expired",
+            "expired_state": previous_state,
+            "expired_error": previous_error,
+            "outcome_unknown": previous_state == "outcome_unknown",
+            "error": "async job result expired",
+            "terminal": True,
+            "retryable": False,
+        }
+        if previous_state == "failed":
+            detail = AsyncJobManager._safe_failure_detail(result_json)
+            if detail is not None:
+                response["error_detail"] = detail
+        return response
+
+    @staticmethod
+    def _safe_failure_detail(result_json: str) -> str | None:
+        try:
+            result_value = json.loads(result_json or "{}")
+        except (TypeError, ValueError):
+            return None
+        if not isinstance(result_value, dict):
+            return None
+        detail = result_value.get("error_detail")
+        prefix = "SQLite write transaction exceeded its duration budget (RAG "
+        if isinstance(detail, str) and detail.startswith(prefix):
+            return detail[:500]
+        return None
 
     def submit(self, action: str, payload: dict[str, Any], *, dispatch_delay_seconds: float = 0.0, **fields: Any) -> dict[str, Any]:
         self._reject_retired_fields(fields)
@@ -988,11 +1070,11 @@ class AsyncJobManager:
         with self._mode_transition_lock, self._lock, closing(self._connect()) as con:
             if caller_request_id:
                 identified = con.execute(
-                    "SELECT job_id,action,request_hash,state,trace_id,task_id,expires_at,created_at,error,artifact_id FROM async_jobs WHERE json_valid(payload_json) AND json_type(payload_json,'$.request_id')='text' AND json_extract(payload_json,'$.request_id')<>'' AND json_extract(payload_json,'$.request_id')=? ORDER BY created_at LIMIT 1",
+                    "SELECT job_id,action,request_hash,state,trace_id,task_id,expires_at,created_at,error,artifact_id,result_json FROM async_jobs WHERE json_valid(payload_json) AND json_type(payload_json,'$.request_id')='text' AND json_extract(payload_json,'$.request_id')<>'' AND json_extract(payload_json,'$.request_id')=? ORDER BY created_at LIMIT 1",
                     (caller_request_id,),
                 ).fetchone()
                 if identified:
-                    job_id, old_action, old_hash, old_state, trace_id, old_task_id, expires_at, created_at, old_error, artifact_id = identified
+                    job_id, old_action, old_hash, old_state, trace_id, old_task_id, expires_at, created_at, old_error, artifact_id, old_result_json = identified
                     if str(old_action) != action or str(old_hash) != request_hash:
                         return {"success": False, "job_id": str(job_id), "state": "conflict", "error": "request_id already used with different operation or payload", "conflict": True, "terminal": True, "retryable": False}
                     state = str(old_state)
@@ -1004,11 +1086,18 @@ class AsyncJobManager:
                     age_ms = max(0.0, (now - float(created_at)) * 1000.0)
                     admission = self._admission("coalesced", "idempotent_request_replay", retryable=False, queue_age_ms=age_ms)
                     if state == "expired":
-                        return {"success": False, "job_id": str(job_id), "state": state, "error": "async job result expired", "terminal": True, "retryable": False}
+                        return self._expired_job_response(
+                            str(job_id), str(old_state), str(old_error or ""), str(old_result_json or ""),
+                        )
                     if state == "outcome_unknown":
                         return {"success": False, "job_id": str(job_id), "state": state, "error": str(old_error or "async job outcome unknown"), "outcome_unknown": True, "terminal": True, "retryable": False}
                     self._stats["coalesced"] += 1
-                    return {"success": True, "job_id": str(job_id), "trace_id": str(trace_id or ""), "task_id": str(old_task_id or ""), "state": state, "coalesced": state in {"queued", "running"}, "idempotent_replay": True, "durability": "sqlite_committed", "admission": admission, "admission_state": admission["state"]}
+                    replay = {"success": True, "job_id": str(job_id), "trace_id": str(trace_id or ""), "task_id": str(old_task_id or ""), "state": state, "coalesced": state in {"queued", "running"}, "idempotent_replay": True, "durability": "sqlite_committed", "admission": admission, "admission_state": admission["state"]}
+                    if state == "failed":
+                        error_detail = self._safe_failure_detail(str(old_result_json or ""))
+                        if error_detail:
+                            replay["error_detail"] = error_detail
+                    return replay
             existing = con.execute("SELECT job_id,state,trace_id,task_id FROM async_jobs WHERE request_hash=? AND state IN ('queued','running')", (request_hash,)).fetchone()
             if existing:
                 self._stats["coalesced"] += 1
@@ -1234,10 +1323,10 @@ class AsyncJobManager:
 
     def _progress_callback(self, job_id: str, attempt: int) -> Callable[[float, str], bool]:
         guard = threading.Lock()
-        last_write = float("-inf")
+        last_attempt = float("-inf")
 
         def update(percent: float, stage: str) -> bool:
-            nonlocal last_write
+            nonlocal last_attempt
             if isinstance(percent, bool) or not isinstance(percent, (int, float)):
                 return False
             try:
@@ -1250,10 +1339,11 @@ class AsyncJobManager:
             stage = " ".join(stage.split())
             with guard:
                 tick = time.monotonic()
-                if tick - last_write < 0.25:
+                if tick - last_attempt < 0.25:
                     return False
+                last_attempt = tick
                 try:
-                    with self._lock, closing(self._connect()) as con:
+                    with self._lock, closing(self._connect_for_progress()) as con:
                         changed = con.execute(
                             "INSERT INTO async_job_progress(job_id,attempt,progress_percent,current_stage,updated_at) "
                             "SELECT job_id,attempts,?,?,? FROM async_jobs WHERE job_id=? "
@@ -1265,7 +1355,6 @@ class AsyncJobManager:
                             (min(99.0, float(percent)), stage, time.time(), job_id, attempt, time.time(), time.time()),
                         ).rowcount
                         con.commit()
-                    last_write = tick
                     return changed == 1
                 except sqlite3.DatabaseError:
                     return False
@@ -1283,7 +1372,7 @@ class AsyncJobManager:
             if current_state != "queued" or row["cancel_requested"]:
                 cancelled = bool(row["cancel_requested"]) or current_state == "cancelled"
                 state = "cancelled" if cancelled else current_state
-                return {"success": False, "job_id": job_id, "state": state, "error": "async job cancelled before execution" if cancelled else "async job is not queued", "outcome_unknown": state == "outcome_unknown", "terminal": state in self.TERMINAL_STATES, "retryable": state in {"queued", "running"}, "admission": self._admission("accepted", "capacity_available", retryable=False)}
+                return {"success": False, "job_id": job_id, "state": state, "error": "async job cancelled before execution" if cancelled else "async job is not queued", "outcome_unknown": state == "outcome_unknown", "terminal": state in self.TERMINAL_STATES, "retryable": state in {"queued", "running"}}
             claimed = con.execute(
                 "UPDATE async_jobs SET state='running',attempts=attempts+1,lease_until=?,updated_at=? "
                 "WHERE job_id=? AND state='queued' AND cancel_requested=0 AND attempts=?",
@@ -1346,6 +1435,7 @@ class AsyncJobManager:
 
         # N06 Phase 1: Pre-check ownership and store artifact outside DB write transaction
         pre_artifact_id = ""
+        pre_result_json = ""
         if result.get("success") is True:
             is_valid_attempt = False
             with self._lock, closing(self._connect()) as chk_con:
@@ -1369,8 +1459,9 @@ class AsyncJobManager:
                     is_valid_attempt = True
             if is_valid_attempt:
                 try:
+                    pre_result_json = json_dumps(result, ensure_ascii=False, separators=(",", ":"))
                     stored_id = self.artifacts.put(
-                        json_dumps(result, ensure_ascii=False, separators=(",", ":")),
+                        pre_result_json,
                         kind="async-job",
                     )
                     pre_artifact_id = str(stored_id or "").strip()
@@ -1394,7 +1485,7 @@ class AsyncJobManager:
             if notify_expiration_after_commit:
                 self._event(job_id).set()
 
-        with self._lock, closing(self._connect()) as con, _finalization_transaction(con):
+        with self._lock, closing(self._connect_for_finalization()) as con, _finalization_transaction(con):
             # Hold the SQLite writer fence through validation and final persistence.
             # A process-local lock alone cannot exclude another manager instance.
             owner = con.execute(
@@ -1494,7 +1585,7 @@ class AsyncJobManager:
                     final = {"success": False, "state": "outcome_unknown", "outcome_unknown": True, "error": "async job result artifact unavailable", "terminal": True, "retryable": False}
                     con.execute("UPDATE async_jobs SET state='outcome_unknown',result_json=?,artifact_id='',error=?,lease_until=0,updated_at=? WHERE job_id=?", (json_dumps(final, ensure_ascii=False, separators=(",", ":")), final["error"], time.time(), job_id))
                 else:
-                    con.execute("UPDATE async_jobs SET state='done',result_json=?,artifact_id=?,lease_until=0,updated_at=? WHERE job_id=?", (json_dumps(result, ensure_ascii=False, separators=(",", ":")), artifact_id, time.time(), job_id))
+                    con.execute("UPDATE async_jobs SET state='done',result_json=?,artifact_id=?,lease_until=0,updated_at=? WHERE job_id=?", (pre_result_json, artifact_id, time.time(), job_id))
                     stats_counter = "completed"
                     final = result
             else:
@@ -1621,7 +1712,9 @@ class AsyncJobManager:
         row = self._row(job_id)
         if not row: return {"success": False, "error": "async job not found", "terminal": True, "retryable": False}
         if float(row["expires_at"]) <= time.time() and row["state"] in self.TERMINAL_STATES:
-            return {"success": False, "job_id": job_id, "state": "expired", "terminal": True, "retryable": False}
+            return self._expired_job_response(
+                job_id, str(row["state"]), str(row["error"] or ""), str(row["result_json"] or ""),
+            )
         state = str(row["state"])
         artifact_unavailable = state == "done" and not self._result_artifact_available(str(row["artifact_id"] or ""))
         if artifact_unavailable:
@@ -1639,7 +1732,7 @@ class AsyncJobManager:
             "terminal": state in self.TERMINAL_STATES,
             "retryable": state in {"queued", "running"},
             "next_action": "wait_or_result" if state in {"queued", "running"} else "inspect_result",
-            "admission": self._admission("accepted", "capacity_available", retryable=False, queue_age_ms=(time.time() - float(row["created_at"])) * 1000.0),
+            "admission": self._admission("accepted", "job_persisted", retryable=False, queue_age_ms=(time.time() - float(row["created_at"])) * 1000.0),
         }
         if state == "outcome_unknown":
             try:
@@ -1669,6 +1762,10 @@ class AsyncJobManager:
             result["error"] = "async job result artifact unavailable"
         elif state == "outcome_unknown":
             result["error"] = str(row["error"] or "async job outcome unknown")
+        elif state == "failed":
+            error_detail = self._safe_failure_detail(str(row["result_json"] or ""))
+            if error_detail:
+                result["error_detail"] = error_detail
         result["admission_state"] = result["admission"]["state"]
         if "trace_id" in row.keys(): result["trace_id"] = str(row["trace_id"] or "")
         return result
@@ -1735,7 +1832,9 @@ class AsyncJobManager:
         if not row: return {"success": False, "error": "async job not found", "terminal": True, "retryable": False}
         state = str(row["state"])
         if state == "expired" or (float(row["expires_at"]) <= time.time() and state in self.TERMINAL_STATES):
-            return {"success": False, "job_id": job_id, "state": "expired", "error": "async job result expired", "terminal": True, "retryable": False}
+            return self._expired_job_response(
+                job_id, state, str(row["error"] or ""), str(row["result_json"] or ""),
+            )
         if row["state"] != "done":
             result = {"success": False, "job_id": job_id, "state": state, "error": str(row["error"] or "async job is not complete"), "outcome_unknown": state == "outcome_unknown", "in_progress": state in {"queued", "running"}, "terminal": state in self.TERMINAL_STATES, "retryable": state in {"queued", "running"}}
             if state == "outcome_unknown":
@@ -1745,6 +1844,10 @@ class AsyncJobManager:
                         result["cleanup_unconfirmed"] = True
                 except (TypeError, ValueError):
                     pass
+            elif state == "failed":
+                error_detail = self._safe_failure_detail(str(row["result_json"] or ""))
+                if error_detail:
+                    result["error_detail"] = error_detail
             return result
         artifact_id = str(row["artifact_id"] or "").strip()
         if not self._result_artifact_available(artifact_id):
@@ -1892,7 +1995,27 @@ class AsyncJobManager:
             return
         now = time.time()
         with self._lock, closing(self._connect()) as con:
-            expired = con.execute("UPDATE async_jobs SET state='expired',dispatch_not_before=0,updated_at=? WHERE state IN ('done','failed','cancelled','outcome_unknown') AND expires_at<?", (now, now)).rowcount
+            expiring = con.execute(
+                "SELECT job_id,state,error,result_json FROM async_jobs WHERE state IN ('done','failed','cancelled','outcome_unknown') AND expires_at<?",
+                (now,),
+            ).fetchall()
+            expired = 0
+            for job_id, previous_state, previous_error, result_json in expiring:
+                try:
+                    result_value = json.loads(str(result_json or "{}"))
+                except (TypeError, ValueError):
+                    result_value = {"_async_original_result_json": str(result_json or "")}
+                if not isinstance(result_value, dict):
+                    result_value = {"_async_original_result": result_value}
+                result_value["_async_expiry"] = {
+                    "state": str(previous_state),
+                    "error": str(previous_error or ""),
+                }
+                cursor = con.execute(
+                    "UPDATE async_jobs SET state='expired',result_json=?,dispatch_not_before=0,updated_at=? WHERE job_id=? AND state=? AND expires_at<?",
+                    (json_dumps(result_value, ensure_ascii=False, separators=(",", ":")), now, job_id, previous_state, now),
+                )
+                expired += cursor.rowcount
             # Periodic tombstone purge: evict expired jobs whose retention period has lapsed
             con.execute("DELETE FROM async_jobs WHERE state='expired' AND updated_at<?", (now - self.result_ttl_seconds,))
             con.execute("DELETE FROM async_job_progress WHERE NOT EXISTS (SELECT 1 FROM async_jobs j WHERE j.job_id=async_job_progress.job_id)")
@@ -1908,7 +2031,15 @@ class AsyncJobManager:
                         self._stats["cancelled"] += 1
                 else:
                     con.execute("UPDATE async_jobs SET state='queued',lease_until=0,dispatch_not_before=0,updated_at=? WHERE job_id=?", (now, str(s_id)))
-            rows = con.execute("SELECT job_id FROM async_jobs WHERE state='queued' AND dispatch_not_before<=? AND lease_until<?", (now, now)).fetchall()
+            rows = con.execute(
+                """SELECT job_id FROM async_jobs
+                   WHERE state='queued' AND dispatch_not_before<=? AND lease_until<?
+                   ORDER BY (
+                       COALESCE(CAST(json_extract(payload_json, '$.priority') AS INTEGER), 0) +
+                       MIN(9, MAX(0, CAST((? - created_at) / 30.0 AS INTEGER)))
+                   ) DESC, created_at ASC""",
+                (now, now, now),
+            ).fetchall()
             delayed_ids = set(self._delayed_dispatch)
             active_rows = con.execute("SELECT job_id FROM async_jobs WHERE state IN ('queued','running')").fetchall()
             active_ids = {str(r[0]) for r in active_rows}

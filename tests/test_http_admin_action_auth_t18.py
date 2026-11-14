@@ -31,6 +31,55 @@ def test_admin_authorization_rejects_explicit_audit_queue_rejection(monkeypatch)
     assert handler.responses == [(503, {"success": False, "error": "admin audit unavailable", "retryable": True})]
 
 
+def test_require_authorized_audits_denied_admin_action(monkeypatch):
+    monkeypatch.setattr(http_server, "APP", SimpleNamespace(config={"security": {}}))
+    handler = _handler("/api/config/update", "")
+    audits = []
+    handler._authorized = lambda action, permission=None: False
+    handler._audit_admin_authorization = lambda action, *, allowed: audits.append((action, allowed)) or True
+
+    assert handler._require_authorized() is False
+    assert audits == [("config.write", False)]
+    assert handler.responses == [(401, {"success": False, "error": "unauthorized"})]
+
+
+def test_require_authorized_does_not_audit_denied_non_admin_request(monkeypatch):
+    monkeypatch.setattr(http_server, "APP", SimpleNamespace(config={"security": {}}))
+    handler = _handler("/api/non-admin", "")
+    audits = []
+    handler._authorized = lambda action, permission=None: False
+    handler._audit_admin_authorization = lambda action, *, allowed: audits.append((action, allowed)) or True
+
+    assert handler._require_authorized() is False
+    assert audits == []
+    assert handler.responses == [(401, {"success": False, "error": "unauthorized"})]
+
+
+def test_require_authorized_rejects_exhausted_installation_rate_limit(monkeypatch):
+    monkeypatch.setattr(http_server, "APP", SimpleNamespace(config={"security": {}}))
+    handler = _handler("/api/repo/state", "")
+    handler._authorized = lambda action, permission=None: True
+    handler.server = SimpleNamespace(check_rate_limit=lambda: False)
+
+    assert handler._require_authorized() is False
+    assert handler.responses == [(
+        429,
+        {"success": False, "error": "rate limit exceeded; slow down", "retryable": True, "retry_after_seconds": 10},
+    )]
+
+
+def test_require_authorized_accepts_request_when_installation_rate_limit_allows(monkeypatch):
+    monkeypatch.setattr(http_server, "APP", SimpleNamespace(config={"security": {}}))
+    handler = _handler("/api/repo/state", "")
+    checks = []
+    handler._authorized = lambda action, permission=None: True
+    handler.server = SimpleNamespace(check_rate_limit=lambda: checks.append(True) or True)
+
+    assert handler._require_authorized() is True
+    assert checks == [True]
+    assert handler.responses == []
+
+
 def test_authorization_rejects_malformed_security_configuration(monkeypatch):
     monkeypatch.setattr(http_server, "APP", SimpleNamespace(config={"security": "invalid"}))
     handler = _handler("/api/config/update", "admin-token-long-enough")
@@ -161,6 +210,18 @@ def test_dashboard_origin_guard_rejects_cross_site_and_invalid_origins(monkeypat
     assert markerless._validate_host_and_origin() is True
     assert invalid_origin._validate_host_and_origin() is False
     assert missing_origin._validate_host_and_origin() is False
+
+def test_dashboard_host_guard_rejects_dns_rebinding_host(monkeypatch):
+    monkeypatch.setattr(http_server, "APP", SimpleNamespace(config={
+        "security": {},
+        "server": {"bind": "127.0.0.1"},
+    }))
+    handler = _dashboard_handler("/api/config/update")
+    handler.headers["Host"] = "127.0.0.1.attacker.example:11435"
+
+    assert handler._validate_host_and_origin() is False
+    assert handler.responses[-1][0] == 403
+    assert handler.responses[-1][1]["error"] == "forbidden: invalid Host header"
 
 def test_loopback_routes_are_authorized_and_admin_actions_are_audited(monkeypatch):
     telemetry = AuditTelemetry()

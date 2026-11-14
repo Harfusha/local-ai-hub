@@ -151,6 +151,27 @@ def test_hotspot_route_surfaces_service_failures_as_http_errors(result, expected
     assert body["terminal"] is (not retryable)
 
 
+@pytest.mark.parametrize(("field", "value"), [
+    ("max_lines", True), ("max_lines", "many"), ("max_lines", 0), ("max_lines", 10001),
+    ("staged", "false"), ("staged", 1),
+])
+def test_git_diff_route_rejects_noncanonical_types_and_bounds(field, value):
+    app, calls = _app()
+    handler = Handler()
+
+    assert handle_post_repository_analysis(
+        handler, {"root": "r", field: value}, ("post_git_diff_1",), app,
+    ) is True
+
+    assert calls == []
+    status, body = handler.responses[0]
+    assert status == 400
+    assert body["success"] is False
+    assert field in body["error"]
+    assert body["terminal"] is True
+    assert body["retryable"] is False
+
+
 @pytest.mark.parametrize("payload", [
     {"root": "r", "query": 7},
     {"root": "r", "query": "needle", "max_commits": True},
@@ -194,13 +215,20 @@ def test_repo_state_fallback_error_and_missing_tracker_bodies():
         assert handler.responses == [(200, expected)]
 
 
-def test_conversion_errors_escape_to_do_post_central_error_translation():
+def test_git_diff_conversion_errors_return_bounded_bad_request():
     app, calls = _app()
     handler = Handler()
-    with pytest.raises(ValueError):
-        handle_post_repository_analysis(handler, {"max_lines": "bad"}, ("post_git_diff_1",), app)
+
+    assert handle_post_repository_analysis(
+        handler, {"max_lines": "bad"}, ("post_git_diff_1",), app,
+    ) is True
+
     assert calls == []
-    assert handler.responses == []
+    status, body = handler.responses[0]
+    assert status == 400
+    assert body["error"] == "max_lines must be an integer from 1 to 10000"
+    assert body["terminal"] is True
+    assert body["retryable"] is False
 
 
 def test_unrelated_route_is_not_consumed_and_family_priority_is_stable():

@@ -948,9 +948,14 @@ def generate_global_policy(cfg: dict[str, Any]) -> str:
     if fs.tasks and fs.has_any_model():
         task_action_list = list(_available_semantic_task_actions(fs))
         if task_action_list:
-            prioritization_bullets.append(
-                f"> - **Semantic Review & Second Opinion**: Call `local_ai_task(action=\"{'|'.join(task_action_list)}\")` before finalizing non-trivial edits."
-            )
+            if len(task_action_list) == 1:
+                prioritization_bullets.append(
+                    f"> - **Semantic Review & Second Opinion**: Call `local_ai_task(action=\"{task_action_list[0]}\")` before finalizing non-trivial edits."
+                )
+            else:
+                prioritization_bullets.append(
+                    "> - **Semantic Review & Second Opinion**: Use an exposed `local_ai_task` review action before finalizing non-trivial edits."
+                )
     prioritization_bullets.append(
         '> - **Antigravity wrapper**: Use `call_mcp_tool(ServerName="local-ai", ToolName="<tool>", Arguments={<same arguments>})` for the calls above.'
     )
@@ -1017,7 +1022,7 @@ def generate_global_policy(cfg: dict[str, Any]) -> str:
            "Non-overlapping dirty Git hunks may be preserved; overlapping edits require an active path lease claimed with the actual execution owner, then pass its exact `owner` and returned `lease_id`. "
            "The engine preflights all edits, rolls back write failures, and performs no auto-commit. "
            "Set `dry_run=false` only after review.\n\n" if fs.repo and fs.batch_replacement else "")
-        + f"{fs.selection_guide()}\n"
+        + f"{fs.selection_guide(include_task_actions=False)}\n"
         f"{model_default}\n"
         f"{context_economy_contract(cfg)}\n"
         "<!-- END LOCAL AI HUB TOOL POLICY -->"

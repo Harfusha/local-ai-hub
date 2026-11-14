@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+from pathlib import Path
+
+import pytest
+
 from local_ai_hub.http_server import Handler, LocalAIHTTPServer
 
 
@@ -114,3 +118,51 @@ def test_host_and_origin_validation(monkeypatch):
     assert Handler._validate_host_and_origin(handler) is False
     assert sent[-1][0] == 403
     assert "cross-origin requests are not allowed" in sent[-1][1]["error"]
+
+    # Reject malformed Host ports instead of trusting a split hostname.
+    handler.headers = {"Host": "localhost:70000"}
+    assert Handler._validate_host_and_origin(handler) is False
+    assert "invalid Host header" in sent[-1][1]["error"]
+
+    handler.headers = {"Host": "localhost:0"}
+    assert Handler._validate_host_and_origin(handler) is False
+    assert "invalid Host header" in sent[-1][1]["error"]
+
+    # Same host with a different explicit port is a different browser origin.
+    handler.headers = {"Host": "127.0.0.1:11435", "Origin": "http://localhost:11436"}
+    assert Handler._validate_host_and_origin(handler) is False
+    assert "cross-origin requests are not allowed" in sent[-1][1]["error"]
+
+    # Origin serializations cannot include credentials.
+    handler.headers = {"Host": "127.0.0.1:11435", "Origin": "http://attacker@localhost:11435"}
+    assert Handler._validate_host_and_origin(handler) is False
+    assert "cross-origin requests are not allowed" in sent[-1][1]["error"]
+
+
+def test_allowed_root_fails_closed_when_symlink_appears_during_resolution(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+):
+    import local_ai_hub.http_server as http_server
+
+    allowed = tmp_path / "allowed"
+    candidate = allowed / "repo"
+    outside = tmp_path / "outside"
+    candidate.mkdir(parents=True)
+    outside.mkdir()
+    original_resolve = Path.resolve
+    replaced = False
+
+    def resolve_after_symlink_swap(path: Path, *, strict: bool = False) -> Path:
+        nonlocal replaced
+        if path == candidate and not replaced:
+            replaced = True
+            # Model the resolution observing an outside symlink swapped in
+            # after is_symlink() but before resolve().
+            return original_resolve(outside, strict=True)
+        return original_resolve(path, strict=strict)
+
+    monkeypatch.setattr(Path, "resolve", resolve_after_symlink_swap)
+    resolved = http_server._strict_root_path(str(candidate))
+
+    assert resolved == original_resolve(outside, strict=True)
+    assert not http_server._root_is_allowed(resolved, [str(allowed)])

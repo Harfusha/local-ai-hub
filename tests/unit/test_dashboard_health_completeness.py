@@ -132,3 +132,29 @@ const offline=dashboardHealth({...base,hub_online:false,observability:{...base.o
 assert.equal(offline.level,'degraded');
 """,
     )
+
+
+def test_runtime_and_installed_package_versions_are_distinguished() -> None:
+    source = _extract("function renderVersionBadge(", "async function probeHealth(")
+    _deferred_javascript_check(
+        "const els={};\n"
+        "const $=id=>els[id]||(els[id]={textContent:'',className:''});\n"
+        + source,
+        """
+const ok = renderVersionBadge('6.0.0', '6.0.0');
+assert.equal(ok.level, 'ok');
+assert.match(ok.text, /Running code 6\\.0\\.0 · Installed package 6\\.0\\.0/);
+assert.equal(els.versionBadge.className, 'pill ok');
+
+const mismatch = renderVersionBadge('6.0.0', '5.1.4');
+assert.equal(mismatch.level, 'warn-t');
+assert.match(mismatch.text, /Running code 6\\.0\\.0 · Installed package 5\\.1\\.4/);
+assert.equal(els.versionBadge.className, 'pill warn-t');
+
+const unknown = renderVersionBadge('6.0.0', null);
+assert.equal(unknown.level, 'warn-t');
+assert.match(unknown.text, /Running code 6\\.0\\.0 · Installed package unknown/);
+assert.equal(els.versionBadge.className, 'pill warn-t');
+""",
+    )
+

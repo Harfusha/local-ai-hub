@@ -762,6 +762,41 @@ def test_hundred_plus_durable_jobs_stay_within_configured_worker_bounds(manager_
     assert max_running == 4
 
 
+def test_async_queue_capacity_returns_retryable_durable_backpressure(manager_factory) -> None:
+    entered = threading.Event()
+    release = threading.Event()
+
+    def execute(_action, _payload):
+        entered.set()
+        assert release.wait(10), "synthetic executor release missing"
+        return {"success": True}
+
+    manager = manager_factory(execute)
+    manager.max_workers = 1
+    manager.max_pending = 1
+    try:
+        first = manager.submit("reason", {"request_id": "queue-capacity-first", "task": "first"})
+        assert first["success"] is True
+        assert entered.wait(5), "first async worker did not start"
+
+        rejected = manager.submit("reason", {"request_id": "queue-capacity-second", "task": "second"})
+
+        assert rejected["success"] is False
+        assert rejected["state"] == "rejected"
+        assert rejected["admission_state"] == "rejected"
+        assert rejected["admission"]["reason"] == "queue_limit"
+        assert rejected["retryable"] is True
+        with closing(manager._connect()) as con:
+            rows = con.execute(
+                "SELECT job_id,state FROM async_jobs ORDER BY created_at,job_id"
+            ).fetchall()
+        assert [(str(row[0]), str(row[1])) for row in rows] == [(first["job_id"], "running")]
+    finally:
+        release.set()
+
+    assert manager.wait(first["job_id"], 10)["state"] == "done"
+
+
 @pytest.mark.parametrize(
     ("manager_response", "expected_status"),
     [

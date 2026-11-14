@@ -15,6 +15,7 @@ from types import ModuleType, SimpleNamespace
 
 import pytest
 from local_ai_hub import mcp_server
+from local_ai_hub import rag as rag_module
 from local_ai_hub.operational_mode import OperationalModeSnapshot
 from local_ai_hub.rag import RAGStore
 from local_ai_hub import reranker as reranker_module
@@ -39,6 +40,57 @@ def test_rag_import_does_not_require_unowned_policy_adapter():
         timeout=15,
     )
     assert result.returncode == 0, result.stderr
+
+
+def test_rag_publish_budget_error_identifies_overrun_stage(monkeypatch):
+    monkeypatch.setattr(rag_module.time, "monotonic", lambda: 15.25)
+
+    with pytest.raises(TimeoutError, match=r"stage=insert_fts.*elapsed_ms=5250.*budget_ms=5000"):
+        rag_module._check_rag_publish_budget(
+            started_at=10.0,
+            stage="insert_fts",
+            budget_seconds=5.0,
+        )
+
+
+def test_rag_batch_publish_budget_failure_reports_stage_and_rolls_back(tmp_path, monkeypatch):
+    store = _store(tmp_path)
+    (tmp_path / "sample.py").write_text("def sample():\n    return 1\n", encoding="utf-8")
+
+    class _Services:
+        def embed(self, texts, **_kwargs):
+            batch = list(texts)
+            return {
+                "success": True,
+                "embedding_space_id": "batch-publish-budget-test-space",
+                "embeddings": [[1.0, 0.0] for _ in batch],
+            }
+
+    store.services = _Services()
+    observed_stages = []
+
+    def _check_budget(*, started_at, stage, budget_seconds):
+        observed_stages.append(stage)
+        if stage == "insert_chunks":
+            raise TimeoutError(
+                "RAG publish budget exceeded: stage=insert_chunks elapsed_ms=5250 budget_ms=5000"
+            )
+
+    monkeypatch.setattr(rag_module, "_check_rag_publish_budget", _check_budget)
+    result = store.index_paths_step(
+        str(tmp_path), workspace="batch-publish-budget", paths=["sample.py"],
+    )
+
+    assert result["success"] is False
+    assert result["error"] == "publish_failed"
+    assert result["error_detail"] == (
+        "RAG publish budget exceeded: stage=insert_chunks elapsed_ms=5250 budget_ms=5000"
+    )
+    assert observed_stages == ["inspect_fts", "delete_old_rows", "insert_chunks"]
+    files, chunks, fts, *_ = _rag_snapshot(store, "batch-publish-budget")
+    assert files == []
+    assert chunks == []
+    assert fts == []
 
 
 def _store(tmp_path):
@@ -344,6 +396,71 @@ def test_incremental_index_fts_write_failure_keeps_previous_snapshot(
     assert result["retryable"] is False
     assert injected["attempts"] == 1
     assert _rag_snapshot(store, workspace) == previous
+
+
+def test_incremental_index_updates_only_changed_project_file_owners(tmp_path, monkeypatch):
+    store = _store(tmp_path)
+    root = tmp_path / "project"
+    root.mkdir()
+    first = root / "first.py"
+    second = root / "second.py"
+    first.write_text("first = 1\n", encoding="utf-8")
+    second.write_text("second = 2\n", encoding="utf-8")
+
+    class _VectorServices:
+        def embed(self, texts, **_kwargs):
+            return {
+                "success": True,
+                "embedding_space_id": "owner-row-incremental-test-space",
+                "embeddings": [[0.25, 0.75] for _ in texts],
+            }
+
+    store.services = _VectorServices()
+    workspace = "owner-row-incremental-workspace"
+    assert store.index(root=str(root), workspace=workspace)["success"] is True
+
+    first.write_text("first = 3\n", encoding="utf-8")
+    owner_statements = []
+    connect = store._connect
+
+    class _ObservedConnection:
+        def __init__(self, connection):
+            self._connection = connection
+            self._connection.set_trace_callback(
+                lambda sql: owner_statements.append(sql)
+                if "project_file_owners" in sql
+                else None
+            )
+
+        def close(self):
+            self._connection.close()
+
+        def __getattr__(self, name):
+            return getattr(self._connection, name)
+
+    monkeypatch.setattr(store, "_connect", lambda: _ObservedConnection(connect()))
+    result = store.index(root=str(root), workspace=workspace)
+
+    assert result["success"] is True
+    owner_deletes = [
+        sql for sql in owner_statements if sql.startswith("DELETE FROM project_file_owners")
+    ]
+    owner_inserts = [
+        sql for sql in owner_statements if sql.startswith("INSERT OR IGNORE INTO project_file_owners")
+    ]
+    assert len(owner_deletes) == 1
+    assert "AND path='first.py'" in owner_deletes[0]
+    assert len(owner_inserts) == 1
+    assert "'first.py'" in owner_inserts[0]
+    with closing(connect()) as con:
+        owners = con.execute(
+            "SELECT root,path FROM project_file_owners WHERE workspace=? ORDER BY path",
+            (workspace,),
+        ).fetchall()
+    assert [(row[0], row[1]) for row in owners] == [
+        (str(root), "first.py"),
+        (str(root), "second.py"),
+    ]
 
 
 @pytest.mark.parametrize("failed_statement", ["INSERT INTO chunk_fts", "DELETE FROM chunk_fts"])

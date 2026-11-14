@@ -856,6 +856,11 @@ def _receipt_evidence_matches(
         or not isinstance(artifact.get("text"), str)
     ):
         return False
+    expected_artifact_id = "art_" + hashlib.sha256(
+        (expected_kind + "\0" + artifact["text"]).encode("utf-8")
+    ).hexdigest()[:24]
+    if receipt.evidence_id != expected_artifact_id:
+        return False
     try:
         proof = json.loads(artifact["text"])
     except (TypeError, ValueError):

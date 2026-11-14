@@ -44,6 +44,12 @@ def _safe_float(val: Any, default: float, min_val: float | None = None, max_val:
     return res
 
 
+def _bounded_capture_text(value: Any, max_bytes: int) -> str:
+    if not isinstance(value, str) or max_bytes <= 0:
+        return ""
+    return value.encode("utf-8", errors="replace")[:max_bytes].decode("utf-8", errors="ignore").strip()
+
+
 def _queue_laya_context_budget_shadow(
     services: Any,
     args: Any,
@@ -113,16 +119,45 @@ def _queue_laya_context_budget_shadow(
     if not isinstance(context_source, str) or context_source not in {"deterministic", "hybrid"}:
         context_source = "unknown"
 
-    task_input = task.encode("utf-8", errors="replace")[:8192].decode("utf-8", errors="ignore").strip()
+    packed_evidence = packed.get("evidence")
+    context_parts: list[str] = []
+    context_bytes = 0
+    if isinstance(packed_evidence, (list, tuple)):
+        allowed_evidence_ids = set(evidence_ids)
+        for item in packed_evidence:
+            if not isinstance(item, dict):
+                continue
+            evidence_id = item.get("evidence_id")
+            if not isinstance(evidence_id, str) or evidence_id not in allowed_evidence_ids:
+                continue
+            text = item.get("text")
+            if not isinstance(text, str) or not text.strip():
+                continue
+            separator = "\n\n" if context_parts else ""
+            separator_bytes = len(separator.encode("utf-8"))
+            remaining = (6 * 1024) - context_bytes - separator_bytes
+            if remaining <= 0:
+                break
+            excerpt = _bounded_capture_text(text, remaining)
+            if not excerpt:
+                continue
+            context_parts.append(excerpt)
+            context_bytes += separator_bytes + len(excerpt.encode("utf-8"))
+            if context_bytes >= 6 * 1024:
+                break
+    context_excerpt = "\n\n".join(context_parts)
+
+    content_budget = (16 * 1024) - 1024 - context_bytes
+    per_field_budget = min(8 * 1024, max(0, content_budget // 2))
+    task_input = _bounded_capture_text(task, per_field_budget)
     response_text = response.get("text")
     model_response = (
-        response_text.encode("utf-8", errors="replace")[:8192].decode("utf-8", errors="ignore").strip()
+        _bounded_capture_text(response_text, per_field_budget)
         if isinstance(response_text, str)
         else ""
     )
     observed_args = dict(args)
     observed_args["evidence_ids"] = evidence_ids
-    packed_evidence = packed.get("evidence")
     deterministic_evidence = deterministic.get("evidence") if isinstance(deterministic, dict) else None
     state = {
         "route_complexity": complexity,
@@ -145,11 +180,140 @@ def _queue_laya_context_budget_shadow(
                 for key, value in (
                     ("task_input", task_input),
                     ("model_response", model_response),
+                    ("context_excerpt", context_excerpt),
                 )
                 if value
             },
             baseline={
                 "method": "repo_context_token_budget",
+                "suggestion": suggestion,
+                "evidence_id": evidence_ids[0],
+            },
+        ))
+    except Exception:
+        return False
+
+
+def _queue_laya_delegation_shadow(
+    services: Any,
+    args: Any,
+    *,
+    root: str,
+    task: str,
+    mode: str,
+    route: Any,
+    risk_score: float,
+    plan: Any,
+    need_worker: bool,
+    explorer: Any,
+    packed: Any,
+    response: Any,
+) -> bool:
+    """Queue the deterministic adaptive worker-escalation decision for shadow review."""
+    if (
+        type(args) is not dict
+        or not isinstance(args.get("task_id"), str)
+        or not args["task_id"].strip()
+        or not isinstance(root, str)
+        or not root.strip()
+        or not isinstance(task, str)
+        or not task.strip()
+        or mode != "adaptive"
+        or not isinstance(route, dict)
+        or route.get("task_type") == "review"
+        or not isinstance(plan, dict)
+        or type(plan.get("worker")) is not bool
+        or plan["worker"] is not need_worker
+        or not isinstance(explorer, dict)
+        or explorer.get("success") is not True
+        or not isinstance(packed, dict)
+        or packed.get("success") is not True
+        or not isinstance(response, dict)
+        or response.get("success") is not True
+    ):
+        return False
+    queue = getattr(services, "_queue_laya_shadow_observation", None)
+    if not callable(queue):
+        return False
+
+    evidence_ids: list[str] = []
+    for result in (packed, explorer.get("structured"),):
+        if not isinstance(result, dict):
+            continue
+        evidence = result.get("evidence")
+        if isinstance(evidence, (list, tuple)):
+            values = [item.get("evidence_id") for item in evidence if isinstance(item, dict)]
+        else:
+            values = result.get("evidence_ids", [])
+        if not isinstance(values, (list, tuple)):
+            continue
+        for evidence_id in values:
+            if isinstance(evidence_id, str) and evidence_id.strip() and evidence_id not in evidence_ids:
+                evidence_ids.append(evidence_id)
+                if len(evidence_ids) >= 64:
+                    break
+        if len(evidence_ids) >= 64:
+            break
+    if not evidence_ids:
+        return False
+
+    structured = explorer.get("structured")
+    structured = structured if isinstance(structured, dict) else {}
+    confidence = _safe_float(structured.get("confidence"), 0.0, min_val=0.0, max_val=1.0)
+    confidence_bucket = "high" if confidence >= 0.9 else "medium" if confidence >= 0.65 else "low"
+    missing_evidence = structured.get("missing_evidence")
+    missing_evidence_count = len(missing_evidence) if isinstance(missing_evidence, (list, tuple)) else 0
+    risk = round(_safe_float(risk_score, 0.0, min_val=0.0, max_val=100.0), 3)
+
+    context_excerpt = structured.get("summary")
+    if not isinstance(context_excerpt, str):
+        context_excerpt = explorer.get("text") if isinstance(explorer.get("text"), str) else ""
+    response_text = response.get("text")
+    model_response = response_text if isinstance(response_text, str) else ""
+    content_budget = 16 * 1024 - 1024
+    task_input = _bounded_capture_text(task, min(8 * 1024, content_budget // 3))
+    context_excerpt = _bounded_capture_text(context_excerpt, min(4 * 1024, content_budget // 3))
+    model_response = _bounded_capture_text(
+        model_response,
+        min(4 * 1024, max(0, content_budget - len(task_input.encode("utf-8")) - len(context_excerpt.encode("utf-8")))),
+    )
+    observed_args = dict(args)
+    observed_args["evidence_ids"] = evidence_ids
+    suggestion = "delegate_bounded" if need_worker else "no_delegation"
+    state = {
+        "pipeline_mode": mode,
+        "review_task": "false",
+        "route_complexity": str(route.get("complexity"))
+        if route.get("complexity") in {"fast", "moderate", "heavy"}
+        else "unknown",
+        "risk_score": str(risk),
+        "explorer_confidence": confidence_bucket,
+        "missing_evidence_count": str(min(missing_evidence_count, 999)),
+        "grounded_evidence": "true" if evidence_ids else "false",
+        "planned_worker": "true" if plan.get("worker") else "false",
+        "worker_used": "true" if need_worker else "false",
+        "gate_reason": "confidence_sufficient"
+        if plan.get("reason") == "7b-confidence-sufficient"
+        else "planner_decision",
+    }
+    try:
+        return bool(queue(
+            observed_args,
+            root=root,
+            category="delegation",
+            options=["delegate_bounded", "no_delegation"],
+            state=state,
+            training_content={
+                key: value
+                for key, value in (
+                    ("task_input", task_input),
+                    ("context_excerpt", context_excerpt),
+                    ("model_response", model_response),
+                )
+                if value
+            },
+            baseline={
+                "method": "pipeline_worker_escalation",
                 "suggestion": suggestion,
                 "evidence_id": evidence_ids[0],
             },
@@ -717,6 +881,20 @@ class LocalAgentPipeline:
         worker_text = worker.get("text")
         if not isinstance(worker_text, str) or not worker_text.strip():
             worker_text = worker_structured.get("summary", "") if worker_structured else ""
+        _queue_laya_delegation_shadow(
+            self.services,
+            args,
+            root=root,
+            task=task,
+            mode=mode,
+            route=route,
+            risk_score=risk_score,
+            plan=plan,
+            need_worker=need_worker,
+            explorer=explorer,
+            packed=packed,
+            response={"success": result.get("success") is True, "text": canonical_text},
+        )
         _queue_laya_context_budget_shadow(
             self.services,
             args,

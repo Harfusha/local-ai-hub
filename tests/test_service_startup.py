@@ -13,7 +13,7 @@ import pytest
 
 def test_denied_scheduler_keeps_user_logon_startup(tmp_path, monkeypatch):
     from local_ai_hub import config
-    monkeypatch.setattr(config, 'load_config', lambda *args: {'server': {'state_dir': str(tmp_path)}})
+    monkeypatch.setattr(config, 'load_config', lambda *args, **_kwargs: {'server': {'state_dir': str(tmp_path)}})
     spec = importlib.util.spec_from_file_location('test_hub_service', Path(__file__).parents[1] / 'tools' / 'service.py')
     service = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(service)

@@ -79,4 +79,99 @@ def test_adaptive_relevance_bounds_optional_model_request_time():
 
     assert result["degraded"] is True
     assert result["degraded_reason"] == "backend_timeout"
-    assert captured.get("request_timeout_seconds") == 15.0
+    assert captured.get("request_timeout_seconds") == 3.0
+
+
+def test_adaptive_relevance_cools_down_after_queue_full(monkeypatch):
+    from local_ai_hub import services as services_module
+
+    now = [100.0]
+    monkeypatch.setattr(services_module.time, "monotonic", lambda: now[0])
+    service = LocalAIServices.__new__(LocalAIServices)
+    service.consistency_guard = _Guard()
+    service.config = {"models": {"fast_code": "qwen2.5-coder:3b"}}
+    service._repo_cached = lambda _op, _root, _params, compute: compute()
+    calls = []
+
+    def generate(*_args, **_kwargs):
+        calls.append(1)
+        if len(calls) == 1:
+            return {
+                "success": False,
+                "error_type": "QueueFullError",
+                "error_code": "local_backend_transport",
+                "retryable": True,
+            }
+        return {"success": True, "text": "{}"}
+
+    service._generate = generate
+    request = SimpleNamespace(
+        root="C:/repo",
+        task_id="task-1",
+        session_id="session-1",
+        phase="edit",
+        preload_profile="default",
+        focus=(),
+        changed_paths=(),
+        query="inspect code",
+        token_budget=512,
+    )
+    args = (request, ({"evidence_id": "evidence-1", "path": "src/main.py"},), "rev-1", "mem-1")
+
+    first = service._adaptive_relevance(*args)
+    now[0] += 1.0
+    during_cooldown = service._adaptive_relevance(*args)
+
+    assert first["degraded_reason"] == "backend_queue_full"
+    assert during_cooldown["degraded_reason"] == "backend_queue_full"
+    assert len(calls) == 1
+
+    now[0] += 10.0
+    after_cooldown = service._adaptive_relevance(*args)
+
+    assert after_cooldown["success"] is True
+    assert len(calls) == 2
+
+
+def test_adaptive_relevance_does_not_cool_down_after_timeout(monkeypatch):
+    from local_ai_hub import services as services_module
+
+    now = [200.0]
+    monkeypatch.setattr(services_module.time, "monotonic", lambda: now[0])
+    service = LocalAIServices.__new__(LocalAIServices)
+    service.consistency_guard = _Guard()
+    service.config = {"models": {"fast_code": "qwen2.5-coder:3b"}}
+    service._repo_cached = lambda _op, _root, _params, compute: compute()
+    calls = []
+
+    def generate(*_args, **_kwargs):
+        calls.append(1)
+        if len(calls) == 1:
+            return {
+                "success": False,
+                "error_type": "TimeoutError",
+                "error_code": "model_request_timeout",
+                "timed_out": True,
+            }
+        return {"success": True, "text": "{}"}
+
+    service._generate = generate
+    request = SimpleNamespace(
+        root="C:/repo",
+        task_id="task-1",
+        session_id="session-1",
+        phase="edit",
+        preload_profile="default",
+        focus=(),
+        changed_paths=(),
+        query="inspect code",
+        token_budget=512,
+    )
+    args = (request, ({"evidence_id": "evidence-1", "path": "src/main.py"},), "rev-1", "mem-1")
+
+    timed_out = service._adaptive_relevance(*args)
+    succeeded = service._adaptive_relevance(*args)
+
+    assert timed_out["degraded_reason"] == "backend_timeout"
+    assert succeeded["success"] is True
+    assert len(calls) == 2

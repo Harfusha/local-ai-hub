@@ -55,7 +55,7 @@ package-dir = {"" = "src"}
 where = ["src"]
 
 [tool.setuptools.package-data]
-local_ai_hub = ["defaults.toml", "automation_browser.js"]
+local_ai_hub = ["defaults.toml", "automation_browser.js", "ui_static/*.html", "ui_static/*.js", "ui_static/*.css"]
 "local_ai_hub.repo_plan" = ["repo-plan.v1.schema.json"]
 
 [tool.setuptools.data-files]
@@ -93,4 +93,9 @@ files = [
   "src/local_ai_hub/command_redaction.py",
   "src/local_ai_hub/evidence_merge.py",
   "src/local_ai_hub/http_event_cursor.py",
+  "src/local_ai_hub/external_candidate_paths.py",
+  "src/local_ai_hub/agent_event_pages.py",
+  "src/local_ai_hub/command_patch_paths.py",
+  "src/local_ai_hub/mcp_normalization.py",
+  "src/local_ai_hub/python_shell_injection.py",
 ]

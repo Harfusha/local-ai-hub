@@ -277,6 +277,32 @@ def test_normal_admission_rejects_stale_or_unknown_sample_age(telemetry, expecte
     assert "vram_available_bytes" not in result
 
 
+@pytest.mark.parametrize("pressure", ["high", "critical"])
+@pytest.mark.parametrize("throttle_background", ["false", "", 0, None, []])
+def test_normal_admission_rejects_malformed_throttle_telemetry(pressure, throttle_background):
+    class Balancer:
+        def status(self, force=False):
+            return {
+                "available": True,
+                "pressure_level": pressure,
+                "context_budget_factor": 0.5,
+                "throttle_background": throttle_background,
+                "vram_total_mb": 8192.0,
+                "vram_available_mb": 7168.0,
+                "telemetry_stale": False,
+                "sample_age_seconds": 0.2,
+            }
+
+    result = scheduler_with_balancer(Balancer())._admission(
+        background=True,
+        model="target-model",
+    )
+
+    assert result["state"] == "rejected"
+    assert result["reason"] == "resource_telemetry_invalid"
+    assert result["retryable"] is True
+
+
 def test_admission_rejection_message_matches_reason_and_request_class():
     assert admission_rejection_message("vram_telemetry_unavailable", background=False) == (
         "VRAM telemetry unavailable; refusing model admission"

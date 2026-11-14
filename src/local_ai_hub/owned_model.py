@@ -52,6 +52,7 @@ class _ModelProcess:
         self._writers = []
         self._stderr_tail = bytearray()
         self._stderr_lock = threading.Lock()
+        self._stderr_ready = threading.Event()
         self._reader = threading.Thread(target=self._read, daemon=True, name="model-response")
         self._stderr_reader = threading.Thread(target=self._read_stderr, daemon=True, name="model-stderr")
         self._reader.start()
@@ -68,6 +69,7 @@ class _ModelProcess:
                     self._stderr_tail.extend(chunk)
                     if len(self._stderr_tail) > 8192:
                         del self._stderr_tail[:-8192]
+                self._stderr_ready.set()
         except (OSError, ValueError):
             return
 
@@ -81,8 +83,12 @@ class _ModelProcess:
                 pass
         if exit_code is not None:
             details.append(f"worker exit code: {exit_code}")
-        if not self._stderr_tail:
-            time.sleep(0.05)
+        with self._stderr_lock:
+            has_stderr = bool(self._stderr_tail)
+        if not has_stderr:
+            # Give the bounded stderr reader a chance to catch up when the
+            # worker wrote its diagnostic just before the request deadline.
+            self._stderr_ready.wait(timeout=0.2)
         with self._stderr_lock:
             stderr = bytes(self._stderr_tail).decode("utf-8", "replace").strip()
         if stderr:

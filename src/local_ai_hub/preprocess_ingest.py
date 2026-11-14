@@ -40,31 +40,63 @@ class SinglePassIngestCache:
             return len(self._cache)
 
     @staticmethod
-    def _key(rel_path: str, root: str | None = None) -> str:
+    def _key(rel_path: str, root: str | None = None, content_hash: str | None = None) -> str:
         norm = rel_path.replace("\\", "/").lstrip("/")
         if root:
             norm_root = str(Path(root).resolve()).replace("\\", "/").rstrip("/")
+            if content_hash:
+                return f"{norm_root}:{norm}:{content_hash}"
             return f"{norm_root}:{norm}"
+        if content_hash:
+            return f"{norm}:{content_hash}"
         return norm
 
-    def has(self, rel_path: str, root: str | None = None) -> bool:
+    def has(self, rel_path: str, root: str | None = None, content_hash: str | None = None) -> bool:
         norm = rel_path.replace("\\", "/").lstrip("/")
         with self._lock:
+            if content_hash is not None:
+                if root is not None:
+                    return self._key(norm, root, content_hash) in self._cache
+                target = f"{norm}:{content_hash}"
+                return any(k == target or k.endswith(f":{target}") for k in self._cache)
             if root is not None:
-                return self._key(norm, root) in self._cache
-            return any(k == norm or k.endswith(f":{norm}") for k in self._cache)
+                norm_root = str(Path(root).resolve()).replace("\\", "/").rstrip("/")
+                prefix = f"{norm_root}:{norm}:"
+                exact = f"{norm_root}:{norm}"
+                return any(k == exact or k.startswith(prefix) for k in self._cache)
+            return any(k == norm or k.endswith(f":{norm}") or f":{norm}:" in k for k in self._cache)
 
-    def get(self, rel_path: str, root: str | None = None) -> IngestedFile | None:
+    def get(self, rel_path: str, root: str | None = None, content_hash: str | None = None) -> IngestedFile | None:
         norm = rel_path.replace("\\", "/").lstrip("/")
         with self._lock:
-            if root is not None:
-                k = self._key(norm, root)
-                item = self._cache.get(k)
-                if item is not None:
-                    self._cache.pop(k, None)
+            if content_hash is not None:
+                if root is not None:
+                    k = self._key(norm, root, content_hash)
+                    item = self._cache.get(k)
+                    if item is not None:
+                        self._cache.pop(k, None)
+                        self._cache[k] = item
+                    return item
+                target = f"{norm}:{content_hash}"
+                matches = [k for k in self._cache if k == target or k.endswith(f":{target}")]
+                if len(matches) == 1:
+                    k = matches[0]
+                    item = self._cache.pop(k)
                     self._cache[k] = item
-                return item
-            matches = [k for k in self._cache if k == norm or k.endswith(f":{norm}")]
+                    return item
+                return None
+            if root is not None:
+                norm_root = str(Path(root).resolve()).replace("\\", "/").rstrip("/")
+                prefix = f"{norm_root}:{norm}:"
+                exact = f"{norm_root}:{norm}"
+                matches = [k for k in self._cache if k == exact or k.startswith(prefix)]
+                if matches:
+                    k = matches[-1]
+                    item = self._cache.pop(k)
+                    self._cache[k] = item
+                    return item
+                return None
+            matches = [k for k in self._cache if k == norm or k.endswith(f":{norm}") or f":{norm}:" in k]
             if len(matches) == 1:
                 k = matches[0]
                 item = self._cache.pop(k)
@@ -72,7 +104,7 @@ class SinglePassIngestCache:
                 return item
             return None
 
-    def invalidate(self, rel_path: str | None = None, root: str | None = None) -> None:
+    def invalidate(self, rel_path: str | None = None, root: str | None = None, content_hash: str | None = None) -> None:
         if rel_path is not None and not root:
             raise ValueError("root is required when invalidating a relative path")
         with self._lock:
@@ -90,14 +122,25 @@ class SinglePassIngestCache:
                         self._total_bytes = max(0, self._total_bytes - evicted.size_bytes)
                 return
             if rel_path is not None and root is not None:
-                k = self._key(rel_path, root)
-                evicted = self._cache.pop(k, None)
-                if evicted is not None:
-                    self._total_bytes = max(0, self._total_bytes - evicted.size_bytes)
+                norm = rel_path.replace("\\", "/").lstrip("/")
+                norm_root = str(Path(root).resolve()).replace("\\", "/").rstrip("/")
+                if content_hash is not None:
+                    k = self._key(norm, root, content_hash)
+                    evicted = self._cache.pop(k, None)
+                    if evicted is not None:
+                        self._total_bytes = max(0, self._total_bytes - evicted.size_bytes)
+                    return
+                prefix = f"{norm_root}:{norm}:"
+                exact = f"{norm_root}:{norm}"
+                keys_to_remove = [k for k in self._cache if k == exact or k.startswith(prefix)]
+                for k in keys_to_remove:
+                    evicted = self._cache.pop(k, None)
+                    if evicted is not None:
+                        self._total_bytes = max(0, self._total_bytes - evicted.size_bytes)
                 return
             if rel_path is not None and root is None:
                 norm = rel_path.replace("\\", "/").lstrip("/")
-                keys_to_remove = [k for k in self._cache if k == norm or k.endswith(f":{norm}")]
+                keys_to_remove = [k for k in self._cache if k == norm or k.endswith(f":{norm}") or f":{norm}:" in k]
                 for k in keys_to_remove:
                     evicted = self._cache.pop(k, None)
                     if evicted is not None:
@@ -131,7 +174,17 @@ class SinglePassIngestCache:
             if item.size_bytes > self.max_bytes:
                 return
         with self._lock:
-            k = self._key(item.path, root)
+            norm = item.path.replace("\\", "/").lstrip("/")
+            if root:
+                norm_root = str(Path(root).resolve()).replace("\\", "/").rstrip("/")
+                prefix = f"{norm_root}:{norm}:"
+                exact = f"{norm_root}:{norm}"
+                stale_keys = [k for k in self._cache if k == exact or k.startswith(prefix)]
+                for sk in stale_keys:
+                    old_item = self._cache.pop(sk, None)
+                    if old_item is not None:
+                        self._total_bytes = max(0, self._total_bytes - old_item.size_bytes)
+            k = self._key(item.path, root, item.content_hash)
             existing = self._cache.pop(k, None)
             if existing is not None:
                 self._total_bytes = max(0, self._total_bytes - existing.size_bytes)
@@ -165,15 +218,23 @@ class SinglePassIngestCache:
             if acquired:
                 item._ast_lock.release()
 
-    def get_with_ast(self, rel_path: str, root: str | None = None) -> IngestedFile | None:
-        item = self.get(rel_path, root=root)
+    def get_with_ast(self, rel_path: str, root: str | None = None, content_hash: str | None = None) -> IngestedFile | None:
+        item = self.get(rel_path, root=root, content_hash=content_hash)
         if item is None:
             return None
         self._ensure_ast(item, True)
         # An invalidation or replacement during parsing makes this snapshot stale.
-        return item if self.get(rel_path, root=root) is item else None
+        return item if self.get(rel_path, root=root, content_hash=content_hash) is item else None
 
-    def get_or_ingest(self, base: Path, rel_path: str, repo_tools: Any, *, parse_ast: bool = True) -> IngestedFile:
+    def get_or_ingest(
+        self,
+        base: Path,
+        rel_path: str,
+        repo_tools: Any,
+        *,
+        parse_ast: bool = True,
+        expected_hash: str | None = None,
+    ) -> IngestedFile:
         root_str = str(base)
         normalized = rel_path.replace("\\", "/").lstrip("/")
 
@@ -184,24 +245,29 @@ class SinglePassIngestCache:
                 if item is None:
                     return None
                 self._ensure_ast(item, True)
-                current = self.get(normalized, root=root_str)
+                current = self.get(normalized, root=root_str, content_hash=expected_hash)
                 if current is item:
                     return item
                 item = current
             return None
 
-        cached = self.get(normalized, root=root_str)
+        cached = self.get(normalized, root=root_str, content_hash=expected_hash)
         if cached is not None:
-            current_hash, _current_lines = repo_tools._read_snapshot(base / Path(normalized))
-            if current_hash == cached.content_hash:
+            if expected_hash is not None and cached.content_hash == expected_hash:
                 cached = ensure_current(cached)
                 if cached is not None:
                     return cached
+            elif expected_hash is None:
+                current_hash, _current_lines = repo_tools._read_snapshot(base / Path(normalized))
+                if current_hash == cached.content_hash:
+                    cached = ensure_current(cached)
+                    if cached is not None:
+                        return cached
             self.invalidate(normalized, root=root_str)
 
-        event_key = self._key(normalized, root_str)
+        event_key = self._key(normalized, root_str, expected_hash)
         with self._lock:
-            cached = self.get(normalized, root=root_str)
+            cached = self.get(normalized, root=root_str, content_hash=expected_hash)
             if cached is None:
                 event = self._in_flight.get(event_key)
                 if event is None:
@@ -226,7 +292,7 @@ class SinglePassIngestCache:
 
         if not is_leader:
             event.wait(timeout=30.0)
-            cached = self.get(normalized, root=root_str)
+            cached = self.get(normalized, root=root_str, content_hash=expected_hash)
             if cached is not None:
                 cached = ensure_current(cached)
                 if cached is not None:

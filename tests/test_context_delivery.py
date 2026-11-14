@@ -756,6 +756,7 @@ def test_context_http_rejects_malformed_max_tokens_and_guard_fields(tmp_path, mo
 
         from local_ai_hub.agent_context import CompiledContext
 
+        app.services.preflight_guard_task_state = lambda _request: None
         app.services.adaptive_context_pack = lambda *_args, **_kwargs: {
             "success": True, "context": "repo evidence", "repo_revision": "revision-1",
             "evidence": [], "context_pack": {"context_id": "ctx-1", "evidence": []},
@@ -1536,7 +1537,95 @@ def test_unchanged_repository_revision_returns_context_reuse_pointer():
     assert result["context"] == "fast facts"
 
 
-def test_context_http_preserves_terminal_pack_failure_with_and_without_task_context(tmp_path):
+def test_unchanged_repository_revision_skips_snapshot_but_keeps_base_diff():
+    from types import SimpleNamespace
+
+    guard = _Guard()
+    services = _guarded_services(guard)
+    observed = {"repo_diff_called": False}
+    fingerprint_calls = []
+
+    def fingerprint(root, *, force):
+        fingerprint_calls.append((root, force))
+        return {
+            "fingerprint": "revision-1",
+            "degraded": False,
+            "stale": False,
+        }
+
+    services.repo_state = SimpleNamespace(fingerprint=fingerprint)
+    services.repo_tools.git_snapshot = lambda *_args, **_kwargs: pytest.fail(
+        "git_snapshot called for unchanged repository revision"
+    )
+    def record_repo_diff(*_args, **_kwargs):
+        observed["repo_diff_called"] = True
+        return {
+            "success": True,
+            "paths_complete": True,
+            "diff": "base delta",
+            "changed_paths": ["src/app.py"],
+            "revision": "revision-1",
+        }
+
+    services.repo_tools.git_diff = record_repo_diff
+
+    def record_diff(request, contract, changed_paths, diff, **kwargs):
+        observed["diff"] = dict(diff)
+        return ()
+
+    guard.check_drift = record_diff
+
+    result = services.adaptive_context_pack(
+        _request(), mode="adaptive", since_hash="revision-1"
+    )
+
+    assert result["unchanged"] is True
+    assert result["changed_paths"] == []
+    assert fingerprint_calls == [(str(_TEST_ROOT), True)]
+    assert observed["repo_diff_called"] is True
+    assert guard.diff_analysis_status(observed["diff"]) == "complete"
+    assert observed["diff"] == {
+        "success": True,
+        "paths_complete": True,
+        "diff": "base delta",
+        "changed_paths": ["src/app.py"],
+        "revision": "revision-1",
+        "diff_sha256": "revision-1",
+    }
+
+
+@pytest.mark.parametrize(
+    "fingerprint_state",
+    [
+        {"fingerprint": "revision-1", "degraded": True, "stale": False},
+        {"fingerprint": "revision-1", "degraded": False, "stale": True},
+    ],
+)
+def test_degraded_or_stale_fingerprint_keeps_git_snapshot_and_diff(fingerprint_state):
+    from types import SimpleNamespace
+
+    services = _guarded_services(_Guard())
+    calls = []
+    services.repo_state = SimpleNamespace(
+        fingerprint=lambda root, *, force: fingerprint_state
+    )
+    services.repo_tools.git_snapshot = lambda root: calls.append("snapshot") or _Snapshot()
+    services.repo_tools.git_diff = lambda *args, **kwargs: calls.append("diff") or {
+        "success": True,
+        "paths_complete": True,
+        "diff": "",
+        "changed_paths": [],
+        "revision": "revision-1",
+    }
+
+    services.adaptive_context_pack(
+        _request(), mode="adaptive", since_hash="revision-1"
+    )
+
+    assert calls == ["snapshot", "diff"]
+
+
+def test_context_http_preflights_guard_task_and_returns_bounded_failure(tmp_path):
     import json
     import threading
     import urllib.error
@@ -1561,7 +1650,10 @@ def test_context_http_preserves_terminal_pack_failure_with_and_without_task_cont
         "context": "",
         "evidence": [],
     }
-    app.services.adaptive_context_pack = lambda *_args, **_kwargs: dict(terminal_failure)
+    pack_calls = []
+    app.services.adaptive_context_pack = lambda *_args, **_kwargs: (
+        pack_calls.append(True) or dict(terminal_failure)
+    )
 
     previous = http_server.APP
     http_server.APP = app
@@ -1591,13 +1683,25 @@ def test_context_http_preserves_terminal_pack_failure_with_and_without_task_cont
         assert status == 400
         assert body["error"] == "guarded context requires a non-empty task_id"
 
+        payload["task_id"] = "context-pack-missing-task"
+        status, body = post(payload)
+        assert status == 404
+        assert body["stop_code"] == "context_task_state_missing"
+        assert body["terminal"] is True
+        assert body["retryable"] is False
+        assert "task_context" not in body
+        assert "context_pack" not in body
+        assert pack_calls == []
+
+        app.services.preflight_guard_task_state = lambda _request: None
         payload["task_id"] = "context-pack-terminal-failure"
         status, body = post(payload)
         assert status == 500
         assert body["stop_code"] == terminal_failure["stop_code"]
         assert body["terminal"] is True
         assert body["retryable"] is False
-        assert body["task_context"]["repository"]["stop_code"] == terminal_failure["stop_code"]
+        assert "task_context" not in body
+        assert "context_pack" not in body
 
         retryable_failure = {
             **terminal_failure,
@@ -1613,6 +1717,7 @@ def test_context_http_preserves_terminal_pack_failure_with_and_without_task_cont
         assert body["stop_code"] == retryable_failure["stop_code"]
         assert body["retryable"] is True
         assert status == 503
+        assert "task_context" not in body
     finally:
         server.shutdown()
         server.server_close()

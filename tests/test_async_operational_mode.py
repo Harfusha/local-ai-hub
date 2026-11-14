@@ -122,15 +122,15 @@ def test_mode_change_cancels_running_job_cooperatively(tmp_path, monkeypatch, mo
         manager.close()
 
 
-def test_submit_before_gaming_is_cancelled_at_dispatch(tmp_path, monkeypatch):
+def test_mode_change_cancels_queued_job_before_dispatch(tmp_path, monkeypatch):
     manager = _manager(tmp_path)
     calls = []
     monkeypatch.setattr(async_jobs, "load_operational_mode", lambda _path: _mode("active"), raising=False)
+    manager.executor = lambda action, payload: calls.append((action, payload)) or {"success": True}
     try:
         submitted = manager.submit("reason", {"task": "queued"}, dispatch_delay_seconds=30)
-        monkeypatch.setattr(async_jobs, "load_operational_mode", lambda _path: _mode("gaming"), raising=False)
 
-        manager._dispatch(submitted["job_id"])
+        manager.on_operational_mode_changed(_mode("gaming", revision=2))
 
         assert _states(manager)[submitted["job_id"]] == ("reason", "cancelled", True)
         assert calls == []

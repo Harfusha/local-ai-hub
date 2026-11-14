@@ -1094,7 +1094,7 @@ def ensure_cursor_rule_frontmatter(path: Path, backup_enabled: bool) -> bool:
     if text and GLOBAL_POLICY_BEGIN not in text and TOKEN_ECONOMY_POLICY_BEGIN not in text:
         return False
     match = re.match(r"\A---\r?\n(.*?)\r?\n---(?:\r?\n|$)", text, re.DOTALL)
-    owner_marker = {"begin": "---", "end": "---"}
+    owner_marker = {"begin": "---\n", "end": "\n---"}
     preimage = match.group(0).rstrip("\r\n") if match else None
     if preimage is not None and _ACTIVE_INSTALL_ROOT is not None:
         try:

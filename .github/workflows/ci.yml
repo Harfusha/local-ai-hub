@@ -167,7 +167,7 @@ jobs:
         run: python -m tools.ci_diagnostics --selftest
       - name: Reject test/runtime side effects
         run: python tools/release_check.py --post-test
-      - run: python tools/hubctl.py generate
+      - run: python -m local_ai_hub.generator --config src/local_ai_hub/defaults.toml --output-dir .
       - run: python tools/check_dashboard.py
       - name: Reject tracked test mutations
         run: git diff --exit-code

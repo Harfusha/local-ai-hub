@@ -131,6 +131,69 @@ def allowed_decision_options(category: DecisionCategory | str) -> frozenset[str]
     return _CATEGORY_OPTIONS[normalized]
 
 
+def filter_available_model_route_options(server_verified_routes: Any) -> frozenset[str]:
+    """Limit route labels to verified routes and reject non-decisions.
+
+    The caller must derive these labels from a strict installed-and-runnable
+    model inventory. Configuration alone is not availability evidence. Invalid
+    or unknown inventory input fails closed, and the category allowlist remains
+    the upper bound. Fewer than two available routes yields an empty set because
+    Laya candidate capture requires a real choice between at least two options.
+    """
+    if type(server_verified_routes) not in (set, frozenset, list, tuple):
+        return frozenset()
+    if any(type(route) is not str for route in server_verified_routes):
+        return frozenset()
+    available = _CATEGORY_OPTIONS[DecisionCategory.MODEL_ROUTE].intersection(server_verified_routes)
+    return available if len(available) >= 2 else frozenset()
+
+
+def filter_verified_model_route_options(
+    models_by_role: Any,
+    installed_digests: Any,
+    current_role: Any,
+) -> frozenset[str]:
+    """Return useful route options backed by installed model digests.
+
+    The caller supplies the effective (project-resolved) model for each Hub
+    role and a fresh server-verified digest map. ``smart`` follows the current
+    request's heavy-code or reasoning role; for fast/general requests it uses
+    the heavy-code role. Identical model targets do not form a useful choice.
+    """
+    if not isinstance(models_by_role, Mapping) or not isinstance(installed_digests, Mapping):
+        return frozenset()
+    if any(not isinstance(role, str) or not isinstance(model, str) for role, model in models_by_role.items()):
+        return frozenset()
+    if any(not isinstance(model, str) for model in installed_digests):
+        return frozenset()
+    if not isinstance(current_role, str) or current_role not in {
+        "fast_code", "heavy_code", "reasoning", "general"
+    }:
+        return frozenset()
+
+    smart_role = current_role if current_role in {"heavy_code", "reasoning"} else "heavy_code"
+    route_roles = {
+        "fast": "fast_code",
+        "smart": smart_role,
+        "generic": "general",
+    }
+    available: set[str] = set()
+    available_models: set[str] = set()
+    for route, role in route_roles.items():
+        model = models_by_role.get(role)
+        if not model.strip():
+            continue
+        digest = installed_digests.get(model)
+        if not isinstance(digest, str) or re.fullmatch(r"[0-9a-fA-F]{64}", digest) is None:
+            continue
+        available.add(route)
+        available_models.add(model.casefold())
+
+    if len(available_models) < 2:
+        return frozenset()
+    return filter_available_model_route_options(available)
+
+
 def _identifier(value: Any, field: str, *, optional: bool = False) -> str | None:
     if optional and value is None:
         return None
@@ -529,3 +592,58 @@ class DecisionResult:
             ),
             "execution_verification": "NOT_VERIFIED",
         }
+
+
+_WATCHDOG_LIFECYCLE_SUGGESTIONS = {
+    "draft": "recommend_continue",
+    "planned": "recommend_continue",
+    "active": "recommend_continue",
+    "verifying": "recommend_continue",
+    "waiting": "recommend_human_review",
+    "blocked": "recommend_human_review",
+    "failed": "recommend_human_review",
+    "abandoned": "recommend_human_review",
+    "completed": "recommend_stop",
+    "cancelled": "recommend_stop",
+}
+
+
+def derive_watchdog_lifecycle_baseline(
+    *,
+    status: Any,
+    request_evidence_ids: Any,
+    checkpoint_evidence_ids: Any,
+    options: Any,
+) -> dict[str, str] | None:
+    """Return a shadow-only watchdog baseline from typed Agent OS lifecycle state.
+
+    The caller remains responsible for resolving each evidence ID against the
+    authorized repository before invoking this projection.
+    """
+    status_value = getattr(status, "value", status)
+    if not isinstance(status_value, str):
+        return None
+    suggestion = _WATCHDOG_LIFECYCLE_SUGGESTIONS.get(status_value)
+    if suggestion is None:
+        return None
+    if not isinstance(options, (tuple, list)) or suggestion not in options:
+        return None
+    if not isinstance(request_evidence_ids, (tuple, list)):
+        return None
+    if not isinstance(checkpoint_evidence_ids, (tuple, list)):
+        return None
+    if any(not isinstance(item, str) or not item for item in request_evidence_ids):
+        return None
+    if any(not isinstance(item, str) or not item for item in checkpoint_evidence_ids):
+        return None
+    evidence_id = next(
+        (item for item in request_evidence_ids if item in checkpoint_evidence_ids),
+        None,
+    )
+    if evidence_id is None:
+        return None
+    return {
+        "method": "agent_os_task_lifecycle",
+        "suggestion": suggestion,
+        "evidence_id": evidence_id,
+    }

@@ -9,17 +9,21 @@ import pytest
 
 import local_ai_hub.laya_candidates as candidates_module
 from local_ai_hub.agent_events import AgentStateStore
-from local_ai_hub.app import LocalAIApp
+from local_ai_hub.app import LocalAIApp, _laya_review_endpoint_is_loopback
 from local_ai_hub.config import ConfigError, validate_config
+from local_ai_hub.evidence import EvidenceStore
 from local_ai_hub.laya_dataset_merge import _validate_row
 from local_ai_hub.laya_candidates import LayaCandidateStore, LocalModelReviewResult
 from tools.model_training.laya_backend import _validate_laya_label_provenance
 from local_ai_hub.laya_decisions import (
     ContextSourceEvidence,
+    DecisionCategory,
     DecisionInput,
     DecisionMode,
     DecisionRequest,
     DecisionResult,
+    _CATEGORY_INSTRUCTIONS,
+    allowed_decision_options,
 )
 
 
@@ -56,6 +60,12 @@ def _capture(*, state="A short approved state", **changes):
     }
     operation.update(changes)
     return operation
+
+
+def test_runtime_baseline_registry_accepts_pipeline_delegation_method():
+    assert candidates_module._RUNTIME_BASELINE_METHODS[DecisionCategory.DELEGATION] == (
+        "pipeline_worker_escalation"
+    )
 
 
 def test_candidate_store_initializes_laya_schema_once_per_database(candidate_env, monkeypatch):
@@ -301,6 +311,7 @@ def test_redacted_raw_decision_content_survives_to_train_export(candidate_env, m
 
     payload = store.export_train_payload(
         {"snapshot_id": snapshot["snapshot_id"]}, root=str(repo), task_store=task_store,
+        evidence_store=_current_laya_evidence_store(),
     )
     rows = [json.loads(line) for line in payload.decode("utf-8").splitlines()]
     assert len(rows) == 1
@@ -425,7 +436,8 @@ def test_runtime_outcome_records_deterministic_baseline_and_unobserved_downstrea
         runtime_version="fixture", model_id="laya", revision="rev", provider="mock",
         device="cpu", device_class="cpu", device_name="mock", parameter_device="cpu",
         execution_verification="NOT_VERIFIED", quality_status="NOT_EVALUATED",
-        latency_ms=3.0, input_tokens=12, output_tokens=2, fallback_reason="",
+        latency_ms=3.0, adapter_queue_wait_ms=1.25, inference_latency_ms=1.5,
+        input_tokens=12, output_tokens=2, fallback_reason="",
     )
 
     captured = store.capture_runtime_outcome(
@@ -458,6 +470,9 @@ def test_runtime_outcome_records_deterministic_baseline_and_unobserved_downstrea
         "status": "not_observed",
         "reason": "shadow_only_not_user_exposed",
     }
+    assert event["runtime"]["latency_ms"] == 3.0
+    assert event["runtime"]["adapter_queue_wait_ms"] == 1.25
+    assert event["runtime"]["inference_latency_ms"] == 1.5
 
     duplicate_capture = store.capture_runtime_outcome(
         request,
@@ -993,6 +1008,88 @@ def test_context_source_export_revalidates_scoped_memory_provenance(candidate_en
         )
 
 
+def test_context_source_export_revalidates_provenance_after_atomic_write(candidate_env, monkeypatch):
+    from local_ai_hub.agent_identity import AgentScope
+    from local_ai_hub.agent_memory import MemoryKind, MemoryRecord, MemoryStatus, MemoryStore
+
+    repo, state, task_store, store = candidate_env
+    evidence_id = "E" + "0" * 20
+    memory_store = MemoryStore(task_store.state_store)
+    memory_record = memory_store.record(
+        MemoryRecord.create(
+            kind=MemoryKind.FINDING,
+            scope=AgentScope.TASK,
+            scope_id="task-1",
+            key="laya-export-source-race",
+            value="Task-scoped export source.",
+            status=MemoryStatus.CONFIRMED,
+            source="user",
+            evidence_ids=(evidence_id,),
+            provenance={"root": str(repo)},
+        ),
+        actor="user",
+        idempotency_key="laya-export-memory-source-race",
+    )
+    operation = _context_source_capture(
+        state={
+            "gap_code": "unresolved_evidence_gap",
+            "source_codes": ["memory", "indexed"],
+            "freshness_codes": ["current", "current"],
+            "coverage_codes": ["partial", "complete"],
+        },
+        evidence_ids=[evidence_id, "E" + "1" * 20],
+    )
+    operation["candidate"]["options"] = ["memory", "indexed", "more_evidence"]
+    operation["candidate"]["source_record_ids"] = [memory_record.record_id, None]
+    captured = store.handle(
+        operation,
+        root=str(repo),
+        task_store=task_store,
+        evidence_store=_evidence_store(source_codes=["indexed"]),
+    )
+    store.handle(
+        {"action": "label", "candidate_id": captured["candidate_id"], "target": "memory"},
+        root=str(repo),
+        task_store=task_store,
+    )
+    monkeypatch.setattr(candidates_module, "_split_for_group", lambda _group: "train")
+    snapshot = store.handle({"action": "prepare_splits"}, root=str(repo), task_store=task_store)
+
+    original_replace = candidates_module.os.replace
+    original_find = MemoryStore.find
+
+    def revoke_source_after_write(source, destination):
+        original_replace(source, destination)
+        monkeypatch.setattr(MemoryStore, "find", lambda *_args, **_kwargs: [])
+
+    monkeypatch.setattr(candidates_module.os, "replace", revoke_source_after_write)
+    export_path = (
+        state
+        / "experiments"
+        / "model-training"
+        / "data"
+        / f"laya-{snapshot['snapshot_id']}.train.jsonl"
+    )
+    with pytest.raises(ValueError, match="memory source provenance"):
+        store.handle(
+            {"action": "export", "snapshot_id": snapshot["snapshot_id"]},
+            root=str(repo),
+            task_store=task_store,
+            evidence_store=_evidence_store(source_codes=["indexed"]),
+        )
+    assert not export_path.exists()
+
+    monkeypatch.setattr(MemoryStore, "find", original_find)
+    monkeypatch.setattr(candidates_module.os, "replace", original_replace)
+    exported = store.handle(
+        {"action": "export", "snapshot_id": snapshot["snapshot_id"]},
+        root=str(repo),
+        task_store=task_store,
+        evidence_store=_evidence_store(source_codes=["indexed"]),
+    )
+    assert exported["success"] is True
+
+
 def _evidence_store(*, stale=False, available=True, root_override=None, source_codes=None):
     def get_many(evidence_ids, *, verify, root):
         return [
@@ -1050,6 +1147,15 @@ def _capture_and_verify(store, repo, task_store, task_id, session_id, state, suf
         "action": "label", "candidate_id": cid, "target": "fast",
     }, root=str(repo), task_store=task_store)
     return cid
+
+
+def _current_laya_evidence_store():
+    return SimpleNamespace(
+        get_many=lambda evidence_ids, *, verify, root: [
+            {"success": True, "evidence_id": evidence_id, "root": root, "stale": False}
+            for evidence_id in evidence_ids
+        ]
+    )
 
 
 def test_context_source_capture_accepts_only_approved_minimal_codes(candidate_env):
@@ -1376,6 +1482,26 @@ def test_candidate_list_cursor_cannot_cross_task_filter(candidate_env):
         )
 
 
+def test_identical_candidate_content_is_distinct_across_task_sessions(candidate_env):
+    repo, _state, task_store, store = candidate_env
+    first_task = task_store.list_tasks()[0]
+    second_task = SimpleNamespace(task_id="task-2", context=SimpleNamespace(session_id="session-2"))
+    task_store.list_tasks = lambda **_kwargs: [first_task, second_task]
+
+    first = store.handle(_capture(), root=str(repo), task_store=task_store)
+    second_operation = _capture()
+    second_operation["task_id"] = "task-2"
+    second_operation["session_id"] = "session-2"
+    second = store.handle(second_operation, root=str(repo), task_store=task_store)
+
+    assert first["duplicate"] is False
+    assert second["duplicate"] is False
+    assert second["candidate_id"] != first["candidate_id"]
+    assert store.handle(
+        {"action": "list", "task_id": "task-2"}, root=str(repo), task_store=task_store
+    )["count"] == 1
+
+
 def test_configured_ed25519_keys_are_rejected_for_local_only_review(tmp_path):
     with pytest.raises(ValueError, match="SSH reviewer keys are retired"):
         LayaCandidateStore(tmp_path, reviewer_public_keys=["ssh-ed25519 AAAA test"])
@@ -1476,6 +1602,7 @@ def test_group_and_near_duplicate_safe_splits_keep_test_labels_out_of_train_expo
     zip_payload = store.export_train_payload(
         {"snapshot_id": snapshot["snapshot_id"]},
         root=str(repo), task_store=task_store,
+        evidence_store=_current_laya_evidence_store(),
     )
     zip_rows = [json.loads(line) for line in zip_payload.decode("utf-8").splitlines()]
     assert all(isinstance(row["state"], str) for row in zip_rows)
@@ -1490,7 +1617,7 @@ def test_group_and_near_duplicate_safe_splits_keep_test_labels_out_of_train_expo
 
     exported = store.handle({
         "action": "export", "snapshot_id": snapshot["snapshot_id"],
-    }, root=str(repo), task_store=task_store)
+    }, root=str(repo), task_store=task_store, evidence_store=_current_laya_evidence_store())
     assert exported["count"] == snapshot["split_counts"]["train"]
     export_rows = [json.loads(line) for line in Path(exported["output_path"]).read_text(encoding="utf-8").splitlines()]
     assert all(isinstance(row["state"], str) for row in export_rows)
@@ -1529,6 +1656,7 @@ def test_candidate_delete_purges_private_events_and_invalidates_export(candidate
     exported = store.handle(
         {"action": "export", "snapshot_id": snapshot["snapshot_id"]},
         root=str(repo), task_store=task_store,
+        evidence_store=_current_laya_evidence_store(),
     )
     output_path = Path(exported["output_path"])
     assert output_path.is_file()
@@ -1578,7 +1706,7 @@ def test_candidate_delete_can_retry_export_cleanup_after_database_commit(candida
     snapshot = store.handle({"action": "prepare_splits"}, root=str(repo), task_store=task_store)
     exported = store.handle(
         {"action": "export", "snapshot_id": snapshot["snapshot_id"]},
-        root=str(repo), task_store=task_store,
+        root=str(repo), task_store=task_store, evidence_store=_current_laya_evidence_store(),
     )
     output_path = Path(exported["output_path"])
 
@@ -1630,9 +1758,52 @@ def test_candidate_export_removes_output_when_final_database_transition_fails(ca
         store.handle(
             {"action": "export", "snapshot_id": snapshot["snapshot_id"]},
             root=str(repo), task_store=task_store,
+            evidence_store=_current_laya_evidence_store(),
         )
 
     assert not output_path.exists()
+
+
+@pytest.mark.parametrize("stale_on_call", [1, 2])
+def test_candidate_export_revalidates_general_evidence_before_and_after_write(
+    candidate_env, monkeypatch, stale_on_call
+):
+    repo, state, task_store, store = candidate_env
+    monkeypatch.setattr(candidates_module, "_split_for_group", lambda _group: "train")
+    _capture_and_verify(store, repo, task_store, "task-1", "session-1", "export evidence", "stale-evidence")
+    snapshot = store.handle({"action": "prepare_splits"}, root=str(repo), task_store=task_store)
+    output_path = (
+        state / "experiments" / "model-training" / "data"
+        / f"laya-{snapshot['snapshot_id']}.train.jsonl"
+    )
+
+    class SequencedEvidenceStore:
+        calls = 0
+
+        def get_many(self, evidence_ids, *, verify, root):
+            self.calls += 1
+            stale = self.calls >= stale_on_call
+            return [
+                {"success": True, "evidence_id": evidence_id, "root": root, "stale": stale}
+                for evidence_id in evidence_ids
+            ]
+
+    evidence_store = SequencedEvidenceStore()
+    with pytest.raises(ValueError, match="Laya evidence is not authorized and current"):
+        store.handle(
+            {"action": "export", "snapshot_id": snapshot["snapshot_id"]},
+            root=str(repo),
+            task_store=task_store,
+            evidence_store=evidence_store,
+        )
+
+    assert evidence_store.calls == stale_on_call
+    assert not output_path.exists()
+    with closing(store._connect(task_store)) as con:
+        status = con.execute(
+            "SELECT status FROM laya_candidates WHERE task_id='task-1'"
+        ).fetchone()["status"]
+    assert status == "verified"
 
 
 @pytest.mark.parametrize("changes", [
@@ -1745,6 +1916,73 @@ def test_local_model_review_uses_server_bound_callback_and_stays_separate_from_o
     assert candidate["targets"] == {"model_route": "fast"}
     assert candidate["label_provenance"]["method"] == "local_operator_confirmation"
     assert candidate["model_reviews"][0]["decision"] == "smart"
+
+
+@pytest.mark.parametrize("runtime_mode", ["direct", "tiered"])
+def test_local_laya_model_review_rejects_remote_ollama_before_any_runtime_call(runtime_mode):
+    app = LocalAIApp.__new__(LocalAIApp)
+    runtime_calls = []
+
+    def unexpected_runtime_call(*_args, **_kwargs):
+        runtime_calls.append(True)
+        raise AssertionError("remote endpoint must be rejected before runtime access")
+
+    app.config = {"models": {"reasoning": "reviewer-model"}}
+    backend = SimpleNamespace(
+        base_url="https://ollama.example.invalid:11434",
+        is_online=unexpected_runtime_call,
+        model_digest=unexpected_runtime_call,
+        version=unexpected_runtime_call,
+    )
+    app.runtime = backend if runtime_mode == "direct" else SimpleNamespace(
+        _runtime_for_model=lambda _model: ("smart", backend, object()),
+        is_online=unexpected_runtime_call,
+        model_digest=unexpected_runtime_call,
+        version=unexpected_runtime_call,
+    )
+    app.services = SimpleNamespace(_generate=unexpected_runtime_call)
+    category = DecisionCategory.MODEL_ROUTE
+    options = sorted(allowed_decision_options(category))
+    review_request = {
+        "candidate_id": "candidate-1",
+        "task_id": "task-1",
+        "candidate_sha256": "a" * 64,
+        "candidate": {
+            "category": category.value,
+            "state": {"task_input": "private candidate content"},
+            "options": options,
+            "questions": {
+                category.value: {
+                    "id": category.value,
+                    "type": "choice",
+                    "instructions": _CATEGORY_INSTRUCTIONS[category],
+                    "criteria": {option: option.replace("_", " ") for option in options},
+                }
+            },
+        },
+    }
+
+    with pytest.raises(RuntimeError, match="loopback"):
+        app._review_laya_candidate_locally(review_request)
+
+    assert runtime_calls == []
+
+
+@pytest.mark.parametrize(
+    ("endpoint", "expected"),
+    [
+        ("http://127.0.0.1:11434", True),
+        ("https://[::1]:11434", True),
+        ("http://localhost:11434/api", True),
+        ("http://localhost.example:11434", False),
+        ("http://127.0.0.2:11434", True),
+        ("http://user@localhost:11434", False),
+        ("http://localhost:99999", False),
+        ("file:///tmp/ollama", False),
+    ],
+)
+def test_local_laya_review_endpoint_requires_explicit_loopback(endpoint, expected):
+    assert _laya_review_endpoint_is_loopback(endpoint) is expected
 
 
 def test_model_review_rejects_caller_output_and_missing_local_reviewer(candidate_env):
@@ -1962,6 +2200,7 @@ def test_app_local_model_reviewer_uses_installed_reasoning_route_and_attested_me
     app = LocalAIApp.__new__(LocalAIApp)
     app.config = {"models": {"reasoning": "qwen3.5:9b"}}
     app.runtime = SimpleNamespace(
+        base_url="http://127.0.0.1:11434",
         # Tiered runtimes may report only fast-tier inventory here; model_digest
         # resolves the exact configured model through its serving tier.
         installed_models=lambda: [],
@@ -2034,6 +2273,7 @@ def test_app_local_model_reviewer_supports_other_typed_decision_categories():
     app = LocalAIApp.__new__(LocalAIApp)
     app.config = {"models": {"reasoning": "qwen3.5:9b"}}
     app.runtime = SimpleNamespace(
+        base_url="http://127.0.0.1:11434",
         model_digest=lambda _model: "sha256:" + "a" * 64,
         version=lambda: "0.17.7",
         is_online=lambda: True,
@@ -2102,6 +2342,7 @@ def test_app_local_model_reviewer_rejects_model_digest_change_during_review():
         return "sha256:" + ("a" if digest_calls == 1 else "b") * 64
 
     app.runtime = SimpleNamespace(
+        base_url="http://127.0.0.1:11434",
         installed_models=lambda: ["qwen3.5:9b"],
         model_digest=model_digest,
         version=lambda: "0.17.7",
@@ -2139,6 +2380,7 @@ def test_app_local_model_reviewer_rejects_missing_exact_model_digest_before_gene
     app = LocalAIApp.__new__(LocalAIApp)
     app.config = {"models": {"reasoning": "qwen3.5:9b"}}
     app.runtime = SimpleNamespace(
+        base_url="http://127.0.0.1:11434",
         model_digest=lambda _model: None,
         version=lambda: "0.17.7",
         is_online=lambda: True,
@@ -2177,6 +2419,7 @@ def test_app_local_model_reviewer_rejects_non_ollama_provider():
     app = LocalAIApp.__new__(LocalAIApp)
     app.config = {"models": {"reasoning": "qwen3.5:9b"}}
     app.runtime = SimpleNamespace(
+        base_url="http://127.0.0.1:11434",
         model_digest=lambda _model: "sha256:" + "a" * 64,
         version=lambda: "0.17.7",
         is_online=lambda: True,
@@ -2350,3 +2593,209 @@ def test_local_model_review_hides_laya_output_from_reviewer(candidate_env):
 
     assert result["success"] is True
     assert "model_output" not in observed["candidate"]
+
+
+def test_evaluate_snapshot_rejects_unknown_or_out_of_scope_snapshot(candidate_env):
+    repo, _state, task_store, store = candidate_env
+
+    with pytest.raises(ValueError, match="snapshot_id is outside the authorized repository scope"):
+        store.handle(
+            {"action": "evaluate_snapshot", "snapshot_id": "laya_snapshot_unknown"},
+            root=str(repo),
+            task_store=task_store,
+        )
+
+
+@pytest.mark.parametrize(
+    ("category", "laya_suggestion", "baseline_suggestion", "target"),
+    [
+        (DecisionCategory.MODEL_ROUTE, "smart", "fast", "smart"),
+        (
+            DecisionCategory.WATCHDOG,
+            "recommend_continue",
+            "recommend_stop",
+            "recommend_continue",
+        ),
+    ],
+)
+def test_evaluate_snapshot_reports_paired_test_metrics_without_example_identifiers(
+    candidate_env, category, laya_suggestion, baseline_suggestion, target
+):
+    repo, _state, task_store, store = candidate_env
+
+    class EvidenceStore:
+        def get_many(self, evidence_ids, *, verify, root):
+            assert verify is True
+            return [
+                {"success": True, "evidence_id": evidence_id, "root": root, "stale": False}
+                for evidence_id in evidence_ids
+            ]
+
+    evidence_store = EvidenceStore()
+    capture = _capture(state="paired eval fixture")
+    capture["candidate"].update(
+        category=category.value,
+        state={"task_status": "active"},
+        options=sorted(allowed_decision_options(category)),
+    )
+    captured = store.handle(capture, root=str(repo), task_store=task_store)
+    candidate_id = captured["candidate_id"]
+    labeled = store.handle(
+        {"action": "label", "candidate_id": candidate_id, "target": target},
+        root=str(repo), task_store=task_store,
+    )
+    assert labeled["status"] == "verified"
+    scope = store._repo_scope(str(repo))
+    with closing(store._connect(task_store)) as con:
+        row = con.execute(
+            "SELECT group_id,candidate_json FROM laya_candidates WHERE candidate_id=? AND repository_scope=?",
+            (candidate_id, scope),
+        ).fetchone()
+        encoded = row["candidate_json"]
+        content_hash = hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+        split_policy = "group_hash_80_10_10_near_duplicate_jaccard_0.80_v1"
+        snapshot_material = {
+            "schema_version": candidates_module._SCHEMA_VERSION,
+            "split_policy": split_policy,
+            "entries": sorted([(candidate_id, content_hash, row["group_id"], row["group_id"], "test")]),
+        }
+        snapshot_hash = hashlib.sha256(candidates_module._canonical_json(snapshot_material).encode("utf-8")).hexdigest()
+        snapshot_id = "laya_snapshot_" + snapshot_hash[:32]
+        con.execute(
+            "INSERT INTO laya_dataset_snapshots VALUES(?,?,?,?,?,?)",
+            (
+                snapshot_id,
+                scope,
+                snapshot_hash,
+                "prepared",
+                json.dumps({
+                    "candidate_count": 1,
+                    "split_counts": {"train": 0, "calibration": 0, "test": 1},
+                    "split_policy": split_policy,
+                    "snapshot_hash": snapshot_hash,
+                }),
+                1.0,
+            ),
+        )
+        con.execute(
+            "INSERT INTO laya_dataset_assignments(snapshot_id,candidate_id,group_id,split_name,content_hash) VALUES(?,?,?,?,?)",
+            (snapshot_id, candidate_id, row["group_id"], "test", content_hash),
+        )
+        store._event(
+            con, candidate_id, scope, "task-1", "runtime_output",
+            {
+                "success": True,
+                "suggestion": laya_suggestion,
+                "baseline": {
+                    "status": "recorded",
+                    "method": candidates_module._RUNTIME_BASELINE_METHODS[category],
+                    "suggestion": baseline_suggestion,
+                    "evidence_id": "ev-1",
+                },
+                "runtime": {
+                    "latency_ms": 12,
+                    "adapter_queue_wait_ms": 3,
+                    "inference_latency_ms": 6,
+                    "input_tokens": 5,
+                    "output_tokens": 2,
+                    "device_class": "gpu",
+                },
+            },
+            2.0,
+        )
+
+    report = store.handle(
+        {"action": "evaluate_snapshot", "snapshot_id": snapshot_id},
+        root=str(repo), task_store=task_store, evidence_store=evidence_store,
+    )
+
+    assert report["evaluation_status"] == "DESCRIPTIVE_ONLY"
+    assert report["promotion_status"] == "NOT_EVALUATED"
+    assert report["threshold_status"] == "NOT_PREDECLARED"
+    assert report["paired_rows"] == report["test_rows"] == 1
+    metrics = report["categories"][category.value]
+    assert metrics["laya_accuracy"] == 1.0
+    assert metrics["deterministic_accuracy"] == 0.0
+    assert metrics["accuracy_delta"] == 1.0
+    assert metrics["laya_latency_ms_p50"] == 12.0
+    assert metrics["laya_adapter_queue_wait_ms_p50"] == 3.0
+    assert metrics["laya_inference_latency_ms_p50"] == 6.0
+    assert metrics["input_tokens_total"] == 5
+    assert metrics["output_tokens_total"] == 2
+    rendered = json.dumps(report)
+    assert candidate_id not in rendered
+    assert "task-1" not in rendered
+    assert "ev-1" not in rendered
+    assert "paired eval fixture" not in rendered
+
+
+def test_train_payload_rejects_stale_general_evidence(candidate_env, monkeypatch):
+    repo, state, task_store, store = candidate_env
+    evidence_store = EvidenceStore(state)
+    source = repo / "laya-evidence.txt"
+    source.write_text("captured evidence", encoding="utf-8")
+    evidence_id = evidence_store.put(
+        str(repo),
+        {
+            "path": source.name,
+            "start_line": 1,
+            "end_line": 1,
+            "text": "captured evidence",
+            "file_sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
+        },
+    )
+    assert evidence_id is not None
+
+    operation = _capture(state="stale export evidence")
+    operation["candidate"]["evidence_ids"] = [evidence_id]
+    captured = store.handle(
+        operation,
+        root=str(repo),
+        task_store=task_store,
+        evidence_store=evidence_store,
+        _runtime_capture_token=candidates_module._RUNTIME_CAPTURE_TOKEN,
+    )
+    store.handle(
+        {"action": "label", "candidate_id": captured["candidate_id"], "target": "fast"},
+        root=str(repo),
+        task_store=task_store,
+    )
+    monkeypatch.setattr(candidates_module, "_split_for_group", lambda _group: "train")
+    snapshot = store.handle({"action": "prepare_splits"}, root=str(repo), task_store=task_store)
+    source.write_text("changed after capture", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="Laya evidence is not authorized and current"):
+        store.export_train_payload(
+            {"snapshot_id": snapshot["snapshot_id"]},
+            root=str(repo),
+            task_store=task_store,
+        )
+
+
+def test_train_payload_revalidates_general_evidence_after_serialization(candidate_env, monkeypatch):
+    repo, _state, task_store, store = candidate_env
+    _capture_and_verify(store, repo, task_store, "task-1", "session-1", "payload evidence", "payload-stale")
+    monkeypatch.setattr(candidates_module, "_split_for_group", lambda _group: "train")
+    snapshot = store.handle({"action": "prepare_splits"}, root=str(repo), task_store=task_store)
+
+    class SequencedEvidenceStore:
+        calls = 0
+
+        def get_many(self, evidence_ids, *, verify, root):
+            self.calls += 1
+            stale = self.calls >= 2
+            return [
+                {"success": True, "evidence_id": evidence_id, "root": root, "stale": stale}
+                for evidence_id in evidence_ids
+            ]
+
+    evidence_store = SequencedEvidenceStore()
+    with pytest.raises(ValueError, match="Laya evidence is not authorized and current"):
+        store.export_train_payload(
+            {"snapshot_id": snapshot["snapshot_id"]},
+            root=str(repo),
+            task_store=task_store,
+            evidence_store=evidence_store,
+        )
+
+    assert evidence_store.calls == 2

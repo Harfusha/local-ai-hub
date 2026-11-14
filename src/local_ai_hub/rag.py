@@ -39,6 +39,17 @@ from functools import lru_cache
 from collections import OrderedDict
 
 
+def _check_rag_publish_budget(*, started_at: float, stage: str, budget_seconds: float) -> None:
+    elapsed_seconds = time.monotonic() - started_at
+    if elapsed_seconds > budget_seconds:
+        raise TimeoutError(
+            "SQLite write transaction exceeded its duration budget "
+            f"(RAG index publish; stage={stage}; "
+            f"elapsed_ms={int(elapsed_seconds * 1000)}; "
+            f"budget_ms={int(budget_seconds * 1000)})"
+        )
+
+
 _MAX_RERANK_CANDIDATES = 512
 _INDEX_EMBED_BATCH_SIZE = 64
 # Stable compatibility identity for the current RAG index contract. Keep this
@@ -2123,12 +2134,17 @@ class RAGStore:
         # The embed phase is intentionally outside this retry: a transient writer
         # must not cause expensive model work to run again.
         def publish() -> None:
+            publish_budget_seconds = 5.0
             with self._get_workspace_lock(workspace,), closing(self._connect()) as con, write_transaction(
-                con, max_duration_seconds=5.0, rollback_label="RAG index publish"
+                con, max_duration_seconds=publish_budget_seconds, rollback_label="RAG index publish"
             ):
+                publish_started = time.monotonic()
                 fts_exists = con.execute(
                     "SELECT 1 FROM sqlite_master WHERE type='table' AND name='chunk_fts'"
                 ).fetchone()
+                _check_rag_publish_budget(
+                    started_at=publish_started, stage="inspect_fts", budget_seconds=publish_budget_seconds,
+                )
                 successfully_read_paths = {str(row[0]) for row in file_rows}
                 publish_paths = deleted_paths + [rel for rel in changed_paths if rel in successfully_read_paths]
                 del_paths = [(workspace, rel) for rel in publish_paths]
@@ -2137,9 +2153,18 @@ class RAGStore:
                     con.executemany("DELETE FROM files WHERE workspace=? AND path=?", del_paths)
                     if fts_exists:
                         con.executemany("DELETE FROM chunk_fts WHERE workspace=? AND path=?", del_paths)
-                con.execute(
-                    "DELETE FROM project_file_owners WHERE workspace=? AND root=?",
-                    (workspace, str(root_path)),
+                _check_rag_publish_budget(
+                    started_at=publish_started, stage="delete_old_rows", budget_seconds=publish_budget_seconds,
+                )
+                owner_root = str(root_path)
+                owner_paths = [(workspace, owner_root, rel) for rel in publish_paths]
+                if owner_paths:
+                    con.executemany(
+                        "DELETE FROM project_file_owners WHERE workspace=? AND root=? AND path=?",
+                        owner_paths,
+                    )
+                _check_rag_publish_budget(
+                    started_at=publish_started, stage="delete_root_owners", budget_seconds=publish_budget_seconds,
                 )
                 con.executemany(
                     "INSERT INTO chunks(workspace,path,chunk_no,content_hash,text,embedding,embedding_space) VALUES(?,?,?,?,?,?,?)",
@@ -2147,6 +2172,9 @@ class RAGStore:
                         (workspace, r["path"], r["chunk_no"], r["hash"], r["text"], r["embedding"], r["embedding_space"])
                         for r in changed_records
                     ],
+                )
+                _check_rag_publish_budget(
+                    started_at=publish_started, stage="insert_chunks", budget_seconds=publish_budget_seconds,
                 )
                 if fts_exists:
                     con.executemany(
@@ -2156,18 +2184,25 @@ class RAGStore:
                             for record in changed_records
                         ],
                     )
+                _check_rag_publish_budget(
+                    started_at=publish_started, stage="insert_fts", budget_seconds=publish_budget_seconds,
+                )
                 con.executemany(
                     "INSERT INTO files(workspace,path,mtime_ns,size,content_hash) VALUES(?,?,?,?,?)",
                     [(workspace, rel, mtime_ns, size, file_hash) for rel, mtime_ns, size, file_hash in file_rows],
                 )
-                owner_root = str(root_path)
+                _check_rag_publish_budget(
+                    started_at=publish_started, stage="insert_files", budget_seconds=publish_budget_seconds,
+                )
                 con.executemany(
-                    "INSERT OR IGNORE INTO project_file_owners(workspace,root,path) "
-                    "SELECT ?,?,? WHERE EXISTS (SELECT 1 FROM files WHERE workspace=? AND path=?)",
+                    "INSERT OR IGNORE INTO project_file_owners(workspace,root,path) VALUES(?,?,?)",
                     [
-                        (workspace, owner_root, rel, workspace, rel)
-                        for rel in current_meta
+                        (workspace, owner_root, rel)
+                        for rel, _mtime_ns, _size, _file_hash in file_rows
                     ],
+                )
+                _check_rag_publish_budget(
+                    started_at=publish_started, stage="insert_root_owners", budget_seconds=publish_budget_seconds,
                 )
                 self._store_workspace_embedding_space(con, workspace, embedding_space)
                 if chunker_version_changed and chunker_version_publishable:
@@ -2180,6 +2215,9 @@ class RAGStore:
                 )
                 if publish_paths or uncertainty_changed:
                     self._bump_workspace_index_generation(con, workspace)
+                _check_rag_publish_budget(
+                    started_at=publish_started, stage="update_index_metadata", budget_seconds=publish_budget_seconds,
+                )
 
         report_progress(90.0, "publishing index")
         retry_busy(
@@ -2376,7 +2414,9 @@ class RAGStore:
                 stored_space = self._stored_workspace_embedding_space(con, workspace)
                 legacy_rows = (
                     con.execute(
-                        "SELECT embedding,embedding_space FROM chunks WHERE workspace=?",
+                        "SELECT DISTINCT COALESCE(TRIM(CAST(embedding_space AS TEXT)), '') "
+                        "FROM chunks WHERE workspace=? AND embedding IS NOT NULL "
+                        "AND length(embedding)>0",
                         (workspace,),
                     ).fetchall()
                     if stored_space is None else []
@@ -2384,9 +2424,7 @@ class RAGStore:
             inferred_spaces: set[str] = set()
             unresolved_legacy_vectors = False
             for row in legacy_rows:
-                if not row[0]:
-                    continue
-                row_space = str(row[1] or "").strip()
+                row_space = str(row[0] or "").strip()
                 if not row_space:
                     unresolved_legacy_vectors = True
                 else:
@@ -2679,12 +2717,19 @@ class RAGStore:
                 processed_paths.append(rel)
 
             def publish() -> None:
+                publish_budget_seconds = 5.0
                 with closing(self._connect()) as con, write_transaction(
-                    con, max_duration_seconds=5.0, rollback_label="RAG batch index publish"
+                    con, max_duration_seconds=publish_budget_seconds,
+                    rollback_label="RAG batch index publish",
                 ):
+                    publish_started = time.monotonic()
                     fts_exists = con.execute(
                         "SELECT 1 FROM sqlite_master WHERE type='table' AND name='chunk_fts'"
                     ).fetchone()
+                    _check_rag_publish_budget(
+                        started_at=publish_started, stage="inspect_fts",
+                        budget_seconds=publish_budget_seconds,
+                    )
                     for i in range(0, len(all_rels), 500):
                         batch_rels = all_rels[i:i+500]
                         placeholders = ",".join("?" for _ in batch_rels)
@@ -2692,18 +2737,34 @@ class RAGStore:
                         con.execute(f"DELETE FROM files WHERE workspace=? AND path IN ({placeholders})", (workspace, *batch_rels))
                         if fts_exists:
                             con.execute(f"DELETE FROM chunk_fts WHERE workspace=? AND path IN ({placeholders})", (workspace, *batch_rels))
+                    _check_rag_publish_budget(
+                        started_at=publish_started, stage="delete_old_rows",
+                        budget_seconds=publish_budget_seconds,
+                    )
                     con.executemany(
                         "INSERT INTO chunks(workspace,path,chunk_no,content_hash,text,embedding,embedding_space) VALUES(?,?,?,?,?,?,?)",
                         chunks_to_insert,
+                    )
+                    _check_rag_publish_budget(
+                        started_at=publish_started, stage="insert_chunks",
+                        budget_seconds=publish_budget_seconds,
                     )
                     if fts_exists:
                         con.executemany(
                             "INSERT INTO chunk_fts(workspace,path,chunk_no,text) VALUES(?,?,?,?)",
                             [(c[0], c[1], c[2], c[4]) for c in chunks_to_insert],
                         )
+                    _check_rag_publish_budget(
+                        started_at=publish_started, stage="insert_fts",
+                        budget_seconds=publish_budget_seconds,
+                    )
                     con.executemany(
                         "INSERT INTO files(workspace,path,mtime_ns,size,content_hash) VALUES(?,?,?,?,?)",
                         files_to_insert,
+                    )
+                    _check_rag_publish_budget(
+                        started_at=publish_started, stage="insert_files",
+                        budget_seconds=publish_budget_seconds,
                     )
                     for rel in set(deleted_paths or []) | policy_deleted:
                         con.execute(
@@ -2713,6 +2774,10 @@ class RAGStore:
                     con.executemany(
                         "INSERT OR IGNORE INTO project_file_owners(workspace,root,path) VALUES(?,?,?)",
                         [(workspace, str(root_path), rel) for rel in processed_paths],
+                    )
+                    _check_rag_publish_budget(
+                        started_at=publish_started, stage="update_project_file_owners",
+                        budget_seconds=publish_budget_seconds,
                     )
                     if embedding_space:
                         self._store_workspace_embedding_space(con, workspace, embedding_space)
@@ -2726,6 +2791,10 @@ class RAGStore:
                     )
                     if all_rels or uncertainty_changed:
                         self._bump_workspace_index_generation(con, workspace)
+                    _check_rag_publish_budget(
+                        started_at=publish_started, stage="update_workspace_metadata",
+                        budget_seconds=publish_budget_seconds,
+                    )
 
             try:
                 retry_busy(
@@ -2734,10 +2803,15 @@ class RAGStore:
                     base_delay_seconds=min(0.25, max(0.01, self._sqlite_busy_seconds / 10.0)),
                 )
             except Exception as exc:
-                return {
+                result = {
                     "success": False, "workspace": workspace,
                     "error": "publish_failed", "retryable": is_busy_error(exc),
                 }
+                if isinstance(exc, TimeoutError) and str(exc).startswith(
+                    "SQLite write transaction exceeded its duration budget (RAG "
+                ):
+                    result["error_detail"] = str(exc)
+                return result
 
         return {
             "success": True, "workspace": workspace, "preempted": False,
@@ -3887,6 +3961,32 @@ class RAGStore:
                 "SELECT workspace, COUNT(*), COUNT(DISTINCT path) FROM chunks GROUP BY workspace ORDER BY workspace",
             ).fetchall()
         return [{"workspace": r[0], "chunks": r[1], "files": r[2]} for r in rows]
+
+    def workspace_stats(self, workspaces: list[str]) -> dict[str, dict[str, int]]:
+        """Return persisted file and chunk coverage for the requested workspaces."""
+        selected = list(dict.fromkeys(str(workspace) for workspace in workspaces if str(workspace)))
+        counts: dict[str, dict[str, int]] = {}
+        for offset in range(0, len(selected), 400):
+            batch = selected[offset : offset + 400]
+            placeholders = ",".join("?" for _ in batch)
+            with closing(self._connect()) as con:
+                rows = con.execute(
+                    f"""SELECT workspace, 'files', COUNT(*), COUNT(DISTINCT path)
+                        FROM files WHERE workspace IN ({placeholders}) GROUP BY workspace
+                        UNION ALL
+                        SELECT workspace, 'chunks', COUNT(*), COUNT(DISTINCT path)
+                        FROM chunks WHERE workspace IN ({placeholders}) GROUP BY workspace""",
+                    (*batch, *batch),
+                ).fetchall()
+            for row in rows:
+                workspace = str(row[0])
+                stats = counts.setdefault(workspace, {})
+                if row[1] == "files":
+                    stats["files"] = int(row[2])
+                else:
+                    stats["chunks"] = int(row[2])
+                    stats["chunked_files"] = int(row[3])
+        return counts
 
     def docset_index(self, name: str, *, root: str) -> dict[str, Any]:
         """Index an offline library or API documentation directory under a named docset workspace."""

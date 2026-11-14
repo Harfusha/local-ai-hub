@@ -76,6 +76,26 @@ def test_only_canonical_endpoint_is_registered(
 
 @pytest.mark.parametrize(
     "path",
+    tuple(sorted({path for rule in POST_ROUTE_REGISTRY for path in rule.paths})),
+)
+def test_every_registered_post_route_authorizes_before_body_or_dispatch(
+    monkeypatch: pytest.MonkeyPatch, path: str
+) -> None:
+    events: list[str] = []
+    monkeypatch.setattr(http_server, "APP", object())
+    handler = http_server.Handler.__new__(http_server.Handler)
+    handler.path = path
+    handler._require_authorized = lambda: events.append("authorization") or False
+    handler._read_json = lambda: pytest.fail("unauthorized route must not read its request body")
+    handler._begin_trace = lambda *_args, **_kwargs: pytest.fail("unauthorized route must not start a trace")
+
+    handler.do_POST()
+
+    assert events == ["authorization"]
+
+
+@pytest.mark.parametrize(
+    "path",
     tuple(alias for _route_id, _canonical, aliases in _CANONICAL_ROUTES_WITH_ALIASES for alias in aliases),
 )
 def test_retired_post_alias_returns_404_before_auth_or_service(

@@ -80,3 +80,53 @@ def test_mcp_revision_arguments_reach_existing_route(tmp_path, monkeypatch):
     assert calls[0][0] == "/api/git/diff"
     assert calls[0][1]["rev1"] == "HEAD~3"
     assert calls[0][1]["rev2"] == "HEAD"
+
+
+def test_git_diff_skips_second_scan_for_complete_unquoted_paths(tmp_path, monkeypatch):
+    from local_ai_hub import repo_tools as repo_tools_module
+
+    root = tmp_path / "repo"
+    root.mkdir()
+    _git(root, "init")
+    _git(root, "config", "user.email", "test@example.invalid")
+    _git(root, "config", "user.name", "Bundle Test")
+    target = root / "plain.py"
+    target.write_text("value = 1\n", encoding="utf-8")
+    _git(root, "add", ".")
+    _git(root, "commit", "-m", "base")
+    target.write_text("value = 2\n", encoding="utf-8")
+
+    original_popen_managed = repo_tools_module.popen_managed
+    diff_commands = []
+
+    def track_diff_commands(command, *args, **kwargs):
+        if "diff" in command:
+            diff_commands.append(command)
+        return original_popen_managed(command, *args, **kwargs)
+
+    monkeypatch.setattr(repo_tools_module, "popen_managed", track_diff_commands)
+    result = RepositoryTools({}).git_diff(str(root))
+
+    assert result["success"], result
+    assert result["changed_files"] == ["plain.py"]
+    assert len(diff_commands) == 1
+
+    diff_commands.clear()
+    truncated = RepositoryTools({}).git_diff(str(root), max_tokens=1)
+    assert truncated["success"], truncated
+    assert truncated["truncated"] is True
+    assert truncated["changed_files"] == ["plain.py"]
+    assert len(diff_commands) == 2
+
+    _git(root, "add", ".")
+    _git(root, "commit", "-m", "second")
+    unusual = root / "space name.py"
+    unusual.write_text("value = 1\n", encoding="utf-8")
+    _git(root, "add", ".")
+    _git(root, "commit", "-m", "add unusual path")
+    unusual.write_text("value = 2\n", encoding="utf-8")
+    diff_commands.clear()
+    quoted = RepositoryTools({}).git_diff(str(root))
+    assert quoted["success"], quoted
+    assert quoted["changed_files"] == ["space name.py"]
+    assert len(diff_commands) == 2

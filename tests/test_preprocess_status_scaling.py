@@ -7,6 +7,7 @@ from contextlib import closing
 from pathlib import Path
 
 from local_ai_hub.preprocess import ProjectPreprocessor
+from local_ai_hub.rag import RAGStore
 
 
 class _CountingIndex:
@@ -32,6 +33,19 @@ class _CountingIndex:
 class _MissingFilesIndex:
     def _connect(self) -> sqlite3.Connection:
         return sqlite3.connect(":memory:")
+
+
+class _RagWorkspaceIndex:
+    def __init__(self) -> None:
+        self.stats_calls = 0
+
+    def workspace_stats(self, workspaces: list[str]) -> dict[str, dict[str, int]]:
+        self.stats_calls += 1
+        assert workspaces == [f"workspace-{index:03}" for index in range(70)]
+        return {
+            "workspace-000": {"chunks": 2, "files": 2, "chunked_files": 1},
+            "workspace-001": {"chunks": 5, "files": 4, "chunked_files": 3},
+        }
 
 
 def _status_preprocessor(tmp_path: Path, project_count: int = 70) -> tuple[ProjectPreprocessor, list[str], list[str]]:
@@ -66,7 +80,7 @@ def _status_preprocessor(tmp_path: Path, project_count: int = 70) -> tuple[Proje
             [
                 (
                     root,
-                    "workspace",
+                    f"workspace-{index:03}",
                     "complete" if index == 0 else "running",
                     "complete" if index == 0 else "code_index",
                     now,
@@ -116,6 +130,7 @@ def _status_preprocessor(tmp_path: Path, project_count: int = 70) -> tuple[Proje
     pre.max_preprocessing_projects = 3
     pre.code_index = _CountingIndex(tmp_path / "code-index.sqlite3", roots)
     pre.deterministic = _CountingIndex(tmp_path / "deterministic.sqlite3", roots)
+    pre.rag = _RagWorkspaceIndex()
     pre._status_cache = {}
     pre._background_work_allowed = lambda: True
     pre.ingestion_reuse_rate = lambda: 0.0
@@ -144,6 +159,12 @@ def test_status_batches_registered_project_counts_and_reuses_index_connections(t
     assert projects[roots[0]]["file_cards"] == 1
     assert projects[roots[0]]["hashed_files"] == 1
     assert projects[roots[0]]["rag_files"] == 1
+    assert projects[roots[0]]["rag_indexed_files"] == 2
+    assert projects[roots[0]]["rag_chunked_files"] == 1
+    assert projects[roots[0]]["rag_chunks"] == 2
+    assert projects[roots[1]]["rag_indexed_files"] == 4
+    assert projects[roots[1]]["rag_chunked_files"] == 3
+    assert projects[roots[1]]["rag_chunks"] == 5
     assert projects[roots[0]]["external_indexes"]["serena"]["status"] == "unavailable"
     assert projects[roots[1]]["status"] == "running"
     assert projects[roots[1]]["files"] == 2
@@ -163,6 +184,7 @@ def test_status_batches_registered_project_counts_and_reuses_index_connections(t
             assert "group by root" in reads[0].lower()
     assert pre.code_index.connect_calls == 1
     assert pre.deterministic.connect_calls == 1
+    assert pre.rag.stats_calls == 1
     for index in (pre.code_index, pre.deterministic):
         file_queries = [statement for statement in index.queries if "from files" in statement.lower()]
         assert len(file_queries) == 1
@@ -180,6 +202,34 @@ def test_status_keeps_sqlite_index_error_fallback(tmp_path: Path) -> None:
     assert result["projects"][0]["root"] == roots[1]
     assert result["projects"][0]["phase_progress_pct"] == 0.0
     assert result["projects"][0]["active_detail"] == "AST symbol extraction: 0/2 files (0.0%)"
+
+
+def test_rag_workspace_stats_limits_counts_to_requested_workspaces(tmp_path: Path) -> None:
+    db_path = tmp_path / "rag.sqlite3"
+    with closing(sqlite3.connect(db_path)) as con:
+        con.execute("CREATE TABLE files(workspace TEXT, path TEXT)")
+        con.execute("CREATE TABLE chunks(workspace TEXT, path TEXT)")
+        con.executemany(
+            "INSERT INTO files(workspace, path) VALUES(?, ?)",
+            [("wanted", "a.py"), ("wanted", "b.py"), ("wanted", "empty.py"), ("unrelated", "other.py")],
+        )
+        con.executemany(
+            "INSERT INTO chunks(workspace, path) VALUES(?, ?)",
+            [
+                ("wanted", "a.py"),
+                ("wanted", "a.py"),
+                ("wanted", "b.py"),
+                ("unrelated", "other.py"),
+            ],
+        )
+        con.commit()
+
+    rag = object.__new__(RAGStore)
+    rag._connect = lambda: sqlite3.connect(db_path)
+
+    assert rag.workspace_stats(["wanted", "missing"]) == {
+        "wanted": {"chunks": 3, "files": 3, "chunked_files": 2},
+    }
 
 
 def test_file_card_generation_respects_configured_batch_limit():

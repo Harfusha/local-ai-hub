@@ -2,6 +2,10 @@
 
 The Hub binds to `127.0.0.1` and rejects non-loopback peers before routing. Loopback HTTP/MCP calls need no Hub API token; the Hub has no bearer-token authentication system. Dashboard mutations still require same-origin browser checks. Command authorization, capabilities, root confinement, approvals, leases, rate limits, and audit records remain enforced.
 
+HTTP requests reject non-local `Host` names and malformed authorities. A supplied `Origin` must be a valid local HTTP(S) origin without credentials, path, query, or fragment; explicit ports must match the request Host port. Configured browser-extension origins apply only to browser bridge routes. DNS names supplied by callers do not change the socket peer trust decision.
+
+Debug traces can contain complete prompts, model output, tool arguments, and results. The dashboard warns before detailed capture is enabled. Local trace retention is bounded by configured TTL, byte, session, event, and text limits. Admin purge requires exact confirmation; exports are bounded and redact common credentials and local paths, while local trace records remain unredacted.
+
 Retired `security.api_token`, `security.supervisor_token`, `security.action_tokens`, and `security.api_token_permissions` keys reject by presence. Retired user, tenant, and principal fields also reject by presence. OpenCode's separate nonce-scoped provider-session credential authenticates only that provider bridge; it is not a Hub credential.
 
 ## Identity and shared state

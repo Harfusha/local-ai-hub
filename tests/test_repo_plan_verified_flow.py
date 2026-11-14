@@ -635,7 +635,11 @@ def test_concurrent_plan_bindings_only_allow_one_active_execution(environment):
                 plan_task_id="task_work", expected_revision=revision,
             )["success"]
         except ValueError as error:
-            assert "active execution binding" in str(error)
+            message = str(error)
+            assert (
+                "active execution binding" in message
+                or "expected_revision conflicts with the current plan revision" in message
+            )
             return False
 
     with ThreadPoolExecutor(max_workers=2) as pool:

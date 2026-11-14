@@ -8,7 +8,7 @@
     {
       "path": "docs/superpowers/specs/2026-11-10-laya-active-decision-service-training-capture.md",
       "revision": {
-        "content_sha256": "7db3ae8a7679683e255985b3488508eb99cfd7aacd2e402890115c4903787f59",
+        "content_sha256": "ba6acfe3e0fa8b84f4c4367922f84f0ed5309f2261ce5ca7896b39a6394173a9",
         "kind": "working"
       }
     }
@@ -47,9 +47,10 @@
         "Unresolved, rejected, and test-split examples stay out of training exports.",
         "Group provenance prevents related sessions from leaking across splits.",
         "Training and benchmark remain unstarted until the user requests them after collection and review.",
-        "Future comparison uses the same held-out examples and records quality, latency, and compute separately."
+        "Future comparison uses the same held-out examples and records quality, latency, and compute separately.",
+        "An authorized root-scoped evaluate_snapshot operation compares Laya and deterministic suggestions on the same verified, human-labeled test examples; it returns aggregate-only metrics, validates snapshot/group/evidence provenance, excludes raw text and identifiers, and never activates advisory mode."
       ],
-      "blocker": "No authentic candidate available for operator labeling or evidence-backed group-safe export. Runtime remains NOT VERIFIED.",
+      "blocker": "No authentic candidates or operator labels; paired evaluation, category promotion criteria and training outcomes remain unverified.",
       "clarifications": [],
       "depends_on": [
         {
@@ -63,7 +64,7 @@
       ],
       "description": "After authentic examples exist, locally reject unsuitable or duplicate examples and review useful cases under the versioned rubric. The operator may confirm a human training label; a capable local Codex/model may contribute a separately attributed model review. Record reviewer kind/model identity, rubric and evidence provenance locally. Model review cannot silently become a human-confirmed label or training export. No SSH keys, remote reviewer quorum, cloud fallback, synthetic data, training, or benchmark in this task.",
       "kind": "code",
-      "next_action": "Current focused Laya suite passes 292/292 across 11 files, including URL secret redaction and export-failure cleanup. Blind local-model review and separate operator labels remain covered. No authentic candidate is verified; labeling and group-safe export remain NOT VERIFIED.",
+      "next_action": "After natural candidates are collected and operator labels exist, run the authorized local review and group-safe evaluation workflow; keep shadow authority and do not start training, benchmark or card generation.",
       "title": "Review natural candidates and prepare later paired evaluation",
       "work_phase": "verification",
       "work_status": "in_progress"
@@ -77,14 +78,14 @@
         "Laya output stays shadow-only and does not change retrieval, routing, permissions, task state, receipts, or tool execution.",
         "No synthetic inference, model download/install, training, benchmark, advisory activation, or card generation in this work."
       ],
-      "blocker": "No natural eligible capture or candidate has been observed. Ordinary context capture now carries verified scoped MemoryStore evidence with aligned source record IDs. Live runtime proof remains NOT VERIFIED pending a Stability-owned window.",
+      "blocker": "Filter _available_laya_model_route_options wired into both model_route capture hooks in services.py with 60s digest cache and fail-closed runtime.is_online() check. 114 targeted / 349 full Laya suite tests pass. Current authorized candidate inventory is count=0; running-version and natural capture remain NOT VERIFIED until passive window 17:00–17:30.",
       "clarifications": [],
       "depends_on": [],
-      "description": "On each eligible successful ordinary context request, queue bounded shadow capture when an unresolved evidence gap remains and at least two authorized sources have verified evidence IDs; do this regardless of legacy laya.runtime.enabled. Resolve the pinned checkpoint on request, and keep provider/device-capacity failures isolated with metadata-only telemetry. Capture typed gap/source/freshness/coverage signals, verified evidence IDs, deterministic retrieval baseline, useful redacted task query/retrieved excerpts within the approved bounds, actual Laya output/runtime metrics, failures, and later observable downstream outcomes. No synthetic requests or candidate data.",
+      "description": "On each eligible successful ordinary context request, queue bounded shadow capture when an unresolved evidence gap remains and at least two authorized sources have verified evidence IDs; do this regardless of legacy laya.runtime.enabled. Resolve the pinned checkpoint on request, and keep provider/device-capacity failures isolated with metadata-only telemetry. Capture typed gap/source/freshness/coverage signals, verified evidence IDs, deterministic retrieval baseline, useful redacted task query/retrieved excerpts within the approved bounds, actual Laya output/runtime metrics, failures, and later observable downstream outcomes. Preserve end-to-end latency and separately record adapter lock wait and pure predict duration; expose those fields in paired evaluation summaries. No synthetic requests or candidate data.",
       "kind": "code",
-      "next_action": "Ordinary capture now carries current scoped memory provenance and its app handoff has a regression test. Current focused Laya suite passes 278/278. Natural runtime capture and candidate persistence remain NOT VERIFIED pending a bounded Stability-owned window.",
+      "next_action": "After Stability releases the shared files, wire the new filter into natural route capture and finish eligible context/pipeline capture paths. During the approved 17:00–17:30 window inspect the running revision and genuine traffic only; leave NOT VERIFIED if none occurs.",
       "title": "Ověřit přirozeně zachycené context_source výsledky",
-      "work_phase": "implementation",
+      "work_phase": "verification",
       "work_status": "in_progress"
     },
     "task_laya_export": {
@@ -95,7 +96,7 @@
         "Manifest counts included, skipped, rejected, ambiguous, and missing records without reconstructing absent data.",
         "Group-safe split and duplicate checks stay enforced."
       ],
-      "blocker": "No authentic natural candidates or operator-confirmed labels available to validate a data-backed export. Candidate export now revalidates context-source memory and evidence provenance, but export remains NOT VERIFIED with real data.",
+      "blocker": "Current authorized candidate inventory is count=0; no real operator labels or training export can be verified. Source suite passed 366 targeted tests; source validation is separate from real dataset evidence.",
       "clarifications": [],
       "depends_on": [
         {
@@ -105,7 +106,7 @@
       ],
       "description": "Maintain scoped candidate review and export from naturally collected Laya runtime outcomes. The list remains metadata-only; get exposes one candidate under the authorized repository root while hiding Laya output and existing human labels. Per-example consent receipts are not required. Training export accepts current verified local-operator labels with group-safe provenance; any model review remains separately attributed and cannot become a human-confirmed label. Keep ordinary ZIP and diagnostics metadata-only.",
       "kind": "code",
-      "next_action": "After a natural candidate exists, confirm one local human label, prepare group-safe splits, and verify export; current source validation is 277/277 focused Laya tests with a regression proving stale memory provenance blocks export.",
+      "next_action": "When naturally captured candidates exist, inspect local operator labels and perform one root-scoped group-safe export. Do not create sample rows; keep export NOT VERIFIED while no samples exist.",
       "title": "Extend existing reports and authorized ZIP",
       "work_phase": "verification",
       "work_status": "in_progress"
@@ -122,12 +123,12 @@
         "Verify checkpoint presence/hash and installed compatible provider before claiming runtime availability; configuration alone is insufficient.",
         "Do not install/download models or drivers, change CPU fallback, run synthetic inference, train, benchmark, or roll out."
       ],
-      "blocker": "Hub `status` reports online but model inventory unreported. Laya residency, installed model availability and live request/capture remain NOT VERIFIED. Stability owns the runtime window.",
+      "blocker": "Current source confirms Laya service/candidate store and lifecycle are created during Hub app startup without constructing the runtime adapter; the adapter is initialized lazily on request, scheduler idle maintenance calls poll_idle_unload, and source default is 600 seconds after request completion. The 366-file focused Laya suite passes. Live Hub revision, actual first load/residency/unload, provider availability and natural capture remain NOT VERIFIED; verify only in the approved passive window.",
       "clarifications": [],
       "depends_on": [],
       "description": "Hub Laya API/service remains available for the lifetime of the Hub process, independent of whether a Laya model is resident. Do not preload at Hub startup. On the first Laya request, lazily load the explicitly pinned local checkpoint; retain the provider session while work is in flight and until 600 seconds after the most recently completed Laya request, resetting the idle deadline after every completion. Another model identity or external GPU reservation alone must not reject Laya, prevent its load, or prevent idle close. Stability source audit confirms dGPU admission uses an atomic capacity lease against fresh measured free VRAM; a valid external reservation alone is not a rejection, while unknown telemetry, invalid/foreign fence, stale reservation generation, and insufficient capacity fail closed. Stability reports 34 focused capacity/co-admission tests passed, including legacy reservation, owned scheduler digest, and fail-closed cases. Never evict, preempt, unload, or reconfigure another model; preserve reservation owner identity, limits, hardware profile, and CPU fallback.",
       "kind": "code",
-      "next_action": "Continue source implementation and focused validation independently. Last approved Stability window (13 Nov 10:00–10:30 Prague) passed without live evidence; request a new bounded read-only window before runtime verification. Do not restart, infer or change model settings.",
+      "next_action": "At 2026-11-14 17:00–17:30 Europe/Prague, passively compare the running revision; inspect runtime_status, provider availability and naturally occurring requests only. Verify load and 600-second retention only from actual observed requests/status; if none occur, retain NOT VERIFIED. No synthetic request, restart, GPU change or model installation.",
       "title": "Udržet Laya službu trvale dostupnou s lazy load",
       "work_phase": "verification",
       "work_status": "in_progress"
@@ -142,7 +143,7 @@
         "Laya stays shadow-only until category-specific measured benefit and explicit approval; deterministic behavior remains authoritative.",
         "Lazy load occurs on first request and remains resident for 600 seconds after the latest completed request without evicting other models; runtime evidence stays separate from source validation."
       ],
-      "blocker": "Natural eligible production capture and persisted candidate remain NOT VERIFIED; no synthetic request used.",
+      "blocker": "Live Hub revision identity, natural runtime capture, authentic candidates, operator labels, and training export remain NOT VERIFIED (awaiting approved 17:00–17:30 passive operational window).",
       "clarifications": [
         {
           "adoption": "adopted",
@@ -176,9 +177,9 @@
         }
       ],
       "depends_on": [],
-      "description": "Single-owner Laya integration. Operator-confirmed labels use root-scoped local target confirmation with a versioned rubric and distinct provenance. Add model-review submission through the existing root-authorized curate_dataset/laya_operation surface, with typed decision/confidence/abstention, server-owned provenance, no caller-supplied model identity, and no status/label mutation. Keep history hidden from blind candidate get and expose it only through explicit scoped operations: model_review_history and runtime_output_history. Runtime output pages are cursor-bounded and do not merge model outputs into human labels or training export. Add read-only runtime_status through the same MCP/API surface, clearly separating Hub service availability from model residency and preserving NOT_VERIFIED runtime evidence. Model-review submissions are not human labels and are excluded from human-confirmed training export. No SSH reviewer keys/quorum or cloud fallback. Keep Laya shadow-only and deterministic Hub behavior authoritative.",
+      "description": "Single-owner Laya integration. Root-scoped local operator labels use the versioned rubric with separate provenance. Source implements local model-review submission through the root-authorized curate_dataset/laya_operation surface with typed decision/confidence/abstention, server-owned model/provider/revision/device provenance, no caller-supplied identity, and no label/status mutation. Blind candidate get excludes Laya output and earlier labels/reviews; explicit scoped model_review_history and runtime_output_history preserve separation. Read-only runtime_status distinguishes Hub service availability from model residency and keeps NOT_VERIFIED runtime evidence explicit. Model reviews never satisfy human-confirmed training export. No SSH reviewer keys/quorum or cloud fallback. Keep deterministic behavior authoritative until category-specific quality evidence and later approval.",
       "kind": "code",
-      "next_action": "Continue source-only integration on the remaining Laya plan tasks. Keep live inference/capture and candidate export NOT VERIFIED until stability provides a bounded window with real eligible traffic.",
+      "next_action": "During approved passive window (2026-11-14 17:00–17:30 Europe/Prague / 16:00–16:30 UTC), inspect live Hub revision identity and natural traffic. Keep NOT VERIFIED if no eligible traffic occurs; do not generate synthetic traffic, restart, or make GPU changes.",
       "title": "Rozšířit Laya: MCP/API, relevantní rozhodovací body a tréninková data",
       "work_phase": "verification",
       "work_status": "in_progress"

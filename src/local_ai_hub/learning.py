@@ -120,6 +120,20 @@ class UsageLearner:
         resolved = _resolve_root(root)
         if not resolved:
             return
+        self.record_resolved(Path(resolved), query)
+
+    def record_resolved(self, root: Path, query: str) -> None:
+        """Record a query for a root already canonicalized by a trusted caller.
+
+        Search has already resolved its repository root for path-hint checks. Reusing
+        that result avoids a second filesystem resolution in this optional telemetry
+        path, which must not add avoidable latency to foreground retrieval.
+        """
+        if not self.enabled:
+            return
+        if not isinstance(root, Path) or not root.is_absolute():
+            return
+        resolved = str(root)
         clean = " ".join(_clean_text(query).split())[: self.max_query_chars]
         if len(clean) < 6:
             return

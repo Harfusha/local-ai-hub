@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import subprocess
 import threading
@@ -98,7 +99,7 @@ def test_bounded_submit_validates_task_without_holding_work_order_write_lock(tmp
 class FakeArtifacts:
     def __init__(self): self.data = {}
     def put(self, text, *, kind):
-        key = f"a{len(self.data)+1}"
+        key = "art_" + hashlib.sha256((kind + "\0" + text).encode("utf-8")).hexdigest()[:24]
         self.data[key] = {"text": text, "kind": kind}
         return key
     def get(self, artifact_id, *, max_chars=50_000):

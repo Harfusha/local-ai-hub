@@ -1,8 +1,8 @@
 # API surface coverage
 
 Deterministic source inventory. Status describes static evidence, not runtime health or asserted behavior. Full contracts, fixtures, provenance, and coverage details live in `API_COVERAGE.json`.
-Reproduce with `python tools/surface_inventory.py --check --task-id task_064acbe93528`.
-<!-- coverage-task-id: task_064acbe93528 -->
+Reproduce with `python tools/surface_inventory.py --check --task-id task_b206b2c34111`.
+<!-- coverage-task-id: task_b206b2c34111 -->
 
 | Surface | Name | Evidence status | Owner | Operation ID |
 |---|---|---|---|---|

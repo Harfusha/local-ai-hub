@@ -44,6 +44,8 @@ def test_laya_decision_metadata_uses_existing_snapshot_table_without_raw_payload
         saved = json.loads(row[1])
         assert saved["decision_id"] == "decision-1"
         assert saved["repository_id"] == "repo-1"
+        assert saved["task_id"] == "task-1"
+        assert saved["session_id"] == "session-1"
         assert saved["suggestion"] == "indexed"
         assert "raw_output" not in saved
     finally:

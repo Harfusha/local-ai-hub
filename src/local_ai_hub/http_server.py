@@ -158,6 +158,7 @@ from .trace_context import reset_context, reset_observer, set_context, set_obser
 from .http_route_registry import select_get_handler, select_http_routes, select_post_handler
 from .http_post_repository_analysis import handle_post_repository_analysis, handle_post_plan
 from .dashboard import DASHBOARD_HTML
+from .dashboard_frontend import dashboard_frontend_asset, dashboard_frontend_html
 from .config import ConfigError, deep_merge, load_config, save_runtime_overrides, validate_config
 from .delivery import decide_delivery
 from .resilience import RecoveryJournal
@@ -188,6 +189,12 @@ from .search_pagination import (
     pagination_bounds_error,
 )
 from .json_utils import dumps as json_dumps, dumps_bytes as json_dumps_bytes, loads as json_loads
+from .agent_event_pages import (
+    AGENT_EVENT_PAGE_MAX_BYTES,
+    AGENT_EVENT_PAGE_MAX_LIMIT,
+    _bound_agent_event_page as _bound_agent_event_page_impl,
+    _minimum_json_bytes,
+)
 from .process_utils import process_identity, process_owner_state, process_parent_pid
 
 from .browser_bridge import (
@@ -479,9 +486,14 @@ READINESS_COMPONENTS = (
 
 
 def _dashboard_html_with_trace_notice() -> str:
-    return DASHBOARD_HTML.replace(
+    html = DASHBOARD_HTML.replace(
         "Agent debug traces · off by default; payloads available when enabled",
         "Agent debug traces · full input/output only when enabled · complete stored details shown as recorded · local access only · separate local retention policy",
+        1,
+    )
+    return html.replace(
+        '<div class="tabs">',
+        '<div class="tabs"><a class="btn" href="/dashboard/next" aria-label="Open the new dashboard preview">New dashboard preview</a>',
         1,
     )
 
@@ -1117,121 +1129,23 @@ def _is_loopback_client_address(client_address: Any) -> bool:
         return False
 
 
-def _json_bytes(data: Any) -> bytes:
-    return json_dumps_bytes(data)
-
-
-AGENT_EVENT_PAGE_MAX_BYTES = 1024 * 1024
-AGENT_EVENT_PAGE_MAX_LIMIT = 100
 DEBUG_TRACE_HTTP_MAX_BYTES = 8 * 1024 * 1024
 SSE_REPLAY_MAX_EVENTS = 10_000
 
 
-def _minimum_json_bytes(value: Any, ceiling: int) -> int:
-    """Lower bound UTF-8 JSON size without encoding potentially huge event values."""
-    if isinstance(value, str):
-        return min(len(value) + 2, ceiling + 1)
-    if value is None:
-        return 4
-    if value is True:
-        return 4
-    if value is False:
-        return 5
-    if isinstance(value, (int, float)):
-        try:
-            return min(len(json_dumps(value).encode("ascii")), ceiling + 1)
-        except (OverflowError, ValueError):
-            return ceiling + 1
-    total = 0
-    if isinstance(value, dict):
-        total = 2 + max(0, len(value) - 1)
-        if total > ceiling:
-            return ceiling + 1
-        for key, item in value.items():
-            total += _minimum_json_bytes(key, ceiling - total)
-            if total > ceiling:
-                return ceiling + 1
-            total += 1 + _minimum_json_bytes(item, ceiling - total)
-            if total > ceiling:
-                return ceiling + 1
-    elif isinstance(value, (list, tuple)):
-        total = 2 + max(0, len(value) - 1)
-        if total > ceiling:
-            return ceiling + 1
-        for item in value:
-            total += _minimum_json_bytes(item, ceiling - total)
-            if total > ceiling:
-                return ceiling + 1
-    return total
+def _json_bytes(data: Any) -> bytes:
+    return json_dumps_bytes(data)
 
 
 def _bound_agent_event_page(status: int, page: dict[str, Any], after_seq: Any) -> tuple[int, dict[str, Any]]:
-    """Bound serialized event pages while keeping the cursor on the last returned row."""
-    try:
-        cursor = max(0, int(after_seq))
-    except (TypeError, ValueError, OverflowError):
-        cursor = 0
-
-    original_events = list(page.get("events") or [])
-    if not original_events:
-        return (status, page) if len(_json_bytes(page)) <= AGENT_EVENT_PAGE_MAX_BYTES else (
-            413,
-            {
-                "success": False, "events": [], "next_seq": cursor,
-                "first_retained_seq": max(0, int(page.get("first_retained_seq") or 0)),
-                "last_seq": max(0, int(page.get("last_seq") or 0)), "has_more": False,
-                "gap_ranges": [], "cursor_reset": bool(page.get("cursor_reset")),
-                "error": {"code": "agent_event_page_too_large", "message": "event page metadata exceeds serialized response byte limit", "max_bytes": AGENT_EVENT_PAGE_MAX_BYTES},
-            },
-        )
-
-    event_bytes = 0
-    best_page: dict[str, Any] | None = None
-    for index, event in enumerate(original_events):
-        candidate = dict(page)
-        try:
-            candidate["next_seq"] = max(0, int(event.get("seq") or 0))
-        except (AttributeError, TypeError, ValueError, OverflowError):
-            break
-        trimmed = index + 1 < len(original_events)
-        candidate["has_more"] = bool(page.get("has_more")) or trimmed
-        candidate["gap_ranges"] = [
-            gap for gap in (page.get("gap_ranges") or [])
-            if isinstance(gap, dict) and int(gap.get("to_seq") or 0) <= candidate["next_seq"]
-        ]
-        candidate["events"] = []
-        envelope_bytes = len(_json_bytes(candidate)) - 2  # Replace serialized empty event list.
-        separator_bytes = 1 if index else 0
-        if envelope_bytes + event_bytes + separator_bytes + _minimum_json_bytes(
-            event, AGENT_EVENT_PAGE_MAX_BYTES
-        ) > AGENT_EVENT_PAGE_MAX_BYTES:
-            break
-        item_bytes = len(_json_bytes(event))
-        if envelope_bytes + event_bytes + separator_bytes + item_bytes > AGENT_EVENT_PAGE_MAX_BYTES:
-            break
-        event_bytes += item_bytes
-        candidate["events"] = original_events[:index + 1]
-        best_page = candidate
-    if best_page is not None:
-        return status, best_page
-
-    # A single event can exceed the budget through uncapped metadata fields.
-    # Keep the caller cursor unchanged so retry cannot silently skip that row.
-    return 413, {
-        "success": False,
-        "events": [],
-        "next_seq": cursor,
-        "first_retained_seq": max(0, int(page.get("first_retained_seq") or 0)),
-        "last_seq": max(0, int(page.get("last_seq") or 0)),
-        "has_more": bool(page.get("has_more")) or bool(original_events),
-        "gap_ranges": [],
-        "cursor_reset": bool(page.get("cursor_reset")),
-        "error": {
-            "code": "agent_event_page_too_large",
-            "message": "first event exceeds serialized response byte limit",
-            "max_bytes": AGENT_EVENT_PAGE_MAX_BYTES,
-        },
-    }
+    return _bound_agent_event_page_impl(
+        status,
+        page,
+        after_seq,
+        json_bytes=_json_bytes,
+        minimum_json_bytes=_minimum_json_bytes,
+        max_bytes=AGENT_EVENT_PAGE_MAX_BYTES,
+    )
 
 
 def _resolve_memory_scope(
@@ -1366,9 +1280,22 @@ def _strict_root_path(raw: Any) -> Path:
     if not candidate.is_absolute():
         raise ValueError("root must be an absolute directory")
     try:
-        if any(path.is_symlink() for path in (candidate, *candidate.parents)):
-            raise ValueError("symlink roots are not allowed")
+        checked_paths = (candidate, *candidate.parents)
+        before = {}
+        for path in checked_paths:
+            info = path.lstat()
+            if path.is_symlink():
+                raise ValueError("symlink roots are not allowed")
+            before[path] = (info.st_dev, info.st_ino)
         resolved = candidate.resolve(strict=True)
+        for path in checked_paths:
+            info = path.lstat()
+            if path.is_symlink() or (info.st_dev, info.st_ino) != before[path]:
+                raise ValueError("root path changed during validation")
+        resolved_info = resolved.stat()
+        candidate_info = candidate.stat()
+        if (resolved_info.st_dev, resolved_info.st_ino) != (candidate_info.st_dev, candidate_info.st_ino):
+            raise ValueError("root target changed during validation")
     except (OSError, RuntimeError) as exc:
         raise ValueError("root must resolve to an existing allowed directory") from exc
     if not resolved.is_dir():
@@ -1797,7 +1724,9 @@ class Handler(BaseHTTPRequestHandler):
                 return
             raise
 
-    def _common_headers(self, *, html: bool = False, nonce: str | None = None) -> None:
+    def _common_headers(
+        self, *, html: bool = False, nonce: str | None = None, self_hosted_assets: bool = False,
+    ) -> None:
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("Referrer-Policy", "no-referrer")
@@ -1815,8 +1744,12 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Access-Control-Allow-Headers", "Content-Type")
             self.send_header("Vary", "Origin")
         if html:
-            script_source = f"'nonce-{nonce}'" if nonce else "'none'"
-            self.send_header("Content-Security-Policy", f"default-src 'none'; connect-src 'self'; img-src 'self' data:; style-src 'unsafe-inline'; script-src {script_source}; script-src-attr 'unsafe-inline'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'")
+            if self_hosted_assets:
+                policy = "default-src 'none'; connect-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
+            else:
+                script_source = f"'nonce-{nonce}'" if nonce else "'none'"
+                policy = f"default-src 'none'; connect-src 'self'; img-src 'self' data:; style-src 'unsafe-inline'; script-src {script_source}; script-src-attr 'unsafe-inline'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
+            self.send_header("Content-Security-Policy", policy)
 
     def _finish_static_response(
         self,
@@ -1861,7 +1794,7 @@ class Handler(BaseHTTPRequestHandler):
         finally:
             self._telemetry_finished = True
 
-    def _send_html(self, status: int, html: str) -> None:
+    def _send_html(self, status: int, html: str, *, self_hosted_assets: bool = False) -> None:
         nonce = uuid.uuid4().hex
         body = html.replace("<script>", f'<script nonce="{nonce}">', 1).encode("utf-8")
         sent = False
@@ -1869,7 +1802,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send_response(status)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Connection", "close")
-            self._common_headers(html=True, nonce=nonce)
+            self._common_headers(html=True, nonce=nonce, self_hosted_assets=self_hosted_assets)
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
@@ -1882,6 +1815,29 @@ class Handler(BaseHTTPRequestHandler):
                 status, len(body), "static_html", success=sent and 200 <= status < 400,
             )
             self.close_connection = True
+
+    def _send_dashboard_frontend_asset(self, name: str) -> bool:
+        asset = dashboard_frontend_asset(name)
+        if asset is None:
+            return False
+        content_type, body = asset
+        sent = False
+        try:
+            self.send_response(200)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Connection", "close")
+            self._common_headers()
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            sent = True
+        except OSError as exc:
+            if not _is_client_disconnect(exc):
+                raise
+        finally:
+            self._finish_static_response(200, len(body), "static_dashboard_asset", success=sent)
+            self.close_connection = True
+        return True
 
     server_version = f"LocalAIHub/{__version__}"
 
@@ -3023,22 +2979,56 @@ class Handler(BaseHTTPRequestHandler):
             self._send(403, {"success": False, "error": "forbidden: dashboard mutation requires Origin"})
             return False
         host_header = str(header("Host", "") or "").strip()
+        host_port: int | None = None
         if host_header:
-            host_name = host_header.split(":", 1)[0].strip("[]").lower()
+            try:
+                parsed_host = urlparse(f"//{host_header}")
+                host_name = str(parsed_host.hostname or "").lower()
+                host_port = parsed_host.port
+                valid_host_syntax = not (
+                    parsed_host.username is not None
+                    or parsed_host.password is not None
+                    or parsed_host.path
+                    or parsed_host.params
+                    or parsed_host.query
+                    or parsed_host.fragment
+                    or host_header.endswith(":")
+                    or host_port == 0
+                )
+            except ValueError:
+                host_name = ""
+                valid_host_syntax = False
             allowed_hosts = {"127.0.0.1", "localhost", "::1", "testserver"}
             server_cfg = APP.config.get("server", {})
             bind = str(server_cfg.get("bind", "")).strip("[]").lower()
             if bind and bind not in {"0.0.0.0", "::"}:
                 allowed_hosts.add(bind)
 
-            if host_name not in allowed_hosts:
+            if not valid_host_syntax or host_name not in allowed_hosts:
                 self._send(403, {"success": False, "error": "forbidden: invalid Host header"})
                 return False
 
         origin_header = str(header("Origin", "") or "").strip()
         if origin_header:
-            parsed_origin = urlparse(origin_header)
-            origin_host = str(parsed_origin.hostname or "").lower()
+            try:
+                parsed_origin = urlparse(origin_header)
+                origin_host = str(parsed_origin.hostname or "").lower()
+                origin_scheme = parsed_origin.scheme.lower()
+                origin_port = parsed_origin.port
+                valid_origin_syntax = not (
+                    parsed_origin.username is not None
+                    or parsed_origin.password is not None
+                    or parsed_origin.path
+                    or parsed_origin.params
+                    or parsed_origin.query
+                    or parsed_origin.fragment
+                    or origin_port == 0
+                )
+            except ValueError:
+                origin_host = ""
+                origin_scheme = ""
+                origin_port = None
+                valid_origin_syntax = False
             allowed_origins = {"127.0.0.1", "localhost", "::1", "testserver"}
             server_cfg = APP.config.get("server", {})
             bind = str(server_cfg.get("bind", "")).strip("[]").lower()
@@ -3048,7 +3038,14 @@ class Handler(BaseHTTPRequestHandler):
             bridge_origin = False
             if str(getattr(self, "path", "")).startswith("/api/browser/") or str(getattr(self, "path", "")) == "/api/vision/review":
                 bridge_origin = origin_allowed(APP.config, origin_header)
-            if origin_host not in allowed_origins and not bridge_origin:
+            local_origin_valid = (
+                origin_scheme in {"http", "https"}
+                and valid_origin_syntax
+                and origin_host in allowed_origins
+                and (host_port or 80)
+                == (origin_port or (443 if origin_scheme == "https" else 80))
+            )
+            if not local_origin_valid and not bridge_origin:
                 self._send(403, {"success": False, "error": "forbidden: cross-origin requests are not allowed"})
                 return False
         return True
@@ -3369,7 +3366,28 @@ class Handler(BaseHTTPRequestHandler):
                 bounded_number(payload.get("timeout_seconds", 90), "timeout_seconds", 0, 90)
             if action in {"submit", "get"} or "max_output_tokens" in payload:
                 bounded_integer(payload.get("max_output_tokens", 0), "max_output_tokens", 0, 4096)
-        elif path in {"/api/preprocess", "/api/repo/profile", "/api/repo/map", "/api/repo/code-index", "/api/repo/investigate", "/api/repo/diagnose", "/api/repo/briefing", "/api/repo/deterministic", "/api/search"}:
+        elif path == "/api/repo/call_graph":
+            if "root" in payload:
+                text(payload["root"], "root", 4096)
+            required_text("symbol", "query", maximum=1024)
+            if "path" in payload and payload["path"] is not None:
+                text(payload["path"], "path", 4096)
+            if "depth" in payload:
+                bounded_integer(payload["depth"], "depth", 1, 2)
+            if "limit" in payload:
+                bounded_integer(payload["limit"], "limit", 1, MAX_PAGE_SIZE)
+        elif path == "/api/repo/code-index":
+            if "root" in payload:
+                text(payload["root"], "root", 4096)
+            if "query" in payload:
+                text(payload["query"], "query", 4096)
+            if "include_code" in payload and type(payload["include_code"]) is not bool:
+                raise RequestBodyError("include_code must be a boolean")
+            if "limit" in payload:
+                bounded_integer(payload["limit"], "limit", 1, MAX_PAGE_SIZE)
+            if "offset" in payload:
+                bounded_integer(payload["offset"], "offset", 0, MAX_PAGE_WINDOW - 1)
+        elif path in {"/api/preprocess", "/api/repo/profile", "/api/repo/map", "/api/repo/investigate", "/api/repo/diagnose", "/api/repo/briefing", "/api/repo/deterministic", "/api/search"}:
             if "root" in payload:
                 text(payload["root"], "root", 4096)
         elif path == "/api/memory/put":
@@ -3684,6 +3702,9 @@ class Handler(BaseHTTPRequestHandler):
         if decision["mode"] != "async":
             return None
         job_payload = dict(payload)
+        caller_request_id = str(self.headers.get("X-LocalAI-Request-ID") or "").strip()
+        if caller_request_id:
+            job_payload.setdefault("request_id", caller_request_id)
         job_payload.pop("delivery", None); job_payload.pop("latency_budget_ms", None)
         if job_action == "reason":
             job_payload["task"] = str(job_payload.get("problem", job_payload.get("task", "")))
@@ -4442,7 +4463,22 @@ class Handler(BaseHTTPRequestHandler):
         if "root" in query_params and query_params["root"]:
             self._request_root = str(query_params["root"][0])
         if path == "/health":
-            self._send(200, {"success": True, "hub_online": True, "version": __version__})
+            installed_version = None
+            try:
+                import importlib.metadata
+
+                installed_version = importlib.metadata.version("local-ai-hub")
+            except Exception:
+                installed_version = None
+            self._send(
+                200,
+                {
+                    "success": True,
+                    "hub_online": True,
+                    "version": __version__,
+                    "installed_version": installed_version,
+                },
+            )
             return
         if path == "/ready":
             if APP is None and not self._loopback_client():
@@ -4481,7 +4517,7 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/api/mode":
             if not self._validate_host_and_origin():
                 return
-        elif path not in {"/", "/dashboard", "/favicon.ico"} and not self._require_authorized():
+        elif path not in {"/", "/dashboard", "/dashboard/next", "/favicon.ico", "/dashboard-assets/app.css", "/dashboard-assets/app.js"} and not self._require_authorized():
             return
         mode_error = _http_mode_gate_error("GET", path)
         if mode_error is not None:
@@ -4573,6 +4609,16 @@ class Handler(BaseHTTPRequestHandler):
                 if not bool(APP.config.get("monitoring", {}).get("dashboard_enabled", True)) or not bool(APP.config.get("features", {}).get("dashboard", True)):
                     self._send(404, {"error": "dashboard disabled"}); return
                 self._send_html(200, _dashboard_html_with_trace_notice()); return
+            if path == "/dashboard/next":
+                if not bool(APP.config.get("monitoring", {}).get("dashboard_enabled", True)) or not bool(APP.config.get("features", {}).get("dashboard", True)):
+                    self._send(404, {"error": "dashboard disabled"}); return
+                self._send_html(200, dashboard_frontend_html(), self_hosted_assets=True); return
+            if path.startswith("/dashboard-assets/"):
+                if not bool(APP.config.get("monitoring", {}).get("dashboard_enabled", True)) or not bool(APP.config.get("features", {}).get("dashboard", True)):
+                    self._send(404, {"error": "dashboard disabled"}); return
+                if self._send_dashboard_frontend_asset(path.removeprefix("/dashboard-assets/")):
+                    return
+                self._send(404, {"error": "not found"}); return
             if path == "/favicon.ico":
                 sent = False
                 try:
@@ -8595,8 +8641,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, APP.services.repo_map(str(payload.get("root", ".")), int(payload.get("max_symbols", 120)))); return
             if 'post_repo_code_index_1' in post_route_ids:
                 result = APP.services.code_query(
-                    str(payload.get("root", ".")), str(payload.get("query", "")),
-                    payload.get("limit", 24), bool(payload.get("include_code", False)),
+                    payload.get("root", "."), payload.get("query", ""),
+                    payload.get("limit", 24), payload.get("include_code", False),
                     payload.get("offset", 0),
                 )
                 status = int(result.pop("status_code", 200))
@@ -8668,10 +8714,12 @@ class Handler(BaseHTTPRequestHandler):
                         return result
                     timings = result.get("phase_timings_ms")
                     timings = dict(timings) if isinstance(timings, dict) else {}
+                    total_ms = round((time.perf_counter() - context_request_started) * 1000.0, 1)
                     timings.update({
                         "request_preparation_ms": preparation_ms,
                         "context_retrieval_ms": retrieval_ms,
-                        "total_ms": round((time.perf_counter() - context_request_started) * 1000.0, 1),
+                        "post_retrieval_ms": max(0.0, round(total_ms - preparation_ms - retrieval_ms, 1)),
+                        "total_ms": total_ms,
                     })
                     result["phase_timings_ms"] = timings
                     return result
@@ -8841,6 +8889,12 @@ class Handler(BaseHTTPRequestHandler):
 
                     request = ConsistencyRequest(root=root, task_id=str(payload.get("task_id", "")), session_id=str(payload.get("session_id", "")), query=guarded_query, phase=phase, focus=focus_values, workspace=str(payload.get("workspace", "")), preload_profile=str(payload.get("preload_profile", "")), token_budget=max_tokens, changed_paths=tuple(str(item) for item in (payload.get("changed_paths") or [])), base=str(payload.get("base", "HEAD")), staged=bool(payload.get("staged", False)), override_reason=str(payload.get("override_reason", "")), approval=approval, path_hints=path_controls.path_hints if path_controls else (), directory_hints=path_controls.directory_hints if path_controls else (), exclude_paths=path_controls.exclude_paths if path_controls else (), force_include_paths=path_controls.force_include_paths if path_controls else (), project_config_digest=project_config_digest)
                     has_task_id = bool(str(payload.get("task_id", "")).strip())
+                    if guarded_requested and has_task_id:
+                        preflight = APP.services.preflight_guard_task_state(request)
+                        if preflight is not None:
+                            status_code = int(preflight.get("status_code", 503))
+                            response = {key: value for key, value in preflight.items() if key != "status_code"}
+                            self._send(status_code, response); return
                     context_preparation_ms = round(
                         (time.perf_counter() - context_request_started) * 1000.0, 1,
                     )
@@ -8880,7 +8934,7 @@ class Handler(BaseHTTPRequestHandler):
                         (time.perf_counter() - context_retrieval_started) * 1000.0, 1,
                     )
                     repository_failed = isinstance(result, dict) and result.get("success") is False
-                    if repository_failed and (not (guarded_requested and has_task_id) or auto_injected_task):
+                    if repository_failed:
                         status_code = 503 if result.get("retryable") is True else 500
                         self._send(status_code, result); return
                     if guarded_requested and has_task_id and not getattr(APP, "agent_context", None):
@@ -9225,12 +9279,14 @@ class Handler(BaseHTTPRequestHandler):
                 status = 200 if res.get("success") else res.get("status_code", 400)
                 self._send(status, res); return
             if 'post_repo_call_graph_1' in post_route_ids:
-                root = str(payload.get("root", "."))
-                symbol = str(payload.get("symbol", "") or payload.get("query", ""))
+                root = payload.get("root", ".")
+                symbol = payload.get("symbol") or payload.get("query", "")
                 path_val = payload.get("path")
-                depth = int(payload.get("depth", 1))
-                limit = int(payload.get("limit", 50))
-                self._send(200, APP.services.call_graph(root, symbol, path=path_val, depth=depth, limit=limit)); return
+                depth = payload.get("depth", 1)
+                limit = payload.get("limit", 50)
+                result = APP.services.call_graph(root, symbol, path=path_val, depth=depth, limit=limit)
+                status = int(result.pop("status_code", 200))
+                self._send(status, result); return
             if 'post_repo_git_status_1' in post_route_ids:
                 root = str(payload.get("root", "."))
                 res = APP.repo_tools.git_status(root)

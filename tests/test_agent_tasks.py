@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 import threading
+import time
+from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
 import subprocess
@@ -225,6 +228,82 @@ def contract_with_criteria(*criteria: str) -> GoalContract:
         acceptance_criteria=tuple(criteria),
         scope=AgentScope.TASK,
     )
+
+
+def test_task_checkpoint_waits_for_short_external_writer_lock(store: TaskStore, monkeypatch):
+    task_id = "task-write-lock-budget"
+    task = store.create(
+        GoalContract(goal="Exercise task write lock budget"),
+        ScopeContext(task_id=task_id),
+        task_id=task_id,
+    )
+    store.transition(
+        task.task_id,
+        TaskStatus.ACTIVE,
+        reason="start",
+        actor="agent",
+        idempotency_key="activate-before-checkpoint-lock",
+    )
+    checkpoint = TaskCheckpoint(
+        phase="lock-window",
+        next_action="resume after writer lock release",
+        blockers=(),
+        evidence_ids=(),
+        state_data={},
+    )
+    write_started = threading.Event()
+    results: list[TaskState] = []
+    errors: list[BaseException] = []
+    original_write_transaction = agent_tasks_module.write_transaction
+
+    @contextmanager
+    def observe_task_update(connection, **kwargs):
+        if kwargs.get("rollback_label") == "Agent task update":
+            write_started.set()
+        with original_write_transaction(connection, **kwargs) as active:
+            yield active
+
+    monkeypatch.setattr(agent_tasks_module, "write_transaction", observe_task_update)
+    blocker = connect_sqlite(
+        store.state_store.db_path,
+        timeout_seconds=0.1,
+        isolation_level=None,
+    )
+    runner = None
+    try:
+        blocker.execute("BEGIN IMMEDIATE")
+
+        def transition_task():
+            try:
+                results.append(
+                    store.checkpoint(
+                        task.task_id,
+                        checkpoint,
+                        actor="agent",
+                        idempotency_key="checkpoint-after-short-lock",
+                    )
+                )
+            except BaseException as exc:
+                errors.append(exc)
+
+        runner = threading.Thread(target=transition_task, daemon=True)
+        runner.start()
+        assert write_started.wait(2)
+        time.sleep(0.9)
+        assert runner.is_alive(), "task write abandoned a lock released within its transaction budget"
+
+        blocker.execute("COMMIT")
+        runner.join(3)
+
+        assert not runner.is_alive()
+        assert errors == []
+        assert results[0].checkpoint.phase == checkpoint.phase
+    finally:
+        if blocker.in_transaction:
+            blocker.execute("ROLLBACK")
+        blocker.close()
+        if runner is not None:
+            runner.join(3)
 
 
 def test_completion_gate_reports_typed_laya_outcome_without_changing_result(store: TaskStore):

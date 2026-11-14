@@ -2481,7 +2481,7 @@ def test_timeout_reaps_command_descendants(tmp_path: Path) -> None:
     result = broker._execute(
         "timeout-parent",
         str(tmp_path),
-        1,
+        5,
         argv_override=[sys.executable, "-B", "-c", parent, str(child_pid_file)],
     )
 

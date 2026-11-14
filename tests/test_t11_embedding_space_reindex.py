@@ -582,3 +582,89 @@ def test_embedding_fingerprint_change_requires_offline_rebuild_and_preserves_row
         ).fetchall()
     assert after_rows == before_rows
     assert embedder.calls == 1
+
+
+def test_legacy_embedding_space_recovery_does_not_select_embedding_blobs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / "stable.py").write_text("stable project knowledge\n", encoding="utf-8")
+    workspace = RAGStore.workspace_id(str(root))
+    embedder = SpaceEmbedder("space-a")
+    store = RAGStore(_config(tmp_path / "state"), services=embedder)
+    assert store.index(root=str(root), workspace=workspace)["success"] is True
+
+    with closing(store._connect()) as con:
+        con.execute(
+            "DELETE FROM rag_meta WHERE key=?",
+            (store._workspace_embedding_space_key(workspace),),
+        )
+        con.commit()
+
+    statements: list[str] = []
+    connect = store._connect
+
+    def traced_connect():
+        con = connect()
+        con.set_trace_callback(statements.append)
+        return con
+
+    monkeypatch.setattr(store, "_connect", traced_connect)
+    result = store.index_paths_step(
+        str(root), workspace=workspace, paths=["stable.py"]
+    )
+
+    assert result["success"] is True
+    with closing(connect()) as con:
+        assert store._stored_workspace_embedding_space(con, workspace) == "space-a"
+
+    normalized_statements = [" ".join(statement.upper().split()) for statement in statements]
+    assert any(
+        "SELECT DISTINCT COALESCE(TRIM(CAST(EMBEDDING_SPACE AS TEXT)), '')" in statement
+        for statement in normalized_statements
+    ), normalized_statements
+    assert not any(
+        "SELECT EMBEDDING,EMBEDDING_SPACE FROM CHUNKS" in statement
+        for statement in normalized_statements
+    ), normalized_statements
+
+
+def test_legacy_vectors_without_space_still_require_rebuild_and_preserve_rows(
+    tmp_path: Path,
+):
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / "stable.py").write_text("stable project knowledge\n", encoding="utf-8")
+    workspace = RAGStore.workspace_id(str(root))
+    store = RAGStore(_config(tmp_path / "state"), services=SpaceEmbedder("space-a"))
+    assert store.index(root=str(root), workspace=workspace)["success"] is True
+
+    with closing(store._connect()) as con:
+        con.execute(
+            "DELETE FROM rag_meta WHERE key=?",
+            (store._workspace_embedding_space_key(workspace),),
+        )
+        con.execute(
+            "UPDATE chunks SET embedding_space='' WHERE workspace=?",
+            (workspace,),
+        )
+        con.commit()
+        before_rows = con.execute(
+            "SELECT path,text,embedding,embedding_space FROM chunks WHERE workspace=?",
+            (workspace,),
+        ).fetchall()
+
+    result = store.index_paths_step(
+        str(root), workspace=workspace, paths=["stable.py"]
+    )
+
+    assert result["success"] is False
+    assert result["error"] == "embedding_space_rebuild_required"
+    assert result["rebuild_required"] is True
+    with closing(store._connect()) as con:
+        after_rows = con.execute(
+            "SELECT path,text,embedding,embedding_space FROM chunks WHERE workspace=?",
+            (workspace,),
+        ).fetchall()
+    assert after_rows == before_rows

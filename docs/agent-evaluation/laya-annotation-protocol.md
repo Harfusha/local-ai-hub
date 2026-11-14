@@ -25,6 +25,23 @@ Existing-card export reads only selected eligible, non-deterministic cards and
 source text already stored in the Hub index. It needs no per-example consent
 manifest, makes no model calls, and generates no cards.
 
+## Paired snapshot evaluation
+
+`local_ai_coord(action="curate_dataset", laya_operation={"action":"evaluate_snapshot","snapshot_id":...})`
+compares persisted Laya outputs with their recorded deterministic baselines on
+the same locally operator-labeled, verified `test` split rows. It rechecks
+snapshot fingerprint/status, group isolation, candidate hashes, task/session identity,
+evidence provenance, and the current human-label rubric before scoring. Output
+contains aggregate per-category accuracy, paired count, end-to-end latency
+percentiles, adapter lock-wait percentiles, pure `predict()` latency percentiles,
+token totals, and device classes. These measures stay separate so model time is
+not conflated with serialization delay. Output never returns example text or candidate,
+task, session, or evidence IDs. It consumes saved outcomes only: no inference,
+threshold decision, training, or promotion occurs. Results are
+`DESCRIPTIVE_ONLY`; promotion remains `NOT_EVALUATED` and thresholds
+`NOT_PREDECLARED` until authentic data and predeclared criteria support a
+separate decision.
+
 ## Approved `context_source` pilot
 
 - Trigger: an unresolved evidence gap with at least two authorized sources.
@@ -78,6 +95,29 @@ manifest, makes no model calls, and generates no cards.
   task/session, and evidence-provenance checks above. Model-weight training
   remains disabled.
 
+## Registered decision categories
+
+Every suggestion is a closed typed option, not an executable action. The
+`context_source` category uses `evaluate_context_source`; other categories use
+`evaluate_decision`.
+
+| Category | Allowed suggestions | Natural entry |
+|---|---|---|
+| `context_source` | `indexed`, `artifact`, `memory`, `rag`, `more_evidence` | Eligible ordinary context retrieval with an unresolved gap and at least two authorized sources |
+| `context_budget` | `compact`, `standard`, `expanded` | Successful retrieval/delegation without an explicit caller budget |
+| `model_route` | `fast`, `smart`, `background`, `vision`, `generic` | Automatically routed task with a successful model response |
+| `redundant_step` | `possible_duplicate`, `validation_still_required` | Direct typed request at a real decision point |
+| `next_step` | `inspect_source`, `run_test`, `retrieve_evidence`, `ask_human` | Direct typed request at a real decision point |
+| `delegation` | `review_only`, `delegate_bounded`, `no_delegation` | Successful adaptive pipeline run |
+| `completion_gap` | `missing_verification`, `resolve_blocker`, `request_human_review` | Naturally rejected completion gate with current checkpoint evidence |
+| `watchdog` | `recommend_continue`, `recommend_stop`, `recommend_human_review` | Direct typed request; Hub derives the deterministic baseline from the current task lifecycle |
+
+All requests require a real task, server-bound repository/task/session identity,
+and verified evidence. `redundant_step` and `next_step` currently have no
+automatic capture hook. A runtime candidate with no recorded deterministic
+baseline may still support local training review, but `evaluate_snapshot`
+excludes it from paired quality metrics. Laya output remains shadow-only.
+
 ## Other typed decision inputs
 
 The root-authorized `POST /api/agent-state/tasks` endpoint and MCP
@@ -108,9 +148,9 @@ Hub evaluation and does not prove this pilot useful.
 
 The approved `context_source` pilot fixes its category, minimal fields,
 deterministic baseline, label rubric, and privacy scope. `model_route`,
-`context_budget`, and `completion_gap` are collection-only shadow categories
-until their own natural examples, labels, measured baselines, and approval gates
-pass. No advisory behavior is enabled by these observations.
+`context_budget`, `completion_gap`, and `watchdog` are collection-only shadow
+categories until their own natural examples, labels, measured baselines, and
+approval gates pass. No advisory behavior is enabled by these observations.
 
 ## Additional automatic shadow observations
 
@@ -131,7 +171,28 @@ runtime-outcome path when a pinned local checkpoint is configured:
   text and verifier details stay out of the candidate. The deterministic gate
   remains authoritative, and operator waivers do not trigger capture.
 
-All three require an existing task and current root-scoped evidence IDs. The Hub
+The pipeline also queues a typed `delegation` shadow observation after a
+successful adaptive pipeline run. Its deterministic `pipeline_worker_escalation`
+baseline records whether the pipeline selected its worker, with bounded task,
+explorer, result, and verified evidence context. The shared app callback accepts
+and validates this server-derived baseline, then sends the request through the
+existing shadow runtime and outcome store. The observation never changes the
+worker decision or deterministic pipeline behavior. Natural candidate capture
+still requires an eligible request and an actual runtime outcome; pre-runtime
+capture failures remain metadata-only.
+
+Direct typed `watchdog` decisions use the current Agent OS task lifecycle as a
+separate deterministic baseline: `draft`, `planned`, `active`, and `verifying`
+map to `recommend_continue`; `waiting`, `blocked`, `failed`, and `abandoned`
+map to `recommend_human_review`; `completed` and `cancelled` map to
+`recommend_stop`. The mapped option must be allowed by the request, and an
+evidence ID must occur in both the request and the current task checkpoint.
+Unknown lifecycle states or unlinked evidence have no baseline. The result is
+only a shadow recommendation; it never changes task lifecycle or authorizes an
+action.
+
+Every active automatic category requires an existing task and current
+root-scoped evidence IDs. The Hub
 derives repository/session identity from the authorized task and validates
 evidence provenance before queueing. The bounded raw task input is secret
 redacted and separate from typed state. These observations do not change route,

@@ -23,7 +23,7 @@ _LAYA_EVALUATION_ACTIONS = frozenset({"evaluate_decision", "evaluate_context_sou
 _LAYA_CURATION_ACTIONS = frozenset({
     "list", "get", "review_challenge", "verify", "model_review", "model_review_history",
     "runtime_output_history", "runtime_status",
-    "label", "reject", "delete", "prepare_splits", "export",
+    "label", "reject", "delete", "prepare_splits", "evaluate_snapshot", "export",
 })
 
 

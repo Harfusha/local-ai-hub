@@ -27,6 +27,13 @@ Local AI Hub 6.0.0 uses one current runtime contract across packaging, HTTP, MCP
 
 ## Supported Languages & Frameworks
 
+Laya is available through the existing root-scoped `local_ai_coord` MCP/API
+curation surface. `laya_operation.action="evaluate_snapshot"` produces an
+aggregate-only comparison of persisted Laya decisions and deterministic
+baselines on verified, human-labeled test rows. Laya stays shadow-only until
+category-specific quality evidence and a later explicit approval support a
+behavior change; see the [annotation and evaluation protocol](docs/agent-evaluation/laya-annotation-protocol.md).
+
 Local AI Hub features deep static intelligence, deterministic AST extraction, code indexing, test mapping, import resolution, and dependency security audits across modern technology stacks with zero LLM inference:
 
 | Language / Stack | Support Level | Frameworks & Ecosystem | Intelligence & Features |
@@ -70,8 +77,8 @@ Laya is available through the existing `local_ai_coord` MCP tool and the root-au
     "decision": {
       "category": "context_budget",
       "evidence_ids": ["<authorized-evidence-id>"],
-      "options": ["compact", "keep"],
-      "state": {"current_tokens": 1200},
+      "options": ["compact", "standard", "expanded"],
+      "state": {"current_tokens": "1200"},
       "training_content": {
         "task_input": "<useful task text>",
         "model_response": "<bounded answer text, when useful>",
@@ -93,9 +100,13 @@ Candidate review uses the same `curate_dataset` transport. First list and inspec
 {"action":"curate_dataset","root":"C:/path/to/repository","laya_operation":{"action":"label","candidate_id":"<candidate-id>","target":"<allowed-option>"}}
 {"action":"curate_dataset","root":"C:/path/to/repository","laya_operation":{"action":"model_review","candidate_id":"<candidate-id>"}}
 {"action":"curate_dataset","root":"C:/path/to/repository","laya_operation":{"action":"model_review_history","candidate_id":"<candidate-id>"}}
+{"action":"curate_dataset","root":"C:/path/to/repository","laya_operation":{"action":"runtime_output_history","candidate_id":"<candidate-id>"}}
+{"action":"curate_dataset","root":"C:/path/to/repository","laya_operation":{"action":"runtime_output_history","candidate_id":"<candidate-id>","after_event_id":"<next-event-id>","limit":10}}
 ```
 
 Candidate pages are stable and bounded (1–1000 rows). Continue with `next_candidate_id` while `has_more` is true. Listing returns metadata only; it never reveals task text, model output, or labels.
+
+`runtime_output_history` is a separate root-authorized read for persisted Laya outputs and deterministic baselines. It verifies candidate task/session scope, returns at most 10 events per page, and exposes `next_event_id` as the next `after_event_id`. Candidate `get` stays blind to Laya outputs and prior labels/reviews.
 
 `label` records `local_operator_confirmation`. `model_review` uses the configured local reasoning route and records model/runtime provenance; it cannot confirm a human label or enable training export. Prepare group-safe splits only after authentic examples have local operator labels, then export the returned snapshot's train split:
 

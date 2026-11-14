@@ -683,6 +683,16 @@ class AffinityScheduler:
     def _admission(self, *, background: bool, model: str | None = None) -> dict[str, Any]:
         resource = self._resource_status()
         pressure = str(resource.get("pressure_level", "nominal") or "nominal").lower()
+        if "throttle_background" in resource and type(resource.get("throttle_background")) is not bool:
+            return {
+                "state": "rejected",
+                "reason": "resource_telemetry_invalid",
+                "pressure_level": pressure,
+                "queue_age_ms": 0,
+                "retryable": True,
+                "vram_admission": "unknown",
+                "vram_estimate_source": "unknown",
+            }
         vram_fields: dict[str, int] = {}
         shared_capacity_enforced = False
         freshness_reason = _gpu_telemetry_freshness_reason(resource)
@@ -799,7 +809,7 @@ class AffinityScheduler:
             factor = max(0.0, min(1.0, float(factor)))
         except (TypeError, ValueError, OverflowError):
             factor = 1.0
-        throttled = bool(resource.get("throttle_background", False))
+        throttled = resource.get("throttle_background", False) is True
         pressure_rejected = background and throttled and pressure in {"high", "critical"}
         budget_rejected = bool(vram_fields) and (
             vram_admission_state == "rejected"
@@ -1228,6 +1238,20 @@ class AffinityScheduler:
                         ))
                     )
                 )
+                internal_digest = getattr(self, "_internal_gpu_digest", None)
+                if (
+                    not active
+                    and uncertainty_expired
+                    and path is not None
+                    and store is not None
+                    and isinstance(internal_digest, str)
+                    and current in {None, internal_digest}
+                ):
+                    # A digest-only fence is ours only when the store can match
+                    # and safely remove that exact digest under its file lock.
+                    reservation_absent = store.release_internal(internal_digest)
+                    if reservation_absent:
+                        current = None
                 if not active and uncertainty_expired and reservation_absent:
                     self._internal_gpu_uncertain = False
                     self._internal_gpu_uncertain_since = None
@@ -1791,11 +1815,40 @@ class AffinityScheduler:
 
     def _perform_idle_unload(self, model: str) -> None:
         released = False
+        inventory_verified = False
+        deadline = time.monotonic() + 5.0
+        should_stop = lambda: not self._running
         try:
             unload = getattr(self.runtime, "unload_model", None)
             if callable(unload):
-                released = bool(unload(model, should_stop=lambda: not self._running,
-                                       deadline=time.monotonic() + 5.0))
+                released = bool(unload(model, should_stop=should_stop, deadline=deadline))
+                inventory = getattr(self.runtime, "loaded_model_inventory", None)
+                if released and callable(inventory):
+                    released = False
+                    snapshot = inventory(
+                        should_stop=should_stop,
+                        deadline=deadline,
+                        force_refresh=True,
+                    )
+                    if (
+                        isinstance(snapshot, dict)
+                        and snapshot.get("complete") is True
+                        and snapshot.get("backend_available") is True
+                        and snapshot.get("errors") == {}
+                        and isinstance(snapshot.get("models"), list)
+                    ):
+                        model_key = str(model).strip().casefold()
+                        still_loaded = any(
+                            isinstance(row, dict)
+                            and any(
+                                isinstance(row.get(field), str)
+                                and row[field].strip().casefold() == model_key
+                                for field in ("name", "model")
+                            )
+                            for row in snapshot["models"]
+                        )
+                        inventory_verified = not still_loaded
+                        released = inventory_verified
         except Exception:
             pass
         finally:
@@ -1807,7 +1860,11 @@ class AffinityScheduler:
                     self._active_since = 0.0
                     self._active_dispatched = 0
                 self._idle_owned_model = None
-                self._idle_unload_state = "request_accepted" if released else "unconfirmed"
+                self._idle_unload_state = (
+                    "verified_unloaded" if inventory_verified
+                    else "request_accepted" if released
+                    else "unconfirmed"
+                )
                 counter = "idle_unloads" if released else "idle_unload_failures"
                 self._stats[counter] = int(self._stats.get(counter, 0)) + 1
                 self._switching = False

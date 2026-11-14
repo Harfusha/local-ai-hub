@@ -2305,6 +2305,285 @@ def _behavioral_test_links(root: Path, inventory: dict[str, Any]) -> dict[str, l
 
     return {key: sorted(selectors) for key, selectors in sorted(links.items())}
 
+def _path_condition_match(test: ast.AST, path: str) -> tuple[bool, int]:
+    """Match explicit path equality, membership, or startswith guards only."""
+    best_specificity = 0
+    parents = {
+        child: node
+        for node in ast.walk(test)
+        for child in ast.iter_child_nodes(node)
+    }
+
+    def negated_or_compared(node: ast.AST) -> bool:
+        current = node
+        while current in parents:
+            parent = parents[current]
+            if isinstance(parent, ast.UnaryOp) and isinstance(parent.op, ast.Not):
+                return True
+            if isinstance(parent, ast.Compare):
+                return True
+            current = parent
+        return False
+
+    for node in ast.walk(test):
+        if (
+            isinstance(node, ast.Compare)
+            and not negated_or_compared(node)
+            and isinstance(node.left, ast.Name)
+            and node.left.id == "path"
+        ):
+            for operator, comparator in zip(node.ops, node.comparators):
+                if isinstance(operator, ast.Eq) and isinstance(comparator, ast.Constant):
+                    value = comparator.value
+                    if isinstance(value, str) and path == value:
+                        best_specificity = max(best_specificity, len(value) + 10_000)
+                elif isinstance(operator, ast.In) and isinstance(comparator, (ast.Tuple, ast.List, ast.Set)):
+                    values = [item.value for item in comparator.elts if isinstance(item, ast.Constant)]
+                    if path in values:
+                        best_specificity = max(best_specificity, len(path) + 10_000)
+        if (
+            isinstance(node, ast.Call)
+            and not negated_or_compared(node)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "startswith"
+            and isinstance(node.func.value, ast.Name)
+            and node.func.value.id == "path"
+            and node.args
+            and isinstance(node.args[0], ast.Constant)
+            and isinstance(node.args[0].value, str)
+            and path.startswith(node.args[0].value)
+        ):
+            best_specificity = max(best_specificity, len(node.args[0].value))
+    return best_specificity > 0, best_specificity
+
+
+def _post_route_registry_metadata(registry_tree: ast.AST) -> tuple[dict[str, str], dict[str, str]]:
+    route_ids_by_path: dict[str, str] = {}
+    handlers_by_id: dict[str, str] = {}
+    for node in ast.walk(registry_tree):
+        if not isinstance(node, ast.AnnAssign) or not isinstance(node.target, ast.Name):
+            continue
+        if node.target.id == "POST_ROUTE_REGISTRY" and isinstance(node.value, (ast.Tuple, ast.List)):
+            for rule in node.value.elts:
+                if not isinstance(rule, ast.Call) or len(rule.args) < 2:
+                    continue
+                route_id = rule.args[0].value if isinstance(rule.args[0], ast.Constant) else None
+                if not isinstance(route_id, str):
+                    continue
+                for value in ast.walk(rule.args[1]):
+                    if isinstance(value, ast.Constant) and isinstance(value.value, str) and value.value.startswith("/"):
+                        route_ids_by_path[value.value] = route_id
+        elif node.target.id == "POST_ROUTE_HANDLER_BOUNDARIES" and isinstance(node.value, ast.Call):
+            mapping = next((arg for arg in node.value.args if isinstance(arg, ast.Dict)), None)
+            if mapping is None:
+                continue
+            for key, value in zip(mapping.keys, mapping.values):
+                if (
+                    isinstance(key, ast.Constant) and isinstance(key.value, str)
+                    and isinstance(value, ast.Constant) and isinstance(value.value, str)
+                ):
+                    handlers_by_id[key.value] = value.value
+    return route_ids_by_path, handlers_by_id
+
+
+def _is_route_scope_guard(name: str) -> bool:
+    return name.startswith("_bind_") or name == "_require_scoped_task"
+
+
+def _post_route_scope_boundary(scope_binding: dict[str, Any]) -> str:
+    guards = scope_binding.get("guards", [])
+    if guards:
+        return (
+            "direct scope-guard invocation observed: "
+            + ", ".join(guards)
+            + "; helper enforcement and transitive confinement remain unverified"
+        )
+    return "no route-specific scope guard observed; project/task/session confinement remains unverified"
+
+
+def _post_route_access_classification(scope_binding: dict[str, Any]) -> str:
+    guards = scope_binding.get("guards", [])
+    scope = ", ".join(guards) if guards else "no route-specific guard observed"
+    return (
+        "shared POST gate: Host/Origin validation, retired identity rejection, loopback-only local actor, "
+        "mutation audit gating for recognized admin actions, and server rate limit when available; "
+        "no per-user principal or bearer token; scope guards: "
+        + scope
+    )
+
+
+def _post_route_scope_binding(
+    http_tree: ast.AST,
+    path: str,
+    route_id: str | None = None,
+    handler_name: str | None = None,
+) -> dict[str, Any]:
+    method = next(
+        (
+            node
+            for node in ast.walk(http_tree)
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == "do_POST"
+        ),
+        None,
+    )
+    if method is None:
+        return {"status": "not_observed", "guards": [], "evidence": []}
+
+    path_candidates: list[tuple[int, ast.If, set[str], set[str]]] = []
+    route_candidates: list[tuple[int, ast.AST, set[str], set[str]]] = []
+    for node in ast.walk(method):
+        if not isinstance(node, ast.If):
+            continue
+        matched_path, path_specificity = _path_condition_match(node.test, path)
+        has_route_id = bool(
+            route_id
+            and any(isinstance(value, ast.Name) and value.id == "post_route_ids" for value in ast.walk(node.test))
+            and any(isinstance(value, ast.Constant) and value.value == route_id for value in ast.walk(node.test))
+        )
+        if not matched_path and not has_route_id:
+            continue
+        calls = [
+            call
+            for statement in (node.test, *node.body)
+            for call in ast.walk(statement)
+            if isinstance(call, ast.Call) and isinstance(call.func, ast.Attribute)
+        ]
+        guards = {call.func.attr for call in calls if _is_route_scope_guard(call.func.attr)}
+        evidence = {
+            f"src/local_ai_hub/http_server.py:{call.lineno}"
+            for call in calls
+            if _is_route_scope_guard(call.func.attr)
+        }
+        if matched_path:
+            path_candidates.append((path_specificity, node, guards, evidence))
+        if has_route_id:
+            route_candidates.append((0, node, guards, evidence))
+
+    selected: list[tuple[int, ast.AST, set[str], set[str]]] = []
+    if path_candidates:
+        best = max(item[0] for item in path_candidates)
+        selected.extend(item for item in path_candidates if item[0] == best)
+    selected.extend(route_candidates)
+    if handler_name:
+        handler = next(
+            (
+                node
+                for node in ast.walk(http_tree)
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == handler_name
+            ),
+            None,
+        )
+        if handler is not None:
+            calls = [
+                call
+                for statement in handler.body
+                for call in ast.walk(statement)
+                if isinstance(call, ast.Call) and isinstance(call.func, ast.Attribute)
+            ]
+            guards = {call.func.attr for call in calls if _is_route_scope_guard(call.func.attr)}
+            evidence = {
+                f"src/local_ai_hub/http_server.py:{call.lineno}"
+                for call in calls
+                if _is_route_scope_guard(call.func.attr)
+            }
+            route_candidates.append((0, handler, guards, evidence))
+            selected.append(route_candidates[-1])
+
+    guards = sorted({guard for _, _, group, _ in selected for guard in group})
+    evidence = sorted({source for _, _, _, group in selected for source in group})
+    if guards:
+        evidence.extend(
+            f"src/local_ai_hub/http_server.py:{node.lineno}"
+            for _, node, _, _ in selected
+        )
+    return {
+        "status": "observed" if guards else "not_observed",
+        "guards": guards,
+        "evidence": sorted(set(evidence)),
+    }
+
+
+def _post_route_dispatch(
+    http_tree: ast.AST,
+    path: str,
+    route_id: str | None,
+    handler_name: str | None,
+) -> dict[str, Any]:
+    method = next(
+        (
+            node
+            for node in ast.walk(http_tree)
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == "do_POST"
+        ),
+        None,
+    )
+    if method is None:
+        return {"status": "not_observed", "handler_boundaries": [], "targets": [], "evidence": []}
+
+    path_candidates: list[tuple[int, ast.If]] = []
+    route_candidates: list[ast.If] = []
+    for node in ast.walk(method):
+        if not isinstance(node, ast.If):
+            continue
+        matched_path, specificity = _path_condition_match(node.test, path)
+        has_route_id = bool(
+            route_id
+            and any(isinstance(value, ast.Name) and value.id == "post_route_ids" for value in ast.walk(node.test))
+            and any(isinstance(value, ast.Constant) and value.value == route_id for value in ast.walk(node.test))
+        )
+        if matched_path:
+            path_candidates.append((specificity, node))
+        if has_route_id:
+            route_candidates.append(node)
+
+    selected: list[ast.AST] = []
+    if path_candidates:
+        best = max(item[0] for item in path_candidates)
+        selected.extend(node for specificity, node in path_candidates if specificity == best)
+    selected.extend(route_candidates)
+    handlers = [handler_name] if handler_name else []
+    targets: set[str] = set()
+    evidence: set[str] = set()
+    for branch in selected:
+        evidence.add(f"src/local_ai_hub/http_server.py:{branch.lineno}")
+        for statement in (branch.test, *branch.body):
+            for call in ast.walk(statement):
+                if not isinstance(call, ast.Call):
+                    continue
+                name = ast.unparse(call.func)
+                is_app_target = name.startswith("APP.") and not name.startswith("APP.logger.")
+                is_handler_target = (
+                    isinstance(call.func, ast.Attribute)
+                    and isinstance(call.func.value, ast.Name)
+                    and call.func.value.id == "self"
+                    and call.func.attr.startswith("_handle_post_")
+                )
+                if is_app_target:
+                    targets.add(name)
+                    evidence.add(f"src/local_ai_hub/http_server.py:{call.lineno}")
+                if is_handler_target:
+                    handlers.append(call.func.attr)
+                    evidence.add(f"src/local_ai_hub/http_server.py:{call.lineno}")
+    if handler_name:
+        handler = next(
+            (
+                node
+                for node in ast.walk(http_tree)
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == handler_name
+            ),
+            None,
+        )
+        if handler is not None:
+            evidence.add(f"src/local_ai_hub/http_server.py:{handler.lineno}")
+    handlers = sorted(set(handlers))
+    return {
+        "status": "observed" if handlers or targets else "not_observed",
+        "handler_boundaries": handlers,
+        "targets": sorted(targets),
+        "evidence": sorted(evidence),
+    }
+
+
 def collect_inventory(root: Path | str) -> dict[str, Any]:
     root = Path(root).resolve()
     modules = {key: _read_module(root, key) for key in SOURCE_FILES}
@@ -2433,6 +2712,7 @@ def collect_inventory(root: Path | str) -> dict[str, Any]:
 
     source_http_routes = _extract_http(modules["http"][1], SOURCE_FILES["http"])
     route_registry_path = root / "src/local_ai_hub/http_route_registry.py"
+    registry_tree: ast.AST | None = None
     if route_registry_path.is_file():
         registry_tree = ast.parse(route_registry_path.read_text(encoding="utf-8"), filename=str(route_registry_path))
         source_http_routes.extend(
@@ -2440,6 +2720,19 @@ def collect_inventory(root: Path | str) -> dict[str, Any]:
         )
     drift.extend(_dynamic_route_registry_drift(source_http_routes))
     http_routes = _merge_dynamic_routes(source_http_routes)
+    route_ids_by_path, handlers_by_id = (
+        _post_route_registry_metadata(registry_tree) if registry_tree is not None else ({}, {})
+    )
+    for route in http_routes:
+        if route["method"] == "POST":
+            route_id = route_ids_by_path.get(route["path"])
+            handler_name = handlers_by_id.get(route_id or "")
+            route["scope_binding"] = _post_route_scope_binding(
+                modules["http"][1], route["path"], route_id, handler_name
+            )
+            route["dispatch"] = _post_route_dispatch(
+                modules["http"][1], route["path"], route_id, handler_name
+            )
     client_methods, client_targets = _extract_client(modules["client"][1], SOURCE_FILES["client"])
     manifests, missing_manifests = _extract_manifests(modules["generator"][1], root)
     manifest_paths = {item["path"] for item in manifests}
@@ -2849,7 +3142,11 @@ def coverage_rows(findings: list[dict[str, Any]], task_id: str | None = None) ->
             ),
             "access_classification": finding.get("access_classification") or _access_classification(finding["surface"]),
             "cache_key": _normalize_unverified(finding.get("cache_key") or "not statically identified", "cache_key"),
-            "scope_boundary": _normalize_unverified(finding.get("scope_boundary") or "not statically identified", "scope_boundary"),
+            "scope_boundary": (
+                finding["scope_boundary"]
+                if finding.get("surface") == "HTTP POST" and finding.get("scope_boundary")
+                else _normalize_unverified(finding.get("scope_boundary") or "not statically identified", "scope_boundary")
+            ),
             "provenance": finding.get("provenance") or evidence,
             "test_ids": test_ids,
             "test_coverage": finding.get("test_coverage") or (
@@ -2901,6 +3198,58 @@ def _findings(inventory: dict[str, Any]) -> list[dict[str, Any]]:
     for route in inventory["http_routes"]:
         conditional_gates = route.get("conditional_gates", [])
         condition = "; ".join(conditional_gates) or route.get("classification")
+        route_contract = dict(route.get("contract", {}))
+        scope_binding = route.get("scope_binding", {"status": "not_observed", "guards": [], "evidence": []})
+        dispatch = route.get("dispatch", {
+            "status": "not_observed", "handler_boundaries": [], "targets": [], "evidence": []
+        })
+        if route["method"] == "POST":
+            route_contract.update(
+                {
+                    "auth_identity": (
+                        "local loopback client; _authorized actor is local; no per-user principal or bearer token"
+                    ),
+                    "route_invariants": (
+                        "canonical method/path selection precedes body parsing; accepted POST routes pass Host/Origin "
+                        "validation and loopback authorization before dispatch; retired identity fields reject"
+                    ),
+                    "state_boundary": (
+                        "single installation owner scope; direct route dispatch is listed in "
+                        "route_state_boundary; downstream effects are outside this static inventory"
+                    ),
+                    "authorization_boundary": {
+                        "status": "shared_gate_observed",
+                        "checks": [
+                            "Host and Origin validation",
+                            "retired identity fields rejected",
+                            "loopback client required; actor is local",
+                            "mutations require an accepted audit when an admin action is recognized",
+                            "server rate limit when check_rate_limit is available",
+                            "no per-user principal or bearer token",
+                        ],
+                        "route_scope_guards": scope_binding["guards"],
+                        "behavior_test_id": (
+                            "tests/unit/test_canonical_http_routes.py::"
+                            "test_every_registered_post_route_authorizes_before_body_or_dispatch"
+                        ),
+                    },
+                    "route_state_boundary": {
+                        "direct_dispatch_status": dispatch["status"],
+                        "handler_boundaries": dispatch["handler_boundaries"],
+                        "targets": dispatch["targets"],
+                        "transitive_state_effects": "unverified",
+                    },
+                    "dispatch_scope_binding": {
+                        "status": scope_binding["status"],
+                        "guards": scope_binding["guards"],
+                    },
+                    "route_dispatch": {
+                        "status": dispatch["status"],
+                        "handler_boundaries": dispatch["handler_boundaries"],
+                        "targets": dispatch["targets"],
+                    },
+                }
+            )
         findings.append(
             {
                 "surface": f"HTTP {route['method']}",
@@ -2910,9 +3259,26 @@ def _findings(inventory: dict[str, Any]) -> list[dict[str, Any]]:
                 "owner": SOURCE_FILES["http"] if route.get("classification") is None else "tools/surface_inventory.py",
                 "owner_task": route.get("owner_task"),
                 "handler": route.get("handler"),
-                "contract": route.get("contract", {}),
+                "access_classification": (
+                    _post_route_access_classification(scope_binding)
+                    if route["method"] == "POST"
+                    else None
+                ),
+                "scope_boundary": (
+                    _post_route_scope_boundary(scope_binding)
+                    if route["method"] == "POST"
+                    else None
+                ),
+                "contract": route_contract,
                 "acceptance": "HTTP method and path resolve to a handler or registered dynamic route.",
-                "evidence": [route["evidence"]],
+                "evidence": [
+                    route["evidence"],
+                    "src/local_ai_hub/http_server.py:2782",
+                    "src/local_ai_hub/http_server.py:3005",
+                    "src/local_ai_hub/http_server.py:5816",
+                    *scope_binding["evidence"],
+                    *dispatch["evidence"],
+                ] if route["method"] == "POST" else [route["evidence"]],
             }
         )
     for tool_name, actions in inventory["mcp_actions"].items():

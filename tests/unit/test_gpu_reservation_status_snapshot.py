@@ -1,4 +1,5 @@
 import threading
+import time
 from contextlib import contextmanager
 from concurrent.futures import ThreadPoolExecutor
 
@@ -52,6 +53,63 @@ def test_status_explains_valid_legacy_fence_without_releasing_it(tmp_path):
     assert result['state'] == 'unknown'
     assert result['reason_code'] == 'legacy_digest_only_fence'
     assert store.path.read_text(encoding='ascii') == digest
+
+
+def test_scheduler_releases_its_expired_idle_internal_fence(tmp_path):
+    store = ExternalGpuReservationStore(tmp_path / 'gpu', ttl_seconds=1)
+    digest = 'f' * 64
+    store.path.write_text(digest, encoding='ascii')
+    scheduler = _scheduler(store)
+    scheduler._external_gpu_path = store.path
+    scheduler._internal_gpu_digest = digest
+    scheduler._internal_gpu_uncertain = True
+    scheduler._internal_gpu_uncertain_since = time.monotonic() - 2
+    scheduler._inflight = 0
+    scheduler._switching = False
+    scheduler._gpu_prepare_in_progress = False
+    scheduler._background_gpu_lease = None
+
+    assert scheduler._external_gpu_reserved() is False
+    assert not store.path.exists()
+    assert scheduler._internal_gpu_uncertain is False
+    assert scheduler._internal_gpu_digest is None
+
+
+def test_scheduler_keeps_expired_internal_fence_while_gpu_work_is_active(tmp_path):
+    store = ExternalGpuReservationStore(tmp_path / 'gpu', ttl_seconds=1)
+    digest = 'g' * 64
+    store.path.write_text(digest, encoding='ascii')
+    scheduler = _scheduler(store)
+    scheduler._external_gpu_path = store.path
+    scheduler._internal_gpu_digest = digest
+    scheduler._internal_gpu_uncertain = True
+    scheduler._internal_gpu_uncertain_since = time.monotonic() - 2
+    scheduler._inflight = 1
+    scheduler._switching = False
+    scheduler._gpu_prepare_in_progress = False
+    scheduler._background_gpu_lease = None
+
+    assert scheduler._external_gpu_reserved() is True
+    assert store.path.read_text(encoding='ascii') == digest
+    assert scheduler._internal_gpu_uncertain is True
+
+
+def test_scheduler_keeps_expired_fence_when_digest_is_not_its_own(tmp_path):
+    store = ExternalGpuReservationStore(tmp_path / 'gpu', ttl_seconds=1)
+    store.path.write_text('h' * 64, encoding='ascii')
+    scheduler = _scheduler(store)
+    scheduler._external_gpu_path = store.path
+    scheduler._internal_gpu_digest = 'i' * 64
+    scheduler._internal_gpu_uncertain = True
+    scheduler._internal_gpu_uncertain_since = time.monotonic() - 2
+    scheduler._inflight = 0
+    scheduler._switching = False
+    scheduler._gpu_prepare_in_progress = False
+    scheduler._background_gpu_lease = None
+
+    assert scheduler._external_gpu_reserved() is True
+    assert store.path.read_text(encoding='ascii') == 'h' * 64
+    assert scheduler._internal_gpu_uncertain is True
 
 
 def test_status_reports_when_it_reaps_an_expired_reservation(tmp_path):

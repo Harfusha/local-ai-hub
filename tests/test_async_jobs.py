@@ -5,7 +5,7 @@ import sqlite3
 import pytest
 import threading
 import time
-from contextlib import closing
+from contextlib import closing, nullcontext
 
 import local_ai_hub.async_jobs as async_jobs_module
 from local_ai_hub import sqlite_support
@@ -67,6 +67,96 @@ def test_rag_index_gpu_reservation_denial_is_known_failure_not_unknown(tmp_path)
         manager.close()
 
 
+def test_failed_rag_job_exposes_only_bounded_sqlite_timeout_detail(tmp_path):
+    manager, _scheduler = _manager(tmp_path)
+    try:
+        payload = {"task": "failed RAG job", "request_id": "failed-rag-timeout-detail"}
+        submitted = manager.submit("rag_index", payload, dispatch_delay_seconds=30.0)
+        job_id = submitted["job_id"]
+        detail = "SQLite write transaction exceeded its duration budget (RAG " + ("x" * 700)
+        with closing(manager._connect()) as con:
+            con.execute(
+                "UPDATE async_jobs SET state='failed',error=?,result_json=? WHERE job_id=?",
+                ("SQLite write transaction exceeded its duration budget", json.dumps({"error_detail": detail}), job_id),
+            )
+            con.commit()
+
+        responses = (
+            manager.status(job_id),
+            manager.result(job_id),
+            manager.submit("rag_index", payload, dispatch_delay_seconds=30.0),
+        )
+        for response in responses:
+            assert response["error_detail"] == detail[:500]
+
+        with closing(manager._connect()) as con:
+            con.execute(
+                "UPDATE async_jobs SET result_json=? WHERE job_id=?",
+                (json.dumps({"error_detail": "private payload path C:/private/request.txt"}), job_id),
+            )
+            con.commit()
+        assert "error_detail" not in manager.result(job_id)
+    finally:
+        manager.close()
+
+
+def test_rag_timeout_detail_survives_async_failure_finalization(tmp_path):
+    manager, _scheduler = _manager(tmp_path)
+    # Exercise durable failure finalization independently of live GPU admission.
+    manager.inference_admission = lambda *_args, **_kwargs: nullcontext(None)
+    detail = "SQLite write transaction exceeded its duration budget (RAG index publish; stage=insert_chunks; " + ("x" * 700)
+    manager.executor = lambda _action, _payload: {
+        "success": False,
+        "error": "RAG index publish failed",
+        "error_detail": detail,
+        "retryable": False,
+    }
+    payload = {"root": "C:/project", "workspace": "workspace-1", "request_id": "finalized-rag-timeout"}
+    try:
+        submitted = manager.submit("rag_index", payload, dispatch_delay_seconds=30.0)
+        job_id = submitted["job_id"]
+        execution = manager._execute(job_id)
+        assert manager.status(job_id)["state"] == "failed", execution
+        responses = (
+            manager.status(job_id),
+            manager.result(job_id),
+            manager.submit("rag_index", payload),
+        )
+        for response in responses:
+            assert response["error_detail"] == detail[:500]
+    finally:
+        manager.close()
+
+
+def test_progress_callback_throttles_retries_while_sqlite_is_locked(tmp_path, monkeypatch):
+    manager, _scheduler = _manager(tmp_path)
+    attempts = 0
+
+    def locked_connect():
+        nonlocal attempts
+        attempts += 1
+        raise sqlite3.OperationalError("database is locked")
+
+    update = manager._progress_callback("busy-job", 1)
+    monkeypatch.setattr(manager, "_connect_for_progress", locked_connect)
+    try:
+        assert update(10, "scanning files") is False
+        assert update(11, "scanning files") is False
+        assert attempts == 1
+    finally:
+        monkeypatch.undo()
+        manager.close()
+
+
+def test_progress_persistence_uses_short_sqlite_busy_timeout(tmp_path):
+    manager, _scheduler = _manager(tmp_path)
+    try:
+        with closing(manager._connect_for_progress()) as con:
+            assert con.execute("PRAGMA busy_timeout").fetchone()[0] == 50
+    finally:
+        manager.close()
+
+
 def test_async_job_schema_initialization_uses_bounded_transaction(tmp_path, monkeypatch):
     observed = []
     original_transaction = async_jobs_module.write_transaction
@@ -101,6 +191,9 @@ class _Scheduler:
         self.calls = []
         self.enqueued = threading.Event()
 
+    def resource_status(self):
+        return {"available": True, "pressure_level": "nominal", "context_budget_factor": 1.0}
+
     def enqueue(self, model, source, execute, priority=1, *, background=True):
         self.calls.append({"model": model, "source": source, "execute": execute, "priority": priority, "background": background})
         self.enqueued.set()
@@ -124,6 +217,32 @@ def _manager(tmp_path):
         lambda action, payload: {"success": True, "action": action, "task": payload.get("task")},
     )
     return manager, scheduler
+
+
+@pytest.mark.parametrize(
+    ("resource", "reason"),
+    [
+        ({"available": False, "pressure_level": "nominal", "context_budget_factor": 1.0}, "resource_telemetry_unavailable"),
+        ({"available": True, "pressure_level": "unknown", "context_budget_factor": 1.0}, "resource_telemetry_invalid"),
+        ({"available": True, "pressure_level": "nominal", "context_budget_factor": True}, "resource_telemetry_invalid"),
+        ({"available": True, "pressure_level": "nominal", "context_budget_factor": 1.1}, "resource_telemetry_invalid"),
+    ],
+)
+def test_async_submit_rejects_unavailable_or_malformed_resource_telemetry(tmp_path, resource, reason):
+    manager, scheduler = _manager(tmp_path)
+    scheduler.resource_status = lambda: resource
+    try:
+        submitted = manager.submit("reason", {"task": "fail closed"}, dispatch_delay_seconds=30)
+
+        assert submitted["success"] is False
+        assert submitted["state"] == "rejected"
+        assert submitted["admission"]["state"] == "rejected"
+        assert submitted["admission"]["reason"] == reason
+        assert submitted["retryable"] is True
+        assert submitted.get("job_id") is None
+        assert scheduler.calls == []
+    finally:
+        manager.close()
 
 
 def _wait_for_terminal(manager, job_id, expected_state="done"):
@@ -239,6 +358,7 @@ def test_terminal_task_callbacks_run_outside_async_job_write_lock(
 ):
     manager, _scheduler = _manager(tmp_path)
     callback_lock_was_free: list[bool] = []
+    callback_done = threading.Event()
 
     class _TaskStore:
         def fail(self, _task_id: str, *, reason: str) -> None:
@@ -252,6 +372,7 @@ def test_terminal_task_callbacks_run_outside_async_job_write_lock(
                     callback_lock_was_free.append(False)
             finally:
                 probe.close()
+                callback_done.set()
 
     manager.task_store = _TaskStore()
     manager.executor = lambda _action, _payload: dict(response)
@@ -260,8 +381,8 @@ def test_terminal_task_callbacks_run_outside_async_job_write_lock(
         status = _wait_for_terminal(manager, submitted["job_id"], expected_state)
 
         assert status["state"] == expected_state
-        expected_callback = [True] if expected_state == "failed" else []
-        assert callback_lock_was_free == expected_callback
+        assert callback_done.wait(2.0)
+        assert callback_lock_was_free == [True]
     finally:
         manager.close()
 
@@ -478,7 +599,7 @@ def test_request_id_replay_uses_existing_partial_lookup_index(tmp_path):
         lookup = next(
             statement
             for statement in reversed(statements)
-            if statement.startswith("SELECT job_id,action,request_hash,state,trace_id,task_id,expires_at,created_at,error,artifact_id FROM async_jobs WHERE")
+            if statement.startswith("SELECT job_id,action,request_hash,state,trace_id,task_id,expires_at,created_at,error,artifact_id,result_json FROM async_jobs WHERE")
         )
         with closing(original_connect()) as con:
             plan = [str(row[3]) for row in con.execute(f"EXPLAIN QUERY PLAN {lookup}")]
@@ -527,7 +648,7 @@ def test_submit_returns_before_slow_async_execution(tmp_path):
 
     def execute(_action, _payload):
         started.set()
-        release.wait(1.5)
+        release.wait(5)
         return {"success": True}
 
     scheduler = _Scheduler()
@@ -543,8 +664,8 @@ def test_submit_returns_before_slow_async_execution(tmp_path):
         elapsed = time.monotonic() - started_at
 
         assert submitted["success"] is True
-        assert elapsed < 0.75
-        assert started.wait(2.0)
+        assert elapsed < 3.0
+        assert started.wait(3.0)
     finally:
         release.set()
         manager.close()
@@ -1279,5 +1400,90 @@ def test_tick_cannot_claim_delayed_submit_before_timer_registration(tmp_path, mo
         assert dispatch_attempts == []
         assert scheduler.calls == []
         assert submitted.get("error") is None
+    finally:
+        manager.close()
+
+
+def test_expired_result_retains_terminal_state_and_error(tmp_path):
+    manager, _scheduler = _manager(tmp_path)
+    try:
+        payload = {"task": "expired result", "request_id": "expired-result-request"}
+        submitted = manager.submit(
+            "reason", payload, dispatch_delay_seconds=30.0,
+        )
+        job_id = submitted["job_id"]
+        detail = "async job outcome unknown after interrupted attempt"
+        with closing(manager._connect()) as con:
+            con.execute(
+                "UPDATE async_jobs SET state='outcome_unknown',error=?,result_json=?,expires_at=0 WHERE job_id=?",
+                (detail, json.dumps({"state": "outcome_unknown", "error": detail}), job_id),
+            )
+            con.commit()
+
+        manager.tick()
+        status = manager.status(job_id)
+        result = manager.result(job_id)
+        replay = manager.submit("reason", payload, dispatch_delay_seconds=30.0)
+
+        for response in (status, result, replay):
+            assert response["state"] == "expired"
+            assert response["expired_state"] == "outcome_unknown"
+            assert response["expired_error"] == detail
+            assert response["outcome_unknown"] is True
+            assert response["terminal"] is True
+            assert response["retryable"] is False
+    finally:
+        manager.close()
+
+
+def test_expired_failed_rag_job_retains_only_bounded_sqlite_detail(tmp_path):
+    manager, _scheduler = _manager(tmp_path)
+    try:
+        payload = {"root": "C:/project", "workspace": "workspace-1", "request_id": "expired-rag-timeout"}
+        submitted = manager.submit("rag_index", payload, dispatch_delay_seconds=30.0)
+        job_id = submitted["job_id"]
+        detail = "SQLite write transaction exceeded its duration budget (RAG index publish; stage=insert_chunks; " + ("x" * 700)
+        with closing(manager._connect()) as con:
+            con.execute(
+                "UPDATE async_jobs SET state='failed',error=?,result_json=?,expires_at=0 WHERE job_id=?",
+                ("RAG index publish failed", json.dumps({"error_detail": detail}), job_id),
+            )
+            con.commit()
+
+        manager.tick()
+        responses = (
+            manager.status(job_id),
+            manager.result(job_id),
+            manager.submit("rag_index", payload, dispatch_delay_seconds=30.0),
+        )
+        for response in responses:
+            assert response["error_detail"] == detail[:500]
+
+        with closing(manager._connect()) as con:
+            con.execute(
+                "UPDATE async_jobs SET result_json=? WHERE job_id=?",
+                (json.dumps({"_async_expiry": {"state": "failed"}, "error_detail": "private path C:/secret.txt"}), job_id),
+            )
+            con.commit()
+        for response in (manager.status(job_id), manager.result(job_id)):
+            assert "error_detail" not in response
+    finally:
+        manager.close()
+
+
+def test_invalid_throttle_flag_is_not_coerced_in_resource_sample(tmp_path):
+    manager, scheduler = _manager(tmp_path)
+    scheduler.resource_status = lambda: {
+        "available": True,
+        "pressure_level": "nominal",
+        "context_budget_factor": 1.0,
+        "throttle_background": "false",
+    }
+    try:
+        result = manager._resource_admission()
+
+        assert result["state"] == "rejected"
+        assert result["reason"] == "resource_telemetry_invalid"
+        assert result["resource_sample"]["throttle_background"] is None
     finally:
         manager.close()

@@ -820,17 +820,31 @@ def test_isolated_app_rolls_back_when_broker_command_fails(tmp_path, monkeypatch
             assert state["mutation_generation"] >= 2
         assert diagnostic_calls == []
         if diagnostics_enabled:
-            hint = handoff["local_handoff"]
-            assert hint["artifact_id"] == handoff["artifact_id"]
-            assert hint["root"] == str(root)
-            assert hint["artifact_tool"] == "local_ai_artifact"
-            assert hint["tool"] == "local_ai_task" and hint["action"] == "reason"
-            assert hint["requires_primary_review"] is True
-            compact = app.work_orchestrator.get(result["work_id"], profile="compact")
-            assert compact["local_handoff"] == hint
-            from local_ai_hub.response_budget import budget_response
-            budgeted = budget_response(compact, max_tokens=512, profile="compact")
-            assert budgeted["local_handoff"]["artifact_id"] == handoff["artifact_id"]
+            from local_ai_hub.work_orchestrator import _UNCERTAIN_COMMAND_FLAGS
+            eligible_failure = any(
+                item.get("success") is False
+                and type(item.get("exit_code")) is int
+                and item["exit_code"] != 0
+                and all(item.get(flag, False) is False for flag in _UNCERTAIN_COMMAND_FLAGS)
+                for item in report["validation"]
+            )
+            assert app.work_orchestrator.local_diagnostic_dispatch is True
+            assert ("local_handoff" in handoff) is eligible_failure, {
+                "validation": report["validation"],
+                "handoff": handoff,
+            }
+            if eligible_failure:
+                hint = handoff["local_handoff"]
+                assert hint["artifact_id"] == handoff["artifact_id"]
+                assert hint["root"] == str(root)
+                assert hint["artifact_tool"] == "local_ai_artifact"
+                assert hint["tool"] == "local_ai_task" and hint["action"] == "reason"
+                assert hint["requires_primary_review"] is True
+                compact = app.work_orchestrator.get(result["work_id"], profile="compact")
+                assert compact["local_handoff"] == hint
+                from local_ai_hub.response_budget import budget_response
+                budgeted = budget_response(compact, max_tokens=512, profile="compact")
+                assert budgeted["local_handoff"]["artifact_id"] == handoff["artifact_id"]
             import asyncio
             import copy
             import threading

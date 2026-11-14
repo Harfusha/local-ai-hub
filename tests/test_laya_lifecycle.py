@@ -20,6 +20,37 @@ class FakeSession:
         self.closed = False
 
 
+@pytest.mark.parametrize(
+    ("runtime_configuration", "expected_state", "expected_missing"),
+    [
+        (None, "unconfigured", ["checkpoint_path", "revision", "expected_sha256"]),
+        ({"checkpoint_path": "C:/private/model"}, "partial", ["revision", "expected_sha256"]),
+        (
+            {
+                "checkpoint_path": "C:/private/model",
+                "revision": "revision-1",
+                "expected_sha256": {"weights.safetensors": "a" * 64},
+            },
+            "configured_unverified",
+            [],
+        ),
+    ],
+)
+def test_runtime_status_reports_configuration_readiness_without_model_details(
+    runtime_configuration, expected_state, expected_missing
+):
+    lifecycle = LayaSessionLifecycle(600, runtime_configuration=runtime_configuration)
+
+    status = lifecycle.status
+
+    assert status["model_configuration"] == expected_state
+    assert status["missing_configuration_fields"] == expected_missing
+    assert status["runtime_verification"] == "NOT_VERIFIED"
+    assert "C:/private/model" not in str(status)
+    assert "weights.safetensors" not in str(status)
+    assert "a" * 64 not in str(status)
+
+
 def test_idle_timeout_uses_inference_completion_then_reloads_after_unload():
     clock = FakeClock()
     sessions = []

@@ -1,10 +1,11 @@
 import sqlite3
 import threading
 import hashlib
-from contextlib import closing
+from contextlib import closing, contextmanager
 
 import pytest
 
+from local_ai_hub import preprocess as preprocess_module
 from local_ai_hub.preprocess import ProjectPreprocessor
 from local_ai_hub.repo_tools import RepositoryTools
 
@@ -89,3 +90,63 @@ def test_lexical_requeues_legacy_git_identities_for_sha256(tmp_path, changed):
     with closing(connect()) as con:
         assert con.execute("SELECT COUNT(*) FROM source_index").fetchone()[0] == 0
         assert con.execute("SELECT needs_hash FROM file_refs").fetchone()[0] == 1
+
+
+def test_lexical_index_writes_bounded_fts_batches(tmp_path, monkeypatch):
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / "a.py").write_text("alpha", encoding="utf-8")
+    (root / "b.py").write_text("beta", encoding="utf-8")
+    db = tmp_path / "state.sqlite"
+    with closing(sqlite3.connect(db)) as con:
+        con.execute("CREATE TABLE file_refs(root TEXT,path TEXT,content_hash TEXT,needs_hash INTEGER)")
+        con.execute("CREATE TABLE source_index(root TEXT,path TEXT,content_hash TEXT,text TEXT,updated_at REAL,PRIMARY KEY(root,path))")
+        con.execute("CREATE VIRTUAL TABLE source_fts USING fts5(root UNINDEXED,path UNINDEXED,content)")
+        con.executemany(
+            "INSERT INTO file_refs VALUES(?, ?, ?, 0)",
+            [(str(root), "a.py", "hash-a"), (str(root), "b.py", "hash-b")],
+        )
+        con.commit()
+
+    def connect():
+        con = sqlite3.connect(db)
+        con.row_factory = sqlite3.Row
+        return con
+
+    class Repo:
+        def _read_snapshot(self, path):
+            rel = path.name
+            return ("hash-a", ["alpha"]) if rel == "a.py" else ("hash-b", ["beta"])
+
+    class Pool:
+        def map(self, fn, values):
+            return map(fn, values)
+
+    original_transaction = preprocess_module.write_transaction
+    transaction_count = 0
+
+    @contextmanager
+    def counted_transaction(*args, **kwargs):
+        nonlocal transaction_count
+        transaction_count += 1
+        with original_transaction(*args, **kwargs) as transaction:
+            yield transaction
+
+    monkeypatch.setattr(preprocess_module, "_LEXICAL_WRITE_BATCH_SIZE", 1)
+    monkeypatch.setattr(preprocess_module, "write_transaction", counted_transaction)
+    pre = ProjectPreprocessor.__new__(ProjectPreprocessor)
+    pre._connect, pre._db_lock = connect, threading.RLock()
+    pre._stats_lock, pre._stats = threading.RLock(), {}
+    pre._find_lexical_pending = lambda root, limit: [
+        {"path": "a.py", "content_hash": "hash-a"},
+        {"path": "b.py", "content_hash": "hash-b"},
+    ]
+    pre._record_progress = lambda *args: None
+    pre.repo_tools, pre._cpu_pool, pre.deterministic, pre.cfg = Repo(), Pool(), None, {}
+
+    assert pre._step_lexical({"root": str(root)})
+    assert transaction_count == 2
+    with closing(connect()) as con:
+        assert con.execute("SELECT COUNT(*) FROM source_index").fetchone()[0] == 2
+        assert con.execute("SELECT COUNT(*) FROM source_fts").fetchone()[0] == 2
+        assert {row[0] for row in con.execute("SELECT path FROM source_fts")} == {"a.py", "b.py"}

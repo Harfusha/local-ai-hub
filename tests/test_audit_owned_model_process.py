@@ -69,6 +69,7 @@ def test_owned_model_stderr_reader_bounds_retained_tail():
     process = object.__new__(_ModelProcess)
     process.process = SimpleNamespace(stderr=Stream())
     process._stderr_lock = threading.Lock()
+    process._stderr_ready = threading.Event()
     process._stderr_tail = bytearray(b"x" * 8192)
 
     process._read_stderr()

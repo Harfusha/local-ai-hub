@@ -177,6 +177,7 @@ def test_async_delivery_maps_reason_payload_to_the_existing_job_contract(monkeyp
 
     monkeypatch.setattr(http_server, "APP", _App())
     handler = object.__new__(http_server.Handler)
+    handler.headers = {}
     status, response = handler._async_delivery(
         "/api/reason", {"delivery": "auto", "latency_budget_ms": 5_000, "problem": "find cause", "context": "facts"}
     )
@@ -204,6 +205,7 @@ def test_async_delivery_maps_review_diff_to_durable_review_job(monkeypatch):
 
     monkeypatch.setattr(http_server, "APP", _App())
     handler = object.__new__(http_server.Handler)
+    handler.headers = {}
     status, response = handler._async_delivery(
         "/api/review/diff",
         {"delivery": "auto", "latency_budget_ms": 5_000, "instructions": "find defects", "context": "large diff"},
@@ -235,6 +237,7 @@ def test_cold_start_review_diff_auto_delivery_is_async(monkeypatch):
 
     monkeypatch.setattr(http_server, "APP", _App())
     handler = object.__new__(http_server.Handler)
+    handler.headers = {}
     status, response = handler._async_delivery(
         "/api/review/diff",
         {"delivery": "auto", "latency_budget_ms": 30_000, "instructions": "find defects"},
@@ -263,6 +266,7 @@ def test_cold_start_rag_index_auto_delivery_uses_durable_job(monkeypatch):
 
     monkeypatch.setattr(http_server, "APP", _App())
     handler = object.__new__(http_server.Handler)
+    handler.headers = {}
     status, response = handler._async_delivery(
         "/api/rag/index",
         {
@@ -300,6 +304,7 @@ def test_rag_index_defaults_to_bounded_async_delivery_but_keeps_explicit_sync(mo
 
     monkeypatch.setattr(http_server, "APP", _App())
     handler = object.__new__(http_server.Handler)
+    handler.headers = {}
 
     status, response = handler._async_delivery(
         "/api/rag/index", {"root": "C:/project", "workspace": "workspace-1"}
@@ -388,6 +393,7 @@ def test_async_delivery_returns_http_429_for_retryable_queue_rejection(monkeypat
 
     monkeypatch.setattr(http_server, "APP", _App())
     handler = object.__new__(http_server.Handler)
+    handler.headers = {}
     status, response = handler._async_delivery(
         "/api/rag/index", {"root": "C:/project", "workspace": "workspace-1"}
     )

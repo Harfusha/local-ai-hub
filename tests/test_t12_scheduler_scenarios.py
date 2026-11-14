@@ -8,6 +8,7 @@ from local_ai_hub.scheduler import AffinityScheduler
 
 
 SCENARIOS = ("scheduler", "batch", "deadline", "overload", "cancel", "fallback")
+_FRESH_GPU_TELEMETRY = {"telemetry_stale": False, "sample_age_seconds": 0.0}
 
 
 def _scheduler(runtime: Any) -> AffinityScheduler:
@@ -24,6 +25,7 @@ def test_t12_cross_model_admission_defers_to_post_unload_check() -> None:
         def resource_status(self) -> dict[str, Any]:
             return {
                 "available": True,
+                **_FRESH_GPU_TELEMETRY,
                 "pressure_level": "nominal",
                 "vram_total_mb": 8192.0,
                 "vram_available_mb": 1024.0,
@@ -261,6 +263,7 @@ def test_t12_scheduler_admission_reports_observed_vram_budget() -> None:
         def resource_status(self) -> dict[str, Any]:
             return {
                 "available": True,
+                **_FRESH_GPU_TELEMETRY,
                 "pressure_level": self.pressure,
                 "context_budget_factor": 1.0,
                 "throttle_background": self.throttle,
@@ -299,6 +302,7 @@ def test_t12_model_switch_admission_does_not_overstate_measured_reclaimable_vram
         def resource_status(self) -> dict[str, Any]:
             return {
                 "available": True,
+                **_FRESH_GPU_TELEMETRY,
                 "pressure_level": "critical",
                 "context_budget_factor": 0.25,
                 "throttle_background": False,
@@ -335,6 +339,7 @@ def test_t12_scheduler_uses_explicit_cold_model_vram_estimate() -> None:
         def resource_status(self) -> dict[str, Any]:
             return {
                 "available": True,
+                **_FRESH_GPU_TELEMETRY,
                 "pressure_level": "nominal",
                 "context_budget_factor": 1.0,
                 "throttle_background": False,
@@ -373,6 +378,7 @@ def test_t12_scheduler_does_not_count_unobserved_configured_resident_vram_as_rec
         def resource_status(self) -> dict[str, Any]:
             return {
                 "available": True,
+                **_FRESH_GPU_TELEMETRY,
                 "pressure_level": "nominal",
                 "context_budget_factor": 1.0,
                 "throttle_background": False,
@@ -408,6 +414,7 @@ def test_t12_scheduler_labels_unestimated_cold_model_without_fabricated_size() -
         def resource_status(self) -> dict[str, Any]:
             return {
                 "available": True,
+                **_FRESH_GPU_TELEMETRY,
                 "pressure_level": "nominal",
                 "context_budget_factor": 1.0,
                 "throttle_background": False,

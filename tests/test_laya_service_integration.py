@@ -23,6 +23,31 @@ class _Router:
         return route
 
 
+def test_laya_capture_telemetry_is_metadata_only_and_logs_failures_safely() -> None:
+    recorded: list[dict] = []
+    warnings: list[tuple[str, tuple[object, ...]]] = []
+    app = LocalAIApp.__new__(LocalAIApp)
+    app.telemetry = SimpleNamespace(record_stage=lambda **event: recorded.append(event))
+    app.logger = SimpleNamespace(warning=lambda message, *args: warnings.append((message, args)))
+
+    assert app._record_laya_capture_observation("skipped", "no_unresolved_evidence_gap") is True
+    assert recorded == [{
+        "action": "laya_capture",
+        "stage": "skipped",
+        "bypass_reason": "no_unresolved_evidence_gap",
+        "success": True,
+    }]
+
+    def fail_recording(**_event: object) -> None:
+        raise ValueError("private payload must not reach telemetry")
+
+    app.telemetry.record_stage = fail_recording
+    assert app._record_laya_capture_observation(
+        "failed", "capture_exception", error_type="ValueError"
+    ) is False
+    assert warnings == [("Laya capture telemetry failed: %s", ("ValueError",))]
+
+
 def test_laya_shadow_observation_queues_only_verified_scope_inputs() -> None:
     service = LocalAIServices.__new__(LocalAIServices)
     observed: list[tuple[dict, str, dict]] = []
@@ -86,6 +111,96 @@ def test_laya_shadow_observation_skips_without_evidence_ids() -> None:
     )
 
     assert queued is False
+
+
+def test_laya_shadow_observation_accepts_deterministic_delegation_baseline() -> None:
+    service = LocalAIServices.__new__(LocalAIServices)
+    observed: list[tuple[dict, str, dict]] = []
+    service.laya_decision_observer = lambda operation, root, baseline: (
+        observed.append((operation, root, baseline)) or {"status": "queued"}
+    )
+
+    queued = service._queue_laya_shadow_observation(
+        {"task_id": "task-1", "evidence_ids": ["ev-1"]},
+        root="C:/repo",
+        category="delegation",
+        options=["delegate_bounded", "no_delegation"],
+        state={"worker_used": "false", "explorer_confidence": "high"},
+        training_content={"task_input": "Inspect the repository change."},
+        baseline={
+            "method": "pipeline_worker_escalation",
+            "suggestion": "no_delegation",
+            "evidence_id": "ev-1",
+        },
+    )
+
+    assert queued is True
+    assert len(observed) == 1
+    operation, root, baseline = observed[0]
+    assert root == "C:/repo"
+    assert operation["decision"]["category"] == "delegation"
+    assert operation["decision"]["options"] == ["delegate_bounded", "no_delegation"]
+    assert baseline["method"] == "pipeline_worker_escalation"
+    assert baseline["suggestion"] == "no_delegation"
+
+
+def test_laya_watchdog_baseline_uses_verified_agent_os_lifecycle_only() -> None:
+    from local_ai_hub.agent_tasks import TaskStatus
+    from local_ai_hub.laya_decisions import DecisionCategory
+
+    app = LocalAIApp.__new__(LocalAIApp)
+    request = SimpleNamespace(
+        category=DecisionCategory.WATCHDOG,
+        evidence_ids=("ev-task-1",),
+        options=("recommend_continue", "recommend_stop", "recommend_human_review"),
+    )
+
+    for status, suggestion in (
+        (TaskStatus.ACTIVE, "recommend_continue"),
+        (TaskStatus.VERIFYING, "recommend_continue"),
+        (TaskStatus.BLOCKED, "recommend_human_review"),
+        (TaskStatus.WAITING, "recommend_human_review"),
+        (TaskStatus.FAILED, "recommend_human_review"),
+        (TaskStatus.ABANDONED, "recommend_human_review"),
+        (TaskStatus.COMPLETED, "recommend_stop"),
+        (TaskStatus.CANCELLED, "recommend_stop"),
+    ):
+        task = SimpleNamespace(
+            task_id="task-1",
+            status=status,
+            checkpoint=SimpleNamespace(evidence_ids=("ev-task-1",)),
+        )
+        assert app._derive_laya_decision_baseline(request, task) == {
+            "method": "agent_os_task_lifecycle",
+            "suggestion": suggestion,
+            "evidence_id": "ev-task-1",
+        }
+
+    task_without_linked_evidence = SimpleNamespace(
+        task_id="task-1",
+        status=TaskStatus.ACTIVE,
+        checkpoint=SimpleNamespace(evidence_ids=("ev-other",)),
+    )
+    assert app._derive_laya_decision_baseline(request, task_without_linked_evidence) is None
+
+    unsupported_status = SimpleNamespace(
+        task_id="task-1",
+        status="unknown",
+        checkpoint=SimpleNamespace(evidence_ids=("ev-task-1",)),
+    )
+    assert app._derive_laya_decision_baseline(request, unsupported_status) is None
+
+    limited_options = SimpleNamespace(
+        category=DecisionCategory.WATCHDOG,
+        evidence_ids=("ev-task-1",),
+        options=("recommend_stop",),
+    )
+    active_task = SimpleNamespace(
+        task_id="task-1",
+        status=TaskStatus.ACTIVE,
+        checkpoint=SimpleNamespace(evidence_ids=("ev-task-1",)),
+    )
+    assert app._derive_laya_decision_baseline(limited_options, active_task) is None
 
 
 def test_completion_outcome_is_queued_and_records_metadata_only() -> None:
@@ -267,6 +382,17 @@ def test_delegate_queues_model_route_observation_after_primary_generation() -> N
     service = LocalAIServices.__new__(LocalAIServices)
     service.config = {}
     service.router = _Router()
+    route_models = {
+        "fast_code": "fast-model",
+        "heavy_code": "smart-model",
+        "reasoning": "reasoning-model",
+        "general": "generic-model",
+    }
+    service.router.model_for_role = lambda role: route_models[role]
+    installed_models = {"fast-model", "generic-model"}
+    service.runtime = SimpleNamespace(
+        model_digest=lambda model: "a" * 64 if model in installed_models else None
+    )
     service._resolve_local_task_project = lambda _root: (None, "", "", "")
     service._resident_optimize = lambda route, *_args: route
     events: list[str] = []
@@ -291,11 +417,125 @@ def test_delegate_queues_model_route_observation_after_primary_generation() -> N
     assert result["success"] is True
     assert events == ["generation", "laya_queue"]
     assert observations[0]["decision"]["category"] == "model_route"
+    assert observations[0]["decision"]["options"] == ["fast", "generic"]
     assert observations[0]["decision"]["state"]["generator_model"] == "fast-model"
     assert observations[0]["decision"]["training_content"] == {
         "task_input": "Fix the parser.",
         "model_response": "done",
     }
+
+
+def test_laya_model_route_availability_uses_request_role_and_requires_two_routes() -> None:
+    service = LocalAIServices.__new__(LocalAIServices)
+    route_models = {
+        "fast_code": "fast-model",
+        "heavy_code": "smart-model",
+        "reasoning": "reasoning-model",
+        "general": "generic-model",
+    }
+    service.router = SimpleNamespace(model_for_role=lambda role: route_models[role])
+    installed_models = {"fast-model", "reasoning-model"}
+    service.runtime = SimpleNamespace(
+        model_digest=lambda model: "b" * 64 if model in installed_models else None
+    )
+
+    assert service._available_laya_model_route_options("reasoning") == frozenset(
+        {"fast", "smart"}
+    )
+    assert service._available_laya_model_route_options("fast_code") == frozenset()
+
+
+def test_laya_model_route_availability_uses_project_resolved_models() -> None:
+    service = LocalAIServices.__new__(LocalAIServices)
+    route_models = {
+        "fast_code": "base-fast",
+        "heavy_code": "base-heavy",
+        "reasoning": "base-reasoning",
+        "general": "base-general",
+    }
+    project_models = {
+        "fast_code": "project-fast",
+        "heavy_code": "project-heavy",
+        "reasoning": "project-reasoning",
+        "general": "project-general",
+    }
+    settings = {"model_profile": "high"}
+    policy_calls = []
+
+    class _ModelPolicy:
+        def apply_project_settings(self, model, payload, *, settings, role):
+            policy_calls.append((model, settings, role))
+            return project_models[role], payload
+
+    service.router = SimpleNamespace(model_for_role=lambda role: route_models[role])
+    service.model_policy = _ModelPolicy()
+    installed_models = {"project-fast", "project-reasoning"}
+    service.runtime = SimpleNamespace(
+        model_digest=lambda model: "c" * 64 if model in installed_models else None
+    )
+
+    assert service._available_laya_model_route_options(
+        "reasoning", project_settings=settings
+    ) == frozenset({"fast", "smart"})
+    assert policy_calls == [
+        ("base-fast", settings, "fast_code"),
+        ("base-heavy", settings, "heavy_code"),
+        ("base-reasoning", settings, "reasoning"),
+        ("base-general", settings, "general"),
+    ]
+
+
+def test_laya_model_route_availability_fails_closed_when_runtime_offline() -> None:
+    service = LocalAIServices.__new__(LocalAIServices)
+    route_models = {
+        "fast_code": "fast-model",
+        "heavy_code": "heavy-model",
+        "reasoning": "reasoning-model",
+        "general": "general-model",
+    }
+    service.router = SimpleNamespace(model_for_role=lambda role: route_models[role])
+    digest_calls: list[str] = []
+    service.runtime = SimpleNamespace(
+        is_online=lambda: False,
+        model_digest=lambda model: digest_calls.append(model) or "d" * 64,
+    )
+
+    assert service._available_laya_model_route_options("reasoning") == frozenset()
+    assert digest_calls == []
+
+
+def test_laya_model_route_availability_caches_verified_digests() -> None:
+    service = LocalAIServices.__new__(LocalAIServices)
+    route_models = {
+        "fast_code": "fast-model",
+        "heavy_code": "heavy-model",
+        "reasoning": "heavy-model",
+        "general": "general-model",
+    }
+    service.router = SimpleNamespace(model_for_role=lambda role: route_models[role])
+    digest_calls: list[str] = []
+    installed = {"fast-model": "a" * 64, "heavy-model": "b" * 64}
+
+    def mock_digest(model: str) -> str | None:
+        digest_calls.append(model)
+        return installed.get(model)
+
+    service.runtime = SimpleNamespace(is_online=lambda: True, model_digest=mock_digest)
+
+    first = service._available_laya_model_route_options("reasoning")
+    assert first == frozenset({"fast", "smart"})
+    assert digest_calls == ["fast-model", "heavy-model", "general-model"]
+
+    # Second call should reuse the cache without re-querying model_digest
+    digest_calls.clear()
+    second = service._available_laya_model_route_options("reasoning")
+    assert second == frozenset({"fast", "smart"})
+    assert digest_calls == []
+
+    # use_cache=False bypasses the cache
+    third = service._available_laya_model_route_options("reasoning", use_cache=False)
+    assert third == frozenset({"fast", "smart"})
+    assert digest_calls == ["fast-model", "heavy-model", "general-model"]
 
 
 def test_laya_model_response_excerpt_is_bounded_and_success_only() -> None:
@@ -332,6 +572,16 @@ def test_solve_repo_queues_task_scoped_pipeline_response_for_laya() -> None:
         return result
 
     service.pipeline = SimpleNamespace(enabled=True, solve_repo=solve_repo)
+    route_models = {
+        "fast_code": "fast-model",
+        "heavy_code": "smart-model",
+        "reasoning": "reasoning-model",
+        "general": "generic-model",
+    }
+    service.router = SimpleNamespace(model_for_role=lambda role: route_models[role])
+    service.runtime = SimpleNamespace(
+        model_digest=lambda model: "d" * 64 if model in {"fast-model", "smart-model"} else None
+    )
     observations: list[dict] = []
     service.laya_decision_observer = lambda operation, _root, _baseline: (
         observations.append(operation) or {"status": "queued"}
@@ -344,6 +594,7 @@ def test_solve_repo_queues_task_scoped_pipeline_response_for_laya() -> None:
     assert callable(captured_args[0]["_laya_tool_output_callback"])
     assert observations[0]["task_id"] == "task-pipeline-1"
     assert observations[0]["decision"]["category"] == "model_route"
+    assert observations[0]["decision"]["options"] == ["fast", "smart"]
     assert observations[0]["decision"]["evidence_ids"] == ["ev-pipeline-1"]
     assert observations[0]["decision"]["state"]["generator_model"] == "qwen3.5:9b"
     assert observations[0]["decision"]["training_content"] == {
@@ -390,6 +641,15 @@ def test_delegate_repo_queues_automatic_context_budget_with_retrieval_evidence()
         "semantic_used": False,
         "scanned_files": 1,
     }
+    service.evidence_store = SimpleNamespace(get_many=lambda ids, **kwargs: [
+        {
+            "success": True,
+            "evidence_id": "ev-1",
+            "text": "Verified indexed source excerpt.",
+            "source_verified": True,
+            "stale": False,
+        }
+    ])
     observations: list[dict] = []
     service.delegate = lambda _payload, **_kwargs: {
         "success": True,
@@ -414,7 +674,45 @@ def test_delegate_repo_queues_automatic_context_budget_with_retrieval_evidence()
     assert observations[0]["decision"]["training_content"] == {
         "task_input": "Summarize the module.",
         "model_response": "done",
+        "context_excerpt": "Verified indexed source excerpt.",
     }
+    assert sum(
+        len(value.encode("utf-8"))
+        for value in observations[0]["decision"]["training_content"].values()
+    ) < 16 * 1024
+
+
+def test_laya_context_excerpt_requires_current_provenance_and_stays_bounded() -> None:
+    calls: list[tuple[list[str], dict]] = []
+
+    def get_many(ids, **kwargs):
+        calls.append((ids, kwargs))
+        return [
+            {
+                "success": True,
+                "evidence_id": "ev-stale",
+                "text": "Do not capture stale evidence.",
+                "source_verified": False,
+                "stale": True,
+            },
+            {
+                "success": True,
+                "evidence_id": "ev-current",
+                "text": "x" * 7000,
+                "source_verified": True,
+                "stale": False,
+            },
+        ]
+
+    excerpt = LocalAIServices._laya_verified_context_excerpt(
+        SimpleNamespace(get_many=get_many),
+        ["ev-stale", "ev-current"],
+        root="C:/repo",
+    )
+
+    assert calls == [(["ev-stale", "ev-current"], {"verify": True, "root": "C:/repo"})]
+    assert "Do not capture stale evidence." not in excerpt
+    assert excerpt == "x" * (6 * 1024)
 
 
 def test_app_queue_derives_scope_and_rejects_caller_baseline(tmp_path, monkeypatch) -> None:
@@ -496,14 +794,108 @@ def test_app_queue_derives_scope_and_rejects_caller_baseline(tmp_path, monkeypat
         completion_gap_baseline,
     )
 
+    delegation_operation = {
+        **operation,
+        "decision": {
+            "category": "delegation",
+            "evidence_ids": ["ev-1"],
+            "options": ["delegate_bounded", "no_delegation"],
+            "state": {
+                "pipeline_mode": "adaptive",
+                "review_task": "false",
+                "planned_worker": "true",
+                "worker_used": "true",
+            },
+            "training_content": {"task_input": "Fix the parser."},
+        },
+    }
+    delegation_baseline = {
+        "method": "pipeline_worker_escalation",
+        "suggestion": "delegate_bounded",
+        "evidence_id": "ev-1",
+    }
+    delegation_queued = app.queue_laya_decision_observation(
+        delegation_operation,
+        str(tmp_path),
+        delegation_baseline,
+    )
+
     assert queued == {"status": "queued"}
     assert rejected == {"status": "skipped", "reason": "decision_invalid"}
     assert completion_gap_queued == {"status": "queued"}
-    assert len(app._laya_capture_queue) == 2
+    assert delegation_queued == {"status": "queued"}
+    assert len(app._laya_capture_queue) == 3
     queued_operation, queued_root, queued_baseline = app._laya_capture_queue[0]
     assert "session_id" not in queued_operation
     assert queued_root == str(tmp_path)
     assert queued_baseline == baseline
+
+
+def test_app_accepts_server_derived_delegation_baseline(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(
+        project_config,
+        "resolve_project_context",
+        lambda *_args: SimpleNamespace(coordination_id="repo-1"),
+    )
+    captured_baselines = []
+
+    class _Adapter:
+        def evaluate_decision(self, request, decision_input, *, session_lifecycle, outcome_recorder):
+            decision = SimpleNamespace(
+                success=True,
+                status=SimpleNamespace(value="ok"),
+                suggestion="delegate_bounded",
+                reason_codes=(),
+            )
+            outcome = SimpleNamespace(decision=decision, runtime=None)
+            outcome_recorder(request, decision_input, outcome)
+            return outcome
+
+    app = LocalAIApp.__new__(LocalAIApp)
+    app.config = {
+        "laya": {"runtime": {
+            "checkpoint_path": "C:/models/laya/revision-1",
+            "revision": "revision-1",
+            "expected_sha256": {"model.safetensors": "a" * 64},
+        }},
+        "server": {"state_dir": str(tmp_path)},
+    }
+    app.agent_tasks = object()
+    app.laya_candidates = SimpleNamespace(
+        _find_task=lambda *_args: object(),
+        _session_for_task=lambda _task: "session-1",
+        _candidate_input=lambda value: value,
+        _validate_context_source_evidence=lambda *_args, **_kwargs: None,
+        capture_runtime_outcome=lambda _request, _input, _outcome, **kwargs: (
+            captured_baselines.append(kwargs["baseline"]) or {"candidate_id": "candidate-1"}
+        ),
+    )
+    app.evidence = object()
+    app.laya_lifecycle = object()
+    app._get_laya_runtime_adapter = lambda *_args, **_kwargs: _Adapter()
+    app._record_laya_runtime_decision = lambda *_args: True
+    operation = {
+        "action": "evaluate_decision",
+        "task_id": "task-1",
+        "decision": {
+            "category": "delegation",
+            "evidence_ids": ["ev-1"],
+            "options": ["delegate_bounded", "no_delegation"],
+            "state": {"pipeline_mode": "adaptive", "review_task": "false"},
+            "training_content": {},
+        },
+    }
+    baseline = {
+        "method": "pipeline_worker_escalation",
+        "suggestion": "delegate_bounded",
+        "evidence_id": "ev-1",
+    }
+
+    result = app.evaluate_laya_decision(operation, root=str(tmp_path), _server_baseline=baseline)
+
+    assert result["success"] is True
+    assert result["candidate"]["candidate_id"] == "candidate-1"
+    assert captured_baselines == [baseline]
 
 
 def test_successful_incomplete_task_context_queues_natural_laya_capture(tmp_path) -> None:
@@ -635,6 +1027,33 @@ def test_successful_incomplete_task_context_queues_natural_laya_capture(tmp_path
         not {"operation", "root", "query", "context_excerpt"}.intersection(event)
         for event in telemetry_events
     )
+
+    memory_calls = []
+    memory_record = SimpleNamespace(
+        record_id="memory-1",
+        scope=SimpleNamespace(value="task"),
+        status=SimpleNamespace(value="active"),
+        evidence_ids=("ev-memory",),
+        value="Task-specific memory source.",
+        sensitivity="normal",
+    )
+    app.agent_memory = SimpleNamespace(
+        find=lambda **kwargs: (memory_calls.append(kwargs) or [memory_record])
+    )
+    result["retrieval"]["lexical"]["coverage"]["complete"] = True
+    result["retrieval"]["semantic"]["coverage"]["complete"] = True
+    callbacks.clear()
+    telemetry_events.clear()
+    app._laya_capture_queue.clear()
+    app._laya_capture_draining = False
+
+    observation = app.capture_laya_context_source_from_context(request, result)
+
+    assert observation == {"status": "skipped", "reason": "no_unresolved_evidence_gap"}
+    assert memory_calls == []
+    assert callbacks == []
+    assert app._laya_capture_queue == []
+    assert [event["stage"] for event in telemetry_events] == ["skipped"]
 
 
 def test_context_source_capture_skips_without_task_identity(tmp_path) -> None:

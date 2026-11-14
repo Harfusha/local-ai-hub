@@ -63,6 +63,7 @@ from .async_jobs import capture_job_cancellation, current_job_should_stop
 from .telemetry import TelemetryStore
 from .trace_context import observer
 from .treesitter_parser import parse_treesitter
+from .external_candidate_paths import collect_external_candidate_paths
 
 logger = logging.getLogger(__name__)
 from .agent_consistency import AdaptiveContextPack, ConsistencyRequest, GuardWarning
@@ -631,6 +632,19 @@ class LocalAIServices:
     board: Any = None
     _VISION_MAX_OUTPUT_TOKENS = 4096
     consistency_guard: Any = None
+    _adaptive_relevance_backoff_init_lock = threading.Lock()
+    _ADAPTIVE_RELEVANCE_QUEUE_BACKOFF_SECONDS = 5.0
+
+    def _adaptive_relevance_queue_state(self) -> dict[str, Any]:
+        state = getattr(self, "_adaptive_relevance_queue_backoff", None)
+        if isinstance(state, dict):
+            return state
+        with self._adaptive_relevance_backoff_init_lock:
+            state = getattr(self, "_adaptive_relevance_queue_backoff", None)
+            if not isinstance(state, dict):
+                state = {"lock": threading.Lock(), "until": 0.0}
+                self._adaptive_relevance_queue_backoff = state
+        return state
 
     @staticmethod
     def merge_overlapping_evidence(evidence: list[dict[str, Any]], root: str | Path | None = None) -> list[dict[str, Any]]:
@@ -807,6 +821,57 @@ class LocalAIServices:
             return ""
         return model
 
+    @staticmethod
+    def _laya_verified_context_excerpt(
+        evidence_store: Any,
+        evidence_ids: Sequence[str],
+        *,
+        root: str,
+        max_bytes: int = 6 * 1024,
+    ) -> str:
+        """Return bounded source text only from current, root-scoped evidence rows."""
+        fetch_many = getattr(evidence_store, "get_many", None)
+        if not callable(fetch_many) or not evidence_ids or max_bytes <= 0:
+            return ""
+        try:
+            rows = fetch_many(list(evidence_ids), verify=True, root=root)
+        except Exception:
+            return ""
+        if not isinstance(rows, (list, tuple)):
+            return ""
+        rows_by_id = {
+            row.get("evidence_id"): row
+            for row in rows
+            if isinstance(row, Mapping) and isinstance(row.get("evidence_id"), str)
+        }
+        excerpts: list[str] = []
+        used_bytes = 0
+        for evidence_id in evidence_ids:
+            row = rows_by_id.get(evidence_id)
+            if (
+                not isinstance(row, Mapping)
+                or row.get("success") is not True
+                or row.get("source_verified") is not True
+                or row.get("stale") is not False
+                or not isinstance(row.get("text"), str)
+            ):
+                continue
+            text = row["text"].strip()
+            if not text:
+                continue
+            prefix = "\n" if excerpts else ""
+            remaining = max_bytes - used_bytes - len(prefix.encode("utf-8"))
+            if remaining <= 0:
+                break
+            bounded = text.encode("utf-8", errors="replace")[:remaining].decode("utf-8", errors="ignore")
+            if not bounded:
+                continue
+            excerpts.append(prefix + bounded)
+            used_bytes += len((prefix + bounded).encode("utf-8"))
+            if used_bytes >= max_bytes:
+                break
+        return "".join(excerpts)
+
     def _queue_laya_shadow_observation(
         self,
         args: Mapping[str, Any],
@@ -859,6 +924,7 @@ class LocalAIServices:
             expected_method = {
                 DecisionCategory.MODEL_ROUTE: "model_router_classify",
                 DecisionCategory.CONTEXT_BUDGET: "repo_context_token_budget",
+                DecisionCategory.DELEGATION: "pipeline_worker_escalation",
             }.get(decision_category)
             if expected_method is None or baseline_value.get("method") != expected_method:
                 return False
@@ -1005,6 +1071,41 @@ class LocalAIServices:
             if isinstance(value, dict) and value.get("approved") is True:
                 return True
         return False
+
+    def preflight_guard_task_state(self, request: ConsistencyRequest) -> dict[str, Any] | None:
+        """Reject unavailable guarded task state before repository retrieval starts."""
+        store = getattr(self.consistency_guard, "task_store", None)
+        getter = getattr(store, "get", None)
+        if store is None or not callable(getter):
+            return {
+                "status_code": 503,
+                "success": False,
+                "terminal": False,
+                "retryable": True,
+                "stop_code": "context_task_state_unavailable",
+                "error": "context task state store unavailable",
+            }
+        try:
+            state = getter(request.task_id)
+        except Exception as exc:
+            return {
+                "status_code": 503,
+                "success": False,
+                "terminal": False,
+                "retryable": True,
+                "stop_code": "context_task_state_unavailable",
+                "error": f"context task state unavailable: {type(exc).__name__}",
+            }
+        if state is None:
+            return {
+                "status_code": 404,
+                "success": False,
+                "terminal": True,
+                "retryable": False,
+                "stop_code": "context_task_state_missing",
+                "error": "context task does not exist",
+            }
+        return None
 
     def _guard_task_state(self, request: ConsistencyRequest, warnings: tuple[GuardWarning, ...], revision: str) -> tuple[str, bool]:
         store = getattr(self.consistency_guard, "task_store", None)
@@ -2261,7 +2362,10 @@ class LocalAIServices:
                 "general": "generic",
             }.get(project_role)
             evidence_id = args["evidence_ids"][0]
-            if route_option is not None:
+            route_options = self._available_laya_model_route_options(
+                project_role, project_settings=project_settings,
+            )
+            if route_option is not None and route_option in route_options:
                 task_input = task.encode("utf-8", errors="replace")[:8192].decode("utf-8", errors="ignore").strip()
                 training_content = {"task_input": task_input} if task_input else {}
                 model_response = self._laya_model_response_excerpt(result)
@@ -2280,7 +2384,7 @@ class LocalAIServices:
                     args,
                     root=str(args.get("root") or args.get("cwd") or ""),
                     category="model_route",
-                    options=["fast", "smart", "generic"],
+                    options=[option for option in ("fast", "smart", "generic") if option in route_options],
                     state=decision_state,
                     training_content=training_content,
                     baseline={
@@ -3997,10 +4101,7 @@ class LocalAIServices:
                 "terminal": True,
                 "retryable": False,
             }
-        try:
-            hint_root = Path(root).expanduser().resolve(strict=True)
-        except (OSError, RuntimeError, ValueError):
-            hint_root = None
+        hint_root = project_context.root
         # Exact pagination streams Git paths in RepositoryTools. Do not prebuild
         # a repository-sized inventory here; directory hints are ranked by root.
         file_inventory = None
@@ -4094,7 +4195,10 @@ class LocalAIServices:
         learning_record_started = time.perf_counter()
         if self.learner is not None:
             try:
-                self.learner.record(root, query)
+                if hint_root is not None:
+                    self.learner.record_resolved(hint_root, query)
+                else:
+                    self.learner.record(root, query)
             except Exception:
                 pass
         phase_timings_ms["search_learning_record_ms"] = round(
@@ -4418,7 +4522,7 @@ class LocalAIServices:
                         seen_hits.add(key)
 
             result_path_validation_started = time.perf_counter()
-            base = Path(root).expanduser().resolve(strict=True)
+            base = project_context.root
             allowed_results: list[dict[str, Any]] = []
             extension_is_searchable = getattr(
                 self.repo_tools, "_path_extension_is_searchable", None
@@ -6204,12 +6308,15 @@ class LocalAIServices:
         return self.deterministic_operation("symbol-callgraph", root, {"symbol": symbol, "limit": limit}, lambda: self.deterministic.symbol_callgraph(root, symbol, limit))
 
     def repo_impact(self, root: str, base: str = "HEAD", staged: bool = False, max_symbols: int = 48, max_dependents: int = 30) -> dict[str, Any]:
+        diff_result = None
         def compute() -> dict[str, Any]:
+            nonlocal diff_result
             # Local AI deterministic primary path: refresh only changed files in the code
             # index, then resolve dependents/tests through SQLite refs/edges. A full
             # repository scan is only a bounded fallback for sparse indexes.
             if self.code_index is not None and hasattr(self.code_index, "impact"):
                 diff = self.repo_tools.git_diff(root, base, staged, max_tokens=24000)
+                diff_result = diff if diff.get("success") else None
                 if diff.get("terminal"):
                     return diff
                 if diff.get("success"):
@@ -6248,7 +6355,10 @@ class LocalAIServices:
                             "diff_sha256": diff.get("diff_sha256"), "method": "code-index", "index_confidence": indexed.get("confidence", 0.0),
                             "deterministic_diff": det,
                         }
-            fallback = self.repo_tools.impact_analysis(root, base, staged, max_symbols, max_dependents)
+            fallback = self.repo_tools.impact_analysis(
+                root, base, staged, max_symbols, max_dependents,
+                diff_result=diff_result,
+            )
             if isinstance(fallback, dict): fallback.setdefault("method", "scan-fallback")
             return fallback
         return self._repo_cached(
@@ -6420,6 +6530,15 @@ class LocalAIServices:
             }
 
             def compute() -> dict[str, Any]:
+                queue_state = self._adaptive_relevance_queue_state()
+                with queue_state["lock"]:
+                    if queue_state["until"] > time.monotonic():
+                        return {
+                            "success": False,
+                            "degraded": True,
+                            "degraded_reason": "backend_queue_full",
+                            "warnings": [],
+                        }
                 try:
                     models = getattr(self, "config", {}).get("models", {})
                     model = getattr(self, "config", {}).get("context_relevance_model") or models.get("fast_code") or models.get("general") or "context-relevance"
@@ -6436,7 +6555,7 @@ class LocalAIServices:
                         format={"type": "object"},
                         # Context relevance is optional; deterministic evidence remains
                         # available when local inference exceeds its latency budget.
-                        request_timeout_seconds=15.0,
+                        request_timeout_seconds=3.0,
                     )
                 except Exception:
                     return {"success": False, "degraded": True, "degraded_reason": "model_error", "warnings": []}
@@ -6446,6 +6565,11 @@ class LocalAIServices:
                     error_code = str(generated.get("error_code") or "") if is_result else ""
                     timed_out = is_result and generated.get("timed_out") is True
                     if error_type == "QueueFullError":
+                        with queue_state["lock"]:
+                            queue_state["until"] = max(
+                                queue_state["until"],
+                                time.monotonic() + self._ADAPTIVE_RELEVANCE_QUEUE_BACKOFF_SECONDS,
+                            )
                         degraded_reason = "backend_queue_full"
                     elif timed_out or error_code == "model_request_timeout":
                         degraded_reason = "backend_timeout"
@@ -6714,6 +6838,7 @@ class LocalAIServices:
             return {**base, "guarded": False, "context_id": context_id, "context_pack": pack}
 
         revision = ""
+        fresh_fingerprint = False
         try:
             # Use the bounded worktree fingerprint for guarded provenance.  The
             # GitSnapshot revision is HEAD-only, which makes dirty working-tree
@@ -6721,15 +6846,21 @@ class LocalAIServices:
             state = self.repo_state.fingerprint(request.root, force=True)
             if isinstance(state, dict) and not state.get("degraded") and not state.get("stale"):
                 revision = str(state.get("fingerprint", "") or "")[:200]
+                fresh_fingerprint = bool(revision)
         except Exception:
             pass
-        try:
-            snapshot = self.repo_tools.git_snapshot(request.root)
-            if not revision:
-                revision = str(getattr(snapshot, "revision", "") or "")[:200]
-            snapshot_paths = tuple(str(path) for path in (getattr(snapshot, "changed_paths", ()) or ()))[:64]
-        except Exception:
-            snapshot_paths = ()
+        fingerprint_matches_since_hash = bool(
+            since_hash and fresh_fingerprint and since_hash == revision
+        )
+        snapshot_paths = ()
+        if not fingerprint_matches_since_hash:
+            try:
+                snapshot = self.repo_tools.git_snapshot(request.root)
+                if not revision:
+                    revision = str(getattr(snapshot, "revision", "") or "")[:200]
+                snapshot_paths = tuple(str(path) for path in (getattr(snapshot, "changed_paths", ()) or ()))[:64]
+            except Exception:
+                snapshot_paths = ()
         evidence = tuple(item for item in (base.get("evidence") or ()) if isinstance(item, dict))[:24]
         changed_paths = tuple(request.changed_paths or base.get("changed_paths") or snapshot_paths)[:64]
         if since_hash and since_hash == revision:
@@ -6842,7 +6973,7 @@ class LocalAIServices:
             task_status, waiting = self._guard_task_state(request, warnings, revision)
         except Exception as exc:
             return {
-                **base, "success": False, "terminal": True, "retryable": False,
+                "success": False, "terminal": True, "retryable": False,
                 "stop_code": "context_task_state_unavailable",
                 "error": f"context task state unavailable: {type(exc).__name__}",
                 "context": "", "evidence": [],
@@ -7137,50 +7268,8 @@ class LocalAIServices:
 
     @staticmethod
     def _external_candidate_paths(root: str, payload: Any) -> list[str]:
-        """Extract safe, existing repository-relative paths from backend payloads."""
-        root_path = Path(root).resolve(strict=False)
-        path_keys = {"path", "relative_path", "file_path", "filename", "module_path", "source_path"}
-        found: list[str] = []
-        visited = 0
-
-        def add_path(raw_path: str | Path) -> None:
-            candidate_text = str(raw_path).strip()
-            candidate = Path(candidate_text).expanduser()
-            if not candidate.is_absolute():
-                candidate = root_path / Path(candidate_text.replace("\\", "/"))
-            try:
-                resolved = candidate.resolve(strict=False)
-                resolved.relative_to(root_path)
-                if resolved.is_file():
-                    relative = resolved.relative_to(root_path).as_posix()
-                    if relative not in found:
-                        found.append(relative)
-            except (OSError, ValueError):
-                pass
-
-        def visit(value: Any) -> None:
-            nonlocal visited
-            if visited >= 500:
-                return
-            visited += 1
-            if isinstance(value, dict):
-                for key, item in value.items():
-                    if str(key).lower() in path_keys and isinstance(item, (str, Path)):
-                        add_path(item)
-                    else:
-                        if (
-                            isinstance(key, str)
-                            and ("/" in key or "\\" in key)
-                            and isinstance(item, (dict, list, tuple))
-                        ):
-                            add_path(key)
-                        visit(item)
-            elif isinstance(value, (list, tuple)):
-                for item in value:
-                    visit(item)
-
-        visit(payload)
-        return found
+        """Compatibility entry point for external backend path normalization."""
+        return collect_external_candidate_paths(root, payload)
 
     def _external_context_candidates(
         self, root: str, query: str, *, timeout_budget: float | None = None
@@ -7322,7 +7411,7 @@ class LocalAIServices:
             except (TypeError, ValueError, OverflowError):
                 return default
 
-        backend_deadline = started_at + max(
+        backend_budget_seconds = max(
             bounded_timeout("context_backend_timeout_seconds", 1.0),
             bounded_timeout("context_rag_timeout_seconds", 3.0),
         )
@@ -7429,6 +7518,10 @@ class LocalAIServices:
         except (TypeError, ValueError, OverflowError):
             confidence_threshold = 0.80
         confident_builtin = quality_first and confidence >= confidence_threshold
+        # Synchronous workspace/index preparation above is outside this optional
+        # backend budget. Start it only when the bounded backends can actually run.
+        preparation_ms = round((time.perf_counter() - started_at) * 1000.0, 3)
+        backend_deadline = time.perf_counter() + backend_budget_seconds
         remaining_budget = max(0.0, backend_deadline - time.perf_counter())
         request_optional = not confident_builtin
         rag_ready = bool(
@@ -7490,6 +7583,7 @@ class LocalAIServices:
             "confidence": round(confidence, 4),
             "threshold": round(confidence_threshold, 4),
             "selected_backends": selected_backends,
+            "preparation_ms": preparation_ms,
             "remaining_budget_ms": round(remaining_budget * 1000, 3),
         }
         hinted_paths = [
@@ -8251,11 +8345,21 @@ class LocalAIServices:
                 else "expanded" if max_context_tokens >= 4200
                 else "standard"
             )
-            task_input = task.encode("utf-8", errors="replace")[:8192].decode("utf-8", errors="ignore").strip()
+            # Leave room for useful, provenance-verified source context while
+            # keeping all raw training fields below the 16 KiB aggregate cap.
+            task_input = task.encode("utf-8", errors="replace")[:4096].decode("utf-8", errors="ignore").strip()
             training_content = {"task_input": task_input} if task_input else {}
             model_response = self._laya_model_response_excerpt(result)
             if model_response:
-                training_content["model_response"] = model_response
+                training_content["model_response"] = model_response.encode("utf-8", errors="replace")[:4096].decode("utf-8", errors="ignore").strip()
+            context_excerpt = self._laya_verified_context_excerpt(
+                getattr(self, "evidence_store", None),
+                packed_evidence_ids[:64],
+                root=str(packed.get("root") or root),
+                max_bytes=6 * 1024,
+            )
+            if context_excerpt:
+                training_content["context_excerpt"] = context_excerpt
             decision_state = {
                 "task_type": str(initial_route.get("task_type", "general")),
                 "complexity": str(initial_route.get("complexity", "fast")),
@@ -8342,6 +8446,69 @@ class LocalAIServices:
         finally:
             CURRENT_REQUEST_CANCEL_EVENT.reset(token)
 
+    def _available_laya_model_route_options(
+        self, current_role: str, *, project_settings: Any = None, use_cache: bool = True,
+    ) -> frozenset[str]:
+        """Expose only distinct model routes whose exact installed digest is verified."""
+        from .laya_decisions import filter_verified_model_route_options
+
+        router = getattr(self, "router", None)
+        model_for_role = getattr(router, "model_for_role", None)
+        if not callable(model_for_role):
+            return frozenset()
+        runtime = getattr(self, "runtime", None)
+        if runtime is None:
+            return frozenset()
+        is_online = getattr(runtime, "is_online", None)
+        if callable(is_online) and not is_online():
+            return frozenset()
+
+        models_by_role: dict[str, str] = {}
+        installed_digests: dict[str, str] = {}
+        roles = ("fast_code", "heavy_code", "reasoning", "general")
+        now = time.monotonic()
+        digest_cache = getattr(self, "_laya_digest_cache", None)
+        if not isinstance(digest_cache, dict):
+            digest_cache = {}
+            self._laya_digest_cache = digest_cache
+
+        for role in roles:
+            try:
+                model = model_for_role(role)
+            except Exception:
+                model = ""
+            if not isinstance(model, str) or not model.strip():
+                models_by_role[role] = ""
+                continue
+            if project_settings is not None:
+                try:
+                    model, _ = self.model_policy.apply_project_settings(
+                        model, {"model": model}, settings=project_settings, role=role,
+                    )
+                except Exception:
+                    models_by_role[role] = ""
+                    continue
+            model = str(model or "").strip()
+            models_by_role[role] = model
+            if not model or model in installed_digests:
+                continue
+            cached_entry = digest_cache.get(model) if use_cache else None
+            if cached_entry is not None and (now - cached_entry[0]) < 60.0:
+                digest = cached_entry[1]
+            else:
+                try:
+                    digest = runtime.model_digest(model)
+                except Exception:
+                    digest = None
+                digest_cache[model] = (now, digest)
+            if isinstance(digest, str):
+                installed_digests[model] = digest
+
+        verified = filter_verified_model_route_options(
+            models_by_role, installed_digests, current_role,
+        )
+        return verified
+
     def _queue_laya_solve_repo_observation(
         self, args: Mapping[str, Any], result: Any, *, tool_output_excerpt: str = "",
     ) -> None:
@@ -8372,6 +8539,15 @@ class LocalAIServices:
             "general": "generic",
         }.get(str(route.get("task_type", "")))
         if route_option is None:
+            return
+        project_context, _, _, _ = self._resolve_local_task_project(
+            args.get("root") or args.get("cwd", "")
+        )
+        project_settings = project_context.settings if project_context is not None else None
+        route_options = self._available_laya_model_route_options(
+            str(route.get("task_type", "")), project_settings=project_settings,
+        )
+        if route_option not in route_options:
             return
         evidence = repo_context.get("evidence")
         if not isinstance(evidence, (list, tuple)):
@@ -8417,7 +8593,7 @@ class LocalAIServices:
             {"task_id": args.get("task_id"), "evidence_ids": evidence_ids},
             root=str(args.get("root") or ""),
             category="model_route",
-            options=["fast", "smart", "generic"],
+            options=[option for option in ("fast", "smart", "generic") if option in route_options],
             state=state,
             training_content=training_content,
             baseline={

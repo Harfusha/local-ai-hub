@@ -129,6 +129,7 @@ def test_old_async_attempt_cannot_overwrite_new_result(tmp_path, monkeypatch):
         with closing(sqlite3.connect(str(manager.path), timeout=0.75)) as initialized_disk_db:
             initialized_disk_db.backup(anchor)
         monkeypatch.setattr(manager, "_connect", connect_shared_memory)
+        monkeypatch.setattr(manager, "_connect_for_finalization", connect_shared_memory)
 
         submission = manager.submit("reason", {"task": "audit", "request_id": "audit-isolated-stale"})
         assert submission["success"] is True, submission

@@ -442,6 +442,78 @@ def test_missing_answer_abstains(tmp_path):
     assert result.decision.reason_codes == ("LOW_SIGNAL",)
 
 
+def test_predict_failure_is_recorded_with_runtime_metadata_but_no_error_text(tmp_path):
+    class FailingAgent(FakeAgent):
+        def predict(self, _state, _questions):
+            raise RuntimeError("private prediction failure")
+
+    model = adapter(tmp_path, lambda _path, *, device, expected_sha256: FailingAgent(device))
+    request, evidence = request_and_evidence()
+    recorded = []
+
+    result = model.evaluate_context_source(
+        request,
+        evidence,
+        session_lifecycle=lifecycle(),
+        outcome_recorder=lambda *args: recorded.append(args),
+    )
+
+    assert result.decision.status is DecisionStatus.ERROR
+    assert result.decision.reason_codes == ("MODEL_UNAVAILABLE",)
+    assert result.runtime is not None
+    assert result.runtime.device == "cuda:0"
+    assert result.runtime.execution_verification == "NOT_VERIFIED"
+    assert result.runtime.quality_status == "NOT_EVALUATED"
+    assert result.runtime.input_tokens is None
+    assert result.runtime.output_tokens is None
+    assert result.runtime.fallback_reason == "PREDICTION_FAILED"
+    assert result.capture_status == "captured"
+    assert len(recorded) == 1
+    assert recorded[0][2].decision is result.decision
+    assert "private prediction failure" not in repr(recorded[0][2])
+
+
+def test_provider_load_failure_is_not_recorded_as_an_executed_example(tmp_path):
+    def load(_path, *, device, expected_sha256):
+        raise RuntimeError("private provider failure")
+
+    model = adapter(tmp_path, load)
+    request, evidence = request_and_evidence()
+    calls = []
+    result = model.evaluate_context_source(
+        request,
+        evidence,
+        session_lifecycle=lifecycle(),
+        outcome_recorder=lambda *args: calls.append(args),
+    )
+
+    assert result.decision.status is DecisionStatus.ERROR
+    assert result.runtime is None
+    assert result.capture_status == "not_requested"
+    assert calls == []
+
+
+def test_prediction_capacity_failure_does_not_capture_raw_example(tmp_path):
+    class CapacityFailingAgent(FakeAgent):
+        def predict(self, _state, _questions):
+            raise RuntimeError("CUDA out of memory")
+
+    model = adapter(tmp_path, lambda _path, *, device, expected_sha256: CapacityFailingAgent(device))
+    request, evidence = request_and_evidence()
+    calls = []
+    result = model.evaluate_context_source(
+        request,
+        evidence,
+        session_lifecycle=lifecycle(),
+        outcome_recorder=lambda *args: calls.append(args),
+    )
+
+    assert result.decision.status is DecisionStatus.ERROR
+    assert result.runtime is None
+    assert result.capture_status == "not_requested"
+    assert calls == []
+
+
 def test_provider_failure_falls_back_once_to_next_eligible_device(tmp_path):
     attempts = []
 
@@ -461,23 +533,55 @@ def test_provider_failure_falls_back_once_to_next_eligible_device(tmp_path):
     assert result.runtime.fallback_reason == "EARLIER_DEVICE_UNAVAILABLE"
 
 
-def test_concurrent_evaluation_is_rejected_as_overloaded(tmp_path):
+def test_concurrent_evaluation_waits_and_records_queue_latency(tmp_path):
     entered, release = threading.Event(), threading.Event()
     model = adapter(tmp_path, lambda _path, *, device, expected_sha256: FakeAgent(device, entered=entered, release=release))
     request, evidence = request_and_evidence()
-    output = []
-    worker = threading.Thread(
-        target=lambda: output.append(model.evaluate_context_source(request, evidence, session_lifecycle=lifecycle()))
+    shared_lifecycle = lifecycle()
+    second_request = replace(request, decision_id="decision-2")
+    first_result = []
+    first_thread = threading.Thread(
+        target=lambda: first_result.append(
+            model.evaluate_context_source(request, evidence, session_lifecycle=shared_lifecycle)
+        )
     )
-    worker.start()
+    second_started, second_finished = threading.Event(), threading.Event()
+    second_result = []
+
+    def evaluate_second():
+        second_started.set()
+        try:
+            second_result.append(
+                model.evaluate_context_source(second_request, evidence, session_lifecycle=shared_lifecycle)
+            )
+        finally:
+            second_finished.set()
+
+    second_thread = threading.Thread(target=evaluate_second)
+    first_thread.start()
     assert entered.wait(2)
-    second = model.evaluate_context_source(request, evidence, session_lifecycle=lifecycle())
-    release.set()
-    worker.join(2)
-    assert not worker.is_alive()
-    assert second.decision.status is DecisionStatus.SKIPPED
-    assert second.decision.reason_codes == ("OVERLOADED",)
-    assert output[0].decision.suggestion == "artifact"
+    second_thread.start()
+
+    try:
+        assert second_started.wait(1)
+        assert not second_finished.wait(0.1)
+    finally:
+        release.set()
+        first_thread.join(2)
+        second_thread.join(2)
+
+    assert not first_thread.is_alive()
+    assert not second_thread.is_alive()
+    assert len(first_result) == 1
+    assert len(second_result) == 1
+    assert first_result[0].decision.success is True
+    assert second_result[0].decision.success is True
+    assert second_result[0].runtime.latency_ms >= 50
+    assert second_result[0].runtime.adapter_queue_wait_ms >= 50
+    assert second_result[0].runtime.inference_latency_ms >= 0
+    assert second_result[0].runtime.latency_ms >= (
+        second_result[0].runtime.adapter_queue_wait_ms + second_result[0].runtime.inference_latency_ms
+    )
 
 
 def test_unconfirmed_provider_cleanup_stops_device_fallback(tmp_path):

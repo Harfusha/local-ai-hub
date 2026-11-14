@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+from pathlib import Path
 import threading
 from types import SimpleNamespace
 
@@ -8,6 +10,9 @@ import pytest
 from local_ai_hub.agent_surface import diagnostic_http_operation, diagnostic_mcp_operation
 from local_ai_hub import http_server, mcp_server
 from local_ai_hub.app import LocalAIApp
+from local_ai_hub.laya_candidates import LayaCandidateStore
+from local_ai_hub.laya_decisions import DecisionInput, DecisionMode, DecisionRequest
+from local_ai_hub.laya_lifecycle import LayaSessionLifecycle
 
 
 def _decision_operation() -> dict[str, object]:
@@ -17,8 +22,8 @@ def _decision_operation() -> dict[str, object]:
         "decision": {
             "category": "context_budget",
             "evidence_ids": ["ev-verified-1"],
-            "options": ["compact"],
-            "state": {"current_tokens": 1200},
+            "options": ["compact", "standard"],
+            "state": {"current_tokens": "1200"},
             "training_content": {
                 "task_input": "summarize indexed evidence",
                 "model_response": "Authorization: Bearer abc.def",
@@ -26,6 +31,45 @@ def _decision_operation() -> dict[str, object]:
             },
         },
     }
+
+
+def test_readme_laya_mcp_example_passes_typed_candidate_contract():
+    readme = (Path(__file__).resolve().parents[1] / "README.md").read_text(encoding="utf-8")
+    action_offset = readme.index('"action": "evaluate_decision"')
+    fence_start = readme.rfind("```json", 0, action_offset)
+    fence_end = readme.find("```", action_offset)
+    assert fence_start >= 0 and fence_end > action_offset
+    operation = json.loads(readme[fence_start + len("```json"):fence_end].strip())
+    operation["laya_operation"]["task_id"] = "task-wire-1"
+    decision = operation["laya_operation"]["decision"]
+    decision["evidence_ids"] = ["ev-verified-1"]
+
+    request = DecisionRequest.from_mapping(
+        {
+            "category": decision["category"],
+            "evidence_ids": decision["evidence_ids"],
+            "options": decision["options"],
+        },
+        decision_id="laya-wire-1",
+        mode=DecisionMode.SHADOW,
+        repository_id="repo-wire-1",
+        task_id=operation["laya_operation"]["task_id"],
+        session_id="session-wire-1",
+    )
+    decision_input = DecisionInput.from_mapping(
+        {"state": decision["state"], "training_content": decision["training_content"]}
+    )
+    LayaCandidateStore._candidate_input(
+        {
+            "decision_schema_version": "laya-decision-v1",
+            "category": request.category.value,
+            "state": decision_input.model_state(),
+            "options": list(request.options),
+            "language": "und",
+            "preprocessing": {"name": "laya-runtime", "version": "revision-1"},
+            "evidence_ids": list(request.evidence_ids),
+        }
+    )
 
 
 def _http_post_via_handler(monkeypatch, tmp_path, payload, *, app_overrides=None):
@@ -247,6 +291,7 @@ def test_mcp_curate_dataset_forwards_scoped_candidate_get(monkeypatch, tmp_path)
         ("reject", False),
         ("delete", False),
         ("prepare_splits", False),
+        ("evaluate_snapshot", False),
         ("export", False),
         ("capture", True),
         ("capture_batch", True),
@@ -293,6 +338,41 @@ def test_laya_http_wire_accepts_typed_shape_and_rejects_extra_nested_fields(monk
     assert invalid_mode_body["error"] == "Laya decision fields invalid"
 
 
+def test_app_laya_close_callback_uses_capacity_aware_adapter_close():
+    app = object.__new__(LocalAIApp)
+    app._laya_runtime_adapter_lock = threading.Lock()
+    session = object()
+    closed = []
+    app._laya_runtime_adapter = SimpleNamespace(
+        _close_with_capacity=lambda value: closed.append(value) or True
+    )
+
+    class Clock:
+        now = 0.0
+
+        def __call__(self):
+            return self.now
+
+    clock = Clock()
+    lifecycle = LayaSessionLifecycle(
+        600,
+        close_session=app._close_laya_runtime_session,
+        clock=clock,
+    )
+    assert lifecycle.status["provider_close_configured"] is True
+
+    with lifecycle.inference_session(lambda: session) as loaded:
+        assert loaded is session
+    clock.now = 599.999
+    assert lifecycle.poll_idle_unload() == "not_idle"
+    clock.now = 600.0
+    assert lifecycle.poll_idle_unload() == "unloaded"
+    assert closed == [session]
+
+    app._laya_runtime_adapter = SimpleNamespace()
+    assert app._close_laya_runtime_session(session) is False
+
+
 def test_laya_runtime_adapter_uses_shared_scheduler_for_capacity(monkeypatch):
     from local_ai_hub import laya_runtime
 
@@ -332,6 +412,11 @@ def test_mcp_curate_dataset_forwards_runtime_status(monkeypatch, tmp_path):
             "success": True,
             "service_available": True,
             "model_resident": False,
+            "runtime": {
+                "model_configuration": "unconfigured",
+                "missing_configuration_fields": ["checkpoint_path", "revision", "expected_sha256"],
+                "runtime_verification": "NOT_VERIFIED",
+            },
         }),
     )
 
@@ -343,12 +428,15 @@ def test_mcp_curate_dataset_forwards_runtime_status(monkeypatch, tmp_path):
     )
 
     assert result["success"] is True
+    assert result["runtime"]["model_configuration"] == "unconfigured"
     assert calls[0][1]["laya_operation"] == operation
 
 
 def test_http_curate_dataset_returns_laya_lifecycle_status(monkeypatch, tmp_path):
     lifecycle = {
         "available": False,
+        "model_configuration": "configured_unverified",
+        "missing_configuration_fields": [],
         "provider_close_configured": True,
         "idle_unload_seconds": 600.0,
         "inflight": 0,

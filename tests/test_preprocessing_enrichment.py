@@ -59,6 +59,15 @@ def test_unchanged_inventory_does_not_skip_pending_stub_enrichment(tmp_path):
         row = dict(prep._project_row(str(root)))
         assert prep._step_inventory(row) is True
         assert prep._project_row(str(root))["phase"] != "complete"
+        with closing(prep._connect()) as con:
+            con.execute("UPDATE projects SET status='complete',phase='complete' WHERE root=?", (str(root),))
+            con.commit()
+        complete_status = prep.status(str(root))["projects"][0]
+        assert complete_status["pending_stub_cards"] == 1
+        assert "Index complete" in complete_status["active_detail"]
+        assert "awaiting enrichment" in complete_status["active_detail"]
+        assert "card enrichments remain" in complete_status["waiting_reason"]
+        assert "100% ready" not in complete_status["active_detail"]
         snapshot = set_operational_mode(tmp_path / "state", "preprocessing")
         publish_preprocessing_ready(tmp_path / "state", snapshot)
         prep._consume_dirty_paths = lambda _root: {"notes.md"}

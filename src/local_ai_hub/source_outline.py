@@ -22,6 +22,7 @@ class OutlineSuccess(TypedDict):
 class OutlineFailure(TypedDict):
     success: Literal[False]
     error: str
+    error_code: NotRequired[str]
 
 
 OutlineResult = OutlineSuccess | OutlineFailure

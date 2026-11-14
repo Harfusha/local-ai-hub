@@ -220,3 +220,22 @@ def test_http_task_query_surfaces_scan_truncation(live_api, monkeypatch: pytest.
     assert result["success"] is True
     assert result["tasks"] == []
     assert result["query_truncated"] is True
+
+
+def test_count_matches_task_list_status_and_staleness_filters(store: TaskStore) -> None:
+    from local_ai_hub.agent_tasks import TaskStatus
+
+    _create(store, "active-count", "Active task")
+    _create(store, "planned-count", "Planned task")
+    store.transition(
+        "active-count",
+        TaskStatus.ACTIVE,
+        reason="count test",
+        actor="test",
+        idempotency_key="active-count-transition",
+    )
+
+    assert store.count(include_stale=False) == len(store.list_tasks(include_stale=False))
+    assert store.count(TaskStatus.ACTIVE, include_stale=False) == len(
+        store.list_tasks(status=TaskStatus.ACTIVE, include_stale=False)
+    )

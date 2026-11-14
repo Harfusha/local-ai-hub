@@ -457,6 +457,24 @@ class TestWriteAllGenerated:
         assert (tmp_path / "generated" / "schemas" / "local_ai_repo.json").exists()
 
 
+def test_high_profile_generated_policy_fits_antigravity_rule_cap(tmp_path: Path):
+    from local_ai_hub.config import deep_merge
+    from local_ai_hub.hardware import profile_overrides
+
+    config = tomllib.loads((ROOT / "src" / "local_ai_hub" / "defaults.toml").read_text(encoding="utf-8"))
+    config = deep_merge(config, profile_overrides("high"))
+    config.setdefault("hardware", {})["profile"] = "high"
+
+    write_all_generated(config, tmp_path)
+
+
+def test_ci_generation_does_not_deploy_agent_configs():
+    workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+
+    assert "python -m local_ai_hub.generator --config src/local_ai_hub/defaults.toml --output-dir ." in workflow
+    assert "python tools/hubctl.py generate" not in workflow
+
+
 class TestMcpServerDynamicRegistration:
     def test_mcp_server_unregisters_disabled_tools(self, monkeypatch):
         import local_ai_hub.mcp_server as mcp_mod

@@ -65,6 +65,8 @@ class _FailingConnection:
         return getattr(self._connection, name)
 
     def execute(self, sql, parameters=()):
+        if self._fail_commit and sql.lstrip().upper() == "COMMIT":
+            raise sqlite3.OperationalError("injected commit failure")
         if sql.lstrip().upper().startswith("INSERT OR REPLACE INTO ARTIFACTS"):
             self.inserts += 1
             if self.inserts == self._fail_insert:
@@ -72,8 +74,6 @@ class _FailingConnection:
         return self._connection.execute(sql, parameters)
 
     def commit(self):
-        if self._fail_commit:
-            raise sqlite3.OperationalError("injected commit failure")
         return self._connection.commit()
 
 

@@ -3554,7 +3554,8 @@ class RepositoryTools:
         return {"success": True, "root": str(base), "stale": stale > 0, "stale_count": stale, "checked": checked}
 
     def git_diff(self, root: str, base: str = "HEAD", staged: bool = False, max_tokens: int = 10000,
-                 *, rev1: str | None = None, rev2: str | None = None, path: str | None = None) -> dict[str, Any]:
+                 *, rev1: str | None = None, rev2: str | None = None, path: str | None = None,
+                 include_snapshot_metadata: bool = True) -> dict[str, Any]:
         repo = self._root(root)
         revision_mode = rev1 is not None or rev2 is not None
         if revision_mode and (staged or rev1 is None or rev2 is None):
@@ -3689,69 +3690,85 @@ class RepositoryTools:
         if truncated:
             text += "\n\n[... additional diff sections omitted to fit local review budget ...]\n"
         changed: list[str] = []
+        can_reuse_diff_paths = not truncated
         retained_stdout = stdout_retained.decode("utf-8", errors="replace")
         for line in retained_stdout.splitlines():
+            if not line.startswith("diff --git "):
+                continue
             if not line.startswith("diff --git a/"):
+                can_reuse_diff_paths = False
                 continue
             match = re.match(r"diff --git a/(.+?) b/(.+)$", line)
             if match:
-                changed.append(match.group(2))
-        path_names: list[str] = []
-        path_pending = bytearray()
-        path_capture_error = ""
+                old_path, new_path = match.groups()
+                if old_path != new_path or not re.fullmatch(r"[A-Za-z0-9_./@+-]+", new_path):
+                    can_reuse_diff_paths = False
+                changed.append(new_path)
+            else:
+                can_reuse_diff_paths = False
+        if can_reuse_diff_paths:
+            path_names = list(dict.fromkeys(changed))
+        else:
+            path_names: list[str] = []
+            path_pending = bytearray()
+            path_capture_error = ""
 
-        def collect_path_chunk(chunk: bytes) -> None:
-            nonlocal path_capture_error
-            if path_capture_error:
-                return
-            if len(path_names) >= 4096:
-                path_capture_error = "path count cap reached"
-                return
-            data = bytes(path_pending) + chunk
-            pieces = data.split(b"\0")
-            tail = pieces.pop()
-            if len(tail) > 4096:
-                path_capture_error = "path byte cap reached"
-                return
-            path_pending.clear()
-            path_pending.extend(tail)
-            for piece in pieces:
-                if not piece:
-                    continue
-                if len(piece) > 4096:
-                    path_capture_error = "path byte cap reached"
+            def collect_path_chunk(chunk: bytes) -> None:
+                nonlocal path_capture_error
+                if path_capture_error:
                     return
                 if len(path_names) >= 4096:
                     path_capture_error = "path count cap reached"
                     return
-                path_names.append(piece.decode("utf-8", errors="replace"))
+                data = bytes(path_pending) + chunk
+                pieces = data.split(b"\0")
+                tail = pieces.pop()
+                if len(tail) > 4096:
+                    path_capture_error = "path byte cap reached"
+                    return
+                path_pending.clear()
+                path_pending.extend(tail)
+                for piece in pieces:
+                    if not piece:
+                        continue
+                    if len(piece) > 4096:
+                        path_capture_error = "path byte cap reached"
+                        return
+                    if len(path_names) >= 4096:
+                        path_capture_error = "path count cap reached"
+                        return
+                    path_names.append(piece.decode("utf-8", errors="replace"))
 
-        path_cmd = ["git", "-C", str(repo), "diff", "--no-ext-diff", "--no-textconv", "--name-only", "-z", *selectors, *pathspec]
-        path_result = bounded_process(path_cmd, 0, on_stdout_chunk=collect_path_chunk)
-        if path_capture_error:
-            return {
-                "success": False,
-                "error": f"git diff path capture failed: {path_capture_error}",
-                "terminal": False,
-                "retryable": True,
-                "paths_complete": False,
-            }
-        if path_result.get("returncode") is None or path_result.get("returncode") != 0:
-            path_error = bytes(path_result.get("stderr", b"")).decode("utf-8", errors="replace").strip()
-            return {
-                "success": False,
-                "error": f"git diff path capture failed: {path_error or path_result.get('error', 'non-zero exit')}",
-                "terminal": False,
-                "retryable": bool(path_result.get("retryable", True)),
-                "paths_complete": False,
-            }
-        if path_pending and len(path_names) < 4096:
-            path_names.append(bytes(path_pending)[:4096].decode("utf-8", errors="replace"))
-        snapshot = self.git_snapshot(str(repo))
+            path_cmd = ["git", "-C", str(repo), "diff", "--no-ext-diff", "--no-textconv", "--name-only", "-z", *selectors, *pathspec]
+            path_result = bounded_process(path_cmd, 0, on_stdout_chunk=collect_path_chunk)
+            if path_capture_error:
+                return {
+                    "success": False,
+                    "error": f"git diff path capture failed: {path_capture_error}",
+                    "terminal": False,
+                    "retryable": True,
+                    "paths_complete": False,
+                }
+            if path_result.get("returncode") is None or path_result.get("returncode") != 0:
+                path_error = bytes(path_result.get("stderr", b"")).decode("utf-8", errors="replace").strip()
+                return {
+                    "success": False,
+                    "error": f"git diff path capture failed: {path_error or path_result.get('error', 'non-zero exit')}",
+                    "terminal": False,
+                    "retryable": bool(path_result.get("retryable", True)),
+                    "paths_complete": False,
+                }
+            if path_pending and len(path_names) < 4096:
+                path_names.append(bytes(path_pending)[:4096].decode("utf-8", errors="replace"))
+        snapshot = self.git_snapshot(str(repo)) if include_snapshot_metadata else None
         changed_files = list(dict.fromkeys(path_names + changed))
-        changed_paths = changed_files if revision_mode or path else list(dict.fromkeys(changed_files + list(snapshot.changed_paths)))
+        changed_paths = (
+            changed_files
+            if revision_mode or path or snapshot is None
+            else list(dict.fromkeys(changed_files + list(snapshot.changed_paths)))
+        )
         untracked: list[str] = []
-        if not staged and not revision_mode:
+        if snapshot is not None and not staged and not revision_mode:
             path_filter = path.replace("\\", "/").rstrip("/") if path else ""
             untracked = sorted(
                 item for item, state in snapshot.status.items()
@@ -3759,10 +3776,10 @@ class RepositoryTools:
             )
         return {
             "success": True, "root": str(repo), "diff": text, "changed_files": changed_files,
-            "changed_paths": changed_paths, "revision": snapshot.revision,
+            "changed_paths": changed_paths, "revision": snapshot.revision if snapshot else None,
             "untracked_files_excluded": untracked[:100],
-            "untracked_inventory_complete": not snapshot.degraded and len(untracked) <= 100,
-            "repository_revision": snapshot.repository_revision,
+            "untracked_inventory_complete": bool(snapshot is not None and not snapshot.degraded and len(untracked) <= 100),
+            "repository_revision": snapshot.repository_revision if snapshot else None,
             "estimated_tokens": estimate_tokens(text),
             "original_estimated_tokens": max(estimate_tokens(text), (stdout_total + 3) // 4),
             "truncated": truncated, "diff_sha256": content_result["sha256"],
@@ -3781,6 +3798,8 @@ class RepositoryTools:
         staged: bool = False,
         max_symbols: int = 48,
         max_dependents: int = 30,
+        *,
+        diff_result: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Cheap generic change-impact/test targeting without invoking an LLM.
 
@@ -3789,7 +3808,9 @@ class RepositoryTools:
         useful before spending cloud context.
         """
         repo = self._root(root)
-        diff = self.git_diff(str(repo), base=base, staged=staged, max_tokens=2500)
+        diff = diff_result if isinstance(diff_result, dict) else self.git_diff(
+            str(repo), base=base, staged=staged, max_tokens=2500
+        )
         if not diff.get("success"):
             return diff
         changed_files = [str(x) for x in diff.get("changed_files", [])]

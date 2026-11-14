@@ -680,9 +680,14 @@ class BoundedWriteTransaction:
     def commit(self) -> None:
         if not self.active:
             raise RuntimeError("write transaction is no longer active")
-        if time.monotonic() - self.started > self.max_duration_seconds:
+        elapsed_seconds = time.monotonic() - self.started
+        if elapsed_seconds > self.max_duration_seconds:
             self._rollback()
-            raise TimeoutError("SQLite write transaction exceeded its duration budget")
+            raise TimeoutError(
+                "SQLite write transaction exceeded its duration budget "
+                f"({self.rollback_label}; elapsed_ms={round(elapsed_seconds * 1000)}; "
+                f"budget_ms={round(self.max_duration_seconds * 1000)})"
+            )
         try:
             self.con.execute("COMMIT")
         except BaseException:

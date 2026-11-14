@@ -34,6 +34,7 @@ from .token_accounting import json_tokens
 MAX_TASK_QUERY_SCAN_ROWS = 10_000
 MAX_TASK_REAP_BATCH = 64
 MAX_AGENT_QUESTION_BYTES = 16_384
+_AGENT_TASK_WRITE_TIMEOUT_SECONDS = 2.0
 
 
 MAX_TRAINING_DATASET_BYTES = 16 * 1024 * 1024
@@ -2147,16 +2148,27 @@ class TaskStore:
         tasks = [self._row_to_state(row) for row in rows]
         return TaskList(tasks[:page_size], query_truncated=query_truncated)
 
-    def count(self, status: TaskStatus | None = None) -> int:
+    def count(self, status: TaskStatus | None = None, *, include_stale: bool = True) -> int:
         if not self._db_path_available():
             return 0
         self._init_projection_table()
         def _fetch_count() -> int:
             with closing(connect_sqlite(self.state_store.db_path)) as con:
+                where_clauses = []
+                params = []
                 if status is not None:
-                    row = con.execute("SELECT COUNT(1) FROM agent_tasks_projection WHERE status = ?", (status.value,)).fetchone()
-                else:
-                    row = con.execute("SELECT COUNT(1) FROM agent_tasks_projection").fetchone()
+                    where_clauses.append("status = ?")
+                    params.append(status.value)
+                if not include_stale:
+                    where_clauses.append(
+                        "(status IN ('completed', 'cancelled', 'failed', 'abandoned') "
+                        "OR NOT (heartbeat_expires_at > 0 AND heartbeat_expires_at < ?))"
+                    )
+                    params.append(time.time())
+                where_sql = (" WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
+                row = con.execute(
+                    f"SELECT COUNT(1) FROM agent_tasks_projection{where_sql}", params
+                ).fetchone()
                 return int(row[0]) if row else 0
 
         return retry_busy(_fetch_count, retries=5, base_delay_seconds=0.02)
@@ -4427,7 +4439,8 @@ class TaskStore:
         def _do_commit(con: sqlite3.Connection) -> tuple[TaskState, list[AgentEvent]]:
             published.clear()
             with write_transaction(
-                con, max_duration_seconds=0.25, rollback_label="Agent task create"
+                con, max_duration_seconds=_AGENT_TASK_WRITE_TIMEOUT_SECONDS,
+                rollback_label="Agent task create"
             ):
                 existing = con.execute(
                     """
@@ -4488,7 +4501,7 @@ class TaskStore:
                         published.append(appended.event)
                 return state, published
         res = self._run_ordered_task_write(
-            _do_commit, timeout_seconds=0.25
+            _do_commit, timeout_seconds=_AGENT_TASK_WRITE_TIMEOUT_SECONDS
         )
         try:
             self._sync_project_plan_checkpoint(res)
@@ -4564,7 +4577,8 @@ class TaskStore:
         def _do_commit(con: sqlite3.Connection) -> tuple[TaskState, list[AgentEvent]]:
             published.clear()
             with write_transaction(
-                con, max_duration_seconds=0.25, rollback_label="Agent task update"
+                con, max_duration_seconds=_AGENT_TASK_WRITE_TIMEOUT_SECONDS,
+                rollback_label="Agent task update"
             ):
                 if event.idempotency_key:
                     existing = con.execute(
@@ -4622,7 +4636,9 @@ class TaskStore:
                 return updated, published
         root = _task_scope_root(current)
         if not root:
-            return self._run_ordered_task_write(_do_commit, timeout_seconds=0.25)
+            return self._run_ordered_task_write(
+                _do_commit, timeout_seconds=_AGENT_TASK_WRITE_TIMEOUT_SECONDS
+            )
 
         from .file_locks import exclusive_file_update
         from .repo_plan.agent_bridge import TaskBindingManager, project_checkpoint_fields
@@ -4677,7 +4693,9 @@ class TaskStore:
                 if len(record["entries"]) > 64:
                     raise ValueError("too many pending checkpoint updates")
                 self._write_plan_sync_intent(pending, record)
-            res = self._run_ordered_task_write(_do_commit, timeout_seconds=0.25)
+            res = self._run_ordered_task_write(
+                _do_commit, timeout_seconds=_AGENT_TASK_WRITE_TIMEOUT_SECONDS
+            )
         try:
             self._sync_project_plan_checkpoint(res)
         except Exception as exc:

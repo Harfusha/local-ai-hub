@@ -91,3 +91,41 @@ def test_live_status_includes_concurrency_snapshot_for_managed_server(monkeypatc
     handler._handle_get_live_status({})
 
     assert responses == [(200, {**snapshot, "http_concurrency": concurrency})]
+
+
+def test_agent_state_summary_uses_exact_count_apis() -> None:
+    from local_ai_hub.agent_tasks import TaskStatus
+    from local_ai_hub.app import LocalAIApp
+
+    task_count_calls = []
+
+    def count_tasks(status=None, *, include_stale=True):
+        task_count_calls.append((status, include_stale))
+        return 137 if status is None else 3
+
+    fake = SimpleNamespace(
+        agent_state=SimpleNamespace(enabled=True),
+        agent_tasks=SimpleNamespace(
+            count=count_tasks,
+            list_tasks=lambda **_kwargs: pytest.fail("status must not load task records"),
+        ),
+        agent_incidents=SimpleNamespace(
+            summary_count=lambda: 211,
+            list_incidents=lambda **_kwargs: pytest.fail("status must not load incident records"),
+        ),
+        agent_learning=SimpleNamespace(
+            candidate_count=lambda: 307,
+            list_candidates=lambda **_kwargs: pytest.fail("status must not load candidates"),
+        ),
+        agent_memory=SimpleNamespace(count=lambda: 401),
+        config={"agent_state": {"retention_days": 30}},
+    )
+
+    summary = LocalAIApp._agent_state_summary(fake)
+
+    assert summary["tasks_count"] == 137
+    assert summary["active_tasks_count"] == 3
+    assert summary["incidents_count"] == 211
+    assert summary["candidates_count"] == 307
+    assert summary["memory_records_count"] == 401
+    assert task_count_calls == [(TaskStatus.ACTIVE, False), (None, False)]

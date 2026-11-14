@@ -4,6 +4,7 @@ from .json_utils import dumps as json_dumps
 
 import stat
 import io
+import ipaddress
 import json
 import re
 import sqlite3
@@ -17,6 +18,7 @@ from concurrent.futures import CancelledError
 from copy import deepcopy
 from pathlib import Path
 from typing import Any, Mapping
+from urllib.parse import urlsplit
 
 from . import __version__
 from .artifacts import ArtifactStore
@@ -81,14 +83,45 @@ from .status_executor import StatusDependencyExecutor
 
 _LAYA_SECRET_PATTERNS = (
     re.compile(r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----.*?-----END [A-Z0-9 ]*PRIVATE KEY-----", re.DOTALL),
+    re.compile(r"\b(Bearer|Basic)\s+[A-Za-z0-9._~+/=-]+", re.IGNORECASE),
     re.compile(
         r"\b((?:api[_-]?key|access[_-]?token|refresh[_-]?token|client[_-]?secret|password|passwd|secret|token|authorization|credential)\b\s*[:=]\s*)(?:\"[^\"]*\"|'[^']*'|[^\s,;]+)",
         re.IGNORECASE,
     ),
-    re.compile(r"\b(Bearer|Basic)\s+[A-Za-z0-9._~+/=-]+", re.IGNORECASE),
     re.compile(r"\b(?:gh[pousr]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-(?:proj-)?[A-Za-z0-9_-]{20,})\b"),
     re.compile(r"(https?://[^/\s:@]+:)[^@\s/]+(@)", re.IGNORECASE),
 )
+
+
+def _laya_review_endpoint_is_loopback(value: Any) -> bool:
+    """Return whether a configured HTTP endpoint has an explicitly local host."""
+    if type(value) is not str or not value or len(value) > 2048:
+        return False
+    try:
+        parsed = urlsplit(value)
+        host = parsed.hostname
+        # Avoid credentials, query/fragment ambiguity, non-HTTP transports, and
+        # DNS names whose eventual address cannot be safely pinned here.
+        if (
+            parsed.scheme not in {"http", "https"}
+            or not parsed.netloc
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.query
+            or parsed.fragment
+            or not host
+            or "%" in host
+        ):
+            return False
+        _ = parsed.port  # Validate malformed/out-of-range ports.
+    except ValueError:
+        return False
+    if host.casefold() == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
 
 
 def _redact_laya_training_text(value: str) -> str:
@@ -553,7 +586,12 @@ class LocalAIApp:
             local_model_reviewer=self._review_laya_candidate_locally,
         )
         self.agent_tasks.set_laya_completion_observer(self.queue_laya_completion_observation)
-        self.laya_lifecycle = LayaSessionLifecycle(DEFAULT_IDLE_UNLOAD_SECONDS)
+        runtime_cfg = laya_cfg.get("runtime", {}) if isinstance(laya_cfg, dict) else {}
+        self.laya_lifecycle = LayaSessionLifecycle(
+            DEFAULT_IDLE_UNLOAD_SECONDS,
+            runtime_configuration=runtime_cfg if isinstance(runtime_cfg, dict) else {},
+            close_session=self._close_laya_runtime_session,
+        )
         self._laya_runtime_adapter_lock = threading.Lock()
         self._laya_runtime_adapter = None
         self._laya_capture_lock = threading.Lock()
@@ -1026,17 +1064,17 @@ class LocalAIApp:
     def _agent_state_summary(self) -> dict[str, Any]:
         if not getattr(self, "agent_state", None) or not self.agent_state.enabled:
             return {"enabled": False}
-        tasks = self.agent_tasks.list_tasks() if getattr(self, "agent_tasks", None) else []
-        incidents = self.agent_incidents.list_incidents() if getattr(self, "agent_incidents", None) else []
-        candidates = self.agent_learning.list_candidates() if getattr(self, "agent_learning", None) else []
+        task_store = getattr(self, "agent_tasks", None)
+        incident_store = getattr(self, "agent_incidents", None)
+        learning_store = getattr(self, "agent_learning", None)
         mem_count = self.agent_memory.count() if getattr(self, "agent_memory", None) else 0
         return {
             "enabled": True,
             "status": "healthy",
-            "active_tasks_count": len([task for task in tasks if task.status == TaskStatus.ACTIVE]),
-            "tasks_count": len(tasks),
-            "incidents_count": len(incidents),
-            "candidates_count": len(candidates),
+            "active_tasks_count": task_store.count(TaskStatus.ACTIVE, include_stale=False) if task_store else 0,
+            "tasks_count": task_store.count(include_stale=False) if task_store else 0,
+            "incidents_count": incident_store.summary_count() if incident_store else 0,
+            "candidates_count": learning_store.candidate_count() if learning_store else 0,
             "memory_records_count": mem_count,
             "retention_days": int(self.config.get("agent_state", {}).get("retention_days", 30)),
         }
@@ -1144,7 +1182,8 @@ class LocalAIApp:
                         "last_error_short", "waiting_reason", "active_detail",
                         "phase_index", "total_phases", "phase_progress_pct", "phase_progress_measured",
                         "speed_str", "eta_str", "progress_age_seconds", "last_complete_at",
-                        "files", "hashed_files", "code_index_files", "rag_files", "file_cards",
+                        "files", "hashed_files", "code_index_files", "rag_files",
+                        "rag_indexed_files", "rag_chunked_files", "rag_chunks", "file_cards",
                     ):
                         if key in item:
                             row[key] = item[key]
@@ -2519,6 +2558,15 @@ class LocalAIApp:
     def __exit__(self, _exc_type: Any, _exc: Any, _tb: Any) -> None:
         self.close()
 
+    def _close_laya_runtime_session(self, session: Any) -> bool:
+        """Close a lifecycle-owned model through its capacity-aware adapter."""
+        with self._laya_runtime_adapter_lock:
+            adapter = self._laya_runtime_adapter
+        close = getattr(adapter, "_close_with_capacity", None)
+        if not callable(close):
+            return False
+        return close(session) is True
+
     def _get_laya_runtime_adapter(
         self,
         runtime_cfg: Mapping[str, Any],
@@ -2597,6 +2645,15 @@ class LocalAIApp:
         model = models.get("reasoning") if isinstance(models, Mapping) else None
         if type(model) is not str or not model.strip():
             raise RuntimeError("configured local reasoning model is unavailable")
+        endpoint_runtime = self.runtime
+        runtime_for_model = getattr(self.runtime, "_runtime_for_model", None)
+        if callable(runtime_for_model):
+            try:
+                _tier, endpoint_runtime, _other_runtime = runtime_for_model(model)
+            except Exception as exc:
+                raise RuntimeError("configured local reasoning model is unavailable") from exc
+        if not _laya_review_endpoint_is_loopback(getattr(endpoint_runtime, "base_url", None)):
+            raise RuntimeError("local Laya model review requires a loopback Ollama endpoint")
         model_digest = getattr(self.runtime, "model_digest", None)
         runtime_version_reader = getattr(self.runtime, "version", None)
         backend_online = getattr(self.runtime, "is_online", None)
@@ -2844,7 +2901,12 @@ class LocalAIApp:
         }:
             raise ValueError("Laya decision input fields invalid")
 
-        from .laya_decisions import DecisionCategory, DecisionInput, DecisionMode, DecisionRequest
+        from .laya_decisions import (
+            DecisionCategory,
+            DecisionInput,
+            DecisionMode,
+            DecisionRequest,
+        )
         from .project_config import resolve_project_context
 
         laya_cfg = self.config.get("laya", {})
@@ -2903,6 +2965,8 @@ class LocalAIApp:
                 DecisionCategory.MODEL_ROUTE: "model_router_classify",
                 DecisionCategory.CONTEXT_BUDGET: "repo_context_token_budget",
                 DecisionCategory.COMPLETION_GAP: "agent_os_completion_gate",
+                DecisionCategory.WATCHDOG: "agent_os_task_lifecycle",
+                DecisionCategory.DELEGATION: "pipeline_worker_escalation",
             }.get(request.category)
             supplied_baseline = dict(_server_baseline)
             baseline_suggestion_valid = supplied_baseline.get("suggestion") in request.options
@@ -2962,8 +3026,17 @@ class LocalAIApp:
         }
 
     def _derive_laya_decision_baseline(self, request: Any, task: Any) -> dict[str, str] | None:
-        """Derive the completion-gap baseline from the authoritative Agent OS gate."""
-        from .laya_decisions import DecisionCategory
+        """Derive deterministic baselines from authoritative Hub state."""
+        from .laya_decisions import DecisionCategory, derive_watchdog_lifecycle_baseline
+
+        if request.category is DecisionCategory.WATCHDOG:
+            checkpoint = getattr(task, "checkpoint", None)
+            return derive_watchdog_lifecycle_baseline(
+                status=getattr(task, "status", None),
+                request_evidence_ids=getattr(request, "evidence_ids", ()),
+                checkpoint_evidence_ids=getattr(checkpoint, "evidence_ids", ()),
+                options=getattr(request, "options", ()),
+            )
 
         if request.category is not DecisionCategory.COMPLETION_GAP or not request.evidence_ids:
             return None
@@ -3243,6 +3316,7 @@ class LocalAIApp:
                 DecisionCategory.MODEL_ROUTE: "model_router_classify",
                 DecisionCategory.CONTEXT_BUDGET: "repo_context_token_budget",
                 DecisionCategory.COMPLETION_GAP: "agent_os_completion_gate",
+                DecisionCategory.DELEGATION: "pipeline_worker_escalation",
             }.get(request.category)
             baseline_value = dict(baseline)
             baseline_suggestion_valid = baseline_value.get("suggestion") in request.options
@@ -3420,6 +3494,25 @@ class LocalAIApp:
             if evidence_id:
                 source_rows[source_code] = {"evidence_id": evidence_id, "row": row}
 
+        lexical = retrieval.get("lexical") if isinstance(retrieval.get("lexical"), dict) else {}
+        semantic = retrieval.get("semantic") if isinstance(retrieval.get("semantic"), dict) else {}
+
+        def coverage_code(source_code: str) -> str:
+            if source_code == "memory":
+                return "partial"
+            metadata = semantic if source_code == "rag" else lexical
+            raw_coverage = metadata.get("coverage") if isinstance(metadata.get("coverage"), dict) else {}
+            if raw_coverage.get("complete") is True and metadata.get("truncated") is not True:
+                return "complete"
+            if raw_coverage.get("candidate_count", 0) or raw_coverage.get("included_evidence_count", 0):
+                return "partial"
+            return "incomplete"
+
+        if len(source_rows) >= 2 and all(
+            coverage_code(source_code) == "complete" for source_code in source_rows
+        ):
+            return {"status": "skipped", "reason": "no_unresolved_evidence_gap"}
+
         memory_store = getattr(self, "agent_memory", None)
         find_memory = getattr(memory_store, "find", None)
         if callable(find_memory):
@@ -3510,24 +3603,16 @@ class LocalAIApp:
         sources = list(source_rows.items())[:4]
         freshness: list[str] = []
         coverage: list[str] = []
-        lexical = retrieval.get("lexical") if isinstance(retrieval.get("lexical"), dict) else {}
-        semantic = retrieval.get("semantic") if isinstance(retrieval.get("semantic"), dict) else {}
         for source_code, _ in sources:
             if source_code == "memory":
                 freshness.append("current")
-                coverage.append("partial")
+                coverage.append(coverage_code(source_code))
                 continue
             metadata = semantic if source_code == "rag" else lexical
             raw_freshness = metadata.get("freshness") if isinstance(metadata.get("freshness"), dict) else {}
             freshness_status = raw_freshness.get("status")
             freshness.append("current" if freshness_status == "current" and result.get("stale") is not True else "unknown")
-            raw_coverage = metadata.get("coverage") if isinstance(metadata.get("coverage"), dict) else {}
-            if raw_coverage.get("complete") is True and metadata.get("truncated") is not True:
-                coverage.append("complete")
-            elif raw_coverage.get("candidate_count", 0) or raw_coverage.get("included_evidence_count", 0):
-                coverage.append("partial")
-            else:
-                coverage.append("incomplete")
+            coverage.append(coverage_code(source_code))
         if all(code == "complete" for code in coverage):
             return {"status": "skipped", "reason": "no_unresolved_evidence_gap"}
 

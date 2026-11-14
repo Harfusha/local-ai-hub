@@ -59,3 +59,31 @@ def test_real_context_evidence_shape_keeps_outcome_and_citations(tmp_path, monke
     assert len(requests) == 1
     assert requests[0][1]["mode"] == "adaptive"
     assert source == original
+
+
+@pytest.mark.parametrize("guard_fields", [
+    {"guarded": True},
+    {"focus": ["src/module.py"]},
+    {"changed_paths": ["src/module.py"]},
+])
+def test_guarded_context_without_task_id_is_rejected_before_http(tmp_path, monkeypatch, guard_fields):
+    requests = []
+
+    def post(path, payload, **_options):
+        requests.append((path, payload))
+        return {"success": True, "context": "should not be requested", "evidence": []}
+
+    monkeypatch.setattr(mcp_server.CLIENT, "post", post)
+    monkeypatch.setattr(mcp_server._ACCOUNTING_REPORTER, "record", lambda _event: None)
+    contents, structured = asyncio.run(mcp_server.mcp.call_tool("local_ai_repo", {
+        "action": "context", "root": str(tmp_path), "mode": "adaptive",
+        "query": "Inspect this source", **guard_fields,
+    }))
+    result = structured if structured is not None else json.loads(contents[0].text)
+
+    assert result["success"] is False
+    assert result["status_code"] == 400
+    assert result["terminal"] is True
+    assert result["retryable"] is False
+    assert "task_id" in result["error"]
+    assert requests == []

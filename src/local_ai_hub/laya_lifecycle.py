@@ -11,7 +11,7 @@ import math
 import threading
 import time
 from contextlib import contextmanager
-from typing import Any, Callable, Iterator
+from typing import Any, Callable, Iterator, Mapping
 
 DEFAULT_IDLE_UNLOAD_SECONDS = 600.0
 MAX_IDLE_UNLOAD_SECONDS = 86_400.0
@@ -36,10 +36,29 @@ class LayaSessionLifecycle:
         self,
         idle_unload_seconds: float = DEFAULT_IDLE_UNLOAD_SECONDS,
         *,
+        runtime_configuration: Mapping[str, Any] | None = None,
         close_session: Callable[[Any], Any] | None = None,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self.idle_unload_seconds = validate_idle_unload_seconds(idle_unload_seconds)
+        config = runtime_configuration if isinstance(runtime_configuration, Mapping) else {}
+        configured_fields = {
+            "checkpoint_path": isinstance(config.get("checkpoint_path"), str)
+            and bool(config.get("checkpoint_path", "").strip()),
+            "revision": isinstance(config.get("revision"), str)
+            and bool(config.get("revision", "").strip()),
+            "expected_sha256": isinstance(config.get("expected_sha256"), Mapping)
+            and bool(config.get("expected_sha256")),
+        }
+        self._missing_configuration_fields = tuple(
+            field for field, present in configured_fields.items() if not present
+        )
+        if not self._missing_configuration_fields:
+            self._model_configuration = "configured_unverified"
+        elif len(self._missing_configuration_fields) == len(configured_fields):
+            self._model_configuration = "unconfigured"
+        else:
+            self._model_configuration = "partial"
         self._close_session = close_session
         self._clock = clock
         self._condition = threading.Condition(threading.RLock())
@@ -60,6 +79,8 @@ class LayaSessionLifecycle:
         with self._condition:
             return {
                 "available": self._session is not None,
+                "model_configuration": self._model_configuration,
+                "missing_configuration_fields": list(self._missing_configuration_fields),
                 "provider_close_configured": self._close_session is not None,
                 "idle_unload_seconds": self.idle_unload_seconds,
                 "inflight": self._inflight,

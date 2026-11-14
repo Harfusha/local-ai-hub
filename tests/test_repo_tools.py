@@ -398,6 +398,39 @@ def test_repository_tools_returns_revision_and_changed_paths_for_guard(tmp_path:
     assert snapshot.changed_paths == ("main.py",)
 
 
+def test_http_git_diff_skips_unused_repository_snapshot(tmp_path: Path, monkeypatch):
+    from local_ai_hub.deterministic import DeterministicEngine
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    target = repo / "main.py"
+    target.write_text("VALUE = 1\n", encoding="utf-8")
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "-c", "user.email=test@example.invalid", "-c", "user.name=Test", "commit", "-qm", "initial"],
+        check=True,
+    )
+    target.write_text("VALUE = 2\n", encoding="utf-8")
+    tools = RepositoryTools(_cfg(tmp_path))
+
+    def unexpected_snapshot(*_args, **_kwargs):
+        raise AssertionError("HTTP git diff does not consume whole-repository snapshot metadata")
+
+    monkeypatch.setattr(tools, "git_snapshot", unexpected_snapshot)
+    engine = DeterministicEngine(_cfg(tmp_path), tools)
+    try:
+        result = engine.git_diff(str(repo), path="main.py")
+    finally:
+        observer = getattr(engine, "_cache_observer", None)
+        if observer is not None:
+            observer.close()
+
+    assert result["success"], result
+    assert result["changed_files"] == ["main.py"]
+    assert result["files"][0]["file"] == "main.py"
+
+
 def test_git_diff_base_range_lists_paths_beyond_content_cap(tmp_path: Path):
     repo = tmp_path / "repo"
     repo.mkdir()
@@ -425,7 +458,7 @@ def test_git_diff_base_range_lists_paths_beyond_content_cap(tmp_path: Path):
 def test_git_diff_rejects_path_capture_failure(tmp_path: Path, monkeypatch):
     repo = tmp_path / "repo"
     repo.mkdir()
-    target = repo / "main.py"
+    target = repo / "main file.py"
     target.write_text("value = 1\n", encoding="utf-8")
     subprocess.run(["git", "init", "-q", str(repo)], check=True)
     subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
@@ -458,7 +491,7 @@ def test_git_diff_rejects_path_capture_failure(tmp_path: Path, monkeypatch):
 def test_git_diff_rejects_path_capture_cap(tmp_path: Path, monkeypatch):
     repo = tmp_path / "repo"
     repo.mkdir()
-    target = repo / "main.py"
+    target = repo / "main file.py"
     target.write_text("value = 1\n", encoding="utf-8")
     subprocess.run(["git", "init", "-q", str(repo)], check=True)
     subprocess.run(["git", "-C", str(repo), "add", "."], check=True)

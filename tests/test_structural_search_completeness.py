@@ -1,3 +1,4 @@
+import ast
 import os
 from pathlib import Path
 
@@ -94,3 +95,39 @@ def test_structural_search_does_not_swallow_unexpected_parser_failure(tmp_path: 
     monkeypatch.setattr("local_ai_hub.deterministic.ast.parse", broken_parser)
     with pytest.raises(RuntimeError, match="parser bug"):
         DeterministicEngine().structural_search(str(tmp_path), pattern="needle", path="valid.py")
+
+
+def test_recursive_declaration_search_skips_irrelevant_python_parses(tmp_path: Path, monkeypatch) -> None:
+    (tmp_path / "irrelevant.py").write_text("def other():\n    return 1\n", encoding="utf-8")
+    (tmp_path / "target.py").write_text("def wanted():\n    return 2\n", encoding="utf-8")
+    parsed_files: list[str] = []
+    original_parse = ast.parse
+
+    def tracking_parse(source, filename="<unknown>", *args, **kwargs):
+        parsed_files.append(filename)
+        return original_parse(source, filename, *args, **kwargs)
+
+    monkeypatch.setattr("local_ai_hub.deterministic.ast.parse", tracking_parse)
+
+    result = DeterministicEngine().structural_search(str(tmp_path), pattern="fn:wanted")
+
+    assert result["count"] == 1
+    assert parsed_files == ["target.py"]
+
+
+def test_recursive_call_search_skips_python_files_without_target_name(tmp_path: Path, monkeypatch) -> None:
+    (tmp_path / "irrelevant.py").write_text("def other():\n    return 1\n", encoding="utf-8")
+    (tmp_path / "target.py").write_text("def run():\n    wanted()\n", encoding="utf-8")
+    parsed_files: list[str] = []
+    original_parse = ast.parse
+
+    def tracking_parse(source, filename="<unknown>", *args, **kwargs):
+        parsed_files.append(filename)
+        return original_parse(source, filename, *args, **kwargs)
+
+    monkeypatch.setattr("local_ai_hub.deterministic.ast.parse", tracking_parse)
+
+    result = DeterministicEngine().structural_search(str(tmp_path), pattern="call:wanted")
+
+    assert result["count"] == 1
+    assert parsed_files == ["target.py"]

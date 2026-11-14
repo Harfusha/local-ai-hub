@@ -139,3 +139,14 @@ def test_incident_store_resolve_all(store: IncidentStore):
     resolved = store.list_incidents(resolved=True)
     assert len(resolved) >= 2
 
+
+def test_summary_count_matches_grouped_incident_listing(store: IncidentStore, tmp_path: Path):
+    root_a = str(tmp_path / "repo-a")
+    root_b = str(tmp_path / "repo-b")
+    store.capture(failed_command_outcome("same failure", root=root_a))
+    store.capture(failed_command_outcome("same failure", root=root_a))
+    store.capture(failed_command_outcome("same failure", root=root_b))
+
+    assert len(store.list_incidents()) == 2
+    assert store.summary_count() == 2
+

@@ -1230,6 +1230,35 @@ def test_completion_rereads_and_rejects_deleted_proof_artifact(
     assert completion.unsatisfied_criteria == ("tests",)
 
 
+def test_completion_rejects_proof_artifact_content_that_no_longer_matches_its_id(
+    stores: tuple[TaskStore, VerificationStore],
+):
+    task_store, verifier = stores
+    task = task_store.create(
+        GoalContract(goal="proof integrity", acceptance_criteria=("tests",)),
+        ScopeContext(task_id="proof-integrity"),
+        task_id="proof-integrity",
+    )
+    receipt = receipt_for(task.task_id, "tests", artifact_store=verifier.artifact_store)
+    verifier.record(receipt)
+    proof_artifact = verifier.artifact_store.get(receipt.evidence_id)
+    tampered_text = proof_artifact["text"].replace('"exit_code":0', '"exit_code":9')
+    assert tampered_text != proof_artifact["text"]
+    with closing(verifier.artifact_store._connect()) as con:
+        with con:
+            con.execute(
+                f"UPDATE {verifier.artifact_store._table} "
+                "SET text = ? "
+                "WHERE artifact_id = ?",
+                (tampered_text, receipt.evidence_id),
+            )
+
+    completion = verifier.completion(task.task_id)
+
+    assert completion.complete is False
+    assert completion.unsatisfied_criteria == ("tests",)
+
+
 def test_completion_fails_closed_when_artifact_resolver_is_missing(tmp_path: Path):
     state_store = AgentStateStore(tmp_path / "agent_state.sqlite3")
     task_store = TaskStore(state_store)

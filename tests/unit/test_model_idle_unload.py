@@ -82,6 +82,61 @@ def test_unconfirmed_release_drops_affinity_without_retry_loop():
         assert scheduler._claim_idle_unload(10000) is None
 
 
+def test_idle_release_requires_inventory_absence_before_verified_state():
+    scheduler = _scheduler()
+    scheduler.runtime = SimpleNamespace(
+        unload_model=lambda *_args, **_kwargs: True,
+        loaded_model_inventory=lambda **_kwargs: {
+            "complete": True,
+            "backend_available": True,
+            "errors": {},
+            "models": [{"name": "owned", "backend": "ollama"}],
+        },
+    )
+    with scheduler._cond:
+        target = scheduler._claim_idle_unload(400)
+    scheduler._perform_idle_unload(target)
+    assert scheduler._idle_unload_state == "unconfirmed"
+    assert scheduler._stats["idle_unload_failures"] == 1
+    assert scheduler._active_model is None
+
+
+def test_idle_release_marks_verified_only_after_complete_inventory_is_empty():
+    scheduler = _scheduler()
+    scheduler.runtime = SimpleNamespace(
+        unload_model=lambda *_args, **_kwargs: True,
+        loaded_model_inventory=lambda **_kwargs: {
+            "complete": True,
+            "backend_available": True,
+            "errors": {},
+            "models": [],
+        },
+    )
+    with scheduler._cond:
+        target = scheduler._claim_idle_unload(400)
+    scheduler._perform_idle_unload(target)
+    assert scheduler._idle_unload_state == "verified_unloaded"
+    assert scheduler._stats["idle_unloads"] == 1
+
+
+def test_idle_release_does_not_verify_unload_from_incomplete_inventory():
+    scheduler = _scheduler()
+    scheduler.runtime = SimpleNamespace(
+        unload_model=lambda *_args, **_kwargs: True,
+        loaded_model_inventory=lambda **_kwargs: {
+            "complete": False,
+            "backend_available": True,
+            "errors": {"ollama": "timeout"},
+            "models": [],
+        },
+    )
+    with scheduler._cond:
+        target = scheduler._claim_idle_unload(400)
+    scheduler._perform_idle_unload(target)
+    assert scheduler._idle_unload_state == "unconfirmed"
+    assert scheduler._stats["idle_unload_failures"] == 1
+
+
 def test_tiered_runtime_forwards_release_deadline_and_cancellation():
     runtime = object.__new__(TieredOllamaRuntime)
     calls = []
