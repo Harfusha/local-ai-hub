@@ -57,6 +57,14 @@
           <dl class="project-details" id="project-details" hidden></dl>
           <p class="panel-copy">Refresh runs the selected root's existing preprocessing flow. Unregister leaves source files untouched and does not request cache purging.</p>
         </section>
+        <section class="content-panel agents-panel" id="agents-view" aria-labelledby="agents-heading" hidden>
+          <div class="panel-heading"><div><p class="eyebrow">AGENT HOST READINESS</p><h2 id="agents-heading">Agents and tools</h2></div></div>
+          <p class="panel-copy">Inspect agent host connections (Codex, Antigravity, Cursor), MCP registration, and command policies. Host readiness indicates whether skills and tools are linked.</p>
+          <div class="project-actions"><button class="action-button" id="load-agents" type="button">Check agent hosts</button></div>
+          <p class="panel-copy" id="agents-status" role="status" aria-live="polite">Agent host check not loaded.</p>
+          <div class="task-list" id="agents-list" aria-live="polite"></div>
+          <p class="panel-copy">For live command streams, worktrees, and broker metrics, see the <a href="/dashboard/legacy#commands">Commands page</a>.</p>
+        </section>
         <section class="content-panel tasks-panel" id="tasks-view" aria-labelledby="tasks-heading" hidden>
           <div class="panel-heading"><div><p class="eyebrow">REPOSITORY-SCOPED RECORDS</p><h2 id="tasks-heading">Tasks and coordination</h2></div></div>
           <p class="panel-copy">Choose an exact repository root. Expand a task to inspect every field returned by the stored record. Task state alone does not prove verified completion.</p>

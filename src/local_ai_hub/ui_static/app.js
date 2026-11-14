@@ -16,6 +16,10 @@ const kicker = document.getElementById("section-kicker");
 const main = document.getElementById("main-content");
 const menuToggle = document.querySelector(".menu-toggle");
 const projectsView = document.getElementById("projects-view");
+const agentsView = document.getElementById("agents-view");
+const agentsStatus = document.getElementById("agents-status");
+const agentsList = document.getElementById("agents-list");
+const loadAgentsButton = document.getElementById("load-agents");
 const sectionNotice = document.getElementById("section-notice");
 const projectForm = document.getElementById("project-form");
 const projectRootInput = document.getElementById("project-root");
@@ -64,11 +68,12 @@ function showSection(section, moveFocus = false) {
   }
   document.getElementById("overview-cards").hidden = section !== "overview";
   projectsView.hidden = section !== "projects";
+  agentsView.hidden = section !== "agents";
   tasksView.hidden = section !== "tasks";
   diagnosticsView.hidden = section !== "diagnostics";
   modelsView.hidden = section !== "models";
   settingsView.hidden = section !== "settings";
-  const migrated = section === "overview" || section === "projects" || section === "tasks" || section === "diagnostics" || section === "models" || section === "settings";
+  const migrated = section === "overview" || section === "projects" || section === "agents" || section === "tasks" || section === "diagnostics" || section === "models" || section === "settings";
   sectionNotice.hidden = migrated;
   document.getElementById("section-notice-title").textContent = `${copy[0]} page remains in the current dashboard`;
   document.getElementById("section-notice-copy").textContent = `The ${copy[0]} view has not moved into this preview yet. Use the existing dashboard page links below; this shell has not checked or changed its configuration.`;
@@ -377,6 +382,51 @@ async function loadTelemetryTimeline(older = false) {
 
 loadTimelineButton.addEventListener("click", () => loadTelemetryTimeline(false));
 loadOlderTimelineButton.addEventListener("click", () => loadTelemetryTimeline(true));
+
+loadAgentsButton.addEventListener("click", async () => {
+  if (loadAgentsButton.disabled) return;
+  loadAgentsButton.disabled = true;
+  agentsList.replaceChildren();
+  agentsStatus.textContent = "Checking agent host integration and capabilities…";
+  try {
+    const [statusResult, capResult] = await Promise.all([
+      projectRequest("/api/status?detail=agent_state", { cache: "no-store" }),
+      projectRequest("/api/capabilities", { cache: "no-store" }),
+    ]);
+    const hosts = [
+      {
+        name: "Agent OS Coordination & State",
+        status: statusResult.enabled ? "Active" : "Disabled",
+        detail: `Initialized: ${Boolean(statusResult.initialized)} · Active tasks: ${statusResult.active_tasks?.length || 0}`,
+      },
+      {
+        name: "Antigravity / Codex Skills & Hook",
+        status: capResult.capabilities?.commands ? "Available" : "Policy restricted",
+        detail: `Commands enabled: ${Boolean(capResult.capabilities?.commands)} · Preprocessing: ${Boolean(capResult.capabilities?.preprocessing)}`,
+      },
+      {
+        name: "MCP Client Readiness",
+        status: "Local loopback",
+        detail: `Active features: ${Object.keys(capResult.features || {}).filter(k => capResult.features[k]).join(", ") || "standard"}`,
+      },
+    ];
+    for (const host of hosts) {
+      const card = document.createElement("article");
+      const title = document.createElement("h3");
+      const detail = document.createElement("p");
+      card.className = "task-card";
+      title.textContent = `${host.name} · ${host.status}`;
+      detail.textContent = host.detail;
+      card.append(title, detail);
+      agentsList.append(card);
+    }
+    agentsStatus.textContent = `Received readiness reports for ${hosts.length} agent integration channels.`;
+  } catch (error) {
+    agentsStatus.textContent = error.message;
+  } finally {
+    loadAgentsButton.disabled = false;
+  }
+});
 
 loadModelsButton.addEventListener("click", async () => {
   if (loadModelsButton.disabled) return;

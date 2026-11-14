@@ -160,6 +160,11 @@ def test_responsive_shell_has_keyboard_and_screen_reader_basics():
     assert "@media (prefers-reduced-motion: reduce)" in styles
     assert ".nav-item { min-height: 46px" in styles
     assert ".menu-toggle { display: none; width: 44px; height: 44px" in styles
+    assert 'tabindex="-1"' in html
+    assert "--focus: #f7d49a" in styles
+    assert "button:focus-visible, a:focus-visible" in styles
+    assert "overflow-wrap: anywhere" in styles
+    assert ".action-button { min-height: 44px" in styles
 
 
 def test_overview_separates_current_api_observation_from_unknown_resources():
@@ -268,6 +273,21 @@ def test_settings_preview_reads_only_redacted_config_and_does_not_mutate():
     assert "Redacted configuration snapshot loaded. No values were changed." in script
     assert "does not edit, import, export, or restart the Hub." in html
     assert 'href="/dashboard#config"' in html
+
+
+def test_agents_view_checks_agent_host_readiness_and_preserves_policy():
+    html = dashboard_frontend_html()
+    script = dashboard_frontend_asset("app.js")[1].decode("utf-8")
+
+    assert 'id="agents-view"' in html
+    assert 'id="load-agents" type="button"' in html
+    assert 'projectRequest("/api/status?detail=agent_state"' in script
+    assert 'projectRequest("/api/capabilities"' in script
+    assert "Agent OS Coordination & State" in script
+    assert "Antigravity / Codex Skills & Hook" in script
+    assert "MCP Client Readiness" in script
+    assert "innerHTML" not in script
+
 
 
 def test_dashboard_legacy_alias_serves_legacy_dashboard(monkeypatch):
