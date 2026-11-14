@@ -159,7 +159,7 @@
       "next_action": "",
       "order": 11,
       "title": "HUB-011 P1: API schema and operation registry",
-      "work_status": "completed"
+      "work_status": "done"
     },
     "task_hub_012": {
       "acceptance_criteria": [
@@ -176,7 +176,7 @@
       "next_action": "",
       "order": 12,
       "title": "HUB-012 P2: Rozdělení monolitů v 5 nezávislých slices",
-      "work_status": "completed"
+      "work_status": "done"
     },
     "task_hub_013": {
       "acceptance_criteria": [
@@ -193,7 +193,7 @@
       "next_action": "",
       "order": 13,
       "title": "HUB-013 P2: Type safety rollout",
-      "work_status": "completed"
+      "work_status": "done"
     },
     "task_hub_014": {
       "acceptance_criteria": [
@@ -210,7 +210,7 @@
       "next_action": "",
       "order": 14,
       "title": "HUB-014 P2: SQLite repository boundaries",
-      "work_status": "completed"
+      "work_status": "done"
     },
     "task_hub_015": {
       "acceptance_criteria": [
@@ -227,7 +227,7 @@
       "next_action": "",
       "order": 15,
       "title": "HUB-015 P2: Tool schema / token budget guard",
-      "work_status": "completed"
+      "work_status": "done"
     },
     "task_hub_016": {
       "acceptance_criteria": [
@@ -244,7 +244,7 @@
       "next_action": "",
       "order": 16,
       "title": "HUB-016 P1: Frontend build-out a parity harness",
-      "work_status": "completed"
+      "work_status": "done"
     },
     "task_hub_017": {
       "acceptance_criteria": [
@@ -260,7 +260,7 @@
       "next_action": "",
       "order": 17,
       "title": "HUB-017 P1: Design system + responsive shell",
-      "work_status": "completed"
+      "work_status": "done"
     },
     "task_hub_018": {
       "acceptance_criteria": [
@@ -276,7 +276,7 @@
       "next_action": "",
       "order": 18,
       "title": "HUB-018 P1: Overview health/action redesign",
-      "work_status": "completed"
+      "work_status": "done"
     },
     "task_hub_019": {
       "acceptance_criteria": [
@@ -292,7 +292,7 @@
       "next_action": "",
       "order": 19,
       "title": "HUB-019 P1: Projects + indexing detail",
-      "work_status": "completed"
+      "work_status": "done"
     },
     "task_hub_020": {
       "acceptance_criteria": [
@@ -308,7 +308,7 @@
       "next_action": "",
       "order": 20,
       "title": "HUB-020 P1: Agent integrations diagnostics",
-      "work_status": "completed"
+      "work_status": "done"
     },
     "task_hub_021": {
       "acceptance_criteria": [
@@ -324,7 +324,7 @@
       "next_action": "",
       "order": 21,
       "title": "HUB-021 P1: Model manager and Laya Studio",
-      "work_status": "completed"
+      "work_status": "done"
     },
     "task_hub_022": {
       "acceptance_criteria": [
@@ -340,7 +340,7 @@
       "next_action": "",
       "order": 22,
       "title": "HUB-022 P1: Tasks/coordination/receipts experience",
-      "work_status": "completed"
+      "work_status": "done"
     },
     "task_hub_023": {
       "acceptance_criteria": [
@@ -356,7 +356,7 @@
       "next_action": "",
       "order": 23,
       "title": "HUB-023 P1: Settings Basic/Advanced and contextual help",
-      "work_status": "completed"
+      "work_status": "done"
     },
     "task_hub_024": {
       "acceptance_criteria": [
@@ -372,7 +372,7 @@
       "next_action": "",
       "order": 24,
       "title": "HUB-024 P2: Diagnostics, timelines and token savings",
-      "work_status": "completed"
+      "work_status": "done"
     },
     "task_hub_025": {
       "acceptance_criteria": [
@@ -389,7 +389,7 @@
       "next_action": "",
       "order": 25,
       "title": "HUB-025 P1: Browser-assisted setup wizard",
-      "work_status": "completed"
+      "work_status": "done"
     },
     "task_hub_026": {
       "acceptance_criteria": [
@@ -406,7 +406,7 @@
       "next_action": "",
       "order": 26,
       "title": "HUB-026 P1: Update / rollback assistant",
-      "work_status": "completed"
+      "work_status": "done"
     },
     "task_hub_027": {
       "acceptance_criteria": [
@@ -422,7 +422,7 @@
       "next_action": "",
       "order": 27,
       "title": "HUB-027 P1: Valid reproducible E2E / eval baseline",
-      "work_status": "completed"
+      "work_status": "done"
     },
     "task_hub_028": {
       "acceptance_criteria": [
@@ -438,7 +438,7 @@
       "next_action": "",
       "order": 28,
       "title": "HUB-028 P1: True local model capability matrix",
-      "work_status": "completed"
+      "work_status": "done"
     },
     "task_hub_029": {
       "acceptance_criteria": [
@@ -454,7 +454,7 @@
       "next_action": "",
       "order": 29,
       "title": "HUB-029 P2: Docs and release onboarding",
-      "work_status": "completed"
+      "work_status": "done"
     },
     "task_roadmap_001_030": {
       "acceptance_criteria": [
@@ -477,7 +477,7 @@
       "order": 1,
       "title": "Local AI Hub HUB-001–030 Roadmap Execution",
       "work_phase": "integration",
-      "work_status": "completed"
+      "work_status": "done"
     }
   },
   "title": "Local AI Hub HUB-001–030 Audit Roadmap Implementation"
