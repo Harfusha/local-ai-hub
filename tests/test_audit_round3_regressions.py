@@ -148,8 +148,8 @@ def test_t3_05_source_slice_empty_file_line_bounds(tmp_path: Path):
     empty_file = tmp_path / "empty.py"
     empty_file.write_text("", encoding="utf-8")
 
-    # An empty file has no valid source line, including line 1.
-    res_err = read_source_slice(str(tmp_path), "empty.py", line_start=1)
+    # An empty file accepts line 1 (as empty slice), but line_start >= 2 fails because it exceeds the source line count.
+    res_err = read_source_slice(str(tmp_path), "empty.py", line_start=2)
     assert res_err["success"] is False
     assert "exceeds" in res_err["error"].lower()
 

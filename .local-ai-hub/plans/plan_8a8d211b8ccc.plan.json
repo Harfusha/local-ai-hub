@@ -374,6 +374,40 @@
       "title": "HUB-024 P2: Diagnostics, timelines and token savings",
       "work_status": "completed"
     },
+    "task_hub_025": {
+      "acceptance_criteria": [
+        "CLI wizard behavior preserved with 7-step onboarding flow",
+        "Precise planned installs and downloads without silent model pulls",
+        "Failure recovery report generated (setup-report.json) on error with clean rollback",
+        "Full setup test suite passing green"
+      ],
+      "blocker": null,
+      "clarifications": [],
+      "depends_on": [],
+      "description": "Browser-assisted setup wizard in tools/setup.py, tools/setup_wizard.py, setup_report.py, and frontend onboarding. Preserves CLI behavior, enforces package isolation, and avoids silent pulls.",
+      "kind": "code",
+      "next_action": "",
+      "order": 25,
+      "title": "HUB-025 P1: Browser-assisted setup wizard",
+      "work_status": "completed"
+    },
+    "task_hub_026": {
+      "acceptance_criteria": [
+        "Update dry-run and backup verification before applying changes",
+        "Old state preserved on failure without corrupting state_version.json v6",
+        "Explicit rollback paths and state migration recovery documented in docs/INSTALLER_RECOVERY.md",
+        "Full rollback and migration test suite (94 tests) passing green"
+      ],
+      "blocker": null,
+      "clarifications": [],
+      "depends_on": [],
+      "description": "Update / rollback assistant in tools/update_transaction.py, tools/state_migrations.py, tools/setup_reinstall.py. Ensures atomic update dry-run, backup verification, and safe state migration.",
+      "kind": "code",
+      "next_action": "",
+      "order": 26,
+      "title": "HUB-026 P1: Update / rollback assistant",
+      "work_status": "completed"
+    },
     "task_roadmap_001_030": {
       "acceptance_criteria": [
         "Record exact baseline revision, dirty paths and ownership before edits; preserve all pre-existing changes.",

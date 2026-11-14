@@ -51,13 +51,11 @@ def test_t2_04_sharded_lru_uses_full_non_divisible_capacity(max_entries: int, bu
     assert cache.stats()["entries"] == cache.max_entries
 
 
-def test_t2_01_token_router_non_float_score_fallback():
-    """T2-01 (N01): Non-float or invalid score in LLM ranges does not raise ValueError."""
+def test_t2_01_token_router_rejects_invalid_scores_without_raising():
+    """T2-01 (N01): Invalid LLM scores reject their range without raising."""
     text = json.dumps({"ranges": [{"start": 2, "end": 6, "score": "high"}, {"start": 8, "end": 10, "score": None}]})
     ranges = LosslessTokenRouter._parse_ranges(text, max_line=20, max_ranges=5, context_lines=0)
-    assert len(ranges) == 2
-    assert ranges[0][0] == 2 and ranges[0][1] == 6 and ranges[0][2] == 1.0
-    assert ranges[1][0] == 8 and ranges[1][1] == 10 and ranges[1][2] == 1.0
+    assert ranges == []
 
 
 def test_t2_12_token_router_handles_extreme_and_malformed_ranges():

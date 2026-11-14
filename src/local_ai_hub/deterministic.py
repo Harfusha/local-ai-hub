@@ -143,6 +143,9 @@ _SQLITE_DISCOVERY_MAX_ENTRIES = 20_000
 _SQLITE_DISCOVERY_MAX_SECONDS = 3.0
 _GIT_INSIGHT_DEADLINE_SECONDS = 8.0
 _GIT_INSIGHT_STREAM_LIMIT = 1_048_576
+_DIFF_SHELL_I = re.compile(r"\b(exec|system|shell_exec|subprocess|Process\.Start|Runtime\.getRuntime)\b", re.I)
+_DIFF_EVAL_I = re.compile(r"\b(eval|exec)\s*\(", re.I)
+_DIFF_SECRET_PASSWORD_I = re.compile(r"\b(password|secret|api[_-]?key|private[_-]?key|token)\b", re.I)
 from .source_facts import (
     CONCURRENCY_RE,
     CONFIG_PATTERNS,
