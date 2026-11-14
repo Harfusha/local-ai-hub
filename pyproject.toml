@@ -98,4 +98,8 @@ files = [
   "src/local_ai_hub/command_patch_paths.py",
   "src/local_ai_hub/mcp_normalization.py",
   "src/local_ai_hub/python_shell_injection.py",
+  "src/local_ai_hub/search_fusion.py",
+  "src/local_ai_hub/repository_scope.py",
+  "src/local_ai_hub/dashboard_contracts.py",
+  "src/local_ai_hub/operation_contracts.py",
 ]

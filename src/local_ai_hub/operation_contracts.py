@@ -345,7 +345,7 @@ _REPO_MUTATIONS = (
     "batch_replace", "preprocess", "preprocess_refresh", "preprocess_pause", "preprocess_resume",
     "preprocess_cancel", "preprocess_unregister", "patch", "revert",
 )
-_REPO_CONDITIONS = {
+_REPO_CONDITIONS: dict[str, tuple[str, ...]] = {
     "batch_replace": ("batch_replacement",),
     "semantic": ("serena",),
     "intelligence": ("has_semantic",),
@@ -1327,7 +1327,7 @@ def operation_contract(tool: str) -> dict[str, Any] | None:
 
 def operation_guide_cards(features: Any = None) -> dict[str, Any]:
     """Small, feature-aware examples derived from the same public action contracts."""
-    examples = {
+    examples: dict[str, dict[str, Any]] = {
         "local_ai_status": {"detail": "brief"},
         "local_ai_repo": {"action": "context", "root": "ABS_ROOT", "query": "Bounded repository question", "mode": "adaptive"},
         "local_ai_task": {"action": "delegate", "task": "Summarize supplied evidence", "context": "EVIDENCE"},
@@ -1674,7 +1674,7 @@ def operation_output_schema(tool: str, action: str) -> dict[str, Any]:
         if status_variants:
             schema["anyOf"] = status_variants
     elif tool == "local_ai_rag" and action == "search":
-        schema["properties"].update({
+        properties.update({
             "workspace": {"type": "string"},
             "results": {
                 "type": "array",
@@ -2002,7 +2002,9 @@ def validate_operation_output(tool: str, action: str, result: Any) -> str | None
 def operation_enabled(features: Any, tool: str) -> bool:
     """Resolve a contract's named feature gate against a FeatureSet-like object."""
     contract = operation_contract(tool)
-    gate = contract.get("feature_gate") if contract else None
+    if not contract:
+        return False
+    gate = contract.get("feature_gate")
     if not gate or not _requirements_met(features, (str(gate),)):
         return False
     return _requirements_met(features, contract.get("feature_requirements", ()))
@@ -2034,7 +2036,7 @@ def _schema_cache_inputs(tool: str, features: Any) -> tuple[tuple[str, ...], tup
         capability_id = _CAPABILITY_BY_OPERATION.get((tool, action))
         definition = CAPABILITY_REGISTRY.get(capability_id) if capability_id else None
         gate = definition.get("feature_gate") if isinstance(definition, dict) else None
-        if gate:
+        if gate and isinstance(gate, str):
             requirements.add({
                 "local_vision": "local_vision_qualified",
                 "local_code_generation": "local_code_generation_qualified",
