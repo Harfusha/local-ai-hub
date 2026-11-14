@@ -114,6 +114,13 @@ def test_preprocess_write_actor_future_waits_for_commit(tmp_path: Path, monkeypa
                 raise TimeoutError("test did not release commit")
             self._connection.commit()
 
+        def execute(self, sql: str, *args, **kwargs):
+            if isinstance(sql, str) and sql.strip().upper() == "COMMIT":
+                commit_started.set()
+                if not allow_commit.wait(timeout=2):
+                    raise TimeoutError("test did not release commit")
+            return self._connection.execute(sql, *args, **kwargs)
+
     monkeypatch.setattr(
         preprocess_write_actor,
         "connect_sqlite",

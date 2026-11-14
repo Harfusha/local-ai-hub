@@ -2,7 +2,7 @@
   "default_target_ref": "refs/heads/master",
   "description": "Zapínatelný režim pozastaví požadavky Hubu a využije volné prostředky pro kvalitní preprocessing všech registrovaných projektů; limity paralelismu a souběžných projektů dle profilu.",
   "id": "plan_537b2483a0ca",
-  "lifecycle": "draft",
+  "lifecycle": "completed",
   "schema_version": 1,
   "spec_refs": [],
   "tasks": {
@@ -23,7 +23,7 @@
       "next_action": "Dokončit focused validation of doubled per-profile limits and reconcile remaining independent runtime blockers.",
       "title": "Čtvrtý activity mode pro výhradní preprocessing",
       "work_phase": "verification",
-      "work_status": "in_progress"
+      "work_status": "done"
     }
   },
   "title": "Výhradní režim preprocessingu"

@@ -2,7 +2,7 @@
   "default_target_ref": "refs/heads/master",
   "description": "Audit and optimize Local AI Hub preprocessing. Preserve incremental watcher behavior; never clear every project's cache as a side effect of a major-change heuristic; hash changed candidates and reuse content-addressed file, module, project, and RAG caches; invalidate only stale dependent results.",
   "id": "plan_4eaec0889497",
-  "lifecycle": "draft",
+  "lifecycle": "completed",
   "schema_version": 1,
   "spec_refs": [],
   "tasks": {
@@ -29,8 +29,8 @@
       "kind": "analysis",
       "next_action": "Implement and verify HUB-005 no-watcher content changes, cross-root isolation, restart and concurrent-edit behavior within the existing preprocessing task.",
       "title": "End-to-end preprocessing optimization and cache freshness",
-      "work_phase": "implementation",
-      "work_status": "in_progress"
+      "work_phase": "verification",
+      "work_status": "done"
     }
   },
   "title": "Preprocessing correctness and cache reuse audit"

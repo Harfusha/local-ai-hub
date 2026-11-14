@@ -51,7 +51,7 @@
       "next_action": "Acceptance now covers root/home/source/source-parent/unowned-marker denials, timeout/stale PID/nonzero exit/still-running stop failures, and absent vs verified-stopped process states; 385-test cross-workstream matrix passes with two Windows symlink-privilege skips. Cross-platform confirmation remains not run.",
       "title": "HUB-031–035 Installer safety and reversible agent ownership",
       "work_phase": "verification",
-      "work_status": "completed"
+      "work_status": "done"
     },
     "task_retrieval": {
       "acceptance_criteria": [
@@ -67,7 +67,7 @@
       "kind": "code",
       "next_action": "Acceptance now verifies deterministic Git-relative path identity and case policy, lexical/semantic chunk retention and deduplication, primary/alternative matches, truncation metadata, FTS_UNAVAILABLE distinction, and explicit degraded hybrid coverage. Linux/macOS run remains not done; model-specific retrieval qualification stays in HUB-046.",
       "title": "HUB-043–045, 047 Search evidence and FTS failure semantics",
-      "work_status": "completed"
+      "work_status": "done"
     }
   },
   "title": "Implement 2026-11-12 second audit HUB-031–048"
