@@ -7521,7 +7521,7 @@ class LocalAIServices:
         # Synchronous workspace/index preparation above is outside this optional
         # backend budget. Start it only when the bounded backends can actually run.
         preparation_ms = round((time.perf_counter() - started_at) * 1000.0, 3)
-        backend_deadline = time.perf_counter() + backend_budget_seconds
+        backend_deadline = started_at + backend_budget_seconds
         remaining_budget = max(0.0, backend_deadline - time.perf_counter())
         request_optional = not confident_builtin
         rag_ready = bool(

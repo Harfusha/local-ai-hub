@@ -167,12 +167,19 @@ def test_scheduler_status_marks_bounded_pending_and_cache_stats() -> None:
 
 
 def test_async_admission_states_and_queued_result_are_explicit(tmp_path) -> None:
+    class _NominalScheduler:
+        def resource_status(self) -> dict[str, object]:
+            return {
+                "available": True, "telemetry_stale": False, "sample_age_seconds": 0.0,
+                "pressure_level": "nominal", "context_budget_factor": 1.0, "throttle_background": False,
+            }
+
     manager = AsyncJobManager(
         {
             "server": {"state_dir": str(tmp_path / "state")},
             "async_jobs": {"max_pending": 1},
         },
-        scheduler=None,
+        scheduler=_NominalScheduler(),
         artifacts=None,
         executor=lambda _action, _payload: {"success": True},
     )

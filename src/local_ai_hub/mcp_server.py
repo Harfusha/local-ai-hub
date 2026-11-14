@@ -3411,8 +3411,6 @@ def _validate_context_pack_inputs(
         return _context_input_error("include_diagnostics must be boolean")
     if token_budget and max_tokens and token_budget != max_tokens:
         return _context_input_error("token_budget and max_tokens must match when both are provided")
-    if (guarded or focus or changed_paths) and not task_id.strip():
-        return _context_input_error("guarded context requires a non-empty task_id")
     guarded_requested = (
         guarded or bool(task_id.strip()) or bool(phase.strip()) or bool(session_id.strip())
         or bool(str(clone_id).strip()) or bool(str(worktree_id).strip()) or bool(str(branch).strip())

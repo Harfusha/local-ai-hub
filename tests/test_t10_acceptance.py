@@ -1237,7 +1237,9 @@ def test_adaptive_retrieval_skips_optional_backends_when_builtin_confidence_is_h
     assert FakeRag.calls == 0
 
 
-def test_adaptive_retrieval_skips_optional_backends_when_deadline_is_exhausted(tmp_path: Path) -> None:
+def test_adaptive_retrieval_skips_optional_backends_when_deadline_is_exhausted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
     class FakeRepoTools:
         @staticmethod
         def context_pack_paths(root: str, query: str, paths: list[str], *, max_tokens: int, top_k: int) -> dict:
@@ -1250,7 +1252,6 @@ def test_adaptive_retrieval_skips_optional_backends_when_deadline_is_exhausted(t
     class SlowDeterministic:
         @staticmethod
         def related_paths(_root: str, _query: str, *, limit: int) -> list[str]:
-            time.sleep(0.08)
             return ["src/local.py"]
 
     class FakeExternal:
@@ -1274,6 +1275,17 @@ def test_adaptive_retrieval_skips_optional_backends_when_deadline_is_exhausted(t
     services.external_tools = FakeExternal()
     services.evidence_store = None
     services.rag = None
+
+    orig_perf = time.perf_counter
+    calls = [0]
+
+    def fake_perf() -> float:
+        calls[0] += 1
+        if calls[0] >= 3:
+            return orig_perf() + 10.0
+        return orig_perf()
+
+    monkeypatch.setattr(time, "perf_counter", fake_perf)
 
     result = services._hybrid_context_uncached(
         str(tmp_path), "find local evidence", workspace=None, max_tokens=400, quality_first=True

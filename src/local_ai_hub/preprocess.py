@@ -3,6 +3,7 @@ from __future__ import annotations
 from .json_utils import dumps as json_dumps
 
 import copy
+import hashlib
 import json
 import logging
 import math
@@ -3944,11 +3945,17 @@ class ProjectPreprocessor:
         stale_paths: list[str] = []
         missing_paths: set[str] = set()
         base = Path(root)
+        reader = getattr(getattr(self, "repo_tools", None), "_read_snapshot", None)
         for rel, expected_hash in pending_hashes.items():
             try:
                 source_path = (base / rel).resolve(strict=False)
                 source_path.relative_to(base)
-                file_hash, lines = self.repo_tools._read_snapshot(source_path)
+                if callable(reader):
+                    file_hash, lines = reader(source_path)
+                else:
+                    raw = source_path.read_bytes()
+                    file_hash = hashlib.sha256(raw).hexdigest()
+                    lines = raw.decode("utf-8", errors="replace").splitlines()
             except FileNotFoundError:
                 stale_paths.append(rel)
                 missing_paths.add(rel)
@@ -4175,8 +4182,14 @@ class ProjectPreprocessor:
                     )
                     file_hash, text = ingested.content_hash, ingested.text
                 else:
-                    file_hash, lines = self.repo_tools._read_snapshot(path)
-                    text = "\n".join(lines)
+                    reader = getattr(getattr(self, "repo_tools", None), "_read_snapshot", None)
+                    if callable(reader):
+                        file_hash, lines = reader(path)
+                        text = "\n".join(lines)
+                    else:
+                        raw = path.read_bytes()
+                        file_hash = hashlib.sha256(raw).hexdigest()
+                        text = raw.decode("utf-8", errors="replace")
             except FileNotFoundError:
                 # The file may disappear after inventory or the earlier stale-ref
                 # cleanup. Drop that ref and let the rest of this batch proceed.
