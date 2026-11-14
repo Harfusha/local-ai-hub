@@ -346,12 +346,13 @@
       "query": "Jak hluboko hledá deterministické vyhledávání související symboly?",
       "language": "cs",
       "expected_paths": [
-        "src/local_ai_hub/deterministic.py"
+        "src/local_ai_hub/deterministic.py",
+        "src/local_ai_hub/deterministic_symbol_context.py"
       ],
       "negative": false,
       "evidence": [
         {
-          "path": "src/local_ai_hub/deterministic.py",
+          "path": "src/local_ai_hub/deterministic_symbol_context.py",
           "anchor": "depth=1"
         }
       ]

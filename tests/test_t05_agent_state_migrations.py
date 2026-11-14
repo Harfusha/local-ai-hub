@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from contextlib import closing
+import hashlib
 import json
 import os
 import sqlite3
@@ -22,26 +23,35 @@ from local_ai_hub.agent_tasks import GoalContract, ScopeContext, TaskStore
 from local_ai_hub.agent_verification import VerificationReceipt, VerificationStore
 
 
+def _make_migration_evidence(task):
+    proof = {
+        "passed": True,
+        "kind": "work_source_review",
+        "criteria": ["migration"],
+        "task_id": task.task_id,
+        "owner": task.owner or "agent",
+        "repository_revision": "",
+        "mutation_generation": 0,
+    }
+    proof_text = json.dumps(proof)
+    evidence_id = "art_" + hashlib.sha256(
+        ("source_review\0" + proof_text).encode("utf-8")
+    ).hexdigest()[:24]
+    return evidence_id, proof_text
+
+
 class _MigrationArtifactStore:
     def __init__(self, task):
         self.task = task
+        self.evidence_id, self.proof_text = _make_migration_evidence(task)
 
     def get(self, artifact_id, *, max_chars):
-        proof = {
-            "passed": True,
-            "kind": "work_source_review",
-            "criteria": ["migration"],
-            "task_id": self.task.task_id,
-            "owner": self.task.owner,
-            "repository_revision": "",
-            "mutation_generation": 0,
-        }
         return {
             "success": True,
             "artifact_id": artifact_id,
             "kind": "source_review",
             "next_offset": None,
-            "text": json.dumps(proof),
+            "text": self.proof_text,
         }
 
 
@@ -81,12 +91,13 @@ def _seed_state(db_path):
     # Seed durable projection directly; event-writer integration belongs to T08.
     MemoryStore(state)._save_record(memory)
 
-    verifications = VerificationStore(state, task_store=tasks, artifact_store=_MigrationArtifactStore(task))
+    artifact_store = _MigrationArtifactStore(task)
+    verifications = VerificationStore(state, task_store=tasks, artifact_store=artifact_store)
     receipt = VerificationReceipt.create(
         task_id=task.task_id,
         criterion="migration",
         passed=True,
-        evidence_id="migration-evidence",
+        evidence_id=artifact_store.evidence_id,
     )
     verifications.record(receipt)
     BlackboardStore(db_path)
