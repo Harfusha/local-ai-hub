@@ -7,7 +7,6 @@ import hashlib
 import subprocess
 import time
 from pathlib import Path
-from unittest.mock import MagicMock
 
 import pytest
 
@@ -153,7 +152,8 @@ def test_t4_04_worktree_status_handles_non_existent():
     """T4-04 (A03): get_worktree_status cleanly handles non-existent or invalid paths."""
     status = get_worktree_status("non_existent_worktree_path_xyz")
     assert status["exists"] is False
-    assert status["locked"] is False
+    assert status["locked"] is None
+    assert status["lock_status"] == "unknown"
 
 
 def test_t4_05_transaction_stash_tracks_exact_sha(tmp_path: Path):
@@ -435,6 +435,13 @@ def test_t4_09_model_quality_receipt_validation():
     assert dec_weak["reason"] == "evaluation_receipt_required"
 
     # Strong receipt
-    strong_receipt = {"receipt_id": "r2", "evaluation_hash": "sha256abc", "suite_version": "v1"}
+    strong_receipt = {
+        "receipt_id": "r2",
+        "model_digest": "sha256m",
+        "suite_version": "v1",
+        "dataset_hash": "sha256d",
+        "run_id": "run1",
+        "evaluator_id": "eval1",
+    }
     dec_strong = promote_candidate(cand, receipt=strong_receipt)
     assert dec_strong["status"] == "champion"

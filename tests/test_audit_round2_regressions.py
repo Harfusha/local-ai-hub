@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import json
 import threading
-import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -17,7 +16,7 @@ from local_ai_hub.agent_identity import AgentScope
 from local_ai_hub.agent_memory import MemoryKind, MemoryRecord, MemoryStore
 from local_ai_hub.async_jobs import AsyncJobManager
 from local_ai_hub.leases import ScopeLeaseStore
-from local_ai_hub.preprocess_ingest import IngestedFile, SinglePassIngestCache
+from local_ai_hub.preprocess_ingest import SinglePassIngestCache
 from local_ai_hub.token_router import LosslessTokenRouter
 
 
@@ -338,7 +337,8 @@ def test_t2_09_cache_shard_capacity_bounded():
     from local_ai_hub.cache import MemoryLRUCache
     cache = MemoryLRUCache(max_entries=2, shards=16)
     assert cache.num_shards <= 2
-    assert cache._shard_max >= 1
+    assert all(lim >= 1 for lim in cache._shard_limits)
+    assert sum(cache._shard_limits) == cache.max_entries
 
 
 def test_t2_10_scheduler_enqueue_passes_model_admission():

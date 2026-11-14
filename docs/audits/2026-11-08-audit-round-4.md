@@ -168,3 +168,9 @@ Toto kolo auditu se zaměřilo na dříve nepokryté subsystémy: důvěryhodnos
 5. **`treesitter_parser.py`**: Serializace nativního parseru a izolace problematických Windows workerů.
 6. **`agent_consistency.py`**: Lokální model nemá autoritu nad deterministickými důkazy; striktní evidence IDs.
 7. **`agent_verification.py`**: Completion gate kontroluje ownera, revizi, generační čítač mutací a artefakty.
+
+## 10. A13 implementační stav (2026-11-12)
+
+V izolovaném worktree nyní `_copy_tree()` dodá výchozí manifest snapshotu; jedna následná kontrola zdrojového stromu dál zachytí změny během kopírování. Výchozí cesta klesla ze tří úplných průchodů na dva; `full_verification=True` ze čtyř na tři. Kopírování samo zachovává kontroly vnořeného `.git` a nepodporovaných Windows reparse bodů.
+
+Focused testy `tests/test_command_transaction_snapshot.py` a `tests/unit/test_transaction_snapshot_cycle_guard.py` původně prošly **33/33**. `git diff --check` prošel. Pozdější ověřený benchmark a follow-up optimalizace jsou zapsané v `docs/AUDIT_EVAL_STATUS_2026-11-11.md` (13. 11. 2026); původní stav této poznámky je překonaný.

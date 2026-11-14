@@ -85,6 +85,18 @@ def test_runtime_config_and_ci_files_rank_as_source_but_docs_schema_does_not() -
     assert source_context_path_tier("src/runtime.py") == 0
 
 
+def test_czech_source_intent_and_polyglot_source_suffixes() -> None:
+    query = "opravit chybu v modulu"
+
+    assert is_source_context_query(query)
+    assert is_source_context_query("", intent="source_analysis")
+    for suffix in (".php", ".rb", ".vue", ".svelte"):
+        assert source_context_path_tier("src/handler" + suffix) == 0
+    assert prioritize_source_context_paths(
+        ["docs/plans/old.md", "src/handler.vue"], query,
+    ) == ["src/handler.vue", "docs/plans/old.md"]
+
+
 def test_targeted_pack_ranks_source_before_historical_noise_and_preserves_force_include(
     tmp_path: Path,
 ) -> None:

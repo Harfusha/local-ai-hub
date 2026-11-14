@@ -3,6 +3,7 @@
 from collections.abc import Mapping, Sequence
 from typing import Any
 
+from .command_policy import _classification_result
 
 def classify_git_command(
     tokens: Sequence[str], lower: Sequence[str], cfg: Mapping[str, Any]
@@ -15,12 +16,10 @@ def classify_git_command(
         )
         for flag in lower
     ):
-        return {
-            "class": "unknown",
-            "cacheable": False,
-            "allowed": False,
-            "reason": "git flags may execute a pager or external program",
-        }
+        return _classification_result(
+            "unknown", cacheable=False, allowed=False,
+            reason="git flags may execute a pager or external program",
+        )
     for idx, arg in enumerate(tokens[1:], 1):
         if arg == "-c" and idx < len(tokens) - 1:
             config_pair = tokens[idx + 1].lower()
@@ -34,12 +33,10 @@ def classify_git_command(
                     "core.sshcommand",
                 )
             ):
-                return {
-                    "class": "unknown",
-                    "cacheable": False,
-                    "allowed": False,
-                    "reason": "git -c config may execute arbitrary commands",
-                }
+                return _classification_result(
+                    "unknown", cacheable=False, allowed=False,
+                    reason="git -c config may execute arbitrary commands",
+                )
 
     skip_next = False
     sub = ""
@@ -67,12 +64,10 @@ def classify_git_command(
         break
 
     if not sub:
-        return {
-            "class": "read",
-            "cacheable": True,
-            "allowed": bool(cfg.get("allow_read", True)),
-            "reason": "read-only git",
-        }
+        return _classification_result(
+            "read", cacheable=True, allowed=bool(cfg.get("allow_read", True)),
+            reason="read-only git",
+        )
 
     git_read_subs = {
         "status",
@@ -111,34 +106,28 @@ def classify_git_command(
         "verify-tag",
     }
     if sub in git_read_subs:
-        return {
-            "class": "read",
-            "cacheable": True,
-            "allowed": bool(cfg.get("allow_read", True)),
-            "reason": f"read-only git {sub}",
-        }
+        return _classification_result(
+            "read", cacheable=True, allowed=bool(cfg.get("allow_read", True)),
+            reason=f"read-only git {sub}",
+        )
 
     if sub == "stash":
         stash_args = [t.lower() for t in tokens[sub_idx + 1 :] if not t.startswith("-")]
         stash_sub = stash_args[0] if stash_args else "list"
         if stash_sub in {"list", "show"}:
-            return {
-                "class": "read",
-                "cacheable": True,
-                "allowed": bool(cfg.get("allow_read", True)),
-                "reason": f"read-only git stash {stash_sub}",
-            }
+            return _classification_result(
+                "read", cacheable=True, allowed=bool(cfg.get("allow_read", True)),
+                reason=f"read-only git stash {stash_sub}",
+            )
 
     if sub == "worktree":
         wt_args = [t.lower() for t in tokens[sub_idx + 1 :] if not t.startswith("-")]
         wt_sub = wt_args[0] if wt_args else "list"
         if wt_sub in {"list"}:
-            return {
-                "class": "read",
-                "cacheable": True,
-                "allowed": bool(cfg.get("allow_read", True)),
-                "reason": f"read-only git worktree {wt_sub}",
-            }
+            return _classification_result(
+                "read", cacheable=True, allowed=bool(cfg.get("allow_read", True)),
+                reason=f"read-only git worktree {wt_sub}",
+            )
 
     if sub == "config":
         config_args = [t.lower() for t in tokens[sub_idx + 1 :]]
@@ -152,16 +141,13 @@ def classify_git_command(
             "--show-scope",
         }
         if any(rf in config_args for rf in read_flags):
-            return {
-                "class": "read",
-                "cacheable": True,
-                "allowed": bool(cfg.get("allow_read", True)),
-                "reason": "read-only git config",
-            }
+            return _classification_result(
+                "read", cacheable=True, allowed=bool(cfg.get("allow_read", True)),
+                reason="read-only git config",
+            )
 
-    return {
-        "class": "mutating",
-        "cacheable": False,
-        "allowed": bool(cfg.get("allow_mutating", False)),
-        "reason": f"git {sub} may mutate",
-    }
+    return _classification_result(
+        "mutating", cacheable=False,
+        allowed=bool(cfg.get("allow_mutating", False)),
+        reason=f"git {sub} may mutate",
+    )

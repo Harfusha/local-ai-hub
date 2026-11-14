@@ -352,6 +352,28 @@ def test_project_command_rejects_unsafe_environment_override_before_execution(
     assert executed is False
 
 
+def test_run_rejects_git_config_environment_override_before_execution(
+    tmp_path: Path, monkeypatch
+) -> None:
+    broker = _broker(tmp_path)
+    executed = False
+
+    def forbidden_execute(*_args, **_kwargs):
+        nonlocal executed
+        executed = True
+        raise AssertionError("unsafe environment must not execute")
+
+    monkeypatch.setattr(broker, "_execute", forbidden_execute)
+    result = broker.run(
+        "python -B -c pass", str(tmp_path), env={"GIT_CONFIG_COUNT": "1"}
+    )
+
+    assert result["success"] is False
+    assert result["error"] == "project command environment is invalid"
+    assert result["terminal"] is True
+    assert executed is False
+
+
 def test_string_project_command_is_resolved_exactly_without_runner_guessing(
     tmp_path: Path,
 ) -> None:

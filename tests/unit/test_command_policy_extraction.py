@@ -14,6 +14,7 @@ from local_ai_hub.command_policy import (
     VOLATILE_READS,
 )
 from local_ai_hub.command_git import classify_git_command
+from local_ai_hub.command_validation import _validation_classification
 from local_ai_hub.commands import CommandBroker
 
 
@@ -85,3 +86,27 @@ def test_extracted_git_classifier_respects_read_mutation_config():
 
     assert read["allowed"] is False
     assert mutating["allowed"] is True
+
+
+def test_extracted_validation_classification_shares_allow_policy():
+    assert _validation_classification({}, "phpstan validation") == {
+        "class": "validation",
+        "cacheable": True,
+        "allowed": True,
+        "replay_safe": True,
+        "reason": "phpstan validation",
+    }
+    assert _validation_classification(
+        {"allow_validation": False}, "black check"
+    )["allowed"] is False
+
+
+def test_git_read_classification_respects_read_gate():
+    tokens = ["git", "status"]
+    assert classify_git_command(tokens, tokens, {}) == {
+        "class": "read",
+        "cacheable": True,
+        "allowed": True,
+        "reason": "read-only git status",
+    }
+    assert classify_git_command(tokens, tokens, {"allow_read": False})["allowed"] is False

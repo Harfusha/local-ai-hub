@@ -73,6 +73,29 @@ def test_one_hop_follows_local_javascript_and_php_imports_once(tmp_path):
     ) == ["src/lib/boot.js"]
 
 
+def test_one_hop_prefers_typescript_source_for_nodenext_js_import(tmp_path):
+    (tmp_path / "src/lib").mkdir(parents=True)
+    (tmp_path / "src/main.ts").write_text('import { client } from "./lib/client.js";\n', encoding="utf-8")
+    (tmp_path / "src/lib/client.ts").write_text("export const client = true;\n", encoding="utf-8")
+    (tmp_path / "src/lib/client.js").write_text("export const generated = true;\n", encoding="utf-8")
+    eligible = {"src/main.ts", "src/lib/client.ts", "src/lib/client.js"}
+
+    neighbors = one_hop_related_files(tmp_path, ["src/main.ts"], eligible, RepositoryTools({}))
+
+    assert neighbors == ["src/lib/client.ts"]
+
+
+def test_one_hop_resolves_nested_rust_module_from_module_file(tmp_path):
+    (tmp_path / "src/foo").mkdir(parents=True)
+    (tmp_path / "src/foo.rs").write_text("mod bar;\n", encoding="utf-8")
+    (tmp_path / "src/foo/bar.rs").write_text("pub fn run() {}\n", encoding="utf-8")
+    eligible = {"src/foo.rs", "src/foo/bar.rs"}
+
+    neighbors = one_hop_related_files(tmp_path, ["src/foo.rs"], eligible, RepositoryTools({}))
+
+    assert neighbors == ["src/foo/bar.rs"]
+
+
 def test_one_hop_php_resolves_composer_autoload_and_dev_psr4_aliases(tmp_path):
     (tmp_path / "src/Services").mkdir(parents=True)
     (tmp_path / "src/Legacy").mkdir(parents=True)

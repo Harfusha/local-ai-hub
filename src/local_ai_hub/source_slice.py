@@ -117,7 +117,7 @@ def read_source_slice(
             if line_start <= total_lines <= requested_end:
                 selected_chars += len(line)
                 selected_parts.append(line)
-    if line_start > total_lines:
+    if line_start > total_lines and not (total_lines == 0 and line_start == 1):
         return failure("line_start exceeds the source line count")
     selected = "".join(selected_parts)
     if offset > selected_chars:

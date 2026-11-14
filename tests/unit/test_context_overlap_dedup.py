@@ -4,6 +4,7 @@ import hashlib
 from pathlib import Path
 
 from local_ai_hub.deterministic import DeterministicEngine
+from local_ai_hub.deterministic_slice_merging import merge_overlapping_source_slices
 
 
 class _SnapshotRepo:
@@ -76,3 +77,36 @@ def test_merge_overlapping_slices_discards_changed_source(tmp_path: Path) -> Non
     )
 
     assert merged == []
+
+
+def test_extracted_slice_merger_keeps_distinct_ranges_and_drops_escape_paths(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "foo.py"
+    source.write_text("".join(f"line-{number}\n" for number in range(1, 11)), encoding="utf-8")
+    digest = hashlib.sha256(source.read_bytes()).hexdigest()
+    slices = [
+        {"path": "foo.py", "start_line": 4, "end_line": 5, "file_sha256": digest},
+        {
+            "path": "foo.py",
+            "start_line": 1,
+            "end_line": 2,
+            "file_sha256": digest,
+            "symbol_complete": True,
+        },
+        {
+            "path": "foo.py",
+            "start_line": 8,
+            "end_line": 9,
+            "file_sha256": digest,
+            "symbol_complete": True,
+        },
+        {"path": "../outside.py", "start_line": 1, "end_line": 1, "file_sha256": digest},
+    ]
+
+    merged = merge_overlapping_source_slices(_SnapshotRepo(), str(tmp_path), slices)
+
+    assert [(item["start_line"], item["end_line"]) for item in merged] == [(1, 5), (8, 9)]
+    assert merged[0]["symbol_complete"] is False
+    assert merged[1]["symbol_complete"] is True
+    assert merged[0]["text"].splitlines() == [f"{line}: line-{line}" for line in range(1, 6)]

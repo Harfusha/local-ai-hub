@@ -1,6 +1,50 @@
 from __future__ import annotations
 
 from .json_utils import dumps as json_dumps
+from .diagnostic_compression import compress_diagnostic_text
+from .deterministic_answer_rendering import render_deterministic_answer
+from .related_path_ranking import rank_related_paths
+from .file_card_summary import build_file_card
+from .module_card_summary import build_module_card_summary
+from .project_card_summary import build_project_card_summary
+from .config_flattening import flatten_config_values
+from .manifest_discovery import select_manifest_files, walk_manifest_paths
+from .manifest_dispatch import parse_manifest_dispatch
+from .deterministic_intent_classification import classify_deterministic_intent
+from .call_graph_diff import analyze_call_graph_diff
+from .deterministic_slice_merging import merge_overlapping_source_slices
+from .structural_search import search_structurally
+from .infra_facts import extract_infra_facts
+from .breaking_change_detection import compare_api_definitions
+from .unified_diff_parser import parse_unified_diff
+from .python_shell_injection import _python_shell_injection_lines
+from .python_relations import _RELATION_SCAN_MAX_SECONDS, find_python_relations
+from .secret_scan_config import (
+    _SECRET_SCAN_MAX_ENTRIES,
+    _SECRET_SCAN_MAX_FILES,
+    _SECRET_SCAN_MAX_FILE_BYTES,
+    _SECRET_SCAN_MAX_TOTAL_BYTES,
+    _SECRET_SCAN_MAX_LINE_BYTES,
+    _SECRET_SCAN_MAX_SECONDS,
+    _SECRET_SCAN_MAX_FINDINGS,
+    _SECRET_SCAN_PATTERNS,
+)
+from .secret_scanning import scan_secrets
+from .migration_drift import detect_migration_drift
+from .complexity_analysis import compute_code_complexity
+from .security_audit import run_security_audit
+from .split_changes import run_split_changes
+from .dataset_generation import build_dataset
+from .profile_digest import build_profile_digest
+from .code_invariants import run_code_invariants
+from .dead_code_detection import find_dead_code
+from .deterministic_exact_evidence import collect_exact_evidence
+from .circular_dependency_analysis import find_circular_dependencies as find_indexed_circular_dependencies
+from .schema_file_scanning import scan_schema_files
+from .git_history_search import search_git_history, _git_history_timestamp, _git_history_pathspec
+from .query_intent_terms import filter_intent_noise
+from .batch_replace_dirty_hunks import parse_dirty_hunks
+from .deterministic_symbol_context import build_symbol_context
 
 import ast
 import hashlib
@@ -22,7 +66,6 @@ import tomllib
 import urllib.request
 import xml.etree.ElementTree as ET
 from collections import Counter, defaultdict
-from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
 from datetime import date as _datetime_date, datetime as _datetime, time as _datetime_time, timezone as _datetime_timezone
 from pathlib import Path
@@ -52,6 +95,17 @@ from .process_utils import (
     clean_git_env, hidden_run_kwargs, run_hidden,
 )
 from .repo_tools import is_root_archive_path
+from .deterministic_test_paths import (
+    build_test_file_result, build_test_matrix_response, collect_test_matrix_rows,
+    extract_test_case_names,
+    is_test_file as _is_test_file, is_test_matrix_source, run_test_matrix_workers,
+    select_test_matrix_targets,
+)
+from .test_matrix_commands import build_test_file_command
+from .api_spec_document import build_api_spec_document
+from .topology_summary import build_topology_summary_markdown
+from .topology_labels import classify_topology_layer
+from .test_framework_selection import detect_test_framework, select_test_framework
 from .state_paths import configured_state_dir
 
 
@@ -83,83 +137,93 @@ _MAX_SCHEMA_FILE_BYTES = 1_048_576
 _MAX_SCHEMA_TOTAL_BYTES = 16_777_216
 _MAX_SCHEMA_SCAN_SECONDS = 3.0
 _SCHEMA_DB_TIMEOUT_SECONDS = 1.0
-_SECRET_SCAN_MAX_ENTRIES = 20_000
-_SECRET_SCAN_MAX_FILES = 1_000
-_SECRET_SCAN_MAX_FILE_BYTES = 1_048_576
-_SECRET_SCAN_MAX_TOTAL_BYTES = 16_777_216
-_SECRET_SCAN_MAX_LINE_BYTES = 65_536
-_SECRET_SCAN_MAX_SECONDS = 5.0
-_SECRET_SCAN_MAX_FINDINGS = 100
-_RELATION_SCAN_MAX_SECONDS = 3.0
-_GIT_INSIGHT_DEADLINE_SECONDS = 8.0
+
 _GIT_INSIGHT_STREAM_LIMIT = 1_048_576
-_GIT_HISTORY_QUERY_MAX_CHARS = 512
-_GIT_HISTORY_AUTHOR_MAX_CHARS = 256
-_GIT_HISTORY_PATH_MAX_CHARS = 4096
-_GIT_HISTORY_COMMIT_LIMIT = 100
-_HOTSPOT_ALGORITHM = "git-recency-half-life-90d-v1"
-_HOTSPOT_GIT_COMMIT_LIMIT = 5_000
-_HOTSPOT_PATH_LIMIT = 10_000
-_HOTSPOT_FILE_LIMIT = 100
-_HOTSPOT_FILE_BYTES_LIMIT = 262_144
-_HOTSPOT_TOTAL_BYTES_LIMIT = 4_194_304
-_HOTSPOT_ANALYSIS_SECONDS = 8.0
+from .source_facts import (
+    CONCURRENCY_RE,
+    CONFIG_PATTERNS,
+    ENV_PATTERNS,
+    ROUTE_PATTERNS,
+    SECURITY_RE,
+    SQL_RE,
+    TODO_RE,
+    _SOURCE_ACTION_ATTR,
+    _SOURCE_ARTISAN_CMD,
+    _SOURCE_ASYNC_DEF_RE,
+    _SOURCE_BLADE_DIRECTIVE,
+    _SOURCE_CAKE_ASSOC,
+    _SOURCE_CAKE_ENTITY,
+    _SOURCE_CAKE_MIGRATION,
+    _SOURCE_CAKE_RESOURCES,
+    _SOURCE_CAKE_ROUTE,
+    _SOURCE_CAKE_TABLE,
+    _SOURCE_CSS_CLASS,
+    _SOURCE_CSS_VAR,
+    _SOURCE_DATACLASS_RE,
+    _SOURCE_DECORATOR_RE,
+    _SOURCE_ELEM_ID,
+    _SOURCE_ELOQUENT_FILLABLE,
+    _SOURCE_ELOQUENT_REL,
+    _SOURCE_ELOQUENT_TABLE,
+    _SOURCE_FORM_REQ,
+    _SOURCE_FORM_TAG,
+    _SOURCE_HARDCODED_IP,
+    _SOURCE_IMPORT_FROM,
+    _SOURCE_JS_IMPORT,
+    _SOURCE_KEYFRAMES,
+    _SOURCE_LARAVEL_RESOURCE,
+    _SOURCE_LINK_CSS,
+    _SOURCE_MEDIA_QUERY,
+    _SOURCE_METHOD_ATTR,
+    _SOURCE_MIGRATION_COL,
+    _SOURCE_NEST_DECORATOR,
+    _SOURCE_NEXT_ROUTE_HANDLER,
+    _SOURCE_PHP_ATTR,
+    _SOURCE_PHP_DEF,
+    _SOURCE_PHP_FUNC,
+    _SOURCE_PHP_NS,
+    _SOURCE_PHP_ROUTE_ATTR,
+    _SOURCE_PHP_TESTED_CLASS,
+    _SOURCE_PHP_USE,
+    _SOURCE_REACT_COMPONENT,
+    _SOURCE_REACT_HOOK,
+    _SOURCE_REACT_ROUTE,
+    _SOURCE_SCHEMA_CREATE,
+    _SOURCE_SCRIPT_SRC,
+    _SOURCE_SECRET_RE,
+    _SOURCE_TABLE_INSERT_I,
+    _SOURCE_TESTED_CLASS,
+    _SOURCE_TEST_SUITE_BLOCK,
+    _SOURCE_TS_DECLARATION,
+    _SOURCE_UNITY_LIFECYCLES,
+    _SOURCE_WEB_COMPONENT,
+    _SOURCE_WP_HOOK,
+    extract_source_facts as _extract_source_facts,
+)
 
+from .api_spec_extraction import (
+    _API_ATTRIBUTE_ROUTE_DECLARATION,
+    _API_EXPRESS_ROUTER_METHOD,
+    _API_HTML_FORM_ENDPOINT,
+    _API_LARAVEL_RESOURCE_ROUTE,
+    _API_LARAVEL_ROUTE_METHOD,
+    _API_NEXT_ROUTE_HANDLER,
+    _API_PHP_CONNECT_ROUTE,
+    _API_PHP_RESOURCE_ROUTE,
+    extract_api_spec as _extract_api_spec,
+)
+from .repo_topology import repo_topology as _repo_topology
 
-def _git_history_timestamp(value: Any, field: str, *, upper_bound: bool) -> tuple[float | None, str | None]:
-    if value in (None, ""):
-        return None, None
-    if not isinstance(value, str) or len(value) > 64 or any(ord(ch) < 32 or ord(ch) == 127 for ch in value):
-        raise ValueError(f"{field} must be an ISO date or RFC3339 timestamp")
-    raw = value.strip()
-    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", raw):
-        parsed_date = _datetime_date.fromisoformat(raw)
-        parsed = _datetime.combine(
-            parsed_date,
-            _datetime_time.max if upper_bound else _datetime_time.min,
-            tzinfo=_datetime_timezone.utc,
-        )
-    else:
-        if not re.fullmatch(
-            r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})",
-            raw,
-            flags=re.IGNORECASE,
-        ):
-            raise ValueError(f"{field} must be an RFC3339 timestamp with an explicit timezone")
-        normalized = raw[:-1] + "+00:00" if raw.endswith(("Z", "z")) else raw
-        parsed = _datetime.fromisoformat(normalized)
-        if parsed.tzinfo is None or "T" not in raw.upper():
-            raise ValueError(f"{field} RFC3339 timestamp must include an explicit timezone")
-        parsed = parsed.astimezone(_datetime_timezone.utc)
-    timestamp = parsed.timestamp()
-    return timestamp, parsed.isoformat().replace("+00:00", "Z")
-
-
-def _git_history_pathspec(root: str, value: Any) -> str | None:
-    if value in (None, ""):
-        return None
-    if not isinstance(value, str) or len(value) > _GIT_HISTORY_PATH_MAX_CHARS:
-        raise ValueError("path must be a bounded repository-relative literal path")
-    normalized = value.replace("\\", "/")
-    windows_path = PureWindowsPath(value)
-    parts = PurePosixPath(normalized).parts
-    if (
-        not normalized
-        or normalized.startswith("/")
-        or windows_path.drive
-        or windows_path.is_absolute()
-        or any(ord(ch) < 32 or ord(ch) == 127 for ch in normalized)
-        or any(part in {"..", ""} for part in parts)
-    ):
-        raise ValueError("path must stay inside the repository root")
-    canonical_root = Path(root).resolve(strict=True)
-    candidate = (canonical_root / Path(*parts)).resolve(strict=False)
-    try:
-        candidate.relative_to(canonical_root)
-    except ValueError as exc:
-        raise ValueError("path must stay inside the repository root") from exc
-    pathspec = PurePosixPath(*parts).as_posix()
-    return None if pathspec == "." else pathspec
+from .hotspot_analysis import (
+    _HOTSPOT_ALGORITHM,
+    _HOTSPOT_ANALYSIS_SECONDS,
+    _HOTSPOT_FILE_BYTES_LIMIT,
+    _HOTSPOT_FILE_LIMIT,
+    _HOTSPOT_GIT_COMMIT_LIMIT,
+    _HOTSPOT_PATH_LIMIT,
+    _HOTSPOT_TOTAL_BYTES_LIMIT,
+    find_hotspots as _find_hotspots,
+)
 
 
 def _is_symlink_or_reparse_point(path: Path) -> bool:
@@ -181,91 +245,20 @@ def _bounded_schema_files(
     deadline: float,
     migrations_only: bool = False,
 ) -> list[Path]:
-    """Collect schema candidates without materializing unbounded directory listings."""
-    skip_dirs = {
-        ".git", ".venv", "venv", "node_modules", "__pycache__", "state", "artifacts",
-        "test", "tests", "__tests__", "fixture", "fixtures", "tool-envs",
-    }
-    canonical_root = root.resolve(strict=True)
-    pending = [canonical_root]
-    candidates: list[Path] = []
-    visited_dirs = 0
-    visited_entries = 0
-    visited_canonical_dirs: set[Path] = set()
-    while pending:
-        current = pending.pop().resolve(strict=True)
-        try:
-            current.relative_to(canonical_root)
-        except ValueError as exc:
-            raise PermissionError("schema scan directory resolves outside the requested root") from exc
-        if current in visited_canonical_dirs:
-            continue
-        visited_canonical_dirs.add(current)
-        visited_dirs += 1
-        if visited_dirs > _MAX_SCHEMA_SCAN_DIRS or time.monotonic() >= deadline:
-            raise TimeoutError("schema scan exceeded its directory or time budget")
-        with os.scandir(current) as entries:
-            for entry in entries:
-                visited_entries += 1
-                if visited_entries > _MAX_SCHEMA_SCAN_ENTRIES or time.monotonic() >= deadline:
-                    raise TimeoutError("schema scan exceeded its entry or time budget")
-                if entry.is_symlink():
-                    continue
-                if entry.is_dir(follow_symlinks=False):
-                    if getattr(os.path, "isjunction", lambda _path: False)(entry.path):
-                        resolved_child = Path(entry.path).resolve(strict=True)
-                        try:
-                            resolved_child.relative_to(canonical_root)
-                        except ValueError as exc:
-                            raise PermissionError(
-                                "schema scan junction resolves outside the requested root"
-                            ) from exc
-                    if entry.name.lower() not in skip_dirs and not entry.name.startswith("."):
-                        pending.append(Path(entry.path))
-                        if len(pending) + visited_dirs > _MAX_SCHEMA_SCAN_DIRS:
-                            raise TimeoutError("schema scan exceeded its directory budget")
-                    continue
-                if not entry.is_file(follow_symlinks=False) or not entry.name.lower().endswith(suffix):
-                    continue
-                candidate = current / entry.name
-                if migrations_only and not any(
-                    part.lower() in {"migration", "migrations"}
-                    for part in candidate.parent.relative_to(root).parts
-                ):
-                    continue
-                candidates.append(candidate)
-                if len(candidates) > _MAX_SCHEMA_SCAN_FILES:
-                    raise TimeoutError(f"schema scan exceeded {_MAX_SCHEMA_SCAN_FILES} files")
-    return sorted(candidates)
+    return scan_schema_files(
+        root,
+        suffix=suffix,
+        deadline=deadline,
+        migrations_only=migrations_only,
+        max_dirs=_MAX_SCHEMA_SCAN_DIRS,
+        max_entries=_MAX_SCHEMA_SCAN_ENTRIES,
+        max_files=_MAX_SCHEMA_SCAN_FILES,
+    )
 
 
 _WORD = re.compile(r"[A-Za-z_$][A-Za-z0-9_.$:/-]{1,100}")
 TEST_MARKERS = ("/test/", "/tests/", "/spec/", "/specs/", "_test.", ".test.", "_spec.", ".spec.")
 
-ROUTE_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
-    ("http", re.compile(r"\bRoute::(get|post|put|patch|delete|options|any)\s*\(\s*['\"]([^'\"]+)", re.I)),
-    ("http", re.compile(r"\b(?:app|router)\.(get|post|put|patch|delete|options|head|all)\s*\(\s*['\"]([^'\"]+)", re.I)),
-    ("http", re.compile(r"@\w+\.(get|post|put|patch|delete|options|head)\s*\(\s*['\"]([^'\"]+)", re.I)),
-    ("http", re.compile(r"@(?:GetMapping|PostMapping|PutMapping|PatchMapping|DeleteMapping|RequestMapping)\s*\(\s*(?:value\s*=\s*)?['\"]([^'\"]+)", re.I)),
-    ("http", re.compile(r"\bMap(Get|Post|Put|Patch|Delete|Methods)\s*\(\s*['\"]([^'\"]+)", re.I)),
-]
-ENV_PATTERNS = [
-    re.compile(r"\bos\.getenv\(\s*['\"]([A-Za-z_][A-Za-z0-9_]*)['\"]"),
-    re.compile(r"\bos\.environ(?:\.get)?\(\s*['\"]([A-Za-z_][A-Za-z0-9_]*)['\"]"),
-    re.compile(r"\bos\.environ\[\s*['\"]([A-Za-z_][A-Za-z0-9_]*)['\"]\s*\]"),
-    re.compile(r"\bprocess\.env\.([A-Za-z_][A-Za-z0-9_]*)"),
-    re.compile(r"\b(?:env|getenv)\(\s*['\"]([A-Za-z_][A-Za-z0-9_.-]*)['\"]"),
-    re.compile(r"\$_ENV\[['\"]([A-Za-z_][A-Za-z0-9_]*)['\"]\]"),
-    re.compile(r"Environment\.GetEnvironmentVariable\(\s*['\"]([A-Za-z_][A-Za-z0-9_]*)['\"]"),
-]
-CONFIG_PATTERNS = [
-    re.compile(r"\bconfig\(\s*['\"]([^'\"]+)['\"]"),
-    re.compile(r"\bsettings?\[['\"]([^'\"]+)['\"]\]", re.I),
-]
-SQL_RE = re.compile(r"\b(SELECT|INSERT\s+INTO|UPDATE|DELETE\s+FROM|CREATE\s+TABLE|ALTER\s+TABLE)\b", re.I)
-CONCURRENCY_RE = re.compile(r"\b(async|await|thread|mutex|lock|semaphore|queue|channel|goroutine|tokio|Task\.Run|parallel|concurrent|atomic)\b", re.I)
-SECURITY_RE = re.compile(r"\b(auth|authentication|authorization|permission|role|token|jwt|oauth|csrf|xss|encrypt|decrypt|password|secret|credential|sanitize|escape)\b", re.I)
-TODO_RE = re.compile(r"\b(TODO|FIXME|XXX|HACK)\b[:\s-]*(.*)", re.I)
 
 _SECURITY_AUDIT_SECRETS: list[tuple[str, re.Pattern[str]]] = [
     ("AWS Access Key", re.compile(r"\b(AKIA[0-9A-Z]{16})\b")),
@@ -330,267 +323,15 @@ def _yaml_load_match_lines(text: str) -> list[int]:
     return sorted(matched_lines)
 
 
-def _python_shell_injection_lines(source: str, *, tree: ast.AST | None = None) -> list[int]:
-    if tree is None:
-        tree = ast.parse(source)
-    scope_types = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)
-    parents: dict[ast.AST, ast.AST] = {}
-    scopes: list[ast.AST] = [tree]
-    for node in ast.walk(tree):
-        if isinstance(node, scope_types):
-            scopes.append(node)
-        for child in ast.iter_child_nodes(node):
-            parents[child] = node
-
-    imports_by_scope: dict[ast.AST, dict[str, str]] = {}
-    bindings_by_scope: dict[ast.AST, set[str]] = {}
-    for scope in scopes:
-        imported: dict[str, str] = {}
-        bound: set[str] = set()
-
-        def collect_bindings(node: ast.AST) -> None:
-            if node is not scope and isinstance(node, scope_types):
-                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-                    bound.add(node.name)
-                return
-            if isinstance(node, ast.Import):
-                for alias in node.names:
-                    if alias.name == "subprocess" or alias.name.startswith("subprocess."):
-                        local_name = alias.asname or alias.name.split(".", 1)[0]
-                        imported[local_name] = "module"
-                    else:
-                        bound.add(alias.asname or alias.name.split(".", 1)[0])
-            elif isinstance(node, ast.ImportFrom):
-                for alias in node.names:
-                    local_name = alias.asname or alias.name
-                    if node.module == "subprocess" and alias.name in {"Popen", "run", "call"}:
-                        imported[local_name] = alias.name
-                    else:
-                        bound.add(local_name)
-            elif isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
-                bound.add(node.id)
-            elif isinstance(node, ast.arg):
-                bound.add(node.arg)
-            elif isinstance(node, ast.ExceptHandler) and node.name:
-                bound.add(node.name)
-            for child in ast.iter_child_nodes(node):
-                collect_bindings(child)
-
-        if isinstance(scope, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
-            args = scope.args
-            bound.update(arg.arg for arg in (*args.posonlyargs, *args.args, *args.kwonlyargs))
-            if args.vararg:
-                bound.add(args.vararg.arg)
-            if args.kwarg:
-                bound.add(args.kwarg.arg)
-        collect_bindings(scope)
-        # A local assignment/parameter shadows an outer import throughout its scope.
-        for name in bound:
-            imported.pop(name, None)
-        imports_by_scope[scope] = imported
-        bindings_by_scope[scope] = bound
-
-    def resolves_as(node: ast.AST, name: str, kind: str) -> bool:
-        def enclosing_scope(current: ast.AST | None) -> ast.AST | None:
-            while current is not None and not isinstance(current, (ast.Module, *scope_types)):
-                current = parents.get(current)
-            return current
-
-        scope = enclosing_scope(node)
-        while scope is not None:
-            if imports_by_scope.get(scope, {}).get(name) == kind:
-                return True
-            if name in bindings_by_scope.get(scope, set()):
-                return False
-            parent_scope = enclosing_scope(parents.get(scope))
-            if isinstance(scope, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)) and isinstance(parent_scope, ast.ClassDef):
-                parent_scope = enclosing_scope(parents.get(parent_scope))
-            scope = parent_scope
-        return False
-
-    def literal_dict_enables_shell(value: ast.AST) -> bool:
-        found, enabled = literal_dict_shell_value(value)
-        return found and enabled
-
-    def literal_dict_shell_value(value: ast.AST) -> tuple[bool, bool]:
-        if not isinstance(value, ast.Dict):
-            return False, False
-        found = False
-        enabled = False
-        for key, item in zip(value.keys, value.values):
-            if isinstance(key, ast.Constant) and key.value == "shell":
-                found = True
-                enabled = not (isinstance(item, ast.Constant) and not bool(item.value))
-            elif key is None:
-                nested_found, nested_enabled = literal_dict_shell_value(item)
-                if nested_found:
-                    found = True
-                    enabled = nested_enabled
-        return found, enabled
-
-    lines: set[int] = set()
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Call):
-            continue
-        function = node.func
-        is_subprocess_call = (
-            isinstance(function, ast.Attribute)
-            and function.attr in {"Popen", "run", "call"}
-            and isinstance(function.value, ast.Name)
-            and resolves_as(node, function.value.id, "module")
-        ) or (
-            isinstance(function, ast.Name)
-            and any(
-                resolves_as(node, function.id, imported_name)
-                for imported_name in {"Popen", "run", "call"}
-            )
-        )
-        if not is_subprocess_call:
-            continue
-        keyword_shell = any(
-            (
-                keyword.arg == "shell"
-                and not (
-                    isinstance(keyword.value, ast.Constant)
-                    and not bool(keyword.value.value)
-                )
-            )
-            or (keyword.arg is None and literal_dict_enables_shell(keyword.value))
-            for keyword in node.keywords
-        )
-        # Popen's eighth optional positional argument (index 8) is ``shell``.
-        positional_shell = (
-            (
-                isinstance(function, ast.Attribute)
-                and function.attr == "Popen"
-                and isinstance(function.value, ast.Name)
-                and resolves_as(node, function.value.id, "module")
-                or isinstance(function, ast.Name)
-                and resolves_as(node, function.id, "Popen")
-            )
-            and len(node.args) > 8
-            and not (
-                isinstance(node.args[8], ast.Constant)
-                and not bool(node.args[8].value)
-            )
-        )
-        if keyword_shell or positional_shell:
-            lines.add(node.lineno)
-    return sorted(lines)
-
-_SECRET_SCAN_PATTERNS: list[tuple[str, str, re.Pattern[str], str]] = [
-    ("openai_api_key", "OpenAI API Key", re.compile(r"(sk-(?:proj-|live-)?[A-Za-z0-9_-]{20,60})"), "CRITICAL"),
-    ("anthropic_api_key", "Anthropic API Key", re.compile(r"(sk-ant-api[0-9]{2}-[A-Za-z0-9_-]{20,80})"), "CRITICAL"),
-    ("aws_access_key", "AWS Access Key ID", re.compile(r"\b(AKIA[0-9A-Z]{16})\b"), "CRITICAL"),
-    ("github_pat", "GitHub Personal Access Token", re.compile(r"\b((?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{36})\b"), "CRITICAL"),
-    ("slack_token", "Slack Token", re.compile(r"(xox[baprs]-[0-9A-Za-z-]{20,72})"), "HIGH"),
-    ("slack_webhook", "Slack Incoming Webhook", re.compile(r"(https:\/\/hooks\.slack\.com\/services\/T[0-9A-Z]+\/B[0-9A-Z]+\/[0-9A-Za-z]+)"), "HIGH"),
-    ("google_api_key", "Google Cloud / API Key", re.compile(r"\b(AIza[0-9A-Za-z-_]{35})\b"), "CRITICAL"),
-    ("stripe_secret_key", "Stripe Secret Key", re.compile(r"\b((?:sk|rk)_(?:live|test)_[0-9a-zA-Z]{24,})\b"), "CRITICAL"),
-    ("private_key", "Private Key Header", re.compile(r"(-----BEGIN (?:RSA|DSA|EC|OPENSSH|PGP) PRIVATE KEY-----)"), "CRITICAL"),
-    ("db_connection_uri", "Database Connection URI with Password", re.compile(r"\b((?:postgres|postgresql|mysql|mongodb|redis):\/\/[a-zA-Z0-9_\-\.]+:[a-zA-Z0-9_\-\.@#$%^&*!]+@[a-zA-Z0-9_\-\.]+)"), "HIGH"),
-    ("generic_secret_assignment", "Generic Hardcoded Secret", re.compile(r"(?:api_key|secret_key|auth_token|client_secret|access_token)\s*=\s*['\"]([A-Za-z0-9+/=_\-\.]{16,})['\"]", re.I), "HIGH"),
-]
 
 
-def _is_test_file(rel_path: str) -> bool:
-    norm = rel_path.replace("\\", "/").lower()
-    parts = norm.split("/")
-    test_dirs = {"test", "tests", "fixtures", "fixture", "mock", "mocks", "__tests__", "spec", "specs"}
-    if any(p in test_dirs for p in parts[:-1]):
-        return True
-    fname = parts[-1]
-    if fname.startswith(("test_", "mock_")):
-        return True
-    test_suffixes = (
-        "_test.py", "_test.go", "_test.js", "_test.ts",
-        ".test.js", ".test.ts", ".test.tsx", ".test.jsx",
-        ".spec.js", ".spec.ts", ".spec.tsx", ".spec.jsx",
-        "test.php", "spec.php", "_test.php", ".test.php", ".spec.php",
-        ".test.mjs", ".spec.mjs", ".test.cjs", ".spec.cjs",
-    )
-    return any(fname.endswith(s) for s in test_suffixes)
 
 
-_INFRA_RESOURCE = re.compile('^\\s*resource\\s+[\\"\\\']([^\\"\\\']+)[\\"\\\']\\s+[\\"\\\']([^\\"\\\']+)[\\"\\\']')
-_INFRA_MODULE = re.compile('^\\s*module\\s+[\\"\\\']([^\\"\\\']+)[\\"\\\']')
-_INFRA_PROVIDER = re.compile('^\\s*provider\\s+[\\"\\\']([^\\"\\\']+)[\\"\\\']')
-_INFRA_VARIABLE = re.compile('^\\s*variable\\s+[\\"\\\']([^\\"\\\']+)[\\"\\\']')
-_INFRA_STAGE_I = re.compile('^-?\\s*stage\\s*:\\s*([^#]+)', re.I)
-_INFRA_JOB_I = re.compile('^-?\\s*job\\s*:\\s*([^#]+)', re.I)
-_INFRA_TASK_I = re.compile('^-?\\s*task\\s*:\\s*([^#]+)', re.I)
-_INFRA_SCRIPT_I = re.compile('^(?:script|bash|pwsh|powershell)\\s*:\\s*(.+)', re.I)
-_INFRA_SERVICE = re.compile('^\\s*service\\s+([A-Za-z_]\\w*)')
-_INFRA_RPC = re.compile('^\\s*rpc\\s+([A-Za-z_]\\w*)\\s*\\(')
-_INFRA_MESSAGE = re.compile('^\\s*message\\s+([A-Za-z_]\\w*)')
-_SOURCE_SECRET_RE = re.compile('(?i)(?:api[-_]?key|secret[-_]?key|access[-_]?token|password|passwd|auth[-_]?token|bearer)\\s*[=:]\\s*["\\\']([A-Za-z0-9+/\\-_]{12,})["\\\']')
-_SOURCE_HARDCODED_IP = re.compile('\\b(?:https?://)\\d{1,3}(?:\\.\\d{1,3}){3}(?::\\d+)?\\b')
-_SOURCE_UNITY_LIFECYCLES = re.compile('\\b(Awake|Start|Update|FixedUpdate|LateUpdate|OnEnable|OnDisable|OnDestroy|OnTriggerEnter|OnCollisionEnter|OnTriggerExit|OnCollisionExit|OnApplicationPause|OnApplicationQuit)\\s*\\(', re.M)
-_SOURCE_REACT_COMPONENT = re.compile('(?:export\\s+(?:default\\s+)?)?(?:function|const|class)\\s+([A-Z][A-Za-z0-9_]+)', re.M)
-_SOURCE_REACT_HOOK = re.compile('\\bconst\\s+(use[A-Z][A-Za-z0-9_]*)\\s*=', re.M)
-_SOURCE_REACT_ROUTE = re.compile('(?:path|to)\\s*[:=]\\s*[\\\'"`]([/][^\\\'"`]*)[\\\'"`]', re.M)
-_SOURCE_TS_DECLARATION = re.compile('^\\s*(?:export\\s+)?(?:default\\s+)?(interface|type|enum|class)\\s+([A-Za-z_$][A-Za-z0-9_$]*)', re.M)
-_SOURCE_NEXT_ROUTE_HANDLER = re.compile('^\\s*export\\s+(?:async\\s+)?function\\s+(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)\\s*\\(', re.M)
-_SOURCE_NEST_DECORATOR = re.compile('^\\s*@(Controller|Injectable|Get|Post|Put|Patch|Delete)\\s*(?:\\(\\s*[\'\\"]?([^\'\\")\\s]*)[\'\\"]?\\s*\\))?', re.M)
-_SOURCE_TEST_SUITE_BLOCK = re.compile('^\\s*(describe|it|test)\\s*\\(\\s*[\'\\"` ]([^\'\\"`]+)[\'\\"` ]', re.M)
-_SOURCE_FORM_TAG = re.compile('<form\\b([^>]*)>', re.I)
-_SOURCE_ACTION_ATTR = re.compile('\\baction=["\\\']([^"\\\']+)["\\\']', re.I)
-_SOURCE_METHOD_ATTR = re.compile('\\bmethod=["\\\']([^"\\\']+)["\\\']', re.I)
-_SOURCE_SCRIPT_SRC = re.compile('<script\\b[^>]*\\bsrc=["\\\']([^"\\\']+)["\\\']', re.I)
-_SOURCE_LINK_CSS = re.compile('<link\\b[^>]*\\bhref=["\\\']([^"\\\']+)["\\\']', re.I)
-_SOURCE_ELEM_ID = re.compile('\\bid=["\\\']([A-Za-z0-9_-]+)["\\\']', re.I)
-_SOURCE_WEB_COMPONENT = re.compile('<([a-z0-9]+-[a-z0-9-]+)\\b', re.I)
-_SOURCE_BLADE_DIRECTIVE = re.compile('@(extends|include|section|yield|livewire|component)\\s*\\(\\s*["\\\']([^"\\\']+)["\\\']', re.I)
-_SOURCE_CSS_VAR = re.compile('--([A-Za-z0-9_-]+)\\s*:\\s*([^;]+);')
-_SOURCE_KEYFRAMES = re.compile('@keyframes\\s+([A-Za-z0-9_-]+)')
-_SOURCE_MEDIA_QUERY = re.compile('@media\\s+([^{]+)')
-_SOURCE_CSS_CLASS = re.compile('^\\s*(\\.[A-Za-z0-9_-]+)\\s*\\{')
-_SOURCE_PHP_DEF = re.compile('^\\s*(?:(?:final|abstract|readonly)\\s+)*(class|trait|interface|enum)\\s+([A-Za-z_][A-Za-z0-9_]*)', re.M)
-_SOURCE_PHP_FUNC = re.compile('^\\s*(?:(?:public|protected|private|static|final|abstract)\\s+)*function\\s+([A-Za-z_][A-Za-z0-9_]*)\\s*\\(', re.M)
-_SOURCE_PHP_NS = re.compile('^\\s*namespace\\s+([A-Za-z_][A-Za-z0-9_\\\\]*)', re.M)
-_SOURCE_PHP_ROUTE_ATTR = re.compile('#\\[(?:Route|Get|Post|Put|Patch|Delete)\\s*(?:\\(\\s*[\'\\"]([^\'\\"]+)[\'\\"](?:[^)]*methods:\\s*\\[([^\\]]+)\\])?\\s*\\))?\\]', re.M)
-_SOURCE_PHP_ATTR = re.compile('#\\[([A-Za-z_][A-Za-z0-9_\\\\]*(?:\\([^)]*\\))?)\\]', re.M)
-_SOURCE_WP_HOOK = re.compile('\\b(add_action|add_filter|do_action|apply_filters)\\s*\\(\\s*[\'\\"]([^\'\\"]+)[\'\\"]', re.M)
-_SOURCE_LARAVEL_RESOURCE = re.compile('\\bRoute::(?:apiResource|resource)\\s*\\(\\s*[\'\\"]([^\'\\"]+)[\'\\"]\\s*,\\s*([A-Za-z0-9_\\\\]+)', re.M)
-_SOURCE_ELOQUENT_TABLE = re.compile('protected\\s+\\$table\\s*=\\s*[\\\'"]([^\\\'"]+)[\\\'"]')
-_SOURCE_ELOQUENT_FILLABLE = re.compile('protected\\s+\\$fillable\\s*=\\s*\\[([^\\]]+)\\]')
-_SOURCE_ELOQUENT_REL = re.compile('return\\s+\\$this->(belongsTo|hasMany|hasOne|belongsToMany|morphTo|morphMany)\\s*\\(\\s*([A-Za-z0-9_:\\\\]+)', re.I)
-_SOURCE_SCHEMA_CREATE = re.compile('Schema::create\\s*\\(\\s*[\\\'"]([^\\\'"]+)[\\\'"]')
-_SOURCE_MIGRATION_COL = re.compile('\\$table->(string|integer|bigInteger|unsignedBigInteger|id|foreignId|boolean|text|longText|json|timestamp|date)\\s*\\(\\s*(?:[\\\'"]([^\\\'"]+)[\\\'"])?')
-_SOURCE_ARTISAN_CMD = re.compile('protected\\s+\\$signature\\s*=\\s*[\\\'"]([^\\\'"]+)[\\\'"]')
-_SOURCE_FORM_REQ = re.compile('class\\s+([A-Za-z0-9_]+)\\s+extends\\s+FormRequest\\b')
-_SOURCE_CAKE_ROUTE = re.compile('\\$(?:builder|routes)->connect\\s*\\(\\s*[\\\'"]([^\\\'"]+)[\\\'"]')
-_SOURCE_CAKE_RESOURCES = re.compile('\\$(?:builder|routes)->resources\\s*\\(\\s*[\\\'"]([^\\\'"]+)[\\\'"]')
-_SOURCE_CAKE_TABLE = re.compile('class\\s+([A-Za-z0-9_]+Table)\\s+extends\\s+Table\\b')
-_SOURCE_CAKE_ENTITY = re.compile('class\\s+([A-Za-z0-9_]+)\\s+extends\\s+Entity\\b')
-_SOURCE_CAKE_ASSOC = re.compile('\\$this->(hasMany|belongsTo|belongsToMany|hasOne)\\s*\\(\\s*[\\\'"]([^\\\'"]+)[\\\'"]')
-_SOURCE_CAKE_MIGRATION = re.compile('\\$this->table\\s*\\(\\s*[\\\'"]([^\\\'"]+)[\\\'"]')
-_SOURCE_DECORATOR_RE = re.compile('^@([\\w.]+)', re.M)
-_SOURCE_ASYNC_DEF_RE = re.compile('\\basync\\s+def\\s+(\\w+)', re.M)
-_SOURCE_DATACLASS_RE = re.compile('@dataclass', re.M)
-_SOURCE_IMPORT_FROM = re.compile('^(?:from\\s+([\\w.]+)\\s+import\\s+([\\w, ]+)|import\\s+([\\w.]+))', re.M)
-_SOURCE_TESTED_CLASS = re.compile('class\\s+Test(\\w+)', re.M)
-_SOURCE_PHP_TESTED_CLASS = re.compile('class\\s+(\\w+)Test\\b', re.M)
-_SOURCE_PHP_USE = re.compile('^\\s*use\\s+([A-Za-z_][A-Za-z0-9_\\\\]+);', re.M)
-_SOURCE_JS_IMPORT = re.compile('import\\s+(?:\\{([^}]+)\\}|(\\w+))\\s+from\\s+[\'\\"]([^\'\\"]+)[\'\\"]', re.M)
-_SOURCE_TABLE_INSERT_I = re.compile('\\b(?:CREATE\\s+TABLE|ALTER\\s+TABLE|INSERT\\s+INTO|UPDATE|DELETE\\s+FROM|FROM|JOIN)\\s+(?:IF\\s+(?:NOT\\s+)?EXISTS\\s+)?[`\\"\\[]?([A-Za-z_][A-Za-z0-9_.$:-]*)', re.I)
-_MANIFEST_IMPLEMENTATION = re.compile('^\\s*(implementation|api|compileOnly|runtimeOnly|testImplementation|testRuntimeOnly|kapt)\\s*\\(?[\\"\']([^\\"\']+)[\\"\']')
-_MANIFEST_IDENTIFIER = re.compile('^\\s*gem\\s+[\'\\"]([^\'\\"]+)[\'\\"](?:\\s*,\\s*[\'\\"]([^\'\\"]+)[\'\\"])?')
-_MANIFEST_IDENTIFIER_REGEX = re.compile('^([A-Za-z0-9_.-]+)\\s*:(?:[^=]|$)')
-_MANIFEST_IDENTIFIER_REGEX_PATTERN = re.compile('^([A-Za-z0-9_.-]+)\\s*(?:[^:=]*)?:\\s*$')
 _DIFF_SHELL_I = re.compile('\\b(exec|system|shell_exec|subprocess|Process\\.Start|Runtime\\.getRuntime)\\b', re.I)
 _DIFF_EVAL_I = re.compile('\\b(eval|exec)\\s*\\(', re.I)
 _DIFF_SECRET_PASSWORD_I = re.compile('\\b(password|secret|api[_-]?key|private[_-]?key|token)\\b', re.I)
 _BRACE_FUNCTION_EXPORT = re.compile('^\\s*(?:(?:pub(?:lic)?|priv(?:ate)?|prot(?:ected)?|internal|static|async|export|default|override|virtual|final)\\s+)*(?:(?:func|fn|function|def)\\b|(?:[A-Za-z_$][\\w.<>,\\[\\]]*\\s+)+[A-Za-z_$][\\w$]*\\s*\\()|^\\s*(?:func\\s*\\([^)]*\\)\\s*)?[A-Za-z_$][\\w$]*\\s*\\([^)]*\\)\\s*(?:[^{;]*\\{|=>)')
 _BRACE_CLASS_INTERFACE = re.compile('^\\s*(?:(?:pub(?:lic)?|export)\\s+)*(?:struct|interface|enum|type|trait|class)\\b')
-_API_EXPRESS_ROUTER_METHOD = re.compile('\\b(?:app|router)\\.(get|post|put|patch|delete|options|head)\\s*\\(', re.I)
-_API_NEXT_ROUTE_HANDLER = re.compile('^\\s*export\\s+(?:async\\s+)?function\\s+(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)\\s*\\(', re.M)
-_API_LARAVEL_ROUTE_METHOD = re.compile('\\bRoute::(get|post|put|patch|delete|options|any)\\s*\\(\\s*[\'\\"]([^\'\\"]+)[\'\\"]', re.I)
-_API_LARAVEL_RESOURCE_ROUTE = re.compile('\\bRoute::(?:apiResource|resource)\\s*\\(\\s*[\'\\"]([^\'\\"]+)[\'\\"]', re.I)
-_API_ATTRIBUTE_ROUTE_DECLARATION = re.compile('#\\[(?:Route|Get|Post|Put|Patch|Delete)\\s*(?:\\(\\s*[\'\\"]([^\'\\"]+)[\'\\"](?:[^)]*methods:\\s*\\[([^\\]]+)\\])?\\s*\\))?\\]', re.I)
-_API_PHP_CONNECT_ROUTE = re.compile('\\$(?:builder|routes)->connect\\s*\\(\\s*[\'\\"]([^\'\\"]+)[\'\\"]', re.I)
-_API_PHP_RESOURCE_ROUTE = re.compile('\\$(?:builder|routes)->resources\\s*\\(\\s*[\'\\"]([^\'\\"]+)[\'\\"]', re.I)
-_API_HTML_FORM_ENDPOINT = re.compile('<form\\b(?=[^>]*\\baction=[\'\\"]([^\'\\"]+)[\'\\"])(?:[^>]*\\bmethod=[\'\\"]([A-Za-z]+)[\'\\"])?', re.I)
 
 
 class DeterministicEngine:
@@ -1059,627 +800,28 @@ class DeterministicEngine:
 
     @staticmethod
     def _flatten_config(value: Any, prefix: str = "", out: list[str] | None = None, limit: int = 200) -> list[str]:
-        out = out if out is not None else []
-        if len(out) >= limit:
-            return out
-        if isinstance(value, dict):
-            for key, child in value.items():
-                name = f"{prefix}.{key}" if prefix else str(key)
-                out.append(name)
-                DeterministicEngine._flatten_config(child, name, out, limit)
-                if len(out) >= limit: break
-        elif isinstance(value, list):
-            for child in value[:8]:
-                DeterministicEngine._flatten_config(child, prefix, out, limit)
-                if len(out) >= limit: break
-        return out
+        return flatten_config_values(value, prefix, out, limit)
 
     def _extract_infra_facts(self, path: str, text: str) -> list[dict[str, Any]]:
-        """Extract common infrastructure/build facts with zero model calls.
-
-        Parsers are intentionally conservative: they expose coordinates/declared
-        values, not behavioral interpretations. This makes the output suitable for
-        direct evidence and safe cache reuse.
-        """
-        facts: list[dict[str, Any]] = []
-        rel = path.replace("\\", "/")
-        low = rel.lower(); name = Path(rel).name.lower()
-        lines = text.splitlines()
-
-        if name in {"dockerfile", "containerfile"} or name.startswith("dockerfile."):
-            for line_no, line in enumerate(lines, 1):
-                stripped = line.strip()
-                m = re.match(r"(?i)^FROM\s+([^\s]+)(?:\s+AS\s+([^\s]+))?", stripped)
-                if m:
-                    facts.append(self._fact("container_base", m.group(1), m.group(1), line_no, stage=m.group(2) or ""))
-                m = re.match(r"(?i)^EXPOSE\s+(.+)$", stripped)
-                if m:
-                    for port in m.group(1).split():
-                        facts.append(self._fact("port", port, port, line_no, source="docker"))
-                m = re.match(r"(?i)^(?:ENV|ARG)\s+([A-Za-z_][A-Za-z0-9_]*)", stripped)
-                if m:
-                    facts.append(self._fact("env", m.group(1), m.group(1), line_no, source="docker"))
-                if re.match(r"(?i)^(?:ENTRYPOINT|CMD)\b", stripped):
-                    facts.append(self._fact("entrypoint", "container", stripped[:300], line_no, source="docker"))
-                if re.match(r"(?i)^HEALTHCHECK\b", stripped):
-                    facts.append(self._fact("healthcheck", "container", stripped[:300], line_no, source="docker"))
-
-        if name in {"compose.yml", "compose.yaml", "docker-compose.yml", "docker-compose.yaml"}:
-            in_services = False; service = ""; service_indent = -1
-            for line_no, line in enumerate(lines, 1):
-                stripped = line.strip(); indent = len(line) - len(line.lstrip(" "))
-                if re.match(r"^services\s*:\s*$", stripped):
-                    in_services = True; service = ""; service_indent = indent; continue
-                if in_services and stripped and not line.startswith(" ") and not stripped.startswith("#"):
-                    in_services = False; service = ""
-                if in_services:
-                    m = re.match(r"^\s+([A-Za-z0-9_.-]+)\s*:\s*$", line)
-                    if m and indent == service_indent + 2:
-                        service = m.group(1)
-                        facts.append(self._fact("service", service, service, line_no, source="compose"))
-                        continue
-                    m = re.match(r"^\s*image\s*:\s*[\"']?([^\"'#\s]+)", stripped, re.I)
-                    if m and service:
-                        facts.append(self._fact("container_image", service, m.group(1), line_no, service=service))
-                    m = re.search(r"[\"']?(\d{2,5})(?::(\d{2,5}))?(?:/(?:tcp|udp))?[\"']?", stripped)
-                    if m and service and ("port" in stripped.lower() or stripped.startswith("-")):
-                        facts.append(self._fact("port", service, m.group(0).strip("\"'"), line_no, service=service))
-                    if stripped.lower().startswith("healthcheck:") and service:
-                        facts.append(self._fact("healthcheck", service, service, line_no, source="compose"))
-
-        if "/.github/workflows/" in f"/{low}" or low.startswith(".github/workflows/"):
-            in_jobs = False; jobs_indent = -1
-            for line_no, line in enumerate(lines, 1):
-                stripped = line.strip(); indent = len(line) - len(line.lstrip(" "))
-                if re.match(r"^jobs\s*:\s*$", stripped):
-                    in_jobs = True; jobs_indent = indent; continue
-                if in_jobs:
-                    m = re.match(r"^\s+([A-Za-z0-9_.-]+)\s*:\s*$", line)
-                    if m and indent == jobs_indent + 2:
-                        facts.append(self._fact("ci_job", m.group(1), m.group(1), line_no, source="github-actions"))
-                m = re.match(r"^uses\s*:\s*([^\s#]+)", stripped)
-                if m:
-                    facts.append(self._fact("ci_action", m.group(1), m.group(1), line_no, source="github-actions"))
-                m = re.match(r"^run\s*:\s*(.+)$", stripped)
-                if m:
-                    facts.append(self._fact("ci_command", "run", m.group(1)[:300], line_no, source="github-actions"))
-
-        if name in {".gitlab-ci.yml", ".gitlab-ci.yaml"}:
-            reserved = {"stages", "variables", "default", "include", "workflow", "image", "services", "before_script", "after_script", "cache"}
-            current_job = ""
-            in_script = False
-            for line_no, line in enumerate(lines, 1):
-                stripped = line.strip(); indent = len(line) - len(line.lstrip(" "))
-                top = re.match(r"^([A-Za-z0-9_.-]+)\s*:\s*$", stripped) if indent == 0 else None
-                if top:
-                    key = top.group(1); in_script = False
-                    current_job = "" if key in reserved or key.startswith(".") else key
-                    if current_job:
-                        facts.append(self._fact("ci_job", current_job, current_job, line_no, source="gitlab-ci"))
-                    continue
-                if current_job and re.match(r"^script\s*:\s*$", stripped):
-                    in_script = True; continue
-                if current_job and in_script:
-                    cmd = re.match(r"^-\s+(.+)$", stripped)
-                    if cmd:
-                        facts.append(self._fact("ci_command", current_job, cmd.group(1)[:300], line_no, source="gitlab-ci"))
-                    elif stripped and not stripped.startswith("#") and indent <= 2:
-                        in_script = False
-
-        if name in {"azure-pipelines.yml", "azure-pipelines.yaml"}:
-            for line_no, line in enumerate(lines, 1):
-                stripped = line.strip()
-                for kind, pattern in (
-                    ("ci_stage", _INFRA_STAGE_I),
-                    ("ci_job", _INFRA_JOB_I),
-                    ("ci_action", _INFRA_TASK_I),
-                    ("ci_command", _INFRA_SCRIPT_I),
-                ):
-                    m = pattern.search(stripped)
-                    if m:
-                        value = m.group(1).strip().strip("\"'")[:300]
-                        facts.append(self._fact(kind, value, value, line_no, source="azure-pipelines"))
-
-        if name.startswith(".env"):
-            for line_no, line in enumerate(lines, 1):
-                m = re.match(r"^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=", line)
-                if m:
-                    facts.append(self._fact("env", m.group(1), m.group(1), line_no, source="env-file"))
-
-        if Path(rel).suffix.lower() in {".ini", ".cfg", ".properties"}:
-            section = ""
-            for line_no, line in enumerate(lines, 1):
-                stripped = line.strip()
-                sm = re.match(r"^\[([^]]+)\]$", stripped)
-                if sm:
-                    section = sm.group(1); continue
-                km = re.match(r"^([A-Za-z0-9_.-]+)\s*[=:]", stripped)
-                if km:
-                    key = f"{section}.{km.group(1)}" if section else km.group(1)
-                    facts.append(self._fact("config_key", key, key, line_no, source="ini-properties"))
-
-        if Path(rel).suffix.lower() in {".tf", ".tfvars"}:
-            patterns = {
-                "terraform_resource": _INFRA_RESOURCE,
-                "terraform_module": _INFRA_MODULE,
-                "terraform_provider": _INFRA_PROVIDER,
-                "config_key": _INFRA_VARIABLE,
-            }
-            for line_no, line in enumerate(lines, 1):
-                for kind, pattern in patterns.items():
-                    m = pattern.search(line)
-                    if m:
-                        value = ".".join(x for x in m.groups() if x)
-                        facts.append(self._fact(kind, value, value, line_no, source="terraform"))
-
-        if Path(rel).suffix.lower() == ".proto":
-            for line_no, line in enumerate(lines, 1):
-                for kind, pattern in (
-                    ("proto_service", _INFRA_SERVICE),
-                    ("proto_rpc", _INFRA_RPC),
-                    ("proto_message", _INFRA_MESSAGE),
-                ):
-                    m = pattern.search(line)
-                    if m:
-                        facts.append(self._fact(kind, m.group(1), m.group(1), line_no, source="protobuf"))
-
-        # Kubernetes YAML is declarative and can be represented losslessly enough for
-        # discovery without embedding the whole manifest. Keep extraction conservative.
-        if Path(rel).suffix.lower() in {".yaml", ".yml"} and re.search(r"(?m)^\s*apiVersion\s*:", text) and re.search(r"(?m)^\s*kind\s*:", text):
-            kind = ""; resource_name = ""
-            for line_no, line in enumerate(lines, 1):
-                stripped = line.strip()
-                m = re.match(r"^kind\s*:\s*([^#]+)", stripped, re.I)
-                if m:
-                    kind = m.group(1).strip().strip("\"'")
-                    facts.append(self._fact("k8s_kind", kind, kind, line_no, source="kubernetes"))
-                    continue
-                # metadata.name is intentionally accepted only on a simple scalar line;
-                # the exact evidence coordinate remains available if disambiguation is needed.
-                m = re.match(r"^name\s*:\s*([A-Za-z0-9_.-]+)\s*$", stripped)
-                if m and not resource_name:
-                    resource_name = m.group(1)
-                    facts.append(self._fact("k8s_resource", resource_name, kind or "resource", line_no, source="kubernetes", resource_kind=kind))
-                m = re.match(r"^image\s*:\s*([^#\s]+)", stripped, re.I)
-                if m:
-                    facts.append(self._fact("container_image", resource_name or kind or "k8s", m.group(1).strip("\"'"), line_no, source="kubernetes"))
-                m = re.match(r"^(?:containerPort|port|targetPort)\s*:\s*([0-9]{1,5})", stripped, re.I)
-                if m:
-                    facts.append(self._fact("port", resource_name or kind or "k8s", m.group(1), line_no, source="kubernetes"))
-
-        # OpenAPI/Swagger paths are exact declared routes. YAML gets precise line
-        # coordinates; JSON is supplemented below from parsed data when available.
-        if Path(rel).suffix.lower() in {".yaml", ".yml"} and ("openapi:" in text[:5000].lower() or "swagger:" in text[:5000].lower() or "openapi" in name or "swagger" in name):
-            current_path = ""
-            path_indent = -1
-            for line_no, line in enumerate(lines, 1):
-                stripped = line.strip(); indent = len(line) - len(line.lstrip(" "))
-                pm = re.match(r"^(/[^:]+)\s*:\s*$", stripped)
-                if pm:
-                    current_path = pm.group(1).strip(); path_indent = indent; continue
-                mm = re.match(r"^(get|post|put|patch|delete|options|head|trace)\s*:\s*$", stripped, re.I)
-                if current_path and mm and indent > path_indent:
-                    method = mm.group(1).upper()
-                    facts.append(self._fact("route", current_path, method, line_no, method=method, source="openapi"))
-                elif current_path and stripped and indent <= path_indent and not stripped.startswith("#"):
-                    current_path = ""
-
-        if name == "package.json":
-            try:
-                pkg_data = json.loads(text)
-                if isinstance(pkg_data, dict):
-                    if "name" in pkg_data:
-                        facts.append(self._fact("package_name", str(pkg_data["name"]), "npm", 1, source="package.json"))
-                    for script_name, cmd in (pkg_data.get("scripts") or {}).items():
-                        facts.append(self._fact("npm_script", str(script_name), str(cmd)[:300], 1, script=str(script_name), command=str(cmd)))
-                    for dep_key, kind in (("dependencies", "prod"), ("devDependencies", "dev"), ("peerDependencies", "peer")):
-                        for dep, ver in (pkg_data.get(dep_key) or {}).items():
-                            facts.append(self._fact("dependency", str(dep), str(ver), 1, manager="npm", dep_kind=kind))
-            except (json.JSONDecodeError, AttributeError, TypeError, ValueError) as parse_exc:
-                logger.debug("Npm package metadata skipped (%s)", type(parse_exc).__name__)
-
-        if name == "composer.json":
-            try:
-                comp_data = json.loads(text)
-                if isinstance(comp_data, dict):
-                    if "name" in comp_data:
-                        facts.append(self._fact("package_name", str(comp_data["name"]), "composer", 1, source="composer.json"))
-                    for dep_key, kind in (("require", "prod"), ("require-dev", "dev")):
-                        for dep, ver in (comp_data.get(dep_key) or {}).items():
-                            facts.append(self._fact("dependency", str(dep), str(ver), 1, manager="composer", dep_kind=kind))
-                    autoload = comp_data.get("autoload") or {}
-                    if isinstance(autoload, dict):
-                        for ns, target_dir in (autoload.get("psr-4") or {}).items():
-                            facts.append(self._fact("psr4_autoload", str(ns).rstrip("\\"), str(target_dir), 1, namespace=str(ns), path=str(target_dir)))
-                    autoload_dev = comp_data.get("autoload-dev") or {}
-                    if isinstance(autoload_dev, dict):
-                        for ns, target_dir in (autoload_dev.get("psr-4") or {}).items():
-                            facts.append(self._fact("psr4_autoload", str(ns).rstrip("\\"), str(target_dir), 1, namespace=str(ns), path=str(target_dir), dev=True))
-                    for script_name, cmd in (comp_data.get("scripts") or {}).items():
-                        cmd_val = cmd if isinstance(cmd, str) else json_dumps(cmd)
-                        facts.append(self._fact("composer_script", str(script_name), str(cmd_val)[:300], 1, script=str(script_name)))
-            except (json.JSONDecodeError, AttributeError, TypeError, ValueError) as parse_exc:
-                logger.debug("Composer package metadata skipped (%s)", type(parse_exc).__name__)
-
-        return facts
+        return extract_infra_facts(
+            path,
+            text,
+            fact=self._fact,
+            json_dumps=json_dumps,
+            logger=logger,
+        )
 
     def _extract_source_facts(self, path: str, text: str) -> list[dict[str, Any]]:
-        facts: list[dict[str, Any]] = []
-        lang = self._language(path)
-        if lang == "python":
-            try:
-                ast.parse(text)
-            except SyntaxError as exc:
-                facts.append(self._fact("syntax_error", "python", str(exc.msg), int(exc.lineno or 1)))
-            facts.extend(self._extract_python_ast(text))
-        elif lang in {"json", "toml", "xml"}:
-            try:
-                if lang == "json": data = json.loads(text)
-                elif lang == "toml": data = tomllib.loads(text)
-                else:
-                    root = ET.fromstring(text)
-                    data = {"xml_tags": list(dict.fromkeys(node.tag.split("}")[-1] for node in root.iter()))[:200]}
-                for key in self._flatten_config(data)[:200]:
-                    facts.append(self._fact("config_key", key, key, 1))
-                if lang == "json" and isinstance(data, dict) and ("openapi" in data or "swagger" in data) and isinstance(data.get("paths"), dict):
-                    for route, operations in list(data.get("paths", {}).items())[:500]:
-                        if not isinstance(operations, dict):
-                            continue
-                        for method in operations:
-                            if str(method).lower() in {"get", "post", "put", "patch", "delete", "options", "head", "trace"}:
-                                facts.append(self._fact("route", str(route), str(method).upper(), 1, method=str(method).upper(), source="openapi-json"))
-            except Exception as exc:
-                facts.append(self._fact("syntax_error", lang, str(exc)[:300], 1))
-
-        # ── Language-specific analyzers ──────────────────────────────────────────
-        ext = Path(path).suffix.lower()
-
-        # Unity / C# analyzer
-        if ext == ".cs":
-            UNITY_LIFECYCLES = _SOURCE_UNITY_LIFECYCLES
-            for line_no, line in enumerate(text.splitlines(), 1):
-                m = UNITY_LIFECYCLES.search(line)
-                if m:
-                    facts.append(self._fact("unity_lifecycle", m.group(1), line.strip()[:200], line_no))
-                if "[SerializeField]" in line or "[SerializeField(" in line:
-                    facts.append(self._fact("unity_serialize_field", "SerializeField", line.strip()[:200], line_no))
-                if "MonoBehaviour" in line:
-                    facts.append(self._fact("unity_monobehaviour", "MonoBehaviour", line.strip()[:200], line_no))
-                if "ScriptableObject" in line:
-                    facts.append(self._fact("unity_scriptable_object", "ScriptableObject", line.strip()[:200], line_no))
-                if "[CustomEditor(" in line:
-                    facts.append(self._fact("unity_custom_editor", "CustomEditor", line.strip()[:200], line_no))
-
-        # JavaScript / TypeScript / Vue / Svelte analyzer
-        if ext in (".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".mts", ".cts", ".vue", ".svelte"):
-            REACT_COMPONENT = _SOURCE_REACT_COMPONENT
-            REACT_HOOK = _SOURCE_REACT_HOOK
-            REACT_ROUTE = _SOURCE_REACT_ROUTE
-            TS_DECLARATION = _SOURCE_TS_DECLARATION
-            NEXT_ROUTE_HANDLER = _SOURCE_NEXT_ROUTE_HANDLER
-            NEST_DECORATOR = _SOURCE_NEST_DECORATOR
-            TEST_SUITE_BLOCK = _SOURCE_TEST_SUITE_BLOCK
-            for line_no, line in enumerate(text.splitlines(), 1):
-                cm = REACT_COMPONENT.search(line)
-                if cm and ("React" in text or "jsx" in path or "tsx" in path or "useState" in text or "useEffect" in text):
-                    facts.append(self._fact("react_component", cm.group(1), line.strip()[:200], line_no))
-                hm = REACT_HOOK.search(line)
-                if hm:
-                    facts.append(self._fact("react_hook", hm.group(1), line.strip()[:200], line_no))
-                rm = REACT_ROUTE.search(line)
-                if rm:
-                    facts.append(self._fact("route", rm.group(1), "ANY", line_no))
-                tm = TS_DECLARATION.search(line)
-                if tm:
-                    kind = tm.group(1)
-                    symbol_name = tm.group(2)
-                    facts.append(self._fact(f"ts_{kind}", symbol_name, line.strip()[:200], line_no))
-                nm = NEXT_ROUTE_HANDLER.search(line)
-                if nm:
-                    method = nm.group(1).upper()
-                    route_path = "/" + Path(path.replace("\\", "/")).as_posix().lstrip("/")
-                    facts.append(self._fact("route", route_path, method, line_no, method=method, source="next-route-handler"))
-                nest_m = NEST_DECORATOR.search(line)
-                if nest_m:
-                    dec_type = nest_m.group(1)
-                    dec_val = nest_m.group(2) or ""
-                    if dec_type in {"Get", "Post", "Put", "Patch", "Delete"}:
-                        facts.append(self._fact("route", dec_val or "/", dec_type.upper(), line_no, method=dec_type.upper(), source="nestjs"))
-                    else:
-                        facts.append(self._fact("nest_decorator", dec_type, dec_val, line_no))
-                tbm = TEST_SUITE_BLOCK.search(line)
-                if tbm:
-                    block_type = tbm.group(1)
-                    test_title = tbm.group(2)
-                    facts.append(self._fact(f"test_{block_type}", test_title, line.strip()[:200], line_no))
-
-        # HTML & template analyzer
-        if ext in (".html", ".htm") or path.lower().endswith(".blade.php") or ext == ".ctp":
-            FORM_TAG = _SOURCE_FORM_TAG
-            ACTION_ATTR = _SOURCE_ACTION_ATTR
-            METHOD_ATTR = _SOURCE_METHOD_ATTR
-            SCRIPT_SRC = _SOURCE_SCRIPT_SRC
-            LINK_CSS = _SOURCE_LINK_CSS
-            ELEM_ID = _SOURCE_ELEM_ID
-            WEB_COMPONENT = _SOURCE_WEB_COMPONENT
-            BLADE_DIRECTIVE = _SOURCE_BLADE_DIRECTIVE
-
-            for line_no, line in enumerate(text.splitlines(), 1):
-                for fm in FORM_TAG.finditer(line):
-                    attrs = fm.group(1)
-                    am = ACTION_ATTR.search(attrs)
-                    mm = METHOD_ATTR.search(attrs)
-                    r_path = am.group(1) if am else "/"
-                    m_method = (mm.group(1) if mm else "GET").upper()
-                    facts.append(self._fact("html_form", r_path, m_method, line_no, method=m_method, action=r_path))
-                    facts.append(self._fact("route", r_path, m_method, line_no, method=m_method, source="html-form"))
-                sm = SCRIPT_SRC.search(line)
-                if sm:
-                    facts.append(self._fact("html_script", sm.group(1), sm.group(1), line_no))
-                lm = LINK_CSS.search(line)
-                if lm and ("stylesheet" in line.lower() or ".css" in lm.group(1).lower()):
-                    facts.append(self._fact("html_stylesheet", lm.group(1), lm.group(1), line_no))
-                for id_m in ELEM_ID.finditer(line):
-                    facts.append(self._fact("html_id", id_m.group(1), id_m.group(1), line_no))
-                for wc_m in WEB_COMPONENT.finditer(line):
-                    facts.append(self._fact("web_component", wc_m.group(1), wc_m.group(1), line_no))
-                for bm in BLADE_DIRECTIVE.finditer(line):
-                    directive, arg = bm.group(1).lower(), bm.group(2)
-                    facts.append(self._fact(f"blade_{directive}", arg, arg, line_no))
-
-        # CSS / SCSS / LESS analyzer
-        if ext in (".css", ".scss", ".sass", ".less"):
-            CSS_VAR = _SOURCE_CSS_VAR
-            KEYFRAMES = _SOURCE_KEYFRAMES
-            MEDIA_QUERY = _SOURCE_MEDIA_QUERY
-            CSS_CLASS = _SOURCE_CSS_CLASS
-
-            for line_no, line in enumerate(text.splitlines(), 1):
-                vm = CSS_VAR.search(line)
-                if vm:
-                    facts.append(self._fact("css_variable", f"--{vm.group(1)}", vm.group(2).strip(), line_no))
-                km = KEYFRAMES.search(line)
-                if km:
-                    facts.append(self._fact("css_keyframes", km.group(1), km.group(1), line_no))
-                mm = MEDIA_QUERY.search(line)
-                if mm:
-                    facts.append(self._fact("css_media_query", mm.group(1).strip()[:100], mm.group(1).strip()[:100], line_no))
-                cm = CSS_CLASS.search(line)
-                if cm:
-                    facts.append(self._fact("css_class", cm.group(1), cm.group(1), line_no))
-
-        # PHP & CakePHP analyzer
-        if ext in (".php", ".ctp"):
-            PHP_DEF = _SOURCE_PHP_DEF
-            PHP_FUNC = _SOURCE_PHP_FUNC
-            PHP_NS = _SOURCE_PHP_NS
-            PHP_ROUTE_ATTR = _SOURCE_PHP_ROUTE_ATTR
-            PHP_ATTR = _SOURCE_PHP_ATTR
-            WP_HOOK = _SOURCE_WP_HOOK
-            LARAVEL_RESOURCE = _SOURCE_LARAVEL_RESOURCE
-            # Laravel specifics
-            ELOQUENT_TABLE = _SOURCE_ELOQUENT_TABLE
-            ELOQUENT_FILLABLE = _SOURCE_ELOQUENT_FILLABLE
-            ELOQUENT_REL = _SOURCE_ELOQUENT_REL
-            SCHEMA_CREATE = _SOURCE_SCHEMA_CREATE
-            MIGRATION_COL = _SOURCE_MIGRATION_COL
-            ARTISAN_CMD = _SOURCE_ARTISAN_CMD
-            FORM_REQ = _SOURCE_FORM_REQ
-
-            # CakePHP specifics
-            CAKE_ROUTE = _SOURCE_CAKE_ROUTE
-            CAKE_RESOURCES = _SOURCE_CAKE_RESOURCES
-            CAKE_TABLE = _SOURCE_CAKE_TABLE
-            CAKE_ENTITY = _SOURCE_CAKE_ENTITY
-            CAKE_ASSOC = _SOURCE_CAKE_ASSOC
-            CAKE_MIGRATION = _SOURCE_CAKE_MIGRATION
-
-            current_ns = ""
-            for line_no, line in enumerate(text.splitlines(), 1):
-                ns_m = PHP_NS.search(line)
-                if ns_m:
-                    current_ns = ns_m.group(1).rstrip(";")
-                    facts.append(self._fact("php_namespace", current_ns, current_ns, line_no))
-                    continue
-
-                def_m = PHP_DEF.search(line)
-                if def_m:
-                    kind = def_m.group(1)
-                    name = def_m.group(2)
-                    fqn = f"{current_ns}\\{name}" if current_ns else name
-                    facts.append(self._fact(f"php_{kind}", name, fqn, line_no, namespace=current_ns, fqn=fqn))
-
-                fn_m = PHP_FUNC.search(line)
-                if fn_m:
-                    fn_name = fn_m.group(1)
-                    if fn_name.lower() not in {"__construct", "__destruct", "__get", "__set"}:
-                        facts.append(self._fact("php_function", fn_name, line.strip()[:200], line_no))
-
-                attr_m = PHP_ATTR.search(line)
-                if attr_m:
-                    attr_val = attr_m.group(1)
-                    facts.append(self._fact("php_attribute", attr_val, attr_val, line_no))
-
-                route_attr_m = PHP_ROUTE_ATTR.search(line)
-                if route_attr_m:
-                    route_path = route_attr_m.group(1) or "/"
-                    methods_str = route_attr_m.group(2) or "ANY"
-                    for method in methods_str.replace("'", "").replace('"', "").split(","):
-                        m_clean = method.strip().upper() or "ANY"
-                        facts.append(self._fact("route", route_path, m_clean, line_no, method=m_clean, source="php-attribute"))
-
-                lr_m = LARAVEL_RESOURCE.search(line)
-                if lr_m:
-                    res_path = lr_m.group(1)
-                    controller = lr_m.group(2)
-                    facts.append(self._fact("route", f"/{res_path.lstrip('/')}", "RESOURCE", line_no, controller=controller, source="laravel-resource"))
-
-                wp_m = WP_HOOK.search(line)
-                if wp_m:
-                    hook_kind = wp_m.group(1)
-                    hook_name = wp_m.group(2)
-                    facts.append(self._fact("wordpress_hook", hook_name, hook_kind, line_no, hook=hook_name, hook_type=hook_kind))
-
-                # Laravel facts
-                tbl_m = ELOQUENT_TABLE.search(line)
-                if tbl_m:
-                    facts.append(self._fact("eloquent_table", tbl_m.group(1), tbl_m.group(1), line_no))
-                fill_m = ELOQUENT_FILLABLE.search(line)
-                if fill_m:
-                    cols = [c.strip().strip("'\"") for c in fill_m.group(1).split(",") if c.strip().strip("'\"")]
-                    for col in cols:
-                        facts.append(self._fact("eloquent_fillable", col, col, line_no))
-                rel_m = ELOQUENT_REL.search(line)
-                if rel_m:
-                    facts.append(self._fact("eloquent_relation", rel_m.group(2).split("::")[0], rel_m.group(1), line_no, relation_type=rel_m.group(1)))
-                sc_m = SCHEMA_CREATE.search(line)
-                if sc_m:
-                    facts.append(self._fact("db_table", sc_m.group(1), sc_m.group(1), line_no, source="laravel-migration"))
-                col_m = MIGRATION_COL.search(line)
-                if col_m:
-                    c_type = col_m.group(1)
-                    c_name = col_m.group(2) or c_type
-                    facts.append(self._fact("db_column", c_name, c_type, line_no, col_type=c_type))
-                art_m = ARTISAN_CMD.search(line)
-                if art_m:
-                    cmd_name = art_m.group(1).split()[0]
-                    facts.append(self._fact("artisan_command", cmd_name, art_m.group(1), line_no))
-                freq_m = FORM_REQ.search(line)
-                if freq_m:
-                    facts.append(self._fact("form_request", freq_m.group(1), freq_m.group(1), line_no))
-
-                # CakePHP facts
-                cr_m = CAKE_ROUTE.search(line)
-                if cr_m:
-                    facts.append(self._fact("route", cr_m.group(1), "ANY", line_no, source="cakephp"))
-                cres_m = CAKE_RESOURCES.search(line)
-                if cres_m:
-                    facts.append(self._fact("route", f"/{cres_m.group(1).lstrip('/')}", "RESOURCE", line_no, source="cakephp-resource"))
-                ctbl_m = CAKE_TABLE.search(line)
-                if ctbl_m:
-                    facts.append(self._fact("cake_table", ctbl_m.group(1), ctbl_m.group(1), line_no))
-                cent_m = CAKE_ENTITY.search(line)
-                if cent_m:
-                    facts.append(self._fact("cake_entity", cent_m.group(1), cent_m.group(1), line_no))
-                cassoc_m = CAKE_ASSOC.search(line)
-                if cassoc_m:
-                    facts.append(self._fact("cake_association", cassoc_m.group(2), cassoc_m.group(1), line_no, association_type=cassoc_m.group(1)))
-                cmig_m = CAKE_MIGRATION.search(line)
-                if cmig_m:
-                    facts.append(self._fact("db_table", cmig_m.group(1), cmig_m.group(1), line_no, source="cakephp-migration"))
-
-        # Python: decorators, dataclasses, async flows
-        if ext == ".py":
-            DECORATOR_RE = _SOURCE_DECORATOR_RE
-            ASYNC_DEF_RE = _SOURCE_ASYNC_DEF_RE
-            DATACLASS_RE = _SOURCE_DATACLASS_RE
-            for m in DECORATOR_RE.finditer(text):
-                line_no = text[:m.start()].count("\n") + 1
-                facts.append(self._fact("python_decorator", m.group(1), m.group(0), line_no))
-            for m in ASYNC_DEF_RE.finditer(text):
-                line_no = text[:m.start()].count("\n") + 1
-                facts.append(self._fact("async_function", m.group(1), m.group(0), line_no))
-            if DATACLASS_RE.search(text):
-                facts.append(self._fact("python_dataclass", "dataclass", path, 1))
-
-        # ── Security / secret scanner ─────────────────────────────────────────────
-        SECRET_RE = _SOURCE_SECRET_RE
-        HARDCODED_IP = _SOURCE_HARDCODED_IP
-        for line_no, line in enumerate(text.splitlines(), 1):
-            sm = SECRET_RE.search(line)
-            if sm:
-                # Never store the actual secret value — only flag the location
-                facts.append(self._fact("security_hardcoded_secret", "REDACTED", f"line {line_no}: potential secret detected", line_no))
-            if HARDCODED_IP.search(line) and "127.0.0.1" not in line and "localhost" not in line:
-                facts.append(self._fact("security_hardcoded_ip", "hardcoded_ip", line.strip()[:200], line_no))
-            # Merge conflict markers
-            if line.startswith("<<<<<<< ") or line.startswith(">>>>>>> ") or line == "=======":
-                facts.append(self._fact("merge_conflict", "git_conflict_marker", line.strip()[:80], line_no))
-
-        # ── Test-to-production mapping ────────────────────────────────────────────
-        if self._is_test(path):
-            # Extract names of classes/functions being tested from import statements and class names
-            IMPORT_FROM = _SOURCE_IMPORT_FROM
-            TESTED_CLASS = _SOURCE_TESTED_CLASS
-            PHP_TESTED_CLASS = _SOURCE_PHP_TESTED_CLASS
-            PHP_USE = _SOURCE_PHP_USE
-            JS_IMPORT = _SOURCE_JS_IMPORT
-            for m in IMPORT_FROM.finditer(text):
-                module = m.group(1) or m.group(3) or ""
-                if module and not module.startswith("test") and "mock" not in module.lower():
-                    facts.append(self._fact("tests_module", module, path, 1))
-                imported_symbols = m.group(2)
-                if imported_symbols:
-                    for sym in imported_symbols.split(","):
-                        s = sym.strip()
-                        if s and not s.startswith("test"):
-                            facts.append(self._fact("tests_symbol", s, path, 1))
-            for m in TESTED_CLASS.finditer(text):
-                facts.append(self._fact("tests_class", m.group(1), path, 1))
-            for m in PHP_TESTED_CLASS.finditer(text):
-                facts.append(self._fact("tests_class", m.group(1), path, 1))
-            for m in PHP_USE.finditer(text):
-                use_target = m.group(1).split("\\")[-1]
-                if use_target and not use_target.endswith("Test") and not use_target.startswith("Test"):
-                    facts.append(self._fact("tests_symbol", use_target, path, 1))
-            for m in JS_IMPORT.finditer(text):
-                named = m.group(1)
-                default_sym = m.group(2)
-                import_src = m.group(3)
-                if named:
-                    for s in named.split(","):
-                        clean_s = s.strip().split(" as ")[0].strip()
-                        if clean_s and not clean_s.startswith("test"):
-                            facts.append(self._fact("tests_symbol", clean_s, path, 1))
-                if default_sym and not default_sym.startswith("test"):
-                    facts.append(self._fact("tests_symbol", default_sym, path, 1))
-                if import_src and not import_src.startswith("test"):
-                    facts.append(self._fact("tests_module", import_src, path, 1))
-
-        # ── General line-by-line patterns ────────────────────────────────────────
-        for line_no, line in enumerate(text.splitlines(), 1):
-            for _, pattern in ROUTE_PATTERNS:
-                m = pattern.search(line)
-                if not m:
-                    continue
-                groups = m.groups()
-                method, route = "ANY", ""
-                if len(groups) >= 2:
-                    method, route = str(groups[0]).upper(), str(groups[1])
-                elif groups:
-                    route = str(groups[0])
-                    decorator = m.group(0).lower()
-                    method = next((x.upper() for x in ("get", "post", "put", "patch", "delete") if x in decorator), "ANY")
-                facts.append(self._fact("route", route, method, line_no, method=method))
-            for pattern in ENV_PATTERNS:
-                for m in pattern.finditer(line):
-                    facts.append(self._fact("env", m.group(1), m.group(1), line_no))
-            for pattern in CONFIG_PATTERNS:
-                for m in pattern.finditer(line):
-                    facts.append(self._fact("config", m.group(1), m.group(1), line_no))
-            todo = TODO_RE.search(line)
-            if todo:
-                facts.append(self._fact("todo", todo.group(1).upper(), todo.group(2).strip()[:300], line_no))
-            if SQL_RE.search(line):
-                facts.append(self._fact("database", "sql", line.strip()[:300], line_no))
-                for pattern in (
-                    _SOURCE_TABLE_INSERT_I,
-                ):
-                    for sm in pattern.finditer(line):
-                        facts.append(self._fact("db_table", sm.group(1), sm.group(1), line_no, source="sql"))
-            conc = CONCURRENCY_RE.search(line)
-            if conc:
-                facts.append(self._fact("concurrency", conc.group(1).lower(), line.strip()[:300], line_no))
-            sec = SECURITY_RE.search(line)
-            if sec:
-                facts.append(self._fact("security", sec.group(1).lower(), line.strip()[:300], line_no))
-        facts.extend(self._extract_infra_facts(path, text))
-        if self._is_test(path):
-            facts.append(self._fact("test_file", Path(path).name, path, 1))
-        low_name = Path(path).name.lower()
-        if low_name in {"main.py", "app.py", "index.js", "index.ts", "server.js", "server.ts", "program.cs", "main.go", "main.rs"}:
-            facts.append(self._fact("entrypoint_file", Path(path).name, path, 1))
-        return facts
+        return _extract_source_facts(
+            path,
+            text,
+            language=self._language,
+            fact=self._fact,
+            flatten_config=self._flatten_config,
+            extract_python_ast=self._extract_python_ast,
+            extract_infra_facts=self._extract_infra_facts,
+            is_test=self._is_test,
+        )
 
 
     def _fact_blob_get(self, content_hash: str, language: str) -> list[dict[str, Any]] | None:
@@ -2022,263 +1164,7 @@ class DeterministicEngine:
                     return cached
             _digest, snapshot_lines = self.repo_tools._read_snapshot(path)
             raw = "\n".join(snapshot_lines).encode("utf-8")
-            if name in {"package.json", "composer.json"}:
-                data = json.loads(raw.decode("utf-8", errors="replace"))
-                if name == "package.json":
-                    for section in ("dependencies", "devDependencies", "peerDependencies", "optionalDependencies"):
-                        obj = data.get(section, {}) if isinstance(data, dict) else {}
-                        if isinstance(obj, dict):
-                            deps.extend((str(k), str(v), section) for k, v in obj.items())
-                    obj = data.get("scripts", {}) if isinstance(data, dict) else {}
-                    if isinstance(obj, dict):
-                        scripts.extend((str(k), str(v), self._purpose(str(k))) for k, v in obj.items())
-                else:
-                    for section in ("require", "require-dev"):
-                        obj = data.get(section, {}) if isinstance(data, dict) else {}
-                        if isinstance(obj, dict):
-                            deps.extend((str(k), str(v), section) for k, v in obj.items())
-                    obj = data.get("scripts", {}) if isinstance(data, dict) else {}
-                    if isinstance(obj, dict):
-                        for k, v in obj.items():
-                            cmd = v if isinstance(v, str) else " && ".join(str(x) for x in v) if isinstance(v, list) else str(v)
-                            scripts.append((str(k), cmd, self._purpose(str(k))))
-            elif name in {"deno.json", "deno.jsonc"}:
-                text = raw.decode("utf-8", errors="replace")
-                if name.endswith(".jsonc"):
-                    # Conservative JSONC cleanup sufficient for top-level imports/tasks.
-                    text = re.sub(r"/\*.*?\*/", "", text, flags=re.S)
-                    text = re.sub(r"(^|\s)//.*$", r"\1", text, flags=re.M)
-                    text = re.sub(r",\s*([}\]])", r"\1", text)
-                data = json.loads(text)
-                if isinstance(data, dict):
-                    imports = data.get("imports", {})
-                    if isinstance(imports, dict):
-                        deps.extend((str(k), str(v), "deno-import") for k, v in imports.items())
-                    tasks = data.get("tasks", {})
-                    if isinstance(tasks, dict):
-                        scripts.extend((str(k), str(v), self._purpose(str(k))) for k, v in tasks.items())
-            elif name == "package-lock.json":
-                data = json.loads(raw.decode("utf-8", errors="replace"))
-                packages = data.get("packages", {}) if isinstance(data, dict) else {}
-                if isinstance(packages, dict) and packages:
-                    for key, meta in packages.items():
-                        if not key.startswith("node_modules/") or not isinstance(meta, dict):
-                            continue
-                        pkg = key[len("node_modules/"):]
-                        if pkg:
-                            deps.append((pkg, str(meta.get("version", "")), "lock"))
-                elif isinstance(data, dict) and isinstance(data.get("dependencies"), dict):
-                    for pkg, meta in data["dependencies"].items():
-                        version = str(meta.get("version", "")) if isinstance(meta, dict) else ""
-                        deps.append((str(pkg), version, "lock"))
-            elif name == "pnpm-lock.yaml":
-                text = raw.decode("utf-8", errors="replace")
-                # pnpm v6-v9 lock keys are deterministic enough to recover package + version
-                # without a YAML dependency. We intentionally ignore peer suffix metadata.
-                for line in text.splitlines():
-                    m = re.match(r"^\s{2,}[\"']?/?((?:@[^/\s:]+/)?[^@:/\s\"']+)@([^:\s(\"']+)(?:\([^)]*\))?[\"']?\s*:\s*$", line)
-                    if m:
-                        deps.append((m.group(1), m.group(2), "lock"))
-            elif name == "packages.lock.json":
-                data = json.loads(raw.decode("utf-8", errors="replace"))
-                if isinstance(data, dict):
-                    for tfm, items in data.get("dependencies", {}).items() if isinstance(data.get("dependencies", {}), dict) else []:
-                        if not isinstance(items, dict): continue
-                        for pkg, meta in items.items():
-                            version = str(meta.get("resolved") or meta.get("requested") or "") if isinstance(meta, dict) else ""
-                            deps.append((str(pkg), version, f"nuget-lock:{tfm}"))
-            elif name in {"uv.lock"}:
-                data = tomllib.loads(raw.decode("utf-8", errors="replace"))
-                packages = data.get("package", []) if isinstance(data, dict) else []
-                for meta in packages if isinstance(packages, list) else []:
-                    if isinstance(meta, dict) and meta.get("name"):
-                        deps.append((str(meta["name"]), str(meta.get("version", "")), "lock"))
-            elif name == "global.json":
-                data = json.loads(raw.decode("utf-8", errors="replace"))
-                sdk = data.get("sdk", {}) if isinstance(data, dict) else {}
-                if isinstance(sdk, dict) and sdk.get("version"):
-                    deps.append(("dotnet-sdk", str(sdk.get("version")), "toolchain"))
-            elif name == "composer.lock":
-                data = json.loads(raw.decode("utf-8", errors="replace"))
-                if isinstance(data, dict):
-                    for section in ("packages", "packages-dev"):
-                        for meta in data.get(section, []) if isinstance(data.get(section, []), list) else []:
-                            if isinstance(meta, dict) and meta.get("name"):
-                                deps.append((str(meta["name"]), str(meta.get("version", "")), "lock-dev" if section.endswith("dev") else "lock"))
-            elif name in {"poetry.lock", "cargo.lock"}:
-                data = tomllib.loads(raw.decode("utf-8", errors="replace"))
-                packages = data.get("package", []) if isinstance(data, dict) else []
-                for meta in packages if isinstance(packages, list) else []:
-                    if isinstance(meta, dict) and meta.get("name"):
-                        deps.append((str(meta["name"]), str(meta.get("version", "")), "lock"))
-            elif name == "go.sum":
-                for line in raw.decode("utf-8", errors="replace").splitlines():
-                    parts = line.split()
-                    if len(parts) >= 2 and not parts[1].endswith("/go.mod"):
-                        deps.append((parts[0], parts[1], "sum"))
-            elif name in {"yarn.lock", "gemfile.lock"}:
-                text = raw.decode("utf-8", errors="replace")
-                if name == "yarn.lock":
-                    current: list[str] = []
-                    for line in text.splitlines():
-                        if line and not line.startswith((" ", "#")) and line.rstrip().endswith(":"):
-                            current = [x.strip().strip('"\'') for x in line[:-1].split(",")]
-                        elif current and line.strip().startswith("version "):
-                            version = line.strip()[len("version "):].strip().strip('"\'')
-                            for spec in current[:8]:
-                                pkg = spec
-                                if spec.startswith("@"):
-                                    slash = spec.find("/")
-                                    at = spec.find("@", slash + 1) if slash >= 0 else -1
-                                    if at > 0: pkg = spec[:at]
-                                elif "@" in spec:
-                                    pkg = spec.split("@", 1)[0]
-                                if pkg: deps.append((pkg, version, "lock"))
-                            current = []
-                else:
-                    in_specs = False
-                    for line in text.splitlines():
-                        if line.strip() == "specs:":
-                            in_specs = True; continue
-                        if in_specs and line and not line.startswith(" "):
-                            in_specs = False
-                        if in_specs:
-                            m = re.match(r"^\s{4}([^\s(]+)\s+\(([^)]+)\)", line)
-                            if m: deps.append((m.group(1), m.group(2), "lock"))
-            elif name in {"build.gradle", "build.gradle.kts"}:
-                text = raw.decode("utf-8", errors="replace")
-                dep_re = _MANIFEST_IMPLEMENTATION
-                for line in text.splitlines():
-                    m = dep_re.match(line)
-                    if m:
-                        coord = m.group(2); parts = coord.split(":")
-                        pkg = ":".join(parts[:2]) if len(parts) >= 2 else coord
-                        version = parts[2] if len(parts) >= 3 else ""
-                        deps.append((pkg, version, m.group(1)))
-            elif name in {"gradle/libs.versions.toml", "libs.versions.toml"}:
-                data = tomllib.loads(raw.decode("utf-8", errors="replace"))
-                versions = data.get("versions", {}) if isinstance(data, dict) else {}
-                libraries = data.get("libraries", {}) if isinstance(data, dict) else {}
-                if isinstance(libraries, dict):
-                    for alias, meta in libraries.items():
-                        if isinstance(meta, str):
-                            deps.append((str(alias), meta, "gradle-catalog")); continue
-                        if not isinstance(meta, dict): continue
-                        module = str(meta.get("module") or "")
-                        if not module and meta.get("group") and meta.get("name"):
-                            module = f"{meta['group']}:{meta['name']}"
-                        version = str(meta.get("version") or "")
-                        ref = meta.get("version", {}).get("ref") if isinstance(meta.get("version"), dict) else meta.get("version.ref")
-                        if ref and isinstance(versions, dict): version = str(versions.get(str(ref), ref))
-                        if module: deps.append((module, version, "gradle-catalog"))
-            elif name.startswith("requirements") and name.endswith((".txt", ".in")):
-                text = raw.decode("utf-8", errors="replace")
-                for line in text.splitlines():
-                    item = line.strip()
-                    if not item or item.startswith("#") or item.startswith(("-r ", "--requirement", "-c ", "--constraint")):
-                        continue
-                    item = item.split(" #", 1)[0].strip()
-                    token = re.split(r"[<>=!~ ;\[]", item, maxsplit=1)[0].strip()
-                    if token and not token.startswith(("git+", "http://", "https://", "-e")):
-                        deps.append((token, item, "requirements"))
-            elif name == "pipfile":
-                data = tomllib.loads(raw.decode("utf-8", errors="replace"))
-                for section in ("packages", "dev-packages"):
-                    obj = data.get(section, {}) if isinstance(data, dict) else {}
-                    if isinstance(obj, dict):
-                        deps.extend((str(k), str(v), section) for k, v in obj.items())
-                obj = data.get("scripts", {}) if isinstance(data, dict) else {}
-                if isinstance(obj, dict):
-                    scripts.extend((str(k), str(v), self._purpose(str(k))) for k, v in obj.items())
-            elif name == "gemfile":
-                text = raw.decode("utf-8", errors="replace")
-                gem_re = _MANIFEST_IDENTIFIER
-                for line in text.splitlines():
-                    m = gem_re.match(line)
-                    if m:
-                        deps.append((m.group(1), m.group(2) or "", "gem"))
-            elif name in {"makefile", "gnumakefile", "justfile"}:
-                text = raw.decode("utf-8", errors="replace")
-                target_re = _MANIFEST_IDENTIFIER_REGEX if name != "justfile" else _MANIFEST_IDENTIFIER_REGEX_PATTERN
-                runner = "just" if name == "justfile" else "make"
-                for line in text.splitlines():
-                    m = target_re.match(line)
-                    if m and not m.group(1).startswith("."):
-                        target = m.group(1)
-                        scripts.append((target, f"{runner} {target}", self._purpose(target)))
-            elif name in {"pyproject.toml", "cargo.toml"}:
-                data = tomllib.loads(raw.decode("utf-8", errors="replace"))
-                if name == "pyproject.toml":
-                    project = data.get("project", {}) if isinstance(data, dict) else {}
-                    for item in project.get("dependencies", []) if isinstance(project, dict) else []:
-                        token = re.split(r"[<>=!~ ;\[]", str(item), maxsplit=1)[0]
-                        deps.append((token, str(item), "project"))
-                    optional = project.get("optional-dependencies", {}) if isinstance(project, dict) else {}
-                    if isinstance(optional, dict):
-                        for group, items in optional.items():
-                            for item in items if isinstance(items, list) else []:
-                                token = re.split(r"[<>=!~ ;\[]", str(item), maxsplit=1)[0]
-                                deps.append((token, str(item), f"optional:{group}"))
-                    tool = data.get("tool", {}) if isinstance(data, dict) else {}
-                    poetry = tool.get("poetry", {}) if isinstance(tool, dict) else {}
-                    pobj = poetry.get("dependencies", {}) if isinstance(poetry, dict) else {}
-                    if isinstance(pobj, dict):
-                        deps.extend((str(k), str(v), "poetry") for k, v in pobj.items() if str(k).lower() != "python")
-                    project_scripts = project.get("scripts", {}) if isinstance(project, dict) else {}
-                    if isinstance(project_scripts, dict):
-                        scripts.extend((str(k), str(v), self._purpose(str(k))) for k, v in project_scripts.items())
-                    poetry_scripts = poetry.get("scripts", {}) if isinstance(poetry, dict) else {}
-                    if isinstance(poetry_scripts, dict):
-                        scripts.extend((str(k), str(v), self._purpose(str(k))) for k, v in poetry_scripts.items())
-                else:
-                    for section in ("dependencies", "dev-dependencies", "build-dependencies"):
-                        obj = data.get(section, {}) if isinstance(data, dict) else {}
-                        if isinstance(obj, dict):
-                            deps.extend((str(k), str(v), section) for k, v in obj.items())
-            elif name == "go.mod":
-                text = raw.decode("utf-8", errors="replace")
-                in_require = False
-                for line in text.splitlines():
-                    s = line.strip()
-                    if s.startswith("require ("):
-                        in_require = True; continue
-                    if in_require and s == ")":
-                        in_require = False; continue
-                    if s.startswith("require "):
-                        s = s[len("require "):].strip()
-                    elif not in_require:
-                        continue
-                    parts = s.split()
-                    if len(parts) >= 2:
-                        deps.append((parts[0], parts[1], "require"))
-            elif name == "go.work":
-                text = raw.decode("utf-8", errors="replace")
-                in_use = False
-                for line in text.splitlines():
-                    item = line.strip()
-                    if item.startswith("use ("): in_use = True; continue
-                    if in_use and item == ")": in_use = False; continue
-                    if item.startswith("use "): item = item[4:].strip()
-                    elif not in_use: continue
-                    if item and not item.startswith("//"):
-                        deps.append((item, "", "workspace-module"))
-            elif path.suffix.lower() in {".csproj", ".fsproj", ".vbproj"} or name in {"directory.packages.props", "directory.build.props", "directory.build.targets"}:
-                root = ET.fromstring(raw)
-                for node in root.iter():
-                    tag = node.tag.split("}")[-1]
-                    if tag in {"PackageReference", "PackageVersion"}:
-                        pkg = node.attrib.get("Include") or node.attrib.get("Update") or ""
-                        version = node.attrib.get("Version") or next((c.text or "" for c in node if c.tag.split("}")[-1] == "Version"), "")
-                        if pkg:
-                            deps.append((pkg, version, tag))
-            elif name == "pom.xml":
-                root = ET.fromstring(raw)
-                for dep in [x for x in root.iter() if x.tag.split("}")[-1] == "dependency"]:
-                    vals = {c.tag.split("}")[-1]: (c.text or "").strip() for c in dep}
-                    artifact = vals.get("artifactId", "")
-                    group = vals.get("groupId", "")
-                    if artifact:
-                        deps.append((f"{group}:{artifact}" if group else artifact, vals.get("version", ""), vals.get("scope", "compile")))
+            deps, scripts = parse_manifest_dispatch(name, path.suffix.lower(), raw, self._purpose)
         except Exception:
             self._stats["manifest_parse_errors"] += 1
         if content_hash:
@@ -2294,37 +1180,14 @@ class DeterministicEngine:
         limits as RepositoryTools.
         """
         base = Path(root_s)
-        names = {
-            "package.json", "package-lock.json", "pnpm-lock.yaml", "deno.json", "deno.jsonc",
-            "composer.json", "composer.lock", "pyproject.toml", "poetry.lock", "uv.lock",
-            "cargo.toml", "cargo.lock", "go.mod", "go.sum", "go.work", "pom.xml", "pipfile", "gemfile", "gemfile.lock",
-            "yarn.lock", "build.gradle", "build.gradle.kts", "libs.versions.toml", "makefile", "gnumakefile", "justfile",
-            "packages.lock.json", "global.json", "directory.packages.props", "directory.build.props", "directory.build.targets"
-        }
-        suffixes = {".csproj", ".fsproj", ".vbproj"}
         raw = self.repo_tools._git_files(base)
         if raw is None:
-            raw = []
-            max_files = int(getattr(self.repo_tools, "max_files", 8000))
-            ignore = set(getattr(self.repo_tools, "ignore_dirs", set()))
-            for dirpath, dirnames, filenames in os.walk(base):
-                dirnames[:] = [d for d in dirnames if d not in ignore]
-                for filename in filenames:
-                    raw.append(Path(dirpath) / filename)
-                    if len(raw) >= max_files:
-                        break
-                if len(raw) >= max_files:
-                    break
-        found: list[Path] = []
-        for path in raw:
-            low_name = path.name.lower()
-            if low_name in names or (low_name.startswith("requirements") and low_name.endswith((".txt", ".in"))) or path.suffix.lower() in suffixes:
-                try:
-                    if path.stat().st_size <= self.max_manifest_bytes:
-                        found.append(path)
-                except OSError:
-                    continue
-        return sorted(found, key=lambda x: str(x).lower())
+            raw = walk_manifest_paths(
+                base,
+                max_files=int(getattr(self.repo_tools, "max_files", 8000)),
+                ignore_dirs=set(getattr(self.repo_tools, "ignore_dirs", set())),
+            )
+        return select_manifest_files(raw, max_bytes=self.max_manifest_bytes)
 
     def refresh_manifests(self, root: str) -> dict[str, Any]:
         root_s = self._root(root)
@@ -2385,32 +1248,7 @@ class DeterministicEngine:
 
     @staticmethod
     def classify_intent(query: str) -> dict[str, Any]:
-        low = query.lower()
-        rules = [
-            ("callers", ("caller", "callers", "called by", "who calls")),
-            ("references", ("reference", "references", "usages", "used by")),
-            ("routes", ("route", "routes", "endpoint", "api path", "controller")),
-            ("commands", ("command", "commands", "build command", "test command", "lint command", "how to run", "build commands", "lint commands")),
-            ("tests", ("test", "tests", "spec", "phpunit", "pytest", "jest", "vitest")),
-            ("dependencies", ("dependency", "dependencies", "package", "packages", "composer", "npm", "cargo", "nuget")),
-            ("infrastructure", ("docker", "container", "compose", "terraform", "kubernetes", "k8s", "helm", "deployment", "deploy", "github actions", "gitlab ci", "azure pipelines", "ci pipeline", "ci job", "ci jobs", "workflow", "port", "healthcheck", "protobuf", "grpc")),
-            ("syntax", ("syntax", "parse error", "invalid json", "invalid toml", "invalid xml")),
-            ("config", ("config", "configuration", "environment", " env ", "setting", "settings")),
-            ("entrypoints", ("entrypoint", "entry point", "startup", "bootstrap", "main")),
-            ("security", ("security", "auth", "authentication", "authorization", "permission", "jwt", "token")),
-            ("concurrency", ("concurrency", "thread", "async", "queue", "lock", "race", "deadlock")),
-            ("database", ("database", "sql", "query", "repository", "migration", "table")),
-            ("todos", ("todo", "fixme", "hack", "xxx")),
-            ("architecture", ("architecture", "structure", "modules", "components", "how project works")),
-            ("symbols", ("symbol", "definition", "defined", "class", "function", "method")),
-        ]
-        for intent, needles in rules:
-            if any(n in low for n in needles):
-                return {"intent": intent, "confidence": 0.94}
-        mutation = any(x in low for x in ("fix", "implement", "change", "modify", "refactor", "rewrite", "add", "remove", "patch", "update", "create", "delete"))
-        if mutation:
-            return {"intent": "implementation", "confidence": 0.88}
-        return {"intent": "general", "confidence": 0.55}
+        return classify_deterministic_intent(query)
 
     def _facts(self, root: str, *, kinds: list[str] | None = None, terms: list[str] | None = None, limit: int | None = None) -> list[dict[str, Any]]:
         root_s = self._root(root)
@@ -2492,166 +1330,10 @@ class DeterministicEngine:
         self, root: str, slices: list[dict[str, Any]]
     ) -> list[dict[str, Any]]:
         """Merge nearby source ranges and re-read exact text from the current snapshot."""
-        base = Path(root).resolve()
-        validated: list[dict[str, Any]] = []
-        for item in slices:
-            if not isinstance(item, dict):
-                continue
-            path = item.get("path")
-            start = item.get("start_line")
-            end = item.get("end_line")
-            digest = item.get("file_sha256")
-            if (not isinstance(path, str) or not path
-                    or not isinstance(start, int) or isinstance(start, bool) or start < 1
-                    or not isinstance(end, int) or isinstance(end, bool) or end < start
-                    or not isinstance(digest, str) or not digest):
-                continue
-            target = (base / path).resolve(strict=False)
-            try:
-                relative_path = target.relative_to(base).as_posix()
-            except ValueError:
-                continue
-            validated.append({
-                "path": relative_path,
-                "start_line": start,
-                "end_line": end,
-                "file_sha256": digest,
-                "symbol_complete": bool(item.get("symbol_complete", False)),
-            })
-
-        ordered = sorted(
-            validated,
-            key=lambda item: (
-                item["path"], item["file_sha256"], item["start_line"], item["end_line"]
-            ),
-        )
-        merged: list[dict[str, Any]] = []
-        for current in ordered:
-            previous = merged[-1] if merged else None
-            if (previous is not None
-                    and previous["path"] == current["path"]
-                    and previous["file_sha256"] == current["file_sha256"]
-                    and current["start_line"] <= previous["end_line"] + 2):
-                previous["end_line"] = max(previous["end_line"], current["end_line"])
-                previous["symbol_complete"] = (
-                    previous["symbol_complete"] and current["symbol_complete"]
-                )
-            else:
-                merged.append(dict(current))
-
-        snapshots: dict[str, tuple[str, list[str]] | None] = {}
-        result: list[dict[str, Any]] = []
-        for item in merged:
-            path = item["path"]
-            if path not in snapshots:
-                try:
-                    snapshots[path] = self.repo_tools._read_snapshot(base / path)
-                except OSError as read_exc:
-                    logger.debug("Merged evidence source skipped (%s)", type(read_exc).__name__)
-                    snapshots[path] = None
-            snapshot = snapshots[path]
-            if snapshot is None:
-                continue
-            digest, lines = snapshot
-            start = item["start_line"]
-            end = item["end_line"]
-            if digest != item["file_sha256"] or not lines or end > len(lines):
-                continue
-            result.append({
-                **item,
-                "text": "\n".join(f"{line}: {lines[line - 1]}" for line in range(start, end + 1)),
-                "deterministic": True,
-            })
-        return result
+        return merge_overlapping_source_slices(self.repo_tools, root, slices)
 
     def _exact_evidence(self, root: str, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        if self.evidence is None or self.max_evidence <= 0:
-            return []
-        base = Path(root).resolve()
-        candidates: list[dict[str, Any]] = []
-        seen: set[tuple[str, int]] = set()
-        seen_ranges: set[tuple[str, int, int]] = set()
-        snapshots: dict[str, tuple[str, list[str]] | None] = {}
-        for row in rows:
-            path = str(row.get("path", ""))
-            if not path:
-                continue
-            line = max(1, int(row.get("line", 1) or 1))
-            target = (base / path).resolve(strict=False)
-            try:
-                path = target.relative_to(base).as_posix()
-            except ValueError:
-                continue
-            key = (path, line)
-            if not path or key in seen:
-                continue
-            seen.add(key)
-            if path not in snapshots:
-                try:
-                    snapshots[path] = self.repo_tools._read_snapshot(target)
-                except OSError as read_exc:
-                    logger.debug("Exact evidence source skipped (%s)", type(read_exc).__name__)
-                    snapshots[path] = None
-            snapshot = snapshots[path]
-            if snapshot is None:
-                continue
-            digest, lines = snapshot
-            if not lines or line > len(lines):
-                continue
-            start = max(1, line - 2)
-            end = min(len(lines), line + 2)
-            bounds = None
-            bounds_reader = getattr(self.code_index, "symbol_bounds_at", None)
-            if callable(bounds_reader):
-                try:
-                    bounds = bounds_reader(str(base), path, line, content_hash=digest)
-                except (OSError, sqlite3.DatabaseError, TypeError, ValueError):
-                    bounds = None
-            valid_bounds = (
-                isinstance(bounds, tuple) and len(bounds) == 2
-                and all(isinstance(value, int) and not isinstance(value, bool) for value in bounds)
-            )
-            if valid_bounds and 1 <= bounds[0] <= line <= bounds[1] <= len(lines):
-                start, end = bounds
-            else:
-                bounds = None
-            range_key = (path, start, end)
-            if range_key in seen_ranges:
-                continue
-            seen_ranges.add(range_key)
-            candidates.append({
-                "path": path,
-                "start_line": start,
-                "end_line": end,
-                "file_sha256": digest,
-                "symbol_complete": bounds is not None,
-            })
-            if len(candidates) >= self.max_evidence:
-                break
-
-        items: list[dict[str, Any]] = []
-        merged_items = self.merge_overlapping_slices(str(base), candidates)
-        put_many = getattr(self.evidence, "put_many", None)
-        record_source = getattr(self.evidence, "record_source_provenance", None)
-        if callable(put_many):
-            stored_items = put_many(str(base), merged_items)
-            for item, stored in zip(merged_items, stored_items):
-                if isinstance(stored, dict) and stored.get("evidence_id"):
-                    item["evidence_id"] = stored["evidence_id"]
-                    if callable(record_source):
-                        record_source(str(item["evidence_id"]), root=str(base), source_code="indexed")
-                item.pop("text", None)  # progressive disclosure at the API boundary
-                items.append(item)
-        else:
-            for item in merged_items:
-                eid = self.evidence.put(str(base), item)
-                if eid:
-                    item["evidence_id"] = eid
-                    if callable(record_source):
-                        record_source(str(eid), root=str(base), source_code="indexed")
-                item.pop("text", None)  # progressive disclosure at the API boundary
-                items.append(item)
-        return items
+        return collect_exact_evidence(self, root, rows)
 
     def query(self, root: str, query: str, limit: int | None = None) -> dict[str, Any]:
         root_s = self._root(root)
@@ -2675,17 +1357,7 @@ class DeterministicEngine:
         if cached is not None:
             cached["query_cache_hit"] = True
             return cached
-        intent_noise = {
-            "routes": {"api", "route", "routes", "endpoint", "endpoints", "controller"},
-            "tests": {"test", "tests", "spec", "specs", "phpunit", "pytest", "jest", "vitest"},
-            "config": {"config", "configuration", "environment", "settings", "setting", "env"},
-            "commands": {"command", "commands", "build", "lint", "test", "run", "validation"},
-            "dependencies": {"dependency", "dependencies", "package", "packages", "composer", "npm", "cargo", "nuget"},
-            "entrypoints": {"entrypoint", "entry", "point", "startup", "bootstrap", "main"},
-            "syntax": {"syntax", "parse", "error", "invalid", "json", "toml", "xml"},
-            "infrastructure": {"infrastructure", "docker", "container", "compose", "terraform", "kubernetes", "k8s", "helm", "deployment", "deploy", "ci", "pipeline", "job", "jobs", "workflow", "port", "ports", "healthcheck", "protobuf", "grpc"},
-        }
-        content_terms = [t for t in terms if t not in intent_noise.get(intent, set())]
+        content_terms = filter_intent_noise(intent, terms)
         result: dict[str, Any] = {"success": True, "root": root_s, "intent": intent, "terms": terms}
         rows: list[dict[str, Any]] = []
         graph: dict[str, Any] = {}
@@ -2805,36 +1477,7 @@ class DeterministicEngine:
         It only claims a high confidence when selection rules are strong; callers
         should fall back to a local model for narrative/general prose.
         """
-        lines = text.splitlines()
-        if not lines:
-            return {"success": True, "text": "", "confidence": 1.0, "deterministic": True}
-        budget_lines = max(12, int(target_tokens * 4 / 90))
-        needles = ("error", "fatal", "exception", "traceback", "failed", "failure", "warning", "assert", "panic", "timeout", "segfault", "passed", "success")
-        diagnostic = sum(1 for line in lines[:2000] if any(n in line.lower() for n in needles))
-        repetitive = 1.0 - (len(set(lines[:5000])) / max(1, min(len(lines), 5000)))
-        if diagnostic == 0 and repetitive < 0.18:
-            return {"success": False, "confidence": 0.2, "reason": "narrative/non-diagnostic input"}
-        selected: list[str] = []
-        seen: Counter[str] = Counter()
-        important_idx = [i for i, line in enumerate(lines) if any(n in line.lower() for n in needles)]
-        indices: set[int] = set()
-        for i in important_idx:
-            indices.update(range(max(0, i - 1), min(len(lines), i + 2)))
-        indices.update(range(min(6, len(lines))))
-        indices.update(range(max(0, len(lines) - 6), len(lines)))
-        for i in sorted(indices):
-            line = lines[i]
-            seen[line] += 1
-            if seen[line] > 2:
-                continue
-            selected.append(f"{i+1}: {line}")
-            if len(selected) >= budget_lines:
-                break
-        repeats = [(line, count) for line, count in Counter(lines).most_common(8) if count > 2]
-        if repeats:
-            selected.append("REPEATED: " + "; ".join(f"{count}x {line[:120]}" for line, count in repeats))
-        confidence = min(0.98, 0.82 + min(0.12, diagnostic * 0.01) + min(0.04, repetitive * 0.08))
-        return {"success": True, "text": "\n".join(selected), "confidence": round(confidence, 4), "deterministic": True, "original_lines": len(lines), "selected_lines": len(selected)}
+        return compress_diagnostic_text(text, target_tokens)
 
     def lexical_projection(self, root: str, path: str, max_chars: int = 12000) -> str | None:
         """Return a compact deterministic FTS representation for declarative files.
@@ -3007,67 +1650,7 @@ class DeterministicEngine:
                 ci = self.code_index.file_summary(root_s, path, 80)
             except Exception:
                 ci = {}
-        for item in ci.get("symbols", []) if isinstance(ci, dict) else []:
-            name = str(item.get("name", ""))
-            if name and name not in symbols and len(symbols) < 24:
-                symbols.append(name)
-        for item in ci.get("edges", []) if isinstance(ci, dict) else []:
-            if str(item.get("kind")) == "imports":
-                name = str(item.get("dst", ""))
-                if name and name not in deps and len(deps) < 24:
-                    deps.append(name)
-        side_effects = []
-        if kinds.get("database"): side_effects.append("database")
-        if kinds.get("route"): side_effects.append("http-route")
-        if kinds.get("env") or kinds.get("config"): side_effects.append("configuration")
-        if kinds.get("concurrency"): side_effects.append("concurrency")
-        if kinds.get("service") or kinds.get("container_base") or kinds.get("container_image"): side_effects.append("containers")
-        if kinds.get("port"): side_effects.append("network-ports")
-        if kinds.get("ci_job") or kinds.get("ci_action"): side_effects.append("ci")
-        if kinds.get("terraform_resource") or kinds.get("terraform_module") or kinds.get("k8s_kind") or kinds.get("k8s_resource"): side_effects.append("infrastructure")
-        if kinds.get("proto_service") or kinds.get("proto_rpc"): side_effects.append("rpc-api")
-        risks = []
-        if kinds.get("security"): risks.append("security-sensitive")
-        if kinds.get("concurrency"): risks.append("concurrency-sensitive")
-        if kinds.get("database") or kinds.get("db_table"): risks.append("data/persistence")
-        if kinds.get("todo"): risks.append("todo/fixme")
-        tests = [path] if is_test else []
-        keywords = []
-        call_names = [str(x.get("name", "")) for x in ci.get("references", [])[:20]] if isinstance(ci, dict) else []
-        for group in (symbols, deps, call_names, kinds.get("route", []), kinds.get("env", []), kinds.get("config", []), kinds.get("service", []), kinds.get("terraform_resource", []), kinds.get("proto_service", [])):
-            for item in group:
-                for token in re.findall(r"[A-Za-z_][A-Za-z0-9_]{2,}", str(item)):
-                    low = token.lower()
-                    if low not in keywords:
-                        keywords.append(low)
-                    if len(keywords) >= 30: break
-        name = Path(path).name
-        purpose_bits = ["test" if is_test else "source", language]
-        if kinds.get("route"): purpose_bits.append("HTTP routing")
-        if kinds.get("entrypoint") or kinds.get("entrypoint_file"): purpose_bits.append("entry point")
-        if kinds.get("database"): purpose_bits.append("data access")
-        if kinds.get("config") or kinds.get("env"): purpose_bits.append("configuration")
-        if kinds.get("service") or kinds.get("container_base"): purpose_bits.append("container infrastructure")
-        if kinds.get("ci_job") or kinds.get("ci_action"): purpose_bits.append("CI workflow")
-        if kinds.get("terraform_resource"): purpose_bits.append("infrastructure-as-code")
-        if kinds.get("proto_service") or kinds.get("proto_rpc"): purpose_bits.append("RPC schema")
-        purpose = f"{name}: " + ", ".join(purpose_bits)
-        richness = len(symbols) * 2 + len(deps) + min(12, len(call_names)) + len(side_effects) * 2 + len(kinds.get("route", [])) * 2 + len(kinds.get("env", []))
-        low_manifest = name.lower(); low_path = path.replace("\\", "/").lower()
-        manifest_like = low_manifest in {
-            "package.json", "package-lock.json", "composer.json", "composer.lock", "pyproject.toml", "poetry.lock",
-            "cargo.toml", "cargo.lock", "go.mod", "go.sum", "pom.xml", "pipfile", "gemfile", "gemfile.lock", "yarn.lock",
-            "build.gradle", "build.gradle.kts", "makefile", "gnumakefile", "justfile", "dockerfile", "containerfile",
-            "compose.yml", "compose.yaml", "docker-compose.yml", "docker-compose.yaml", ".env", ".env.example", ".env.sample"
-        } or (low_manifest.startswith("requirements") and low_manifest.endswith(".txt")) or "/.github/workflows/" in f"/{low_path}" or Path(path).suffix.lower() in {".tf", ".tfvars", ".proto", ".ini", ".cfg", ".properties"}
-        confidence = 0.97 if manifest_like else min(0.95, 0.64 + 0.035 * richness + (0.08 if is_test else 0.0))
-        return {
-            "success": True, "deterministic": True, "confidence": round(confidence, 4),
-            "card": {
-                "purpose": purpose, "symbols": symbols, "dependencies": deps, "side_effects": side_effects,
-                "risks": risks, "tests": tests, "keywords": keywords,
-            },
-        }
+        return build_file_card(path, language, is_test, kinds, symbols, deps, ci)
 
     def module_card(self, root: str, module: str, file_cards: list[dict[str, Any]]) -> dict[str, Any]:
         """Synthesize a factual module card without an LLM.
@@ -3076,39 +1659,8 @@ class DeterministicEngine:
         performs set/structure aggregation only; it does not infer behavioral claims.
         """
         paths = [str(x.get("path", "")) for x in file_cards if x.get("path")]
-        dependencies: list[str] = []
-        risks: list[str] = []
-        validation: list[str] = []
-        entry_points: list[str] = []
-        side_effects: list[str] = []
-        symbols = 0
-
-        def add_unique(dst: list[str], value: Any, limit: int = 40) -> None:
-            text = str(value).strip()
-            if text and text not in dst and len(dst) < limit:
-                dst.append(text)
-
-        for item in file_cards:
-            card = item.get("card", item) if isinstance(item, dict) else {}
-            path = str(item.get("path", "")) if isinstance(item, dict) else ""
-            syms = card.get("symbols", []) if isinstance(card, dict) else []
-            symbols += len(syms or [])
-            for dep in card.get("dependencies", []) if isinstance(card, dict) else []:
-                add_unique(dependencies, dep)
-            for risk in card.get("risks", []) if isinstance(card, dict) else []:
-                add_unique(risks, risk)
-            for test in card.get("tests", []) if isinstance(card, dict) else []:
-                add_unique(validation, test)
-            for side in card.get("side_effects", []) if isinstance(card, dict) else []:
-                add_unique(side_effects, side)
-            low = Path(path).name.lower()
-            if low in {"main.py", "app.py", "index.js", "index.ts", "server.js", "server.ts", "program.cs", "main.go", "main.rs"}:
-                add_unique(entry_points, path)
-            for symbol in syms or []:
-                if str(symbol).lower() in {"main", "run", "app", "create_app", "startup", "program"}:
-                    add_unique(entry_points, f"{path}::{symbol}")
-
         # Exact parser facts can add route/entrypoint/test coordinates without prose inference.
+        rows = []
         if paths:
             with self._lock, closing(self._connect()) as con:
                 rows = []
@@ -3122,33 +1674,7 @@ class DeterministicEngine:
                     ).fetchall())
                     if len(rows) >= 120:
                         break
-            for row in rows:
-                kind = str(row["kind"])
-                if kind in {"entrypoint", "entrypoint_file", "route"}:
-                    add_unique(entry_points, f"{row['path']}:{row['line']} {row['name']}")
-                elif kind == "test_file":
-                    add_unique(validation, str(row["path"]))
-
-        purpose_parts = [f"module {module}", f"{len(paths)} files"]
-        if side_effects:
-            purpose_parts.append("effects=" + ",".join(side_effects[:5]))
-        invariants: list[str] = []
-        # Only structural invariants are safe to state deterministically.
-        if validation:
-            invariants.append("validation files are mapped from indexed test paths")
-        if entry_points:
-            invariants.append("entry points are parser/index coordinates, not inferred behavior")
-        richness = symbols + len(dependencies) + 2 * len(entry_points) + 2 * len(validation) + len(side_effects)
-        confidence = (min(0.98, 0.82 + min(0.14, richness * 0.012) + (0.02 if len(paths) >= 2 else 0.0)) if paths else 0.4)
-        card = {
-            "purpose": "; ".join(purpose_parts),
-            "entry_points": entry_points[:30],
-            "dependencies": dependencies[:40],
-            "invariants": invariants[:12],
-            "risks": risks[:24],
-            "validation": validation[:30],
-        }
-        return {"success": True, "deterministic": True, "confidence": round(confidence, 4), "card": card}
+        return build_module_card_summary(module, file_cards, paths, rows)
 
     def project_card(self, root: str, profile: dict[str, Any] | None = None, repo_map: dict[str, Any] | None = None,
                      modules: list[dict[str, Any]] | None = None) -> dict[str, Any]:
@@ -3165,62 +1691,11 @@ class DeterministicEngine:
         database = self.query(root_s, "database sql persistence", limit=30)
         infrastructure = self.query(root_s, "docker compose terraform deployment ci workflow ports protobuf", limit=40)
         commands = self.query(root_s, "test lint build commands", limit=30)
-
-        def coords(result: dict[str, Any], limit: int = 20) -> list[str]:
-            out: list[str] = []
-            for f in result.get("facts", [])[:limit]:
-                text = f"{f.get('path')}:{f.get('line')} {f.get('kind')}={f.get('name')}"
-                if text not in out:
-                    out.append(text)
-            return out
-
-        entry_points = coords(entry, 24)
-        testing = [f"{x.get('name')} -> {x.get('command')}" for x in commands.get("scripts", []) if str(x.get("purpose", "")).lower() in {"tests", "test", "lint", "checks", "check", "type-check", "build"}][:30]
-        configuration = coords(config, 28)
-        data_flow = coords(database, 24)
-        security_items = coords(security, 24)
-        concurrency_items = coords(concurrency, 24)
-        infrastructure_items = coords(infrastructure, 32)
-        hot_paths = [str(x.get("module")) for x in modules[:20] if x.get("module")]
-        if not hot_paths:
-            hot_paths = [str(x[0]) for x in repo_map.get("top_paths", [])[:20] if isinstance(x, (list, tuple)) and x]
-
-        langs = profile.get("languages", [])
-        if isinstance(langs, dict):
-            langs_text = ", ".join(str(k) for k in list(langs)[:10])
-        elif isinstance(langs, list):
-            langs_text = ", ".join(str(x.get("language", x)) if isinstance(x, dict) else str(x) for x in langs[:10])
-        else:
-            langs_text = str(langs or "")
-        architecture = f"Deterministic project map: {repo_map.get('files', 0)} indexed source files"
-        if langs_text:
-            architecture += f"; languages: {langs_text}"
-        if hot_paths:
-            architecture += "; top modules: " + ", ".join(hot_paths[:10])
-
-        risks: list[str] = []
-        if security_items: risks.append("security-sensitive code present")
-        if concurrency_items: risks.append("concurrency-sensitive code present")
-        if data_flow: risks.append("database/persistence code present")
-        if infrastructure_items: risks.append("deployment/infrastructure declarations present")
         syntax = self.query(root_s, "syntax parse error", limit=20)
-        if syntax.get("facts"): risks.append(f"{len(syntax['facts'])} parser-detected syntax/config errors")
-
-        evidence_count = sum(len(x) for x in (entry_points, configuration, data_flow, security_items, concurrency_items, infrastructure_items, testing))
-        confidence = min(0.97, 0.78 + min(0.17, evidence_count * 0.003) + (0.02 if modules else 0.0))
-        card = {
-            "architecture": architecture,
-            "entry_points": entry_points,
-            "hot_paths": hot_paths[:20],
-            "testing": testing,
-            "configuration": configuration,
-            "data_flow": data_flow,
-            "security": security_items,
-            "concurrency": concurrency_items,
-            "infrastructure": infrastructure_items,
-            "risks": risks,
-        }
-        return {"success": True, "deterministic": True, "confidence": round(confidence, 4), "card": card}
+        return build_project_card_summary(
+            profile, repo_map, modules, entry, config, security, concurrency,
+            database, infrastructure, commands, syntax,
+        )
 
     _extract_py_diff_defs = staticmethod(extract_py_diff_defs)
     _extract_ts_diff_defs = staticmethod(extract_ts_diff_defs)
@@ -3250,116 +1725,17 @@ class DeterministicEngine:
         else:
             return []
 
-        breaking: list[dict[str, Any]] = []
-        for name, old_d in old_defs.items():
-            kind = old_d.get("kind", "symbol")
-            if name not in new_defs:
-                breaking.append({
-                    "type": "removed_symbol",
-                    "symbol": name,
-                    "file": file_path,
-                    "kind": kind,
-                    "description": f"Public {kind} '{name}' was removed",
-                })
-            else:
-                new_d = new_defs[name]
-                if kind in ("function", "method") and new_d.get("kind") in ("function", "method"):
-                    old_req = old_d.get("required_count", 0)
-                    new_req = new_d.get("required_count", 0)
-                    old_args = old_d.get("pos_args") or old_d.get("params") or []
-                    new_args = new_d.get("pos_args") or new_d.get("params") or []
-                    if new_req > old_req:
-                        added_req = [a for a in new_args[:new_req] if a not in old_args[:old_req]]
-                        detail = f": {', '.join(added_req)}" if added_req else ""
-                        breaking.append({
-                            "type": "signature_changed",
-                            "symbol": name,
-                            "file": file_path,
-                            "kind": kind,
-                            "description": f"Signature of {kind} '{name}' added required parameter(s){detail}",
-                            "new_req": new_req,
-                            "old_req": old_req,
-                            "added_req": added_req,
-                            "removed_args": [],
-                        })
-                    elif old_args and new_args:
-                        removed_args = [a for a in old_args if a not in new_args]
-                        if removed_args:
-                            breaking.append({
-                                "type": "signature_changed",
-                                "symbol": name,
-                                "file": file_path,
-                                "kind": kind,
-                                "description": f"Signature of {kind} '{name}' removed or renamed parameter(s): {', '.join(removed_args)}",
-                                "new_req": new_req,
-                                "old_req": old_req,
-                                "added_req": [],
-                                "removed_args": removed_args,
-                            })
-        return breaking
+        return compare_api_definitions(file_path, old_defs, new_defs)
 
     def diff_facts(self, diff: str) -> dict[str, Any]:
         """Parse a unified diff into factual risk/validation metadata without an LLM."""
-        files: list[str] = []
-        added = deleted = hunks = 0
-        added_lines: list[tuple[str, str]] = []
-        file_diff_lines: dict[str, dict[str, list[str]]] = defaultdict(lambda: {"added": [], "deleted": []})
-        current = ""
-        orig_file = ""
-        old_remaining = new_remaining = 0
-        # Unicode separators inside source text must not become diff headers.
-        for line in diff.replace("\r\n", "\n").split("\n"):
-            if old_remaining or new_remaining:
-                if line.startswith("+") and new_remaining:
-                    added += 1
-                    new_remaining -= 1
-                    added_lines.append((current, line[1:]))
-                    if current:
-                        file_diff_lines[current]["added"].append(line[1:])
-                    continue
-                if line.startswith("-") and old_remaining:
-                    deleted += 1
-                    old_remaining -= 1
-                    target = current or orig_file
-                    if target:
-                        file_diff_lines[target]["deleted"].append(line[1:])
-                    continue
-                if line.startswith(" ") and old_remaining and new_remaining:
-                    old_remaining -= 1
-                    new_remaining -= 1
-                    continue
-                if line.startswith("\\ No newline"):
-                    continue
-                # Malformed hunk: do not let its unfinished counts consume a
-                # later file header as source content.
-                old_remaining = new_remaining = 0
-            if line.startswith("--- a/"):
-                orig_file = line[6:].strip()
-                current = ""
-            elif line.startswith("+++ b/"):
-                current = line[6:].strip()
-                if current and current not in files:
-                    files.append(current)
-            elif line.startswith("+++ /dev/null") and orig_file:
-                current = orig_file
-                if current and current not in files:
-                    files.append(current)
-            elif line.startswith("@@"):
-                hunks += 1
-                match = re.match(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@", line)
-                if match:
-                    old_remaining = int(match.group(2) or "1")
-                    new_remaining = int(match.group(4) or "1")
-            elif line.startswith("+") and not line.startswith("+++"):
-                added += 1
-                added_lines.append((current, line[1:]))
-                if current:
-                    file_diff_lines[current]["added"].append(line[1:])
-            elif line.startswith("-") and not line.startswith("---"):
-                deleted += 1
-                target = current or orig_file
-                if target:
-                    file_diff_lines[target]["deleted"].append(line[1:])
+        parsed_diff = parse_unified_diff(diff)
+        files = parsed_diff.files
+        added = parsed_diff.additions
+        deleted = parsed_diff.deletions
+        hunks = parsed_diff.hunks
+        added_lines = parsed_diff.added_lines
+        file_diff_lines = parsed_diff.file_diff_lines
 
         breaking_changes: list[dict[str, Any]] = []
         for file_path, lines_dict in file_diff_lines.items():
@@ -3404,179 +1780,15 @@ class DeterministicEngine:
 
     def call_graph_diff(self, root: str | Path, diff: str | None = None) -> dict[str, Any]:
         """Analyze breaking function/class signature changes against all call sites in the repository."""
-        root_path = Path(root).resolve()
-        if diff is None:
-            try:
-                from .process_utils import hidden_run_kwargs
-                cp = subprocess.run(
-                    ["git", "diff", "HEAD"],
-                    cwd=str(root_path),
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    text=True,
-                    check=False,
-                    timeout=15,
-                    **hidden_run_kwargs(),
-                )
-                diff = cp.stdout or ""
-            except Exception:
-                diff = ""
-
-        file_diff_lines: dict[str, dict[str, list[str]]] = defaultdict(lambda: {"added": [], "deleted": []})
-        current = orig_file = ""
-        for line in diff.splitlines():
-            if line.startswith("--- a/"):
-                orig_file = line[6:].strip()
-                current = ""
-            elif line.startswith("+++ b/"):
-                current = line[6:].strip()
-            elif line.startswith("+++ /dev/null") and orig_file:
-                current = orig_file
-            elif line.startswith("+") and not line.startswith("+++"):
-                if current:
-                    file_diff_lines[current]["added"].append(line[1:])
-            elif line.startswith("-") and not line.startswith("---"):
-                target = current or orig_file
-                if target:
-                    file_diff_lines[target]["deleted"].append(line[1:])
-
-        breaking_changes: list[dict[str, Any]] = []
-        for file_path, lines_dict in file_diff_lines.items():
-            bcs = self._detect_breaking_changes(file_path, lines_dict["deleted"], lines_dict["added"])
-            breaking_changes.extend(bcs)
-
-        breaking_by_symbol = {b["symbol"]: b for b in breaking_changes}
-        breaking_callers: list[dict[str, Any]] = []
-
-        if breaking_by_symbol and root_path.is_dir():
-            skip_dirs = {".git", "__pycache__", ".venv", "venv", "node_modules", ".pytest_cache"}
-            for py_path in root_path.rglob("*.py"):
-                if any(part in skip_dirs for part in py_path.parts):
-                    continue
-                try:
-                    src = py_path.read_text(encoding="utf-8", errors="replace")
-                except Exception:
-                    continue
-                if not any(sym in src for sym in breaking_by_symbol):
-                    continue
-                try:
-                    tree = ast.parse(src)
-                except Exception:
-                    continue
-
-                for node in ast.walk(tree):
-                    if isinstance(node, ast.Call):
-                        callee = ""
-                        if isinstance(node.func, ast.Name):
-                            callee = node.func.id
-                        elif isinstance(node.func, ast.Attribute):
-                            callee = node.func.attr
-
-                        if callee in breaking_by_symbol:
-                            info = breaking_by_symbol[callee]
-                            b_type = info.get("type")
-                            reason = ""
-                            if b_type == "removed_symbol":
-                                reason = f"Call to removed symbol '{callee}'"
-                            elif b_type == "signature_changed":
-                                kw_names = {kw.arg for kw in node.keywords if kw.arg}
-                                removed_args = info.get("removed_args", [])
-                                removed_overlap = kw_names & set(removed_args)
-                                if removed_overlap:
-                                    reason = f"Call passes removed or renamed parameter(s): {', '.join(sorted(removed_overlap))}"
-                                else:
-                                    has_varargs = any(isinstance(a, ast.Starred) for a in node.args)
-                                    has_kwargs = any(kw.arg is None for kw in node.keywords)
-                                    new_req = info.get("new_req", 0)
-                                    passed_args = len(node.args) + len(kw_names)
-                                    if not (has_varargs or has_kwargs) and passed_args < new_req:
-                                        reason = f"Missing required parameter(s): expected at least {new_req}, passed {passed_args}"
-
-                            if reason:
-                                try:
-                                    rel_file = str(py_path.relative_to(root_path)).replace("\\", "/")
-                                except Exception:
-                                    rel_file = str(py_path).replace("\\", "/")
-                                snippet = ""
-                                try:
-                                    snippet = ast.unparse(node)
-                                except (ValueError, TypeError, RecursionError) as render_exc:
-                                    logger.debug(
-                                        "Caller snippet rendering skipped (%s)",
-                                        type(render_exc).__name__,
-                                    )
-                                breaking_callers.append({
-                                    "file": rel_file,
-                                    "line": getattr(node, "lineno", 0),
-                                    "callee": callee,
-                                    "reason": reason,
-                                    "snippet": snippet,
-                                })
-
-        impacted_files = sorted(list({c["file"] for c in breaking_callers}))
-        return {
-            "success": True,
-            "modified_symbols": breaking_changes,
-            "breaking_callers": breaking_callers,
-            "impacted_files": impacted_files,
-            "summary": f"Found {len(breaking_callers)} breaking call site(s) across {len(impacted_files)} file(s).",
-        }
+        return analyze_call_graph_diff(root, diff, self._detect_breaking_changes)
 
     def render_answer(self, result: dict[str, Any], max_items: int = 16) -> str:
         """Render a terse deterministic answer without invoking any model."""
-        intent = str(result.get("intent", "general"))
-        lines: list[str] = []
-        if intent == "dependencies":
-            for x in result.get("dependencies", [])[:max_items]:
-                version = f" {x.get('version')}" if x.get("version") else ""
-                lines.append(f"- {x.get('name')}{version} [{x.get('scope','')}] — {x.get('source','')}")
-        elif intent == "commands":
-            for x in result.get("scripts", [])[:max_items]:
-                lines.append(f"- {x.get('purpose','script')}: {x.get('name')} → {x.get('command')}")
-        elif intent == "tests":
-            for p in result.get("test_candidates", [])[:max_items]:
-                lines.append(f"- {p}")
-            for x in result.get("facts", [])[:max_items-len(lines)]:
-                if x.get("path") not in {p[2:] if p.startswith('- ') else p for p in lines}:
-                    lines.append(f"- {x.get('path')}")
-        elif intent in {"symbols", "callers", "references"}:
-            graph = result.get("code_index", {}) if isinstance(result.get("code_index"), dict) else {}
-            if intent == "callers":
-                for x in graph.get("callers", [])[:max_items]:
-                    lines.append(f"- {x.get('caller')} calls {x.get('callee')} — {x.get('path')}:{x.get('line')}")
-            for x in graph.get("symbols", [])[:max_items]:
-                lines.append(f"- definition {x.get('name')} — {x.get('path')}:{x.get('line')}")
-            group = graph.get("references", []) if intent != "symbols" else []
-            for x in group[:max(0, max_items-len(lines))]:
-                lines.append(f"- reference {x.get('name')} — {x.get('path')}:{x.get('line')}")
-            for x in graph.get("edges", [])[:max(0, max_items-len(lines))]:
-                lines.append(f"- {x.get('src')} {x.get('kind')} {x.get('dst')} — {x.get('path')}:{x.get('line')}")
-        else:
-            for x in result.get("facts", [])[:max_items]:
-                label = x.get("name") or x.get("kind")
-                value = x.get("value")
-                suffix = f" = {value}" if value and value != label else ""
-                lines.append(f"- {x.get('kind')}: {label}{suffix} — {x.get('path')}:{x.get('line')}")
-            if not lines:
-                graph = result.get("code_index", {}) if isinstance(result.get("code_index"), dict) else {}
-                for x in graph.get("symbols", [])[:max_items]:
-                    lines.append(f"- definition {x.get('name')} — {x.get('path')}:{x.get('line')}")
-        if not lines:
-            return "No deterministic match found."
-        return "\n".join(lines)
+        return render_deterministic_answer(result, max_items)
 
     def related_paths(self, root: str, query: str, limit: int = 24) -> list[str]:
         result = self.query(root, query, limit=max(limit, 24))
-        scores: dict[str, int] = defaultdict(int)
-        for item in result.get("facts", []):
-            p = str(item.get("path", "")); scores[p] += 4
-        graph = result.get("code_index", {}) if isinstance(result.get("code_index"), dict) else {}
-        for group, weight in ((graph.get("symbols", []), 4), (graph.get("references", []), 2), (graph.get("edges", []), 1)):
-            for item in group or []:
-                p = str(item.get("path", "")); scores[p] += weight
-        for p in result.get("test_candidates", []):
-            scores[str(p)] += 3
-        return [p for p, _ in sorted(scores.items(), key=lambda kv: (-kv[1], kv[0]))[:limit] if p]
+        return rank_related_paths(result, limit)
 
     def context_pack(self, root: str, query: str, max_chars: int = 5200, max_raw_evidence: int = 5) -> dict[str, Any]:
         """Build a tiny deterministic context pack with only selected exact evidence.
@@ -3628,32 +1840,14 @@ class DeterministicEngine:
 
         if self.code_index is not None and used < max_chars:
             try:
-                sym_res = self.code_index.find_symbol(root, query, depth=1, include_info=True, limit=6)
-                symbols = sym_res.get("symbols", [])
-                if not symbols:
-                    for term in self._terms(query):
-                        if term.isidentifier():
-                            sym_res = self.code_index.find_symbol(root, term, depth=1, include_info=True, limit=6)
-                            symbols = sym_res.get("symbols", [])
-                            if symbols:
-                                break
-                    if not symbols:
-                        q_res = self.code_index.query(root, query, limit=6)
-                        symbols = q_res.get("symbols", [])
-                if symbols:
-                    sym_blocks = ["\nHIERARCHICAL SYMBOLS & SIGNATURES:"]
-                    for s in symbols:
-                        sig = s.get("signature") or f"{s.get('kind')} {s.get('name')}"
-                        sym_blocks.append(f"- [{s.get('kind')}] {s.get('name_path')} ({s.get('path')}:{s.get('line')}) -> {sig}")
-                        for ch in s.get("children", [])[:4]:
-                            sym_blocks.append(f"    * {ch.get('signature') or ch.get('name')} (L{ch.get('line')})")
-                    sym_text = "\n".join(sym_blocks)
-                    if used + 1 + len(sym_text) <= max_chars:
-                        pieces.append(sym_text)
-                    else:
-                        truncated = True
+                sym_text, symbol_truncated = build_symbol_context(
+                    self.code_index, root, query, self._terms(query), max_chars, used
+                )
             except Exception:
-                pass
+                sym_text, symbol_truncated = "", False
+            if sym_text:
+                pieces.append(sym_text)
+            truncated = truncated or symbol_truncated
 
         context = "\n".join(pieces)
         return {
@@ -4405,49 +2599,7 @@ class DeterministicEngine:
         if requested_lang not in supported:
             return {"success": False, "root": resolved, "language": requested_lang, "error": f"unsupported language: {requested_lang}"}
 
-        def language_for_path(path: str) -> str:
-            suffix = Path(path).suffix.lower()
-            if suffix == ".py": return "python"
-            if suffix == ".cs": return "csharp"
-            if suffix == ".php": return "php"
-            if suffix in {".ts", ".tsx", ".mts", ".cts"}: return "typescript"
-            if suffix in {".js", ".jsx", ".mjs", ".cjs", ".vue", ".svelte"}: return "javascript"
-            return "auto"
-
-        def import_for(symbol: str, container: str, path: str, lang: str, source: str) -> str:
-            if lang == "csharp":
-                namespace = container
-                if not namespace:
-                    match = re.search(r"(?m)^\s*namespace\s+([A-Za-z_][A-Za-z0-9_.]*)", source)
-                    namespace = match.group(1) if match else ""
-                return f"using {namespace};" if namespace else ""
-            if lang == "php":
-                namespace = container
-                if not namespace:
-                    match = re.search(r"(?m)^\s*namespace\s+([A-Za-z_][A-Za-z0-9_\\]*)", source)
-                    namespace = match.group(1) if match else ""
-                fqn = f"{namespace}\\{symbol}" if namespace else symbol
-                return f"use {fqn};"
-            if lang == "python":
-                mod_path = Path(path.replace("\\", "/"))
-                without_suffix = mod_path.with_suffix("") if mod_path.suffix else mod_path
-                parts = list(without_suffix.parts)
-                if parts and parts[-1] == "__init__":
-                    parts.pop()
-                if any(not part.isidentifier() for part in parts if part not in {".", ""}):
-                    return ""
-                module = ".".join(part for part in parts if part not in {".", ""})
-                return f"from {module} import {symbol}" if module else f"import {symbol}"
-            if lang in {"typescript", "javascript"}:
-                normalized = path.replace("\\", "/")
-                pth = Path(normalized)
-                if pth.suffix.lower() in {".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs"}:
-                    normalized = str(pth.with_suffix("")).replace("\\", "/")
-                if not normalized.startswith("."):
-                    normalized = "./" + normalized
-                normalized = normalized.replace("'", "\\'").replace("\n", "\\n").replace("\r", "\\r")
-                return f"import {{ {symbol} }} from '{normalized}';"
-            return ""
+        from .import_statements import import_for, language_for_path
 
         if not isinstance(unknown_symbols, list) or len(unknown_symbols) > 64 or any(
             not isinstance(symbol, str) or len(symbol) > 512 or "\0" in symbol for symbol in unknown_symbols
@@ -4698,174 +2850,19 @@ class DeterministicEngine:
         until: str | None = None,
         path: str | None = None,
     ) -> dict[str, Any]:
-        """Search bounded Git message and pickaxe history with explicit coverage."""
-        resolved = self._root(root)
-        git_exe = shutil.which("git") or "git"
-        if (
-            not isinstance(query, str)
-            or len(query) > _GIT_HISTORY_QUERY_MAX_CHARS
-            or any(ord(ch) < 32 or ord(ch) == 127 for ch in query)
-        ):
-            return {"success": False, "status_code": 400, "terminal": True, "retryable": False,
-                    "error": "query must be a bounded literal string", "root": resolved}
-        if isinstance(max_commits, bool) or not isinstance(max_commits, int) or not 1 <= max_commits <= _GIT_HISTORY_COMMIT_LIMIT:
-            return {"success": False, "status_code": 400, "terminal": True, "retryable": False,
-                    "error": f"max_commits must be an integer from 1 to {_GIT_HISTORY_COMMIT_LIMIT}", "root": resolved}
-        clean_query = query.strip()
-        if author is not None and (
-            not isinstance(author, str)
-            or len(author) > _GIT_HISTORY_AUTHOR_MAX_CHARS
-            or any(ord(ch) < 32 or ord(ch) == 127 for ch in author)
-        ):
-            return {"success": False, "status_code": 400, "terminal": True, "retryable": False,
-                    "error": "author must be a bounded string", "root": resolved}
-        clean_author = author.strip() if isinstance(author, str) else ""
-        try:
-            since_epoch, since_normalized = _git_history_timestamp(since, "since", upper_bound=False)
-            until_epoch, until_normalized = _git_history_timestamp(until, "until", upper_bound=True)
-            pathspec = _git_history_pathspec(resolved, path)
-        except (OSError, RuntimeError, TypeError, ValueError, OverflowError) as exc:
-            return {"success": False, "status_code": 400, "terminal": True, "retryable": False,
-                    "error": str(exc), "root": resolved}
-        if since_epoch is not None and until_epoch is not None and since_epoch > until_epoch:
-            return {"success": False, "status_code": 400, "terminal": True, "retryable": False,
-                    "error": "since must be earlier than or equal to until", "root": resolved}
-
-        deadline = time.monotonic() + _GIT_INSIGHT_DEADLINE_SECONDS
-        commits: dict[str, dict[str, Any]] = {}
-        incomplete: set[str] = set()
-        completed_searches = 0
-        for match_type in ("message", "diff_content"):
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                incomplete.add("aggregate_deadline")
-                break
-            fmt = "%H%x00%an%x00%cI%x00%s%x00"
-            argv = [
-                git_exe, "-C", resolved, "--literal-pathspecs",
-                "-c", "diff.external=", "-c", "core.pager=cat", "log",
-                f"-n{max_commits + 1}", f"--format={fmt}", "-i", "--fixed-strings",
-                "--no-ext-diff", "--no-textconv", "--no-renames",
-            ]
-            if not clean_query and match_type == "diff_content":
-                continue
-            if match_type == "message":
-                if clean_query:
-                    argv.append(f"--grep={clean_query}")
-            else:
-                argv.append(f"-S{clean_query}")
-            if clean_author:
-                argv.append(f"--author={clean_author}")
-            if since_epoch is not None:
-                argv.append(f"--since-as-filter=@{math.ceil(since_epoch)}")
-            if until_epoch is not None:
-                argv.append(f"--until=@{math.floor(until_epoch)}")
-            argv.extend(("--end-of-options", "HEAD", "--"))
-            if pathspec is not None:
-                argv.append(pathspec)
-            try:
-                result = run_hidden(
-                    argv,
-                    cwd=resolved,
-                    capture_output=True,
-                    text=False,
-                    stdin=subprocess.DEVNULL,
-                    timeout=remaining,
-                    max_output_bytes=_GIT_INSIGHT_STREAM_LIMIT,
-                    env=clean_git_env(extra_env={
-                        "GIT_PAGER": "cat", "PAGER": "cat", "GIT_TERMINAL_PROMPT": "0",
-                        "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull,
-                        "GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "diff.external",
-                        "GIT_CONFIG_VALUE_0": "",
-                    }),
-                )
-            except (ProcessCancelledError, ProcessCleanupUnverifiedError, subprocess.TimeoutExpired, OSError, ValueError) as exc:
-                incomplete.add(f"{match_type}_search_{type(exc).__name__}")
-                continue
-            if getattr(result, "returncode", 1) != 0:
-                incomplete.add(f"{match_type}_search_failed")
-                continue
-            if getattr(result, "stdout_truncated", False) or getattr(result, "stderr_truncated", False):
-                incomplete.add(f"{match_type}_output_truncated")
-            raw_output = getattr(result, "stdout", b"")
-            if not isinstance(raw_output, bytes):
-                incomplete.add(f"{match_type}_malformed_output")
-                continue
-            fields = raw_output.split(b"\0")
-            if fields and fields[-1] == b"":
-                fields.pop()
-            if fields and fields[-1] in {b"\n", b"\r\n"}:
-                fields.pop()
-            if len(fields) % 4:
-                incomplete.add(f"{match_type}_malformed_output")
-            for index in range(0, len(fields) - 3, 4):
-                if time.monotonic() >= deadline:
-                    incomplete.add("aggregate_deadline")
-                    break
-                try:
-                    full_hash = fields[index].lstrip(b"\r\n").decode("ascii")
-                    commit_author = fields[index + 1].decode("utf-8", "strict")
-                    committed_at = fields[index + 2].decode("ascii", "strict")
-                    subject = fields[index + 3].decode("utf-8", "strict").strip("\r\n")
-                    if not re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", full_hash):
-                        raise ValueError("invalid commit hash")
-                    committed_dt = _datetime.fromisoformat(committed_at.replace("Z", "+00:00"))
-                    if committed_dt.tzinfo is None:
-                        raise ValueError("commit date has no timezone")
-                    committed_timestamp = committed_dt.timestamp()
-                    if since_epoch is not None and committed_timestamp < since_epoch:
-                        continue
-                    if until_epoch is not None and committed_timestamp > until_epoch:
-                        continue
-                except (UnicodeDecodeError, ValueError, OverflowError):
-                    incomplete.add(f"{match_type}_malformed_output")
-                    continue
-                current = commits.get(full_hash)
-                if current is None:
-                    current = {
-                        "commit": full_hash[:10],
-                        "full_hash": full_hash,
-                        "author": commit_author,
-                        "date": committed_dt.date().isoformat(),
-                        "subject": subject,
-                        "message": subject,
-                        "match_type": match_type,
-                        "_committed_timestamp": committed_timestamp,
-                        "_match_types": [match_type],
-                    }
-                    commits[full_hash] = current
-                elif match_type not in current["_match_types"]:
-                    current["_match_types"].append(match_type)
-            if len(fields) >= 4 * (max_commits + 1):
-                incomplete.add("commit_limit_reached")
-            completed_searches += 1
-
-        if completed_searches < 2 and time.monotonic() >= deadline:
-            incomplete.add("aggregate_deadline")
-        ordered = sorted(
-            commits.values(),
-            key=lambda item: (-float(item["_committed_timestamp"]), item["full_hash"]),
+        return search_git_history(
+            root,
+            query,
+            max_commits,
+            author=author,
+            since=since,
+            until=until,
+            path=path,
+            root_resolver=self._root,
+            git_executable_fn=shutil.which,
+            run_hidden_fn=run_hidden,
+            clean_git_env_fn=clean_git_env,
         )
-        if len(ordered) > max_commits:
-            incomplete.add("commit_limit_reached")
-        res_list = ordered[:max_commits]
-        for item in res_list:
-            item["match_type"] = ", ".join(item.pop("_match_types"))
-            item.pop("_committed_timestamp", None)
-        return {
-            "success": completed_searches > 0,
-            "root": resolved,
-            "query": clean_query,
-            "author": clean_author or None,
-            "since": since_normalized,
-            "until": until_normalized,
-            "path": pathspec,
-            "max_commits": max_commits,
-            "count": len(res_list),
-            "commits": res_list,
-            "complete": not incomplete,
-            "incomplete_reasons": sorted(incomplete),
-        }
 
     def find_hotspots(
         self,
@@ -4874,312 +2871,16 @@ class DeterministicEngine:
         limit: int = 20,
     ) -> dict[str, Any]:
         """Rank Git-touched files by bounded recency-weighted churn and complexity."""
-        if isinstance(days, bool) or not isinstance(days, int) or not 1 <= days <= 3650:
-            return {"success": False, "status_code": 400, "terminal": True, "retryable": False,
-                    "error": "days must be an integer from 1 to 3650"}
-        if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 50:
-            return {"success": False, "status_code": 400, "terminal": True, "retryable": False,
-                    "error": "limit must be an integer from 1 to 50"}
-        resolved = self._root(root)
-        git_exe = shutil.which("git") or "git"
-
-        # The service-level repository cache keys this operation by the current
-        # repository fingerprint. Do not consult the older root/days-only table:
-        # it cannot detect changed HEADs or current-file contents.
-
-        deadline = time.monotonic() + _HOTSPOT_ANALYSIS_SECONDS
-        now = time.time()
-        cutoff = int(now - days * 86_400)
-        argv = [
-            git_exe, "-C", resolved, "--literal-pathspecs", "-c", "core.pager=cat",
-            "log", f"-n{_HOTSPOT_GIT_COMMIT_LIMIT + 1}", f"--since-as-filter=@{cutoff}",
-            "--format=%x00LAH_HOTSPOT:%ct%x00", "--name-only", "-z", "--no-merges",
-            "--no-renames", "--no-ext-diff", "--no-textconv", "--end-of-options", "HEAD", "--",
-        ]
-        incomplete: set[str] = set()
-        churn_counts: dict[str, int] = defaultdict(int)
-        weighted_counts: dict[str, float] = defaultdict(float)
-        try:
-            res = run_hidden(
-                argv,
-                cwd=resolved,
-                capture_output=True,
-                text=False,
-                stdin=subprocess.DEVNULL,
-                timeout=max(0.1, deadline - time.monotonic()),
-                max_output_bytes=_GIT_INSIGHT_STREAM_LIMIT,
-                env=clean_git_env(extra_env={
-                    "GIT_PAGER": "cat", "PAGER": "cat", "GIT_TERMINAL_PROMPT": "0",
-                    "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull,
-                    "GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "diff.external",
-                    "GIT_CONFIG_VALUE_0": "",
-                }),
-            )
-            if getattr(res, "returncode", 1) != 0:
-                incomplete.add("git_history_failed")
-            if getattr(res, "stdout_truncated", False) or getattr(res, "stderr_truncated", False):
-                incomplete.add("git_output_truncated")
-            raw_output = getattr(res, "stdout", b"")
-            if not isinstance(raw_output, bytes):
-                incomplete.add("git_output_malformed")
-                raw_output = b""
-            segments = raw_output.split(b"\0LAH_HOTSPOT:")
-            if segments and not segments[0].strip(b"\r\n"):
-                segments = segments[1:]
-            if len(segments) > _HOTSPOT_GIT_COMMIT_LIMIT:
-                incomplete.add("commit_limit_reached")
-            for segment in segments[:_HOTSPOT_GIT_COMMIT_LIMIT]:
-                if time.monotonic() >= deadline:
-                    incomplete.add("analysis_deadline")
-                    break
-                try:
-                    # The explicit timestamp terminator is followed by Git's
-                    # -z record terminator before its filename framing newline.
-                    timestamp_raw, separator, files_raw = segment.partition(b"\0\0")
-                    timestamp = int(timestamp_raw.strip())
-                    if not separator or timestamp < cutoff:
-                        raise ValueError("malformed commit record")
-                    # Git inserts one formatting newline around each NUL-delimited
-                    # name list. Remove only those framing bytes; preserve filename newlines.
-                    if files_raw.startswith(b"\n"):
-                        files_raw = files_raw[1:]
-                    if files_raw.endswith(b"\n"):
-                        files_raw = files_raw[:-1]
-                    per_commit: set[str] = set()
-                    path_offset = 0
-                    path_count = 0
-                    while path_offset <= len(files_raw):
-                        if path_count >= _HOTSPOT_PATH_LIMIT:
-                            if path_offset < len(files_raw):
-                                incomplete.add("path_limit_reached")
-                            break
-                        if path_count % 64 == 0 and time.monotonic() >= deadline:
-                            incomplete.add("analysis_deadline")
-                            break
-                        separator_at = files_raw.find(b"\0", path_offset)
-                        if separator_at < 0:
-                            raw_path = files_raw[path_offset:]
-                            path_offset = len(files_raw) + 1
-                        else:
-                            raw_path = files_raw[path_offset:separator_at]
-                            path_offset = separator_at + 1
-                        path_count += 1
-                        if not raw_path:
-                            continue
-                        relative = raw_path.decode("utf-8", "strict").replace("\\", "/")
-                        pure_path = PurePosixPath(relative)
-                        if pure_path.is_absolute() or any(part in {"..", ""} for part in pure_path.parts):
-                            incomplete.add("unsafe_git_path")
-                            continue
-                        if any(part.lower() in {".git", "vendor", "node_modules", "dist", "build"} for part in pure_path.parts):
-                            continue
-                        relative_path = pure_path.as_posix()
-                        if relative_path in per_commit:
-                            continue
-                        if relative_path not in churn_counts and len(churn_counts) >= _HOTSPOT_PATH_LIMIT:
-                            incomplete.add("path_limit_reached")
-                            break
-                        per_commit.add(relative_path)
-                    age_days = max(0.0, (now - float(timestamp)) / 86_400.0)
-                    weight = 0.5 ** (age_days / 90.0)
-                    for relative in per_commit:
-                        churn_counts[relative] += 1
-                        weighted_counts[relative] += weight
-                except (UnicodeDecodeError, ValueError, OverflowError):
-                    incomplete.add("git_output_malformed")
-            if len(segments) > _HOTSPOT_GIT_COMMIT_LIMIT:
-                incomplete.add("commit_limit_reached")
-            if time.monotonic() >= deadline:
-                incomplete.add("analysis_deadline")
-        except (ProcessCancelledError, ProcessCleanupUnverifiedError, subprocess.TimeoutExpired, OSError, ValueError) as exc:
-            incomplete.add(f"git_history_{type(exc).__name__}")
-
-        if not churn_counts and incomplete:
-            return {
-                "success": False,
-                "root": resolved,
-                "days": days,
-                "count": 0,
-                "hotspots": [],
-                "algorithm": _HOTSPOT_ALGORITHM,
-                "complete": False,
-                "incomplete_reasons": sorted(incomplete),
-                "recency_half_life_days": 90,
-            }
-
-        hotspots: list[dict[str, Any]] = []
-        candidates = sorted(
-            weighted_counts,
-            key=lambda file_rel: (-weighted_counts[file_rel], file_rel),
+        return _find_hotspots(
+            root,
+            days,
+            limit,
+            root_resolver=self._root,
+            is_symlink_or_reparse_point=_is_symlink_or_reparse_point,
+            git_insight_stream_limit=_GIT_INSIGHT_STREAM_LIMIT,
+            run_hidden_fn=run_hidden,
+            clean_git_env_fn=clean_git_env,
         )
-        if len(candidates) > _HOTSPOT_FILE_LIMIT:
-            incomplete.add("file_limit_reached")
-        total_bytes = 0
-        reserved_bytes = 0
-        analyzed_files = 0
-        canonical_root = Path(resolved).resolve(strict=True)
-        for file_rel in candidates[:_HOTSPOT_FILE_LIMIT]:
-            if time.monotonic() >= deadline:
-                incomplete.add("analysis_deadline")
-                break
-            full_p = Path(resolved) / file_rel
-            fd = -1
-            content_buffer = bytearray()
-            try:
-                current_component = canonical_root
-                for part in PurePosixPath(file_rel).parts:
-                    current_component = current_component / part
-                    if _is_symlink_or_reparse_point(current_component):
-                        raise ValueError("reparse_point")
-                before = os.stat(full_p, follow_symlinks=False)
-                if not stat.S_ISREG(before.st_mode):
-                    raise ValueError("not_regular")
-                canonical_file = full_p.resolve(strict=True)
-                canonical_file.relative_to(canonical_root)
-                size = before.st_size
-                if size > _HOTSPOT_FILE_BYTES_LIMIT:
-                    incomplete.add("file_byte_limit_reached")
-                    continue
-                reservation = size + 1
-                if reserved_bytes + reservation > _HOTSPOT_TOTAL_BYTES_LIMIT:
-                    incomplete.add("aggregate_byte_limit_reached")
-                    break
-                reserved_bytes += reservation
-                flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NONBLOCK", 0)
-                if getattr(os, "O_NOFOLLOW", 0):
-                    flags |= os.O_NOFOLLOW
-                fd = os.open(full_p, flags)
-                opened = os.fstat(fd)
-                if (
-                    not stat.S_ISREG(opened.st_mode)
-                    or (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns)
-                    != (opened.st_dev, opened.st_ino, opened.st_size, opened.st_mtime_ns)
-                ):
-                    raise ValueError("file_identity_changed")
-                opened_path = Path(full_p).resolve(strict=True)
-                opened_path.relative_to(canonical_root)
-                source = os.fdopen(fd, "rb", buffering=0)
-                fd = -1
-                deadline_expired_during_read = False
-                with source:
-                    remaining_read = reservation
-                    while remaining_read:
-                        if time.monotonic() >= deadline:
-                            incomplete.add("analysis_deadline")
-                            deadline_expired_during_read = True
-                            break
-                        chunk = source.read(min(65_536, remaining_read))
-                        if not chunk:
-                            break
-                        content_buffer.extend(chunk)
-                        total_bytes += len(chunk)
-                        remaining_read -= len(chunk)
-                    after = os.fstat(source.fileno())
-                if deadline_expired_during_read:
-                    continue
-                current_path_stat = os.stat(full_p, follow_symlinks=False)
-                current_path = full_p.resolve(strict=True)
-                current_path.relative_to(canonical_root)
-                before_state = (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns, before.st_ctime_ns)
-                opened_state = (opened.st_dev, opened.st_ino, opened.st_size, opened.st_mtime_ns, opened.st_ctime_ns)
-                after_state = (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns, after.st_ctime_ns)
-                path_state = (
-                    current_path_stat.st_dev, current_path_stat.st_ino, current_path_stat.st_size,
-                    current_path_stat.st_mtime_ns, current_path_stat.st_ctime_ns,
-                )
-                # Windows path stat and handle stat expose different ctime
-                # semantics. Compare each source with its own earlier sample.
-                if (
-                    before_state != path_state
-                    or opened_state != after_state
-                    or (current_path_stat.st_dev, current_path_stat.st_ino) != (after.st_dev, after.st_ino)
-                    or current_path != canonical_file
-                    or _is_symlink_or_reparse_point(full_p)
-                ):
-                    incomplete.add("file_changed_during_read")
-                    continue
-                content_bytes = bytes(content_buffer)
-                if len(content_buffer) > size:
-                    incomplete.add("file_grew_during_read")
-                    continue
-                content = content_bytes.decode("utf-8", "strict")
-                analyzed_files += 1
-            except UnicodeDecodeError:
-                incomplete.add("file_decode_failed")
-                continue
-            except ValueError as exc:
-                incomplete.add("reparse_point_skipped" if str(exc) == "reparse_point" else "file_identity_changed")
-                continue
-            except (OSError, RuntimeError):
-                incomplete.add("current_file_unavailable")
-                continue
-            finally:
-                if fd >= 0:
-                    os.close(fd)
-            comp_score = 1
-            loc = 0
-            if time.monotonic() >= deadline:
-                incomplete.add("analysis_deadline")
-                continue
-            try:
-                loc = len(content.splitlines())
-                if full_p.suffix == ".py":
-                    if time.monotonic() >= deadline:
-                        incomplete.add("analysis_deadline")
-                        continue
-                    tree = ast.parse(content, filename=file_rel)
-                    for node in ast.walk(tree):
-                        if isinstance(node, (ast.If, ast.For, ast.While, ast.Try, ast.ExceptHandler, ast.With, ast.Match)):
-                            comp_score += 1
-                else:
-                    comp_score = max(1, loc // 15)
-            except Exception:
-                incomplete.add("complexity_parse_failed")
-                comp_score = max(1, loc // 20)
-
-            raw_churn = churn_counts[file_rel]
-            recency_weighted_churn = round(weighted_counts[file_rel], 6)
-            hotspot_index = round(recency_weighted_churn * math.log2(1.0 + float(comp_score)), 2)
-            hotspots.append({
-                "file": file_rel,
-                "path": file_rel,
-                "churn": raw_churn,
-                "churn_commits": raw_churn,
-                "recency_weighted_churn": recency_weighted_churn,
-                "complexity": comp_score,
-                "lines_of_code": loc,
-                "debt_score": hotspot_index,
-                "hotspot_score": hotspot_index,
-                "risk_level": "critical" if hotspot_index >= 50 else ("high" if hotspot_index >= 20 else "moderate"),
-            })
-
-        hotspots.sort(key=lambda x: x["hotspot_score"], reverse=True)
-        res_data = {
-            "success": True,
-            "root": resolved,
-            "days": days,
-            "algorithm": _HOTSPOT_ALGORITHM,
-            "recency_half_life_days": 90,
-            "recency_weighting": "sum(0.5 ** (commit_age_days / 90)) over commits in the requested day window",
-            "complete": not incomplete,
-            "incomplete_reasons": sorted(incomplete),
-            "analysis": {
-                "git_commits_scanned": min(len(segments) if "segments" in locals() else 0, _HOTSPOT_GIT_COMMIT_LIMIT),
-                "files_seen": len(candidates),
-                "files_analyzed": analyzed_files,
-                "bytes_read": total_bytes,
-                "bytes_reserved": reserved_bytes,
-                "commit_limit": _HOTSPOT_GIT_COMMIT_LIMIT,
-                "file_limit": _HOTSPOT_FILE_LIMIT,
-                "per_file_bytes_limit": _HOTSPOT_FILE_BYTES_LIMIT,
-                "aggregate_bytes_limit": _HOTSPOT_TOTAL_BYTES_LIMIT,
-            },
-            "count": len(hotspots),
-            "hotspots": hotspots,
-        }
-        res_data["hotspots"] = hotspots[:limit]
-        res_data["count"] = len(res_data["hotspots"])
-        return res_data
 
     def generate_tests_for_diff(
         self,
@@ -5476,79 +3177,7 @@ def test_{sym}_regression_edge_cases():
 
     @staticmethod
     def _detect_test_framework(resolved_root: Path) -> tuple[str, str, bool, list[str]]:
-        root_str = str(resolved_root)
-        warnings: list[str] = []
-        incomplete = False
-        framework = "unknown"
-        run_all_cmd = ""
-
-        dotnet_project = False
-        if resolved_root.is_dir():
-            try:
-                with os.scandir(root_str) as root_entries:
-                    for index, entry in enumerate(root_entries):
-                        if index >= 128:
-                            incomplete = True
-                            warnings.append("root_framework_scan_limit_reached")
-                            break
-                        if entry.name.endswith((".sln", ".csproj")) and entry.is_file(follow_symlinks=False):
-                            dotnet_project = True
-                            break
-            except OSError:
-                incomplete = True
-                warnings.append("root_framework_scan_failed")
-
-        # Fast framework detection via files in root
-        if (resolved_root / "pytest.ini").exists() or (resolved_root / "pyproject.toml").exists() or any((resolved_root / f).is_file() for f in ("setup.py", "requirements.txt", "requirements-core.txt")):
-            framework = "pytest"
-            run_all_cmd = "python -m pytest"
-        elif dotnet_project:
-            framework = "dotnet"
-            run_all_cmd = "dotnet test"
-        elif (resolved_root / "package.json").exists():
-            framework = "npm"
-            run_all_cmd = "npm test"
-        elif (resolved_root / "Cargo.toml").exists():
-            framework = "cargo"
-            run_all_cmd = "cargo test"
-        elif (resolved_root / "go.mod").exists():
-            framework = "go"
-            run_all_cmd = "go test ./..."
-        else:
-            composer_path = resolved_root / "composer.json"
-            phpunit_config = any((resolved_root / name).is_file() for name in ("phpunit.xml", "phpunit.xml.dist"))
-            php_packages: set[str] = set()
-            if composer_path.exists() or composer_path.is_symlink():
-                try:
-                    manifest_stat = composer_path.lstat()
-                    if stat.S_ISLNK(manifest_stat.st_mode) or (getattr(manifest_stat, "st_file_attributes", 0) & 0x400):
-                        incomplete = True
-                        warnings.append("composer_manifest_reparse_point_skipped")
-                    elif not stat.S_ISREG(manifest_stat.st_mode):
-                        incomplete = True
-                        warnings.append("composer_manifest_not_regular_file")
-                    elif manifest_stat.st_size > 256_000:
-                        incomplete = True
-                        warnings.append("composer_manifest_too_large")
-                    else:
-                        manifest = json.loads(composer_path.read_text(encoding="utf-8-sig"))
-                        if isinstance(manifest, dict):
-                            for field in ("require", "require-dev"):
-                                packages = manifest.get(field, {})
-                                if isinstance(packages, dict):
-                                    php_packages.update(str(name).lower() for name in packages)
-                except (OSError, UnicodeError, json.JSONDecodeError):
-                    incomplete = True
-                    warnings.append("composer_manifest_unreadable")
-            pest_config = (resolved_root / "Pest.php").is_file() or (resolved_root / "tests" / "Pest.php").is_file()
-            if "pestphp/pest" in php_packages or pest_config:
-                framework = "pest"
-                run_all_cmd = "vendor/bin/pest"
-            elif "phpunit/phpunit" in php_packages or phpunit_config:
-                framework = "phpunit"
-                run_all_cmd = "vendor/bin/phpunit"
-
-        return framework, run_all_cmd, incomplete, warnings
+        return detect_test_framework(resolved_root)
 
     def test_matrix(self, root: str) -> dict[str, Any]:
         """Discover test frameworks, test files, and test mappings in the repository."""
@@ -5557,28 +3186,10 @@ def test_{sym}_regression_edge_cases():
         test_files: list[dict[str, Any]] = []
         framework, run_all_cmd, incomplete, warnings = self._detect_test_framework(resolved_root)
 
-        def is_test_source(rel_path: str) -> bool:
-            """Recognize supported test naming conventions in the current tree."""
-            normalized = rel_path.replace("\\", "/").lower()
-            suffix = Path(normalized).suffix
-            if suffix not in {".py", ".go", ".cs", ".ts", ".tsx", ".js", ".jsx", ".java", ".rs", ".cpp", ".cc", ".c", ".php"}:
-                return False
-            name = Path(normalized).name
-            original_name = Path(rel_path.replace("\\", "/")).name
-            if name == "pest.php":
-                return False
-            php_test_name = (
-                name == "test.php" or name.endswith("_test.php") or original_name.endswith("Test.php")
-            )
-            return (
-                name.startswith("test_") or name.startswith("tests_") or
-                name.endswith(("_test.py", "_test.go", ".spec.ts", ".spec.js", ".spec.tsx", ".spec.jsx", ".test.ts", ".test.js", ".test.tsx", ".test.jsx")) or php_test_name or
-                any(part in {"test", "tests", "spec", "specs"} for part in Path(normalized).parts)
-            )
-
         # Only current filesystem entries can back a matrix row. Keep directory
         # enumeration bounded; the durable index is deliberately not a source
         # of truth for test targets because it can lag deletions and renames.
+        max_depth = 25
         max_files = 2000
         max_targets = 40
         max_file_bytes = min(int(getattr(self.repo_tools, "max_file_bytes", 1_000_000)), 256_000)
@@ -5588,7 +3199,7 @@ def test_{sym}_regression_edge_cases():
         enumerated = 0
         try:
             for candidate, snapshot_stat in self.repo_tools._iter_files_with_stat(
-                root_str, max_depth=25, max_files=max_files,
+                root_str, max_depth=max_depth, max_files=max_files,
             ):
                 if time.monotonic() >= deadline:
                     incomplete = True
@@ -5597,7 +3208,7 @@ def test_{sym}_regression_edge_cases():
                 enumerated += 1
                 try:
                     rel = candidate.relative_to(resolved_root).as_posix()
-                    if not is_test_source(rel):
+                    if not is_test_matrix_source(rel):
                         continue
                     lst = candidate.lstat()
                     if stat.S_ISLNK(lst.st_mode) or (getattr(lst, "st_file_attributes", 0) & 0x400):
@@ -5627,17 +3238,17 @@ def test_{sym}_regression_edge_cases():
             incomplete = True
             warnings.append("test_file_enumeration_failed")
 
-        target_paths.sort(key=lambda item: item[0])
-        if len(target_paths) > max_targets:
-            incomplete = True
-            warnings.append("test_file_result_limit_reached")
-            target_paths = target_paths[:max_targets]
+        selected, selection_incomplete, selection_warnings = select_test_matrix_targets(
+            target_paths,
+            max_targets=max_targets,
+            max_total_bytes=max_total_bytes,
+        )
+        incomplete = incomplete or selection_incomplete
+        warnings.extend(selection_warnings)
 
         def _extract_file_info(item: tuple[str, Path, os.stat_result]) -> dict[str, Any] | None:
             rel, f, before = item
-            cases: list[str] = []
             suffix = f.suffix.lower()
-            cases_scan_complete = suffix in {".py", ".cs"}
             try:
                 if time.monotonic() >= deadline:
                     raise TimeoutError("test matrix read deadline exceeded")
@@ -5655,109 +3266,36 @@ def test_{sym}_regression_edge_cases():
                     before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns,
                 ) != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns):
                     raise OSError("file changed during bounded read")
-                if suffix == ".py":
-                    for ln in txt.splitlines():
-                        if time.monotonic() >= deadline:
-                            cases_scan_complete = False
-                            break
-                        if ln.strip().startswith("def test_"):
-                            cases.append(ln.strip().split("(")[0].replace("def ", "").strip())
-                            if len(cases) > 15:
-                                cases_scan_complete = False
-                                break
-                elif suffix == ".cs":
-                    attribute_pending = 0
-                    for line in txt.splitlines():
-                        if time.monotonic() >= deadline:
-                            cases_scan_complete = False
-                            break
-                        if re.search(r"\[(?:Test|UnityTest|Fact)\b", line):
-                            attribute_pending = 20
-                        if attribute_pending and (method := re.search(r"\bvoid\s+([A-Za-z0-9_]+)", line)):
-                            cases.append(method.group(1))
-                            attribute_pending = 0
-                            if len(cases) > 15:
-                                cases_scan_complete = False
-                                break
-                        elif attribute_pending:
-                            attribute_pending -= 1
+                cases, cases_scan_complete = extract_test_case_names(
+                    txt, suffix, should_continue=lambda: time.monotonic() < deadline,
+                )
             except Exception as exc:
                 return {"_omitted": type(exc).__name__}
 
             # Keep arguments structured. Display strings include only simple
             # shell tokens; paths needing quoting remain available as argv.
-            suffix = f.suffix.lower()
-            if suffix == ".py" and framework == "pytest":
-                run_argv = ["python", "-m", "pytest", "--", rel]
-            elif suffix == ".cs" and framework == "dotnet":
-                run_argv = ["dotnet", "test", "--filter", f"FullyQualifiedName~{f.stem}"]
-            elif suffix in {".js", ".jsx", ".ts", ".tsx"} and framework == "npm":
-                run_argv = ["npm", "test", "--", rel]
-            elif suffix == ".go" and framework == "go":
-                run_argv = ["go", "test", f"./{str(Path(rel).parent).replace(chr(92), '/')}"]
-            elif suffix == ".rs" and framework == "cargo":
-                run_argv = ["cargo", "test"]
-            else:
-                run_argv = []
-            safe_tokens = all(re.fullmatch(r"[A-Za-z0-9_./\\:-]+", arg) for arg in run_argv)
-            run_file_cmd = " ".join(run_argv) if safe_tokens else ""
-            return {
-                "path": rel,
-                "cases_count": len(cases),
-                "cases": cases[:15],
-                "run_command": run_file_cmd,
-                "run_argv": run_argv,
-                "content_sha256": digest,
-                "cases_truncated": len(cases) > 15,
-                "cases_scan_complete": cases_scan_complete,
-                "case_detection": {
-                    ".py": "python_test_function_name_heuristic",
-                    ".cs": "csharp_test_attribute_method_heuristic",
-                }.get(suffix, "not_implemented_for_language"),
-            }
+            run_argv, run_file_cmd = build_test_file_command(f, rel, framework)
+            return build_test_file_result(
+                rel, digest, cases, cases_scan_complete, suffix,
+                run_argv, run_file_cmd,
+            )
 
-        selected: list[tuple[str, Path, os.stat_result]] = []
-        remaining_bytes = max_total_bytes
-        for item in target_paths:
-            size = int(item[2].st_size)
-            reservation = size + 1  # _read_snapshot's bounded growth lookahead
-            if reservation > remaining_bytes:
-                incomplete = True
-                warnings.append("test_file_total_byte_limit_reached")
-                break
-            remaining_bytes -= reservation
-            selected.append(item)
         if selected:
-            with ThreadPoolExecutor(max_workers=min(8, len(selected))) as pool:
-                for row in pool.map(_extract_file_info, selected):
-                    if row is None or "_omitted" in row:
-                        incomplete = True
-                        warnings.append("test_file_read_failed")
-                        continue
-                    if row.get("cases_truncated"):
-                        incomplete = True
-                        warnings.append("test_case_result_limit_reached")
-                    if not row.get("cases_scan_complete", True):
-                        incomplete = True
-                        warnings.append("test_case_scan_incomplete")
-                    test_files.append(row)
+            worker_rows = run_test_matrix_workers(_extract_file_info, selected)
+            rows, rows_incomplete, row_warnings = collect_test_matrix_rows(worker_rows)
+            test_files.extend(rows)
+            incomplete = incomplete or rows_incomplete
+            warnings.extend(row_warnings)
 
-        return {
-            "success": True,
-            "framework": framework,
-            "run_all_command": run_all_cmd,
-            "test_files_count": len(test_files),
-            "test_files": test_files,
-            "coverage": {
-                "scan_complete": not incomplete,
-                "scan_complete_within_scope": not incomplete,
-                "scope": "current supported test files emitted by repo_tools iterator",
-                "max_depth": 25,
-                "max_files": 2000,
-                "inventory_omissions_unknown": True,
-                "warnings": sorted(set(warnings)),
-            },
-        }
+        return build_test_matrix_response(
+            framework,
+            run_all_cmd,
+            test_files,
+            incomplete,
+            warnings,
+            max_depth=max_depth,
+            max_files=max_files,
+        )
 
     def affected_tests(self, root: str, changed_paths: list[str] | None = None, base: str = "HEAD") -> dict[str, Any]:
         """Map changed paths/symbols directly to affected test files and formulate targeted command."""
@@ -5772,24 +3310,15 @@ def test_{sym}_regression_edge_cases():
                     return {"success": False, "error": "Unable to determine changed paths from git status",
                             "error_code": "git_status_failed", "exit_code": p.returncode,
                             "terminal": True, "retryable": False}
-                if not isinstance(p.stdout, bytes) or (p.stdout and not p.stdout.endswith(b"\0")):
+                if not isinstance(p.stdout, bytes):
                     return {"success": False, "error": "Git status returned malformed path records",
                             "error_code": "git_status_malformed", "terminal": True, "retryable": False}
-                records = os.fsdecode(p.stdout).split("\0")[:-1]
-                index = 0
-                while index < len(records):
-                    record = records[index]
-                    index += 1
-                    if len(record) < 4 or record[2] != " " or not record[3:]:
-                        return {"success": False, "error": "Git status returned malformed path records",
-                                "error_code": "git_status_malformed", "terminal": True, "retryable": False}
-                    changed_paths.append(record[3:])
-                    if "R" in record[:2] or "C" in record[:2]:
-                        if index >= len(records) or not records[index]:
-                            return {"success": False, "error": "Git status returned malformed path records",
-                                    "error_code": "git_status_malformed", "terminal": True, "retryable": False}
-                        changed_paths.append(records[index])
-                        index += 1
+                from .git_status_paths import parse_porcelain_status_paths
+                parsed_paths = parse_porcelain_status_paths(p.stdout)
+                if parsed_paths is None:
+                    return {"success": False, "error": "Git status returned malformed path records",
+                            "error_code": "git_status_malformed", "terminal": True, "retryable": False}
+                changed_paths.extend(parsed_paths)
                 if changed_paths:
                     prefix_result = subprocess.run(["git", "rev-parse", "--show-prefix"], cwd=str(resolved_root), capture_output=True, timeout=5, **hidden_run_kwargs())
                     if (prefix_result.returncode != 0 or not isinstance(prefix_result.stdout, bytes)
@@ -5896,354 +3425,14 @@ def test_{sym}_regression_edge_cases():
 
     def repo_topology(self, root: str) -> dict[str, Any]:
         """Return a bounded local Python import graph and heuristic path labels."""
-        import sys
-
-        resolved_root = Path(self._root(root)).resolve()
-        root_str = str(resolved_root)
-        file_limit = 20_000
-        per_file_limit = 256 * 1024
-        total_bytes_limit = 8 * 1024 * 1024
-        edge_limit = 5_000
-        sample_limit = 100
-        deadline = time.monotonic() + 3.0
-        complete = True
-        errors: list[str] = []
-        excluded_dirs = sorted(getattr(self.repo_tools, "ignore_dirs", set()))
-        excluded = {
-            ".git", ".hg", ".svn", ".venv", "venv", ".tox", "node_modules",
-            "__pycache__", "docs", "doc", "plans", "tests", "test", "fixtures",
-            "fixture", "examples", "example", "archive", "archives", "artifacts",
-            "handoff", "cache", "caches", "build", "dist", "target", "vendor",
-            "generated",
-        }
-
-        source_roots: list[Path] = []
-        src_root = resolved_root / "src"
-        if src_root.is_dir():
-            resolved_src = src_root.resolve()
-            if _is_symlink_or_reparse_point(src_root) or not resolved_src.is_relative_to(resolved_root):
-                complete = False
-                errors.append("unsafe_path")
-            else:
-                source_roots.append(resolved_src)
-        packages_root = resolved_root / "packages"
-        if packages_root.is_dir():
-            try:
-                if _is_symlink_or_reparse_point(packages_root):
-                    complete = False
-                    errors.append("unsafe_path")
-                else:
-                    package_entries: list[Path] = []
-                    for package in packages_root.iterdir():
-                        if len(package_entries) >= file_limit or time.monotonic() >= deadline:
-                            complete = False
-                            errors.append("source_root_limit_or_deadline")
-                            break
-                        package_entries.append(package)
-                    for package in sorted(package_entries):
-                        if time.monotonic() >= deadline:
-                            complete = False
-                            errors.append("source_root_deadline")
-                            break
-                        package_src = package / "src"
-                        if not package_src.is_dir():
-                            continue
-                        resolved_package_src = package_src.resolve()
-                        if (
-                            _is_symlink_or_reparse_point(package)
-                            or _is_symlink_or_reparse_point(package_src)
-                            or not resolved_package_src.is_relative_to(resolved_root)
-                        ):
-                            complete = False
-                            errors.append("unsafe_path")
-                            continue
-                        source_roots.append(resolved_package_src)
-            except OSError:
-                complete = False
-                errors.append("source_root_error")
-        unsafe_source_root = "unsafe_path" in errors and not source_roots
-        use_project_root = not source_roots and not unsafe_source_root
-        inventory_roots = source_roots or ([resolved_root] if use_project_root else [])
-
-        def eligible_rel(path: Path) -> str | None:
-            try:
-                rel = path.relative_to(resolved_root)
-            except ValueError:
-                return None
-            if any(part.lower() in excluded for part in rel.parts[:-1]):
-                return None
-            if use_project_root or any(path.is_relative_to(base) for base in source_roots):
-                return rel.as_posix()
-            return None
-
-        eligible: list[tuple[str, Path]] = []
-        try:
-            for inventory_root in inventory_roots:
-                inventory_count = 0
-                for candidate in self.repo_tools.iter_files(
-                    str(inventory_root), max_files=file_limit + 1
-                ):
-                    if time.monotonic() >= deadline:
-                        complete = False
-                        errors.append("inventory_deadline")
-                        break
-                    inventory_count += 1
-                    if inventory_count > file_limit:
-                        complete = False
-                        errors.append("inventory_limit")
-                        break
-                    rel = eligible_rel(candidate)
-                    if rel is None or not rel.lower().endswith(".py"):
-                        continue
-                    if len(eligible) >= file_limit:
-                        complete = False
-                        errors.append("file_limit")
-                        break
-                    eligible.append((rel, candidate))
-                if any(error in errors for error in ("inventory_deadline", "file_limit", "inventory_limit")):
-                    break
-        except Exception:
-            complete = False
-            errors.append("inventory_error")
-
-        layers: dict[str, list[str]] = {
-            name: []
-            for name in (
-                "entrypoints", "presentation", "core_services",
-                "domain_models", "infrastructure", "utilities",
-            )
-        }
-        module_paths: dict[str, list[str]] = defaultdict(list)
-        path_modules: dict[str, str] = {}
-        for rel, path in eligible:
-            base = next(
-                (source_root for source_root in source_roots if path.is_relative_to(source_root)),
-                resolved_root,
-            )
-            module_parts = list(path.relative_to(base).with_suffix("").parts)
-            if module_parts[-1] == "__init__":
-                module_parts.pop()
-            module = ".".join(module_parts)
-            if module:
-                module_paths[module].append(rel)
-                path_modules[rel] = module
-
-            lowered = rel.lower()
-            name = path.name.lower()
-            if name in {"main.py", "app.py", "cli.py", "__main__.py"}:
-                layer = "entrypoints"
-            elif any(token in lowered for token in ("route", "controller", "view", "endpoint", "http_", "mcp_", "api/", "api_")):
-                layer = "presentation"
-            elif any(token in lowered for token in ("service", "orchestrat", "planner", "pipeline", "handler", "manager", "engine", "core")):
-                layer = "core_services"
-            elif any(token in lowered for token in ("model", "schema", "entity", "types", "event", "state")):
-                layer = "domain_models"
-            elif any(token in lowered for token in ("db", "storage", "repo", "dao", "client", "cache", "telemetry", "hardware", "sqlite")):
-                layer = "infrastructure"
-            else:
-                layer = "utilities"
-            layers[layer].append(rel)
-
-        local_top_levels = {module.partition(".")[0] for module in module_paths}
-
-        def resolve_local(module: str) -> str | None:
-            matches = module_paths.get(module, [])
-            if len(matches) == 1:
-                return matches[0]
-            return "" if matches else None
-
-        def has_unsafe_ancestor(path: Path) -> bool:
-            current = resolved_root
-            for part in path.relative_to(resolved_root).parts:
-                current = current / part
-                if _is_symlink_or_reparse_point(current):
-                    return True
-            return False
-
-        edges: list[dict[str, Any]] = []
-        unresolved: list[dict[str, Any]] = []
-        external: list[dict[str, Any]] = []
-        stdlib_count = total_bytes = files_read = skipped = parse_errors = 0
-        for file_index, (rel, path) in enumerate(eligible):
-            if len(edges) + len(unresolved) + len(external) >= edge_limit:
-                complete = False
-                errors.append("edge_limit")
-                skipped += len(eligible) - file_index
-                break
-            if time.monotonic() >= deadline or total_bytes >= total_bytes_limit:
-                complete = False
-                errors.append(
-                    "analysis_deadline"
-                    if time.monotonic() >= deadline
-                    else "aggregate_byte_limit"
-                )
-                skipped += len(eligible) - file_index
-                break
-            try:
-                if has_unsafe_ancestor(path) or not path.resolve().is_relative_to(resolved_root):
-                    raise ValueError("unsafe_path")
-                flags = (
-                    os.O_RDONLY
-                    | getattr(os, "O_NOFOLLOW", 0)
-                    | getattr(os, "O_NONBLOCK", 0)
-                    | getattr(os, "O_BINARY", 0)
-                )
-                fd = os.open(path, flags)
-                try:
-                    before = os.fstat(fd)
-                    path_before = os.stat(path, follow_symlinks=False)
-                    if (
-                        not stat.S_ISREG(before.st_mode)
-                        or before.st_size > per_file_limit
-                        or (before.st_dev, before.st_ino) != (path_before.st_dev, path_before.st_ino)
-                    ):
-                        raise ValueError("unsafe_path")
-                    remaining = min(per_file_limit, total_bytes_limit - total_bytes)
-                    with os.fdopen(fd, "rb", closefd=False) as handle:
-                        raw = handle.read(remaining + 1)
-                    after = os.fstat(fd)
-                    path_after = os.stat(path, follow_symlinks=False)
-                    if (
-                        len(raw) > remaining
-                        or (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns, before.st_ctime_ns)
-                        != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns, after.st_ctime_ns)
-                        or (after.st_dev, after.st_ino) != (path_after.st_dev, path_after.st_ino)
-                        or has_unsafe_ancestor(path)
-                    ):
-                        raise ValueError("file_changed_or_byte_limit")
-                    total_bytes += len(raw)
-                    files_read += 1
-                    parsed = ast.parse(raw.decode("utf-8"), filename=rel)
-                finally:
-                    os.close(fd)
-            except (OSError, SyntaxError, UnicodeError, ValueError) as exc:
-                complete = False
-                skipped += 1
-                parse_errors += 1
-                errors.append(str(exc) if isinstance(exc, ValueError) else "read_or_parse_error")
-                continue
-
-            source_module = path_modules.get(rel)
-            if not source_module:
-                continue
-            for node in ast.walk(parsed):
-                if time.monotonic() >= deadline:
-                    complete = False
-                    errors.append("analysis_deadline")
-                    break
-                imports: list[tuple[str, int, bool]] = []
-                if isinstance(node, ast.Import):
-                    imports = [(alias.name, node.lineno, False) for alias in node.names]
-                elif isinstance(node, ast.ImportFrom):
-                    package_parts = source_module.split(".")[:-1]
-                    if Path(rel).name == "__init__.py":
-                        package_parts = source_module.split(".")
-                    if node.level > len(package_parts):
-                        # An invalid relative level cannot become a root import.
-                        imports = [("." * node.level + (node.module or ""), node.lineno, True)]
-                    else:
-                        prefix = package_parts[: len(package_parts) - node.level + 1] if node.level else []
-                        if node.module:
-                            prefix.extend(node.module.split("."))
-                        base_module = ".".join(prefix)
-                        base_matches = module_paths.get(base_module, [])
-                        modules = [base_module] if base_matches else []
-                        base_is_package = not base_matches or all(
-                            Path(match).name == "__init__.py" for match in base_matches
-                        )
-                        if base_is_package:
-                            for alias in node.names:
-                                child = f"{base_module}.{alias.name}"
-                                if alias.name != "*" and child in module_paths:
-                                    modules.append(child)
-                        if not modules:
-                            modules = [base_module]
-                        imports = [
-                            (module, node.lineno, bool(node.level))
-                            for module in dict.fromkeys(modules) if module
-                        ]
-
-                for imported, line, is_relative in imports:
-                    target = resolve_local(imported)
-                    if target == "":
-                        unresolved.append({"source": rel, "module": imported, "line": line, "reason": "ambiguous_local_module"})
-                    elif target:
-                        edges.append({"source": rel, "target": target, "module": imported, "line": line})
-                    elif is_relative:
-                        unresolved.append({"source": rel, "module": imported, "line": line, "reason": "unresolved_relative_import"})
-                    elif imported.partition(".")[0] in local_top_levels:
-                        unresolved.append({"source": rel, "module": imported, "line": line, "reason": "unresolved_local_module"})
-                    elif imported.split(".", 1)[0] in sys.stdlib_module_names:
-                        stdlib_count += 1
-                    else:
-                        external.append({"source": rel, "module": imported, "line": line})
-                    if len(edges) + len(unresolved) + len(external) >= edge_limit:
-                        complete = False
-                        errors.append("edge_limit")
-                        break
-                if len(edges) + len(unresolved) + len(external) >= edge_limit:
-                    break
-
-        hubs = [
-            {"path": path, "in_degree": count}
-            for path, count in Counter(
-                target for _source, target in dict.fromkeys(
-                    (edge["source"], edge["target"]) for edge in edges
-                )
-            ).most_common(10)
-        ]
-        has_api = bool(layers["presentation"])
-        has_services = bool(layers["core_services"])
-        has_cli = bool(layers["entrypoints"])
-        if has_api and has_services:
-            pattern = "Layered Service / Web Application"
-        elif has_cli and has_services:
-            pattern = "Modular CLI Application"
-        elif has_services:
-            pattern = "Library / Application Engine"
-        else:
-            pattern = "Package / Module Collection"
-        graph_complete = complete and not unresolved and "edge_limit" not in errors
-        graph = {
-            "scope": "bounded Python AST imports resolved against unique local source modules",
-            "nodes": len(path_modules), "edge_count": len(edges), "edges": edges[:sample_limit], "hub_paths": hubs,
-            "unresolved_count": len(unresolved), "unresolved": unresolved[:sample_limit],
-            "external_import_count": len(external), "external_imports": external[:sample_limit],
-            "stdlib_import_count": stdlib_count, "complete": graph_complete,
-            "truncated": any(len(items) > sample_limit for items in (edges, unresolved, external)),
-        }
-        lines = [
-            f"# Architecture Topology: {resolved_root.name}",
-            f"**Architecture hypothesis (heuristic)**: {pattern}",
-            "", "## Heuristic path labels",
-        ]
-        for name, paths in layers.items():
-            if paths:
-                lines.append(f"- **{name.replace('_', ' ').title()}** ({len(paths)}): `{', '.join(paths[:4])}`")
-        lines.extend(["", f"## Local Python import graph: {len(edges)} edges; complete={str(graph_complete).lower()}"])
-        for edge in edges[:8]:
-            lines.append(f"- `{edge['source']}:{edge['line']}` -> `{edge['target']}`")
-        return {
-            "success": True, "root": root_str,
-            "architecture_pattern_hypothesis": pattern,
-            "architecture_pattern_verified": False,
-            "heuristic_layers": layers, "module_graph": graph,
-            "summary_markdown": "\n".join(lines),
-            "coverage": {
-                "complete": complete,
-                "inventory_scope": "eligible Python source under recognized roots; docs, plans, tests and fixtures excluded",
-                "deadline_kind": "cooperative", "files_seen": len(eligible),
-                "files_read": files_read, "files_skipped": skipped,
-                "parse_errors": parse_errors, "bytes_read": total_bytes,
-                "file_limit": file_limit, "per_file_bytes_limit": per_file_limit,
-                "aggregate_bytes_limit": total_bytes_limit, "excluded_dirs": excluded_dirs,
-                "errors": sorted(set(errors)), "module_graph_resolved": True,
-                "module_graph_complete": graph_complete,
-                "architecture_pattern_basis": "filename and path heuristics",
-                "architecture_pattern_verified": False,
-            },
-            "import_scope": "Python AST imports resolved only against unique local modules in the bounded source inventory",
-        }
+        return _repo_topology(
+            root,
+            root_resolver=self._root,
+            repo_tools=self.repo_tools,
+            is_symlink_or_reparse_point=_is_symlink_or_reparse_point,
+            classify_layer=classify_topology_layer,
+            build_summary=build_topology_summary_markdown,
+        )
 
     def ast_rename(self, root: str, target_file: str, old_symbol: str, new_symbol: str, apply_changes: bool = False) -> dict[str, Any]:
         """Mechanically rename a symbol across the target file and its callers using AST / pattern replacement."""
@@ -6461,337 +3650,31 @@ def test_{sym}_regression_edge_cases():
         """Deterministic static security analysis (hardcoded secrets, unsafe deserialization, SQL injection)."""
         if type(limit) is not int or not 1 <= limit <= 100000:
             return {"success": False, "error": "limit must be an integer from 1 through 100000", "terminal": True, "retryable": False}
-        resolved_root = Path(self._root(root))
-        secret_patterns = _SECURITY_AUDIT_SECRETS
-        code_smell_patterns = _SECURITY_AUDIT_SMELLS
-
-        findings: list[dict[str, Any]] = []
-        deadline = time.monotonic() + 30.0
-        raw_files, inventory = self.repo_tools.security_inventory(str(resolved_root), deadline=deadline)
-        def _sec_priority(p: Path) -> int:
-            try:
-                parts = p.relative_to(resolved_root).parts
-            except ValueError:
-                return 2
-            if not parts or len(parts) == 1:
-                return 0
-            top = parts[0].lower()
-            if top in {"src", "lib", "app", "core", "server", "api"}:
-                return 0
-            if top in {"tools", "scripts", "bin"}:
-                return 1
-            if top in {"tests", "test", "fixtures"}:
-                return 3
-            return 2
-        candidate_files = sorted(raw_files, key=_sec_priority)
-        scanned_files = 0
-        eligible_files = 0
-        skipped_files = 0
-        scan_complete = inventory.get("complete") is True
-        limit_reached = False
-        scanned_bytes = 0
-        scan_errors: list[dict[str, str]] = []
-        max_file_bytes = min(2_000_000, max(1, int(getattr(self.repo_tools, "max_file_bytes", 2_000_000))))
-        stop_reason = "" if scan_complete else "inventory_incomplete"
-
-
-        for f in candidate_files:
-            if len(findings) >= limit:
-                limit_reached = True
-                scan_complete = False
-                stop_reason = "findings_limit"
-                break
-            if time.monotonic() >= deadline or scanned_bytes >= 32 * 1024 * 1024:
-                scan_complete = False
-                stop_reason = "time_or_byte_budget"
-                break
-            if f.suffix.lower() not in {".py", ".ts", ".js", ".cs", ".go", ".rs", ".json", ".toml", ".yaml", ".yml", ".env"}:
-                skipped_files += 1
-                continue
-            eligible_files += 1
-            rel = str(f.relative_to(resolved_root)).replace("\\", "/")
-            try:
-                target = f.resolve(strict=True)
-                target.relative_to(resolved_root)
-                import stat
-                flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
-                descriptor = os.open(target, flags)
-                try:
-                    opened = os.fstat(descriptor)
-                    if not stat.S_ISREG(opened.st_mode):
-                        raise ValueError("security source is not a regular file")
-                    source = os.fdopen(descriptor, "rb")
-                    descriptor = -1
-                    with source:
-                        remaining_bytes = 32 * 1024 * 1024 - scanned_bytes
-                        read_bound = min(max_file_bytes, remaining_bytes)
-                        raw = source.read(read_bound + 1)
-                        after_read = os.fstat(source.fileno())
-                    target.resolve(strict=True).relative_to(resolved_root)
-                    current = target.stat()
-                    opened_state = (opened.st_dev, opened.st_ino, opened.st_size, opened.st_mtime_ns, opened.st_ctime_ns)
-                    after_state = (after_read.st_dev, after_read.st_ino, after_read.st_size, after_read.st_mtime_ns, after_read.st_ctime_ns)
-                    if opened_state != after_state or (opened.st_dev, opened.st_ino, opened.st_size) != (current.st_dev, current.st_ino, current.st_size):
-                        raise ValueError("security source changed during read")
-                finally:
-                    if descriptor >= 0:
-                        os.close(descriptor)
-                scanned_bytes += len(raw)
-                if len(raw) > read_bound:
-                    raise ValueError("security source exceeds file or aggregate byte bound")
-                txt = raw.decode("utf-8", errors="replace")
-                lines = txt.splitlines()
-                scanned_files += 1
-                for i, line in enumerate(lines, 1):
-                    if len(findings) >= limit or (i % 1024 == 0 and time.monotonic() >= deadline):
-                        scan_complete = False
-                        limit_reached = len(findings) >= limit
-                        stop_reason = "findings_limit" if limit_reached else "time_budget"
-                        break
-                    stripped = line.strip()
-                    if stripped.startswith(("#", "//", "/*", "*")):
-                        continue
-
-                    for name, pat in secret_patterns:
-                        if pat.search(line):
-                            findings.append({
-                                "severity": "HIGH",
-                                "type": "secret_leak",
-                                "title": name,
-                                "path": rel,
-                                "line": i,
-                                "snippet": "[credential-like value omitted]",
-                            })
-                            break
-
-                python_tree: ast.AST | None = None
-                if rel.lower().endswith(".py") and len(findings) < limit and time.monotonic() < deadline:
-                    try:
-                        python_tree = ast.parse(txt)
-                    except (SyntaxError, ValueError):
-                        scan_complete = False
-                        if len(scan_errors) < 20:
-                            scan_errors.append({"path": rel, "error_type": "ASTParseError"})
-
-                for name, pat in code_smell_patterns:
-                    if len(findings) >= limit or time.monotonic() >= deadline:
-                        scan_complete = False
-                        limit_reached = len(findings) >= limit
-                        stop_reason = "findings_limit" if limit_reached else "time_budget"
-                        break
-                    if name == "Shell Injection Risk":
-                        if not rel.lower().endswith(".py"):
-                            continue
-                        line_numbers = (
-                            _python_shell_injection_lines(txt, tree=python_tree)
-                            if python_tree is not None else []
-                        )
-                    elif name == "Unsafe eval/exec" and rel.lower().endswith(".py"):
-                        if python_tree is None:
-                            line_numbers = []
-                        else:
-                            line_numbers = sorted(
-                                {
-                                    node.lineno
-                                    for node in ast.walk(python_tree)
-                                    if isinstance(node, ast.Call)
-                                    and (
-                                        isinstance(node.func, ast.Name)
-                                        and node.func.id in {"eval", "exec"}
-                                        or isinstance(node.func, ast.Attribute)
-                                        and node.func.attr in {"eval", "exec"}
-                                        and isinstance(node.func.value, ast.Name)
-                                        and node.func.value.id in {"builtins", "__builtins__"}
-                                    )
-                                }
-                            )
-                    elif name == "Unsafe PyYAML":
-                        line_numbers = _yaml_load_match_lines(txt)
-                    else:
-                        line_numbers = _pattern_match_lines(txt, pat)
-                    for line_no in line_numbers:
-                        matched_line = lines[line_no - 1].strip() if line_no <= len(lines) else ""
-                        if matched_line.startswith(("#", "//", "/*", "*")):
-                            continue
-                        if not any(fd["path"] == rel and fd["line"] == line_no and fd["title"] == name for fd in findings):
-                            findings.append({
-                                "severity": "MEDIUM",
-                                "type": "code_vulnerability",
-                                "title": name,
-                                "path": rel,
-                                "line": line_no,
-                                "snippet": matched_line[:120] or pat.pattern[:120],
-                            })
-                        if len(findings) >= limit:
-                            limit_reached = True
-                            scan_complete = False
-                            stop_reason = "findings_limit"
-                            break
-            except Exception as exc:
-                scan_complete = False
-                skipped_files += 1
-                if len(scan_errors) < 20:
-                    scan_errors.append({
-                        "path": rel,
-                        "error_type": type(exc).__name__,
-                        "error": str(exc)[:200],
-                    })
-
-
-        if not scan_complete and not stop_reason and scan_errors:
-            stop_reason = "scan_errors"
-        if scan_complete:
-            _final_files, final_inventory = self.repo_tools.security_inventory(str(resolved_root), deadline=deadline)
-            initial_identity = inventory.get("_identity")
-            final_identity = final_inventory.get("_identity")
-            if (final_inventory.get("complete") is not True or not isinstance(initial_identity, dict)
-                    or not isinstance(final_identity, dict) or initial_identity != final_identity):
-                scan_complete = False
-                stop_reason = "inventory_changed_or_unverified"
-                reasons = inventory.setdefault("reasons", [])
-                if final_inventory.get("complete") is not True:
-                    reasons.extend(reason for reason in final_inventory.get("reasons", []) if reason not in reasons)
-                    examples = inventory.setdefault("examples", {})
-                    for reason, paths in final_inventory.get("examples", {}).items():
-                        bucket = examples.setdefault(reason, [])
-                        for path in paths:
-                            if path not in bucket:
-                                if len(bucket) < 3:
-                                    bucket.append(path)
-                                else:
-                                    inventory["examples_truncated"] = True
-                    inventory["examples_truncated"] = bool(
-                        inventory.get("examples_truncated") or final_inventory.get("examples_truncated")
-                    )
-                    if not reasons:
-                        reasons.append("inventory_coverage_unknown")
-                elif not isinstance(initial_identity, dict) or not isinstance(final_identity, dict):
-                    reasons.append("inventory_evidence_missing")
-                elif "workspace_changed" not in reasons:
-                    reasons.append("workspace_changed")
-
-        if scanned_files == 0 and scan_complete and not inventory.get("excluded_link_paths", 0):
-            scan_complete = False
-            stop_reason = "no_files_scanned"
-
-        high_count = sum(1 for f in findings if f.get("severity") == "HIGH")
-        med_count = sum(1 for f in findings if f.get("severity") == "MEDIUM")
-        test_findings = []
-        for finding in findings:
-            rel_path = str(finding.get("path", ""))
-            is_test = rel_path.casefold().startswith("tests/") or Path(rel_path).name.casefold().startswith("test_")
-            finding["is_test"] = is_test
-            finding["classification"] = "untriaged"
-            if is_test:
-                test_findings.append(finding)
-        untriaged_high = sum(
-            1 for finding in findings
-            if finding.get("severity") == "HIGH"
+        return run_security_audit(
+            self,
+            root,
+            limit,
+            secret_patterns=_SECURITY_AUDIT_SECRETS,
+            code_smell_patterns=_SECURITY_AUDIT_SMELLS,
+            python_shell_injection_lines=_python_shell_injection_lines,
+            yaml_load_match_lines=_yaml_load_match_lines,
+            pattern_match_lines=_pattern_match_lines,
+            path_type=Path,
+            ast_module=ast,
+            os_module=os,
+            time_module=time,
         )
-
-        return {
-            "success": True,
-            "root": str(resolved_root),
-            "findings_count": len(findings),
-            "high_severity_count": high_count,
-            "medium_severity_count": med_count,
-            "untriaged_high_severity_count": untriaged_high,
-            "test_findings_count": len(test_findings),
-            "findings_present": bool(findings),
-            "release_blocking_findings": untriaged_high,
-            "triage_complete": not findings,
-            "scanned_files": scanned_files,
-            "eligible_files": eligible_files,
-            "eligible_files_total": None,
-            "skipped_files": skipped_files,
-            "scanned_bytes": scanned_bytes,
-            "scan_complete": scan_complete,
-            "inventory_incomplete_reasons": inventory.get("reasons", []),
-            "inventory_incomplete_examples": inventory.get("examples", {}),
-            "inventory_examples_truncated": bool(inventory.get("examples_truncated", False)),
-            "limit_reached": limit_reached,
-            "stop_reason": stop_reason,
-            "scan_errors": scan_errors,
-            "coverage_scope": "project-filtered repository files; symlinks and reparse points excluded; counts cover visited entries",
-            "is_clean": not findings and scan_complete,
-            "findings": findings[:limit],
-        }
 
     def split_changes(self, root: str, changed_files: list[str] | None = None) -> dict[str, Any]:
         """Cluster modified repo files into atomic, cohesive commit or PR chunks."""
-        resolved_root = Path(self._root(root))
-        files = list(changed_files or [])
-        if not files:
-            try:
-                cp = subprocess.run(
-                    ["git", "status", "--porcelain"],
-                    cwd=str(resolved_root),
-                    capture_output=True,
-                    text=True,
-                    check=False,
-                    timeout=self.git_status_timeout,
-                    **hidden_run_kwargs(),
-                )
-                if cp.returncode == 0:
-                    for line in cp.stdout.splitlines():
-                        parts = line.strip().split(maxsplit=1)
-                        if len(parts) == 2:
-                            files.append(parts[1].replace("\\", "/"))
-            except Exception:
-                pass
-
-        if not files:
-            return {"success": True, "clusters": [], "total_files": 0, "message": "No changed files detected"}
-
-        categories: dict[str, list[str]] = {
-            "docs": [],
-            "config": [],
-            "core": [],
-            "api_or_services": [],
-            "models_or_schemas": [],
-            "tests": [],
-            "other": [],
-        }
-
-        for f in files:
-            norm = f.lower().replace("\\", "/")
-            if norm.startswith("docs/") or norm.endswith((".md", ".rst", ".txt")):
-                categories["docs"].append(f)
-            elif norm.endswith((".toml", ".json", ".yaml", ".yml", ".ini", ".cfg", ".lock")) or "config" in norm:
-                categories["config"].append(f)
-            elif "test" in norm or norm.startswith("tests/"):
-                categories["tests"].append(f)
-            elif any(k in norm for k in ("model", "schema", "entity", "dto")):
-                categories["models_or_schemas"].append(f)
-            elif any(k in norm for k in ("api", "service", "route", "controller", "endpoint")):
-                categories["api_or_services"].append(f)
-            elif any(k in norm for k in ("core", "engine", "util", "helper", "lib")):
-                categories["core"].append(f)
-            else:
-                categories["other"].append(f)
-
-        clusters = []
-        cluster_id = 1
-        order = ["models_or_schemas", "core", "api_or_services", "tests", "config", "docs", "other"]
-        for cat in order:
-            cat_files = categories[cat]
-            if cat_files:
-                clusters.append({
-                    "cluster_id": cluster_id,
-                    "name": cat.replace("_", " ").title(),
-                    "category": cat,
-                    "suggested_commit_message": f"feat({cat}): update {cat.replace('_', ' ')} components",
-                    "files": sorted(cat_files),
-                })
-                cluster_id += 1
-
-        return {
-            "success": True,
-            "root": str(resolved_root),
-            "total_files": len(files),
-            "cluster_count": len(clusters),
-            "clusters": clusters,
-        }
+        return run_split_changes(
+            self,
+            root,
+            changed_files,
+            path_type=Path,
+            subprocess_module=subprocess,
+            hidden_run_kwargs_fn=hidden_run_kwargs,
+        )
 
     def synthesize_rules(self, root: str, limit: int = 10) -> dict[str, Any]:
         """Synthesize proactive coding and architecture rules from repository conventions."""
@@ -6844,200 +3727,15 @@ def test_{sym}_regression_edge_cases():
 
     def code_invariants(self, root: str, path: str | None = None) -> dict[str, Any]:
         """Check Python source invariants; report unsupported files and syntax errors."""
-        resolved_root = Path(self._root(root))
-        target_paths: list[Path] = []
-        unsupported_files: list[dict[str, str]] = []
-        parse_errors: list[dict[str, Any]] = []
-        scan_errors: list[dict[str, Any]] = []
-        read_errors: list[dict[str, Any]] = []
-        if not resolved_root.is_dir():
-            return {
-                "success": False,
-                "complete": False,
-                "error": "root_not_directory",
-                "root": str(resolved_root),
-                "files_checked": 0,
-                "supported_languages": ["python"],
-                "parse_errors": [],
-                "scan_errors": [],
-                "read_errors": [],
-                "unsupported_files": [],
-                "truncated": False,
-                "violation_count": 0,
-                "violations": [],
-            }
-        if path:
-            candidate = (resolved_root / path).resolve(strict=False)
-            if candidate.is_file():
-                if not candidate.is_relative_to(resolved_root):
-                    return {
-                        "success": False,
-                        "complete": False,
-                        "error": "path_outside_root",
-                        "root": str(resolved_root),
-                        "files_checked": 0,
-                        "supported_languages": ["python"],
-                        "parse_errors": [],
-                        "scan_errors": [],
-                        "read_errors": [],
-                        "unsupported_files": [],
-                        "truncated": False,
-                        "violation_count": 0,
-                        "violations": [],
-                    }
-                if candidate.suffix.lower() == ".py":
-                    target_paths.append(candidate)
-                else:
-                    unsupported_files.append({
-                        "path": str(candidate.relative_to(resolved_root)).replace("\\", "/"),
-                        "language": candidate.suffix.lower().lstrip(".") or "unknown",
-                        "reason": "unsupported_language",
-                    })
-            else:
-                return {
-                    "success": False,
-                    "complete": False,
-                    "error": f"path not found: {path}",
-                    "root": str(resolved_root),
-                    "files_checked": 0,
-                    "supported_languages": ["python"],
-                    "parse_errors": [],
-                    "scan_errors": [],
-                    "read_errors": [],
-                    "unsupported_files": [],
-                    "truncated": False,
-                    "violation_count": 0,
-                    "violations": [],
-                }
-        else:
-            truncated = False
-            def record_scan_error(exc: OSError) -> None:
-                scan_errors.append({
-                    "path": str(exc.filename or resolved_root),
-                    "reason": type(exc).__name__,
-                    "message": exc.strerror or str(exc),
-                })
-
-            ignored = {
-                ".git", ".venv", "node_modules", "__pycache__", ".pytest_cache", "tests", "tool-envs",
-                *getattr(self.repo_tools, "ignore_dirs", set()),
-            }
-            for dirpath, dirnames, filenames in os.walk(resolved_root, onerror=record_scan_error):
-                # Repository-wide audits should cover shipped runtime code, not
-                # test setup commands or managed dependency environments. An
-                # explicit path remains available for fixture-level checks.
-                rel_dir = os.path.relpath(dirpath, resolved_root).replace("\\", "/")
-                if rel_dir != "." and (is_root_archive_path(rel_dir) or any(part.startswith(".") for part in rel_dir.split("/"))):
-                    dirnames[:] = []
-                    continue
-                dirnames[:] = [
-                    d for d in dirnames
-                    if d not in ignored
-                    and not d.startswith(".")
-                    and not is_root_archive_path(d if rel_dir == "." else f"{rel_dir}/{d}")
-                ]
-                for f in filenames:
-                    rel_file = f if rel_dir == "." else f"{rel_dir}/{f}"
-                    if is_root_archive_path(rel_file) or any(part.startswith(".") for part in rel_file.split("/")[:-1]):
-                        continue
-                    if f.endswith(".py"):
-                        if len(target_paths) >= 150:
-                            truncated = True
-                            break
-                        target_paths.append(Path(dirpath) / f)
-                if truncated:
-                    break
-
-        if path:
-            truncated = False
-
-        violations: list[dict[str, Any]] = []
-
-        class InvariantVisitor(ast.NodeVisitor):
-            def __init__(self, rel_path: str):
-                self.rel_path = rel_path
-                self.with_items: set[int] = set()
-
-            def visit_With(self, node: ast.With) -> None:
-                for item in node.items:
-                    if isinstance(item.context_expr, ast.Call):
-                        self.with_items.add(id(item.context_expr))
-                self.generic_visit(node)
-
-            def visit_Call(self, node: ast.Call) -> None:
-                func_name = ""
-                if isinstance(node.func, ast.Name):
-                    func_name = node.func.id
-                elif isinstance(node.func, ast.Attribute):
-                    func_name = node.func.attr
-                    if isinstance(node.func.value, ast.Name):
-                        full_name = f"{node.func.value.id}.{func_name}"
-                        if full_name in ("subprocess.run", "requests.get", "requests.post", "requests.put", "requests.delete", "urllib.request.urlopen"):
-                            has_timeout = any(kw.arg == "timeout" for kw in node.keywords)
-                            if not has_timeout:
-                                violations.append({
-                                    "path": self.rel_path,
-                                    "line": node.lineno,
-                                    "col": node.col_offset,
-                                    "rule": "missing_timeout",
-                                    "message": f"Call to '{full_name}' lacks explicit 'timeout' parameter",
-                                    "severity": "high",
-                                })
-
-                # ``os.open`` is a descriptor-level API, not a file object that
-                # needs a context manager.  ``subprocess.Popen`` likewise has
-                # no timeout argument; callers must bound communicate/wait.
-                if isinstance(node.func, ast.Name) and func_name == "open" and id(node) not in self.with_items:
-                    violations.append({
-                        "path": self.rel_path,
-                        "line": node.lineno,
-                        "col": node.col_offset,
-                        "rule": "missing_with_open",
-                        "message": "File 'open(...)' used without 'with' statement context manager",
-                        "severity": "medium",
-                    })
-
-                self.generic_visit(node)
-
-        for p in target_paths:
-            rel = str(p.relative_to(resolved_root)).replace("\\", "/")
-            try:
-                code = p.read_text(encoding="utf-8", errors="replace")
-                tree = ast.parse(code, filename=rel)
-            except OSError as exc:
-                read_errors.append({
-                    "path": rel,
-                    "reason": type(exc).__name__,
-                    "message": str(exc),
-                })
-                continue
-            except SyntaxError as exc:
-                parse_errors.append({
-                    "path": rel,
-                    "reason": "syntax_error",
-                    "line": exc.lineno,
-                    "column": exc.offset,
-                    "message": exc.msg,
-                })
-                continue
-            visitor = InvariantVisitor(rel)
-            visitor.visit(tree)
-
-        complete = not parse_errors and not scan_errors and not read_errors and not unsupported_files and not truncated
-        return {
-            "success": complete,
-            "complete": complete,
-            "root": str(resolved_root),
-            "files_checked": len(target_paths),
-            "supported_languages": ["python"],
-            "parse_errors": parse_errors,
-            "scan_errors": scan_errors,
-            "read_errors": read_errors,
-            "unsupported_files": unsupported_files,
-            "truncated": truncated,
-            "violation_count": len(violations),
-            "violations": violations[:100],
-        }
+        return run_code_invariants(
+            self,
+            root,
+            path,
+            path_type=Path,
+            ast_module=ast,
+            os_module=os,
+            is_root_archive_path_fn=is_root_archive_path,
+        )
 
     def generate_dataset(
         self,
@@ -7047,462 +3745,33 @@ def test_{sym}_regression_edge_cases():
         format: str = "json",
     ) -> dict[str, Any]:
         """Generate synthetic test datasets and seed data adhering to a field schema."""
-        import uuid
-        resolved_root = Path(self._root(root))
-        n = max(1, min(int(count), 1000))
-        fields: dict[str, str] = {}
-        if isinstance(schema_or_model, dict):
-            fields = {str(k): str(v).lower() for k, v in schema_or_model.items()}
-        elif isinstance(schema_or_model, list):
-            for item in schema_or_model:
-                if isinstance(item, dict):
-                    fields[str(item.get("name", "field"))] = str(item.get("type", "str")).lower()
-                else:
-                    fields[str(item)] = "str"
-        else:
-            fields = {"id": "uuid", "name": "str", "status": "str"}
-
-        dataset_seed = repr(tuple(fields.items()))
-        rows: list[dict[str, Any]] = []
-        for i in range(1, n + 1):
-            row: dict[str, Any] = {}
-            for col, ctype in fields.items():
-                if "uuid" in ctype or col.lower() in ("id", "guid"):
-                    row[col] = uuid.uuid5(
-                        uuid.NAMESPACE_URL,
-                        f"{dataset_seed}:{col}:{i}",
-                    ).hex[:12]
-                elif "int" in ctype or col.lower() in ("age", "count", "seq", "index"):
-                    row[col] = i * 10
-                elif "float" in ctype or col.lower() in ("price", "amount", "score", "rate"):
-                    row[col] = round(10.0 + (i * 3.5), 2)
-                elif "bool" in ctype or col.lower() in ("active", "enabled", "valid", "is_admin"):
-                    row[col] = (i % 2 == 0)
-                elif "email" in ctype or "email" in col.lower():
-                    row[col] = f"user_{i}@example.com"
-                elif "date" in ctype or "time" in col.lower():
-                    row[col] = f"2026-09-12T12:{i % 60:02d}:00Z"
-                else:
-                    row[col] = f"{col.capitalize()}_{i}"
-            rows.append(row)
-
-        fmt = format.lower()
-        if fmt == "csv":
-            import csv
-            out = io.StringIO()
-            writer = csv.DictWriter(out, fieldnames=list(fields.keys()))
-            writer.writeheader()
-            writer.writerows(rows)
-            rendered = out.getvalue()
-        elif fmt in ("sqlite", "sql"):
-            lines = []
-            table = "test_dataset"
-            cols = ", ".join(f'"{c}"' for c in fields.keys())
-            for r in rows:
-                vals = ", ".join(f"'{v}'" if isinstance(v, str) else str(v).lower() if isinstance(v, bool) else str(v) for v in r.values())
-                lines.append(f"INSERT INTO {table} ({cols}) VALUES ({vals});")
-            rendered = "\n".join(lines)
-        else:
-            rendered = json_dumps(rows, indent=2)
-
-        return {
-            "success": True,
-            "root": str(resolved_root),
-            "count": len(rows),
-            "format": fmt,
-            "fields": list(fields.keys()),
-            "data": rendered,
-            "rows": rows[:50],
-        }
+        return build_dataset(
+            self,
+            root,
+            schema_or_model,
+            count,
+            format,
+            path_type=Path,
+            json_dumps=json_dumps,
+            io_module=io,
+        )
 
     def profile_digest(self, profile_path: str, top_n: int = 15) -> dict[str, Any]:
         """Digest a cProfile / pstats binary profile or flamegraph trace into top bottleneck functions."""
-        p = Path(profile_path).expanduser().resolve(strict=False)
-        if not p.exists():
-            return {"success": False, "error": f"profile file not found: {profile_path}"}
-
-        limit = max(1, min(int(top_n), 100))
-        entries: list[dict[str, Any]] = []
-
-        try:
-            import pstats
-            stats = pstats.Stats(str(p))
-            stats.sort_stats("cumulative")
-            sorted_items = sorted(stats.stats.items(), key=lambda kv: kv[1][3], reverse=True)
-            for (fn_file, fn_line, fn_name), (cc, nc, tt, ct, _callers) in sorted_items[:limit]:
-                entries.append({
-                    "function": fn_name,
-                    "filename": Path(fn_file).name,
-                    "filepath": fn_file,
-                    "line": fn_line,
-                    "calls": nc,
-                    "primitive_calls": cc,
-                    "total_time_seconds": round(float(tt), 4),
-                    "cumulative_time_seconds": round(float(ct), 4),
-                    "time_per_call": round(float(ct) / max(1, nc), 6),
-                })
-            return {
-                "success": True,
-                "profile_path": str(p),
-                "format": "cProfile_pstats",
-                "total_functions_analyzed": len(stats.stats),
-                "top_functions": entries,
-            }
-        except Exception:
-            entries.clear()
-
-        try:
-            raw = p.read_text(encoding="utf-8", errors="replace")
-            data = json.loads(raw)
-            if isinstance(data, dict) and "traceEvents" in data:
-                events = data.get("traceEvents", [])
-                if not isinstance(events, list):
-                    return {
-                        "success": False,
-                        "error": "failed to parse profile: traceEvents must be a JSON array",
-                    }
-                durations: dict[str, float] = {}
-                counts: dict[str, int] = {}
-                for ev in events:
-                    if not isinstance(ev, dict):
-                        continue
-                    name = ev.get("name", "")
-                    raw_duration = ev.get("dur", 0)
-                    if not isinstance(name, str) or not name.strip():
-                        continue
-                    if isinstance(raw_duration, bool) or not isinstance(raw_duration, (int, float)):
-                        continue
-                    duration = float(raw_duration)
-                    if not math.isfinite(duration) or duration <= 0:
-                        continue
-                    total_duration = durations.get(name, 0.0) + duration
-                    if not math.isfinite(total_duration):
-                        continue
-                    durations[name] = total_duration
-                    counts[name] = counts.get(name, 0) + 1
-                sorted_events = sorted(durations.items(), key=lambda kv: kv[1], reverse=True)
-                for name, total_dur in sorted_events[:limit]:
-                    entries.append({
-                        "function": name,
-                        "cumulative_time_microseconds": round(total_dur, 2),
-                        "calls": counts.get(name, 1),
-                    })
-                return {
-                    "success": True,
-                    "profile_path": str(p),
-                    "format": "chrome_trace",
-                    "top_functions": entries,
-                }
-        except Exception:
-            entries.clear()
-
-        try:
-            lines = p.read_text(encoding="utf-8", errors="replace").splitlines()
-            for line in lines:
-                parts = line.strip().split()
-                if len(parts) >= 5 and parts[0].replace(".", "").isdigit():
-                    entries.append({"summary": line.strip()})
-                    if len(entries) >= limit:
-                        break
-            if not entries:
-                return {"success": False, "error": "failed to parse profile: no profile records found"}
-            return {
-                "success": True,
-                "profile_path": str(p),
-                "format": "text_profile",
-                "top_functions": entries,
-            }
-        except Exception as exc:
-            return {"success": False, "error": f"failed to parse profile: {exc}"}
+        return build_profile_digest(
+            profile_path,
+            top_n,
+            path_type=Path,
+            json_module=json,
+            math_module=math,
+        )
 
     def _find_python_relations(
         self, root: str, symbol: str, limit: int, offset: int, direction: str,
     ) -> dict[str, Any]:
-        bounds_error = pagination_bounds_error(limit, offset)
-        if bounds_error:
-            return {"success": False, "status_code": 400, "terminal": True, "retryable": False, "error": bounds_error}
-        p_root = Path(self._root(root)).resolve()
-        if not p_root.is_dir():
-            return {"success": False, "error": f"root not found: {root}", "terminal": True, "retryable": False}
-        if not isinstance(symbol, str) or not symbol.strip():
-            return {"success": False, "status_code": 400, "error": "symbol must be a non-empty string", "terminal": True, "retryable": False}
-
-        sym = symbol.strip()
-        if (direction == "callers" and "." in sym and "::" not in sym) or (
-            direction == "callees" and "." in sym and ("::" not in sym or "." in sym.split("::", 1)[1])
-        ):
-            return {
-                "success": False, "terminal": True, "retryable": False,
-                "error": "deterministic Python relation fallback requires an unqualified symbol or canonical :: qualification",
-                "coverage": {"complete": False, "scope": "python_ast", "resolution": "unsupported_qualification"},
-            }
-        result_key = "callers" if direction == "callers" else "callees"
-        page: list[dict[str, Any]] = []
-        relation_count = 0
-        skipped_files = 0
-        scanned_files = 0
-        scanned_bytes = 0
-        incomplete = False
-        scan_stopped = False
-        incomplete_reasons: set[str] = set()
-        deadline = time.monotonic() + _RELATION_SCAN_MAX_SECONDS
-        max_files = max(1, int(getattr(self.repo_tools, "python_fallback_max_files", 8000)))
-        max_file_bytes = max(1, int(getattr(self.repo_tools, "max_file_bytes", 2_000_000)))
-        max_total_bytes = min(64_000_000, max_file_bytes * min(max_files, 32))
-        max_directories = min(10_000, max_files * 4)
-        excluded = {str(value).lower() for value in getattr(self.repo_tools, "ignore_dirs", set())}
-        excluded.update({".git", ".venv", "venv", "node_modules", "vendor", "build", "dist"})
-        directories_seen = 0
-        source_files_seen = 0
-        unsupported_languages: set[str] = set()
-        matching_definitions: list[str] = []
-        qualified_caller_symbol = direction == "callers" and "::" in sym
-        caller_symbol_name = sym.rsplit("::", 1)[-1] if qualified_caller_symbol else sym
-        callee_identity = sym.replace(".", "::") if direction == "callees" and "::" in sym else sym
-        if qualified_caller_symbol:
-            incomplete = True
-            incomplete_reasons.add("qualified_symbol_scope_not_resolved")
-
-        def walk_error(_error: OSError) -> None:
-            nonlocal incomplete
-            incomplete = True
-            incomplete_reasons.add("directory_walk_error")
-
-        def call_name(node: ast.AST) -> str | None:
-            if isinstance(node, ast.Name):
-                return node.id
-            if isinstance(node, ast.Attribute):
-                return node.attr
-            return None
-
-        for directory, dirnames, filenames in os.walk(p_root, topdown=True, onerror=walk_error, followlinks=False):
-            if time.monotonic() >= deadline:
-                incomplete = True
-                scan_stopped = True
-                incomplete_reasons.add("time_budget_exhausted")
-                break
-            directories_seen += 1
-            if directories_seen > max_directories:
-                incomplete = True
-                scan_stopped = True
-                incomplete_reasons.add("directory_budget_exhausted")
-                break
-            kept_dirs = []
-            for name in sorted(dirnames):
-                if name.lower() in excluded or name.startswith("."):
-                    continue
-                directory_path = Path(directory) / name
-                try:
-                    if _is_symlink_or_reparse_point(directory_path):
-                        incomplete = True
-                        incomplete_reasons.add("reparse_point_skipped")
-                        continue
-                    directory_path.resolve().relative_to(p_root)
-                    kept_dirs.append(name)
-                except (OSError, ValueError):
-                    incomplete = True
-                    incomplete_reasons.add("directory_path_unverified")
-            dirnames[:] = kept_dirs
-            filenames.sort()
-            for filename in filenames:
-                if time.monotonic() >= deadline:
-                    incomplete = True
-                    scan_stopped = True
-                    incomplete_reasons.add("time_budget_exhausted")
-                    break
-                path = Path(directory) / filename
-                extension = path.suffix.lower()
-                if extension == ".py":
-                    pass
-                elif extension in {".cs", ".go", ".java", ".js", ".jsx", ".ts", ".tsx", ".rs", ".php", ".rb", ".cpp", ".c", ".h", ".hpp", ".kt", ".swift"}:
-                    unsupported_languages.add(extension.lstrip("."))
-                    continue
-                else:
-                    continue
-                relative = path.relative_to(p_root).as_posix()
-                if is_root_archive_path(relative):
-                    continue
-                source_files_seen += 1
-                if source_files_seen > max_files:
-                    incomplete = True
-                    scan_stopped = True
-                    incomplete_reasons.add("file_budget_exhausted")
-                    break
-                try:
-                    if _is_symlink_or_reparse_point(path):
-                        skipped_files += 1
-                        incomplete = True
-                        incomplete_reasons.add("reparse_point_skipped")
-                        continue
-                    resolved_path = path.resolve(strict=True)
-                    resolved_path.relative_to(p_root)
-                    _digest, lines = self.repo_tools._read_snapshot(path, max_bytes=max_file_bytes)
-                    content = "\n".join(lines)
-                    current_bytes = len(content.encode("utf-8", errors="replace"))
-                    if scanned_bytes + current_bytes > max_total_bytes:
-                        incomplete = True
-                        scan_stopped = True
-                        incomplete_reasons.add("byte_budget_exhausted")
-                        break
-                    scanned_bytes += current_bytes
-                    scanned_files += 1
-                    tree = ast.parse(content, filename=str(path))
-                except (OSError, SyntaxError, UnicodeError, RecursionError, ValueError):
-                    skipped_files += 1
-                    incomplete = True
-                    incomplete_reasons.add("file_read_or_parse_error")
-                    continue
-
-                module_name = relative[:-3].replace("/", ".")
-                if module_name.endswith(".__init__"):
-                    module_name = module_name[:-9]
-                module_identity = module_name.replace(".", "::")
-
-                class _RelationVisitor(ast.NodeVisitor):
-                    def __init__(self):
-                        self.scope_stack: list[str] = []
-
-                    def _visit_scope(self, node):
-                        if time.monotonic() >= deadline:
-                            nonlocal_incomplete[0] = True
-                            return
-                        self.scope_stack.append(node.name)
-                        target_definition_name = sym.rsplit("::", 1)[-1]
-                        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == target_definition_name:
-                            matching_definitions.append("::".join([part for part in (module_identity, *self.scope_stack) if part]))
-                        self.generic_visit(node)
-                        self.scope_stack.pop()
-
-                    visit_FunctionDef = _visit_scope
-                    visit_AsyncFunctionDef = _visit_scope
-                    visit_ClassDef = _visit_scope
-
-                    def generic_visit(self, node):
-                        if time.monotonic() >= deadline:
-                            nonlocal_incomplete[0] = True
-                            return
-                        super().generic_visit(node)
-
-                    def visit_Call(self, node):
-                        nonlocal relation_count
-                        if time.monotonic() >= deadline:
-                            nonlocal_incomplete[0] = True
-                            return
-                        target = call_name(node.func)
-                        scope = ".".join(self.scope_stack) if self.scope_stack else "<module>"
-                        if direction == "callers":
-                            matched = target == caller_symbol_name
-                        else:
-                            qualified_scope = "::".join([part for part in (module_identity, *self.scope_stack) if part])
-                            if "::" in sym or "." in sym:
-                                scope_matches = (qualified_scope == callee_identity
-                                                 or qualified_scope.endswith("::" + callee_identity))
-                            else:
-                                scope_matches = bool(self.scope_stack and self.scope_stack[-1] == sym)
-                            matched = bool(scope_matches and target)
-                            if scope_matches and target is None:
-                                nonlocal_incomplete[0] = True
-                        if matched:
-                            line_index = max(0, node.lineno - 1)
-                            snippet = lines[line_index].strip() if line_index < len(lines) else ""
-                            if direction == "callers":
-                                item = {
-                                    "file": relative, "line": node.lineno, "col": node.col_offset,
-                                    "caller": scope, "callee": sym, "kind": "calls",
-                                    "match_scope": "syntactic_name", "snippet": snippet[:160],
-                                }
-                            else:
-                                item = {
-                                    "file": relative, "line": node.lineno, "col": node.col_offset,
-                                    "caller": scope, "callee": target, "kind": "calls",
-                                    "match_scope": "syntactic_name", "snippet": snippet[:160],
-                                }
-                            if offset <= relation_count < offset + limit:
-                                page.append(item)
-                            relation_count += 1
-                        self.generic_visit(node)
-
-                nonlocal_incomplete = [False]
-                visitor = _RelationVisitor()
-                visitor.visit(tree)
-                if nonlocal_incomplete[0]:
-                    incomplete = True
-                    scan_stopped = True
-                    incomplete_reasons.add("time_budget_exhausted")
-            if scan_stopped:
-                break
-
-        if unsupported_languages:
-            incomplete = True
-            incomplete_reasons.add("unsupported_languages_present")
-        if direction == "callees":
-            if "::" in sym:
-                matching = [definition for definition in matching_definitions
-                            if definition == callee_identity or definition.endswith("::" + callee_identity)]
-            else:
-                matching = [definition for definition in matching_definitions if definition.endswith("::" + sym)]
-            if len(matching) > 1:
-                return {
-                    "success": False, "status_code": 422, "terminal": True, "retryable": False,
-                    "error": ("qualified function symbol resolves to multiple definitions"
-                              if "::" in sym else "deterministic callee fallback requires a uniquely qualified function symbol"),
-                    "symbol": sym, "callees": [], "count": 0, "offset": offset, "limit": limit,
-                    "coverage": {"complete": False, "scan_complete": not incomplete, "scope": "python_ast",
-                                 "resolution": "ambiguous_qualified_definition" if "::" in sym else "ambiguous_unqualified_definition"},
-                }
-            elif not matching:
-                if incomplete:
-                    return {
-                        "success": False, "status_code": 503, "terminal": True, "retryable": False,
-                        "error": "bounded deterministic scan could not resolve the requested Python function completely",
-                        "symbol": sym, "callees": [], "count": 0, "offset": offset, "limit": limit,
-                        "coverage": {
-                            "complete": False, "scan_complete": False, "scope": "python_ast",
-                            "resolution": "incomplete_scan", "incomplete_reasons": sorted(incomplete_reasons),
-                        },
-                    }
-                return {
-                    "success": False, "status_code": 422, "terminal": True, "retryable": False,
-                    "error": "deterministic callee fallback could not resolve the requested Python function",
-                    "symbol": sym, "callees": [], "count": 0, "offset": offset, "limit": limit,
-                    "coverage": {"complete": False, "scan_complete": not incomplete, "scope": "python_ast", "resolution": "definition_not_found"},
-                }
-
-        count_key = "caller_count" if direction == "callers" else "callee_count"
-        result: dict[str, Any] = {
-            "success": True,
-            "symbol": sym,
-            result_key: page,
-            count_key: len(page),
-            "count": len(page),
-            "returned_count": len(page),
-            "offset": offset,
-            "limit": limit,
-            "truncated": incomplete,
-            "coverage": {
-                "complete": not incomplete and offset == 0 and len(page) == relation_count,
-                "scan_complete": not incomplete,
-                "scope": "python_ast",
-                "resolution": "syntactic_name",
-                "returned": len(page),
-                "limit": limit,
-                "offset": offset,
-                "scanned_files": scanned_files,
-                "skipped_files": skipped_files,
-                "scanned_bytes": scanned_bytes,
-                "incomplete_reasons": sorted(incomplete_reasons),
-                "unsupported_languages": sorted(unsupported_languages),
-            },
-            "freshness": {"status": "not_checked"},
-        }
-        if not incomplete:
-            result["total_matches"] = relation_count
-            has_more = offset + len(page) < relation_count
-            result["has_more"] = has_more
-            result["truncated"] = has_more
-            if has_more:
-                result["next_offset"] = offset + len(page)
-        return result
+        return find_python_relations(
+            self, root, symbol, limit, offset, direction, _is_symlink_or_reparse_point,
+        )
 
     def find_callers(self, root: str, symbol: str, limit: int = 50, offset: int = 0) -> dict[str, Any]:
         """Find Python call sites targeting a symbol, in stable bounded pages."""
@@ -7514,74 +3783,14 @@ def test_{sym}_regression_edge_cases():
 
     def find_dead_code(self, root: str, limit: int = 50) -> dict[str, Any]:
         """Detect potentially dead/uncalled functions and classes in repository."""
-        cached = self.get_unreferenced_symbols(root, limit=limit)
-        if cached:
-            return {"success": True, "root": self._root(root), "dead_code": cached}
-
-        if self.code_index is not None:
-            try:
-                st = self.code_index.status(root)
-                if st.get("symbols", 0) > 0:
-                    res = self.code_index.find_dead_code(root, limit=limit)
-                    if res.get("success"):
-                        return res
-            except Exception:
-                pass
-
-        p_root = Path(self._root(root))
-        if not p_root.is_dir():
-            return {"success": False, "error": f"root not found: {root}"}
-
-        defs: dict[str, dict[str, Any]] = {}
-        usages: set[str] = set()
-
-        for dirpath, dirnames, filenames in os.walk(p_root):
-            dirnames[:] = [
-                d for d in dirnames
-                if not (
-                    d.startswith((".", "node_modules", "venv", ".git", "test", "tool-envs", "site-packages"))
-                    or d in {"tool-envs", "venv", ".venv", "site-packages", "node_modules", "__pycache__", "build", "dist"}
-                )
-            ]
-            for fname in filenames:
-                if not fname.endswith(".py"):
-                    continue
-                p = Path(dirpath) / fname
-                rel = str(p.relative_to(p_root)).replace("\\", "/")
-                try:
-                    content = p.read_text(encoding="utf-8", errors="replace")
-                    tree = ast.parse(content, filename=str(p))
-                    for node in ast.walk(tree):
-                        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                            if not node.name.startswith("_") and node.name not in ("main", "run", "cli", "app"):
-                                defs[f"{rel}::{node.name}"] = {
-                                    "file": rel, "name": node.name, "line": node.lineno, "kind": "function"
-                                }
-                        elif isinstance(node, ast.ClassDef):
-                            if not node.name.startswith("_"):
-                                defs[f"{rel}::{node.name}"] = {
-                                    "file": rel, "name": node.name, "line": node.lineno, "kind": "class"
-                                }
-                        elif isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
-                            usages.add(node.id)
-                        elif isinstance(node, ast.Attribute) and isinstance(node.ctx, ast.Load):
-                            usages.add(node.attr)
-                except Exception:
-                    continue
-
-        dead_candidates: list[dict[str, Any]] = []
-        for key, item in defs.items():
-            if item["name"] not in usages:
-                dead_candidates.append(item)
-                if len(dead_candidates) >= limit:
-                    break
-
-        return {
-            "success": True,
-            "candidate_count": len(dead_candidates),
-            "dead_code": dead_candidates,
-            "dead_symbols": dead_candidates,
-        }
+        return find_dead_code(
+            self,
+            root,
+            limit,
+            path_type=Path,
+            os_module=os,
+            ast_module=ast,
+        )
 
     @staticmethod
     def fold_brace_blocks(code: str, target_symbols: set[str] | None = None) -> str:
@@ -7714,421 +3923,23 @@ def test_{sym}_regression_edge_cases():
         scan_git_history: bool = False,
         commit_depth: int = 20,
     ) -> dict[str, Any]:
-        """Scan repository or specific file for leaked secrets, API keys, and credentials."""
-        if scan_git_history and (
-            not isinstance(commit_depth, int) or isinstance(commit_depth, bool)
-            or not 1 <= commit_depth <= 100
-        ):
-            return {
-                "success": False, "error": "commit_depth must be an integer from 1 to 100",
-                "error_code": "invalid_commit_depth",
-                "scan_complete": False, "clean": False, "scanned_git_history": False,
-                "git_history_status": "invalid_commit_depth",
-                "status_code": 400, "terminal": True, "retryable": False,
-            }
-        p_root = Path(self._root(root))
-        if not p_root.is_dir():
-            return {"success": False, "error": f"root not found: {root}"}
-        scan_root = p_root.resolve(strict=True)
-        started = time.monotonic()
-        deadline = started + _SECRET_SCAN_MAX_SECONDS
-        history_pathspec: str | None = None
-        if scan_git_history and path is not None:
-            requested_history_path = Path(path)
-            history_target = requested_history_path if requested_history_path.is_absolute() else scan_root / requested_history_path
-            try:
-                normalized_history_path = history_target.resolve(strict=False)
-                history_pathspec = normalized_history_path.relative_to(scan_root).as_posix()
-                if not history_pathspec or history_pathspec == ".":
-                    raise ValueError
-            except (OSError, ValueError):
-                return {
-                    "success": False, "error": "history path must resolve within scan root",
-                    "error_code": "invalid_pathspec",
-                    "scan_complete": False, "clean": False, "scanned_git_history": False,
-                    "git_history_status": "invalid_pathspec",
-                    "status_code": 400, "terminal": True, "retryable": False,
-                }
-        excluded = {".git", "node_modules", "venv", ".venv", "tool-envs", "state", "build", "dist", "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache", ".tox"}
-        binary_suffixes = {".png", ".jpg", ".jpeg", ".exe", ".bin", ".whl", ".pyc", ".db", ".sqlite3", ".zip", ".tar", ".gz", ".lock", ".wasm"}
-        findings: list[dict[str, Any]] = []
-        errors: list[str] = []
-        skipped_files = 0
-        visited_entries = 0
-        visited_files = 0
-        eligible_files = 0
-        bytes_read = 0
-        limits_hit: list[str] = []
-        complete = True
-        patterns = _SECRET_SCAN_PATTERNS
-        placeholders = {"EXAMPLE", "DUMMY", "SAMPLE", "PLACEHOLDER", "CHANGE_ME", "REPLACE_ME", "YOUR_KEY", "YOUR_API_KEY", "YOUR_SECRET", "MY_SECRET", "FAKETOKEN", "123456789", "ABCDEFGHIJKL"}
+        return scan_secrets(
+            self,
+            root,
+            path,
+            scan_git_history=scan_git_history,
+            commit_depth=commit_depth,
+            max_entries=_SECRET_SCAN_MAX_ENTRIES,
+            max_files=_SECRET_SCAN_MAX_FILES,
+            max_file_bytes=_SECRET_SCAN_MAX_FILE_BYTES,
+            max_total_bytes=_SECRET_SCAN_MAX_TOTAL_BYTES,
+            max_line_bytes=_SECRET_SCAN_MAX_LINE_BYTES,
+            max_seconds=_SECRET_SCAN_MAX_SECONDS,
+            max_findings=_SECRET_SCAN_MAX_FINDINGS,
+            patterns=_SECRET_SCAN_PATTERNS,
+            run_hidden_callable=run_hidden,
+        )
 
-        def _shannon_entropy(value: str) -> float:
-            if not value:
-                return 0.0
-            counts = Counter(value)
-            length = len(value)
-            return -sum((count / length) * math.log2(count / length) for count in counts.values())
-
-        def _placeholder(token: str) -> bool:
-            return token.upper() in placeholders
-
-        def _record_error(code: str) -> None:
-            nonlocal complete
-            complete = False
-            if len(errors) < 20:
-                errors.append(code)
-
-        def _scan_line(
-            raw_line: bytes, rel: str, line_no: int, *,
-            source: str = "working_tree", git_commit: str | None = None,
-            git_change: str | None = None,
-        ) -> bool:
-            nonlocal complete
-            if len(findings) >= _SECRET_SCAN_MAX_FINDINGS:
-                limits_hit.append("findings")
-                complete = False
-                return True
-            line = raw_line.decode("utf-8", errors="replace").rstrip("\r\n")
-            is_test = _is_test_file(rel)
-            for rule_name, label, pattern, severity in patterns:
-                for match in pattern.finditer(line):
-                    token = match.group(1) if match.groups() else match.group(0)
-                    entropy = _shannon_entropy(token)
-                    masked = f"{token[:4]}***{token[-4:]}" if len(token) > 8 else "***"
-                    findings.append({
-                        "file": rel, "line": line_no, "rule": rule_name,
-                        "description": label, "secret_type": rule_name,
-                        "severity": severity, "is_test": is_test,
-                        "is_placeholder": _placeholder(token),
-                        "triage_status": "untriaged", "entropy": round(entropy, 2),
-                        "match": masked, "redacted_secret": masked,
-                        "redacted_snippet": "credential-like value omitted",
-                        "source": source,
-                        **({"git_commit": git_commit, "git_change": git_change} if git_commit else {}),
-                    })
-                    if len(findings) >= _SECRET_SCAN_MAX_FINDINGS:
-                        limits_hit.append("findings")
-                        complete = False
-                        return True
-            return False
-
-        if path is not None:
-            requested = Path(path)
-            target = requested if requested.is_absolute() else scan_root / requested
-            try:
-                resolved = target.resolve(strict=True)
-                resolved.relative_to(scan_root)
-                if target.is_symlink() or not resolved.is_file():
-                    raise ValueError
-                scan_files = [resolved]
-            except (OSError, ValueError):
-                scan_files = []
-                _record_error("requested_path_unreadable_or_outside_root")
-        else:
-            scan_files = []
-            pending = [scan_root]
-            while pending:
-                if time.monotonic() >= deadline:
-                    limits_hit.append("time")
-                    complete = False
-                    break
-                current = pending.pop()
-                try:
-                    current.relative_to(scan_root)
-                    with os.scandir(current) as entries:
-                        for entry in entries:
-                            if time.monotonic() >= deadline:
-                                limits_hit.append("time")
-                                complete = False
-                                pending.clear()
-                                break
-                            visited_entries += 1
-                            if visited_entries > _SECRET_SCAN_MAX_ENTRIES:
-                                limits_hit.append("visited_entries")
-                                complete = False
-                                pending.clear()
-                                break
-                            if entry.name in excluded:
-                                skipped_files += 1
-                                continue
-                            if entry.is_symlink() or getattr(os.path, "isjunction", lambda _p: False)(entry.path):
-                                skipped_files += 1
-                                _record_error("linked_path_omitted")
-                                continue
-                            candidate = Path(entry.path)
-                            if entry.is_dir(follow_symlinks=False):
-                                pending.append(candidate)
-                            elif entry.is_file(follow_symlinks=False):
-                                scan_files.append(candidate)
-                except (OSError, PermissionError):
-                    _record_error("directory_unreadable")
-
-        for candidate in scan_files:
-            if time.monotonic() >= deadline:
-                limits_hit.append("time")
-                complete = False
-                break
-            if visited_files >= _SECRET_SCAN_MAX_FILES:
-                limits_hit.append("visited_files")
-                complete = False
-                break
-            visited_files += 1
-            try:
-                resolved = candidate.resolve(strict=True)
-                resolved.relative_to(scan_root)
-                if candidate.is_symlink() or not resolved.is_file():
-                    skipped_files += 1
-                    _record_error("file_changed_or_linked_during_scan")
-                    continue
-                rel = resolved.relative_to(scan_root).as_posix()
-                if resolved.suffix.lower() in binary_suffixes:
-                    skipped_files += 1
-                    continue
-                before = os.stat(candidate, follow_symlinks=False)
-                if not stat.S_ISREG(before.st_mode):
-                    skipped_files += 1
-                    _record_error("non_regular_file_omitted")
-                    continue
-                flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NONBLOCK", 0)
-                if getattr(os, "O_NOFOLLOW", 0):
-                    flags |= os.O_NOFOLLOW
-                fd = os.open(candidate, flags)
-                try:
-                    opened = os.fstat(fd)
-                    if not stat.S_ISREG(opened.st_mode) or (before.st_dev, before.st_ino) != (opened.st_dev, opened.st_ino):
-                        skipped_files += 1
-                        _record_error("file_identity_changed_or_non_regular")
-                        continue
-                    opened_path = candidate.resolve(strict=True)
-                    opened_path.relative_to(scan_root)
-                    path_stat = os.stat(candidate, follow_symlinks=False)
-                    if (path_stat.st_dev, path_stat.st_ino) != (opened.st_dev, opened.st_ino):
-                        skipped_files += 1
-                        _record_error("file_path_changed_or_outside_root")
-                        continue
-                    source = os.fdopen(fd, "rb")
-                    fd = -1
-                finally:
-                    if fd >= 0:
-                        os.close(fd)
-                eligible_files += 1
-                with source:
-                    file_bytes = 0
-                    line_no = 0
-                    while True:
-                        if time.monotonic() >= deadline:
-                            limits_hit.append("time")
-                            complete = False
-                            break
-                        remaining = min(
-                            _SECRET_SCAN_MAX_FILE_BYTES - file_bytes,
-                            _SECRET_SCAN_MAX_TOTAL_BYTES - bytes_read,
-                        )
-                        if remaining <= 0:
-                            limits_hit.append("file_bytes" if file_bytes >= _SECRET_SCAN_MAX_FILE_BYTES else "aggregate_bytes")
-                            complete = False
-                            break
-                        raw_line = source.readline(min(_SECRET_SCAN_MAX_LINE_BYTES + 1, remaining))
-                        if not raw_line:
-                            break
-                        file_bytes += len(raw_line)
-                        bytes_read += len(raw_line)
-                        line_no += 1
-                        line_content = raw_line.rstrip(b"\r\n")
-                        if len(line_content) > _SECRET_SCAN_MAX_LINE_BYTES:
-                            _record_error("line_exceeds_scan_limit")
-                            if not raw_line.endswith(b"\n"):
-                                while True:
-                                    drain_left = min(
-                                        _SECRET_SCAN_MAX_FILE_BYTES - file_bytes,
-                                        _SECRET_SCAN_MAX_TOTAL_BYTES - bytes_read,
-                                    )
-                                    if drain_left <= 0:
-                                        limits_hit.append("file_bytes" if file_bytes >= _SECRET_SCAN_MAX_FILE_BYTES else "aggregate_bytes")
-                                        complete = False
-                                        break
-                                    drained = source.readline(min(8192, drain_left))
-                                    if not drained:
-                                        break
-                                    file_bytes += len(drained)
-                                    bytes_read += len(drained)
-                                    if drained.endswith(b"\n"):
-                                        break
-                                    if time.monotonic() >= deadline:
-                                        limits_hit.append("time")
-                                        complete = False
-                                        break
-                                if not complete and limits_hit:
-                                    break
-                            continue
-                        _scan_line(line_content, rel, line_no)
-                        if len(findings) >= _SECRET_SCAN_MAX_FINDINGS:
-                            break
-                    after = os.fstat(source.fileno())
-                    opened_state = (opened.st_dev, opened.st_ino, opened.st_size, opened.st_mtime_ns, opened.st_ctime_ns)
-                    after_state = (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns, after.st_ctime_ns)
-                    if opened_state != after_state:
-                        _record_error("file_changed_during_scan")
-                    current_path = candidate.resolve(strict=True)
-                    current_path.relative_to(scan_root)
-                    current = os.stat(candidate, follow_symlinks=False)
-                    if (current.st_dev, current.st_ino) != (after.st_dev, after.st_ino):
-                        _record_error("file_path_changed_during_scan")
-                    if after.st_size > _SECRET_SCAN_MAX_FILE_BYTES:
-                        limits_hit.append("file_bytes")
-                        complete = False
-                    if not complete and limits_hit:
-                        break
-            except (OSError, UnicodeError, ValueError):
-                _record_error("file_unreadable_or_outside_root")
-            if not complete and limits_hit:
-                break
-
-        history_status = "not_requested"
-        history_command_completed = False
-        history_coverage: dict[str, Any] = {
-            "scope": "not requested", "commits_scanned": 0, "bytes_read": 0,
-            "max_commit_depth": 100, "max_bytes": _SECRET_SCAN_MAX_TOTAL_BYTES,
-            "limitations": [],
-        }
-        if scan_git_history:
-            history_coverage["scope"] = "changed text in the last requested commits reachable from HEAD; not the full historical tree"
-            history_coverage["limitations"] = [
-                "Only textual lines represented in ordinary patch hunks are scanned.",
-                "Binary content, combined merge patches, and ambiguous paths are omitted and make coverage incomplete.",
-                "History scanning covers at most the requested commit depth, not all refs or unreachable objects.",
-                "Shallow-history boundaries and commits unreachable from HEAD may omit older or alternate history.",
-            ]
-            history_coverage["requested_commit_depth"] = commit_depth
-            if len(findings) >= _SECRET_SCAN_MAX_FINDINGS:
-                history_status = "finding_limit_reached"
-                limits_hit.append("findings")
-                complete = False
-                _record_error("git_history_finding_limit_reached")
-            else:
-                remaining_time = deadline - time.monotonic()
-                remaining_bytes = _SECRET_SCAN_MAX_TOTAL_BYTES - bytes_read
-                if remaining_time <= 0:
-                    history_status = "time_budget_exhausted"
-                    limits_hit.append("time")
-                    _record_error("git_history_not_scanned_within_budget")
-                elif remaining_bytes < 2048:
-                    history_status = "aggregate_byte_budget_exhausted"
-                    limits_hit.append("aggregate_bytes")
-                    _record_error("git_history_not_scanned_within_budget")
-                else:
-                    per_stream_limit = min(8 * 1024 * 1024, remaining_bytes // 2)
-                    argv = [
-                        "git", "--literal-pathspecs", "--no-pager", "-C", str(scan_root),
-                        "-c", "core.quotePath=true", "-c", "color.ui=false",
-                        "log", "--no-color", "--no-ext-diff", "--no-textconv",
-                        "--no-renames", "--no-notes", "--no-decorate", "--no-show-signature",
-                        "--src-prefix=a/", "--dst-prefix=b/", "--unified=3",
-                        "--patch", "--max-count=" + str(commit_depth),
-                        "--format=%x00LAH_SECRET_SCAN_COMMIT:%H PARENTS:%P%x00", "--end-of-options", "HEAD", "--",
-                    ]
-                    if history_pathspec is not None:
-                        argv.append(history_pathspec)
-                    try:
-                        process_result = run_hidden(
-                            argv, cwd=str(scan_root), capture_output=True, text=False,
-                            stdin=subprocess.DEVNULL,
-                            timeout=remaining_time, max_output_bytes=per_stream_limit,
-                            env=clean_git_env(extra_env={
-                                "GIT_PAGER": "cat", "PAGER": "cat", "GIT_TERMINAL_PROMPT": "0",
-                                "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull,
-                            }),
-                        )
-                        stdout_ok = isinstance(process_result.stdout, bytes)
-                        stderr_ok = isinstance(process_result.stderr, bytes)
-                        stdout = process_result.stdout if stdout_ok else b""
-                        stderr = process_result.stderr if stderr_ok else b""
-                        history_coverage["bytes_read"] = len(stdout) + len(stderr)
-                        history_coverage["discarded_output_bytes"] = int(
-                            getattr(process_result, "discarded_output_bytes", 0) or 0
-                        )
-                        capture_bad = bool(
-                            getattr(process_result, "stdout_truncated", False)
-                            or getattr(process_result, "stderr_truncated", False)
-                            or getattr(process_result, "output_capture_unconfirmed", False)
-                            or getattr(process_result, "tree_termination_confirmed", True) is False
-                            or getattr(process_result, "cleanup_confirmed", True) is False
-                            or getattr(process_result, "discarded_output_bytes", 0)
-                            or not stdout_ok or not stderr_ok
-                            or len(stdout) + len(stderr) > remaining_bytes
-                        )
-                        if capture_bad:
-                            history_status = "output_capture_incomplete"
-                            limits_hit.append("history_output_bytes")
-                            _record_error("git_history_capture_incomplete")
-                        elif process_result.returncode != 0:
-                            history_status = "command_failed"
-                            _record_error("git_history_command_failed")
-                        else:
-                            history_command_completed = True
-                            parsed = parse_git_patch_output(
-                                stdout, deadline=deadline,
-                                max_line_bytes=_SECRET_SCAN_MAX_LINE_BYTES,
-                                finding_count=len(findings), max_findings=_SECRET_SCAN_MAX_FINDINGS,
-                                scan_line=_scan_line,
-                            )
-                            history_coverage["commits_scanned"] = parsed["commits_scanned"]
-                            for code in parsed["errors"]:
-                                _record_error(code)
-                            if "git_history_line_exceeds_limit" in parsed["errors"]:
-                                limits_hit.append("history_line_bytes")
-                            history_status = parsed["status"]
-                            if parsed["findings_limit"]:
-                                limits_hit.append("findings")
-                            elif history_status == "scanned":
-                                history_status = "scanned_bounded_history"
-                            elif history_status == "time_budget_exhausted":
-                                limits_hit.append("time")
-                            if history_coverage["bytes_read"] + bytes_read > _SECRET_SCAN_MAX_TOTAL_BYTES:
-                                history_status = "aggregate_byte_limit_reached"
-                                limits_hit.append("aggregate_bytes")
-                                _record_error("git_history_exceeded_aggregate_byte_budget")
-                    except (ProcessCancelledError, ProcessCleanupUnverifiedError, subprocess.SubprocessError, OSError, ValueError):
-                        history_status = "process_failed_or_cleanup_unverified"
-                        _record_error("git_history_process_or_cleanup_unverified")
-                    if history_status != "scanned_bounded_history":
-                        complete = False
-                    if time.monotonic() >= deadline:
-                        limits_hit.append("time")
-                        complete = False
-        leak_count = len(findings)
-        return {
-            "success": True,
-            "leak_count": leak_count,
-            "real_leaks_count": leak_count,
-            "test_findings_count": sum(1 for item in findings if item["is_test"] or item["is_placeholder"]),
-            "secrets_count": leak_count,
-            "scanned_git_history": history_command_completed,
-            "git_history_status": history_status,
-            "clean": complete and leak_count == 0,
-            "scan_complete": complete,
-            "coverage": {
-                "coverage_scope": "requested file only" if path is not None else "repository files excluding listed generated and cache directories",
-                "excluded_dirs": sorted(excluded),
-                "visited_entries": visited_entries,
-                "visited_files": visited_files,
-                "eligible_files": eligible_files,
-                "skipped_files": skipped_files,
-                "bytes_read": bytes_read,
-                "limits_hit": sorted(set(limits_hit)),
-                "errors": errors,
-                "elapsed_seconds": round(time.monotonic() - started, 3),
-                "max_entries": _SECRET_SCAN_MAX_ENTRIES,
-                "max_files": _SECRET_SCAN_MAX_FILES,
-                "max_file_bytes": _SECRET_SCAN_MAX_FILE_BYTES,
-                "max_total_bytes": _SECRET_SCAN_MAX_TOTAL_BYTES,
-                "max_seconds": _SECRET_SCAN_MAX_SECONDS,
-                "max_findings": _SECRET_SCAN_MAX_FINDINGS,
-                "git_history": history_coverage,
-            },
-            "findings": findings,
-        }
 
     @staticmethod
     def _find_sqlite_database(p_root: Path) -> Path | None:
@@ -8325,149 +4136,9 @@ def test_{sym}_regression_edge_cases():
         max_cycles: int = 50,
     ) -> dict[str, Any]:
         """Detect circular module import cycles in Python and JS/TS codebases."""
-        if type(max_depth) is not int or not 1 <= max_depth <= 256:
-            raise ValueError("max_depth must be an integer between 1 and 256")
-        if type(max_cycles) is not int or not 1 <= max_cycles <= 10000:
-            raise ValueError("max_cycles must be an integer between 1 and 10000")
-        p_root = Path(root).expanduser().resolve(strict=False)
-        if not p_root.is_dir():
-            return {"success": False, "error": f"directory not found: {root}"}
-
-        skip_dirs = {".git", ".venv", "venv", "node_modules", "__pycache__", ".pytest_cache", ".ruff_cache"}
-        mod_to_file: dict[str, Path] = {}
-        file_to_mod: dict[Path, str] = {}
-        
-        if self.code_index is None:
-            return {"success": False, "error": "Python import index unavailable", "index_state": "unindexed"}
-        graph_reader = getattr(self.code_index, "python_module_import_graph", None)
-        if not callable(graph_reader):
-            return {"success": False, "error": "Python import index API unavailable", "index_state": "unindexed"}
-        indexed_graph = graph_reader(str(p_root))
-        if not indexed_graph.get("success"):
-            return {
-                "success": False,
-                "error": indexed_graph.get("error", "Python import index unavailable"),
-                "index_state": indexed_graph.get("state", "unindexed"),
-            }
-        py_files = sorted(
-            p_root / Path(relative)
-            for relative in indexed_graph.get("paths", [])
-            if not any(part in skip_dirs for part in Path(relative).parts)
+        return find_indexed_circular_dependencies(
+            root, language, max_depth, max_cycles, self.code_index
         )
-
-        for p in py_files:
-            rel = p.relative_to(p_root)
-            parts = list(rel.parts)
-            if parts[-1].endswith(".py"):
-                parts[-1] = parts[-1][:-3]
-            if parts and parts[-1] == "__init__":
-                parts.pop()
-            if not parts:
-                continue
-            mod_name = ".".join(parts)
-            mod_to_file[mod_name] = p
-            file_to_mod[p] = mod_name
-
-        if not file_to_mod:
-            return {"success": False, "error": "no indexed Python modules", "index_state": "unindexed"}
-
-        def _find_matches(target: str) -> list[str]:
-            matches: list[str] = []
-            cur = target
-            while cur:
-                if cur in mod_to_file:
-                    matches.append(cur)
-                if "." in cur:
-                    cur = cur.rsplit(".", 1)[0]
-                else:
-                    break
-            return matches
-
-        graph: dict[str, set[str]] = {m: set() for m in mod_to_file}
-
-        for edge in indexed_graph.get("imports", []):
-            relative_path = Path(str(edge.get("path", "")))
-            source_path = (p_root / relative_path).resolve(strict=False)
-            mod_name = file_to_mod.get(source_path)
-            if not mod_name:
-                continue
-            target = str(edge.get("target", ""))
-            if not target:
-                continue
-            if target.startswith("."):
-                level = len(target) - len(target.lstrip("."))
-                package_parts = mod_name.split(".") if relative_path.name == "__init__.py" else mod_name.split(".")[:-1]
-                if level - 1 > len(package_parts):
-                    continue
-                base_parts = package_parts[:len(package_parts) - (level - 1)]
-                remainder = target[level:]
-                target = ".".join([*base_parts, remainder] if remainder else base_parts)
-            for known in _find_matches(target):
-                if known != mod_name:
-                    graph[mod_name].add(known)
-
-        cycles: list[list[str]] = []
-        seen_cycles: set[tuple[str, ...]] = set()
-        visited: set[str] = set()
-        stack: list[str] = []
-        stack_set: set[str] = set()
-        truncated = False
-        cycle_limit_exceeded = False
-
-        def dfs(curr: str):
-            nonlocal truncated, cycle_limit_exceeded
-            visited.add(curr)
-            stack.append(curr)
-            stack_set.add(curr)
-            for nxt in sorted(graph.get(curr, [])):
-                if cycle_limit_exceeded:
-                    break
-                if nxt in stack_set:
-                    idx = stack.index(nxt)
-                    cycle = stack[idx:] + [nxt]
-                    min_idx = cycle[:-1].index(min(cycle[:-1]))
-                    canon = cycle[min_idx:-1] + cycle[:min_idx] + [cycle[min_idx]]
-                    canon_key = tuple(canon)
-                    if canon_key not in seen_cycles:
-                        if len(cycles) >= max_cycles:
-                            truncated = True
-                            cycle_limit_exceeded = True
-                            break
-                        cycles.append(canon)
-                        seen_cycles.add(canon_key)
-                elif nxt not in visited:
-                    if len(stack) >= max_depth:
-                        truncated = True
-                    else:
-                        dfs(nxt)
-            stack.pop()
-            stack_set.remove(curr)
-
-        for node in sorted(graph.keys()):
-            if cycle_limit_exceeded:
-                break
-            if node not in visited:
-                dfs(node)
-
-        formatted_cycles = []
-        for c in cycles:
-            formatted_cycles.append({
-                "cycle": c,
-                "chain": " -> ".join(c),
-                "length": len(c) - 1,
-                "files": [str(mod_to_file.get(m, m)) for m in c[:-1]],
-            })
-
-        return {
-            "success": True,
-            "root": str(p_root),
-            "modules_scanned": len(file_to_mod),
-            "cycles_found": len(formatted_cycles),
-            "cycles": formatted_cycles,
-            "has_cycles": len(formatted_cycles) > 0,
-            "truncated": truncated,
-            "complete": not truncated,
-        }
 
     def generate_types(self, root: str, file_path: str) -> dict[str, Any]:
         """Generate PEP 484 stub text without writing files."""
@@ -8566,656 +4237,23 @@ def test_{sym}_regression_edge_cases():
     def code_complexity(
         self, root: str, path: str | None = None, max_results: int = 20, include_tests: bool = False
     ) -> dict[str, Any]:
-        """Compute McCabe cyclomatic and cognitive complexity metrics per function/method."""
-        p_root = Path(root).expanduser().resolve(strict=False)
-        if not p_root.is_dir():
-            return {"success": False, "root": str(p_root), "error": "root directory does not exist"}
-        max_entries = 20_000
-        max_files = 50
-        max_file_bytes = 1_048_576
-        max_total_bytes = 16_777_216
-        max_seconds = 5.0
-        started = time.monotonic()
-        deadline = started + max_seconds
-        excluded_dirs = {
-            ".git", ".venv", "venv", "node_modules", "__pycache__", "tool-envs",
-            "state", "build", "dist", "archive", "archives", "history", "historical",
-            "backup", "backups", "docs", "doc", "fixture", "fixtures", "vendor",
-            "generated", "artifacts",
-        }
-        targets: list[tuple[int, str, Path]] = []
-        errors: list[str] = []
-        limits_hit: list[str] = []
-        entries_visited = 0
-        skipped_files = 0
-        skipped_directories = 0
-        eligible_files = 0
-        total_bytes_read = 0
-        complete = True
-
-        def _incomplete(code: str) -> None:
-            nonlocal complete
-            complete = False
-            if len(errors) < 20:
-                errors.append(code)
-
-        def _deadline_reached() -> bool:
-            nonlocal complete
-            if time.monotonic() < deadline:
-                return False
-            if "time" not in limits_hit:
-                limits_hit.append("time")
-            complete = False
-            return True
-
-        def _check_candidate_path(candidate: Path) -> Path:
-            resolved = candidate.resolve(strict=True)
-            resolved.relative_to(p_root)
-            current = p_root
-            for part in candidate.relative_to(p_root).parts:
-                current = current / part
-                if _is_symlink_or_reparse_point(current):
-                    raise ValueError("symbol scan path contains a link")
-            return resolved
-
-        if path:
-            p = Path(path)
-            if not p.is_absolute():
-                p = p_root / p
-            try:
-                resolved = _check_candidate_path(p)
-                if not resolved.is_file():
-                    raise ValueError("requested path is not a regular file")
-                targets.append((0, resolved.relative_to(p_root).as_posix(), p))
-                eligible_files = 1
-            except (OSError, ValueError):
-                skipped_files += 1
-                _incomplete("requested_path_unreadable_or_outside_root")
-        else:
-            pending = [p_root]
-            while pending:
-                if time.monotonic() >= deadline:
-                    limits_hit.append("time")
-                    complete = False
-                    break
-                current = pending.pop()
-                try:
-                    current = _check_candidate_path(current)
-                    with os.scandir(current) as entries:
-                        for entry in entries:
-                            if time.monotonic() >= deadline:
-                                limits_hit.append("time")
-                                complete = False
-                                pending.clear()
-                                break
-                            entries_visited += 1
-                            if entries_visited > max_entries:
-                                limits_hit.append("entries")
-                                complete = False
-                                pending.clear()
-                                break
-                            candidate = Path(entry.path)
-                            if _is_symlink_or_reparse_point(candidate):
-                                if entry.is_dir(follow_symlinks=False):
-                                    skipped_directories += 1
-                                else:
-                                    skipped_files += 1
-                                _incomplete("linked_path_omitted")
-                                continue
-                            rel = candidate.relative_to(p_root).as_posix()
-                            if is_root_archive_path(rel):
-                                if entry.is_dir(follow_symlinks=False):
-                                    skipped_directories += 1
-                                elif entry.name.lower().endswith(".py"):
-                                    skipped_files += 1
-                                continue
-                            if entry.name.lower() in excluded_dirs:
-                                if entry.is_dir(follow_symlinks=False):
-                                    skipped_directories += 1
-                                elif entry.name.lower().endswith(".py"):
-                                    skipped_files += 1
-                                continue
-                            if entry.is_dir(follow_symlinks=False):
-                                pending.append(candidate)
-                                continue
-                            if not entry.name.lower().endswith(".py"):
-                                continue
-                            if not include_tests and _is_test_file(rel):
-                                skipped_files += 1
-                                continue
-                            if not entry.is_file(follow_symlinks=False):
-                                skipped_files += 1
-                                _incomplete("non_regular_file_omitted")
-                                continue
-                            eligible_files += 1
-                            parts = rel.split("/")
-                            priority = 0 if parts[0].lower() == "src" else 1 if parts[0].lower() in {"app", "server", "lib", "libs", "packages", "tools"} else 2
-                            targets.append((priority, rel.casefold(), candidate))
-                except (OSError, ValueError):
-                    _incomplete("directory_unreadable_or_outside_root")
-            targets.sort(key=lambda item: (item[0], item[1], item[2].as_posix()))
-            if len(targets) > max_files:
-                skipped_files += len(targets) - max_files
-                targets = targets[:max_files]
-                limits_hit.append("files")
-                complete = False
-
-        results: list[dict[str, Any]] = []
-
-        files_analyzed = 0
-        parse_error_count = 0
-        read_error_count = 0
-        for _priority, _sort_path, p in targets:
-            if time.monotonic() >= deadline:
-                limits_hit.append("time")
-                complete = False
-                break
-            try:
-                resolved = _check_candidate_path(p)
-                before = os.stat(p, follow_symlinks=False)
-                if not stat.S_ISREG(before.st_mode):
-                    skipped_files += 1
-                    _incomplete("non_regular_file_omitted")
-                    continue
-                remaining_bytes = max_total_bytes - total_bytes_read
-                if before.st_size > max_file_bytes or before.st_size > remaining_bytes:
-                    skipped_files += 1
-                    limits_hit.append("file_bytes" if before.st_size > max_file_bytes else "total_bytes")
-                    complete = False
-                    continue
-                flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NONBLOCK", 0)
-                if getattr(os, "O_NOFOLLOW", 0):
-                    flags |= os.O_NOFOLLOW
-                fd = os.open(p, flags)
-                try:
-                    opened = os.fstat(fd)
-                    if not stat.S_ISREG(opened.st_mode) or (before.st_dev, before.st_ino) != (opened.st_dev, opened.st_ino):
-                        skipped_files += 1
-                        _incomplete("file_identity_changed_or_non_regular")
-                        continue
-                    source = os.fdopen(fd, "rb")
-                    fd = -1
-                finally:
-                    if fd >= 0:
-                        os.close(fd)
-                with source:
-                    read_limit = min(max_file_bytes, remaining_bytes)
-                    raw_content = source.read(read_limit)
-                    total_bytes_read += len(raw_content)
-                    after = os.fstat(source.fileno())
-                    current = os.stat(p, follow_symlinks=False)
-                    current_path = _check_candidate_path(p)
-                before_state = (opened.st_dev, opened.st_ino, opened.st_size, opened.st_mtime_ns, opened.st_ctime_ns)
-                after_state = (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns, after.st_ctime_ns)
-                if before_state != after_state or (current.st_dev, current.st_ino) != (after.st_dev, after.st_ino) or current_path != resolved:
-                    _incomplete("file_changed_during_scan")
-                if after.st_size > max_file_bytes or after.st_size > read_limit:
-                    limits_hit.append("file_bytes" if after.st_size > max_file_bytes else "total_bytes")
-                    complete = False
-                    skipped_files += 1
-                    continue
-                if len(raw_content) != after.st_size:
-                    _incomplete("file_read_incomplete")
-                    skipped_files += 1
-                    continue
-                content = raw_content.decode("utf-8", errors="replace")
-            except Exception:
-                skipped_files += 1
-                read_error_count += 1
-                _incomplete("file_parse_or_read_error")
-                continue
-            try:
-                tree = ast.parse(content, filename=str(p))
-            except Exception:
-                skipped_files += 1
-                parse_error_count += 1
-                _incomplete("file_parse_error")
-                continue
-            files_analyzed += 1
-            if _deadline_reached():
-                break
-
-            analysis_stopped = False
-            for node in ast.walk(tree):
-                if _deadline_reached():
-                    analysis_stopped = True
-                    break
-                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                    fn_name = node.name
-                    lineno = node.lineno
-                    cyclomatic = 1
-                    cognitive = 0
-
-                    def walk_cognitive(curr_node: ast.AST, depth: int) -> bool:
-                        nonlocal cyclomatic, cognitive
-                        if _deadline_reached():
-                            return False
-                        for child in ast.iter_child_nodes(curr_node):
-                            if _deadline_reached():
-                                return False
-                            inc_depth = False
-                            if isinstance(child, (ast.If, ast.While, ast.For, ast.AsyncFor)):
-                                cyclomatic += 1
-                                cognitive += (1 + depth)
-                                inc_depth = True
-                            elif isinstance(child, ast.ExceptHandler):
-                                cyclomatic += 1
-                                cognitive += (1 + depth)
-                                inc_depth = True
-                            elif isinstance(child, (ast.With, ast.AsyncWith, ast.Assert)):
-                                cyclomatic += 1
-                            elif isinstance(child, ast.BoolOp):
-                                cyclomatic += max(0, len(child.values) - 1)
-                                cognitive += max(0, len(child.values) - 1)
-                            elif isinstance(child, ast.comprehension):
-                                cyclomatic += 1 + len(child.ifs)
-                                cognitive += (1 + depth)
-
-                            if not walk_cognitive(child, depth + (1 if inc_depth else 0)):
-                                return False
-                        return True
-
-                    if not walk_cognitive(node, 0):
-                        analysis_stopped = True
-                        break
-                    risk = "high" if (cyclomatic >= 10 or cognitive >= 15) else "medium" if (cyclomatic >= 6 or cognitive >= 8) else "low"
-                    results.append({
-                        "name": fn_name,
-                        "file": p.relative_to(p_root).as_posix() if p.is_relative_to(p_root) else str(p),
-                        "line": lineno,
-                        "cyclomatic_complexity": cyclomatic,
-                        "cognitive_complexity": cognitive,
-                        "risk": risk,
-                    })
-            if analysis_stopped:
-                break
-
-        results.sort(key=lambda x: (-x["cognitive_complexity"], -x["cyclomatic_complexity"]))
-        scope = (
-            "explicit in-root file"
-            if path
-            else f"bounded source-first Python files; include_tests={bool(include_tests)}; excludes listed generated, archive, documentation, fixture and cache directories"
+        return compute_code_complexity(
+            root,
+            path,
+            max_results,
+            include_tests,
+            is_symlink_or_reparse_point=_is_symlink_or_reparse_point,
+            is_test_file=_is_test_file,
+            is_root_archive_path=is_root_archive_path,
         )
-        limits = {
-            "max_entries": max_entries,
-            "max_files": max_files,
-            "max_file_bytes": max_file_bytes,
-            "max_total_bytes": max_total_bytes,
-            "max_seconds": max_seconds,
-        }
-        return {
-            "success": True,
-            "root": str(p_root),
-            "files_analyzed": files_analyzed,
-            "total_functions": len(results),
-            "high_risk_count": sum(1 for r in results if r["risk"] == "high"),
-            "include_tests": bool(include_tests),
-            "functions": results[:max(1, min(int(max_results), 100))],
-            "complete": complete,
-            "scope": scope,
-            "limits": limits,
-            "eligible_files": eligible_files,
-            "skipped_files": skipped_files,
-            "skipped_directories": skipped_directories,
-            "parse_error_count": parse_error_count,
-            "read_error_count": read_error_count,
-            "coverage": {
-                "complete": complete,
-                "scope": scope,
-                "deadline_kind": "cooperative",
-                "entries_visited": entries_visited,
-                "eligible_files": eligible_files,
-                "files_analyzed": files_analyzed,
-                "skipped_files": skipped_files,
-                "skipped_directories": skipped_directories,
-                "parse_error_count": parse_error_count,
-                "read_error_count": read_error_count,
-                "bytes_read": total_bytes_read,
-                "limits_hit": sorted(set(limits_hit)),
-                "errors": errors,
-                "excluded_dirs": sorted(excluded_dirs),
-            },
-        }
+
 
     def extract_api_spec(self, root: str, framework: str | None = None) -> dict[str, Any]:
-        """Statically extract API routes and endpoints into OpenAPI 3.0 schema."""
-        p_root = Path(root).expanduser().resolve(strict=False)
-        skip_dirs = {
-            str(name).casefold()
-            for name in getattr(getattr(self, "repo_tools", None), "ignore_dirs", ())
-        }
-        skip_dirs.update({".git", ".venv", "venv", "tool-envs", "node_modules", "__pycache__"})
-        endpoints: list[dict[str, Any]] = []
-
-        # Check for static openapi.json / swagger.json in root
-        for spec_name in ("openapi.json", "swagger.json", "openapi.yaml", "openapi.yml"):
-            spec_file = p_root / spec_name
-            if spec_file.is_file():
-                try:
-                    spec_data = json.loads(spec_file.read_text(encoding="utf-8"))
-                    paths_obj = spec_data.get("paths", {})
-                    for p_str, methods_obj in paths_obj.items():
-                        if isinstance(methods_obj, dict):
-                            for m_str, m_meta in methods_obj.items():
-                                if m_str.lower() in {"get", "post", "put", "delete", "patch"}:
-                                    endpoints.append({
-                                        "method": m_str.upper(),
-                                        "path": p_str,
-                                        "handler": m_meta.get("operationId", p_str) if isinstance(m_meta, dict) else p_str,
-                                        "summary": m_meta.get("summary", "") if isinstance(m_meta, dict) else "",
-                                        "description": m_meta.get("description", "") if isinstance(m_meta, dict) else "",
-                                        "file": spec_name,
-                                        "line": 1,
-                                    })
-                except Exception:
-                    pass
-
-        scan_patterns = ("*.py", "*.js", "*.ts", "*.mjs", "*.php", "*.ctp", "*.html", "*.htm")
-        files_by_pattern: dict[str, list[Path]] = {pattern: [] for pattern in scan_patterns}
-        authoritative_registry = p_root / "src" / "local_ai_hub" / "http_route_registry.py"
-        registry_is_authoritative = False
-        if authoritative_registry.is_file():
-            try:
-                registry_tree = ast.parse(
-                    authoritative_registry.read_text(encoding="utf-8", errors="replace"),
-                    filename=str(authoritative_registry),
-                )
-                registry_is_authoritative = any(
-                    isinstance(node, ast.Assign)
-                    and any(
-                        isinstance(target, ast.Name)
-                        and target.id == "API_ROUTE_REGISTRIES_AUTHORITATIVE"
-                        for target in node.targets
-                    )
-                    and isinstance(node.value, ast.Constant)
-                    and node.value.value is True
-                    for node in registry_tree.body
-                )
-            except (OSError, SyntaxError, UnicodeError):
-                registry_is_authoritative = False
-
-        if registry_is_authoritative:
-            # This repository's canonical route registry is the same table the
-            # HTTP server dispatches. Parse it directly instead of walking and
-            # AST-parsing every test and tool file in the repository.
-            files_by_pattern["*.py"].append(authoritative_registry)
-        else:
-            for current_root, dirnames, filenames in os.walk(p_root, topdown=True, followlinks=False):
-                dirnames[:] = sorted(name for name in dirnames if name.casefold() not in skip_dirs)
-                for filename in sorted(filenames):
-                    path = Path(current_root) / filename
-                    for pattern in scan_patterns:
-                        if path.match(pattern):
-                            files_by_pattern[pattern].append(path)
-                            break
-
-        for p in files_by_pattern["*.py"]:
-            try:
-                content = p.read_text(encoding="utf-8", errors="replace")
-                tree = ast.parse(content, filename=str(p))
-            except Exception:
-                continue
-
-            for declaration in tree.body:
-                if isinstance(declaration, ast.Assign):
-                    registry_names = [target.id for target in declaration.targets if isinstance(target, ast.Name)]
-                    registry_value = declaration.value
-                elif isinstance(declaration, ast.AnnAssign) and isinstance(declaration.target, ast.Name):
-                    registry_names = [declaration.target.id]
-                    registry_value = declaration.value
-                else:
-                    continue
-                for registry_name in registry_names:
-                    suffix = "_ROUTE_REGISTRY"
-                    if not registry_name.endswith(suffix):
-                        continue
-                    method = registry_name[:-len(suffix)]
-                    if method not in {"GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS", "HEAD"}:
-                        continue
-                    if not isinstance(registry_value, (ast.Tuple, ast.List)):
-                        continue
-                    for rule in registry_value.elts:
-                        if not (
-                            isinstance(rule, ast.Call)
-                            and isinstance(rule.func, ast.Name)
-                            and rule.func.id == "RouteRule"
-                            and len(rule.args) >= 2
-                            and isinstance(rule.args[0], ast.Constant)
-                            and isinstance(rule.args[0].value, str)
-                        ):
-                            continue
-                        paths_node = rule.args[1]
-                        if (
-                            isinstance(paths_node, ast.Call)
-                            and isinstance(paths_node.func, ast.Name)
-                            and paths_node.func.id == "frozenset"
-                            and len(paths_node.args) == 1
-                        ):
-                            paths_node = paths_node.args[0]
-                        try:
-                            route_paths = ast.literal_eval(paths_node)
-                        except (TypeError, ValueError):
-                            continue
-                        if not isinstance(route_paths, (set, frozenset, tuple, list)):
-                            continue
-                        for route_path in route_paths:
-                            if not isinstance(route_path, str) or not route_path:
-                                continue
-                            endpoints.append({
-                                "method": method,
-                                "path": route_path,
-                                "handler": rule.args[0].value,
-                                "summary": rule.args[0].value,
-                                "description": "",
-                                "file": str(p.relative_to(p_root) if p.is_relative_to(p_root) else p),
-                                "line": rule.lineno,
-                            })
-
-            for node in ast.walk(tree):
-                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                    for dec in node.decorator_list:
-                        route_path = None
-                        method = "GET"
-                        if isinstance(dec, ast.Call):
-                            func = dec.func
-                            if isinstance(func, ast.Attribute) and func.attr.lower() in {"get", "post", "put", "delete", "patch", "options", "head"}:
-                                method = func.attr.upper()
-                                if dec.args and isinstance(dec.args[0], ast.Constant) and isinstance(dec.args[0].value, str):
-                                    route_path = dec.args[0].value
-                            elif isinstance(func, ast.Attribute) and func.attr.lower() == "route":
-                                if dec.args and isinstance(dec.args[0], ast.Constant) and isinstance(dec.args[0].value, str):
-                                    route_path = dec.args[0].value
-                                for kw in dec.keywords:
-                                    if kw.arg == "methods" and isinstance(kw.value, (ast.List, ast.Tuple)):
-                                        m_list = [elt.value for elt in kw.value.elts if isinstance(elt, ast.Constant)]
-                                        if m_list:
-                                            method = m_list[0].upper()
-                        if route_path:
-                            doc = ast.get_docstring(node) or ""
-                            endpoints.append({
-                                "method": method,
-                                "path": route_path,
-                                "handler": node.name,
-                                "summary": doc.splitlines()[0] if doc else node.name,
-                                "description": doc,
-                                "file": str(p.relative_to(p_root) if p.is_relative_to(p_root) else p),
-                                "line": node.lineno,
-                            })
-
-        express_call_pat = _API_EXPRESS_ROUTER_METHOD
-        next_route_pat = _API_NEXT_ROUTE_HANDLER
-        for p in files_by_pattern["*.js"] + files_by_pattern["*.ts"] + files_by_pattern["*.mjs"]:
-            try:
-                text = p.read_text(encoding="utf-8", errors="replace")
-                scan_source = _mask_non_code(text, "typescript" if p.suffix.lower() == ".ts" else "javascript")
-                for m in express_call_pat.finditer(scan_source):
-                    route_match = re.match(r"\s*(['\"])([^'\"\r\n]+)\1", text[m.end():])
-                    if not route_match:
-                        continue
-                    method = m.group(1).upper()
-                    r_path = route_match.group(2)
-                    endpoints.append({
-                        "method": method,
-                        "path": r_path,
-                        "handler": f"route_{method.lower()}",
-                        "summary": f"{method} {r_path}",
-                        "description": "",
-                        "file": str(p.relative_to(p_root) if p.is_relative_to(p_root) else p),
-                        "line": text[:m.start()].count("\n") + 1,
-                    })
-                if p.stem.lower() == "route":
-                    for m in next_route_pat.finditer(scan_source):
-                        method = m.group(1).upper()
-                        rel_p = p.relative_to(p_root) if p.is_relative_to(p_root) else p
-                        r_path = "/" + "/".join(part for part in rel_p.parts[:-1] if part not in {"app", "src", "api"})
-                        if not r_path or r_path == "/":
-                            r_path = "/api"
-                        endpoints.append({
-                            "method": method,
-                            "path": r_path,
-                            "handler": f"next_{method.lower()}",
-                            "summary": f"{method} {r_path}",
-                            "description": "",
-                            "file": str(rel_p),
-                            "line": text[:m.start()].count("\n") + 1,
-                        })
-            except Exception:
-                continue
-
-        php_route_pat = _API_LARAVEL_ROUTE_METHOD
-        php_resource_pat = _API_LARAVEL_RESOURCE_ROUTE
-        php_attr_route_pat = _API_ATTRIBUTE_ROUTE_DECLARATION
-        cake_route_pat = _API_PHP_CONNECT_ROUTE
-        cake_resource_pat = _API_PHP_RESOURCE_ROUTE
-
-        for p in files_by_pattern["*.php"] + files_by_pattern["*.ctp"]:
-            try:
-                text = p.read_text(encoding="utf-8", errors="replace")
-                php_scan_source = _mask_non_code(text, "php")
-
-                def is_php_code_match(match: re.Match[str]) -> bool:
-                    return bool(re.match(
-                        r"(?:Route::|#\[(?:Route|Get|Post|Put|Patch|Delete)\b|\$(?:builder|routes)->)",
-                        php_scan_source[match.start():], re.I,
-                    ))
-
-                for m in php_route_pat.finditer(text):
-                    if not is_php_code_match(m):
-                        continue
-                    method = m.group(1).upper()
-                    r_path = m.group(2)
-                    endpoints.append({
-                        "method": method,
-                        "path": r_path,
-                        "handler": f"route_{method.lower()}",
-                        "summary": f"{method} {r_path}",
-                        "description": "",
-                        "file": str(p.relative_to(p_root) if p.is_relative_to(p_root) else p),
-                        "line": text[:m.start()].count("\n") + 1,
-                    })
-                for m in php_resource_pat.finditer(text):
-                    if not is_php_code_match(m):
-                        continue
-                    res_path = "/" + m.group(1).lstrip("/")
-                    endpoints.append({
-                        "method": "RESOURCE",
-                        "path": res_path,
-                        "handler": "resource_controller",
-                        "summary": f"RESOURCE {res_path}",
-                        "description": "",
-                        "file": str(p.relative_to(p_root) if p.is_relative_to(p_root) else p),
-                        "line": text[:m.start()].count("\n") + 1,
-                    })
-                for m in php_attr_route_pat.finditer(text):
-                    if not is_php_code_match(m):
-                        continue
-                    r_path = m.group(1) or "/"
-                    methods_str = m.group(2) or "GET"
-                    for method_raw in methods_str.replace("'", "").replace('"', "").split(","):
-                        method = method_raw.strip().upper() or "GET"
-                        endpoints.append({
-                            "method": method,
-                            "path": r_path,
-                            "handler": f"route_{method.lower()}",
-                            "summary": f"{method} {r_path}",
-                            "description": "",
-                            "file": str(p.relative_to(p_root) if p.is_relative_to(p_root) else p),
-                            "line": text[:m.start()].count("\n") + 1,
-                        })
-                for m in cake_route_pat.finditer(text):
-                    if not is_php_code_match(m):
-                        continue
-                    r_path = m.group(1)
-                    endpoints.append({
-                        "method": "ANY",
-                        "path": r_path,
-                        "handler": "cake_action",
-                        "summary": f"CakePHP route {r_path}",
-                        "description": "",
-                        "file": str(p.relative_to(p_root) if p.is_relative_to(p_root) else p),
-                        "line": text[:m.start()].count("\n") + 1,
-                    })
-                for m in cake_resource_pat.finditer(text):
-                    if not is_php_code_match(m):
-                        continue
-                    r_path = "/" + m.group(1).lstrip("/")
-                    endpoints.append({
-                        "method": "RESOURCE",
-                        "path": r_path,
-                        "handler": "cake_resource",
-                        "summary": f"CakePHP resource {r_path}",
-                        "description": "",
-                        "file": str(p.relative_to(p_root) if p.is_relative_to(p_root) else p),
-                        "line": text[:m.start()].count("\n") + 1,
-                    })
-            except Exception:
-                continue
-
-        form_pat = _API_HTML_FORM_ENDPOINT
-        for p in files_by_pattern["*.html"] + files_by_pattern["*.htm"]:
-            try:
-                text = p.read_text(encoding="utf-8", errors="replace")
-                html_scan_source = re.sub(
-                    r"<!--[\s\S]*?-->",
-                    lambda match: "".join("\n" if char == "\n" else " " for char in match.group(0)),
-                    text,
-                )
-                for m in form_pat.finditer(html_scan_source):
-                    r_path = m.group(1)
-                    method = (m.group(2) or "GET").upper()
-                    endpoints.append({
-                        "method": method,
-                        "path": r_path,
-                        "handler": "html_form",
-                        "summary": f"HTML form {method} {r_path}",
-                        "description": "",
-                        "file": str(p.relative_to(p_root) if p.is_relative_to(p_root) else p),
-                        "line": text[:m.start()].count("\n") + 1,
-                    })
-            except Exception:
-                continue
-
-        openapi_paths: dict[str, Any] = {}
-        for ep in endpoints:
-            p_val = ep["path"]
-            m_val = ep["method"].lower()
-            if p_val not in openapi_paths:
-                openapi_paths[p_val] = {}
-            openapi_paths[p_val][m_val] = {
-                "summary": ep.get("summary", ""),
-                "description": ep.get("description", ""),
-                "operationId": ep.get("handler", ""),
-                "responses": {"200": {"description": "Success"}},
-            }
-
-        return {
-            "success": True,
-            "openapi": "3.0.0",
-            "info": {"title": p_root.name, "version": "1.0.0"},
-            "total_endpoints": len(endpoints),
-            "paths": openapi_paths,
-            "endpoints": endpoints,
-        }
+        return _extract_api_spec(
+            root,
+            framework,
+            repo_tools=getattr(self, "repo_tools", None),
+        )
 
     def slice_dependency_graph(self, root: str, symbol: str, path: str | None = None, depth: int = 2) -> dict[str, Any]:
         """Extract a minimal AST dependency slice for a target symbol, saving context tokens."""
@@ -9233,6 +4271,11 @@ def test_{sym}_regression_edge_cases():
             p = Path(path)
             if not p.is_absolute():
                 p = p_root / p
+            try:
+                p = p.resolve(strict=False)
+                p.relative_to(p_root)
+            except (OSError, RuntimeError, ValueError):
+                return {"success": False, "status_code": 400, "error": "path must resolve inside the repository root"}
             if p.is_file():
                 files_to_check.append(p)
         else:
@@ -9310,499 +4353,21 @@ def test_{sym}_regression_edge_cases():
         }
 
     def migration_drift(self, root: str, db_path: str | None = None) -> dict[str, Any]:
-        """Detect drift between a live SQLite schema and SQL migrations or declared models."""
-        p_root = Path(root).expanduser().resolve(strict=False)
-        db_file: Path | None = None
-        if db_path:
-            p = Path(db_path).expanduser()
-            db_file = p if p.is_absolute() else (p_root / p)
-        else:
-            for cand in [p_root / "app.db", p_root / "data.db", p_root / ".local-ai-hub" / "agent_state.db"]:
-                if cand.is_file():
-                    db_file = cand
-                    break
+        return detect_migration_drift(
+            root,
+            db_path,
+            bounded_schema_files=_bounded_schema_files,
+            connect_sqlite_fn=connect_sqlite,
+            max_schema_db_bytes=_MAX_SCHEMA_DB_BYTES,
+            schema_db_timeout_seconds=_SCHEMA_DB_TIMEOUT_SECONDS,
+            max_schema_scan_seconds=_MAX_SCHEMA_SCAN_SECONDS,
+            max_schema_db_tables=_MAX_SCHEMA_DB_TABLES,
+            max_schema_db_columns=_MAX_SCHEMA_DB_COLUMNS,
+            max_schema_migration_db_bytes=_MAX_SCHEMA_MIGRATION_DB_BYTES,
+            max_schema_file_bytes=_MAX_SCHEMA_FILE_BYTES,
+            max_schema_total_bytes=_MAX_SCHEMA_TOTAL_BYTES,
+        )
 
-        if not db_file or not db_file.is_file():
-            if not db_path:
-                return {
-                    "success": False,
-                    "db_path": None,
-                    "db_tables": [],
-                    "code_models_found": [],
-                    "drift_detected": None,
-                    "in_sync": None,
-                    "missing_tables_in_db": [],
-                    "extra_tables_in_db": [],
-                    "column_drifts": [],
-                    "drift": {},
-                    "status": "database_missing",
-                    "message": "No SQLite database found at default paths",
-                    "error": "Cannot determine migration drift without a live SQLite database",
-                    "terminal": True,
-                    "retryable": False,
-                }
-            return {
-                "success": False,
-                "db_path": str(db_file or db_path),
-                "drift_detected": None,
-                "in_sync": None,
-                "status": "database_missing",
-                "error": f"SQLite database not found at {db_path}",
-                "terminal": True,
-                "retryable": False,
-            }
-
-        try:
-            db_file = db_file.expanduser().resolve(strict=True)
-            db_file.relative_to(p_root)
-            if db_file.stat().st_size > _MAX_SCHEMA_DB_BYTES:
-                return {
-                    "success": False,
-                    "db_path": str(db_file),
-                    "drift_detected": None,
-                    "in_sync": None,
-                    "status": "database_size_limit_exceeded",
-                    "error": f"SQLite database exceeds {_MAX_SCHEMA_DB_BYTES} bytes",
-                    "terminal": True,
-                    "retryable": False,
-                }
-        except ValueError:
-            return {
-                "success": False,
-                "db_path": str(db_path or db_file),
-                "drift_detected": None,
-                "in_sync": None,
-                "status": "database_path_outside_root",
-                "error": "SQLite database path must resolve inside the requested root",
-                "terminal": True,
-                "retryable": False,
-            }
-        except OSError as exc:
-            return {
-                "success": False,
-                "db_path": str(db_path or db_file),
-                "drift_detected": None,
-                "in_sync": None,
-                "status": "database_missing",
-                "error": f"SQLite database not found: {exc}",
-            }
-
-        db_tables: dict[str, set[str]] = {}
-        try:
-            with closing(
-                connect_sqlite(
-                    db_file,
-                    timeout_seconds=_SCHEMA_DB_TIMEOUT_SECONDS,
-                    read_only=True,
-                )
-            ) as con:
-                db_deadline = time.monotonic() + _MAX_SCHEMA_SCAN_SECONDS
-                con.set_progress_handler(
-                    lambda: int(time.monotonic() >= db_deadline), 1000
-                )
-                table_cursor = con.execute(
-                    "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
-                )
-                total_db_columns = 0
-                for table_row in table_cursor:
-                    if time.monotonic() >= db_deadline:
-                        raise TimeoutError("SQLite schema inspection exceeded its time budget")
-                    tbl = table_row[0]
-                    if len(db_tables) >= _MAX_SCHEMA_DB_TABLES:
-                        raise ValueError(
-                            f"SQLite schema exceeds {_MAX_SCHEMA_DB_TABLES} tables"
-                        )
-                    safe_tbl = tbl.replace('"', '""')
-                    cols: set[str] = set()
-                    for column_row in con.execute(f'PRAGMA table_xinfo("{safe_tbl}")'):
-                        if time.monotonic() >= db_deadline:
-                            raise TimeoutError(
-                                "SQLite schema inspection exceeded its time budget"
-                            )
-                        total_db_columns += 1
-                        if total_db_columns > _MAX_SCHEMA_DB_COLUMNS:
-                            raise ValueError(
-                                f"SQLite schema exceeds {_MAX_SCHEMA_DB_COLUMNS} columns"
-                            )
-                        cols.add(column_row[1])
-                    db_tables[tbl] = cols
-        except Exception as exc:
-            return {
-                "success": False,
-                "db_path": str(db_file),
-                "drift_detected": None,
-                "in_sync": None,
-                "status": "database_inspection_failed",
-                "error": f"failed to inspect SQLite schema: {exc}",
-            }
-
-        code_tables: dict[str, set[str]] = {}
-        schema_source = "python_models"
-        migration_files: list[Path] = []
-        schema_scan_deadline = time.monotonic() + _MAX_SCHEMA_SCAN_SECONDS
-        try:
-            migration_files = _bounded_schema_files(
-                p_root, suffix=".sql", deadline=schema_scan_deadline, migrations_only=True
-            )
-        except TimeoutError as exc:
-            return {
-                "success": False,
-                "db_path": str(db_file),
-                "drift_detected": None,
-                "in_sync": None,
-                "status": "schema_scan_budget_exceeded",
-                "error": str(exc),
-                "terminal": True,
-                "retryable": False,
-            }
-        except OSError as exc:
-            return {
-                "success": False,
-                "db_path": str(db_file),
-                "drift_detected": None,
-                "in_sync": None,
-                "status": "schema_scan_failed",
-                "error": f"migration directory scan failed: {exc}",
-            }
-        if migration_files:
-            schema_source = "sql_migrations"
-            migration_db = connect_sqlite(":memory:", timeout_seconds=5.0)
-            migration_db.setlimit(sqlite3.SQLITE_LIMIT_LENGTH, _MAX_SCHEMA_FILE_BYTES)
-            migration_db.setlimit(sqlite3.SQLITE_LIMIT_SQL_LENGTH, _MAX_SCHEMA_FILE_BYTES)
-
-            def split_sql_statements(source: str) -> Iterator[str]:
-                pending: list[str] = []
-                quote: str | None = None
-                line_comment = False
-                block_comment = False
-                index = 0
-                while index < len(source):
-                    char = source[index]
-                    next_char = source[index + 1] if index + 1 < len(source) else ""
-                    pending.append(char)
-                    if line_comment:
-                        if char in "\r\n":
-                            line_comment = False
-                    elif block_comment:
-                        if char == "*" and next_char == "/":
-                            pending.append(next_char)
-                            index += 1
-                            block_comment = False
-                    elif quote is not None:
-                        closing = "]" if quote == "[" else quote
-                        if char == closing:
-                            if next_char == closing and quote != "[":
-                                pending.append(next_char)
-                                index += 1
-                            else:
-                                quote = None
-                    elif char in {"'", '"', "`", "["}:
-                        quote = char
-                    elif char == "-" and next_char == "-":
-                        pending.append(next_char)
-                        index += 1
-                        line_comment = True
-                    elif char == "/" and next_char == "*":
-                        pending.append(next_char)
-                        index += 1
-                        block_comment = True
-                    elif char == ";":
-                        yield "".join(pending)
-                        pending.clear()
-                    index += 1
-                if pending:
-                    yield "".join(pending)
-
-            try:
-                migration_db.setlimit(
-                    sqlite3.SQLITE_LIMIT_LENGTH, _MAX_SCHEMA_MIGRATION_DB_BYTES
-                )
-                page_size = int(migration_db.execute("PRAGMA page_size").fetchone()[0])
-                max_pages = max(1, _MAX_SCHEMA_MIGRATION_DB_BYTES // page_size)
-                migration_db.execute(f"PRAGMA max_page_count={max_pages}")
-                migration_deadline = time.monotonic() + _MAX_SCHEMA_SCAN_SECONDS
-                migration_db.set_progress_handler(
-                    lambda: int(time.monotonic() >= migration_deadline), 1000
-                )
-                total_migration_bytes = 0
-                migration_ddl_count = 0
-                for migration_path in migration_files:
-                    if time.monotonic() >= schema_scan_deadline:
-                        return {
-                            "success": False,
-                            "db_path": str(db_file),
-                            "drift_detected": None,
-                            "in_sync": None,
-                            "status": "schema_scan_budget_exceeded",
-                            "error": "migration scan exceeded its time budget",
-                            "terminal": True,
-                            "retryable": False,
-                        }
-                    with migration_path.open("rb") as migration_stream:
-                        raw_source = migration_stream.read(_MAX_SCHEMA_FILE_BYTES + 1)
-                    total_migration_bytes += len(raw_source)
-                    if (
-                        len(raw_source) > _MAX_SCHEMA_FILE_BYTES
-                        or total_migration_bytes > _MAX_SCHEMA_TOTAL_BYTES
-                    ):
-                        return {
-                            "success": False,
-                            "db_path": str(db_file),
-                            "drift_detected": None,
-                            "in_sync": None,
-                            "status": "schema_scan_budget_exceeded",
-                            "error": "migration SQL exceeds the bounded scan budget",
-                            "terminal": True,
-                            "retryable": False,
-                        }
-                    source = raw_source.decode("utf-8", errors="replace")
-
-                    for statement in split_sql_statements(source):
-                        if time.monotonic() >= migration_deadline:
-                            raise TimeoutError("migration replay exceeded its time budget")
-                        normalized = re.sub(r"(?m)^\s*--[^\n]*", "", statement)
-                        normalized = re.sub(r"/\*.*?\*/", "", normalized, flags=re.DOTALL).strip()
-                        if not re.match(r"^(?:CREATE\s+TABLE|ALTER\s+TABLE|DROP\s+TABLE)\b", normalized, re.IGNORECASE):
-                            continue
-                        try:
-                            migration_db.execute(statement)
-                            migration_ddl_count += 1
-                        except sqlite3.Error as exc:
-                            rel_path = migration_path.relative_to(p_root).as_posix()
-                            return {
-                                "success": False,
-                                "drift_detected": None,
-                                "in_sync": None,
-                                "error": f"failed to apply schema DDL in {rel_path}: {exc}",
-                            }
-                if migration_ddl_count == 0:
-                    return {
-                        "success": False,
-                        "drift_detected": None,
-                        "in_sync": None,
-                        "error": "no supported table schema DDL found in SQL migrations",
-                    }
-                tables = migration_db.execute(
-                    "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
-                )
-                total_code_columns = 0
-                for (table_name,) in tables:
-                    if len(code_tables) >= _MAX_SCHEMA_DB_TABLES:
-                        raise ValueError("migration schema table limit exceeded")
-                    safe_table = str(table_name).replace('"', '""')
-                    columns: set[str] = set()
-                    for row in migration_db.execute(f'PRAGMA table_xinfo("{safe_table}")'):
-                        total_code_columns += 1
-                        if total_code_columns > _MAX_SCHEMA_DB_COLUMNS:
-                            raise ValueError("migration schema column limit exceeded")
-                        if time.monotonic() >= migration_deadline:
-                            raise TimeoutError("migration schema inspection exceeded its time budget")
-                        columns.add(row[1])
-                    code_tables[str(table_name)] = columns
-            except (OSError, sqlite3.Error, ValueError, TimeoutError) as exc:
-                return {"success": False, "drift_detected": None, "in_sync": None,
-                        "error": f"failed to read schema migrations: {exc}"}
-            finally:
-                migration_db.close()
-        else:
-            python_scan_deadline = time.monotonic() + _MAX_SCHEMA_SCAN_SECONDS
-            try:
-                python_files = _bounded_schema_files(
-                    p_root, suffix=".py", deadline=python_scan_deadline
-                )
-            except TimeoutError as exc:
-                return {
-                    "success": False,
-                    "db_path": str(db_file),
-                    "drift_detected": None,
-                    "in_sync": None,
-                    "status": "schema_scan_budget_exceeded",
-                    "error": str(exc),
-                    "terminal": True,
-                    "retryable": False,
-                }
-            except OSError as exc:
-                return {
-                    "success": False,
-                    "db_path": str(db_file),
-                    "drift_detected": None,
-                    "in_sync": None,
-                    "status": "schema_scan_failed",
-                    "error": f"Python model directory scan failed: {exc}",
-                }
-            total_python_bytes = 0
-            for p in python_files:
-                if time.monotonic() >= python_scan_deadline:
-                    return {
-                        "success": False,
-                        "db_path": str(db_file),
-                        "drift_detected": None,
-                        "in_sync": None,
-                        "status": "schema_scan_budget_exceeded",
-                        "error": "Python model scan exceeded its time budget",
-                        "terminal": True,
-                        "retryable": False,
-                    }
-                try:
-                    with p.open("rb") as source_stream:
-                        raw_source = source_stream.read(_MAX_SCHEMA_FILE_BYTES + 1)
-                    total_python_bytes += len(raw_source)
-                    if (
-                        len(raw_source) > _MAX_SCHEMA_FILE_BYTES
-                        or total_python_bytes > _MAX_SCHEMA_TOTAL_BYTES
-                    ):
-                        return {
-                            "success": False,
-                            "db_path": str(db_file),
-                            "drift_detected": None,
-                            "in_sync": None,
-                            "status": "schema_scan_budget_exceeded",
-                            "error": "Python model sources exceed the bounded scan budget",
-                            "terminal": True,
-                            "retryable": False,
-                        }
-                    source_text = raw_source.decode("utf-8", errors="replace")
-                    relative_parts = p.relative_to(p_root).parts
-                    model_source_names = {
-                        "model.py", "models.py", "schema.py", "schemas.py",
-                        "entity.py", "entities.py",
-                    }
-                    model_source_dirs = {
-                        "model", "models", "schema", "schemas", "entity", "entities",
-                    }
-                    if (
-                        re.search(r"(?m)^\s*__tablename__\s*=", source_text) is None
-                        and p.name.lower() not in model_source_names
-                        and not any(
-                            part.lower() in model_source_dirs for part in relative_parts[:-1]
-                        )
-                    ):
-                        continue
-                    tree = ast.parse(source_text, filename=str(p))
-                    for node_index, node in enumerate(ast.walk(tree)):
-                        if node_index % 256 == 0 and time.monotonic() >= python_scan_deadline:
-                            return {
-                                "success": False,
-                                "db_path": str(db_file),
-                                "drift_detected": None,
-                                "in_sync": None,
-                                "status": "schema_scan_budget_exceeded",
-                                "error": "Python model scan exceeded its time budget",
-                                "terminal": True,
-                                "retryable": False,
-                            }
-                        if isinstance(node, ast.ClassDef):
-                            tbl_name = None
-                            cols: set[str] = set()
-                            for item in node.body:
-                                if isinstance(item, ast.Assign):
-                                    for target in item.targets:
-                                        if isinstance(target, ast.Name) and target.id == "__tablename__" and isinstance(item.value, ast.Constant):
-                                            tbl_name = str(item.value.value)
-                                elif isinstance(item, ast.AnnAssign) and isinstance(item.target, ast.Name):
-                                    cols.add(item.target.id)
-                            if tbl_name:
-                                code_tables[tbl_name] = cols
-                except Exception as exc:
-                    rel_path = p.relative_to(p_root).as_posix()
-                    return {
-                        "success": False,
-                        "db_path": str(db_file),
-                        "drift_detected": None,
-                        "in_sync": None,
-                        "status": "schema_scan_failed",
-                        "error": f"failed to inspect Python model source {rel_path}: {exc}",
-                    }
-                if time.monotonic() >= python_scan_deadline:
-                    return {
-                        "success": False,
-                        "db_path": str(db_file),
-                        "drift_detected": None,
-                        "in_sync": None,
-                        "status": "schema_scan_budget_exceeded",
-                        "error": "Python model scan exceeded its time budget",
-                        "terminal": True,
-                        "retryable": False,
-                    }
-
-        if not code_tables:
-            return {
-                "success": False,
-                "db_path": str(db_file),
-                "schema_source": schema_source,
-                "migration_files_found": [p.relative_to(p_root).as_posix() for p in migration_files],
-                "db_tables": list(db_tables.keys()),
-                "code_models_found": [],
-                "drift_detected": None,
-                "in_sync": None,
-                "missing_tables_in_db": [],
-                "extra_tables_in_db": [],
-                "column_drifts": [],
-                "drift": {},
-                "status": "schema_source_unavailable",
-                "error": "No SQL migration schema or declared Python model tables were found",
-                "terminal": True,
-                "retryable": False,
-            }
-
-        # SQLite identifier matching folds ASCII only; Unicode casefold would
-        # incorrectly merge distinct non-ASCII names accepted by SQLite.
-        ascii_lower = str.maketrans("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz")
-        db_names = {name.translate(ascii_lower): name for name in db_tables}
-        code_names = {name.translate(ascii_lower): name for name in code_tables}
-        missing_in_db = sorted(name for key, name in code_names.items() if key not in db_names)
-        extra_in_db = sorted(name for key, name in db_names.items() if key not in code_names)
-        column_drifts: list[dict[str, Any]] = []
-        for key, t in sorted(code_names.items()):
-            if key in db_names:
-                declared = {column.translate(ascii_lower): column for column in code_tables[t]}
-                actual = {column.translate(ascii_lower): column for column in db_tables[db_names[key]]}
-                missing_cols = sorted(column for name, column in declared.items() if name not in actual)
-                extra_cols = sorted(column for name, column in actual.items() if name not in declared) if declared else []
-                if missing_cols or extra_cols:
-                    column_drifts.append({
-                        "table": t,
-                        "missing_in_db": missing_cols,
-                        "extra_in_db": extra_cols,
-                    })
-
-        drift_map: dict[str, Any] = {}
-        for cd in column_drifts:
-            drift_map[cd["table"]] = {
-                "missing_in_db": cd["missing_in_db"],
-                "missing_in_code": cd["extra_in_db"],
-                "type_mismatches": {},
-            }
-        for t in missing_in_db:
-            drift_map[t] = {
-                "missing_in_db": sorted(code_tables.get(t, [])),
-                "missing_in_code": [],
-                "type_mismatches": {},
-            }
-        if schema_source == "sql_migrations":
-            for t in extra_in_db:
-                drift_map[t] = {
-                    "missing_in_db": [],
-                    "missing_in_code": sorted(db_tables.get(t, [])),
-                    "type_mismatches": {},
-                }
-
-        drift_detected = bool(missing_in_db or column_drifts or (schema_source == "sql_migrations" and extra_in_db))
-        return {
-            "success": True,
-            "db_path": str(db_file),
-            "schema_source": schema_source,
-            "migration_files_found": [p.relative_to(p_root).as_posix() for p in migration_files],
-            "db_tables": list(db_tables.keys()),
-            "code_models_found": list(code_tables.keys()),
-            "drift_detected": drift_detected,
-            "in_sync": not drift_detected,
-            "missing_tables_in_db": missing_in_db,
-            "extra_tables_in_db": extra_in_db,
-            "column_drifts": column_drifts,
-            "drift": drift_map,
-            "status": "drift_detected" if drift_detected else "in_sync",
-        }
 
     def package_audit(self, root: str, lockfile_path: str | None = None) -> dict[str, Any]:
         from .dependency_audit import MAX_MANIFEST_BYTES, audit_manifest
@@ -9860,360 +4425,13 @@ def test_{sym}_regression_edge_cases():
         max_results: int = 30,
     ) -> dict[str, Any]:
         """Syntax-aware structural code search across Python and multi-language repositories."""
-        canon_root = canonical_root(root)
-        root_path = Path(canon_root)
-        if not root_path.is_dir():
-            return {"success": False, "error": f"invalid root directory: {root}"}
-
-        target_pattern = (pattern or "").strip().lower()
-        if not target_pattern:
-            return {"success": False, "error": "pattern is required"}
-
-        output_limit = max(0, int(max_results))
-        result_probe_limit = output_limit + 1
-        file_limit = 400
-        results: list[dict[str, Any]] = []
-        read_errors = 0
-        parse_errors = 0
-        ignore_dirs = {".git", "node_modules", "vendor", "__pycache__", ".venv", "venv", "dist", "build"}
-
-        def authorized_path(candidate: Path) -> Path:
-            relative = candidate.relative_to(root_path)
-            if any(part in {"..", ""} for part in relative.parts):
-                raise PermissionError("path must stay within repository root")
-            current = root_path
-            for part in relative.parts:
-                current = current / part
-                if _is_symlink_or_reparse_point(current):
-                    raise PermissionError("path cannot traverse symlinks or reparse points")
-            resolved = candidate.resolve(strict=True)
-            resolved.relative_to(root_path)
-            return resolved
-
-        if path:
-            candidate = Path(path.replace("\\", "/"))
-            if not candidate.is_absolute():
-                candidate = root_path / candidate
-            try:
-                candidate = authorized_path(candidate)
-            except (ValueError, PermissionError):
-                return {"success": False, "status_code": 403, "terminal": True, "retryable": False,
-                        "error": "path must stay within repository root without symlinks or reparse points"}
-            except OSError:
-                return {"success": False, "status_code": 404, "terminal": True, "retryable": False,
-                        "error": "source path unavailable"}
-            else:
-                files_to_scan = [candidate] if candidate.is_file() else []
-        else:
-            files_to_scan = []
-            for cur_root, dirs, filenames in os.walk(root_path):
-                safe_dirs = []
-                for dirname in dirs:
-                    if dirname in ignore_dirs or dirname.startswith("."):
-                        continue
-                    try:
-                        authorized_path(Path(cur_root) / dirname)
-                    except (OSError, ValueError):
-                        read_errors += 1
-                    else:
-                        safe_dirs.append(dirname)
-                dirs[:] = safe_dirs
-                for f in filenames:
-                    if f.endswith((".py", ".ts", ".js", ".go", ".rs", ".cs")):
-                        files_to_scan.append(Path(cur_root) / f)
-                        if len(files_to_scan) > file_limit:
-                            break
-                if len(files_to_scan) > file_limit:
-                    break
-            file_limit_reached = len(files_to_scan) > file_limit
-            files_to_scan = files_to_scan[:file_limit]
-        if path:
-            file_limit_reached = False
-
-        files_scanned = 0
-        for fpath in files_to_scan:
-            if len(results) >= result_probe_limit:
-                break
-            files_scanned += 1
-            try:
-                rel_p = str(fpath.relative_to(root_path)).replace("\\", "/")
-                checked = authorized_path(fpath)
-                before = checked.stat(follow_symlinks=False)
-                flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_NOFOLLOW", 0)
-                descriptor = os.open(checked, flags)
-                with os.fdopen(descriptor, "rb") as stream:
-                    opened = os.fstat(stream.fileno())
-                    if not stat.S_ISREG(opened.st_mode) or (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino):
-                        raise PermissionError("source identity changed")
-                    rechecked = authorized_path(fpath).stat(follow_symlinks=False)
-                    if (opened.st_dev, opened.st_ino) != (rechecked.st_dev, rechecked.st_ino):
-                        raise PermissionError("source path changed before read")
-                    data = stream.read(4 * 1024 * 1024 + 1)
-                    after = os.fstat(stream.fileno())
-                if len(data) > 4 * 1024 * 1024:
-                    raise ValueError("source exceeds read limit")
-                current = authorized_path(fpath).stat(follow_symlinks=False)
-                # Windows may expose different ctime semantics through an open
-                # handle and a fresh path stat; do not reject stable files for it.
-                identity = lambda value: (value.st_dev, value.st_ino, value.st_size, value.st_mtime_ns) + (() if os.name == "nt" else (value.st_ctime_ns,))
-                if identity(opened) != identity(after) or identity(after) != identity(current):
-                    raise PermissionError("source changed during read")
-                content = data.decode("utf-8", errors="replace")
-            except (OSError, ValueError):
-                read_errors += 1
-                continue
-
-            lines = content.splitlines()
-            file_result_start = len(results)
-            parse_failed = False
-
-            if fpath.suffix == ".py":
-                try:
-                    tree = ast.parse(content, filename=rel_p)
-                    for node in ast.walk(tree):
-                        if len(results) >= result_probe_limit:
-                            break
-
-                        if target_pattern.startswith(("fn:", "function:", "class:")):
-                            prefix, name = target_pattern.split(":", 1)
-                            name = name.strip()
-                            kinds = (ast.ClassDef,) if prefix == "class" else (ast.FunctionDef, ast.AsyncFunctionDef)
-                            if isinstance(node, kinds) and node.name.lower() == name:
-                                label = "class" if prefix == "class" else "function"
-                                results.append({
-                                    "file": rel_p,
-                                    "line": node.lineno,
-                                    "structure": f"{label}:{name}",
-                                    "description": f"{label.capitalize()} declaration matching '{name}'",
-                                    "snippet": lines[node.lineno - 1].strip()[:120],
-                                })
-                        elif target_pattern in {"bare_except", "unhandled_exception", "missing_error_handling"}:
-                            if isinstance(node, ast.Try):
-                                for handler in node.handlers:
-                                    if len(results) >= result_probe_limit:
-                                        break
-                                    if handler.type is None:
-                                        snip = lines[handler.lineno - 1].strip() if handler.lineno <= len(lines) else ""
-                                        results.append({
-                                            "file": rel_p,
-                                            "line": handler.lineno,
-                                            "structure": "bare_except",
-                                            "description": "Bare 'except:' catches all exceptions including SystemExit and KeyboardInterrupt",
-                                            "snippet": snip,
-                                        })
-                                    elif isinstance(handler.type, ast.Name) and handler.type.id in {"Exception", "BaseException"}:
-                                        if len(handler.body) == 1 and isinstance(handler.body[0], ast.Pass):
-                                            snip = lines[handler.lineno - 1].strip() if handler.lineno <= len(lines) else ""
-                                            results.append({
-                                                "file": rel_p,
-                                                "line": handler.lineno,
-                                                "structure": "silent_except_pass",
-                                                "description": "Silent 'except Exception: pass' swallows errors without logging",
-                                                "snippet": snip,
-                                            })
-
-                        elif target_pattern in {"unclosed_resource", "open_without_with", "resource_leak"}:
-                            if isinstance(node, ast.Assign):
-                                if isinstance(node.value, ast.Call) and isinstance(node.value.func, ast.Name) and node.value.func.id == "open":
-                                    snip = lines[node.lineno - 1].strip() if node.lineno <= len(lines) else ""
-                                    results.append({
-                                        "file": rel_p,
-                                        "line": node.lineno,
-                                        "structure": "open_without_with",
-                                        "description": "File opened with direct assignment rather than 'with open(...)' context manager",
-                                        "snippet": snip,
-                                    })
-
-                        elif target_pattern in {"async_without_await", "redundant_async"}:
-                            if isinstance(node, ast.AsyncFunctionDef):
-                                has_await = any(isinstance(child, (ast.Await, ast.AsyncWith, ast.AsyncFor)) for child in ast.walk(node))
-                                if not has_await:
-                                    snip = lines[node.lineno - 1].strip() if node.lineno <= len(lines) else ""
-                                    results.append({
-                                        "file": rel_p,
-                                        "line": node.lineno,
-                                        "structure": "async_without_await",
-                                        "description": f"Async function '{node.name}' contains no await, async with, or async for expressions",
-                                        "snippet": snip,
-                                    })
-
-                        elif target_pattern.startswith("decorator:") or target_pattern.startswith("@"):
-                            dec_target = target_pattern.split(":", 1)[-1].lstrip("@").strip()
-                            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-                                for dec in node.decorator_list:
-                                    dec_id = ""
-                                    if isinstance(dec, ast.Name):
-                                        dec_id = dec.id
-                                    elif isinstance(dec, ast.Attribute):
-                                        dec_id = dec.attr
-                                    elif isinstance(dec, ast.Call):
-                                        if isinstance(dec.func, ast.Name):
-                                            dec_id = dec.func.id
-                                        elif isinstance(dec.func, ast.Attribute):
-                                            dec_id = dec.func.attr
-                                    if dec_target.lower() in dec_id.lower():
-                                        snip = lines[node.lineno - 1].strip() if node.lineno <= len(lines) else ""
-                                        results.append({
-                                            "file": rel_p,
-                                            "line": node.lineno,
-                                            "structure": f"decorator:{dec_id}",
-                                            "symbol": node.name,
-                                            "description": f"Function/class '{node.name}' has matching decorator @{dec_id}",
-                                            "snippet": snip,
-                                        })
-
-                        elif target_pattern.startswith("subclass:") or target_pattern.startswith("inherit:"):
-                            sub_target = target_pattern.split(":", 1)[1].strip()
-                            if isinstance(node, ast.ClassDef):
-                                for base in node.bases:
-                                    base_id = ""
-                                    if isinstance(base, ast.Name):
-                                        base_id = base.id
-                                    elif isinstance(base, ast.Attribute):
-                                        base_id = base.attr
-                                    if sub_target.lower() in base_id.lower():
-                                        snip = lines[node.lineno - 1].strip() if node.lineno <= len(lines) else ""
-                                        results.append({
-                                            "file": rel_p,
-                                            "line": node.lineno,
-                                            "structure": f"subclass:{base_id}",
-                                            "symbol": node.name,
-                                            "description": f"Class '{node.name}' inherits from '{base_id}'",
-                                            "snippet": snip,
-                                        })
-
-                        elif target_pattern.startswith("call:"):
-                            fn_target = target_pattern.split(":", 1)[1].strip()
-                            if isinstance(node, ast.Call):
-                                call_id = ""
-                                if isinstance(node.func, ast.Name):
-                                    call_id = node.func.id
-                                elif isinstance(node.func, ast.Attribute):
-                                    call_id = node.func.attr
-                                if fn_target.lower() in call_id.lower():
-                                    snip = lines[node.lineno - 1].strip() if node.lineno <= len(lines) else ""
-                                    results.append({
-                                        "file": rel_p,
-                                        "line": node.lineno,
-                                        "structure": f"call:{call_id}",
-                                        "description": f"Call to '{call_id}'",
-                                        "snippet": snip,
-                                    })
-                except SyntaxError:
-                    parse_errors += 1
-                    parse_failed = True
-
-            if (parse_failed or len(results) == file_result_start or fpath.suffix != ".py") and not (
-                fpath.suffix == ".py" and target_pattern.startswith(("fn:", "function:", "class:"))
-            ):
-                for idx, line in enumerate(lines, 1):
-                    if len(results) >= result_probe_limit:
-                        break
-                    raw_line = line.strip()
-                    if not raw_line or raw_line.startswith(("//", "#", "/*", "*")):
-                        continue
-                    matched = False
-                    desc = ""
-                    struct_type = "text_pattern"
-
-                    # Multi-language JS/TS patterns
-                    if target_pattern in {"unhandled_promise", "catch_missing"} and ".then(" in raw_line and ".catch(" not in raw_line:
-                        matched = True
-                        struct_type = "unhandled_promise"
-                        desc = "Promise .then() chained without .catch() handler"
-                    elif target_pattern in {"empty_catch", "silent_catch"} and (
-                        re.search(r"catch\s*(?:\([^)]*\))?\s*\{\s*\}", raw_line)
-                        or ("catch" in raw_line and "{" in raw_line and idx < len(lines) and lines[idx].strip() == "}")
-                    ):
-                        matched = True
-                        struct_type = "empty_catch"
-                        desc = "Empty catch block swallowing errors silently"
-                    elif target_pattern in {"any_type", "ts_any"} and re.search(r":\s*any\b|\bas\s+any\b", raw_line):
-                        matched = True
-                        struct_type = "any_type"
-                        desc = "TypeScript 'any' type bypasses static type verification"
-                    elif target_pattern in {"react_hook", "hook"} and re.search(r"\buse[A-Z][a-zA-Z0-9_]*\s*\(", raw_line):
-                        matched = True
-                        struct_type = "react_hook"
-                        desc = "React hook invocation"
-
-                    # Go patterns
-                    elif target_pattern in {"goroutine_leak", "goroutine"} and re.search(r"\bgo\s+(?:func|[a-zA-Z0-9_.]+\()", raw_line):
-                        matched = True
-                        struct_type = "goroutine"
-                        desc = "Goroutine spawned without explicit lifecycle management"
-                    elif target_pattern in {"error_ignored", "ignored_err"} and re.search(r"_,\s*err\s*:=|_\s*=\s*[a-zA-Z0-9_.]+\(", raw_line):
-                        matched = True
-                        struct_type = "error_ignored"
-                        desc = "Error return value ignored or discarded with blank identifier"
-
-                    # Rust patterns
-                    elif target_pattern in {"unwrap_call", "unwrap"} and (".unwrap()" in raw_line or ".expect(" in raw_line):
-                        matched = True
-                        struct_type = "unwrap_call"
-                        desc = "Potential panic via unchecked .unwrap() / .expect() call"
-                    elif target_pattern in {"unsafe_block", "unsafe"} and re.search(r"\bunsafe\s*\{", raw_line):
-                        matched = True
-                        struct_type = "unsafe_block"
-                        desc = "Unsafe Rust block bypassing memory safety guarantees"
-                    elif target_pattern in {"todo_macro", "unimplemented"} and re.search(r"\b(?:todo!|unimplemented!)\(", raw_line):
-                        matched = True
-                        struct_type = "todo_macro"
-                        desc = "Unfinished code via todo!() or unimplemented!() macro"
-
-                    # Universal prefix queries: fn:name, class:name, struct:name, interface:name
-                    elif target_pattern.startswith("fn:") or target_pattern.startswith("function:"):
-                        fn_name = target_pattern.split(":", 1)[1].strip().lower()
-                        if re.search(rf"\b(?:def|function|fn|func)\s+{re.escape(fn_name)}\b", raw_line, re.I):
-                            matched = True
-                            struct_type = f"function:{fn_name}"
-                            desc = f"Function declaration matching '{fn_name}'"
-                    elif target_pattern.startswith("class:") or target_pattern.startswith("struct:") or target_pattern.startswith("interface:"):
-                        prefix, ent_name = target_pattern.split(":", 1)
-                        if re.search(rf"\b(?:class|struct|interface|type)\s+{re.escape(ent_name.strip())}\b", raw_line, re.I):
-                            matched = True
-                            struct_type = f"{prefix}:{ent_name.strip()}"
-                            desc = f"{prefix.capitalize()} declaration matching '{ent_name.strip()}'"
-
-                    elif target_pattern in {"sql_injection"} and re.search(r"SELECT\s+.*\+\s*['\"]", raw_line, re.I):
-                        matched = True
-                        struct_type = "sql_injection"
-                        desc = "Potential raw string concatenation in SQL statement"
-                    elif target_pattern in raw_line.lower():
-                        matched = True
-                        desc = f"Pattern match for '{target_pattern}'"
-
-                    if matched:
-                        results.append({
-                            "file": rel_p,
-                            "line": idx,
-                            "structure": struct_type,
-                            "description": desc,
-                            "snippet": raw_line[:120],
-                        })
-
-        returned_matches = results[:output_limit]
-        truncation_reasons: list[str] = []
-        if file_limit_reached:
-            truncation_reasons.append("file_limit")
-        if len(results) > output_limit:
-            truncation_reasons.append("result_limit")
-        if read_errors:
-            truncation_reasons.append("read_errors")
-        if parse_errors:
-            truncation_reasons.append("parse_errors")
-        return {
-            "success": True,
-            "root": str(root_path),
-            "pattern": pattern,
-            "count": len(returned_matches),
-            "matches": returned_matches,
-            "files_scanned": files_scanned,
-            "truncated": bool(truncation_reasons),
-            "truncation_reasons": truncation_reasons,
-            "read_errors": read_errors,
-            "parse_errors": parse_errors,
-        }
+        return search_structurally(
+            root,
+            pattern,
+            path=path,
+            max_results=max_results,
+            is_symlink_or_reparse_point=_is_symlink_or_reparse_point,
+        )
 
     def context_budget(
         self,
@@ -10397,33 +4615,10 @@ def test_{sym}_regression_edge_cases():
                     file_calls.add(node.id)
             module_calls[rel] = file_calls
 
-        ambiguous_names = {name for name, symbol_ids in defs_by_name.items() if len(symbol_ids) > 1}
-        reachable: set[str] = set()
-        queue: list[str] = []
-
-        for ep in ep_candidates:
-            queue.extend(
-                symbol_id
-                for name in module_calls.get(ep, set())
-                if name not in ambiguous_names
-                for symbol_id in defs_by_name.get(name, [])
-            )
-
-        visited_nodes: set[str] = set()
-        while queue:
-            sym = queue.pop(0)
-            if sym in visited_nodes:
-                continue
-            visited_nodes.add(sym)
-            if sym in defs:
-                reachable.add(sym)
-                sym_file = defs[sym]["file"]
-                for neighbor in module_calls.get(sym_file, set()):
-                    if neighbor not in visited_nodes and neighbor not in ambiguous_names:
-                        queue.extend(defs_by_name.get(neighbor, []))
-
-        ambiguous_symbols = [info for name in sorted(ambiguous_names) for info in (defs[symbol_id] for symbol_id in defs_by_name[name])]
-        unreachable = [info for symbol_id, info in defs.items() if symbol_id not in reachable and info["name"] not in ambiguous_names]
+        from .reachability_analysis import analyze_reachability
+        ambiguous_names, reachable, ambiguous_symbols, unreachable = analyze_reachability(
+            defs, defs_by_name, module_calls, ep_candidates
+        )
         warnings = []
         if ambiguous_names:
             warnings.append("Duplicate symbol names make reachability ambiguous; affected symbols were excluded from reachable and dead-code counts.")
@@ -10739,23 +4934,7 @@ def test_{sym}_regression_edge_cases():
                         return {"success": False, "applied": False, "error": f"unable to inspect Git diff for {p_str}: {exc}", "path": p_str}
                     if diff.returncode != 0:
                         return {"success": False, "applied": False, "error": f"Git diff failed for {p_str}: {diff.stderr.decode('utf-8', errors='replace')[:300]}", "path": p_str}
-                    ranges: list[tuple[int, int]] = []
-                    for diff_line in diff.stdout.decode("utf-8", errors="replace").splitlines():
-                        if not diff_line.startswith("@@") or " +" not in diff_line:
-                            continue
-                        new_range = diff_line.split(" +", 1)[1].split(" ", 1)[0]
-                        start_text, separator, count_text = new_range.partition(",")
-                        try:
-                            start_line = int(start_text)
-                            line_count = int(count_text) if separator else 1
-                        except ValueError:
-                            ranges = [(1, 2**31 - 1)]
-                            break
-                        # A deletion has no current-file line; its insertion point is protected.
-                        first = max(1, start_line)
-                        last = max(first, start_line + line_count - 1)
-                        ranges.append((first, last))
-                    dirty_hunks[p_candidate] = ranges or [(1, 2**31 - 1)]
+                    dirty_hunks[p_candidate] = parse_dirty_hunks(diff.stdout)
             elif status.returncode != 0:
                 stderr = status.stderr.decode("utf-8", errors="replace")
                 if "not a git repository" not in stderr.lower():

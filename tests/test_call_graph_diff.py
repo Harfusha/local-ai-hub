@@ -4,6 +4,7 @@ import ast
 from pathlib import Path
 import pytest
 from local_ai_hub.deterministic import DeterministicEngine
+from local_ai_hub.call_graph_diff import analyze_call_graph_diff
 
 
 def test_call_graph_diff_detects_missing_required_argument(tmp_path: Path) -> None:
@@ -116,3 +117,20 @@ def test_call_graph_diff_logs_expected_snippet_render_failure_without_source(
     messages = [record.getMessage() for record in caplog.records]
     assert any("Caller snippet rendering skipped (ValueError)" in message for message in messages)
     assert all(str(tmp_path) not in message for message in messages)
+
+
+def test_extracted_call_graph_diff_uses_breaking_change_detector(tmp_path: Path) -> None:
+    (tmp_path / "caller.py").write_text("def run():\n    return retired_api()\n", encoding="utf-8")
+    diff = "--- a/lib.py\n+++ /dev/null\n-def retired_api():\n-    pass\n"
+
+    def detect_changes(file_path: str, deleted: list[str], added: list[str]) -> list[dict]:
+        assert file_path == "lib.py"
+        assert deleted == ["def retired_api():", "    pass"]
+        assert added == []
+        return [{"symbol": "retired_api", "type": "removed_symbol"}]
+
+    result = analyze_call_graph_diff(tmp_path, diff, detect_changes)
+
+    assert result["success"] is True
+    assert result["breaking_callers"][0]["callee"] == "retired_api"
+    assert result["impacted_files"] == ["caller.py"]

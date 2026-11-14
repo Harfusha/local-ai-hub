@@ -17,6 +17,34 @@ def _broker(tmp_path) -> CommandBroker:
     )
 
 
+def test_dispatcher_empty_and_unknown_results_keep_fail_closed_policy(tmp_path):
+    broker = _broker(tmp_path)
+    assert broker.classify("") == {
+        "class": "unknown",
+        "cacheable": False,
+        "allowed": False,
+        "replay_safe": False,
+        "reason": "empty or unparsable command",
+    }
+    assert broker.classify("custom_tool --apply") == {
+        "class": "unknown",
+        "cacheable": False,
+        "allowed": False,
+        "replay_safe": False,
+        "reason": "command not in safe broker allowlist",
+    }
+
+
+def test_dispatcher_pipeline_result_keeps_replay_safety_default(tmp_path):
+    assert _broker(tmp_path).classify("rg -n needle src | head -n 1") == {
+        "class": "read",
+        "cacheable": False,
+        "allowed": True,
+        "replay_safe": True,
+        "reason": "pipeline with safe filters",
+    }
+
+
 @pytest.mark.parametrize("command", [
     'tasklist /FI "PID eq 3844" /FO CSV /NH',
     'TASKLIST.EXE /FO CSV', 'netstat -ano', 'ipconfig /all',
@@ -386,6 +414,17 @@ def test_read_only_classifier_helper_ignores_non_read_commands():
         read_only=READ_ONLY,
         volatile_reads=VOLATILE_READS,
     ) is None
+
+
+def test_read_only_classifier_uses_shared_fail_closed_unknown_result():
+    from local_ai_hub.command_read import _blocked_unknown
+
+    assert _blocked_unknown("find execution flags are not allowed") == {
+        "class": "unknown",
+        "cacheable": False,
+        "allowed": False,
+        "reason": "find execution flags are not allowed",
+    }
 
 
 def test_broker_keeps_execution_options_blocked_for_read_tools(tmp_path):

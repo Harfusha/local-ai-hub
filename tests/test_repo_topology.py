@@ -3,6 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 from local_ai_hub.deterministic import DeterministicEngine
 from local_ai_hub.repo_tools import RepositoryTools
+from local_ai_hub.topology_summary import build_topology_summary_markdown
+from local_ai_hub.topology_labels import classify_topology_layer
 
 
 def test_repo_topology_layered_detection(tmp_path: Path):
@@ -47,3 +49,37 @@ def test_repo_topology_layered_detection(tmp_path: Path):
     assert "cli.py" in topo["summary_markdown"]
     assert topo["coverage"]["module_graph_resolved"] is True
     assert any(edge["target"].endswith("models/user.py") for edge in topo["module_graph"]["edges"])
+
+
+def test_topology_summary_keeps_bounded_path_and_edge_samples() -> None:
+    layers = {
+        "entrypoints": ["src/app.py", "src/cli.py", "src/web.py", "src/worker.py", "src/extra.py"],
+        "empty_layer": [],
+    }
+    edges = [
+        {"source": f"module_{index}.py", "line": index + 1, "target": f"target_{index}.py"}
+        for index in range(9)
+    ]
+
+    summary = build_topology_summary_markdown("demo", "Modular CLI Application", layers, False, edges)
+
+    assert summary.startswith("# Architecture Topology: demo\n**Architecture hypothesis (heuristic)**: Modular CLI Application")
+    assert "**Entrypoints** (5): `src/app.py, src/cli.py, src/web.py, src/worker.py`" in summary
+    assert "src/extra.py" not in summary
+    assert "## Local Python import graph: 9 edges; complete=false" in summary
+    assert "module_7.py:8` -> `target_7.py" in summary
+    assert "module_8.py" not in summary
+
+
+def test_topology_layer_classification_preserves_precedence() -> None:
+    cases = [
+        ("services/app.py", "app.py", "entrypoints"),
+        ("api/user_service.py", "user_service.py", "presentation"),
+        ("services/user_model.py", "user_model.py", "core_services"),
+        ("models/db_state.py", "db_state.py", "domain_models"),
+        ("storage/client.py", "client.py", "infrastructure"),
+        ("helpers/text.py", "text.py", "utilities"),
+    ]
+
+    for relative_path, filename, expected in cases:
+        assert classify_topology_layer(relative_path, filename) == expected

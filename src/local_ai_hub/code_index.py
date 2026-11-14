@@ -23,6 +23,8 @@ from . import __version__
 
 _PARSER_ANALYZER_VERSION = f"{__version__}:call-edges-v18-lexical-scope-doc-tool-postings"
 from .cache import MemoryLRUCache, stable_hash
+from .code_index_candidate_parse import parse_index_candidate
+from .code_index_parse_blobs import load_parse_blobs
 from .normalizer import tokenize_query_terms
 from .process_utils import canonical_root
 from .repo_tools import FileTooLargeError, is_root_archive_path
@@ -2601,48 +2603,6 @@ class CodeIndex:
 
         blob_map: dict[tuple[str, str], tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]] = {}
 
-        def _bulk_load_parse_blobs(pairs: list[tuple[str, str]]) -> None:
-            unique_pairs = list(dict.fromkeys(pairs))
-            for content_hash, language in unique_pairs:
-                cached = self._parse_blob_l1.get(
-                    f"{content_hash}:{_PARSER_ANALYZER_VERSION}:{language}"
-                )
-                if cached is not None:
-                    diagnostic = cached[3] if len(cached) >= 4 and isinstance(cached[3], dict) else {
-                        "status": "unknown", "parser": "unknown", "fallback_used": False,
-                    }
-                    blob_map[(content_hash, language)] = (
-                        list(cached[0]), list(cached[1]), list(cached[2]), dict(diagnostic),
-                    )
-            missing_pairs = [pair for pair in unique_pairs if pair not in blob_map]
-            if not missing_pairs:
-                return
-            try:
-                for batch in sqlite_batches(missing_pairs):
-                    clauses = " OR ".join("(content_hash=? AND language=?)" for _ in batch)
-                    params: list[Any] = []
-                    for h, lang in batch:
-                        params.extend([h, lang])
-                    with self._lock, closing(self._connect()) as con:
-                        rows = con.execute(
-                            f"SELECT content_hash,language,payload_json FROM parse_blobs WHERE analyzer_version=? AND ({clauses})",
-                            (_PARSER_ANALYZER_VERSION, *params),
-                        ).fetchall()
-                    for row in rows:
-                        data = json.loads(str(row[2]))
-                        if isinstance(data, dict):
-                            diagnostic = data.get("parse_outcome")
-                            if not isinstance(diagnostic, dict):
-                                diagnostic = {"status": "unknown", "parser": "unknown", "fallback_used": False}
-                            blob_map[(str(row[0]), str(row[1]))] = (
-                                list(data.get("symbols", [])),
-                                list(data.get("refs", [])),
-                                list(data.get("edges", [])),
-                                diagnostic,
-                            )
-            except Exception:
-                pass
-
         supplied_pairs: list[tuple[str, str]] = []
         for path, supplied_hash in normalized:
             if supplied_hash:
@@ -2650,7 +2610,7 @@ class CodeIndex:
                 if existing.get(path, ())[:3] != (supplied_hash, _PARSER_ANALYZER_VERSION, lang):
                     supplied_pairs.append((supplied_hash, lang))
         if supplied_pairs:
-            _bulk_load_parse_blobs(supplied_pairs)
+            blob_map.update(load_parse_blobs(self, supplied_pairs, _PARSER_ANALYZER_VERSION, sqlite_batches))
 
         candidates: list[tuple[str, str, str, list[str]]] = []
         file_stats: dict[str, Any] = {}
@@ -2714,7 +2674,7 @@ class CodeIndex:
             pairs = list(dict.fromkeys((h, lang) for _, h, lang, _ in candidates))
             missing_pairs = [pair for pair in pairs if pair not in blob_map]
             if missing_pairs:
-                _bulk_load_parse_blobs(missing_pairs)
+                blob_map.update(load_parse_blobs(self, missing_pairs, _PARSER_ANALYZER_VERSION, sqlite_batches))
 
         files_to_insert: list[tuple[Any, ...]] = []
         syms_to_insert: list[tuple[Any, ...]] = []
@@ -2723,22 +2683,13 @@ class CodeIndex:
         parse_blob_rows: list[tuple[Any, ...]] = []
         paths_to_clean: list[tuple[str, str]] = []
         now = time.time()
-        def _parse_candidate(cand: tuple[str, str, str, list[str]]):
-            path, content_hash, lang, lines = cand
-            parsed = blob_map.get((content_hash, lang))
-            if parsed is None:
-                syms, refs, edges = self._parse_file_content("\n".join(lines), lang, source_key=self._tree_source_key(c_root, path))
-                diagnostic = dict(getattr(self._parse_diagnostic, "value", {}))
-                row_blob = (content_hash, _PARSER_ANALYZER_VERSION, lang, json_dumps({"symbols": syms, "refs": refs, "edges": edges, "parse_outcome": diagnostic}, ensure_ascii=False, separators=(",", ":")), now)
-            else:
-                syms, refs, edges, diagnostic = parsed
-                row_blob = None
-            return path, content_hash, lang, syms, refs, edges, row_blob
-
         # Tree-sitter parsers are shared per language and guarded by one lock.
         # Threading here queues parses behind that lock and adds scheduler cost;
         # the bounded batch SQL write is where this path gains throughput.
-        parsed_candidates = [_parse_candidate(c) for c in candidates]
+        parsed_candidates = [
+            parse_index_candidate(self, candidate, blob_map, c_root, now, _PARSER_ANALYZER_VERSION)
+            for candidate in candidates
+        ]
 
         for path, content_hash, lang, syms, refs, edges, row_blob in parsed_candidates:
             if row_blob is not None:

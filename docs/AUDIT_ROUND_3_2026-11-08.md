@@ -240,3 +240,9 @@ class OperationContract:
 ```
 
 Zavedení tohoto jednotného kontraktu zajistí, že žádná komponenta nebude zaměňovat dílčí úspěch za kompletní hotovou práci.
+
+## Ověření opravy T18 — 2026-11-13
+
+- `read_source_slice()` incorrectly rejected `line_start=1` for an empty file because iteration leaves `total_lines=0`. The existing `test_t3_05_source_slice_empty_file_line_bounds` specifies that line 1 is a valid empty slice while line 5 is out of range.
+- Fixed the range guard to allow only the `(total_lines=0, line_start=1)` empty-file boundary; all higher requested starts still fail closed.
+- RED: the focused Round 3 module failed this case before the change (`1 failed, 11 passed`). GREEN: the focused case passed (`1 passed`), then `tests/test_audit_round3_regressions.py` passed (`12 passed`). Scoped `git diff --check -- src/local_ai_hub/source_slice.py` exited 0. This is focused source/test evidence only; broad/release/runtime gates remain open.

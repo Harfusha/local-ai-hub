@@ -56,6 +56,45 @@ def _make_source_repo(source: Path) -> None:
     _git(source, "commit", "--quiet", "-m", "seed")
 
 
+def test_private_index_validates_all_staged_objects_in_one_batch(
+    tmp_path: Path, monkeypatch
+) -> None:
+    object_ids = {"a" * 40, "b" * 40}
+    calls = []
+
+    def fake_run(command, **kwargs):
+        calls.append((command, kwargs))
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout="".join(f"{object_id} blob\n" for object_id in sorted(object_ids)),
+            stderr="",
+        )
+
+    monkeypatch.setattr(command_transactions.subprocess, "run", fake_run)
+
+    command_transactions._validate_index_objects(tmp_path, object_ids)
+
+    assert len(calls) == 1
+    command, kwargs = calls[0]
+    assert command[-1] == "--batch-check=%(objectname) %(objecttype)"
+    assert kwargs["input"] == "".join(f"{item}\n" for item in sorted(object_ids))
+    assert kwargs["timeout"] == 15
+
+
+@pytest.mark.parametrize("result_line", [f"{'a' * 40} missing", f"{'a' * 40} tree"])
+def test_private_index_batch_rejects_missing_or_non_blob_objects(
+    tmp_path: Path, monkeypatch, result_line: str
+) -> None:
+    def fake_run(command, **kwargs):
+        return subprocess.CompletedProcess(command, 0, stdout=result_line + "\n", stderr="")
+
+    monkeypatch.setattr(command_transactions.subprocess, "run", fake_run)
+
+    with pytest.raises(OSError, match="staged Git index object"):
+        command_transactions._validate_index_objects(tmp_path, {"a" * 40})
+
+
 def test_private_snapshot_hashes_copy_without_second_destination_tree_scan(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -74,7 +113,7 @@ def test_private_snapshot_hashes_copy_without_second_destination_tree_scan(
         source, tmp_path / "transaction"
     )
 
-    assert manifest_roots == [source.resolve(), source.resolve()]
+    assert manifest_roots == [source.resolve()]
     assert original_manifest(snapshot) == baseline
 
 
@@ -97,7 +136,7 @@ def test_private_snapshot_can_run_full_destination_verification(
         source, tmp_path / "transaction", full_verification=True
     )
 
-    assert manifest_roots == [source.resolve(), snapshot.resolve(), source.resolve()]
+    assert manifest_roots == [snapshot.resolve(), source.resolve()]
     assert original_manifest(snapshot) == baseline
 
 

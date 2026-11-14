@@ -8,7 +8,7 @@ import stat
 import subprocess
 from collections.abc import Iterable, Mapping
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from types import MappingProxyType
 
@@ -23,6 +23,57 @@ class _TreeEntry:
     mtime_ns: int
     digest: str = ""
     target: str = ""
+
+
+@dataclass(frozen=True)
+class RollbackFileSnapshot:
+    content: bytes | None
+    mode: int | None
+    xattrs: dict[str, bytes]
+    windows_dacl: bytes | None
+    atime_ns: int | None
+    mtime_ns: int | None
+
+
+@dataclass(frozen=True)
+class RollbackSnapshot:
+    root: Path
+    root_identity: tuple[int, int]
+    files: dict[str, RollbackFileSnapshot]
+    root_guard: int
+    postimages: dict[str, "RollbackPostimage"] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class RollbackPostimage:
+    safe: bool
+    fingerprint: tuple[int, int, int, int, int, int, str, str] | None
+    reason: str = ""
+
+
+@dataclass(frozen=True)
+class PatchFileSnapshot:
+    content: bytes | None
+    mode: int | None
+    atime_ns: int | None
+    mtime_ns: int | None
+    created_parent_dirs: tuple[str, ...] = ()
+    xattrs: dict[str, bytes] | None = None
+    windows_dacl: bytes | None = None
+    device: int | None = None
+    inode: int | None = None
+    owner_uid: int | None = None
+    owner_gid: int | None = None
+    content_digest: str | None = None
+    size: int | None = None
+
+
+@dataclass(frozen=True)
+class PatchTargetsSnapshot:
+    root: Path
+    root_identity: tuple[int, int]
+    files: dict[str, PatchFileSnapshot]
+    root_guard: int
 
 
 def is_valid_transaction_write_path(path: str) -> bool:
@@ -336,10 +387,16 @@ def _copy_tree(
         for entry in entries:
             if source_dir == source and entry.name.casefold() == ".git":
                 continue
+            if entry.name.casefold() == ".git":
+                raise ValueError("nested Git metadata is unsupported in transaction inputs")
             source_path = Path(entry.path)
             target_path = destination_dir / entry.name
             relative = source_path.relative_to(source).as_posix()
             info = entry.stat(follow_symlinks=False)
+            attrs = int(getattr(info, "st_file_attributes", 0))
+            if attrs & int(getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)):
+                if not entry.is_symlink():
+                    raise ValueError(f"unsupported reparse point in transaction inputs: {relative}")
             if entry.is_symlink():
                 link = os.readlink(source_path)
                 resolved = (source_path.parent / link).resolve(strict=False)
@@ -420,6 +477,31 @@ def _index_state(root: Path) -> tuple[Path, dict[str, tuple[int, int, int, int, 
     return index, state
 
 
+def _validate_index_objects(destination: Path, object_ids: set[str]) -> None:
+    if not object_ids:
+        return
+    ordered_ids = sorted(object_ids)
+    result = subprocess.run(
+        ["git", "-C", str(destination), "cat-file", "--batch-check=%(objectname) %(objecttype)"],
+        input="".join(f"{object_id}\n" for object_id in ordered_ids),
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=15,
+        env=_clean_git_env(),
+        **hidden_run_kwargs(),
+    )
+    if result.returncode != 0:
+        raise OSError(f"cannot validate staged Git index objects: {result.stderr[-512:]}")
+    records = result.stdout.splitlines()
+    if len(records) != len(ordered_ids):
+        raise OSError("cannot validate staged Git index objects: incomplete batch response")
+    for expected, record in zip(ordered_ids, records):
+        parts = record.split(" ", 1)
+        if len(parts) != 2 or parts[0].casefold() != expected.casefold() or parts[1] != "blob":
+            raise OSError(f"cannot validate staged Git index object: {expected}")
+
+
 def _copy_private_index(source: Path, destination: Path) -> None:
     source_index, source_state = _index_state(source)
     destination_index = _git_path(destination, "index")
@@ -443,8 +525,7 @@ def _copy_private_index(source: Path, destination: Path) -> None:
         for record in staged.stdout.split(b"\0")
         if record and b" " in record
     }
-    for object_id in object_ids:
-        _git_output(destination, "cat-file", "-e", f"{object_id}^{{blob}}")
+    _validate_index_objects(destination, object_ids)
     _, current_state = _index_state(source)
     if current_state != source_state:
         raise OSError("source Git index changed while transaction snapshot was being created")
@@ -474,7 +555,6 @@ def create_private_transaction_snapshot_with_manifest(
     if Path(top).resolve(strict=True) != source_root:
         raise ValueError("transaction source must be a Git worktree root")
 
-    source_manifest = _tree_manifest(source_root, max_depth=max_depth)
     try:
         clone = subprocess.run(
             ["git", "clone", "--no-hardlinks", "--no-checkout", "--", str(source_root), str(destination_root)],
@@ -495,13 +575,13 @@ def create_private_transaction_snapshot_with_manifest(
         _git_output(destination_root, "config", "--local", "core.hooksPath", "/dev/null")
         _git_output(destination_root, "reset", "--mixed", source_head)
         _copy_private_index(source_root, destination_root)
-        cloned_manifest = _copy_tree(source_root, destination_root, max_depth=max_depth)
+        snapshot_manifest = _copy_tree(source_root, destination_root, max_depth=max_depth)
         if full_verification:
             full_manifest = _tree_manifest(destination_root, max_depth=max_depth)
-            if full_manifest != cloned_manifest:
+            if full_manifest != snapshot_manifest:
                 raise OSError("transaction destination changed while snapshot was being created")
         current_source_manifest = _tree_manifest(source_root, max_depth=max_depth)
-        if cloned_manifest != source_manifest or current_source_manifest != source_manifest:
+        if current_source_manifest != snapshot_manifest:
             raise OSError("transaction source changed while snapshot was being created")
         source_common = Path(_git_output(source_root, "rev-parse", "--git-common-dir"))
         clone_common = Path(_git_output(destination_root, "rev-parse", "--git-common-dir"))
@@ -513,7 +593,7 @@ def create_private_transaction_snapshot_with_manifest(
             raise OSError("transaction Git metadata is not private")
         if _git_output(destination_root, "rev-parse", "HEAD") != source_head:
             raise OSError("transaction Git HEAD does not match source worktree")
-        return destination_root, MappingProxyType(source_manifest)
+        return destination_root, MappingProxyType(snapshot_manifest)
     except Exception:
         if destination_root.exists():
             shutil.rmtree(destination_root, ignore_errors=True)
