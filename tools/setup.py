@@ -2267,7 +2267,8 @@ def main() -> int:
         return 1
 
     try:
-        run([str(hub_python), str(install_dir / "tools" / "hubctl.py"), "restart"], check=True, timeout=30)
+        # hubctl bounds each service action to 35s and permits a 180s cold start.
+        run([str(hub_python), str(install_dir / "tools" / "hubctl.py"), "restart"], check=True, timeout=270)
     except Exception as exc:
         log(f"Setup incomplete: Hub restart before agent configuration failed: {exc}")
         write_setup_failure_report(install_dir, state_dir, stage="hub_restart", error=exc)

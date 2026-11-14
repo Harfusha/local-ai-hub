@@ -52,6 +52,7 @@ def test_setup_skip_service_still_restarts_hub_without_registering_service(tmp_p
         "tools": {},
     }
     commands = []
+    restart_timeouts = []
 
     monkeypatch.setattr(setup, "select_config_source", lambda _path: (config_source, config, install_dir))
 
@@ -70,7 +71,12 @@ def test_setup_skip_service_still_restarts_hub_without_registering_service(tmp_p
     monkeypatch.setattr(setup, "ensure_ollama_for_setup", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(setup, "pull_ollama_models", lambda *_args, **_kwargs: {"unavailable": []})
     monkeypatch.setattr(setup, "ensure_llama_cpp_for_setup", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(setup, "run", lambda command, **_kwargs: commands.append([str(part) for part in command]))
+    def capture_run(command, **kwargs):
+        commands.append([str(part) for part in command])
+        if command[-1:] == ["restart"] and any(Path(part).name == "hubctl.py" for part in command):
+            restart_timeouts.append(kwargs.get("timeout"))
+
+    monkeypatch.setattr(setup, "run", capture_run)
     monkeypatch.setattr(sys, "argv", [
         "setup.py", "--config", str(config_source), "--profile", "cpu", "--skip-service",
         "--skip-tools", "--skip-agent-config", "--skip-token-economy", "--skip-model-pull",
@@ -78,6 +84,7 @@ def test_setup_skip_service_still_restarts_hub_without_registering_service(tmp_p
     ])
 
     assert setup.main() == 0
+    assert restart_timeouts == [270]
     assert sum(
         command[-1:] == ["restart"] and any(part.endswith("tools/hubctl.py") or part.endswith("tools\\hubctl.py") for part in command)
         for command in commands
