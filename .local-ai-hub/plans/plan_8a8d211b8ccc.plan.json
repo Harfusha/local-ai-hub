@@ -425,7 +425,7 @@
       "depends_on": [],
       "description": "Complete the entire Local AI Hub roadmap HUB-001 through HUB-030 in dependency order per C:/Users/Adam/Downloads/local_ai_hub_audit_roadmap_2026-11-12.md.",
       "kind": "code",
-      "next_action": "Execute EPIC 4: HUB-025 and HUB-026 Install & onboarding, update/rollback",
+      "next_action": "Execute EPIC 5: HUB-027 through HUB-030 Measurable product quality and repo hygiene",
       "order": 1,
       "title": "Local AI Hub HUB-001–030 Roadmap Execution",
       "work_phase": "implementation",

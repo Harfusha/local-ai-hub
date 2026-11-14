@@ -3,7 +3,6 @@ Documented in docs/AUDIT_ROUND_3_2026-11-08.md.
 """
 from __future__ import annotations
 
-import time
 import multiprocessing
 from dataclasses import replace
 from pathlib import Path
@@ -13,7 +12,7 @@ import pytest
 
 from local_ai_hub.agent_blackboard import BlackboardSection, merge_sections
 from local_ai_hub.agent_board import BoardStore
-from local_ai_hub.agent_events import AgentEvent, AgentStateStore, SwarmPubSub
+from local_ai_hub.agent_events import AgentStateStore
 from local_ai_hub.agent_semaphores import SemaphoreStore
 from local_ai_hub.agent_tasks import GoalContract, ScopeContext, TaskCheckpoint, TaskStore
 from local_ai_hub.source_slice import read_source_slice
