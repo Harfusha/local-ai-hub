@@ -329,7 +329,7 @@ def test_codex_unowned_instructions_do_not_block_other_profile_setup(tmp_path: P
 
     def merge_global_policy(path, *_args, **_kwargs):
         if path == root_home / ".codex" / "AGENTS.md":
-            raise RuntimeError("external block has no ownership record")
+            raise ValueError("external block has no ownership record")
         policy_paths.append(path)
 
     monkeypatch.setattr(setup, "merge_global_policy", merge_global_policy)

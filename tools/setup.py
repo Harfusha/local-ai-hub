@@ -1654,7 +1654,7 @@ def _configure_agents_impl(
                     merge_global_policy(doc, backup_enabled, cfg=cfg)
                     merge_token_economy_policy(doc, backup_enabled, cfg=cfg)
                     merge_autosetup_policy(doc, backup_enabled, codex_home / "skills")
-                except RuntimeError as exc:
+                except ValueError as exc:
                     if "external block has no ownership record" not in str(exc):
                         raise
                     manual_action = f"Codex instructions preserved: {doc} ({exc})"
