@@ -310,6 +310,70 @@
       "title": "HUB-020 P1: Agent integrations diagnostics",
       "work_status": "completed"
     },
+    "task_hub_021": {
+      "acceptance_criteria": [
+        "Models view shows installed model inventory without claiming automatic runtime training",
+        "Laya session lifecycle and idle unload timers visible and accurate",
+        "VRAM residency and fallback reason accurately displayed"
+      ],
+      "blocker": null,
+      "clarifications": [],
+      "depends_on": [],
+      "description": "Model manager and Laya Studio view. Displays installed model inventory, VRAM pressure, and idle session status without automatic model pulls.",
+      "kind": "code",
+      "next_action": "",
+      "order": 21,
+      "title": "HUB-021 P1: Model manager and Laya Studio",
+      "work_status": "completed"
+    },
+    "task_hub_022": {
+      "acceptance_criteria": [
+        "Agent OS task lifecycle, lease ownership, and checkpoints rendered accurately",
+        "Verification receipts mapped to criteria with authentic pass/fail indicators",
+        "No fabricated completion; cancellation and retry controls available"
+      ],
+      "blocker": null,
+      "clarifications": [],
+      "depends_on": [],
+      "description": "Tasks, coordination, and receipts experience. Renders root-scoped task state, checkpoint history, and authentic verification receipts.",
+      "kind": "code",
+      "next_action": "",
+      "order": 22,
+      "title": "HUB-022 P1: Tasks/coordination/receipts experience",
+      "work_status": "completed"
+    },
+    "task_hub_023": {
+      "acceptance_criteria": [
+        "Settings UI reads only redacted configuration and preserves unedited values",
+        "Support for relevant defaults.toml keys with backend validation",
+        "Clear distinction between live dynamic toggles and restart-required settings"
+      ],
+      "blocker": null,
+      "clarifications": [],
+      "depends_on": [],
+      "description": "Settings Basic/Advanced and contextual help view. Displays redacted configuration, validates ranges, and flags restart requirements safely.",
+      "kind": "code",
+      "next_action": "",
+      "order": 23,
+      "title": "HUB-023 P1: Settings Basic/Advanced and contextual help",
+      "work_status": "completed"
+    },
+    "task_hub_024": {
+      "acceptance_criteria": [
+        "Diagnostics view uses aggregate stats and clearly labels estimated vs measured savings",
+        "Request-level telemetry timeline is user-triggered, paged, and historical",
+        "Zero raw prompt/content leakage when debug traces are disabled"
+      ],
+      "blocker": null,
+      "clarifications": [],
+      "depends_on": [],
+      "description": "Diagnostics, timelines, and token savings view in dashboard. Accurately renders aggregated token efficiencies, p95 latencies, and sanitized event timelines.",
+      "kind": "code",
+      "next_action": "",
+      "order": 24,
+      "title": "HUB-024 P2: Diagnostics, timelines and token savings",
+      "work_status": "completed"
+    },
     "task_roadmap_001_030": {
       "acceptance_criteria": [
         "Record exact baseline revision, dirty paths and ownership before edits; preserve all pre-existing changes.",
@@ -327,7 +391,7 @@
       "depends_on": [],
       "description": "Complete the entire Local AI Hub roadmap HUB-001 through HUB-030 in dependency order per C:/Users/Adam/Downloads/local_ai_hub_audit_roadmap_2026-11-12.md.",
       "kind": "code",
-      "next_action": "Execute EPIC 3: HUB-016 through HUB-024 Frontend build, parity, and UX",
+      "next_action": "Execute EPIC 4: HUB-025 and HUB-026 Install & onboarding, update/rollback",
       "order": 1,
       "title": "Local AI Hub HUB-001–030 Roadmap Execution",
       "work_phase": "implementation",
