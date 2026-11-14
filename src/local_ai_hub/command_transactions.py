@@ -8,7 +8,7 @@ import stat
 import subprocess
 from collections.abc import Iterable, Mapping
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from types import MappingProxyType
 
@@ -23,6 +23,57 @@ class _TreeEntry:
     mtime_ns: int
     digest: str = ""
     target: str = ""
+
+
+@dataclass(frozen=True)
+class RollbackFileSnapshot:
+    content: bytes | None
+    mode: int | None
+    xattrs: dict[str, bytes]
+    windows_dacl: bytes | None
+    atime_ns: int | None
+    mtime_ns: int | None
+
+
+@dataclass(frozen=True)
+class RollbackSnapshot:
+    root: Path
+    root_identity: tuple[int, int]
+    files: dict[str, RollbackFileSnapshot]
+    root_guard: int
+    postimages: dict[str, "RollbackPostimage"] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class RollbackPostimage:
+    safe: bool
+    fingerprint: tuple[int, int, int, int, int, int, str, str] | None
+    reason: str = ""
+
+
+@dataclass(frozen=True)
+class PatchFileSnapshot:
+    content: bytes | None
+    mode: int | None
+    atime_ns: int | None
+    mtime_ns: int | None
+    created_parent_dirs: tuple[str, ...] = ()
+    xattrs: dict[str, bytes] | None = None
+    windows_dacl: bytes | None = None
+    device: int | None = None
+    inode: int | None = None
+    owner_uid: int | None = None
+    owner_gid: int | None = None
+    content_digest: str | None = None
+    size: int | None = None
+
+
+@dataclass(frozen=True)
+class PatchTargetsSnapshot:
+    root: Path
+    root_identity: tuple[int, int]
+    files: dict[str, PatchFileSnapshot]
+    root_guard: int
 
 
 def is_valid_transaction_write_path(path: str) -> bool:
@@ -426,6 +477,31 @@ def _index_state(root: Path) -> tuple[Path, dict[str, tuple[int, int, int, int, 
     return index, state
 
 
+def _validate_index_objects(destination: Path, object_ids: set[str]) -> None:
+    if not object_ids:
+        return
+    ordered_ids = sorted(object_ids)
+    result = subprocess.run(
+        ["git", "-C", str(destination), "cat-file", "--batch-check=%(objectname) %(objecttype)"],
+        input="".join(f"{object_id}\n" for object_id in ordered_ids),
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=15,
+        env=_clean_git_env(),
+        **hidden_run_kwargs(),
+    )
+    if result.returncode != 0:
+        raise OSError(f"cannot validate staged Git index objects: {result.stderr[-512:]}")
+    records = result.stdout.splitlines()
+    if len(records) != len(ordered_ids):
+        raise OSError("cannot validate staged Git index objects: incomplete batch response")
+    for expected, record in zip(ordered_ids, records):
+        parts = record.split(" ", 1)
+        if len(parts) != 2 or parts[0].casefold() != expected.casefold() or parts[1] != "blob":
+            raise OSError(f"cannot validate staged Git index object: {expected}")
+
+
 def _copy_private_index(source: Path, destination: Path) -> None:
     source_index, source_state = _index_state(source)
     destination_index = _git_path(destination, "index")
@@ -449,8 +525,7 @@ def _copy_private_index(source: Path, destination: Path) -> None:
         for record in staged.stdout.split(b"\0")
         if record and b" " in record
     }
-    for object_id in object_ids:
-        _git_output(destination, "cat-file", "-e", f"{object_id}^{{blob}}")
+    _validate_index_objects(destination, object_ids)
     _, current_state = _index_state(source)
     if current_state != source_state:
         raise OSError("source Git index changed while transaction snapshot was being created")

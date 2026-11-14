@@ -38,7 +38,8 @@ def test_deterministic_precompute_dead_code(tmp_path: Path) -> None:
     ci_con.execute("INSERT INTO refs VALUES (?, 'src/other.py', 'used_func', 5)", (root,))
     ci_con.commit()
 
-    mock_code_index._connect.return_value = ci_con
+    ci_con.close()
+    mock_code_index._connect.side_effect = lambda: sqlite3.connect(code_index_db)
     mock_code_index._lock = MagicMock()
     mock_code_index._lock.__enter__ = MagicMock()
     mock_code_index._lock.__exit__ = MagicMock()
@@ -55,11 +56,27 @@ def test_deterministic_precompute_dead_code(tmp_path: Path) -> None:
     assert cached[0]["name"] == "dead_func"
     assert cached[0]["path"] == "src/dead.py"
 
-    # A deterministic source generation change invalidates the cached scan.
-    update = engine.update_file(root, "src/dead.py", content_hash="changed-content-hash")
+    # A supported source update invalidates the cached scan.
+    changed_source.write_text("def fresh_dead_func(): return 3\n", encoding="utf-8")
+    update = engine.update_file(root, "src/dead.py")
     assert update["success"] is True
     assert engine.get_unreferenced_symbols(root) == []
-    ci_con.close()
+
+    # Keep the disposable code-index fixture aligned with the changed source.
+    updated_ci = sqlite3.connect(code_index_db)
+    try:
+        updated_ci.execute("DELETE FROM symbols WHERE root=? AND path=?", (root, "src/dead.py"))
+        updated_ci.execute(
+            "INSERT INTO symbols VALUES (?, 'src/dead.py', 'fresh_dead_func', 'function', 1, '')",
+            (root,),
+        )
+        updated_ci.commit()
+    finally:
+        updated_ci.close()
+
+    refreshed = engine.precompute_dead_code(root)
+    assert [item["name"] for item in refreshed["symbols"]] == ["fresh_dead_func"]
+    assert [item["name"] for item in engine.get_unreferenced_symbols(root)] == ["fresh_dead_func"]
 
 
 def test_reachability_dead_code_scans_fixture_root(tmp_path: Path) -> None:

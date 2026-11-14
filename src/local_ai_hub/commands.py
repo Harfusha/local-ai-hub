@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import ast
 import base64
 import codecs
 from contextlib import contextmanager
@@ -25,12 +24,12 @@ import tempfile
 import threading
 import time
 import uuid
-from collections import OrderedDict, deque
+from collections import OrderedDict
 from collections.abc import Mapping, Sequence
 from functools import wraps
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any
 
 from . import command_streams as _command_streams
 from .command_policy import (
@@ -43,6 +42,15 @@ from .command_policy import (
     SHELL_INTERPRETERS,
     VALIDATORS,
     VOLATILE_READS,
+    _classification_result,
+    classify_dangerous_or_whitelisted_tool,
+    classify_command_sequence,
+    classify_pipeline_filter,
+    command_executable_identity,
+    contains_user_whitelisted_tool,
+    is_interactive_command_prompt,
+    is_interactive_output_prompt as _is_interactive_prompt,
+    normalize_user_whitelisted_tools,
 )
 from .command_git import classify_git_command
 from .command_patch_paths import (
@@ -51,22 +59,49 @@ from .command_patch_paths import (
     _patch_target_path,
 )
 _parse_git_apply_numstat = _parse_git_apply_numstat_impl
+from .command_project_cache import _project_config_cache_key
+from .command_models import CommandInvocation, ProjectContextLike, _ResolvedProjectCommand
+from .command_environment import (
+    PROJECT_COMMAND_ENV_KEY_RE as _PROJECT_COMMAND_ENV_KEY_RE,
+    is_valid_project_command_env_key as _is_valid_project_command_env_key,
+    resolve_project_environment,
+)
 from .command_python import (
+    classify_python_command,
     classify_hubctl_command,
-    classify_python_inline_code,
-    classify_python_module_command,
-    classify_python_script_command,
+    is_well_formed_command_input,
+    is_python_interpreter_name,
+    python_inline_code_syntax_is_valid,
 )
 from .command_build import classify_build_command
 from .command_powershell import classify_powershell_command
 from .command_read import classify_read_only_command
-from .command_redaction import redact_secrets as _redact_secrets
-from .trace_utils import cluster_stack_traces as _cluster_stack_traces, deduplicate_stack_traces
-cluster_stack_traces = _cluster_stack_traces
+from .command_shell import (
+    classify_raw_shell_subshell,
+    is_powershell_command,
+    needs_shell,
+    split_shell_command,
+    strip_null_redirections,
+    tokenize_command,
+)
+from .command_validation import (
+    classify_formatter_command,
+    classify_php_validation_script,
+    classify_validation_tool,
+)
+from .trace_utils import cluster_stack_traces, deduplicate_stack_traces
 MultiplexEvent = _command_streams.MultiplexEvent
 StreamMultiplexer = _command_streams.StreamMultiplexer
+_SECRET_PATTERNS = _command_streams._SECRET_PATTERNS
+_redact_secrets = _command_streams._redact_secrets
+_BoundedStreamBuffer = _command_streams._BoundedStreamBuffer
 from .cache import SQLiteCache, TieredCache, stable_hash
 from .command_transactions import (
+    PatchFileSnapshot,
+    PatchTargetsSnapshot,
+    RollbackFileSnapshot,
+    RollbackPostimage,
+    RollbackSnapshot,
     create_private_transaction_snapshot_with_manifest,
     validate_transaction_output,
     verify_transaction_source_unchanged,
@@ -231,33 +266,6 @@ def _terminate_owned_linux_daemon_group(
 
 _GLOBAL_WINDOWS_JOB = create_job_object_kill_on_close() if os.name == "nt" else None
 _PROJECT_COMMAND_ALIAS_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{0,63}$")
-_PROJECT_COMMAND_ENV_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
-_PROJECT_COMMAND_ENV_BLOCKED = {
-    "BASH_ENV",
-    "COMSPEC",
-    "ENV",
-    "GIT_COMMON_DIR",
-    "GIT_DIR",
-    "GIT_INDEX_FILE",
-    "GIT_PREFIX",
-    "GIT_WORK_TREE",
-    "GIT_OBJECT_DIRECTORY",
-    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
-    "LD_AUDIT",
-    "LD_LIBRARY_PATH",
-    "LD_PRELOAD",
-    "DYLD_FRAMEWORK_PATH",
-    "DYLD_INSERT_LIBRARIES",
-    "DYLD_LIBRARY_PATH",
-    "PATH",
-    "PATHEXT",
-    "SHELL",
-}
-
-
-def _is_unsafe_project_command_env_key(key: str) -> bool:
-    normalized = key.upper()
-    return normalized in _PROJECT_COMMAND_ENV_BLOCKED or normalized.startswith("GIT_CONFIG_")
 _MAX_PROJECT_COMMAND_ARGS = 128
 _MAX_PROJECT_COMMAND_ENV_ENTRIES = 128
 _MAX_PROJECT_COMMAND_ENV_BYTES = 65_536
@@ -560,55 +568,7 @@ def _windows_job_has_processes(job_handle: int) -> bool | None:
 
 
 
-@dataclass(frozen=True)
-class RollbackFileSnapshot:
-    content: bytes | None
-    mode: int | None
-    xattrs: dict[str, bytes]
-    windows_dacl: bytes | None
-    atime_ns: int | None
-    mtime_ns: int | None
 
-
-@dataclass(frozen=True)
-class RollbackSnapshot:
-    root: Path
-    root_identity: tuple[int, int]
-    files: dict[str, RollbackFileSnapshot]
-    root_guard: int
-    postimages: dict[str, "RollbackPostimage"] = field(default_factory=dict)
-
-
-@dataclass(frozen=True)
-class RollbackPostimage:
-    safe: bool
-    fingerprint: tuple[int, int, int, int, int, int, str, str] | None
-    reason: str = ""
-
-
-@dataclass(frozen=True)
-class PatchFileSnapshot:
-    content: bytes | None
-    mode: int | None
-    atime_ns: int | None
-    mtime_ns: int | None
-    created_parent_dirs: tuple[str, ...] = ()
-    xattrs: dict[str, bytes] | None = None
-    windows_dacl: bytes | None = None
-    device: int | None = None
-    inode: int | None = None
-    owner_uid: int | None = None
-    owner_gid: int | None = None
-    content_digest: str | None = None
-    size: int | None = None
-
-
-@dataclass(frozen=True)
-class PatchTargetsSnapshot:
-    root: Path
-    root_identity: tuple[int, int]
-    files: dict[str, PatchFileSnapshot]
-    root_guard: int
 
 
 def _snapshot_patch_targets(
@@ -2252,207 +2212,6 @@ def _restore_rollback_scope(
         )
 
 
-@dataclass(frozen=True)
-class CommandInvocation:
-    """Validated subprocess input that cannot request shell interpretation."""
-
-    argv: list[str]
-    cwd: str | None = None
-    shell: bool = False
-
-
-class _ProjectSettingsLike(Protocol):
-    env_references: Mapping[str, str]
-
-
-class ProjectContextLike(Protocol):
-    root: str | Path
-    config_digest: str
-    settings: _ProjectSettingsLike
-
-
-@dataclass(frozen=True)
-class _ResolvedProjectCommand:
-    alias: str
-    command: str | CommandInvocation
-    environment: dict[str, str]
-    config_digest: str
-    cache_context: str
-    configured_command: str | CommandInvocation
-    caller_arguments: tuple[str, ...]
-
-
-
-def _project_config_cache_key(root: Path, state_dir: Path) -> str | None:
-    """Fingerprint project config files and the exact Git HEAD without storing paths."""
-    try:
-        project_root = root.expanduser().resolve(strict=True)
-        root_identity = hashlib.sha256(os.fsencode(str(project_root))).hexdigest()
-
-        git_marker: Path | None = None
-        for parent in (project_root, *project_root.parents):
-            marker = parent / ".git"
-            if marker.exists() or marker.is_symlink():
-                git_marker = marker
-                break
-
-        common_dir: Path | None = None
-        git_dir: Path | None = None
-        git_revision: str | None = None
-        git_signatures: list[tuple[str, tuple[Any, ...]]] = []
-        primary_root: Path | None = None
-        if git_marker is not None:
-            marker_signature = _project_file_signature(git_marker)
-            if marker_signature is None:
-                return None
-            git_signatures.append(("git-marker", marker_signature))
-            if git_marker.is_dir():
-                git_dir = git_marker.resolve(strict=True)
-            elif git_marker.is_file():
-                marker_text = git_marker.read_text(encoding="utf-8", errors="replace")[:4096]
-                prefix, separator, raw_git_dir = marker_text.partition(":")
-                if prefix.strip().lower() != "gitdir" or not separator:
-                    return None
-                git_dir = Path(raw_git_dir.strip())
-                if not git_dir.is_absolute():
-                    git_dir = git_marker.parent / git_dir
-                git_dir = git_dir.resolve(strict=True)
-            else:
-                return None
-
-            common_file = git_dir / "commondir"
-            if common_file.exists():
-                common_signature = _project_file_signature(common_file)
-                if common_signature is None:
-                    return None
-                git_signatures.append(("git-common-dir", common_signature))
-                raw_common_dir = common_file.read_text(
-                    encoding="utf-8", errors="replace"
-                )[:4096].strip()
-                common_dir = Path(raw_common_dir)
-                if not common_dir.is_absolute():
-                    common_dir = git_dir / common_dir
-                common_dir = common_dir.resolve(strict=True)
-            else:
-                common_dir = git_dir
-            if common_dir.name.lower() != ".git":
-                return None
-            primary_root = common_dir.parent
-            primary_marker = primary_root / ".git"
-            if not primary_marker.is_dir() or primary_marker.resolve(strict=True) != common_dir:
-                return None
-
-            head_file = git_dir / "HEAD"
-            head_signature = _project_file_signature(head_file)
-            if head_signature is None:
-                return None
-            git_signatures.append(("git-head", head_signature))
-            head_value = head_file.read_text(encoding="ascii", errors="replace")[:4096].strip()
-            if head_value.startswith("ref: "):
-                ref_name = head_value[5:].strip()
-                parts = ref_name.split("/")
-                if not ref_name.startswith("refs/") or any(part in {"", ".", ".."} for part in parts):
-                    return None
-                ref_file: Path | None = None
-                for base in (git_dir, common_dir):
-                    candidate = base.joinpath(*parts)
-                    try:
-                        resolved_ref = candidate.resolve(strict=True)
-                        resolved_ref.relative_to(base.resolve(strict=True))
-                        ref_file = resolved_ref
-                        break
-                    except (OSError, RuntimeError, ValueError):
-                        continue
-                if ref_file is not None:
-                    ref_signature = _project_file_signature(ref_file)
-                    if ref_signature is None:
-                        return None
-                    git_signatures.append(("git-ref", ref_signature))
-                    git_revision = ref_file.read_text(encoding="ascii", errors="replace")[:128].strip()
-                else:
-                    packed_refs = common_dir / "packed-refs"
-                    packed_signature = _project_file_signature(packed_refs)
-                    if packed_signature is None:
-                        return None
-                    if packed_refs.stat().st_size > 4 * 1024 * 1024:
-                        return None
-                    git_signatures.append(("git-packed-refs", packed_signature))
-                    packed_text = packed_refs.read_text(encoding="ascii", errors="replace")
-                    for line in packed_text.splitlines():
-                        fields = line.split(" ", 1)
-                        if len(fields) == 2 and fields[1] == ref_name:
-                            git_revision = fields[0]
-                            break
-            else:
-                git_revision = head_value
-            if not isinstance(git_revision, str) or not re.fullmatch(
-                r"(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})", git_revision
-            ):
-                return None
-
-        config_paths = [
-            ("project", project_root / ".local-ai.toml"),
-            ("worktree", project_root / ".local-ai.worktree.toml"),
-        ]
-        if primary_root is not None and primary_root != project_root:
-            config_paths.append(("primary", primary_root / ".local-ai.toml"))
-        if common_dir is not None:
-            config_paths.append(("machine", common_dir / "info" / "local-ai.toml"))
-        config_signatures: list[tuple[str, tuple[Any, ...]]] = []
-        for label, path in config_paths:
-            signature = _project_file_signature(path, missing_ok=True)
-            if signature is None:
-                return None
-            config_signatures.append((label, signature))
-        state_identity = hashlib.sha256(
-            os.fsencode(str(state_dir.expanduser().resolve(strict=False)))
-        ).hexdigest()
-        payload = {
-            "root": root_identity,
-            "state_dir": state_identity,
-            "git_revision": git_revision,
-            "git_signatures": git_signatures,
-            "config_signatures": config_signatures,
-        }
-        return hashlib.sha256(
-            json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
-        ).hexdigest()
-    except (OSError, RuntimeError, ValueError, UnicodeError):
-        return None
-
-
-def _project_file_signature(
-    path: Path, *, missing_ok: bool = False
-) -> tuple[Any, ...] | None:
-    try:
-        link_info = path.lstat()
-    except FileNotFoundError:
-        return ("missing",) if missing_ok else None
-    except OSError:
-        return None
-    try:
-        resolved = path.resolve(strict=True)
-        target_info = resolved.stat()
-    except (OSError, RuntimeError, ValueError):
-        return None
-    return (
-        "file",
-        link_info.st_dev,
-        link_info.st_ino,
-        link_info.st_size,
-        link_info.st_mtime_ns,
-        link_info.st_ctime_ns,
-        link_info.st_mode,
-        hashlib.sha256(os.fsencode(str(resolved))).hexdigest(),
-        target_info.st_dev,
-        target_info.st_ino,
-        target_info.st_size,
-        target_info.st_mtime_ns,
-        target_info.st_ctime_ns,
-        target_info.st_mode,
-    )
-
-
 def _patch_write_paths(root: Path, patch: bytes, timeout: float) -> list[str]:
     """Return patch paths only after rejecting escapes and symlink traversal."""
     result = subprocess.run(
@@ -2776,127 +2535,6 @@ def build_invocation(
     if not result["safe"]:
         raise ValueError(result["error"])
     return CommandInvocation(argv=result["argv"], cwd=result["cwd"], shell=False)
-
-
-class _BoundedStreamBuffer:
-    """Bounded rolling buffer that retains recent output within character and byte limits."""
-
-    def __init__(self, max_chars: int, max_bytes: int = 8_000_000, redact: bool = True):
-        self.max_chars = max(1024, int(max_chars))
-        self.max_bytes = max(1024, int(max_bytes))
-        self.chunks: deque[str] = deque()
-        self.total_chars = 0
-        self.total_bytes = 0
-        self.total_lines = 0
-        self.discarded_chars = 0
-        self.discarded_bytes = 0
-        self.lock = threading.Lock()
-        self.redact = redact
-
-    @staticmethod
-    def _encoded_size(text: str) -> int:
-        return len(text.encode("utf-8", errors="replace"))
-
-    @classmethod
-    def _drop_prefix_bytes(cls, text: str, byte_limit: int) -> tuple[str, int, int]:
-        """Return suffix fitting byte_limit, plus removed chars and bytes."""
-        size = cls._encoded_size(text)
-        if size <= byte_limit:
-            return text, 0, 0
-        low, high = 0, len(text)
-        while low < high:
-            middle = (low + high) // 2
-            if cls._encoded_size(text[middle:]) <= byte_limit:
-                high = middle
-            else:
-                low = middle + 1
-        removed = text[:low]
-        return text[low:], low, cls._encoded_size(removed)
-
-    def append(self, chunk: str) -> None:
-        if not chunk:
-            return
-        cleaned = _redact_secrets(chunk) if self.redact else chunk
-        discarded_chars = 0
-        discarded_bytes = 0
-        if len(cleaned) > self.max_chars:
-            discarded_chars += len(cleaned) - self.max_chars
-            discarded_bytes += self._encoded_size(cleaned[: len(cleaned) - self.max_chars])
-            cleaned = cleaned[-self.max_chars:]
-        cleaned, removed_chars, removed_bytes = self._drop_prefix_bytes(cleaned, self.max_bytes)
-        discarded_chars += removed_chars
-        discarded_bytes += removed_bytes
-        with self.lock:
-            self.total_lines += 1
-            self.total_chars += len(cleaned)
-            self.total_bytes += self._encoded_size(cleaned)
-            self.chunks.append(cleaned)
-            while self.chunks and (self.total_chars > self.max_chars or self.total_bytes > self.max_bytes):
-                first = self.chunks[0]
-                char_excess = max(0, self.total_chars - self.max_chars)
-                byte_excess = max(0, self.total_bytes - self.max_bytes)
-                first_bytes = self._encoded_size(first)
-                if len(first) <= char_excess or first_bytes <= byte_excess:
-                    self.chunks.popleft()
-                    self.total_chars -= len(first)
-                    self.total_bytes -= first_bytes
-                    discarded_chars += len(first)
-                    discarded_bytes += first_bytes
-                else:
-                    if char_excess:
-                        removed = first[:char_excess]
-                        kept = first[char_excess:]
-                        removed_bytes = self._encoded_size(removed)
-                    else:
-                        kept, removed_chars, removed_bytes = self._drop_prefix_bytes(first, max(0, first_bytes - byte_excess))
-                        removed = first[:removed_chars]
-                    self.chunks[0] = kept
-                    self.total_chars -= len(removed)
-                    self.total_bytes -= removed_bytes
-                    discarded_chars += len(removed)
-                    discarded_bytes += removed_bytes
-            self.discarded_chars += discarded_chars
-            self.discarded_bytes += discarded_bytes
-
-    def getvalue(self) -> str:
-        with self.lock:
-            return "".join(self.chunks)[-self.max_chars:]
-
-    def write(self, chunk: str) -> None:
-        self.append(chunk)
-
-    def peek(self, chars: int = 500) -> str:
-        if chars <= 0:
-            return ""
-        with self.lock:
-            if not self.chunks:
-                return ""
-            collected: list[str] = []
-            collected_len = 0
-            for chunk in reversed(self.chunks):
-                collected.append(chunk)
-                collected_len += len(chunk)
-                if collected_len >= chars:
-                    break
-            joined = "".join(reversed(collected))
-            return joined[-chars:]
-
-
-_INTERACTIVE_PATTERNS = [
-    re.compile(r"\[[yY]/[nN]\]"),
-    re.compile(r"\(yes/no\)", re.IGNORECASE),
-    re.compile(r"password(\s+for\s+.*)?:", re.IGNORECASE),
-    re.compile(r"press\s+any\s+key", re.IGNORECASE),
-    re.compile(r"do\s+you\s+want\s+to\s+continue", re.IGNORECASE),
-]
-
-
-def _is_interactive_prompt(text: str) -> bool:
-    """Check if output tail looks like an interactive user prompt."""
-    if not text:
-        return False
-    tail = text[-300:] if len(text) > 300 else text
-    return any(p.search(tail) for p in _INTERACTIVE_PATTERNS)
 
 
 def _stable_rollback_status(method: Any) -> Any:
@@ -4291,122 +3929,41 @@ class CommandBroker:
 
     @staticmethod
     def _tokens(command: str) -> list[str]:
-        try:
-            if os.name == "nt":
-                from .windows_argv import parse_windows_command_line
-                return parse_windows_command_line(command)
-            return shlex.split(command, posix=True)
-        except (OSError, ValueError):
-            return []
+        return tokenize_command(command)
 
     @staticmethod
     def _is_python_interpreter_name(executable: str) -> bool:
-        executable_base = ntpath.basename(executable.strip('"').replace("/", "\\")).lower()
-        executable_base = re.sub(r"\.(exe|cmd|bat|ps1|sh)$", "", executable_base)
-        return executable_base in {"python", "python3", "py"} or bool(
-            re.fullmatch(r"python\d+(?:\.\d+)+", executable_base)
-        )
+        return is_python_interpreter_name(executable)
 
     @classmethod
     def _well_formed_command_input(cls, command: Any) -> bool:
         """Check command/argv structure before an unknown command can be opted in."""
-        if isinstance(command, str):
-            if not command.strip() or "\x00" in command:
-                return False
-            tokens = cls._tokens(cls._strip_null_redirections(command.strip()))
-        elif isinstance(command, Sequence) and not isinstance(command, (bytes, bytearray)):
-            tokens = list(command)
-            if not tokens or any(not isinstance(token, str) or "\x00" in token for token in tokens):
-                return False
-        else:
-            return False
-
-        if not tokens or not tokens[0].strip():
-            return False
-
-        if cls._is_python_interpreter_name(tokens[0]):
-            for index, token in enumerate(tokens[1:], start=1):
-                if token != "-c":
-                    continue
-                if index + 1 >= len(tokens) or not tokens[index + 1].strip():
-                    return False
-                try:
-                    ast.parse(tokens[index + 1])
-                except (SyntaxError, TypeError, ValueError):
-                    return False
-                break
-        return True
+        return is_well_formed_command_input(
+            command,
+            tokenize=cls._tokens,
+            strip_null_redirections=cls._strip_null_redirections,
+            python_interpreter_name=cls._is_python_interpreter_name,
+        )
 
     @staticmethod
     def _strip_null_redirections(cmd: str) -> str:
-        c = re.sub(r"\s*(?:2>&1|2>\s*(?:/dev/null|nul|\$null)|>\s*(?:/dev/null|nul|\$null)|\|\s*Out-Null)\s*$", "", cmd, flags=re.IGNORECASE)
-        return c.strip()
+        return strip_null_redirections(cmd)
 
     @staticmethod
     def _split_outside_quotes(s: str, delimiters: tuple[str, ...]) -> list[tuple[str, str]]:
-        parts = []
-        current = []
-        in_quote = False
-        quote_char = ''
-        i = 0
-        n = len(s)
-        last_delim = ''
-        while i < n:
-            c = s[i]
-            if in_quote:
-                current.append(c)
-                if c == quote_char:
-                    in_quote = False
-                i += 1
-                continue
-            if c in ('"', "'"):
-                in_quote = True
-                quote_char = c
-                current.append(c)
-                i += 1
-                continue
-            matched_delim = None
-            for d in delimiters:
-                if s[i:i+len(d)] == d:
-                    matched_delim = d
-                    break
-            if matched_delim:
-                parts.append((last_delim, "".join(current).strip()))
-                current = []
-                last_delim = matched_delim
-                i += len(matched_delim)
-            else:
-                current.append(c)
-                i += 1
-        if current or last_delim:
-            parts.append((last_delim, "".join(current).strip()))
-        return [(d, p) for d, p in parts if p]
+        return split_shell_command(s, delimiters)
 
     @staticmethod
     def _is_powershell_command(cmd: str) -> bool:
-        trimmed = cmd.strip()
-        if trimmed.startswith(("$", "&")):
-            return True
-        ps_prefixes = (
-            "get-", "set-", "test-", "invoke-", "start-", "stop-", "select-", "format-",
-            "where-", "out-", "new-", "remove-", "clear-", "write-", "read-", "measure-",
-            "compare-", "convertfrom-", "convertto-", "add-type",
-        )
-        first = trimmed.split()[0].lower() if trimmed.split() else ""
-        return any(first.startswith(p) for p in ps_prefixes)
+        return is_powershell_command(cmd)
 
     def classify(self, command: str | Sequence[str]) -> dict[str, Any]:
         result = dict(self._classify(command))
         text = command if isinstance(command, str) else " ".join(str(part) for part in command)
-        extra_allowed = {
-            str(tool).strip().lower()
-            for tool in self.config.get("commands", {}).get("extra_allowed_tools", [])
-            if str(tool).strip()
-        }
-        user_whitelisted = any(
-            re.search(r"(?<!\w)" + re.escape(tool) + r"(?!\w)", text, re.IGNORECASE)
-            for tool in extra_allowed
+        extra_allowed = normalize_user_whitelisted_tools(
+            self.config.get("commands", {}).get("extra_allowed_tools", [])
         )
+        user_whitelisted = contains_user_whitelisted_tool(text, extra_allowed)
         if user_whitelisted:
             result["cacheable"] = False
         result["replay_safe"] = bool(not user_whitelisted and self._replay_safety(command, result))
@@ -4455,7 +4012,10 @@ class CommandBroker:
         cfg = self.config.get("commands", {})
         trimmed = self._strip_null_redirections(command.strip())
         if not trimmed:
-            return {"class": "unknown", "cacheable": False, "allowed": False, "reason": "empty or unparsable command"}
+            return _classification_result(
+                "unknown", cacheable=False, allowed=False,
+                reason="empty or unparsable command",
+            )
 
         # Direct PowerShell syntax or explicit pwsh/powershell invocation
         if self._is_powershell_command(trimmed) or trimmed.lower().startswith(("pwsh", "powershell")):
@@ -4468,27 +4028,7 @@ class CommandBroker:
             for _, subcmd in seq_parts:
                 sub_res = self.classify(subcmd)
                 classifications.append(sub_res)
-            classes = [result.get("class", "unknown") for result in classifications]
-            dangerous = next((result for result in classifications if result.get("class") == "dangerous"), None)
-            if dangerous is not None:
-                return dangerous
-            blocked = next((result for result in classifications if not result.get("allowed")), None)
-            if blocked is not None:
-                return blocked
-            order = ["dangerous", "unknown", "mutating", "build", "validation", "read"]
-            for o in order:
-                if o in classes:
-                    return {
-                        "class": o,
-                        "cacheable": False,
-                        "allowed": bool(cfg.get(f"allow_{o}", o in {"read", "validation", "build"})),
-                        "replay_safe": o == "validation" and all(
-                            bool(result.get("replay_safe", result.get("class") == "read"))
-                            for result in classifications
-                        ),
-                        "reason": f"compound sequence ({o})",
-                    }
-            return {"class": "read", "cacheable": False, "allowed": True, "reason": "compound sequence"}
+            return classify_command_sequence(classifications, cfg)
 
         # Pipelines (|) outside quotes
         pipe_parts = self._split_outside_quotes(trimmed, ("|",))
@@ -4499,19 +4039,17 @@ class CommandBroker:
                 return first_res
             for _, stage in pipe_parts[1:]:
                 stok = self._tokens(stage)
-                if not stok:
-                    continue
-                sexe = ntpath.basename(stok[0].strip('"').replace("/", "\\")).lower()
-                sexe_base = re.sub(r"\.(exe|cmd|bat|ps1|sh)$", "", sexe)
-                if sexe_base not in self.READ_FILTERS and sexe_base not in self.READ_ONLY:
-                    return {"class": "unknown", "cacheable": False, "allowed": False, "reason": f"pipeline filter {sexe_base} not allowed"}
-            return {
-                "class": first_res.get("class", "read"),
-                "cacheable": False,
-                "allowed": True,
-                "replay_safe": bool(first_res.get("replay_safe", False)),
-                "reason": "pipeline with safe filters",
-            }
+                pipeline_filter_result = classify_pipeline_filter(
+                    stok, self.READ_FILTERS, self.READ_ONLY
+                )
+                if pipeline_filter_result is not None:
+                    return pipeline_filter_result
+            return _classification_result(
+                str(first_res.get("class", "read")), cacheable=False,
+                allowed=True,
+                replay_safe=bool(first_res.get("replay_safe", False)),
+                reason="pipeline with safe filters",
+            )
 
         return self._classify_single(trimmed)
 
@@ -4519,31 +4057,33 @@ class CommandBroker:
         structured = not isinstance(command, str)
         tokens = list(command) if structured else self._tokens(command)
         if not tokens:
-            return {"class": "unknown", "cacheable": False, "allowed": False, "reason": "empty or unparsable command"}
+            return _classification_result(
+                "unknown", cacheable=False, allowed=False,
+                reason="empty or unparsable command",
+            )
         command_text = " ".join(tokens) if structured else command
-        raw_exe = tokens[0].strip('"').replace("/", "\\")
-        exe = ntpath.basename(raw_exe).lower() or Path(tokens[0].strip('"')).name.lower()
-        exe_base = re.sub(r"\.(exe|cmd|bat|ps1|sh)$", "", exe)
-        lower = [t.lower() for t in tokens[1:]]
+        exe_base, lower = command_executable_identity(tokens)
         cfg = self.config.get("commands", {})
 
-        if exe_base in self.DANGEROUS_EXES:
-            return {"class": "dangerous", "cacheable": False, "allowed": False, "reason": "dangerous executable"}
-
-        extra_allowed = set(str(x).strip().lower() for x in cfg.get("extra_allowed_tools", []))
+        extra_allowed = normalize_user_whitelisted_tools(cfg.get("extra_allowed_tools", []))
         # Keep shell interpreters inside command classification; allowlisting a
         # shell must not grant arbitrary script execution before safety checks.
-        if exe_base in extra_allowed and exe_base not in SHELL_INTERPRETERS:
-            return {"class": "validation", "cacheable": True, "allowed": True, "replay_safe": False, "reason": f"user-whitelisted tool: {exe_base}"}
+        executable_policy_result = classify_dangerous_or_whitelisted_tool(
+            exe_base, extra_allowed
+        )
+        if executable_policy_result is not None:
+            return executable_policy_result
 
         # PowerShell commands or script blocks
         if self._is_powershell_command(command_text) or exe_base in {"pwsh", "powershell"}:
             return classify_powershell_command(command_text, cfg, extra_allowed)
 
         # Reject dangerous shell subshells in raw non-powershell commands
-        unquoted = re.sub(r'("[^"]*"|\'[^\']*\')', '', command_text) if not structured else ""
-        if not structured and any(op in unquoted for op in ("`", "$(")):
-            return {"class": "unknown", "cacheable": False, "allowed": False, "reason": "shell subshells are not accepted"}
+        shell_subshell_result = classify_raw_shell_subshell(
+            command, structured=structured
+        )
+        if shell_subshell_result is not None:
+            return shell_subshell_result
 
         if exe_base == "git":
             return classify_git_command(tokens, lower, cfg)
@@ -4559,21 +4099,9 @@ class CommandBroker:
             return read_only_result
 
         if self._is_python_interpreter_name(exe_base):
-            python_module_result = classify_python_module_command(tokens, lower, cfg)
-            if python_module_result is not None:
-                return python_module_result
-
-            dash_c = None
-            for idx, arg in enumerate(tokens[1:], 1):
-                if arg == "-c" and idx < len(tokens) - 1:
-                    dash_c = tokens[idx + 1]
-                    break
-            if dash_c is not None:
-                return classify_python_inline_code(dash_c, cfg)
-
-            python_script_result = classify_python_script_command(tokens, lower, cfg)
-            if python_script_result is not None:
-                return python_script_result
+            python_result = classify_python_command(tokens, lower, cfg)
+            if python_result is not None:
+                return python_result
 
         if exe_base == "hubctl":
             hubctl_result = classify_hubctl_command(lower, lower, cfg)
@@ -4581,17 +4109,19 @@ class CommandBroker:
                 return hubctl_result
 
         if exe_base == "php" and lower:
-            php_target = ntpath.basename(lower[0].replace("/", "\\"))
-            if any(name in php_target for name in ("phpunit", "phpstan", "pest")):
-                return {"class": "validation", "cacheable": True, "allowed": bool(cfg.get("allow_validation", True)), "replay_safe": True, "reason": "PHP validation tool"}
+            php_validation_result = classify_php_validation_script(lower[0], cfg)
+            if php_validation_result is not None:
+                return php_validation_result
 
-        if exe_base in {"black", "isort"}:
-            if any(f in lower for f in {"--check", "--diff"}):
-                return {"class": "validation", "cacheable": True, "allowed": bool(cfg.get("allow_validation", True)), "replay_safe": True, "reason": f"{exe_base} check"}
-            return {"class": "mutating", "cacheable": False, "allowed": bool(cfg.get("allow_mutating", False)), "reason": f"{exe_base} format without --check"}
+        formatter_result = classify_formatter_command(exe_base, lower, cfg)
+        if formatter_result is not None:
+            return formatter_result
 
-        if exe_base in self.PURE_VALIDATORS or any(name in exe_base for name in ("phpunit", "phpstan", "pytest", "pest", "flake8", "pylint", "shellcheck", "yamllint")):
-            return {"class": "validation", "cacheable": True, "allowed": bool(cfg.get("allow_validation", True)), "replay_safe": True, "reason": f"{exe_base} validation tool"}
+        validation_result = classify_validation_tool(
+            exe_base, self.PURE_VALIDATORS, cfg, f"{exe_base} validation tool"
+        )
+        if validation_result is not None:
+            return validation_result
 
         build_result = classify_build_command(
             exe_base,
@@ -4604,7 +4134,11 @@ class CommandBroker:
         if build_result is not None:
             return build_result
 
-        return {"class": "unknown", "cacheable": False, "allowed": bool(cfg.get("allow_unknown", False)), "reason": "command not in safe broker allowlist"}
+        return _classification_result(
+            "unknown", cacheable=False,
+            allowed=bool(cfg.get("allow_unknown", False)),
+            reason="command not in safe broker allowlist",
+        )
 
     @staticmethod
     def _safe_label(command: str) -> str:
@@ -4615,15 +4149,7 @@ class CommandBroker:
 
     @classmethod
     def _needs_shell(cls, command: str) -> bool:
-        trimmed = command.strip()
-        if cls._is_powershell_command(trimmed):
-            return True
-        seq = cls._split_outside_quotes(trimmed, (";", "&&", "||", "|", ">", "<"))
-        if len(seq) > 1:
-            return True
-        if any(op in trimmed for op in ("2>&1", "| Out-Null", "| out-null", ">nul", "> nul")):
-            return True
-        return False
+        return needs_shell(command)
 
     def _tool_identity(
         self,
@@ -4906,21 +4432,9 @@ class CommandBroker:
             "failed to spawn process", "command not found", "is not recognized as an internal", "no such file or directory",
         ))
 
-    _INTERACTIVE_PATTERNS = [
-        re.compile(r"\[y/n\]", re.I),
-        re.compile(r"\(y/n\)", re.I),
-        re.compile(r"password\s*:", re.I),
-        re.compile(r"enter\s+(?:passphrase|password|pin|key|choice)", re.I),
-        re.compile(r"press\s+(?:any\s+key|enter)\s+to\s+continue", re.I),
-        re.compile(r"do\s+you\s+want\s+to\s+continue\s*\?", re.I),
-        re.compile(r"are\s+you\s+sure\s*\?", re.I),
-    ]
-
     @classmethod
     def _is_interactive_prompt(cls, text: str) -> bool:
-        if not text:
-            return False
-        return any(p.search(text) for p in cls._INTERACTIVE_PATTERNS)
+        return is_interactive_command_prompt(text)
 
     def _execute(
         self,
@@ -6878,44 +6392,13 @@ class CommandBroker:
         project_context: ProjectContextLike | None,
         cwd: str,
     ) -> tuple[str, dict[str, str], str | None]:
-        if project_context is None:
-            return "", {}, None
-        try:
-            config_digest = project_context.config_digest
-            context_root = Path(project_context.root).expanduser().resolve(strict=False)
-            command_root = Path(cwd).expanduser().resolve(strict=False)
-            environment_refs = project_context.settings.env_references
-        except (AttributeError, OSError, TypeError, ValueError):
-            return "", {}, "project context is invalid"
-        if not isinstance(config_digest, str) or not config_digest or not isinstance(environment_refs, Mapping):
-            return "", {}, "project context is invalid"
-        try:
-            command_root.relative_to(context_root)
-        except ValueError:
-            return "", {}, "command working directory is outside the project context"
-
-        environment: dict[str, str] = {}
-        if len(environment_refs) > _MAX_PROJECT_COMMAND_ENV_ENTRIES:
-            return "", {}, "project environment configuration is invalid"
-        environment_size = 0
-        for child_name, parent_name in environment_refs.items():
-            if not isinstance(child_name, str) or not isinstance(parent_name, str):
-                return "", {}, "project environment configuration is invalid"
-            if (
-                not _PROJECT_COMMAND_ENV_KEY_RE.fullmatch(child_name)
-                or not _PROJECT_COMMAND_ENV_KEY_RE.fullmatch(parent_name)
-                or _is_unsafe_project_command_env_key(child_name)
-            ):
-                return "", {}, "project environment configuration is invalid"
-            if not child_name or "=" in child_name or "\0" in child_name or not parent_name or "=" in parent_name or "\0" in parent_name:
-                return "", {}, "project environment configuration is invalid"
-            if parent_name not in os.environ:
-                return "", {}, "configured project environment source is unavailable"
-            environment[child_name] = os.environ[parent_name]
-            environment_size += len(child_name.encode("utf-8")) + len(environment[child_name].encode("utf-8"))
-            if "\x00" in environment[child_name] or environment_size > _MAX_PROJECT_COMMAND_ENV_BYTES:
-                return "", {}, "project environment configuration is invalid"
-        return config_digest, environment, None
+        return resolve_project_environment(
+            project_context,
+            cwd,
+            host_environment=os.environ,
+            max_entries=_MAX_PROJECT_COMMAND_ENV_ENTRIES,
+            max_bytes=_MAX_PROJECT_COMMAND_ENV_BYTES,
+        )
 
 
     def _cached_project_command_context(self, root: str, state_dir: Path) -> Any:
@@ -7009,8 +6492,7 @@ class CommandBroker:
         for target_name, value in project_environment.items():
             if (
                 not isinstance(target_name, str)
-                or not _PROJECT_COMMAND_ENV_KEY_RE.fullmatch(target_name)
-                or _is_unsafe_project_command_env_key(target_name)
+                or not _is_valid_project_command_env_key(target_name)
                 or not isinstance(value, str)
                 or "\x00" in value
             ):
@@ -7023,8 +6505,7 @@ class CommandBroker:
         for target_name, source_name in command_env_references.items():
             if (
                 not isinstance(target_name, str)
-                or not _PROJECT_COMMAND_ENV_KEY_RE.fullmatch(target_name)
-                or _is_unsafe_project_command_env_key(target_name)
+                or not _is_valid_project_command_env_key(target_name)
                 or not isinstance(source_name, str)
                 or not _PROJECT_COMMAND_ENV_KEY_RE.fullmatch(source_name)
             ):
@@ -7358,8 +6839,7 @@ class CommandBroker:
             for name, value in _environment_overrides.items():
                 if (
                     not isinstance(name, str)
-                    or not _PROJECT_COMMAND_ENV_KEY_RE.fullmatch(name)
-                    or name.upper() in _PROJECT_COMMAND_ENV_BLOCKED
+                    or not _is_valid_project_command_env_key(name)
                     or not isinstance(value, str)
                     or "\x00" in value
                 ):

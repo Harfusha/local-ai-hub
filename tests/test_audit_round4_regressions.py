@@ -7,7 +7,6 @@ import hashlib
 import subprocess
 import time
 from pathlib import Path
-from unittest.mock import MagicMock
 
 import pytest
 
@@ -438,11 +437,11 @@ def test_t4_09_model_quality_receipt_validation():
     # Strong receipt
     strong_receipt = {
         "receipt_id": "r2",
-        "model_digest": "sha256-model",
+        "model_digest": "sha256m",
         "suite_version": "v1",
-        "dataset_hash": "sha256-dataset",
-        "run_id": "run-2",
-        "evaluator_id": "evaluator-1",
+        "dataset_hash": "sha256d",
+        "run_id": "run1",
+        "evaluator_id": "eval1",
     }
     dec_strong = promote_candidate(cand, receipt=strong_receipt)
     assert dec_strong["status"] == "champion"

@@ -3,8 +3,10 @@ from __future__ import annotations
 import concurrent.futures
 from pathlib import Path
 import sqlite3
+import threading
 import pytest
 
+from local_ai_hub import preprocess_write_actor
 from local_ai_hub.preprocess_write_actor import PreprocessWriteActor
 
 
@@ -85,3 +87,65 @@ def test_preprocess_write_actor_does_not_report_success_before_commit(tmp_path: 
         assert con.execute("SELECT COUNT(*) FROM child").fetchone()[0] == 0
     finally:
         con.close()
+
+
+def test_preprocess_write_actor_future_waits_for_commit(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    db_path = tmp_path / "commit_gate.sqlite3"
+    con = sqlite3.connect(db_path)
+    try:
+        con.execute("CREATE TABLE items (value TEXT NOT NULL)")
+    finally:
+        con.close()
+
+    real_connect = preprocess_write_actor.connect_sqlite
+    commit_started = threading.Event()
+    allow_commit = threading.Event()
+
+    class PausedCommitConnection:
+        def __init__(self, connection: sqlite3.Connection) -> None:
+            self._connection = connection
+
+        def __getattr__(self, name: str):
+            return getattr(self._connection, name)
+
+        def commit(self) -> None:
+            commit_started.set()
+            if not allow_commit.wait(timeout=2):
+                raise TimeoutError("test did not release commit")
+            self._connection.commit()
+
+    monkeypatch.setattr(
+        preprocess_write_actor,
+        "connect_sqlite",
+        lambda *args, **kwargs: PausedCommitConnection(real_connect(*args, **kwargs)),
+    )
+
+    captured_futures: list[concurrent.futures.Future[object]] = []
+    real_future = concurrent.futures.Future
+
+    class CapturedFuture(real_future):
+        def __init__(self) -> None:
+            super().__init__()
+            captured_futures.append(self)
+
+    monkeypatch.setattr(concurrent.futures, "Future", CapturedFuture)
+
+    actor = PreprocessWriteActor(db_path)
+    actor.start()
+    try:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+            result = executor.submit(
+                actor.submit,
+                lambda connection: connection.execute("INSERT INTO items VALUES ('written')").rowcount,
+            )
+            try:
+                assert commit_started.wait(timeout=2)
+                assert len(captured_futures) == 1
+                assert not captured_futures[0].done()
+            finally:
+                allow_commit.set()
+
+            assert result.result(timeout=2) == 1
+            assert captured_futures[0].done()
+    finally:
+        actor.stop()

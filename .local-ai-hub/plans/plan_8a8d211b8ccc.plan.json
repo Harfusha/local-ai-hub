@@ -161,6 +161,155 @@
       "title": "HUB-011 P1: API schema and operation registry",
       "work_status": "completed"
     },
+    "task_hub_012": {
+      "acceptance_criteria": [
+        "5 independent slices extracted with backward-compatible export shims",
+        "Narrow focused imports between extracted modules without circular dependencies",
+        "Regression test suite with 150+ unit and integration tests passing green",
+        "No atomic monolith breakage or public contract disruption"
+      ],
+      "blocker": null,
+      "clarifications": [],
+      "depends_on": [],
+      "description": "Deconstruction of monoliths in 5 independent modular slices (command execution, patch paths, HTTP analysis routes, event cursors, source outlines) with compatibility shims and full test coverage.",
+      "kind": "code",
+      "next_action": "",
+      "order": 12,
+      "title": "HUB-012 P2: Rozdělení monolitů v 5 nezávislých slices",
+      "work_status": "completed"
+    },
+    "task_hub_013": {
+      "acceptance_criteria": [
+        "100% strict typing on all 10 extracted API boundary modules in pyproject.toml",
+        "Zero untargeted Any or type:ignore in boundary modules",
+        "mypy strict check passes with 0 issues in CI and local checkout",
+        "Explicit migration backlog for legacy monoliths documented in docs/TYPE_SAFETY_ROLLOUT.md"
+      ],
+      "blocker": null,
+      "clarifications": [],
+      "depends_on": [],
+      "description": "Type safety rollout in pyproject.toml, CI, and extracted modules. Enforces 100% strict typing across new boundary modules with mypy strict verification.",
+      "kind": "code",
+      "next_action": "",
+      "order": 13,
+      "title": "HUB-013 P2: Type safety rollout",
+      "work_status": "completed"
+    },
+    "task_hub_014": {
+      "acceptance_criteria": [
+        "Unified SQLite connection, WAL initialization, and retry_busy API",
+        "Strict write transaction timeouts (write_transaction and begin_write_transaction) with auto rollback on budget expiry",
+        "Zero filesystem I/O inside write transactions and allowable lock times verified",
+        "Integrity checks, vacuum, and backup recovery mechanisms proven"
+      ],
+      "blocker": null,
+      "clarifications": [],
+      "depends_on": [],
+      "description": "SQLite repository boundaries in sqlite_support.py and state stores. Enforces unified connection/transaction/retry/fencing API, strict write lock budgets, and proven integrity checks.",
+      "kind": "code",
+      "next_action": "",
+      "order": 14,
+      "title": "HUB-014 P2: SQLite repository boundaries",
+      "work_status": "completed"
+    },
+    "task_hub_015": {
+      "acceptance_criteria": [
+        "Strictly 7 public MCP tools preserved with full schema compatibility",
+        "Evidence-backed compact responses and response_profile projection verified",
+        "Token budget E2E measurements enforced and verified by tests",
+        "Schema diff alerts and bounded wire accounting proven"
+      ],
+      "blocker": null,
+      "clarifications": [],
+      "depends_on": [],
+      "description": "Tool schema and token budget guard in mcp_tool_descriptions.py, response_budget.py, and projection.py. Enforces 7 public tools, compatible schemas, compact projections, and token budget guards.",
+      "kind": "code",
+      "next_action": "",
+      "order": 15,
+      "title": "HUB-015 P2: Tool schema / token budget guard",
+      "work_status": "completed"
+    },
+    "task_hub_016": {
+      "acceptance_criteria": [
+        "Static UI bundle packaged offline in wheel with zero Node.js runtime requirement",
+        "Strict CSP allowing only self-hosted assets and exact asset allowlist",
+        "11-page legacy navigation parity preserved across all section links",
+        "All dashboard frontend asset tests passing green"
+      ],
+      "blocker": null,
+      "clarifications": [],
+      "depends_on": [],
+      "description": "Frontend build-out and parity harness in src/local_ai_hub/ui_static, dashboard_frontend.py, and dashboard.py. Serves offline self-hosted assets with strict CSP and 11-page parity.",
+      "kind": "code",
+      "next_action": "",
+      "order": 16,
+      "title": "HUB-016 P1: Frontend build-out a parity harness",
+      "work_status": "completed"
+    },
+    "task_hub_017": {
+      "acceptance_criteria": [
+        "Responsive dark shell with sidebar and mobile viewport adaptation",
+        "Accessible forms, semantic text nodes, keyboard navigation, and screen reader labels",
+        "Zero external web font or tracking scripts loaded"
+      ],
+      "blocker": null,
+      "clarifications": [],
+      "depends_on": [],
+      "description": "Design system and responsive shell in ui_static/shell.js and styles.css. Implements keyboard accessible navigation, ARIA landmarks, and dark theme palette.",
+      "kind": "code",
+      "next_action": "",
+      "order": 17,
+      "title": "HUB-017 P1: Design system + responsive shell",
+      "work_status": "completed"
+    },
+    "task_hub_018": {
+      "acceptance_criteria": [
+        "Current API observations separated from historical and unmeasured state",
+        "Stale and unknown resource statuses clearly labeled without guessing",
+        "Actionable status badges (running code vs installed package) verified"
+      ],
+      "blocker": null,
+      "clarifications": [],
+      "depends_on": [],
+      "description": "Overview health/action redesign. Accurately renders real-time health, version divergence badge, and avoids synthetic resource claims.",
+      "kind": "code",
+      "next_action": "",
+      "order": 18,
+      "title": "HUB-018 P1: Overview health/action redesign",
+      "work_status": "completed"
+    },
+    "task_hub_019": {
+      "acceptance_criteria": [
+        "Root-scoped project view with text node escaping for untrusted API strings",
+        "Preprocessing registration and fresh index status displayed cleanly",
+        "No-watcher re-index trigger and safe project repair integration"
+      ],
+      "blocker": null,
+      "clarifications": [],
+      "depends_on": [],
+      "description": "Projects and indexing detail view. Scopes requests to authorized roots, displays verified index checkpoints, and avoids raw HTML injection.",
+      "kind": "code",
+      "next_action": "",
+      "order": 19,
+      "title": "HUB-019 P1: Projects + indexing detail",
+      "work_status": "completed"
+    },
+    "task_hub_020": {
+      "acceptance_criteria": [
+        "Per-agent MCP configuration status displayed for Antigravity, Codex, and Claude",
+        "Handshake and live status checks distinguish connected vs disconnected states",
+        "Clear guidance without claiming false automated setup passes"
+      ],
+      "blocker": null,
+      "clarifications": [],
+      "depends_on": [],
+      "description": "Agent integrations diagnostics view. Accurately reports connection state, integration manifests, and manual config instructions.",
+      "kind": "code",
+      "next_action": "",
+      "order": 20,
+      "title": "HUB-020 P1: Agent integrations diagnostics",
+      "work_status": "completed"
+    },
     "task_roadmap_001_030": {
       "acceptance_criteria": [
         "Record exact baseline revision, dirty paths and ownership before edits; preserve all pre-existing changes.",
@@ -178,7 +327,7 @@
       "depends_on": [],
       "description": "Complete the entire Local AI Hub roadmap HUB-001 through HUB-030 in dependency order per C:/Users/Adam/Downloads/local_ai_hub_audit_roadmap_2026-11-12.md.",
       "kind": "code",
-      "next_action": "Execute HUB-012 Deconstruct monoliths in 5 independent slices",
+      "next_action": "Execute EPIC 3: HUB-016 through HUB-024 Frontend build, parity, and UX",
       "order": 1,
       "title": "Local AI Hub HUB-001–030 Roadmap Execution",
       "work_phase": "implementation",

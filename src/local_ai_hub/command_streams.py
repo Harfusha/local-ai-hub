@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from collections import deque
+import re
 import threading
 import time
 from typing import Any, Callable
@@ -142,3 +144,130 @@ class StreamMultiplexer:
     def subscribe(self, callback: Callable[[MultiplexEvent], None]) -> None:
         with self._lock:
             self._subscribers.append(callback)
+
+_SECRET_PATTERNS = [
+    re.compile(r"(?i)(--?(?:password|token|secret|api[-_]?key)\s*[= ]\s*)([^\s]+)"),
+    re.compile(r"(?i)(Bearer\s+)[A-Za-z0-9._~+/-]+"),
+    re.compile(r"(?i)(basic\s+)[A-Za-z0-9+/=]{16,}"),
+    re.compile(r"sk-[a-zA-Z0-9_\-]{16,}"),
+    re.compile(r"ghp_[a-zA-Z0-9]{36}"),
+    re.compile(r"AKIA[0-9A-Z]{16}"),
+    re.compile(r"(?i)(aws_secret_access_key\s*=\s*)([^\s]+)"),
+]
+
+def _redact_secrets(text: str) -> str:
+    if not text:
+        return ""
+    res = text
+    for pat in _SECRET_PATTERNS:
+        if pat.groups == 2:
+            res = pat.sub(r"\1***", res)
+        elif pat.groups == 1:
+            res = pat.sub(r"\1***", res)
+        else:
+            res = pat.sub("***REDACTED_SECRET***", res)
+    return res
+
+
+class _BoundedStreamBuffer:
+    """Bounded rolling buffer that retains recent output within character and byte limits."""
+
+    def __init__(self, max_chars: int, max_bytes: int = 8_000_000, redact: bool = True):
+        self.max_chars = max(1024, int(max_chars))
+        self.max_bytes = max(1024, int(max_bytes))
+        self.chunks: deque[str] = deque()
+        self.total_chars = 0
+        self.total_bytes = 0
+        self.total_lines = 0
+        self.discarded_chars = 0
+        self.discarded_bytes = 0
+        self.lock = threading.Lock()
+        self.redact = redact
+
+    @staticmethod
+    def _encoded_size(text: str) -> int:
+        return len(text.encode("utf-8", errors="replace"))
+
+    @classmethod
+    def _drop_prefix_bytes(cls, text: str, byte_limit: int) -> tuple[str, int, int]:
+        """Return suffix fitting byte_limit, plus removed chars and bytes."""
+        size = cls._encoded_size(text)
+        if size <= byte_limit:
+            return text, 0, 0
+        low, high = 0, len(text)
+        while low < high:
+            middle = (low + high) // 2
+            if cls._encoded_size(text[middle:]) <= byte_limit:
+                high = middle
+            else:
+                low = middle + 1
+        removed = text[:low]
+        return text[low:], low, cls._encoded_size(removed)
+
+    def append(self, chunk: str) -> None:
+        if not chunk:
+            return
+        cleaned = _redact_secrets(chunk) if self.redact else chunk
+        discarded_chars = 0
+        discarded_bytes = 0
+        if len(cleaned) > self.max_chars:
+            discarded_chars += len(cleaned) - self.max_chars
+            discarded_bytes += self._encoded_size(cleaned[: len(cleaned) - self.max_chars])
+            cleaned = cleaned[-self.max_chars:]
+        cleaned, removed_chars, removed_bytes = self._drop_prefix_bytes(cleaned, self.max_bytes)
+        discarded_chars += removed_chars
+        discarded_bytes += removed_bytes
+        with self.lock:
+            self.total_lines += 1
+            self.total_chars += len(cleaned)
+            self.total_bytes += self._encoded_size(cleaned)
+            self.chunks.append(cleaned)
+            while self.chunks and (self.total_chars > self.max_chars or self.total_bytes > self.max_bytes):
+                first = self.chunks[0]
+                char_excess = max(0, self.total_chars - self.max_chars)
+                byte_excess = max(0, self.total_bytes - self.max_bytes)
+                first_bytes = self._encoded_size(first)
+                if len(first) <= char_excess or first_bytes <= byte_excess:
+                    self.chunks.popleft()
+                    self.total_chars -= len(first)
+                    self.total_bytes -= first_bytes
+                    discarded_chars += len(first)
+                    discarded_bytes += first_bytes
+                else:
+                    if char_excess:
+                        removed = first[:char_excess]
+                        kept = first[char_excess:]
+                        removed_bytes = self._encoded_size(removed)
+                    else:
+                        kept, removed_chars, removed_bytes = self._drop_prefix_bytes(first, max(0, first_bytes - byte_excess))
+                        removed = first[:removed_chars]
+                    self.chunks[0] = kept
+                    self.total_chars -= len(removed)
+                    self.total_bytes -= removed_bytes
+                    discarded_chars += len(removed)
+                    discarded_bytes += removed_bytes
+            self.discarded_chars += discarded_chars
+            self.discarded_bytes += discarded_bytes
+
+    def getvalue(self) -> str:
+        with self.lock:
+            return "".join(self.chunks)[-self.max_chars:]
+
+    def write(self, chunk: str) -> None:
+        self.append(chunk)
+
+    def peek(self, chars: int = 500) -> str:
+        if chars <= 0:
+            return ""
+        with self.lock:
+            if not self.chunks:
+                return ""
+            collected: list[str] = []
+            collected_len = 0
+            for chunk in reversed(self.chunks):
+                collected.append(chunk)
+                collected_len += len(chunk)
+                if collected_len >= chars:
+                    break
+            joined = "".join(reversed(collected))
+            return joined[-chars:]

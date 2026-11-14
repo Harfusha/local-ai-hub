@@ -65,15 +65,24 @@ def test_registered_source_rejects_outside_workspace(tmp_path, monkeypatch):
     assert outside.read_text(encoding="utf-8") == "sentinel\n"
 
 
-def test_empty_source_rejects_requested_line(tmp_path):
+def test_empty_source_accepts_first_line_and_rejects_later_lines(tmp_path):
     source = tmp_path / "empty.py"
     source.write_bytes(b"")
 
-    result = read_source_slice(str(tmp_path), "empty.py", line_start=1)
+    first_line = read_source_slice(str(tmp_path), "empty.py", line_start=1)
 
-    assert result["success"] is False
-    assert result["terminal"] is True and result["retryable"] is False
-    assert result["error"] == "line_start exceeds the source line count"
+    assert first_line["success"] is True
+    assert first_line["text"] == ""
+    assert first_line["line_start"] == 1
+    assert first_line["line_end"] == 0
+    assert first_line["total_lines"] == 0
+    assert first_line["complete"] is True
+
+    later_line = read_source_slice(str(tmp_path), "empty.py", line_start=2)
+
+    assert later_line["success"] is False
+    assert later_line["terminal"] is True and later_line["retryable"] is False
+    assert later_line["error"] == "line_start exceeds the source line count"
 
 
 def test_source_never_claims_trimmed_transport_text_is_exact(tmp_path, monkeypatch):

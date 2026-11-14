@@ -6,6 +6,8 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from local_ai_hub.deterministic import DeterministicEngine
+from local_ai_hub.deterministic_test_paths import extract_test_case_names, is_test_matrix_source
+from local_ai_hub.test_matrix_commands import build_test_file_command
 
 
 def _engine(tmp_path: Path) -> DeterministicEngine:
@@ -208,3 +210,98 @@ def test_test_matrix_passes_deadline_to_inventory_and_surfaces_inventory_timeout
     assert observed["inventory_status"] is not None
     assert result["coverage"]["scan_complete"] is False
     assert "test_file_enumeration_deadline_exceeded" in result["coverage"]["warnings"]
+
+
+def test_test_matrix_command_builder_preserves_runner_and_display_rules() -> None:
+    assert build_test_file_command(Path("tests/test_api.py"), "tests/test_api.py", "pytest") == (
+        ["python", "-m", "pytest", "--", "tests/test_api.py"],
+        "python -m pytest -- tests/test_api.py",
+    )
+    assert build_test_file_command(Path("Tests/Widget.cs"), "Tests/Widget.cs", "dotnet") == (
+        ["dotnet", "test", "--filter", "FullyQualifiedName~Widget"],
+        "",
+    )
+    assert build_test_file_command(Path("src/example.test.ts"), "src/example.test.ts", "npm") == (
+        ["npm", "test", "--", "src/example.test.ts"],
+        "npm test -- src/example.test.ts",
+    )
+    assert build_test_file_command(Path("pkg/example_test.go"), "pkg/example_test.go", "go") == (
+        ["go", "test", "./pkg"],
+        "go test ./pkg",
+    )
+    assert build_test_file_command(Path("src/lib.rs"), "src/lib.rs", "cargo") == (
+        ["cargo", "test"],
+        "cargo test",
+    )
+
+
+def test_test_matrix_command_builder_keeps_argv_when_display_path_needs_quoting() -> None:
+    assert build_test_file_command(Path("tests/test file.py"), "tests/test file.py", "pytest") == (
+        ["python", "-m", "pytest", "--", "tests/test file.py"],
+        "",
+    )
+
+
+def test_test_matrix_command_builder_rejects_unknown_framework_pair() -> None:
+    assert build_test_file_command(Path("tests/test.py"), "tests/test.py", "npm") == ([], "")
+
+
+def test_test_matrix_source_classifier_preserves_supported_names_and_extensions() -> None:
+    assert is_test_matrix_source("tests/test_current.py")
+    assert is_test_matrix_source("test_widget.CS")
+    assert is_test_matrix_source("src/widget_test.go")
+    assert is_test_matrix_source("src/tests_helper.java")
+    assert is_test_matrix_source("specs/client.test.TS")
+    assert is_test_matrix_source("src/WidgetTest.php")
+    assert is_test_matrix_source("src/widget_test.php")
+    assert is_test_matrix_source("src/test.php")
+    assert is_test_matrix_source("specs/helper.c")
+
+
+def test_test_matrix_source_classifier_preserves_exclusions() -> None:
+    assert not is_test_matrix_source("tests/Pest.php")
+    assert not is_test_matrix_source("tests/README.md")
+    assert not is_test_matrix_source("src/widget.cs")
+    assert not is_test_matrix_source("src/widgettest.php")
+
+
+def test_test_case_extractor_keeps_python_heuristic_and_order() -> None:
+    cases, complete = extract_test_case_names(
+        "def test_first(): pass\nasync def test_ignored(): pass\n    def test_second(x): pass\n",
+        ".py",
+    )
+    assert cases == ["test_first", "test_second"]
+    assert complete is True
+
+
+def test_test_case_extractor_keeps_csharp_attribute_window() -> None:
+    cases, complete = extract_test_case_names(
+        "[Fact]\npublic void Works() {}\n[UnityTest]\nvoid AlsoWorks() {}\n",
+        ".cs",
+    )
+    assert cases == ["Works", "AlsoWorks"]
+    assert complete is True
+
+
+def test_test_case_extractor_caps_names_and_reports_incomplete_scan() -> None:
+    source = "".join(f"def test_case_{index}(): pass\n" for index in range(20))
+    cases, complete = extract_test_case_names(source, ".py")
+    assert cases == [f"test_case_{index}" for index in range(16)]
+    assert complete is False
+
+
+def test_test_case_extractor_stops_when_deadline_callback_expires() -> None:
+    checks = 0
+
+    def should_continue() -> bool:
+        nonlocal checks
+        checks += 1
+        return checks <= 2
+
+    cases, complete = extract_test_case_names(
+        "def test_first(): pass\ndef test_second(): pass\ndef test_third(): pass\n",
+        ".py",
+        should_continue=should_continue,
+    )
+    assert cases == ["test_first", "test_second"]
+    assert complete is False
