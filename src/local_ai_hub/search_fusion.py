@@ -38,6 +38,16 @@ def _match_key(match: dict[str, Any]) -> tuple[str, str, str] | None:
     return None
 
 
+def _parse_relevance(val: Any) -> float | None:
+    if val is None or isinstance(val, bool):
+        return None
+    try:
+        f = float(val)
+        return f if math.isfinite(f) else None
+    except (ValueError, TypeError):
+        return None
+
+
 def fuse_search_candidates(
     lexical: list[dict[str, Any]],
     semantic: list[dict[str, Any]],
@@ -92,33 +102,48 @@ def fuse_search_candidates(
                 item["source_breakdown"][source] = {"rank": source_rank, "score": file_score}
                 item["fusion_score"] += file_score
 
+            rel_val = _parse_relevance(candidate.get("relevance"))
             match = {
                 name: value for name, value in candidate.items()
-                if name not in {"path", "sources", "source_breakdown", "fusion_score", "matches"}
+                if name not in {"path", "sources", "source_breakdown", "fusion_score", "matches", "relevance_by_source"}
             }
             match["path"] = path
             match["source"] = source
             match["source_rank"] = source_rank
             match["fusion_score"] = file_score
+            match["relevance_by_source"] = {source: rel_val} if rel_val is not None else {}
+            if rel_val is not None:
+                match["relevance"] = rel_val
+            elif "relevance" in match:
+                match["relevance"] = None
+
             identity = _match_key(match)
             existing = next((row for row in item["matches"] if identity is not None and row.get("_identity") == identity), None)
             if existing is None:
                 match["_identity"] = identity
                 match["sources"] = [source]
                 item["matches"].append(match)
-            elif source not in existing["sources"]:
-                existing["sources"].append(source)
-                existing["fusion_score"] = float(existing.get("fusion_score", 0.0)) + file_score
+            else:
+                if source not in existing["sources"]:
+                    existing["sources"].append(source)
+                    existing["fusion_score"] = float(existing.get("fusion_score", 0.0)) + file_score
+                if rel_val is not None:
+                    existing.setdefault("relevance_by_source", {})[source] = rel_val
+                    current_rel = _parse_relevance(existing.get("relevance"))
+                    existing["relevance"] = max(current_rel, rel_val) if current_rel is not None else rel_val
+                for field in ("text", "content", "symbol", "snippet"):
+                    if not existing.get(field) and candidate.get(field):
+                        existing[field] = candidate[field]
 
     ranked: list[dict[str, Any]] = []
     for item in combined.values():
+        for m in item["matches"]:
+            m["sources"] = sorted(set(m.get("sources", [])))
         matches = sorted(
             item["matches"],
             key=lambda match: (
-                not (type(match.get("relevance")) in {int, float} and math.isfinite(match["relevance"])),
-                -float(match["relevance"])
-                if type(match.get("relevance")) in {int, float} and math.isfinite(match["relevance"])
-                else 0.0,
+                _parse_relevance(match.get("relevance")) is None,
+                -(float(_parse_relevance(match.get("relevance")) or 0.0)),
                 -float(match.get("fusion_score", 0.0)),
                 "lexical" not in match.get("sources", []),
                 int(match.get("source_rank", 0)),
