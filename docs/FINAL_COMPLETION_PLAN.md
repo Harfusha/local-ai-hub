@@ -1,20 +1,24 @@
 ﻿# Finální plán dokončení projektu Local AI Hub
 
-**Datum:** 2026-11-07  
+**Datum aktualizace:** 2026-11-14  
 **Verze:** 6.0.0  
-**Účel:** Jediný autoritativní realizační plán pro navazujícího agenta. Nahrazuje všechny původní plány, specifikace, audity a pracovní záznamy, jejichž platný obsah byl konsolidován do trvalé dokumentace.
+**Stav vydání:** Release Candidate (`release-candidate`). Produkční nasazení (`published`) vyžaduje projití všech stanovených bran.  
+**Účel:** Autorizovaný realizační plán a status dokument projektu.
 
 ---
 
-## 1. Souhrn stavu projektu a výchozí pozice
+## 1. Brány kvality a souhrn stavu projektu
 
-Projekt Local AI Hub se nachází ve verzi **6.0.0** s plně funkčním produkčním během (`hub_online: true`, `ollama_online: true`).
-Při generální inventuře a auditu k 2026-11-07 bylo analyzováno celkem **444 konkrétních požadavků** napříč 112 zdrojovými dokumenty:
-- **410 požadavků (92,3 %):** Dokončeno a ověřeno (A) technickou evidencí v kódu, testech a běžícím runtime.
-- **31 požadavků (7,0 %):** Nahrazeno nebo zrušeno (D) doložitelnými architektonickými rozhodnutími operátora (single-user no-tenancy, unredacted local trace, on-demand model routing, Serena max 2 sessions).
-- **3 požadavky (0,7 %):** Otevřeno / blokováno externí autorizací (B/C) — privátní evaluační korpus T02, fyzická GPU inference při externí rezervaci, živý push na remote CI.
+Stav projektu je explicitně rozčleněn do definovaných validačních bran:
+- **Release candidate:** Verze 6.0.0-rc je připravena v repozitáři; metadata napříč `pyproject.toml`, `RELEASE.json` a kódem jsou sjednocena.
+- **Source implemented:** Všechny komponenty, bezpečnostní hranice a adaptery jsou implementovány ve zdrojovém stromu.
+- **Focused verified:** Cílené unit a integrační testy pro nově upravené moduly (source_outline, evidence_merge, preprocess, search_fusion, services) procházejí v lokálním běhu.
+- **Platform verified:** Běh na Windows (hlavní vývojová platforma) je ověřen; multiplatformní CI běhy probíhají v GitHub Actions.
+- **Installed verified:** Kolo instalace/odinstalace a ownership manifesty ověřeny přes `tools/release_check.py --allow-installed` a acceptance testy.
+- **Hardware verified:** Modely a GPU akcelerace závisí na externím hardware. Případy bez dostupného modelu jsou striktně vedeny jako `BLOCKED_MODEL_ABSENT`, nikoli falešné `PASS`.
+- **Published:** Komerční/produkční publikace nastává až po uzavření celého backlogu třetího auditu (HUB-049–HUB-075).
 
-Všechny historické soubory plánů (`docs/superpowers/plans/`), specifikací (`docs/superpowers/specs/`), review receiptů (`docs/superpowers/receipts/`) a auditních zpráv z `docs/` byly bezpečně odstraněny po převodu jejich obsahu do trvalé dokumentace a tohoto plánu.
+Historické audity (2026-11-07) evidovaly stav výchozí implementace. Třetí audit (2026-11-14, backlog HUB-049 až HUB-075) odstraňuje zbývající P1/P2 nálezy před finální distribucí.
 
 Jedinými ponechanými rozpracovanými výjimkami jsou:
 1. Rozpracované uživatelské soubory evaluační sady v `docs/agent-evaluation/` a necommitovaný plán `.local-ai-hub/plans/plan_prompt_stress_coverage_followup_20261107.plan.json` (probíhající uživatelská práce na stresových testech 105 promptů).
