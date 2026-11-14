@@ -49,7 +49,7 @@ from .command_policy import (
     command_executable_identity,
     contains_user_whitelisted_tool,
     is_interactive_command_prompt,
-    is_interactive_output_prompt as _is_interactive_prompt,
+    is_interactive_output_prompt,
     normalize_user_whitelisted_tools,
 )
 from .command_git import classify_git_command
@@ -90,6 +90,20 @@ from .command_validation import (
     classify_validation_tool,
 )
 from .trace_utils import cluster_stack_traces, deduplicate_stack_traces
+
+
+def _is_interactive_prompt(text: str) -> bool:
+    return is_interactive_command_prompt(text) or is_interactive_output_prompt(text)
+
+
+__all__ = [
+    "dataclass",
+    "field",
+    "SHELL_INTERPRETERS",
+    "python_inline_code_syntax_is_valid",
+    "cluster_stack_traces",
+    "_is_interactive_prompt",
+]
 MultiplexEvent = _command_streams.MultiplexEvent
 StreamMultiplexer = _command_streams.StreamMultiplexer
 _SECRET_PATTERNS = _command_streams._SECRET_PATTERNS
@@ -4434,7 +4448,7 @@ class CommandBroker:
 
     @classmethod
     def _is_interactive_prompt(cls, text: str) -> bool:
-        return is_interactive_command_prompt(text)
+        return _is_interactive_prompt(text)
 
     def _execute(
         self,

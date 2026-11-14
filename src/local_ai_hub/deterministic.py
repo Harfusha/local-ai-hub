@@ -1,5 +1,16 @@
 from __future__ import annotations
 
+__all__ = [
+    "ET",
+    "ProcessCleanupUnverifiedError",
+    "PureWindowsPath",
+    "_git_history_pathspec",
+    "_git_history_timestamp",
+    "pagination_bounds_error",
+    "select_test_framework",
+    "tomllib",
+]
+
 from .json_utils import dumps as json_dumps
 from .diagnostic_compression import compress_diagnostic_text
 from .deterministic_answer_rendering import render_deterministic_answer
@@ -18,7 +29,7 @@ from .infra_facts import extract_infra_facts
 from .breaking_change_detection import compare_api_definitions
 from .unified_diff_parser import parse_unified_diff
 from .python_shell_injection import _python_shell_injection_lines
-from .python_relations import _RELATION_SCAN_MAX_SECONDS, find_python_relations
+from .python_relations import find_python_relations
 from .secret_scan_config import (
     _SECRET_SCAN_MAX_ENTRIES,
     _SECRET_SCAN_MAX_FILES,
@@ -67,16 +78,13 @@ import urllib.request
 import xml.etree.ElementTree as ET
 from collections import Counter, defaultdict
 from contextlib import closing
-from datetime import date as _datetime_date, datetime as _datetime, time as _datetime_time, timezone as _datetime_timezone
 from pathlib import Path
 from pathlib import PurePosixPath, PureWindowsPath
-from typing import Any, Iterator
+from typing import Any
 
 from . import __version__
 from .cache import MemoryLRUCache, SQLiteCache, stable_hash
-from .code_index import _mask_non_code
 from .normalizer import tokenize_query_terms
-from .python_shell_injection import _python_shell_injection_lines
 from .sqlite_support import (
     SQLiteChangeObserver, connect_sqlite, initialize_wal, is_busy_error,
     quick_sanity_check, sqlite_batches, write_transaction,
@@ -89,11 +97,10 @@ from .diff_parsers import (
     extract_rust_diff_defs,
     extract_ts_diff_defs,
 )
-from .secret_history import parse_git_patch_output
 from .search_pagination import pagination_bounds_error
 from .source_outline import ast_outline as _source_ast_outline, fold_brace_blocks as _fold_brace_blocks
 from .process_utils import (
-    ProcessCancelledError, ProcessCleanupUnverifiedError, canonical_root,
+    ProcessCleanupUnverifiedError, canonical_root,
     clean_git_env, hidden_run_kwargs, run_hidden,
 )
 from .repo_tools import is_root_archive_path
@@ -104,7 +111,6 @@ from .deterministic_test_paths import (
     select_test_matrix_targets,
 )
 from .test_matrix_commands import build_test_file_command
-from .api_spec_document import build_api_spec_document
 from .topology_summary import build_topology_summary_markdown
 from .topology_labels import classify_topology_layer
 from .test_framework_selection import detect_test_framework, select_test_framework
@@ -148,87 +154,17 @@ _DIFF_EVAL_I = re.compile(r"\b(eval|exec)\s*\(", re.I)
 _DIFF_SECRET_PASSWORD_I = re.compile(r"\b(password|secret|api[_-]?key|private[_-]?key|token)\b", re.I)
 from .source_facts import (
     CONCURRENCY_RE,
-    CONFIG_PATTERNS,
-    ENV_PATTERNS,
-    ROUTE_PATTERNS,
     SECURITY_RE,
     SQL_RE,
-    TODO_RE,
-    _SOURCE_ACTION_ATTR,
-    _SOURCE_ARTISAN_CMD,
-    _SOURCE_ASYNC_DEF_RE,
-    _SOURCE_BLADE_DIRECTIVE,
-    _SOURCE_CAKE_ASSOC,
-    _SOURCE_CAKE_ENTITY,
-    _SOURCE_CAKE_MIGRATION,
-    _SOURCE_CAKE_RESOURCES,
-    _SOURCE_CAKE_ROUTE,
-    _SOURCE_CAKE_TABLE,
-    _SOURCE_CSS_CLASS,
-    _SOURCE_CSS_VAR,
-    _SOURCE_DATACLASS_RE,
-    _SOURCE_DECORATOR_RE,
-    _SOURCE_ELEM_ID,
-    _SOURCE_ELOQUENT_FILLABLE,
-    _SOURCE_ELOQUENT_REL,
-    _SOURCE_ELOQUENT_TABLE,
-    _SOURCE_FORM_REQ,
-    _SOURCE_FORM_TAG,
-    _SOURCE_HARDCODED_IP,
-    _SOURCE_IMPORT_FROM,
-    _SOURCE_JS_IMPORT,
-    _SOURCE_KEYFRAMES,
-    _SOURCE_LARAVEL_RESOURCE,
-    _SOURCE_LINK_CSS,
-    _SOURCE_MEDIA_QUERY,
-    _SOURCE_METHOD_ATTR,
-    _SOURCE_MIGRATION_COL,
-    _SOURCE_NEST_DECORATOR,
-    _SOURCE_NEXT_ROUTE_HANDLER,
-    _SOURCE_PHP_ATTR,
-    _SOURCE_PHP_DEF,
-    _SOURCE_PHP_FUNC,
-    _SOURCE_PHP_NS,
-    _SOURCE_PHP_ROUTE_ATTR,
-    _SOURCE_PHP_TESTED_CLASS,
-    _SOURCE_PHP_USE,
-    _SOURCE_REACT_COMPONENT,
-    _SOURCE_REACT_HOOK,
-    _SOURCE_REACT_ROUTE,
-    _SOURCE_SCHEMA_CREATE,
-    _SOURCE_SCRIPT_SRC,
-    _SOURCE_SECRET_RE,
-    _SOURCE_TABLE_INSERT_I,
-    _SOURCE_TESTED_CLASS,
-    _SOURCE_TEST_SUITE_BLOCK,
-    _SOURCE_TS_DECLARATION,
-    _SOURCE_UNITY_LIFECYCLES,
-    _SOURCE_WEB_COMPONENT,
-    _SOURCE_WP_HOOK,
     extract_source_facts as _extract_source_facts,
 )
 
 from .api_spec_extraction import (
-    _API_ATTRIBUTE_ROUTE_DECLARATION,
-    _API_EXPRESS_ROUTER_METHOD,
-    _API_HTML_FORM_ENDPOINT,
-    _API_LARAVEL_RESOURCE_ROUTE,
-    _API_LARAVEL_ROUTE_METHOD,
-    _API_NEXT_ROUTE_HANDLER,
-    _API_PHP_CONNECT_ROUTE,
-    _API_PHP_RESOURCE_ROUTE,
     extract_api_spec as _extract_api_spec,
 )
 from .repo_topology import repo_topology as _repo_topology
 
 from .hotspot_analysis import (
-    _HOTSPOT_ALGORITHM,
-    _HOTSPOT_ANALYSIS_SECONDS,
-    _HOTSPOT_FILE_BYTES_LIMIT,
-    _HOTSPOT_FILE_LIMIT,
-    _HOTSPOT_GIT_COMMIT_LIMIT,
-    _HOTSPOT_PATH_LIMIT,
-    _HOTSPOT_TOTAL_BYTES_LIMIT,
     find_hotspots as _find_hotspots,
 )
 
