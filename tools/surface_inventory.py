@@ -3164,7 +3164,18 @@ def coverage_rows(findings: list[dict[str, Any]], task_id: str | None = None) ->
                 else "no asserted operation test linked; behavior unverified"
             ),
             "benchmark_cohort": _normalize_unverified(finding.get("benchmark_cohort") or "not measured", "benchmark_cohort"),
-            "state": finding.get("state") or {"confirmed": "verified", "conditional": "conditional", "refuted": "unsupported"}.get(evidence_status, "unsupported"),
+            "state": (
+                finding.get("state")
+                or (
+                    "verified"
+                    if (behavioral_test_ids and not metadata_only and evidence_status == "confirmed")
+                    else "conditional"
+                    if evidence_status == "conditional"
+                    else "unsupported"
+                    if evidence_status == "refuted"
+                    else "not_verified"
+                )
+            ),
             "contract": contract,
             "acceptance": finding.get("acceptance") or "Inventory agrees with cited source or generated schema evidence.",
             "condition": condition,

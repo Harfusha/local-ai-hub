@@ -946,3 +946,373 @@ def test_http_diagnostics_export_preserves_request_body_timeout_status(
     body = json.loads(timeout.value.read().decode("utf-8"))
     assert body["success"] is False
     assert body["error"] == "request body timed out"
+
+
+def test_http_post_coord_plan_routes_acceptance(running_http_hub, tmp_path):
+    base_url, app = running_http_hub
+
+    # 1. /api/coord/plan_create: test cross-root containment (fail closed)
+    outside_root = tmp_path.parent / "outside"
+    req_cross = urllib_request.Request(
+        f"{base_url}/api/coord/plan_create",
+        data=json.dumps({"root": str(outside_root), "title": "Bad Plan"}).encode("utf-8"),
+        headers={"Content-Type": "application/json", "Connection": "close"},
+        method="POST",
+    )
+    with pytest.raises(HTTPError) as exc_cross:
+        urllib_request.urlopen(req_cross)
+    exc_cross.value.close()
+    assert exc_cross.value.code in (400, 403)
+
+    # Valid plan_create with task_1
+    req_create = urllib_request.Request(
+        f"{base_url}/api/coord/plan_create",
+        data=json.dumps({
+            "root": str(tmp_path),
+            "title": "Acceptance Plan",
+            "plan_id": "plan_acceptance_test",
+            "tasks": {"task_1": {"title": "Task 1", "work_status": "planned"}},
+        }).encode("utf-8"),
+        headers={"Content-Type": "application/json", "Connection": "close"},
+        method="POST",
+    )
+    with urllib_request.urlopen(req_create) as resp:
+        assert resp.status == 200
+        res = json.loads(resp.read().decode("utf-8"))
+        assert res["success"] is True
+        assert res["plan_id"] == "plan_acceptance_test"
+        rev = res.get("file_revision") or ""
+
+    # 2. /api/coord/plan_task_edit: cross-root containment
+    req_edit_cross = urllib_request.Request(
+        f"{base_url}/api/coord/plan_task_edit",
+        data=json.dumps({
+            "root": str(outside_root),
+            "plan_id": "plan_acceptance_test",
+            "task_id": "task_1",
+            "expected_revision": rev or "rev1",
+            "task_data": {"title": "Task 1", "work_status": "in_progress"},
+        }).encode("utf-8"),
+        headers={"Content-Type": "application/json", "Connection": "close"},
+        method="POST",
+    )
+    with pytest.raises(HTTPError) as exc_edit_cross:
+        urllib_request.urlopen(req_edit_cross)
+    exc_edit_cross.value.close()
+    assert exc_edit_cross.value.code in (400, 403)
+
+    # Valid plan_task_edit
+    req_edit = urllib_request.Request(
+        f"{base_url}/api/coord/plan_task_edit",
+        data=json.dumps({
+            "root": str(tmp_path),
+            "plan_id": "plan_acceptance_test",
+            "task_id": "task_1",
+            "expected_revision": rev,
+            "task_data": {"title": "Task 1 Updated", "work_status": "planned"},
+        }).encode("utf-8"),
+        headers={"Content-Type": "application/json", "Connection": "close"},
+        method="POST",
+    )
+    with urllib_request.urlopen(req_edit) as resp:
+        assert resp.status == 200
+        res_edit = json.loads(resp.read().decode("utf-8"))
+        assert res_edit["success"] is True
+        rev2 = res_edit.get("file_revision") or rev
+
+    # 3. /api/coord/plan_task_delete: cross-root containment
+    req_del_cross = urllib_request.Request(
+        f"{base_url}/api/coord/plan_task_delete",
+        data=json.dumps({
+            "root": str(outside_root),
+            "plan_id": "plan_acceptance_test",
+            "task_id": "task_1",
+            "expected_revision": rev2,
+        }).encode("utf-8"),
+        headers={"Content-Type": "application/json", "Connection": "close"},
+        method="POST",
+    )
+    with pytest.raises(HTTPError) as exc_del_cross:
+        urllib_request.urlopen(req_del_cross)
+    exc_del_cross.value.close()
+    assert exc_del_cross.value.code in (400, 403)
+
+    # Valid plan_task_delete
+    req_del = urllib_request.Request(
+        f"{base_url}/api/coord/plan_task_delete",
+        data=json.dumps({
+            "root": str(tmp_path),
+            "plan_id": "plan_acceptance_test",
+            "task_id": "task_1",
+            "expected_revision": rev2,
+        }).encode("utf-8"),
+        headers={"Content-Type": "application/json", "Connection": "close"},
+        method="POST",
+    )
+    with urllib_request.urlopen(req_del) as resp:
+        assert resp.status == 200
+        res = json.loads(resp.read().decode("utf-8"))
+        assert res["success"] is True
+
+
+def test_http_post_complete_acceptance(running_http_hub, monkeypatch, tmp_path):
+    base_url, app = running_http_hub
+    monkeypatch.setattr(
+        app.services,
+        "complete_code",
+        lambda payload: {"success": True, "completed": True, "text": "result_code"},
+    )
+    req = urllib_request.Request(
+        f"{base_url}/api/complete",
+        data=json.dumps({"prompt": "def hello():", "root": str(tmp_path)}).encode("utf-8"),
+        headers={"Content-Type": "application/json", "Connection": "close"},
+        method="POST",
+    )
+    with urllib_request.urlopen(req) as resp:
+        assert resp.status == 200
+        res = json.loads(resp.read().decode("utf-8"))
+        assert res["success"] is True
+        assert res["text"] == "result_code"
+
+
+def test_http_post_worktree_routes_acceptance(running_http_hub, monkeypatch, tmp_path):
+    base_url, app = running_http_hub
+    outside_root = tmp_path.parent / "outside"
+
+    req_lease_bad = urllib_request.Request(
+        f"{base_url}/api/coord/worktree_lease",
+        data=json.dumps({"root": str(outside_root)}).encode("utf-8"),
+        headers={"Content-Type": "application/json", "Connection": "close"},
+        method="POST",
+    )
+    with pytest.raises(HTTPError) as exc:
+        urllib_request.urlopen(req_lease_bad)
+    exc.value.close()
+    assert exc.value.code in (400, 403)
+
+    req_rel_bad = urllib_request.Request(
+        f"{base_url}/api/coord/worktree_release",
+        data=json.dumps({"root": str(outside_root)}).encode("utf-8"),
+        headers={"Content-Type": "application/json", "Connection": "close"},
+        method="POST",
+    )
+    with pytest.raises(HTTPError) as exc:
+        urllib_request.urlopen(req_rel_bad)
+    exc.value.close()
+    assert exc.value.code in (400, 403)
+
+    monkeypatch.setattr(
+        app.services,
+        "worktree_lease",
+        lambda root, branch_name=None: {"success": True, "branch": "test-branch", "path": str(tmp_path / "wt")},
+    )
+    monkeypatch.setattr(
+        app.services,
+        "worktree_release",
+        lambda *args, **kwargs: {"success": True, "released": True},
+    )
+    req_lease = urllib_request.Request(
+        f"{base_url}/api/coord/worktree_lease",
+        data=json.dumps({"root": str(tmp_path), "branch": "test-branch"}).encode("utf-8"),
+        headers={"Content-Type": "application/json", "Connection": "close"},
+        method="POST",
+    )
+    with urllib_request.urlopen(req_lease) as resp:
+        assert resp.status == 200
+        assert json.loads(resp.read().decode("utf-8"))["success"] is True
+
+    req_rel = urllib_request.Request(
+        f"{base_url}/api/coord/worktree_release",
+        data=json.dumps({"root": str(tmp_path), "worktree_path": str(tmp_path / "wt")}).encode("utf-8"),
+        headers={"Content-Type": "application/json", "Connection": "close"},
+        method="POST",
+    )
+    with urllib_request.urlopen(req_rel) as resp:
+        assert resp.status == 200
+        assert json.loads(resp.read().decode("utf-8"))["success"] is True
+
+
+def test_http_post_repo_patch_acceptance(running_http_hub, monkeypatch, tmp_path):
+    base_url, app = running_http_hub
+    outside_root = tmp_path.parent / "outside"
+
+    req_bad = urllib_request.Request(
+        f"{base_url}/api/repo/patch",
+        data=json.dumps({"root": str(outside_root), "path": "file.txt", "old_code": "a", "new_code": "b"}).encode("utf-8"),
+        headers={"Content-Type": "application/json", "Connection": "close"},
+        method="POST",
+    )
+    with pytest.raises(HTTPError) as exc:
+        urllib_request.urlopen(req_bad)
+    exc.value.close()
+    assert exc.value.code in (400, 403)
+
+    monkeypatch.setattr(
+        app.repo_tools,
+        "apply_patch",
+        lambda root, path, old, new: {"success": True, "applied": True, "path": path},
+    )
+    req_good = urllib_request.Request(
+        f"{base_url}/api/repo/patch",
+        data=json.dumps({"root": str(tmp_path), "path": "file.txt", "old_code": "a", "new_code": "b"}).encode("utf-8"),
+        headers={"Content-Type": "application/json", "Connection": "close"},
+        method="POST",
+    )
+    with urllib_request.urlopen(req_good) as resp:
+        assert resp.status == 200
+        assert json.loads(resp.read().decode("utf-8"))["success"] is True
+
+
+def test_http_post_coord_board_and_semaphore_acceptance(running_http_hub, monkeypatch, tmp_path):
+    base_url, app = running_http_hub
+
+    # 1. Semaphore release
+    monkeypatch.setattr(
+        app.services,
+        "semaphore_release",
+        lambda name="", lease_id="", owner="": {"success": True, "released": True},
+    )
+    req_sem = urllib_request.Request(
+        f"{base_url}/api/coord/semaphore_release",
+        data=json.dumps({"name": "gpu_sem", "lease_id": "l-1", "owner": "test"}).encode("utf-8"),
+        headers={"Content-Type": "application/json", "Connection": "close"},
+        method="POST",
+    )
+    with urllib_request.urlopen(req_sem) as resp:
+        assert resp.status == 200
+        assert json.loads(resp.read().decode("utf-8"))["success"] is True
+
+    # 2. Board item create & delete
+    monkeypatch.setattr(
+        app.services,
+        "board_item_create",
+        lambda **kwargs: {"success": True, "item_id": "item-1"},
+    )
+    monkeypatch.setattr(
+        app.services,
+        "board_item_delete",
+        lambda item_id="": {"success": True, "deleted": True},
+    )
+    req_create = urllib_request.Request(
+        f"{base_url}/api/coord/board_item_create",
+        data=json.dumps({"title": "Test Item", "root": str(tmp_path)}).encode("utf-8"),
+        headers={"Content-Type": "application/json", "Connection": "close"},
+        method="POST",
+    )
+    with urllib_request.urlopen(req_create) as resp:
+        assert resp.status == 200
+        assert json.loads(resp.read().decode("utf-8"))["success"] is True
+
+    req_delete = urllib_request.Request(
+        f"{base_url}/api/coord/board_item_delete",
+        data=json.dumps({"item_id": "item-1"}).encode("utf-8"),
+        headers={"Content-Type": "application/json", "Connection": "close"},
+        method="POST",
+    )
+    with urllib_request.urlopen(req_delete) as resp:
+        assert resp.status == 200
+        assert json.loads(resp.read().decode("utf-8"))["success"] is True
+
+    # 3. Milestone create
+    monkeypatch.setattr(
+        app.services,
+        "milestone_create",
+        lambda name="", target_date="", description="": {"success": True, "milestone": name},
+    )
+    req_m = urllib_request.Request(
+        f"{base_url}/api/coord/milestone_create",
+        data=json.dumps({"name": "v6.0", "target_date": "2026-11-15"}).encode("utf-8"),
+        headers={"Content-Type": "application/json", "Connection": "close"},
+        method="POST",
+    )
+    with urllib_request.urlopen(req_m) as resp:
+        assert resp.status == 200
+        assert json.loads(resp.read().decode("utf-8"))["success"] is True
+
+
+def test_http_post_context_budget_acceptance(running_http_hub, monkeypatch, tmp_path):
+    base_url, app = running_http_hub
+    outside_root = tmp_path.parent / "outside"
+
+    req_bad = urllib_request.Request(
+        f"{base_url}/api/repo/context_budget",
+        data=json.dumps({"root": str(outside_root)}).encode("utf-8"),
+        headers={"Content-Type": "application/json", "Connection": "close"},
+        method="POST",
+    )
+    with pytest.raises(HTTPError) as exc:
+        urllib_request.urlopen(req_bad)
+    exc.value.close()
+    assert exc.value.code in (400, 403)
+
+    monkeypatch.setattr(
+        app.services,
+        "context_budget",
+        lambda root, files=None, max_tokens=4000: {"success": True, "budget_tokens": max_tokens, "files": []},
+    )
+    req_good = urllib_request.Request(
+        f"{base_url}/api/repo/context_budget",
+        data=json.dumps({"root": str(tmp_path), "max_tokens": 8000}).encode("utf-8"),
+        headers={"Content-Type": "application/json", "Connection": "close"},
+        method="POST",
+    )
+    with urllib_request.urlopen(req_good) as resp:
+        assert resp.status == 200
+        assert json.loads(resp.read().decode("utf-8"))["success"] is True
+
+
+def test_http_post_rag_ingest_acceptance(running_http_hub, monkeypatch, tmp_path):
+    base_url, app = running_http_hub
+    outside_root = tmp_path.parent / "outside"
+
+    req_doc_bad = urllib_request.Request(
+        f"{base_url}/api/rag/ingest_document",
+        data=json.dumps({"root": str(outside_root), "content": "text"}).encode("utf-8"),
+        headers={"Content-Type": "application/json", "Connection": "close"},
+        method="POST",
+    )
+    with pytest.raises(HTTPError) as exc:
+        urllib_request.urlopen(req_doc_bad)
+    exc.value.close()
+    assert exc.value.code in (400, 403)
+
+    req_dia_bad = urllib_request.Request(
+        f"{base_url}/api/rag/ingest_diagram",
+        data=json.dumps({"root": str(outside_root), "image_path": "diag.png"}).encode("utf-8"),
+        headers={"Content-Type": "application/json", "Connection": "close"},
+        method="POST",
+    )
+    with pytest.raises(HTTPError) as exc:
+        urllib_request.urlopen(req_dia_bad)
+    exc.value.close()
+    assert exc.value.code in (400, 403)
+
+    monkeypatch.setattr(
+        app.rag,
+        "ingest_document",
+        lambda **kwargs: {"success": True, "document_id": "doc-test", "chunks": 1},
+    )
+    monkeypatch.setattr(
+        app.rag,
+        "ingest_diagram",
+        lambda **kwargs: {"success": True, "diagram_id": "dia-test"},
+    )
+    req_doc = urllib_request.Request(
+        f"{base_url}/api/rag/ingest_document",
+        data=json.dumps({"root": str(tmp_path), "content": "valid text content", "title": "Doc 1"}).encode("utf-8"),
+        headers={"Content-Type": "application/json", "Connection": "close"},
+        method="POST",
+    )
+    with urllib_request.urlopen(req_doc) as resp:
+        assert resp.status == 200
+        assert json.loads(resp.read().decode("utf-8"))["success"] is True
+
+    req_dia = urllib_request.Request(
+        f"{base_url}/api/rag/ingest_diagram",
+        data=json.dumps({"root": str(tmp_path), "image_path": "diag.png", "caption": "Diagram 1"}).encode("utf-8"),
+        headers={"Content-Type": "application/json", "Connection": "close"},
+        method="POST",
+    )
+    with urllib_request.urlopen(req_dia) as resp:
+        assert resp.status == 200
+        assert json.loads(resp.read().decode("utf-8"))["success"] is True

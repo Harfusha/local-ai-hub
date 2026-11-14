@@ -80,6 +80,10 @@ Reproduce with `python tools/surface_inventory.py --check --task-id task_b206b2c
 | HTTP GET | /api/telemetry/timeline | confirmed | src/local_ai_hub/http_server.py | op-d7ed59a7d1a4 |
 | HTTP GET | /api/test_matrix | conditional | src/local_ai_hub/http_server.py | op-7e21dfa39869 |
 | HTTP GET | /dashboard | conditional | src/local_ai_hub/http_server.py | op-f5f8517aa982 |
+| HTTP GET | /dashboard-assets/ | conditional | src/local_ai_hub/http_server.py | op-ed30dc86185d |
+| HTTP GET | /dashboard-assets/app.css | confirmed | src/local_ai_hub/http_server.py | op-fb3a808593b2 |
+| HTTP GET | /dashboard-assets/app.js | confirmed | src/local_ai_hub/http_server.py | op-5835050c112b |
+| HTTP GET | /dashboard/next | conditional | src/local_ai_hub/http_server.py | op-bb3baf2ce868 |
 | HTTP GET | /favicon.ico | confirmed | src/local_ai_hub/http_server.py | op-85e915b2262e |
 | HTTP GET | /health | confirmed | src/local_ai_hub/http_server.py | op-fdaca5a0d036 |
 | HTTP GET | /ready | conditional | src/local_ai_hub/http_server.py | op-a5f57d02a8dd |
@@ -168,6 +172,7 @@ Reproduce with `python tools/surface_inventory.py --check --task-id task_b206b2c
 | HTTP POST | /api/coord/session_briefing | confirmed | src/local_ai_hub/http_server.py | op-be387f1cef8b |
 | HTTP POST | /api/coord/simulate_merge | confirmed | src/local_ai_hub/http_server.py | op-5bd15143db41 |
 | HTTP POST | /api/coord/wait_for_event | confirmed | src/local_ai_hub/http_server.py | op-a90b9d0eada5 |
+| HTTP POST | /api/coord/worktree_ | confirmed | src/local_ai_hub/http_server.py | op-b15862f5b64d |
 | HTTP POST | /api/coord/worktree_lease | confirmed | src/local_ai_hub/http_server.py | op-2d8f98fca770 |
 | HTTP POST | /api/coord/worktree_prune | confirmed | src/local_ai_hub/http_server.py | op-a4b060cb7fe2 |
 | HTTP POST | /api/coord/worktree_release | confirmed | src/local_ai_hub/http_server.py | op-b1fcb8539149 |

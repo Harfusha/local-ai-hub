@@ -6473,6 +6473,7 @@ class Handler(BaseHTTPRequestHandler):
         if (
             path in root_scoped_repo_paths
             or path.startswith("/api/coord/plan_")
+            or path.startswith("/api/coord/worktree_")
             or (path.startswith("/api/repo/") and path not in {"/api/repo/cross_repo_contract"})
             or path.startswith("/api/code/")
         ) and not self._bind_repository_root_payload(payload):
