@@ -408,6 +408,38 @@
       "title": "HUB-026 P1: Update / rollback assistant",
       "work_status": "completed"
     },
+    "task_hub_027": {
+      "acceptance_criteria": [
+        "Replayed fixture cohorts executed via tools/audit_quality_eval.py passing cleanly",
+        "Quality, time, and token metrics measured without guessing",
+        "Unrun cohorts accurately marked NOT_RUN rather than fabricated success"
+      ],
+      "blocker": null,
+      "clarifications": [],
+      "depends_on": [],
+      "description": "Valid reproducible E2E / eval baseline in docs/agent-evaluation, tools/audit_quality_eval.py. Evaluates fixture cohorts with authentic quality and token efficiency metrics.",
+      "kind": "code",
+      "next_action": "",
+      "order": 27,
+      "title": "HUB-027 P1: Valid reproducible E2E / eval baseline",
+      "work_status": "completed"
+    },
+    "task_hub_028": {
+      "acceptance_criteria": [
+        "Model qualification harness (qualify_local_tool_model.py) validates tool calling and JSON schema",
+        "Strict opt-in model pull policy enforced; zero automatic pulls",
+        "CPU-only fallback and VRAM bounds tested cleanly"
+      ],
+      "blocker": null,
+      "clarifications": [],
+      "depends_on": [],
+      "description": "True local model capability matrix in tools/qualify_local_tool_model.py and model_quality.py. Enforces strict opt-in model availability and verified JSON schemas.",
+      "kind": "code",
+      "next_action": "",
+      "order": 28,
+      "title": "HUB-028 P1: True local model capability matrix",
+      "work_status": "completed"
+    },
     "task_roadmap_001_030": {
       "acceptance_criteria": [
         "Record exact baseline revision, dirty paths and ownership before edits; preserve all pre-existing changes.",
