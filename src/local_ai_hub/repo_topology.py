@@ -20,8 +20,6 @@ def repo_topology(
     build_summary: Callable[..., str],
 ) -> dict[str, Any]:
     """Return a bounded local Python import graph and heuristic path labels."""
-    import sys
-
     resolved_root = Path(root_resolver(root)).resolve()
     root_str = str(resolved_root)
     file_limit = 20_000
