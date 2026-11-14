@@ -21,6 +21,9 @@ generated/*
 !generated/.gitkeep
 !data/.gitkeep
 .local-ai-hub-skill-ownership.json*
+.local-ai-hub-install-ownership.json*
+.*-ownership.json*
+setup-report*.json
 
 # User configuration (keep config.toml.example in repo)
 config.toml

@@ -32,7 +32,13 @@ _TOP_LEVEL_FORBIDDEN_DIRS = {
     ".worktrees",
 }
 _FORBIDDEN_DIR_NAMES = {"__pycache__"}
-_FORBIDDEN_FILE_NAMES = {"config.toml", ".local-ai-hub.zip", "ORIGINAL_REQUEST.md"}
+_FORBIDDEN_FILE_NAMES = {
+    "config.toml",
+    ".local-ai-hub.zip",
+    "ORIGINAL_REQUEST.md",
+    "setup-report.json",
+    ".local-ai-hub-install-ownership.json",
+}
 _FORBIDDEN_SUFFIXES = {".pyc", ".pyo", ".sqlite3", ".whl"}
 _ALLOWED_RUNTIME_PLACEHOLDERS = {"data/.gitkeep", "generated/.gitkeep"}
 
@@ -163,7 +169,11 @@ def _iter_release_hygiene_violations(
                 continue
             if parts and parts[0] in {"generated", "data"}:
                 continue
-            if path.name in {"config.toml", ".local-ai-hub.zip"}:
+            if path.name in {"config.toml", ".local-ai-hub.zip", "setup-report.json", ".local-ai-hub-install-ownership.json"}:
+                continue
+            if path.name.startswith("setup-report") and path.name.endswith(".json"):
+                continue
+            if path.name.endswith("-ownership.json"):
                 continue
             if ".local-ai-hub-backup-" in path.name:
                 continue
@@ -192,6 +202,12 @@ def _iter_release_hygiene_violations(
             continue
         if path.name in _FORBIDDEN_FILE_NAMES:
             yield f"local-only file: {rel}"
+            continue
+        if path.name.startswith("setup-report") and path.name.endswith(".json"):
+            yield f"local install report: {rel}"
+            continue
+        if path.name.endswith("-ownership.json") and not path.name.startswith("test_"):
+            yield f"local ownership state: {rel}"
             continue
         if path.name.startswith("config.toml.bak"):
             yield f"local-only file: {rel}"
@@ -283,6 +299,31 @@ def run_checks(root: Path, *, expected_version: str | None = None, post_test: bo
     ))
     checks.append({"name": "workspace-hygiene", "ok": not hygiene, "violations": hygiene})
     errors.extend(hygiene)
+
+    if (root / ".git").exists():
+        import subprocess
+        try:
+            git_proc = subprocess.run(
+                ["git", "ls-files"],
+                cwd=str(root),
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if git_proc.returncode == 0:
+                tracked_violations = []
+                for line in git_proc.stdout.splitlines():
+                    fn = Path(line).name
+                    if fn.startswith("setup-report") and fn.endswith(".json"):
+                        tracked_violations.append(f"tracked install report: {line}")
+                    elif fn.endswith("-ownership.json") and not fn.startswith("test_"):
+                        tracked_violations.append(f"tracked ownership state: {line}")
+                    elif line in {"config.toml", ".local-ai-hub.zip", "ORIGINAL_REQUEST.md"}:
+                        tracked_violations.append(f"tracked local payload: {line}")
+                checks.append({"name": "tracked-file-hygiene", "ok": not tracked_violations, "violations": tracked_violations})
+                errors.extend(tracked_violations)
+        except Exception as exc:
+            checks.append({"name": "tracked-file-hygiene", "ok": False, "error": str(exc)})
 
     if package_version:
         readme = (root / "README.md").read_text(encoding="utf-8")

@@ -34,6 +34,10 @@ prune artifacts
 prune T18-review-artifacts-*
 prune .t03-root-current-overlay
 prune .t*-overlay*
+exclude setup-report*.json
+exclude .*-ownership.json
+exclude *-ownership.json
+exclude .local-ai-hub-*.json
 
 recursive-include docs *.md
 prune docs/superpowers
