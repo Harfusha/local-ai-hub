@@ -73,3 +73,94 @@ def test_fold_brace_blocks_can_preserve_target_symbols():
 
     assert "return 42" in folded
 
+
+def test_fold_brace_blocks_handles_strings_comments_and_templates():
+    source = (
+        "function complexMethod() {\n"
+        '    const a = "}";\n'
+        "    const b = '};';\n"
+        "    const c = `template ${x + '}'} text`;\n"
+        "    /* block comment with } */\n"
+        "    // line comment with }\n"
+        "    const regex = /\\/}/g;\n"
+        "    return a;\n"
+        "}\n"
+    )
+    folded = fold_brace_blocks(source)
+    assert "function complexMethod() {" in folded
+    assert "/* ... */" in folded
+    assert "const a" not in folded
+    assert "return a" not in folded
+
+
+def test_fold_brace_blocks_handles_php_heredoc():
+    source = (
+        "function renderTemplate() {\n"
+        "    $html = <<<EOD\n"
+        "    <div class='test'>}</div>\n"
+        "EOD;\n"
+        "    return $html;\n"
+        "}\n"
+    )
+    folded = fold_brace_blocks(source)
+    assert "function renderTemplate() {" in folded
+    assert "/* ... */" in folded
+    assert "<div" not in folded
+
+
+def test_fold_brace_blocks_handles_typescript_generics():
+    source = (
+        "function processItem<T extends { id: string }>(item: T): void {\n"
+        "    const secret = item.id;\n"
+        "    return;\n"
+        "}\n"
+    )
+    folded = fold_brace_blocks(source)
+    assert "function processItem<T extends { id: string }>(item: T): void {" in folded
+    assert "/* ... */" in folded
+    assert "const secret" not in folded
+
+
+def test_fold_brace_blocks_handles_one_liners():
+    source = "function oneLiner() { return 42; }\n"
+    folded = fold_brace_blocks(source)
+    assert "function oneLiner() { /* ... */ }" in folded
+
+
+def test_ast_outline_bounded_large_file(tmp_path):
+    source = tmp_path / "huge.js"
+    # Create file larger than budget
+    content = "function a() {\n    return 1;\n}\n" * 2000
+    source.write_text(content, encoding="utf-8")
+    file_size = source.stat().st_size
+    assert file_size > 10000
+
+    # Call with max_source_bytes = 4096
+    result = ast_outline(str(tmp_path), "huge.js", max_source_bytes=4096)
+    assert result["success"] is True
+    assert result.get("truncated") is True
+    assert result.get("partial") is False
+    assert result.get("fallback_type") == "truncated_head"
+    assert "suggested_slice" in result
+    assert result["suggested_slice"]["start_line"] == 1
+    assert result["suggested_slice"]["end_line"] > 1
+
+
+def test_ast_outline_zero_byte_file(tmp_path):
+    source = tmp_path / "empty.py"
+    source.write_text("", encoding="utf-8")
+    result = ast_outline(str(tmp_path), "empty.py")
+    assert result["success"] is True
+    assert result["outline"] == ""
+    assert result["original_chars"] == 0
+    assert result["outline_chars"] == 0
+
+
+def test_ast_outline_binary_file_rejected(tmp_path):
+    source = tmp_path / "binary.bin"
+    source.write_bytes(b"\x00\x01\x02\x03\x04\x05")
+    result = ast_outline(str(tmp_path), "binary.bin")
+    assert result["success"] is False
+    assert result["error_code"] == "binary_file"
+
+
