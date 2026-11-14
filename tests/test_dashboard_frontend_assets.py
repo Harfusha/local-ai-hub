@@ -310,4 +310,3 @@ def test_dashboard_legacy_alias_serves_legacy_dashboard(monkeypatch):
     assert handler.responses[0][0] == 200
     assert "New dashboard preview" in handler.responses[0][1]
     assert "/dashboard/legacy" in http_server.MONITOR_PATHS
-

@@ -12,14 +12,14 @@
         "DOM selection is relevant, bounded, stable per revision, and reports incompleteness.",
         "Privacy modes, redaction metadata, retention, extension permissions, and navigation/network policy are explicit and tested."
       ],
-      "blocker": "N2-14 remains strict-fail-closed without network enforcement. Mock contract tests pass (155), but live subresource/egress tests remain NOT_RUN. Chrome binary exists at C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe, but action-time confirmation for the real extension permission test is still pending. LOCAL_AI_AUTOMATION_MCP_CLI is unset and playwright-mcp is absent. WSL reports Ubuntu/WSL2 but execution fails HCS_E_HYPERV_NOT_INSTALLED; Docker CLI exists but Docker Linux engine pipe is absent. No Linux or live browser validation ran.",
+      "blocker": "BLOCKED_EXTERNAL: Action-time confirmation for live Chrome extension permissions remains pending; LOCAL_AI_AUTOMATION_MCP_CLI unset and Playwright MCP CLI absent; Linux engine/Hyper-V absent.",
       "clarifications": [],
       "depends_on": [],
       "description": "Align capture with vision projection; improve DOM selection and identity; add privacy controls, narrow extension grants, and truthful automation egress guarantees.",
       "kind": "code",
       "next_action": "Do not launch or interact with live Chrome until required action-time confirmation. Run owned headless fixtures only when the configured Playwright MCP CLI exists. Keep strict egress requests refused until an actual enforcement backend exists. Recheck Linux/browser environment only after an external change.",
       "title": "HUB-036–042 Browser evidence, privacy, and permission contracts",
-      "work_status": "in_progress"
+      "work_status": "blocked"
     },
     "task_embeddings": {
       "acceptance_criteria": [
@@ -27,7 +27,7 @@
         "Default changes only after repeated measured evaluation with no English regression and acceptable resource use.",
         "Acceptance suite covers implemented findings and documents unrun runtime/platform evidence."
       ],
-      "blocker": "Current HUB-048 acceptance rerun passed 23 tests with 1 Windows symlink privilege skip (WinError 1314); browser cases are harness-based. Resolved 29 async admission failures in test_async_*.py. Full suite run without -x queued to capture all failures. Full Ollama inventory has no embedding model. WSL Linux execution fails HCS_E_HYPERV_NOT_INSTALLED; Playwright MCP CLI is absent and Chrome action-time confirmation remains pending.",
+      "blocker": "BLOCKED_MODEL_ABSENT: Full Ollama inventory has no embedding model (nomic-embed-text/bge-m3 absent); external model pull requires explicit operator consent; bilingual retrieval gold set blocked on missing model.",
       "clarifications": [],
       "depends_on": [],
       "description": "Add bilingual source-anchored retrieval evaluation without downloads; qualify supported defaults from evidence and add targeted acceptance coverage.",
@@ -35,7 +35,7 @@
       "next_action": "Acceptance passed (23 passed, 1 Windows symlink skip). All 68 candidate test regressions resolved. Release checks OK (compileall, release_check, selftest 6/6). External gates remain documented (live Chrome, Linux WSL, model pull).",
       "title": "HUB-046, 048 Embedding qualification and second-round acceptance",
       "work_phase": "verification",
-      "work_status": "in_progress"
+      "work_status": "blocked"
     },
     "task_installer": {
       "acceptance_criteria": [
