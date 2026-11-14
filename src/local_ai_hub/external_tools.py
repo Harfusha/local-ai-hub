@@ -199,6 +199,9 @@ class MCPStdioClient:
         self._send({"jsonrpc": "2.0", "method": method, "params": params})
 
     def _request(self, method: str, params: dict[str, Any], *, timeout: float | None = None, soft_timeout: float | None = None, ensure_started: bool = True) -> Any:
+        if ensure_started:
+            self._spawn()
+
         request_started = time.monotonic()
         hard_timeout = self.call_timeout if timeout is None else max(0.05, float(timeout))
         soft_val = float(soft_timeout) if soft_timeout is not None else None
@@ -209,8 +212,6 @@ class MCPStdioClient:
             soft_deadline = None
         hard_deadline = request_started + hard_timeout
         effective_deadline = min(hard_deadline, soft_deadline) if soft_deadline is not None else hard_deadline
-        if ensure_started:
-            self._spawn()
         request_id = self._next_id
         self._next_id += 1
         self._send({"jsonrpc": "2.0", "id": request_id, "method": method, "params": params})

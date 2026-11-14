@@ -242,6 +242,25 @@ def test_mcp_stdio_soft_timeout_does_not_kill_process(tmp_path: Path):
         client.close()
 
 
+def test_mcp_stdio_cold_start_does_not_consume_tool_soft_timeout(tmp_path: Path, monkeypatch):
+    import time
+
+    script = _server(tmp_path)
+    client = MCPStdioClient([sys.executable, str(script)], startup_timeout=2, call_timeout=2)
+    original_spawn = client._spawn
+
+    def slow_spawn():
+        original_spawn()
+        time.sleep(0.15)
+
+    monkeypatch.setattr(client, "_spawn", slow_spawn)
+    try:
+        response = client.call_tool("echo", {"value": "ready"}, timeout=1.0, soft_timeout=0.1)
+        assert response["result"]["args"] == {"value": "ready"}
+    finally:
+        client.close()
+
+
 
 
 
