@@ -312,6 +312,55 @@ def test_codex_mcp_merge_writes_stable_working_directory(tmp_path: Path):
     assert f"cwd = {setup.toml_quote(str(tmp_path / 'hub'))}" in text
 
 
+def test_codex_unowned_instructions_do_not_block_other_profile_setup(tmp_path: Path, monkeypatch):
+    root_home = tmp_path / "root"
+    profile_home = tmp_path / "profile"
+    install_dir = tmp_path / "install"
+    install_dir.mkdir()
+    mcp_paths = []
+    policy_paths = []
+
+    monkeypatch.setattr(setup, "get_user_homes", lambda: [root_home, profile_home])
+    monkeypatch.setattr(setup, "write_all_generated", lambda *args, **kwargs: None)
+    monkeypatch.setattr(setup, "write_generated_agent_manifests", lambda *args, **kwargs: None)
+    monkeypatch.setattr(setup, "install_agent_skills", lambda *args, **kwargs: None)
+    monkeypatch.setattr(setup, "build_codex_mcp_entries", lambda *args, **kwargs: {"local-ai": {"command": "python"}})
+    monkeypatch.setattr(setup, "build_mcp_entries", lambda *args, **kwargs: {})
+
+    def merge_global_policy(path, *_args, **_kwargs):
+        if path == root_home / ".codex" / "AGENTS.md":
+            raise RuntimeError("external block has no ownership record")
+        policy_paths.append(path)
+
+    monkeypatch.setattr(setup, "merge_global_policy", merge_global_policy)
+    monkeypatch.setattr(setup, "merge_token_economy_policy", lambda *args, **kwargs: None)
+    monkeypatch.setattr(setup, "merge_autosetup_policy", lambda *args, **kwargs: None)
+    monkeypatch.setattr(setup, "codex_mcp_merge", lambda path, *_args, **_kwargs: mcp_paths.append(path))
+
+    manual_actions = setup._configure_agents_impl(
+        install_dir,
+        Path("python"),
+        None,
+        {
+            "agents": {
+                "codex": True,
+                "claude": False,
+                "gemini": False,
+                "cursor": False,
+                "windsurf": False,
+                "copilot": False,
+                "agent_skills_standard": False,
+            },
+            "tool_policy": {"install_global_instructions": True},
+            "setup": {"backup_existing_configs": False},
+        },
+    )
+
+    assert "external block has no ownership record" in " ".join(manual_actions)
+    assert mcp_paths == [root_home / ".codex" / "config.toml", profile_home / ".codex" / "config.toml"]
+    assert profile_home / ".codex" / "AGENTS.md" in policy_paths
+
+
 def test_config_mergers_preserve_user_content(tmp_path: Path):
     json_path = tmp_path / "settings.json"
     json_path.write_text(json.dumps({"other": 1, "mcpServers": {"user": {"command": "keep"}}}), encoding="utf-8")

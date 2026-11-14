@@ -1650,9 +1650,16 @@ def _configure_agents_impl(
                 and _agent_component_enabled(agent_components, "codex", "instructions")
             ):
                 doc = codex_home / ("AGENTS.override.md" if (codex_home / "AGENTS.override.md").exists() else "AGENTS.md")
-                merge_global_policy(doc, backup_enabled, cfg=cfg)
-                merge_token_economy_policy(doc, backup_enabled, cfg=cfg)
-                merge_autosetup_policy(doc, backup_enabled, codex_home / "skills")
+                try:
+                    merge_global_policy(doc, backup_enabled, cfg=cfg)
+                    merge_token_economy_policy(doc, backup_enabled, cfg=cfg)
+                    merge_autosetup_policy(doc, backup_enabled, codex_home / "skills")
+                except RuntimeError as exc:
+                    if "external block has no ownership record" not in str(exc):
+                        raise
+                    manual_action = f"Codex instructions preserved: {doc} ({exc})"
+                    manual_actions.append(manual_action)
+                    log(f"Manual agent setup required: {manual_action}")
             if _agent_component_enabled(agent_components, "codex", "mcp"):
                 codex_mcp_merge(
                     codex_home / "config.toml", codex_entries, backup_enabled,
