@@ -468,15 +468,15 @@
         "Run targeted tests, static checks, integration and installed-wheel smoke required by the roadmap; preserve logs/artifacts and do not claim beyond evidence.",
         "Update durable task checkpoints and verify completion against every roadmap ticket; leave all unrelated dirty work untouched."
       ],
-      "blocker": null,
+      "blocker": "HUB-002: External Linux/macOS runner required for cross-platform clean clone proof (Windows clean clone verified, 0 gitlinks).",
       "clarifications": [],
       "depends_on": [],
       "description": "Complete the entire Local AI Hub roadmap HUB-001 through HUB-030 in dependency order per C:/Users/Adam/Downloads/local_ai_hub_audit_roadmap_2026-11-12.md.",
       "kind": "code",
-      "next_action": "Execute EPIC 5: HUB-027 through HUB-030 Measurable product quality and repo hygiene",
+      "next_action": "Perform plan validation and task review",
       "order": 1,
       "title": "Local AI Hub HUB-001–030 Roadmap Execution",
-      "work_phase": "implementation",
+      "work_phase": "verification",
       "work_status": "in_progress"
     }
   },
