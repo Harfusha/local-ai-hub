@@ -3,7 +3,7 @@ from __future__ import annotations
 import ast as _ast
 import os as _os
 import time as _time
-from pathlib import Path as _Path
+from pathlib import Path, Path as _Path
 from typing import Any
 
 

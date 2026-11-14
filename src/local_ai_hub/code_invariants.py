@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from pathlib import Path as _Path
+from pathlib import Path, Path as _Path
 from typing import Any
 import ast as _ast
 import os as _os
