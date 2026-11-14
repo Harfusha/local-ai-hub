@@ -92,4 +92,5 @@ config.runtime.toml
 # Owned temporary state from targeted 069d manual merge checks.
 /.sync-069d-runtime/
 /.case132-fixture-*/
+MagicMock/
 
