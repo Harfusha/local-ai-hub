@@ -16,7 +16,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing, nullcontext
-from pathlib import Path, PureWindowsPath
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 
 # Stable identity for semantic preprocessing output. Bump only when the card
@@ -44,7 +44,46 @@ from .sqlite_support import (
     write_transaction,
 )
 from .worktrees import discover_worktree_roots
-from .process_utils import canonical_root, set_current_thread_priority
+from .process_utils import (
+    canonical_root,
+    is_rooted_path,
+    is_safe_path,
+    set_current_thread_priority,
+)
+
+
+def checked_relative_source(root: str | Path, rel: str | Path) -> str:
+    """Classify a relative repository path with strict root containment.
+
+    Returns one of:
+      - 'inside_regular_file'
+      - 'missing'
+      - 'escaped'
+      - 'directory'
+      - 'inaccessible'
+    """
+    if not is_safe_path(rel) or is_rooted_path(rel):
+        return "escaped"
+    try:
+        base = Path(root).resolve()
+        norm_rel = PurePosixPath(str(rel).replace("\\", "/"))
+        if ".." in norm_rel.parts:
+            return "escaped"
+        target = (base / rel).resolve(strict=False)
+        target.relative_to(base)
+    except (ValueError, OSError):
+        return "escaped"
+    try:
+        st = target.stat()
+        if stat.S_ISDIR(st.st_mode):
+            return "directory"
+        if stat.S_ISREG(st.st_mode):
+            return "inside_regular_file"
+        return "inaccessible"
+    except (FileNotFoundError, NotADirectoryError):
+        return "missing"
+    except (PermissionError, OSError):
+        return "inaccessible"
 
 
 logger = logging.getLogger(__name__)
@@ -3904,72 +3943,6 @@ class ProjectPreprocessor:
             self._set_project(root, phase="files")
             return True
         pending_hashes = {str(item["path"]): str(item["content_hash"]) for item in pending}
-        # Revalidate the exact source snapshot immediately before publishing RAG
-        # content. A watcher event may be absent or may arrive after inventory;
-        # cached source_index text is safe only while the live file still hashes
-        # to the selected file_ref identity.
-        verified_content: dict[str, str] = {}
-        stale_paths: list[str] = []
-        missing_paths: set[str] = set()
-        base = Path(root)
-        reader = getattr(getattr(self, "repo_tools", None), "_read_snapshot", None)
-        for rel, expected_hash in pending_hashes.items():
-            try:
-                source_path = (base / rel).resolve(strict=False)
-                source_path.relative_to(base)
-                if callable(reader):
-                    file_hash, lines = reader(source_path)
-                else:
-                    raw = source_path.read_bytes()
-                    file_hash = hashlib.sha256(raw).hexdigest()
-                    lines = raw.decode("utf-8", errors="replace").splitlines()
-            except FileNotFoundError:
-                stale_paths.append(rel)
-                missing_paths.add(rel)
-                continue
-            except (OSError, ValueError):
-                stale_paths.append(rel)
-                continue
-            if file_hash != expected_hash:
-                stale_paths.append(rel)
-                continue
-            verified_content[rel] = "\n".join(lines)
-        if stale_paths:
-            if callable(getattr(self.rag, "remove_paths", None)):
-                self.rag.remove_paths(workspace=workspace, paths=stale_paths)
-            now = time.time()
-            with self._db_lock, closing(self._connect()) as con:
-                for rel in stale_paths:
-                    target_file = (base / rel).resolve(strict=False)
-                    try:
-                        st = target_file.stat()
-                        is_dir = stat.S_ISDIR(st.st_mode)
-                        file_exists = True
-                    except OSError:
-                        is_dir = False
-                        file_exists = False
-
-                    if not file_exists or is_dir:
-                        deleted = con.execute(
-                            "DELETE FROM file_refs WHERE root=? AND path=? AND content_hash=? AND needs_hash=0",
-                            (root, rel, pending_hashes[rel]),
-                        ).rowcount
-                        if deleted:
-                            con.execute("DELETE FROM source_index WHERE root=? AND path=?", (root, rel))
-                            con.execute("DELETE FROM source_fts WHERE root=? AND path=?", (root, rel))
-                        continue
-                    con.execute(
-                        "UPDATE file_refs SET needs_hash=1,rag_hash=NULL,updated_at=? WHERE root=? AND path=?",
-                        (now, root, rel),
-                    )
-                    con.execute("DELETE FROM source_fts WHERE root=? AND path=?", (root, rel))
-                    con.execute("DELETE FROM source_index WHERE root=? AND path=?", (root, rel))
-                con.commit()
-            stale_set = set(stale_paths)
-            pending = [item for item in pending if str(item["path"]) not in stale_set]
-            pending_hashes = {rel: digest for rel, digest in pending_hashes.items() if rel not in stale_set}
-            if not pending:
-                return True
         # Deterministically well-described declarative files do not need a
         # semantic vector index. Mark them synchronized and remove stale
         # RAG rows from older releases so they cannot pollute future retrieval.
@@ -3999,16 +3972,18 @@ class ProjectPreprocessor:
             return True
 
         paths = [str(p["path"]) for p in needed_items]
-        content_overrides: dict[str, str] = dict(verified_content)
+        content_overrides: dict[str, str] = {}
         placeholders = ",".join("?" for _ in paths)
         with self._db_lock, closing(self._connect()) as con:
-            rows = con.execute(
-                f"SELECT path,content_hash,text FROM source_index WHERE root=? AND path IN ({placeholders})",
-                (root, *paths),
-            ).fetchall()
-        content_overrides.update({str(item["path"]): str(item["text"]) for item in rows
-                                  if str(item["path"]) not in content_overrides
-                                  and str(item["content_hash"]) == pending_hashes.get(str(item["path"]))})
+            tables = {r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+            if "source_index" in tables:
+                rows = con.execute(
+                    f"SELECT path,content_hash,text FROM source_index WHERE root=? AND path IN ({placeholders})",
+                    (root, *paths),
+                ).fetchall()
+                content_overrides.update({str(item["path"]): str(item["text"]) for item in rows
+                                          if str(item["path"]) not in content_overrides
+                                          and str(item["content_hash"]) == pending_hashes.get(str(item["path"]))})
         missing_hashes = [h for p, h in pending_hashes.items() if p not in content_overrides and h]
         if missing_hashes:
             with self._db_lock, closing(self._connect()) as con:
@@ -4058,13 +4033,10 @@ class ProjectPreprocessor:
         missing = []
         uncertain = []
         for rel in paths:
-            try:
-                if not stat.S_ISREG((Path(root) / rel).stat().st_mode):
-                    missing.append(rel)
-            except (FileNotFoundError, NotADirectoryError):
+            classification = checked_relative_source(root, rel)
+            if classification in ("missing", "escaped", "directory"):
                 missing.append(rel)
-            except OSError:
-                # An unreadable file is not evidence of deletion.
+            elif classification == "inaccessible":
                 uncertain.append(rel)
         if uncertain:
             with self._db_lock, closing(self._connect()) as con:
@@ -4074,28 +4046,33 @@ class ProjectPreprocessor:
                 )
                 con.commit()
         if missing:
-            self.rag.remove_paths(workspace=workspace, paths=missing)
+            if callable(getattr(self.rag, "remove_paths", None)):
+                self.rag.remove_paths(workspace=workspace, paths=missing)
             existence = {}
             for rel in missing:
-                try:
-                    existence[rel] = "present" if stat.S_ISREG((Path(root) / rel).stat().st_mode) else "missing"
-                except (FileNotFoundError, NotADirectoryError):
-                    existence[rel] = "missing"
-                except OSError:
-                    existence[rel] = "uncertain"
+                existence[rel] = checked_relative_source(root, rel)
             with self._db_lock, closing(self._connect()) as con:
+                tables = {r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+                has_fts = "source_fts" in tables
+                has_index = "source_index" in tables
                 with write_transaction(con, max_duration_seconds=5.0, rollback_label="preprocessor missing refs"):
                     for rel in missing:
-                        if existence[rel] == "missing":
+                        status = existence[rel]
+                        if status in ("missing", "escaped", "directory"):
                             deleted = con.execute(
                                 "DELETE FROM file_refs WHERE root=? AND path=? AND content_hash=? AND needs_hash=0",
                                 (root, rel, pending_hashes[rel]),
                             ).rowcount
                             if deleted:
-                                con.execute("DELETE FROM source_index WHERE root=? AND path=?", (root, rel))
-                                con.execute("DELETE FROM source_fts WHERE root=? AND path=?", (root, rel))
+                                if has_index:
+                                    con.execute("DELETE FROM source_index WHERE root=? AND path=?", (root, rel))
+                                if has_fts:
+                                    con.execute("DELETE FROM source_fts WHERE root=? AND path=?", (root, rel))
                             else:
-                                con.execute("UPDATE file_refs SET needs_hash=1,rag_hash=NULL WHERE root=? AND path=?", (root, rel))
+                                con.execute(
+                                    "UPDATE file_refs SET needs_hash=1,rag_hash=NULL WHERE root=? AND path=? AND content_hash=? AND needs_hash=0",
+                                    (root, rel, pending_hashes[rel]),
+                                )
                         else:
                             # Uncertain or reappeared paths must be hashed again.
                             con.execute("UPDATE file_refs SET needs_hash=1,rag_hash=NULL WHERE root=? AND path=?", (root, rel))
