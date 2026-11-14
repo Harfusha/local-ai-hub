@@ -3972,7 +3972,16 @@ class ProjectPreprocessor:
             now = time.time()
             with self._db_lock, closing(self._connect()) as con:
                 for rel in stale_paths:
-                    if rel in missing_paths:
+                    target_file = (base / rel).resolve(strict=False)
+                    try:
+                        st = target_file.stat()
+                        is_dir = stat.S_ISDIR(st.st_mode)
+                        file_exists = True
+                    except OSError:
+                        is_dir = False
+                        file_exists = False
+
+                    if not file_exists or is_dir:
                         deleted = con.execute(
                             "DELETE FROM file_refs WHERE root=? AND path=? AND content_hash=? AND needs_hash=0",
                             (root, rel, pending_hashes[rel]),
@@ -3982,8 +3991,8 @@ class ProjectPreprocessor:
                             con.execute("DELETE FROM source_fts WHERE root=? AND path=?", (root, rel))
                         continue
                     con.execute(
-                        "UPDATE file_refs SET needs_hash=1,rag_hash=NULL,updated_at=? WHERE root=? AND path=? AND content_hash=? AND needs_hash=0",
-                        (now, root, rel, pending_hashes[rel]),
+                        "UPDATE file_refs SET needs_hash=1,rag_hash=NULL,updated_at=? WHERE root=? AND path=?",
+                        (now, root, rel),
                     )
                     con.execute("DELETE FROM source_fts WHERE root=? AND path=?", (root, rel))
                     con.execute("DELETE FROM source_index WHERE root=? AND path=?", (root, rel))
