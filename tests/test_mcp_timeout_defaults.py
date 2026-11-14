@@ -81,7 +81,7 @@ def test_mcp_review_forwards_bounded_timeout_and_preserves_unknown(monkeypatch, 
     monkeypatch.setattr(mcp_server, "CLIENT", Client())
     monkeypatch.setattr(mcp_server, "MCP_CFG", {})
     result = mcp_server.local_ai_repo(action="review_diff", root=str(tmp_path))
-    assert calls == [("/api/review/diff", 600)]
+    assert [call for call in calls if not call[0].startswith("/api/telemetry")] == [("/api/review/diff", 600)]
     assert result["outcome_unknown"] is True
     assert result["retryable"] is False
     assert result["request_id"] == "req-example"

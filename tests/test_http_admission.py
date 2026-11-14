@@ -162,7 +162,5 @@ def test_allowed_root_fails_closed_when_symlink_appears_during_resolution(
         return original_resolve(path, strict=strict)
 
     monkeypatch.setattr(Path, "resolve", resolve_after_symlink_swap)
-    resolved = http_server._strict_root_path(str(candidate))
-
-    assert resolved == original_resolve(outside, strict=True)
-    assert not http_server._root_is_allowed(resolved, [str(allowed)])
+    with pytest.raises(ValueError, match="root target changed during validation"):
+        http_server._strict_root_path(str(candidate))

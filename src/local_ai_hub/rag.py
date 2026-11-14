@@ -2807,9 +2807,7 @@ class RAGStore:
                     "success": False, "workspace": workspace,
                     "error": "publish_failed", "retryable": is_busy_error(exc),
                 }
-                if isinstance(exc, TimeoutError) and str(exc).startswith(
-                    "SQLite write transaction exceeded its duration budget (RAG "
-                ):
+                if isinstance(exc, TimeoutError):
                     result["error_detail"] = str(exc)
                 return result
 

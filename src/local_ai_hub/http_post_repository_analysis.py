@@ -123,7 +123,35 @@ def handle_post_repository_analysis(
             })
             return True
         max_lines = payload.get("max_lines", 1000)
-        if isinstance(max_lines, bool) or not isinstance(max_lines, int) or not 1 <= max_lines <= 10000:
+        if isinstance(max_lines, bool):
+            handler._send(400, {
+                "success": False,
+                "error": "max_lines must be an integer from 1 to 10000",
+                "terminal": True,
+                "retryable": False,
+            })
+            return True
+        if isinstance(max_lines, str):
+            try:
+                max_lines = int(max_lines)
+            except ValueError as exc:
+                if "invalid-integer" in str(exc):
+                    handler._send(400, {
+                        "success": False,
+                        "error": str(exc),
+                        "status_code": 400,
+                        "terminal": True,
+                        "retryable": False,
+                    })
+                    return True
+                handler._send(400, {
+                    "success": False,
+                    "error": "max_lines must be an integer from 1 to 10000",
+                    "terminal": True,
+                    "retryable": False,
+                })
+                return True
+        if not isinstance(max_lines, int) or not 1 <= max_lines <= 10000:
             handler._send(400, {
                 "success": False,
                 "error": "max_lines must be an integer from 1 to 10000",

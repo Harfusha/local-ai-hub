@@ -440,19 +440,17 @@ class AsyncJobManager:
                 "policy_pressure_pct", "policy_headroom_mb",
             )},
         }
-        if resource.get("available") is False:
-            return {**self._admission("rejected", "resource_telemetry_unavailable", retryable=True), "pressure_level": pressure, "context_budget_factor": factor, "resource_sample": sample}
         if resource.get("available") is not True or telemetry_error is not None or bool(resource.get("telemetry_error")):
             return {**self._admission("degraded", "resource_telemetry_unavailable", retryable=False), "pressure_level": pressure, "context_budget_factor": factor, "resource_sample": sample}
         if (
-            pressure not in {"nominal", "moderate", "high", "critical"}
+            pressure not in {"nominal", "moderate", "high", "critical", "unknown"}
             or not factor_valid
             or ("throttle_background" in resource and type(resource.get("throttle_background")) is not bool)
         ):
             return {**self._admission("rejected", "resource_telemetry_invalid", retryable=True), "pressure_level": pressure, "context_budget_factor": factor, "resource_sample": sample}
         if pressure == "critical" or (pressure == "high" and resource.get("throttle_background") is True):
             return {**self._admission("rejected", "resource_pressure", retryable=True), "pressure_level": pressure, "context_budget_factor": factor, "resource_sample": sample}
-        if pressure in {"moderate", "high"} or factor < 1.0:
+        if pressure in {"moderate", "high", "unknown"} or factor < 1.0:
             return {**self._admission("degraded", "resource_pressure", retryable=False), "pressure_level": pressure, "context_budget_factor": factor, "resource_sample": sample}
         return {**self._admission("accepted", "capacity_available", retryable=False), "resource_sample": sample}
 

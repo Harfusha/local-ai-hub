@@ -3861,39 +3861,6 @@ class ProjectPreprocessor:
             if not pending:
                 all_paths = [str(r[0]) for r in con.execute("SELECT path FROM file_refs WHERE root=? ORDER BY path", (root,)).fetchall()]
         if not pending:
-            base = Path(root).resolve(strict=True)
-            stale_paths: list[str] = []
-            for rel in all_paths:
-                candidate = Path(root) / rel
-                try:
-                    resolved = candidate.resolve(strict=True)
-                    resolved.relative_to(base)
-                    if not resolved.is_file():
-                        stale_paths.append(rel)
-                except FileNotFoundError:
-                    stale_paths.append(rel)
-                except ValueError:
-                    # A stale index path that now escapes the repository must
-                    # be removed without reading or following it.
-                    stale_paths.append(rel)
-            active_paths = [rel for rel in all_paths if rel not in set(stale_paths)]
-            if stale_paths:
-                self.rag.remove_paths(workspace=workspace, paths=stale_paths)
-                placeholders = ",".join("?" for _ in stale_paths)
-                with self._db_lock, closing(self._connect()) as con:
-                    con.execute(
-                        f"DELETE FROM file_refs WHERE root=? AND path IN ({placeholders})",
-                        (root, *stale_paths),
-                    )
-                    con.execute(
-                        f"DELETE FROM source_fts WHERE root=? AND path IN ({placeholders})",
-                        (root, *stale_paths),
-                    )
-                    con.execute(
-                        f"DELETE FROM source_index WHERE root=? AND path IN ({placeholders})",
-                        (root, *stale_paths),
-                    )
-                    con.commit()
             with self._db_lock, closing(self._connect()) as con:
                 semantic_rows = con.execute(
                     """SELECT f.path,f.content_hash
@@ -3930,78 +3897,13 @@ class ProjectPreprocessor:
             with self._db_lock:
                 batch_limits.pop(root, None)
                 batch_successes.pop(root, None)
-            deleted = self.rag.prune_missing(root, workspace, active_paths)
+            deleted = self.rag.prune_missing(root, workspace, all_paths)
             if deleted:
                 with self._stats_lock:
                     self._stats["rag_deleted_files"] = self._stats.get("rag_deleted_files", 0) + deleted
             self._set_project(root, phase="files")
             return True
         pending_hashes = {str(item["path"]): str(item["content_hash"]) for item in pending}
-        # Revalidate the exact source snapshot immediately before publishing RAG
-        # content. A watcher event may be absent or may arrive after inventory;
-        # cached source_index text is safe only while the live file still hashes
-        # to the selected file_ref identity.
-        verified_content: dict[str, str] = {}
-        stale_paths: list[str] = []
-        missing_paths: set[str] = set()
-        base = Path(root)
-        reader = getattr(getattr(self, "repo_tools", None), "_read_snapshot", None)
-        for rel, expected_hash in pending_hashes.items():
-            try:
-                source_path = (base / rel).resolve(strict=False)
-                source_path.relative_to(base)
-                if callable(reader):
-                    file_hash, lines = reader(source_path)
-                else:
-                    raw = source_path.read_bytes()
-                    file_hash = hashlib.sha256(raw).hexdigest()
-                    lines = raw.decode("utf-8", errors="replace").splitlines()
-            except FileNotFoundError:
-                stale_paths.append(rel)
-                missing_paths.add(rel)
-                continue
-            except (OSError, ValueError):
-                stale_paths.append(rel)
-                continue
-            if file_hash != expected_hash:
-                stale_paths.append(rel)
-                continue
-            verified_content[rel] = "\n".join(lines)
-        if stale_paths:
-            self.rag.remove_paths(workspace=workspace, paths=stale_paths)
-            now = time.time()
-            with self._db_lock, closing(self._connect()) as con:
-                for rel in stale_paths:
-                    target_file = (base / rel).resolve(strict=False)
-                    try:
-                        st = target_file.stat()
-                        is_dir = stat.S_ISDIR(st.st_mode)
-                        file_exists = True
-                    except OSError:
-                        is_dir = False
-                        file_exists = False
-
-                    if not file_exists or is_dir:
-                        deleted = con.execute(
-                            "DELETE FROM file_refs WHERE root=? AND path=? AND content_hash=? AND needs_hash=0",
-                            (root, rel, pending_hashes[rel]),
-                        ).rowcount
-                        if deleted:
-                            con.execute("DELETE FROM source_index WHERE root=? AND path=?", (root, rel))
-                            con.execute("DELETE FROM source_fts WHERE root=? AND path=?", (root, rel))
-                        continue
-                    con.execute(
-                        "UPDATE file_refs SET needs_hash=1,rag_hash=NULL,updated_at=? WHERE root=? AND path=?",
-                        (now, root, rel),
-                    )
-                    con.execute("DELETE FROM source_fts WHERE root=? AND path=?", (root, rel))
-                    con.execute("DELETE FROM source_index WHERE root=? AND path=?", (root, rel))
-                con.commit()
-            stale_set = set(stale_paths)
-            pending = [item for item in pending if str(item["path"]) not in stale_set]
-            pending_hashes = {rel: digest for rel, digest in pending_hashes.items() if rel not in stale_set}
-            if not pending:
-                return True
         # Deterministically well-described declarative files do not need a
         # semantic vector index. Mark them synchronized and remove stale
         # RAG rows from older releases so they cannot pollute future retrieval.
@@ -4013,7 +3915,8 @@ class ProjectPreprocessor:
                 if not needed:
                     skipped.append(rel)
         if skipped:
-            self.rag.remove_paths(workspace=workspace, paths=skipped)
+            if callable(getattr(self.rag, "remove_paths", None)):
+                self.rag.remove_paths(workspace=workspace, paths=skipped)
             now = time.time()
             with self._db_lock, closing(self._connect()) as con:
                 con.executemany(
@@ -4028,8 +3931,9 @@ class ProjectPreprocessor:
         needed_items = [p for p in pending if str(p["path"]) not in skipped_paths]
         if not needed_items:
             return True
+
         paths = [str(p["path"]) for p in needed_items]
-        content_overrides: dict[str, str] = dict(verified_content)
+        content_overrides: dict[str, str] = {}
         placeholders = ",".join("?" for _ in paths)
         with self._db_lock, closing(self._connect()) as con:
             rows = con.execute(

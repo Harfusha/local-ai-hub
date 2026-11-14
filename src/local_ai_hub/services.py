@@ -4101,7 +4101,12 @@ class LocalAIServices:
                 "terminal": True,
                 "retryable": False,
             }
-        hint_root = project_context.root
+        hint_root = getattr(project_context, "root", None)
+        if hint_root is None:
+            try:
+                hint_root = Path(root).expanduser().resolve(strict=True)
+            except (OSError, RuntimeError, ValueError):
+                hint_root = None
         # Exact pagination streams Git paths in RepositoryTools. Do not prebuild
         # a repository-sized inventory here; directory hints are ranked by root.
         file_inventory = None
@@ -4522,7 +4527,7 @@ class LocalAIServices:
                         seen_hits.add(key)
 
             result_path_validation_started = time.perf_counter()
-            base = project_context.root
+            base = getattr(project_context, "root", None) or Path(root).expanduser().resolve(strict=False)
             allowed_results: list[dict[str, Any]] = []
             extension_is_searchable = getattr(
                 self.repo_tools, "_path_extension_is_searchable", None

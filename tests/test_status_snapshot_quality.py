@@ -132,6 +132,8 @@ def test_status_reports_laya_runtime_lifecycle_without_claiming_hardware_release
 
     assert status["laya_runtime"] == {
         "available": False,
+        "model_configuration": "unconfigured",
+        "missing_configuration_fields": ["checkpoint_path", "revision", "expected_sha256"],
         "provider_close_configured": False,
         "idle_unload_seconds": DEFAULT_IDLE_UNLOAD_SECONDS,
         "inflight": 0,

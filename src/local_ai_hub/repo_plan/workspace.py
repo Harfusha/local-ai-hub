@@ -727,7 +727,7 @@ class RepoPlanWorkspace:
                         continue
 
                 work_status = tdata.get("work_status", "planned").lower()
-                target_col = work_status if work_status in columns else "planned"
+                target_col = "done" if work_status in {"completed", "done"} else (work_status if work_status in columns else "planned")
 
                 deliveries = tdata.get("deliveries", {})
                 has_open_deliveries = any(

@@ -32,8 +32,9 @@
       "depends_on": [],
       "description": "Add bilingual source-anchored retrieval evaluation without downloads; qualify supported defaults from evidence and add targeted acceptance coverage.",
       "kind": "code",
-      "next_action": "Run full pytest suite without -x into temporary scratch log. Keep suite-only T6 behavior and harness/runtime distinctions explicit. Remaining external gates: live Chrome permission/SPA/egress validation, Linux/macOS confirmation, and embedding comparison/resource/cold-warm qualification.",
+      "next_action": "Acceptance passed (23 passed, 1 Windows symlink skip). All 68 candidate test regressions resolved. Release checks OK (compileall, release_check, selftest 6/6). External gates remain documented (live Chrome, Linux WSL, model pull).",
       "title": "HUB-046, 048 Embedding qualification and second-round acceptance",
+      "work_phase": "verification",
       "work_status": "in_progress"
     },
     "task_installer": {

@@ -1287,6 +1287,21 @@
         "action_literals": []
       }
     },
+    "GET /dashboard/next": {
+      "decision": "retain",
+      "role": "dashboard",
+      "reason": "Local operator dashboard shell/static asset, not agent tool output.",
+      "response_policy": "Preserve work result, errors/retry/cancellation, identities, evidence and pagination; project_agent_response removes internal observations outside dashboard detail; caller documents remain opaque.",
+      "source_contract": {
+        "source": "src/local_ai_hub/http_server.py",
+        "handler": "do_GET",
+        "literal_response_fields": [
+          "error"
+        ],
+        "response_producers": [],
+        "action_literals": []
+      }
+    },
     "GET /favicon.ico": {
       "decision": "retain",
       "role": "dashboard",
@@ -1310,6 +1325,7 @@
         "handler": "do_GET",
         "literal_response_fields": [
           "hub_online",
+          "installed_version",
           "success",
           "version"
         ],
@@ -6931,6 +6947,26 @@
         "action_literals": []
       }
     },
+    "POST /api/browser/capture/purge": {
+      "decision": "retain",
+      "role": "agent",
+      "reason": "Explicit capability-gated deletion of a current-tab capture bundle; only unshared capture-owned artifacts are removed and shared children remain available to other bundles.",
+      "response_policy": "Preserve success/error_code, bundle_artifact_id, deleted_count and retained_shared_count. Do not imply shared child artifacts were deleted; never expose raw capture payloads.",
+      "source_contract": {
+        "source": "src/local_ai_hub/http_route_registry.py",
+        "handler": "post_browser_capture_abandon_1",
+        "literal_response_fields": [],
+        "response_producers": [
+          "APP.artifacts.purge_browser_capture",
+          "abandon_staged_capture",
+          "commit_staged_capture",
+          "local:checked",
+          "local:result",
+          "stage_capture"
+        ],
+        "action_literals": []
+      }
+    },
     "POST /api/browser/capture/stage": {
       "decision": "retain",
       "role": "agent",
@@ -7373,6 +7409,7 @@
           "APP.services._hybrid_context",
           "APP.services.adaptive_context_pack",
           "APP.services.fast_context",
+          "local:response",
           "local:result"
         ],
         "action_literals": []
@@ -7939,6 +7976,27 @@
         "action_literals": []
       }
     },
+    "POST /api/debug-traces/purge": {
+      "decision": "diagnostic",
+      "role": "operator_diagnostic",
+      "reason": "Explicitly authorized purge of detailed debug-trace history; destructive cleanup requires administrator authorization, audit recording, and confirm=true.",
+      "response_policy": "Require authorized admin action and exact confirm=true payload; return deletion counts or bounded errors, never trace contents.",
+      "source_contract": {
+        "source": "src/local_ai_hub/http_route_registry.py",
+        "handler": "post_debug_trace_purge_1",
+        "literal_response_fields": [
+          "error",
+          "retryable",
+          "success",
+          "terminal"
+        ],
+        "response_producers": [
+          "APP.debug_traces.purge",
+          "local:result"
+        ],
+        "action_literals": []
+      }
+    },
     "POST /api/delegate": {
       "decision": "retain",
       "role": "agent",
@@ -8138,6 +8196,7 @@
           "error",
           "error_code",
           "retryable",
+          "status_code",
           "success",
           "terminal"
         ],
@@ -8166,6 +8225,7 @@
           "error",
           "error_code",
           "retryable",
+          "status_code",
           "success",
           "terminal"
         ],
@@ -8194,6 +8254,7 @@
           "error",
           "error_code",
           "retryable",
+          "status_code",
           "success",
           "terminal"
         ],
@@ -8683,7 +8744,8 @@
         "handler": "post_repo_call_graph_1",
         "literal_response_fields": [],
         "response_producers": [
-          "APP.services.call_graph"
+          "APP.services.call_graph",
+          "local:result"
         ],
         "action_literals": []
       }
@@ -9027,6 +9089,7 @@
           "error",
           "error_code",
           "retryable",
+          "status_code",
           "success",
           "terminal"
         ],
@@ -9294,6 +9357,7 @@
           "error",
           "error_code",
           "retryable",
+          "status_code",
           "success",
           "terminal"
         ],
@@ -9777,6 +9841,7 @@
           "error",
           "error_code",
           "retryable",
+          "status_code",
           "success",
           "terminal"
         ],
@@ -9854,47 +9919,6 @@
           "submit",
           "wait"
         ]
-      }
-    },
-    "POST /api/debug-traces/purge": {
-      "decision": "diagnostic",
-      "role": "operator_diagnostic",
-      "reason": "Explicitly authorized purge of detailed debug-trace history; destructive cleanup requires administrator authorization, audit recording, and confirm=true.",
-      "response_policy": "Require authorized admin action and exact confirm=true payload; return deletion counts or bounded errors, never trace contents.",
-      "source_contract": {
-        "source": "src/local_ai_hub/http_route_registry.py",
-        "handler": "post_debug_trace_purge_1",
-        "literal_response_fields": [
-          "error",
-          "retryable",
-          "success",
-          "terminal"
-        ],
-        "response_producers": [
-          "APP.debug_traces.purge",
-          "local:result"
-        ],
-        "action_literals": []
-      }
-    },
-    "POST /api/browser/capture/purge": {
-      "decision": "retain",
-      "role": "agent",
-      "reason": "Explicit capability-gated deletion of a current-tab capture bundle; only unshared capture-owned artifacts are removed and shared children remain available to other bundles.",
-      "response_policy": "Preserve success/error_code, bundle_artifact_id, deleted_count and retained_shared_count. Do not imply shared child artifacts were deleted; never expose raw capture payloads.",
-      "source_contract": {
-        "source": "src/local_ai_hub/http_route_registry.py",
-        "handler": "post_browser_capture_abandon_1",
-        "literal_response_fields": [],
-        "response_producers": [
-          "APP.artifacts.purge_browser_capture",
-          "abandon_staged_capture",
-          "commit_staged_capture",
-          "local:checked",
-          "local:result",
-          "stage_capture"
-        ],
-        "action_literals": []
       }
     }
   }

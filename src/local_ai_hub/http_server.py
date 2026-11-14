@@ -3702,9 +3702,6 @@ class Handler(BaseHTTPRequestHandler):
         if decision["mode"] != "async":
             return None
         job_payload = dict(payload)
-        caller_request_id = str(self.headers.get("X-LocalAI-Request-ID") or "").strip()
-        if caller_request_id:
-            job_payload.setdefault("request_id", caller_request_id)
         job_payload.pop("delivery", None); job_payload.pop("latency_budget_ms", None)
         if job_action == "reason":
             job_payload["task"] = str(job_payload.get("problem", job_payload.get("task", "")))
@@ -8934,7 +8931,7 @@ class Handler(BaseHTTPRequestHandler):
                         (time.perf_counter() - context_retrieval_started) * 1000.0, 1,
                     )
                     repository_failed = isinstance(result, dict) and result.get("success") is False
-                    if repository_failed:
+                    if repository_failed and (not (guarded_requested and has_task_id) or auto_injected_task):
                         status_code = 503 if result.get("retryable") is True else 500
                         self._send(status_code, result); return
                     if guarded_requested and has_task_id and not getattr(APP, "agent_context", None):
