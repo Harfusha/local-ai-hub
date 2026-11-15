@@ -700,22 +700,25 @@ def test_recovery_retries_after_projection_record_write_failure(test_environment
     with pytest.raises(RuntimeError, match="pending"):
         agent_bridge.reconcile_task_steering(task_store, **arguments)
     monkeypatch.setattr(task_store, "revise_contract", original_revise)
-    original_replace = agent_bridge.os.replace
+    # Pending records use pinned parent descriptors and atomic writes, so
+    # mocking the process-wide os.replace disrupts SQLite and unrelated
+    # project state. Inject at the scoped atomic-write boundary instead.
+    original_atomic_write = agent_bridge._atomic_write_posix
     pending_writes = 0
 
-    def fail_pending_replace(source, destination):
+    def fail_pending_atomic_write(root_arg, destination, payload, **kwargs):
         nonlocal pending_writes
         if "pending-contract-reconciliation" in str(destination):
             pending_writes += 1
             if pending_writes == 1:
                 raise OSError("injected retry record failure")
-        return original_replace(source, destination)
+        return original_atomic_write(root_arg, destination, payload, **kwargs)
 
-    monkeypatch.setattr(agent_bridge.os, "replace", fail_pending_replace)
+    monkeypatch.setattr(agent_bridge, "_atomic_write_posix", fail_pending_atomic_write)
     with pytest.raises(OSError, match="injected retry record failure"):
         agent_bridge.reconcile_task_steering(task_store, **arguments)
     assert task_store.get("task_001").checkpoint.state_data["contract_revision"] == 2
-    monkeypatch.setattr(agent_bridge.os, "replace", original_replace)
+    monkeypatch.setattr(agent_bridge, "_atomic_write_posix", original_atomic_write)
     if alter_plan:
         plan, current = storage.read_plan_file(plan_path)
         plan["tasks"]["task_core"]["next_action"] = "Unrelated later change"
@@ -814,17 +817,20 @@ def test_retry_finishes_pending_record_after_binding_was_already_saved(test_envi
         agent_bridge.reconcile_task_steering(task_store, **arguments)
     monkeypatch.setattr(task_store, "revise_contract", original_revise)
     pending_path = root / ".local-ai-hub" / "local" / "pending-contract-reconciliation" / (hashlib.sha256(b"task_001").hexdigest() + ".json")
-    original_unlink = Path.unlink
+    # On POSIX, pending cleanup now uses dir_fd-pinned os.unlink rather
+    # than Path.unlink. Inject at the exact cleanup operation; do not
+    # monkeypatch all unlink calls in the test process.
+    original_pending_unlink = agent_bridge._pending_unlink
 
-    def fail_pending_unlink(path, *args, **kwargs):
+    def fail_pending_unlink(path):
         if path == pending_path:
             raise OSError("simulated removal failure")
-        return original_unlink(path, *args, **kwargs)
+        return original_pending_unlink(path)
 
-    monkeypatch.setattr(Path, "unlink", fail_pending_unlink)
+    monkeypatch.setattr(agent_bridge, "_pending_unlink", fail_pending_unlink)
     with pytest.raises(OSError, match="simulated"):
         agent_bridge.reconcile_task_steering(task_store, **arguments)
-    monkeypatch.setattr(Path, "unlink", original_unlink)
+    monkeypatch.setattr(agent_bridge, "_pending_unlink", original_pending_unlink)
     assert pending_path.is_file()
     assert agent_bridge.reconcile_task_steering(task_store, **arguments)["success"] is True
     assert not pending_path.exists()
