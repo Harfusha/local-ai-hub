@@ -323,6 +323,10 @@ jobs:
           tests/unit/test_capability_grant_canonical_inputs.py
           tests/test_audit_critical_coverage_contract.py
           tests/test_command_rollback.py
+          tests/test_command_run_project_fingerprints.py
+          tests/test_command_output_artifact_availability.py
+          tests/test_command_terse_output.py
+          tests/test_command_policy.py
           tests/test_audit_review_delivery_quality.py
           tests/test_audit_retrieval_gold_contract.py
           tests/test_audit_quality_eval_contract.py
