@@ -17,6 +17,7 @@ const vm = require('node:vm');
 const assert = require('node:assert/strict');
 const elements = new Map();
 const calls = [];
+const requests = [];
 function node(id = '') {
   return {
     id, textContent: '', value: '', children: [], attrs: {},
@@ -59,11 +60,14 @@ function response(data, status = 200) {
 }
 async function fetch(url, options) {
   calls.push(url);
+  requests.push({url, options});
   if (url === '/api/models')
     return response({object: 'list', data: [{id: 'qwen3.5:9b', object: 'model', owned_by: 'ollama'}]});
   if (url.startsWith('/api/telemetry/timeline'))
     return response(url.includes('before_id=11') ? pages[1] : pages[0]);
   if (url === '/ready') return response({success:true, ready:true});
+  if (url.startsWith('/api/preprocess/status?')) return response({success:true, root:'/tmp/repo', phase:'files'});
+  if (url === '/api/preprocess') return response({success:true, root:'/tmp/repo', phase:'files'});
   return response({success:false, error:'intentional'});
 }
 const context = {document, window:{addEventListener(){}}, fetch, URLSearchParams, AbortController,
@@ -88,6 +92,19 @@ function text(el) {
   assert.ok(combined.indexOf('older') < combined.indexOf('newer'));
   assert.ok(calls.some(url => url.includes('before_id=11')));
   assert.equal(byId('load-older-telemetry').disabled, true);
+
+  byId('project-root').value = '/tmp/repo';
+  context.setSection('projects');
+  await context.handleProjectAction('check');
+  await context.handleProjectAction('reindex');
+  await context.handleProjectAction('unregister');
+  const projectRequests = requests.filter(row => row.url.includes('/api/preprocess'));
+  assert.equal(projectRequests.length, 3);
+  assert.equal(projectRequests[0].options.method, 'GET');
+  assert.match(projectRequests[0].url, /root=%2Ftmp%2Frepo/);
+  assert.equal(JSON.parse(projectRequests[1].options.body).action, 'refresh');
+  assert.equal(JSON.parse(projectRequests[2].options.body).action, 'unregister');
+  assert.equal(JSON.parse(projectRequests[2].options.body).purge_data, false);
 
   const failure = await context.request('/invalid');
   assert.equal(failure.ok, false);
