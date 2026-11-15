@@ -3425,6 +3425,8 @@ def _validate_context_pack_inputs(
     )
     if guarded_only_values and not guarded_requested:
         return _context_input_error("guarded context fields require guarded=true, task_id, or phase")
+    if (guarded or phase.strip() or focus is not None or changed_paths is not None) and not task_id.strip():
+        return _context_input_error("guarded context requires a non-empty task_id")
     return None
 
 

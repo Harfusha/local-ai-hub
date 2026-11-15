@@ -104,7 +104,8 @@ def test_recursive_declaration_search_skips_irrelevant_python_parses(tmp_path: P
     original_parse = ast.parse
 
     def tracking_parse(source, filename="<unknown>", *args, **kwargs):
-        parsed_files.append(filename)
+        if filename in {"irrelevant.py", "target.py"}:
+            parsed_files.append(filename)
         return original_parse(source, filename, *args, **kwargs)
 
     monkeypatch.setattr("local_ai_hub.deterministic.ast.parse", tracking_parse)
@@ -122,7 +123,8 @@ def test_recursive_call_search_skips_python_files_without_target_name(tmp_path: 
     original_parse = ast.parse
 
     def tracking_parse(source, filename="<unknown>", *args, **kwargs):
-        parsed_files.append(filename)
+        if filename in {"irrelevant.py", "target.py"}:
+            parsed_files.append(filename)
         return original_parse(source, filename, *args, **kwargs)
 
     monkeypatch.setattr("local_ai_hub.deterministic.ast.parse", tracking_parse)

@@ -16,11 +16,10 @@ from collections import defaultdict
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field, replace
-from enum import Enum
 from typing import Any, Collection, Mapping
 
 from .agent_events import AgentEvent, AgentStateStore
-from .agent_identity import AgentScope
+from .agent_identity import AgentScope, MemoryKind, MemoryStatus
 from .sqlite_support import connect_sqlite, retry_busy, write_transaction
 
 try:
@@ -67,34 +66,6 @@ def _task_memory_relevance(kind: str, scope: str, scope_id: str, key: str, value
 
 class ApprovalRequiredError(PermissionError):
     """Raised when an unapproved promotion is attempted (e.g. global scope without user approval)."""
-
-
-class MemoryKind(str, Enum):
-    FACT = "fact"
-    DECISION = "decision"
-    CONVENTION = "convention"
-    GOTCHA = "gotcha"
-    HYPOTHESIS = "hypothesis"
-    ASSUMPTION = "assumption"
-    PLAYBOOK = "playbook"
-    CAPABILITY_OBSERVATION = "capability_observation"
-    ENVIRONMENT_CAPSULE = "environment_capsule"
-    FINDING = "finding"
-    REUSABLE_CANDIDATE = "reusable_candidate"
-    CONTRACT_MAPPING = "contract_mapping"
-    REJECTED_APPROACH = "rejected_approach"
-    UNKNOWN = "unknown"
-    VALIDATION = "validation"
-
-
-class MemoryStatus(str, Enum):
-    CANDIDATE = "candidate"
-    ACTIVE = "active"
-    CONFIRMED = "confirmed"
-    QUARANTINED = "quarantined"
-    SUPERSEDED = "superseded"
-    REJECTED = "rejected"
-    STALE = "stale"
 
 
 def _memory_event_stream_id(scope: AgentScope, scope_id: str | None, key: str) -> str:

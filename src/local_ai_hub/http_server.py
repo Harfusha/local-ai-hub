@@ -158,6 +158,7 @@ from .trace_context import reset_context, reset_observer, set_context, set_obser
 from .http_route_registry import select_get_handler, select_http_routes, select_post_handler
 from .http_post_repository_analysis import handle_post_repository_analysis, handle_post_plan
 from .dashboard import DASHBOARD_HTML
+from .dashboard_frontend import dashboard_frontend_asset, dashboard_frontend_html, inspect_agent_hosts
 from .config import ConfigError, deep_merge, load_config, save_runtime_overrides, validate_config
 from .delivery import decide_delivery
 from .resilience import RecoveryJournal
@@ -452,7 +453,7 @@ def _invoke_cancellable_request(
 # Monitoring/control reads must never appear as workload. Keep this hard safety set
 # independent of user config so a dashboard refresh cannot create immortal active jobs.
 MONITOR_PATHS = {
-    "/health", "/ready", "/dashboard", "/dashboard/legacy", "/favicon.ico", "/api/live", "/api/live/status",
+    "/health", "/ready", "/dashboard", "/dashboard/legacy", "/dashboard/next", "/favicon.ico", "/api/live", "/api/live/status",
     "/api/status", "/api/mode", "/api/capabilities", "/api/metrics", "/api/adoption",
     "/api/telemetry/report", "/api/telemetry/tool-accounting", "/api/telemetry/timeline",
     "/api/telemetry/endpoint-stats",
@@ -460,6 +461,7 @@ MONITOR_PATHS = {
     "/api/config", "/api/logs/tail", "/api/hardware/system", "/api/hardware/gpu",
     "/api/mode", "/api/admin/mode",
     "/api/debug-traces",
+    "/api/agent/hosts",
 }
 READINESS_COMPONENTS = (
     "artifacts",
@@ -490,7 +492,11 @@ def _dashboard_html_with_trace_notice() -> str:
         "Agent debug traces · full input/output only when enabled · complete stored details shown as recorded · local access only · separate local retention policy",
         1,
     )
-    return html
+    return html.replace(
+        '<div class="tabs">',
+        '<div class="tabs"><a class="btn" href="/dashboard/next" aria-label="Open the new dashboard preview">New dashboard preview</a>',
+        1,
+    )
 
 
 def _is_loopback_peer(handler: Any) -> bool:
@@ -1719,7 +1725,9 @@ class Handler(BaseHTTPRequestHandler):
                 return
             raise
 
-    def _common_headers(self, *, html: bool = False, nonce: str | None = None) -> None:
+    def _common_headers(
+        self, *, html: bool = False, nonce: str | None = None, self_hosted_assets: bool = False,
+    ) -> None:
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("Referrer-Policy", "no-referrer")
@@ -1737,8 +1745,11 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Access-Control-Allow-Headers", "Content-Type")
             self.send_header("Vary", "Origin")
         if html:
-            script_source = f"'nonce-{nonce}'" if nonce else "'none'"
-            policy = f"default-src 'none'; connect-src 'self'; img-src 'self' data:; style-src 'unsafe-inline'; script-src {script_source}; script-src-attr 'unsafe-inline'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
+            if self_hosted_assets:
+                policy = "default-src 'none'; connect-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
+            else:
+                script_source = f"'nonce-{nonce}'" if nonce else "'none'"
+                policy = f"default-src 'none'; connect-src 'self'; img-src 'self' data:; style-src 'unsafe-inline'; script-src {script_source}; script-src-attr 'unsafe-inline'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
             self.send_header("Content-Security-Policy", policy)
 
     def _finish_static_response(
@@ -1784,7 +1795,7 @@ class Handler(BaseHTTPRequestHandler):
         finally:
             self._telemetry_finished = True
 
-    def _send_html(self, status: int, html: str) -> None:
+    def _send_html(self, status: int, html: str, *, self_hosted_assets: bool = False) -> None:
         nonce = uuid.uuid4().hex
         body = html.replace("<script>", f'<script nonce="{nonce}">', 1).encode("utf-8")
         sent = False
@@ -1792,7 +1803,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send_response(status)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Connection", "close")
-            self._common_headers(html=True, nonce=nonce)
+            self._common_headers(html=True, nonce=nonce, self_hosted_assets=self_hosted_assets)
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
@@ -1805,6 +1816,29 @@ class Handler(BaseHTTPRequestHandler):
                 status, len(body), "static_html", success=sent and 200 <= status < 400,
             )
             self.close_connection = True
+
+    def _send_dashboard_frontend_asset(self, name: str) -> bool:
+        asset = dashboard_frontend_asset(name)
+        if asset is None:
+            return False
+        content_type, body = asset
+        sent = False
+        try:
+            self.send_response(200)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Connection", "close")
+            self._common_headers()
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            sent = True
+        except OSError as exc:
+            if not _is_client_disconnect(exc):
+                raise
+        finally:
+            self._finish_static_response(200, len(body), "static_dashboard_asset", success=sent)
+            self.close_connection = True
+        return True
 
     server_version = f"LocalAIHub/{__version__}"
 
@@ -2783,7 +2817,7 @@ class Handler(BaseHTTPRequestHandler):
             or (path == "/api/mode" and not read_only)
         ):
             return "admin:read" if read_only else "admin:write"
-        if path in {"/", "/dashboard", "/dashboard/legacy", "/api/metrics", "/api/status"}:
+        if path in {"/", "/dashboard", "/dashboard/legacy", "/dashboard/next", "/api/metrics", "/api/status", "/api/agent/hosts"}:
             return "dashboard:read"
         return "api:read" if read_only else "api:write"
 
@@ -4481,7 +4515,7 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/api/mode":
             if not self._validate_host_and_origin():
                 return
-        elif path not in {"/", "/dashboard", "/dashboard/legacy", "/favicon.ico"} and not self._require_authorized():
+        elif path not in {"/", "/dashboard", "/dashboard/legacy", "/dashboard/next", "/favicon.ico", "/dashboard-assets/app.css", "/dashboard-assets/app.js", "/api/agent/hosts"} and not self._require_authorized():
             return
         mode_error = _http_mode_gate_error("GET", path)
         if mode_error is not None:
@@ -4573,6 +4607,18 @@ class Handler(BaseHTTPRequestHandler):
                 if not bool(APP.config.get("monitoring", {}).get("dashboard_enabled", True)) or not bool(APP.config.get("features", {}).get("dashboard", True)):
                     self._send(404, {"error": "dashboard disabled"}); return
                 self._send_html(200, _dashboard_html_with_trace_notice()); return
+            if path == "/dashboard/next":
+                if not bool(APP.config.get("monitoring", {}).get("dashboard_enabled", True)) or not bool(APP.config.get("features", {}).get("dashboard", True)):
+                    self._send(404, {"error": "dashboard disabled"}); return
+                self._send_html(200, dashboard_frontend_html(), self_hosted_assets=True); return
+            if path.startswith("/dashboard-assets/"):
+                if not bool(APP.config.get("monitoring", {}).get("dashboard_enabled", True)) or not bool(APP.config.get("features", {}).get("dashboard", True)):
+                    self._send(404, {"error": "dashboard disabled"}); return
+                if self._send_dashboard_frontend_asset(path.removeprefix("/dashboard-assets/")):
+                    return
+                self._send(404, {"error": "not found"}); return
+            if path == "/api/agent/hosts":
+                self._send(200, inspect_agent_hosts(getattr(APP, "config", None))); return
             if path == "/favicon.ico":
                 sent = False
                 try:
@@ -8954,7 +9000,6 @@ class Handler(BaseHTTPRequestHandler):
                             if not receipt_complete:
                                 if repository_failed and not auto_injected_task:
                                     if isinstance(result, dict):
-                                        result["task_context"] = unified if isinstance(unified, dict) else {}
                                         result.setdefault("stop_code", "context_task_context_incomplete")
                                     status_code = 503 if isinstance(result, dict) and result.get("retryable") is True else 500
                                     self._send(status_code, result); return

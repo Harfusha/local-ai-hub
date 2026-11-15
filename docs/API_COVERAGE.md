@@ -24,6 +24,7 @@ Reproduce with `python tools/surface_inventory.py --check`.
 | HTTP GET | /api/agent-state/swarm | conditional | src/local_ai_hub/http_server.py | op-6668f590a0db |
 | HTTP GET | /api/agent-state/swarm/ | conditional | src/local_ai_hub/http_server.py | op-394fd93d45c9 |
 | HTTP GET | /api/agent-state/tasks | conditional | src/local_ai_hub/http_server.py | op-8a32e6e43634 |
+| HTTP GET | /api/agent/hosts | confirmed | src/local_ai_hub/http_server.py | op-1b57d3fe4ade |
 | HTTP GET | /api/audit/tail | confirmed | src/local_ai_hub/http_server.py | op-8564f8460f97 |
 | HTTP GET | /api/audit_dependencies | conditional | src/local_ai_hub/http_server.py | op-63f1b40f1ca1 |
 | HTTP GET | /api/benchmark/summary | conditional | src/local_ai_hub/http_server.py | op-92275db2a76f |

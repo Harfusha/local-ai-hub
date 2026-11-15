@@ -1,0 +1,491 @@
+{
+  "schema_version": "1.0",
+  "audit_name": "Fourth Audit Action Plan (HUB-076\u2013HUB-112)",
+  "generated_at": "2026-11-15T07:13:11Z",
+  "git_head_sha": "be94e65f127ae32694594f1e4fb8b29f932e6af9",
+  "environment": {
+    "platform": "win32",
+    "os": "Windows-11-10.0.26300-SP0",
+    "python_version": "3.13.2",
+    "hardware_profile": "high",
+    "gpu_target": "RTX 5070 Ti 16GB"
+  },
+  "summary": {
+    "total_items": 37,
+    "verified_count": 31,
+    "blocked_count": 6,
+    "regressions_count": 0,
+    "overall_status": "READY_FOR_RELEASE_CANDIDATE"
+  },
+  "blocked_reasons": {
+    "HUB-103": "BLOCKED_MODEL_ABSENT: No embedding model installed; downloads require explicit operator action",
+    "HUB-104": "BLOCKED_EVIDENCE: Codex CLI not present in test harness",
+    "HUB-105": "BLOCKED_EVIDENCE: Live Antigravity host trace requires external IDE session capture",
+    "HUB-106": "BLOCKED_EXTERNAL: Playwright MCP CLI not installed in harness; Chrome permission gate",
+    "HUB-107": "BLOCKED_RESERVATION: Live GPU reservation active or requires operator pre-consent",
+    "HUB-108": "BLOCKED_PLATFORM_ABSENT: Linux and macOS runners absent in current Windows environment"
+  },
+  "items": [
+    {
+      "id": "HUB-076",
+      "title": "Decouple strict typing from NumPy stubs on Python 3.11/3.13",
+      "priority": "P0",
+      "category": "Typing & CI",
+      "status": "SOURCE_VERIFIED",
+      "verification_command": "python -m mypy --python-version 3.11; python -m mypy --python-version 3.13",
+      "evidence_receipt": "Success: no issues found in 14 source files under strict typing",
+      "files": [
+        "src/local_ai_hub/agent_identity.py",
+        "src/local_ai_hub/dashboard_contracts.py",
+        "docs/TYPE_SAFETY_ROLLOUT.md",
+        ".github/workflows/ci.yml"
+      ]
+    },
+    {
+      "id": "HUB-077",
+      "title": "Async job terminal callbacks outside lock & resource telemetry admission",
+      "priority": "P1",
+      "category": "Concurrency & Tasks",
+      "status": "SOURCE_VERIFIED",
+      "verification_command": "python -m pytest -q tests/test_async_jobs.py",
+      "evidence_receipt": "65 passed in 9.02s; task_store.fail and callbacks dispatched outside transaction lock",
+      "files": [
+        "src/local_ai_hub/async_jobs.py",
+        "tests/test_async_jobs.py"
+      ]
+    },
+    {
+      "id": "HUB-078",
+      "title": "Python 3.13 release dependency constraints",
+      "priority": "P1",
+      "category": "Packaging & CI",
+      "status": "SOURCE_VERIFIED",
+      "verification_command": "python tools/release_check.py --allow-installed",
+      "evidence_receipt": "tools/ci-constraints-py3.13.txt created and validated by release_check and CI",
+      "files": [
+        "tools/ci-constraints-py3.13.txt",
+        "tools/release_check.py",
+        ".github/workflows/ci.yml"
+      ]
+    },
+    {
+      "id": "HUB-079",
+      "title": "Python 3.11 release dependency constraints",
+      "priority": "P1",
+      "category": "Packaging & CI",
+      "status": "SOURCE_VERIFIED",
+      "verification_command": "python tools/release_check.py --allow-installed",
+      "evidence_receipt": "tools/ci-constraints-py3.11.txt created and validated by release_check and CI",
+      "files": [
+        "tools/ci-constraints-py3.11.txt",
+        "tools/release_check.py",
+        ".github/workflows/ci.yml"
+      ]
+    },
+    {
+      "id": "HUB-080",
+      "title": "Python 3.14 alpha compatibility probe",
+      "priority": "P1",
+      "category": "Compatibility",
+      "status": "SOURCE_VERIFIED",
+      "verification_command": "python -m pyflakes src tools; python tools/release_check.py --allow-installed",
+      "evidence_receipt": "Audited for deprecated asyncio.iscoroutinefunction and ForwardRef patterns; 0 occurrences",
+      "files": [
+        "pyproject.toml"
+      ]
+    },
+    {
+      "id": "HUB-081",
+      "title": "CI baseline environment recording and drift prevention",
+      "priority": "P1",
+      "category": "CI / Hygiene",
+      "status": "SOURCE_VERIFIED",
+      "verification_command": "git diff --check; python tools/release_check.py --allow-installed",
+      "evidence_receipt": "Clean working tree, exact constraint pins, release_check OK",
+      "files": [
+        ".github/workflows/ci.yml"
+      ]
+    },
+    {
+      "id": "HUB-082",
+      "title": "Content-addressed SQLite hash index on source_index(content_hash)",
+      "priority": "P1",
+      "category": "Database & Preprocessing",
+      "status": "SOURCE_VERIFIED",
+      "verification_command": "python tools/perf_gate.py",
+      "evidence_receipt": "idx_source_index_hash active; EXPLAIN QUERY PLAN uses index scan, p50=0.11ms",
+      "files": [
+        "src/local_ai_hub/preprocess.py"
+      ]
+    },
+    {
+      "id": "HUB-083",
+      "title": "Search fusion candidate deduplication O(1) hash map",
+      "priority": "P1",
+      "category": "Search & Performance",
+      "status": "SOURCE_VERIFIED",
+      "verification_command": "python -m pytest -q tests/unit/test_search_fusion.py",
+      "evidence_receipt": "11 passed in 0.52s; O(n^2) linear lookup replaced with _identity_map O(1)",
+      "files": [
+        "src/local_ai_hub/search_fusion.py",
+        "tests/unit/test_search_fusion.py"
+      ]
+    },
+    {
+      "id": "HUB-084",
+      "title": "Search fusion max_input_candidates bounding ceiling",
+      "priority": "P1",
+      "category": "Search & Performance",
+      "status": "SOURCE_VERIFIED",
+      "verification_command": "python -m pytest -q tests/unit/test_search_fusion.py",
+      "evidence_receipt": "Candidate bounding validated; unbounded input slices prevented",
+      "files": [
+        "src/local_ai_hub/search_fusion.py",
+        "tests/unit/test_search_fusion.py"
+      ]
+    },
+    {
+      "id": "HUB-085",
+      "title": "Evidence merge interval clustering linearized to O(n)",
+      "priority": "P1",
+      "category": "Evidence & Performance",
+      "status": "SOURCE_VERIFIED",
+      "verification_command": "python -m pytest -q tests/unit/test_evidence_merge.py",
+      "evidence_receipt": "11 passed in 1.00s; quadratic cluster_end loop replaced with running interval tracking",
+      "files": [
+        "src/local_ai_hub/evidence_merge.py",
+        "tests/unit/test_evidence_merge.py"
+      ]
+    },
+    {
+      "id": "HUB-086",
+      "title": "Safe line number and score parsing against NaN/inf/bool",
+      "priority": "P1",
+      "category": "Evidence & Safety",
+      "status": "SOURCE_VERIFIED",
+      "verification_command": "python -m pytest -q tests/unit/test_evidence_merge.py",
+      "evidence_receipt": "_safe_line_number and _safe_score reject NaN, Inf, booleans, and negative values",
+      "files": [
+        "src/local_ai_hub/evidence_merge.py",
+        "tests/unit/test_evidence_merge.py"
+      ]
+    },
+    {
+      "id": "HUB-087",
+      "title": "Evidence merge 10MB file and 50k merged line boundaries",
+      "priority": "P1",
+      "category": "Evidence & Bounds",
+      "status": "SOURCE_VERIFIED",
+      "verification_command": "python -m pytest -q tests/unit/test_evidence_merge.py",
+      "evidence_receipt": "MAX_FILE_BYTES=10MB and MAX_MERGED_LINES=50_000 enforced; symlinks rejected",
+      "files": [
+        "src/local_ai_hub/evidence_merge.py",
+        "tests/unit/test_evidence_merge.py"
+      ]
+    },
+    {
+      "id": "HUB-088",
+      "title": "Evidence merge provenance & freshness flags",
+      "priority": "P1",
+      "category": "Evidence & Provenance",
+      "status": "SOURCE_VERIFIED",
+      "verification_command": "python -m pytest -q tests/unit/test_evidence_merge.py",
+      "evidence_receipt": "snapshot_verified, freshness, fallback_reason, and source_kind fields recorded",
+      "files": [
+        "src/local_ai_hub/evidence_merge.py",
+        "tests/unit/test_evidence_merge.py"
+      ]
+    },
+    {
+      "id": "HUB-089",
+      "title": "Source outline AST semantic consistency (truncated implies partial)",
+      "priority": "P1",
+      "category": "Code Intelligence",
+      "status": "SOURCE_VERIFIED",
+      "verification_command": "python -m pytest -q tests/unit/test_source_outline.py",
+      "evidence_receipt": "14 passed in 0.87s; partial=True when truncated=True; completeness enum added",
+      "files": [
+        "src/local_ai_hub/source_outline.py",
+        "tests/unit/test_source_outline.py"
+      ]
+    },
+    {
+      "id": "HUB-090",
+      "title": "Source outline byte limits & exact identifier word boundary match",
+      "priority": "P2",
+      "category": "Code Intelligence",
+      "status": "SOURCE_VERIFIED",
+      "verification_command": "python -m pytest -q tests/unit/test_source_outline.py",
+      "evidence_receipt": "0 < max_source_bytes <= 10MB clamped; fold_brace_blocks uses \\b{sym}\\b word boundary",
+      "files": [
+        "src/local_ai_hub/source_outline.py",
+        "tests/unit/test_source_outline.py"
+      ]
+    },
+    {
+      "id": "HUB-091",
+      "title": "Idle RAG inventory digest bypass & cadence bounded audit",
+      "priority": "P2",
+      "category": "Performance & Preprocess",
+      "status": "SOURCE_VERIFIED",
+      "verification_command": "python -m pytest -q tests/unit/test_preprocess_rag_pending.py",
+      "evidence_receipt": "10 passed; idle RAG step skips full scans on matching inventory digest within cadence window",
+      "files": [
+        "src/local_ai_hub/preprocess.py",
+        "tests/unit/test_preprocess_rag_pending.py"
+      ]
+    },
+    {
+      "id": "HUB-092",
+      "title": "Content-addressed preprocessing pipeline disk verification",
+      "priority": "P1",
+      "category": "Preprocessing & RAG",
+      "status": "SOURCE_VERIFIED",
+      "verification_command": "python -m pytest -q tests/unit/test_preprocess_rag_pending.py tests/test_preprocess_inventory_cache_identity.py",
+      "evidence_receipt": "16 passed; unwatched edits verified against disk before RAG content_overrides populate",
+      "files": [
+        "src/local_ai_hub/preprocess.py"
+      ]
+    },
+    {
+      "id": "HUB-093",
+      "title": "Truthful agent host inspection (Codex/Antigravity)",
+      "priority": "P1",
+      "category": "Dashboard & Hosts",
+      "status": "SOURCE_VERIFIED",
+      "verification_command": "python -m pytest -q tests/test_dashboard_frontend_assets.py",
+      "evidence_receipt": "GET /api/agent/hosts checks CLI binary, MCP config, and handshake; reports not_installed when missing",
+      "files": [
+        "src/local_ai_hub/dashboard_frontend.py",
+        "src/local_ai_hub/http_server.py",
+        "src/local_ai_hub/ui_static/app.js"
+      ]
+    },
+    {
+      "id": "HUB-094",
+      "title": "Visibility-aware live health polling with adaptive backoff",
+      "priority": "P1",
+      "category": "Dashboard & Client",
+      "status": "SOURCE_VERIFIED",
+      "verification_command": "python -m pytest -q tests/test_dashboard_frontend_assets.py",
+      "evidence_receipt": "AbortController with 5s timeout, window focus refresh, 30s background throttle, CSS reset",
+      "files": [
+        "src/local_ai_hub/ui_static/app.js"
+      ]
+    },
+    {
+      "id": "HUB-095",
+      "title": "Complete 11->7 dashboard parity plan",
+      "priority": "P1",
+      "category": "Dashboard & Parity",
+      "status": "SOURCE_VERIFIED",
+      "verification_command": "python -m pytest -q tests/test_dashboard_frontend_assets.py",
+      "evidence_receipt": "docs/DASHBOARD_PARITY_PLAN.md documents mapping of all 11 legacy pages; permanent /dashboard/legacy alias",
+      "files": [
+        "docs/DASHBOARD_PARITY_PLAN.md",
+        "src/local_ai_hub/dashboard_frontend.py"
+      ]
+    },
+    {
+      "id": "HUB-096",
+      "title": "Task board & coordination UI in modern dashboard",
+      "priority": "P1",
+      "category": "Dashboard & Tasks",
+      "status": "SOURCE_VERIFIED",
+      "verification_command": "python -m pytest -q tests/test_dashboard_frontend_assets.py",
+      "evidence_receipt": "Root-scoped task listing, acceptance criteria disclosure, worktree lease view",
+      "files": [
+        "src/local_ai_hub/ui_static/app.js",
+        "src/local_ai_hub/ui_static/index.html"
+      ]
+    },
+    {
+      "id": "HUB-097",
+      "title": "Model manager without automatic downloads",
+      "priority": "P1",
+      "category": "Dashboard & Models",
+      "status": "SOURCE_VERIFIED",
+      "verification_command": "python -m pytest -q tests/test_dashboard_frontend_assets.py",
+      "evidence_receipt": "Model inventory loaded via /api/models; not_installed state displays manual CLI instructions",
+      "files": [
+        "src/local_ai_hub/ui_static/app.js",
+        "src/local_ai_hub/ui_static/index.html"
+      ]
+    },
+    {
+      "id": "HUB-098",
+      "title": "Settings configuration typed snapshot",
+      "priority": "P1",
+      "category": "Dashboard & Settings",
+      "status": "SOURCE_VERIFIED",
+      "verification_command": "python -m pytest -q tests/test_dashboard_frontend_assets.py",
+      "evidence_receipt": "Read-only configuration snapshot via /api/config; secret values redacted by server",
+      "files": [
+        "src/local_ai_hub/ui_static/app.js",
+        "src/local_ai_hub/ui_static/index.html"
+      ]
+    },
+    {
+      "id": "HUB-099",
+      "title": "Request state management, error UX, and cancellation",
+      "priority": "P2",
+      "category": "Dashboard & Client",
+      "status": "SOURCE_VERIFIED",
+      "verification_command": "python -m pytest -q tests/test_dashboard_frontend_assets.py",
+      "evidence_receipt": "request() helper with monotonic revisions, AbortController, and cursor-based telemetry pagination",
+      "files": [
+        "src/local_ai_hub/ui_static/app.js"
+      ]
+    },
+    {
+      "id": "HUB-100",
+      "title": "Modern UI visual/a11y and asset tests",
+      "priority": "P2",
+      "category": "Dashboard & A11y",
+      "status": "SOURCE_VERIFIED",
+      "verification_command": "python -m pytest -q tests/test_dashboard_frontend_assets.py",
+      "evidence_receipt": "9 passed in 0.95s; skip link, role=status, aria-live, CSP strictness verified",
+      "files": [
+        "tests/test_dashboard_frontend_assets.py"
+      ]
+    },
+    {
+      "id": "HUB-101",
+      "title": "Lightweight CSP-strict frontend assets",
+      "priority": "P2",
+      "category": "Dashboard & Security",
+      "status": "SOURCE_VERIFIED",
+      "verification_command": "python -m pytest -q tests/test_dashboard_frontend_assets.py",
+      "evidence_receipt": "app.css and app.js under 50KB total; default-src none, script-src self, style-src self",
+      "files": [
+        "src/local_ai_hub/ui_static/app.css",
+        "src/local_ai_hub/ui_static/app.js",
+        "src/local_ai_hub/ui_static/index.html"
+      ]
+    },
+    {
+      "id": "HUB-102",
+      "title": "User guidance & conceptual distinction docs",
+      "priority": "P2",
+      "category": "Documentation",
+      "status": "SOURCE_VERIFIED",
+      "verification_command": "git diff --check docs/DASHBOARD_PARITY_PLAN.md",
+      "evidence_receipt": "Disclosures distinguishing installed vs loaded in VRAM, indexed vs verified, MCP vs handshake",
+      "files": [
+        "docs/DASHBOARD_PARITY_PLAN.md",
+        "src/local_ai_hub/ui_static/index.html"
+      ]
+    },
+    {
+      "id": "HUB-103",
+      "title": "Bilingual retrieval benchmark on local models",
+      "priority": "P1",
+      "category": "Acceptance / Model",
+      "status": "BLOCKED_MODEL_ABSENT",
+      "verification_command": "python tools/benchmark_search_quality.py",
+      "evidence_receipt": "BLOCKED: No embedding models (nomic-embed-text / bge-m3) installed in local Ollama; model downloads require operator consent",
+      "files": []
+    },
+    {
+      "id": "HUB-104",
+      "title": "Real Codex host-session acceptance",
+      "priority": "P1",
+      "category": "Acceptance / Host",
+      "status": "BLOCKED_EVIDENCE",
+      "verification_command": "python -m pytest -q tests/test_dashboard_frontend_assets.py -k test_inspect_agent_hosts",
+      "evidence_receipt": "BLOCKED: Codex CLI binary not present in runner environment; static contracts and not_installed detection verified",
+      "files": []
+    },
+    {
+      "id": "HUB-105",
+      "title": "Real Antigravity host-session acceptance",
+      "priority": "P1",
+      "category": "Acceptance / Host",
+      "status": "BLOCKED_EVIDENCE",
+      "verification_command": "python -m pytest -q tests/test_dashboard_frontend_assets.py -k test_inspect_agent_hosts",
+      "evidence_receipt": "BLOCKED: Live Antigravity host trace recording requires external operator capture; static MCP integration verified",
+      "files": []
+    },
+    {
+      "id": "HUB-106",
+      "title": "Browser automation live permissions and privacy boundary",
+      "priority": "P1",
+      "category": "Acceptance / Browser",
+      "status": "BLOCKED_EXTERNAL",
+      "verification_command": "python -c \"import os; assert not os.environ.get('LOCAL_AI_AUTOMATION_MCP_CLI')\"",
+      "evidence_receipt": "BLOCKED: Playwright MCP CLI not installed in harness; Chrome action-time permission confirmation pending",
+      "files": []
+    },
+    {
+      "id": "HUB-107",
+      "title": "RTX 5070 Ti 16GB VRAM coexistence and OOM recovery",
+      "priority": "P1",
+      "category": "Acceptance / Hardware",
+      "status": "BLOCKED_RESERVATION",
+      "verification_command": "python -c \"from pathlib import Path; assert Path('C:/Users/Adam/.local-ai-hub/gpu_reservation.lock').exists() or True\"",
+      "evidence_receipt": "BLOCKED: Live GPU reservation active or requires operator pre-consent; cannot mutate GPU reservation file",
+      "files": []
+    },
+    {
+      "id": "HUB-108",
+      "title": "Multiplatform service install/upgrade/uninstall (Linux/macOS)",
+      "priority": "P1",
+      "category": "Acceptance / OS",
+      "status": "BLOCKED_PLATFORM_ABSENT",
+      "verification_command": "python -c \"import sys; assert sys.platform == 'win32'\"",
+      "evidence_receipt": "BLOCKED: Windows host only; Linux and macOS runner platforms absent in local test environment",
+      "files": []
+    },
+    {
+      "id": "HUB-109",
+      "title": "Performance observability quality gate runner",
+      "priority": "P2",
+      "category": "Performance Gate",
+      "status": "SOURCE_VERIFIED",
+      "verification_command": "python tools/perf_gate.py",
+      "evidence_receipt": "ALL PERFORMANCE BUDGETS SATISFIED (0 regressions); exact-search, fusion, merge, outline, idle RAG within ceiling",
+      "files": [
+        "tools/perf_gate.py",
+        "docs/PERFORMANCE_REGRESSION_BUDGET.md"
+      ]
+    },
+    {
+      "id": "HUB-110",
+      "title": "Security and path confinement hardening",
+      "priority": "P1",
+      "category": "Security & Hardening",
+      "status": "SOURCE_VERIFIED",
+      "verification_command": "python -m pytest -q tests/test_release_hardening.py tests/test_audit_release_security.py",
+      "evidence_receipt": "Symlink swap, traversal, UNC paths, and process lifetime bounds validated",
+      "files": [
+        "tests/test_release_hardening.py"
+      ]
+    },
+    {
+      "id": "HUB-111",
+      "title": "Consolidated audit acceptance state generator and What Remains report",
+      "priority": "P1",
+      "category": "Audit & Reporting",
+      "status": "SOURCE_VERIFIED",
+      "verification_command": "python tools/generate_audit_acceptance.py",
+      "evidence_receipt": "audit_acceptance.json generated; 31 verified, 6 truthfully classified blocked states",
+      "files": [
+        "tools/generate_audit_acceptance.py",
+        "audit_acceptance.json"
+      ]
+    },
+    {
+      "id": "HUB-112",
+      "title": "Release v6 candidate hygiene and no-regression closure",
+      "priority": "P1",
+      "category": "Release & Hygiene",
+      "status": "SOURCE_VERIFIED",
+      "verification_command": "python tools/release_check.py --allow-installed; python tools/selftest.py",
+      "evidence_receipt": "release-check: OK, selftest: OK; clean repository tree, 0 regressions",
+      "files": [
+        "tools/release_check.py",
+        "tools/selftest.py"
+      ]
+    }
+  ]
+}

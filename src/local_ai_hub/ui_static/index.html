@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="dark">
+    <title>Local AI Hub</title>
+    <link rel="stylesheet" href="/dashboard-assets/app.css">
+    <script type="module" src="/dashboard-assets/app.js"></script>
+  </head>
+  <body>
+    <a class="skip-link" href="#main-content">Skip to main content</a>
+    <div class="app-shell">
+      <header class="topbar">
+        <button class="menu-toggle" type="button" aria-expanded="false" aria-controls="primary-nav" aria-label="Open navigation">☰</button>
+        <a class="brand" href="/dashboard/next" aria-label="Local AI Hub home"><span class="brand-mark" aria-hidden="true">◆</span>Local AI Hub</a>
+        <div class="topbar-status"><span class="status-dot" id="api-dot" aria-hidden="true"></span><span id="api-status" role="status" aria-live="polite">Checking Hub…</span></div>
+      </header>
+      <aside class="sidebar" id="primary-nav">
+        <nav aria-label="Main sections">
+          <button class="nav-item is-active" type="button" data-section="overview" aria-current="page"><span aria-hidden="true">⌂</span>Overview</button>
+          <button class="nav-item" type="button" data-section="projects"><span aria-hidden="true">▦</span>Projects</button>
+          <button class="nav-item" type="button" data-section="agents"><span aria-hidden="true">◇</span>Agents</button>
+          <button class="nav-item" type="button" data-section="tasks"><span aria-hidden="true">☷</span>Tasks</button>
+          <button class="nav-item" type="button" data-section="models"><span aria-hidden="true">◉</span>Models</button>
+          <button class="nav-item" type="button" data-section="diagnostics"><span aria-hidden="true">⌁</span>Diagnostics</button>
+          <button class="nav-item" type="button" data-section="settings"><span aria-hidden="true">⚙</span>Settings</button>
+        </nav>
+        <div class="sidebar-footer"><span class="eyebrow">LOCAL INSTALLATION</span><span>One Hub · one operator</span></div>
+      </aside>
+      <main id="main-content" tabindex="-1">
+        <section class="page-heading">
+          <p class="eyebrow">LOCAL AI HUB / <span id="section-kicker">OVERVIEW</span></p>
+          <h1 id="section-title">Overview</h1>
+          <p id="section-description">See whether the Hub is ready and choose the next useful action.</p>
+        </section>
+        <section class="overview-grid" id="overview-cards" aria-label="Current Hub state">
+          <article class="state-card state-card-featured"><div class="card-topline"><span>Current check · Hub API</span><span class="pill pill-neutral" id="api-pill">CHECKING</span></div><strong id="heartbeat-value">Checking…</strong><p id="heartbeat-detail">Reading the local status endpoint.</p><span class="card-meta" id="checked-at">Observation time pending</span></article>
+          <article class="state-card"><div class="card-topline"><span>Projects</span><span class="pill pill-neutral" id="overview-projects-pill">UNKNOWN</span></div><strong id="overview-projects-val">Project health not loaded</strong><p>Project list and indexing freshness have not been queried on this page.</p><a href="/dashboard#projects">Inspect Projects <span aria-hidden="true">↗</span></a></article>
+          <article class="state-card"><div class="card-topline"><span>Current work</span><span class="pill pill-neutral" id="overview-tasks-pill">UNKNOWN</span></div><strong id="overview-tasks-val">Task state not loaded</strong><p>Tasks and receipts are not part of this current health check.</p><a href="/dashboard#agentos">Inspect Tasks <span aria-hidden="true">↗</span></a></article>
+          <article class="state-card"><div class="card-topline"><span>Next action</span><span class="pill pill-warn">AVAILABLE</span></div><strong>Review service diagnostics</strong><p>Open the existing diagnostics page for detailed operational information.</p><a href="/dashboard#reliability">Open Diagnostics <span aria-hidden="true">↗</span></a></article>
+        </section>
+        <section class="content-panel projects-panel" id="projects-view" aria-labelledby="projects-heading" hidden>
+          <div class="panel-heading"><div><p class="eyebrow">SCOPED REPOSITORY OPERATIONS</p><h2 id="projects-heading">Projects and indexing</h2></div></div>
+          <p class="panel-copy">Enter one absolute repository root. Every action is scoped to that exact path and uses the Hub's existing authorization checks.</p>
+          <form id="project-form" class="project-form">
+            <label for="project-root">Repository root</label>
+            <input id="project-root" name="root" type="text" required autocomplete="off" spellcheck="false" placeholder="C:\\work\\repository or /home/user/repository">
+            <div class="project-actions">
+              <button class="action-button" id="project-check" type="submit">Inspect status</button>
+              <button class="action-button" id="project-reindex" type="button">Request reindexing</button>
+              <button class="action-button action-button-danger" id="project-unregister" type="button">Unregister project</button>
+            </div>
+          </form>
+          <p class="panel-copy" id="project-status" role="status" aria-live="polite">No repository inspected yet.</p>
+          <dl class="project-details" id="project-details" hidden>
+            <dt>Registered root</dt><dd id="project-root-value">-</dd>
+            <dt>Phase</dt><dd id="project-phase-value">-</dd>
+            <dt>Status</dt><dd id="project-status-value">-</dd>
+            <dt>FTS indexed rows</dt><dd id="project-fts-value">-</dd>
+            <dt>AST indexed rows</dt><dd id="project-ast-value">-</dd>
+            <dt>Last error</dt><dd id="project-error-value">-</dd>
+          </dl>
+          <p class="panel-copy">Worktree leases, import/export bundles, and manual cache purges remain on the existing <a href="/dashboard#projects">Projects page</a>.</p>
+        </section>
+        <section class="content-panel agents-panel" id="agents-view" aria-labelledby="agents-heading" hidden>
+          <div class="panel-heading"><div><p class="eyebrow">AGENT HOST INSPECTION</p><h2 id="agents-heading">Agents &amp; Hosts</h2></div></div>
+          <p class="panel-copy">Inspect detected agent host CLIs, MCP configuration, and connection readiness (HUB-093). Host status is truthfully verified; missing binaries or unconfigured MCP never report as ready.</p>
+          <div class="project-actions"><button class="action-button" id="load-hosts" type="button">Refresh agent hosts</button></div>
+          <p class="panel-copy" id="hosts-status" role="status" aria-live="polite">Agent hosts not queried.</p>
+          <div class="task-list" id="hosts-list" aria-live="polite"></div>
+        </section>
+        <section class="content-panel tasks-panel" id="tasks-view" aria-labelledby="tasks-heading" hidden>
+          <div class="panel-heading"><div><p class="eyebrow">AGENT OS COORDINATION</p><h2 id="tasks-heading">Tasks &amp; Coordination</h2></div></div>
+          <p class="panel-copy">View and manage Agent OS tasks, acceptance criteria, and worktree leases. Expand a task to inspect every field returned by the stored record.</p>
+          <form id="task-filter-form" class="project-form">
+            <label for="tasks-root">Repository root</label>
+            <input id="tasks-root" name="root" type="text" autocomplete="off" spellcheck="false" placeholder="C:\\work\\repository or leave empty for global">
+            <div class="project-actions"><button class="action-button" id="load-tasks" type="button">Load tasks</button></div>
+          </form>
+          <p class="panel-copy" id="tasks-status" role="status" aria-live="polite">Tasks not loaded.</p>
+          <div class="task-list" id="task-list" aria-live="polite"></div>
+          <div class="worktree-details" id="worktrees-panel">
+            <details>
+              <summary>Active worktree leases &amp; blackboard</summary>
+              <pre id="worktree-response">Click Load tasks to check worktrees.</pre>
+            </details>
+          </div>
+        </section>
+        <section class="content-panel models-panel" id="models-view" aria-labelledby="models-heading" hidden>
+          <div class="panel-heading"><div><p class="eyebrow">LOCAL MODEL INVENTORY</p><h2 id="models-heading">Models &amp; Inference</h2></div></div>
+          <p class="panel-copy">Inspect local model inventory, digests, and VRAM residency. Automatic model downloads are disabled; model pulls require explicit operator action (HUB-097).</p>
+          <div class="project-actions"><button class="action-button" id="load-models" type="button">Load installed models</button></div>
+          <p class="panel-copy" id="models-status" role="status" aria-live="polite">Inventory not loaded.</p>
+          <div class="task-list" id="model-list" aria-live="polite"></div>
+          <p class="panel-copy">Pinned routes, fallback reasons, VRAM observations, and Laya shadow review remain on the existing <a href="/dashboard#performance">Models &amp; search page</a>.</p>
+        </section>
+        <section class="content-panel diagnostics-panel" id="diagnostics-view" aria-labelledby="diagnostics-heading" hidden>
+          <div class="panel-heading"><div><p class="eyebrow">SYSTEM OBSERVABILITY</p><h2 id="diagnostics-heading">Diagnostics &amp; Telemetry</h2></div></div>
+          <p class="panel-copy">Review subsystem health, endpoint latencies, and historical telemetry timeline (HUB-099). Expandable events preserve original payloads.</p>
+          <div class="project-actions">
+            <button class="action-button" id="load-telemetry-timeline" type="button">Load telemetry timeline</button>
+            <button class="action-button" id="load-older-telemetry" type="button" hidden>Load older events</button>
+          </div>
+          <p class="panel-copy" id="diagnostics-status" role="status" aria-live="polite">Telemetry timeline not loaded; click Load telemetry timeline to inspect recent events.</p>
+          <div class="task-list" id="telemetry-timeline" aria-live="polite"></div>
+          <p class="panel-copy">The timeline does not show current runtime health or request traces. For live service health, open the existing <a href="/dashboard#reliability">Service health page</a>.</p>
+        </section>
+        <section class="content-panel settings-panel" id="settings-view" aria-labelledby="settings-heading" hidden>
+          <div class="panel-heading"><div><p class="eyebrow">REDACTED CONFIGURATION SNAPSHOT</p><h2 id="settings-heading">Settings</h2></div></div>
+          <p class="panel-copy">Load a read-only configuration snapshot. Secret values are redacted by the existing API (HUB-098). This preview does not edit, import, export, or restart the Hub.</p>
+          <div class="project-actions"><button class="action-button" id="load-settings" type="button">Load settings</button></div>
+          <p class="panel-copy" id="settings-status" role="status" aria-live="polite">Configuration not loaded.</p>
+          <pre class="telemetry-records" id="settings-records" hidden></pre>
+          <p class="panel-copy">Use the existing <a href="/dashboard#config">Settings page</a> for supported configuration changes and restart guidance.</p>
+        </section>
+        <section class="content-panel section-notice" id="section-notice" aria-labelledby="section-notice-title" hidden>
+          <div class="panel-heading"><div><p class="eyebrow">EXISTING DASHBOARD</p><h2 id="section-notice-title">Current page remains available</h2></div></div>
+          <p class="panel-copy" id="section-notice-copy">This section has not been migrated into the preview shell. Links below open the matching current dashboard pages.</p>
+        </section>
+        <section class="content-panel" aria-labelledby="legacy-heading">
+          <div class="panel-heading"><div><p class="eyebrow">COMPATIBILITY</p><h2 id="legacy-heading">Existing dashboard pages</h2></div><span class="count-badge" id="legacy-count">11</span></div>
+          <p class="panel-copy">All current dashboard destinations remain available. These links open the matching page in the existing dashboard.</p>
+          <div class="legacy-grid" id="legacy-pages">
+            <a class="legacy-link" data-section="overview" href="/dashboard#overview"><span class="legacy-index">01</span><span>Overview</span><span class="legacy-arrow" aria-hidden="true">↗</span></a>
+            <a class="legacy-link" data-section="projects" href="/dashboard#projects"><span class="legacy-index">02</span><span>Projects</span><span class="legacy-arrow" aria-hidden="true">↗</span></a>
+            <a class="legacy-link" data-section="agents" href="/dashboard#commands"><span class="legacy-index">03</span><span>Commands</span><span class="legacy-arrow" aria-hidden="true">↗</span></a>
+            <a class="legacy-link" data-section="tasks" href="/dashboard#work"><span class="legacy-index">04</span><span>Requests</span><span class="legacy-arrow" aria-hidden="true">↗</span></a>
+            <a class="legacy-link" data-section="tasks" href="/dashboard#agentos"><span class="legacy-index">05</span><span>Tasks</span><span class="legacy-arrow" aria-hidden="true">↗</span></a>
+            <a class="legacy-link" data-section="tasks" href="/dashboard#coordination"><span class="legacy-index">06</span><span>Coordination</span><span class="legacy-arrow" aria-hidden="true">↗</span></a>
+            <a class="legacy-link" data-section="models" href="/dashboard#performance"><span class="legacy-index">07</span><span>Models & search</span><span class="legacy-arrow" aria-hidden="true">↗</span></a>
+            <a class="legacy-link" data-section="diagnostics" href="/dashboard#reliability"><span class="legacy-index">08</span><span>Service health</span><span class="legacy-arrow" aria-hidden="true">↗</span></a>
+            <a class="legacy-link" data-section="settings" href="/dashboard#config"><span class="legacy-index">09</span><span>Settings</span><span class="legacy-arrow" aria-hidden="true">↗</span></a>
+            <a class="legacy-link" data-section="projects" href="/dashboard#bundles"><span class="legacy-index">10</span><span>Transfers</span><span class="legacy-arrow" aria-hidden="true">↗</span></a>
+            <a class="legacy-link" data-section="diagnostics" href="/dashboard#events"><span class="legacy-index">11</span><span>Activity</span><span class="legacy-arrow" aria-hidden="true">↗</span></a>
+          </div>
+        </section>
+        <footer class="page-footer"><span>Static local interface · no CDN</span><span>Unknown and unmeasured values stay explicit</span></footer>
+      </main>
+    </div>
+  </body>
+</html>

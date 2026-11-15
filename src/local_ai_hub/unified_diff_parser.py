@@ -28,9 +28,6 @@ class _DiffParser:
     def consume_hunk_content(self, line: str, *, next_file_header: bool) -> bool:
         if not (self.old_remaining or self.new_remaining):
             return False
-        if next_file_header:
-            self.old_remaining = self.new_remaining = 0
-            return False
         if line.startswith("+") and self.new_remaining:
             self.parsed.additions += 1
             self.new_remaining -= 1
@@ -51,6 +48,9 @@ class _DiffParser:
             return True
         if line.startswith("\\ No newline"):
             return True
+        if next_file_header:
+            self.old_remaining = self.new_remaining = 0
+            return False
         self.old_remaining = self.new_remaining = 0
         return False
 

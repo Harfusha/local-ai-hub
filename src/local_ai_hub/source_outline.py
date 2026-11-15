@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Literal, NotRequired, TypedDict
 
 DEFAULT_MAX_SOURCE_BYTES = 512 * 1024  # 512 KB
+HARD_CAP_MAX_SOURCE_BYTES = 10 * 1024 * 1024  # 10 MB
 
 
 class OutlineSuccess(TypedDict):
@@ -20,6 +21,7 @@ class OutlineSuccess(TypedDict):
     polyglot: NotRequired[bool]
     fallback: NotRequired[bool]
     outline_verified: NotRequired[bool]
+    completeness: NotRequired[Literal["complete", "partial", "unverified"]]
     fallback_type: NotRequired[str]
     truncated: NotRequired[bool]
     partial: NotRequired[bool]
@@ -253,7 +255,7 @@ def fold_brace_blocks(code: str, target_symbols: set[str] | None = None) -> str:
                 and not bool(_BRACE_CLASS_INTERFACE.search(line))
                 and ("{" in line or "=>" in line)
             )
-            is_target = any(sym in line for sym in targets) if targets else False
+            is_target = any(bool(re.search(rf"\b{re.escape(sym)}\b", line)) for sym in targets) if targets else False
 
             depth_before = scanner.brace_depth
             events = scanner.process_line(line)
@@ -309,6 +311,11 @@ def ast_outline(
     target_symbols: set[str] | None = None,
 ) -> OutlineResult:
     """Return a token-compact structural outline of a source file."""
+    if not isinstance(max_source_bytes, int) or isinstance(max_source_bytes, bool) or max_source_bytes <= 0:
+        max_source_bytes = DEFAULT_MAX_SOURCE_BYTES
+    elif max_source_bytes > HARD_CAP_MAX_SOURCE_BYTES:
+        max_source_bytes = HARD_CAP_MAX_SOURCE_BYTES
+
     p_root = Path(root).resolve()
     target = Path(path)
     if not target.is_absolute():
@@ -339,6 +346,9 @@ def ast_outline(
             "original_chars": 0,
             "outline_chars": 0,
             "reduction_pct": 0.0,
+            "truncated": False,
+            "partial": False,
+            "completeness": "complete",
             "outline_verified": True,
         }
 
@@ -396,7 +406,8 @@ def ast_outline(
             "outline_chars": len(outlined),
             "reduction_pct": token_savings_pct,
             "truncated": True,
-            "partial": False,
+            "partial": True,
+            "completeness": "partial",
             "outline_verified": False,
             "fallback_type": "truncated_head",
             "suggested_slice": {"start_line": 1, "end_line": max(1, line_count)},
@@ -438,6 +449,9 @@ def ast_outline(
             "original_chars": len(content),
             "outline_chars": len(outlined),
             "reduction_pct": token_savings_pct,
+            "truncated": False,
+            "partial": False,
+            "completeness": "complete",
             "outline_verified": True,
         }
     except Exception:
@@ -452,6 +466,9 @@ def ast_outline(
                 "original_chars": len(content),
                 "outline_chars": len(outlined),
                 "reduction_pct": token_savings_pct,
+                "truncated": False,
+                "partial": False,
+                "completeness": "unverified",
                 "polyglot": True,
                 "outline_verified": False,
                 "fallback_type": "lexical",
@@ -468,6 +485,9 @@ def ast_outline(
             "success": True,
             "path": rel_path,
             "outline": outline_txt or content[:1000],
+            "truncated": False,
+            "partial": False,
+            "completeness": "unverified",
             "fallback": True,
             "outline_verified": False,
             "fallback_type": "line_pattern",

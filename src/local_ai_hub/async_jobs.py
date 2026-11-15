@@ -441,16 +441,16 @@ class AsyncJobManager:
             )},
         }
         if resource.get("available") is not True or telemetry_error is not None or bool(resource.get("telemetry_error")):
-            return {**self._admission("degraded", "resource_telemetry_unavailable", retryable=False), "pressure_level": pressure, "context_budget_factor": factor, "resource_sample": sample}
+            return {**self._admission("rejected", "resource_telemetry_unavailable", retryable=True), "pressure_level": pressure, "context_budget_factor": factor, "resource_sample": sample}
         if (
-            pressure not in {"nominal", "moderate", "high", "critical", "unknown"}
+            pressure not in {"nominal", "moderate", "high", "critical"}
             or not factor_valid
             or ("throttle_background" in resource and type(resource.get("throttle_background")) is not bool)
         ):
             return {**self._admission("rejected", "resource_telemetry_invalid", retryable=True), "pressure_level": pressure, "context_budget_factor": factor, "resource_sample": sample}
         if pressure == "critical" or (pressure == "high" and resource.get("throttle_background") is True):
             return {**self._admission("rejected", "resource_pressure", retryable=True), "pressure_level": pressure, "context_budget_factor": factor, "resource_sample": sample}
-        if pressure in {"moderate", "high", "unknown"} or factor < 1.0:
+        if pressure in {"moderate", "high"} or (factor is not None and factor < 1.0):
             return {**self._admission("degraded", "resource_pressure", retryable=False), "pressure_level": pressure, "context_budget_factor": factor, "resource_sample": sample}
         return {**self._admission("accepted", "capacity_available", retryable=False), "resource_sample": sample}
 
@@ -1526,6 +1526,8 @@ class AsyncJobManager:
                     "UPDATE async_jobs SET state='outcome_unknown',result_json=?,error=?,lease_until=0,updated_at=? WHERE job_id=?",
                     (json_dumps(final, ensure_ascii=False, separators=(",", ":")), final["error"], time.time(), job_id),
                 )
+                if task_id and self.task_store is not None:
+                    task_failure_reason = str(final.get("error", "async job outcome unknown"))
             elif cancelled:
                 con.execute("UPDATE async_jobs SET state='cancelled',lease_until=0,updated_at=? WHERE job_id=?", (time.time(), job_id))
                 stats_counter = "cancelled"
@@ -1580,6 +1582,8 @@ class AsyncJobManager:
                 if not pre_artifact_available:
                     final = {"success": False, "state": "outcome_unknown", "outcome_unknown": True, "error": "async job result artifact unavailable", "terminal": True, "retryable": False}
                     con.execute("UPDATE async_jobs SET state='outcome_unknown',result_json=?,artifact_id='',error=?,lease_until=0,updated_at=? WHERE job_id=?", (json_dumps(final, ensure_ascii=False, separators=(",", ":")), final["error"], time.time(), job_id))
+                    if task_id and self.task_store is not None:
+                        task_failure_reason = "async job result artifact unavailable"
                 else:
                     con.execute("UPDATE async_jobs SET state='done',result_json=?,artifact_id=?,lease_until=0,updated_at=? WHERE job_id=?", (pre_result_json, artifact_id, time.time(), job_id))
                     stats_counter = "completed"
@@ -1603,6 +1607,8 @@ class AsyncJobManager:
                     detail = str(result.get("error", "async job interrupted without a durable outcome"))[:400]
                     final = {"success": False, "state": "outcome_unknown", "outcome_unknown": True, "error": f"async job outcome unknown: {detail}", "terminal": True, "retryable": False}
                     con.execute("UPDATE async_jobs SET state='outcome_unknown',result_json=?,error=?,lease_until=0,updated_at=? WHERE job_id=?", (json_dumps(final, ensure_ascii=False, separators=(",", ":")), final["error"][:500], time.time(), job_id))
+                    if task_id and self.task_store is not None:
+                        task_failure_reason = final["error"][:500]
                 else:
                     con.execute("UPDATE async_jobs SET state='failed',result_json=?,error=?,lease_until=0,updated_at=? WHERE job_id=?", (json_dumps(result, ensure_ascii=False, separators=(",", ":")), str(result.get("error", "async job failed"))[:500], time.time(), job_id))
                     stats_counter = "failed"

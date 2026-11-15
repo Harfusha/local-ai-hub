@@ -255,6 +255,7 @@ TELEMETRY_SAFE_GET_ROUTE_LABELS = frozenset({
     "/api/telemetry/report",
     "/api/telemetry/endpoint-stats",
     "/dashboard",
+    "/dashboard/legacy",
     "/favicon.ico",
     "/health",
     "/ready",

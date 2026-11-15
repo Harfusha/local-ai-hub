@@ -12,6 +12,19 @@ For each selected agent, choose MCP, skills, and global instructions independent
 
 The wizard chooses the hardware profile, supported model downloads, local NLP, OpenVINO, Laya runtime, Tree-sitter AST support, performance packages, profiling tools, Serena, Token Economy, agent configuration, service registration, and companion skills. OpenVINO detection follows configured backends and Intel NPU/iGPU hardware; AMD or unidentified NPUs do not trigger OpenVINO installation. OpenVINO remains optional and CPU fallback remains available. Laya dependencies are only needed for a selected Laya route; the configured checkpoint is a local, hash-pinned directory and is not downloaded by setup. Developer test dependencies stay out of the service environment.
 
+## Optional Ponytail plugin
+
+When an agent's Skills component is selected, setup deploys the six Ponytail skills alongside Caveman to that agent's supported homes, including detected MultiGravity profile homes. The bundle is based on the MIT-licensed [official Ponytail repository](https://github.com/DietrichGebert/ponytail), version 5.3.3. Set `setup.install_companion_skills = false` or pass `--skip-companion-skills` for one run to omit companion skills; that flag also skips pinned Superpowers for Gemini/Antigravity. This does not install the separate Ponytail plugin or enable lifecycle hooks.
+
+For the full Codex plugin, use only the [official Ponytail repository](https://github.com/DietrichGebert/ponytail):
+
+```powershell
+codex plugin marketplace add DietrichGebert/ponytail
+codex plugin add ponytail@ponytail
+```
+
+Restart Codex, review the plugin's hooks in `/hooks`, and trust them only after review. For Antigravity plugin-manager registration, run `agy plugin install https://github.com/DietrichGebert/ponytail` with each profile active. The Hub skill deployment does not require `agy`.
+
 Ollama remains opt-in. When selected, setup pulls configured role, vision, subagent, and embedding models. Managed llama.cpp downloads its pinned default GGUF when that runtime is selected. A custom GGUF must already exist with a configured SHA-256; external model endpoints own their downloads. Sentence Transformers and OpenVINO preloads follow the configured Hugging Face download policy. `setup-report.json` lists each Ollama model as requested, ready, skipped, or unavailable, plus failed preloads. Setup does not silently change providers or install CUDA, ROCm, DirectML, or vendor drivers.
 
 If newly installed Token Economy commands are not visible, open a new terminal to reload the updated `PATH`.

@@ -280,6 +280,16 @@ def run_checks(root: Path, *, expected_version: str | None = None, post_test: bo
     if not manifest_ok:
         errors.append("MANIFEST.in must ship config.toml.example and requirements-openvino.txt, never local config.toml")
 
+    constraints_files = [
+        root / "tools" / "release-runtime-constraints.txt",
+        root / "tools" / "ci-constraints-py3.13.txt",
+        root / "tools" / "ci-constraints-py3.11.txt",
+    ]
+    constraints_ok = all(f.is_file() and f.stat().st_size > 0 for f in constraints_files)
+    checks.append({"name": "constraints-consistency", "ok": constraints_ok})
+    if not constraints_ok:
+        errors.append("required release and CI constraints files are missing or empty")
+
     required_docs = {
         "README.md",
         "LICENSE",

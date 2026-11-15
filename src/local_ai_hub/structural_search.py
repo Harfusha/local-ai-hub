@@ -131,6 +131,10 @@ def search_structurally(
         parse_failed = False
 
         if fpath.suffix == ".py":
+            if target_pattern.startswith(("fn:", "function:", "class:", "call:")):
+                target_name = target_pattern.split(":", 1)[1].strip().split(".")[-1]
+                if target_name and re.search(rf"\b{re.escape(target_name)}\b", content, re.IGNORECASE) is None:
+                    continue
             try:
                 tree = ast.parse(content, filename=rel_p)
                 for node in ast.walk(tree):

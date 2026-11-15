@@ -45,6 +45,34 @@ class AgentScope(str, Enum):
         return cls(value)
 
 
+class MemoryKind(str, Enum):
+    FACT = "fact"
+    DECISION = "decision"
+    CONVENTION = "convention"
+    GOTCHA = "gotcha"
+    HYPOTHESIS = "hypothesis"
+    ASSUMPTION = "assumption"
+    PLAYBOOK = "playbook"
+    CAPABILITY_OBSERVATION = "capability_observation"
+    ENVIRONMENT_CAPSULE = "environment_capsule"
+    FINDING = "finding"
+    REUSABLE_CANDIDATE = "reusable_candidate"
+    CONTRACT_MAPPING = "contract_mapping"
+    REJECTED_APPROACH = "rejected_approach"
+    UNKNOWN = "unknown"
+    VALIDATION = "validation"
+
+
+class MemoryStatus(str, Enum):
+    CANDIDATE = "candidate"
+    ACTIVE = "active"
+    CONFIRMED = "confirmed"
+    QUARANTINED = "quarantined"
+    SUPERSEDED = "superseded"
+    REJECTED = "rejected"
+    STALE = "stale"
+
+
 @dataclass(frozen=True)
 class ScopeContext:
     repository_id: str = ""

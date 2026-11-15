@@ -112,3 +112,31 @@ def test_fusion_handles_nan_inf_and_string_scores_safely():
     assert len(res_str) == 1
     assert res_str[0]["primary_match"]["relevance"] == 0.75
 
+
+def test_fusion_o1_deduplication_and_identity_unknown():
+    # Candidates with no stable chunk identity get identity_unknown and avoid false matching
+    unidentified_1 = {"path": "a.py", "text": "chunk one"}
+    unidentified_2 = {"path": "a.py", "text": "chunk two"}
+    res = fuse_search_candidates([unidentified_1, unidentified_2], [])
+    assert len(res) == 1
+    assert len(res[0]["matches"]) == 2
+    assert all(m.get("identity_unknown") is True for m in res[0]["matches"])
+
+    # High-volume deduplication test (O(1) lookup scaling)
+    shared_chunks = [
+        {"path": "huge.py", "chunk_id": f"c_{i}", "source_id": "s", "content_hash": f"h_{i}", "text": f"txt_{i}"}
+        for i in range(2000)
+    ]
+    res_large = fuse_search_candidates(shared_chunks, shared_chunks, matches_per_file=10)
+    assert len(res_large) == 1
+    assert len(res_large[0]["matches"]) == 10
+    assert res_large[0]["truncated"] is True
+    assert res_large[0]["omitted_matches"] == 1990
+
+
+def test_fusion_max_input_candidates_bounding():
+    cands = [{"path": f"file_{i}.py", "relevance": 0.5} for i in range(100)]
+    res = fuse_search_candidates(cands, [], limit=10, max_input_candidates=5)
+    assert len(res) == 5
+    assert [item["path"] for item in res] == [f"file_{i}.py" for i in range(5)]
+

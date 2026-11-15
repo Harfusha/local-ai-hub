@@ -230,3 +230,59 @@ def test_rag_cleanup_escaped_path_removes_ref_safely(tmp_path):
     with closing(connect()) as con:
         assert con.execute("SELECT COUNT(*) FROM file_refs").fetchone()[0] == 0
         assert con.execute("SELECT COUNT(*) FROM source_index").fetchone()[0] == 0
+
+
+def test_rag_idle_skips_full_inventory_scan_when_digest_matches(tmp_path):
+    root = tmp_path / "repo"
+    root.mkdir()
+    db = tmp_path / "index.sqlite"
+    with closing(sqlite3.connect(db)) as con:
+        con.execute("CREATE TABLE file_refs(root TEXT, path TEXT, content_hash TEXT, needs_hash INTEGER, rag_hash TEXT, last_accessed_at REAL, size INTEGER, updated_at REAL)")
+        con.execute("CREATE TABLE file_refs_revision(root TEXT PRIMARY KEY, revision INTEGER NOT NULL DEFAULT 0)")
+        con.execute("CREATE TABLE projects(root TEXT, phase TEXT, status TEXT, updated_at REAL)")
+        con.execute("INSERT INTO file_refs VALUES(?, 'a.py', 'h1', 0, 'h1', 0, 10, 0)", (str(root),))
+        con.execute("INSERT INTO file_refs_revision VALUES(?, 1)", (str(root),))
+        con.execute("INSERT INTO projects VALUES(?, 'rag', 'running', 0)", (str(root),))
+        con.commit()
+
+    prune_calls = []
+
+    class MockRag:
+        def indexed_paths(self, workspace, paths):
+            return set(paths)
+
+        def prune_missing(self, root, workspace, all_paths):
+            prune_calls.append(len(all_paths))
+            return 0
+
+    pre = ProjectPreprocessor.__new__(ProjectPreprocessor)
+    pre._db_lock = threading.RLock()
+    pre._stats_lock = threading.RLock()
+    pre._stats = {}
+    pre._rag_inventory_digests = {}
+    pre._connect = lambda: sqlite3.connect(db)
+    pre._yield = lambda: False
+    pre.cfg = {"rag_idle_audit_cadence_seconds": 300.0}
+    pre.deterministic = None
+    pre.rag = MockRag()
+    pre._set_project = lambda r, **kwargs: None
+
+    # First call: no pending files, runs full audit and records digest
+    assert pre._step_rag({"root": str(root), "workspace": "ws"})
+    assert len(prune_calls) == 1
+    assert prune_calls[0] == 1
+
+    # Second call: digest unchanged, cadence fresh -> skips full audit/prune
+    assert pre._step_rag({"root": str(root), "workspace": "ws"})
+    assert len(prune_calls) == 1  # No additional prune call
+
+    # Third call: bump revision -> full audit triggers
+    with closing(sqlite3.connect(db)) as con:
+        con.execute("UPDATE file_refs_revision SET revision=2 WHERE root=?", (str(root),))
+        con.commit()
+    assert pre._step_rag({"root": str(root), "workspace": "ws"})
+    assert len(prune_calls) == 2
+
+    # Fourth call: force_refresh -> full audit triggers
+    assert pre._step_rag({"root": str(root), "workspace": "ws", "force_refresh": 1})
+    assert len(prune_calls) == 3

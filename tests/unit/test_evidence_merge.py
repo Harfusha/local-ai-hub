@@ -127,4 +127,51 @@ def test_evidence_merge_falls_back_when_disk_hash_mismatches(tmp_path):
     assert len(merged) == 1
     # Since disk file does not match stale_hash, disk must NOT be read, in-memory lines must be used
     assert merged[0]["text"] == "orig1\norig2"
+    assert merged[0]["snapshot_verified"] is False
+    assert merged[0]["freshness"] == "stale"
+    assert merged[0]["fallback_reason"] == "disk_hash_mismatch"
+
+
+def test_evidence_merge_linear_scaling_and_safe_numeric_validation():
+    # NaN score, bool start_line, negative values, and thousands of segments in linear time
+    evidence = [
+        {
+            "path": "src/big.py",
+            "start_line": i,
+            "end_line": i + 1,
+            "text": f"line_{i}\nline_{i+1}",
+            "score": float("nan") if i % 2 == 0 else 0.5,
+        }
+        for i in range(1, 1000)
+    ]
+    # Malformed entry with boolean lines and string scores
+    evidence.append({
+        "path": "src/big.py",
+        "start_line": True,  # bool must not crash
+        "end_line": "invalid",
+        "score": float("inf"),
+        "text": "bad",
+    })
+
+    merged = merge_overlapping_evidence(evidence)
+    assert len(merged) == 1
+    assert merged[0]["path"] == "src/big.py"
+    assert merged[0]["start_line"] == 1
+    assert merged[0]["score"] == 0.5
+
+
+def test_evidence_merge_bounded_file_read_and_symlink_protection(tmp_path):
+    root = tmp_path / "repo"
+    root.mkdir()
+    target = root / "large.py"
+    # Create file that exceeds MAX_FILE_BYTES
+    target.write_bytes(b"A" * (11 * 1024 * 1024))
+    evidence = [
+        {"path": "large.py", "start_line": 1, "end_line": 2, "text": "chunk1"},
+        {"path": "large.py", "start_line": 2, "end_line": 3, "text": "chunk2"},
+    ]
+    merged = merge_overlapping_evidence(evidence, root=root)
+    assert len(merged) == 1
+    assert merged[0]["fallback_reason"] == "file_too_large"
+    assert merged[0]["snapshot_verified"] is False
 

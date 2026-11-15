@@ -1287,10 +1287,10 @@
         "action_literals": []
       }
     },
-    "GET /dashboard/next": {
+    "GET /dashboard/legacy": {
       "decision": "retain",
       "role": "dashboard",
-      "reason": "Local operator dashboard shell/static asset, not agent tool output.",
+      "reason": "Supported legacy route for the local operator dashboard shell, not agent tool output.",
       "response_policy": "Preserve work result, errors/retry/cancellation, identities, evidence and pagination; project_agent_response removes internal observations outside dashboard detail; caller documents remain opaque.",
       "source_contract": {
         "source": "src/local_ai_hub/http_server.py",

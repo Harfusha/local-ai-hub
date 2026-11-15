@@ -4,8 +4,7 @@ from __future__ import annotations
 from html import escape
 from typing import Any
 
-from .agent_identity import AgentScope
-from .agent_memory import MemoryKind
+from .agent_identity import AgentScope, MemoryKind
 
 
 _FEATURES = ("status", "repo", "tasks", "rag", "commands", "coord", "artifacts",

@@ -20,7 +20,9 @@ class _Artifacts:
 def _manager(tmp_path, executor=None):
     return AsyncJobManager(
         {"server": {"state_dir": str(tmp_path)}, "async_jobs": {"wait_max_seconds": 2}},
-        scheduler=None,
+        scheduler=SimpleNamespace(resource_status=lambda: {
+            "available": True, "pressure_level": "nominal", "context_budget_factor": 1.0,
+        }),
         artifacts=_Artifacts(),
         executor=executor or (lambda action, payload: {"success": True, "action": action}),
     )

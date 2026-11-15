@@ -1,0 +1,10 @@
+# Reproducible CI constraints for Local AI Hub (Python 3.11)
+# Captured from verified test environment 2026-11-15
+numpy==2.2.6
+mypy==1.20.2
+pytest==8.3.5
+pyflakes==3.2.0
+coverage==7.6.12
+psutil==7.0.0
+setuptools==75.8.2
+wheel==0.45.1

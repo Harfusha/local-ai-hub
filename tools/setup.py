@@ -333,6 +333,12 @@ def install_skill(source_skill: Path, target: Path) -> None:
 COMPANION_SKILLS: list[str] = [
     "token-economizer",
     "caveman",
+    "ponytail",
+    "ponytail-audit",
+    "ponytail-debt",
+    "ponytail-gain",
+    "ponytail-help",
+    "ponytail-review",
     "plan-led-work",
     "tool-orchestration",
     "ollama-quality-routing",

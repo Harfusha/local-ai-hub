@@ -387,6 +387,7 @@ class ProjectPreprocessor:
                                          max(1, _safe_int(exclusive_cfg.get("cpu_workers"), 8)))
         self.reject_temp_projects = bool(self.cfg.get("reject_temp_projects", False))
         self.require_project_markers = bool(self.cfg.get("require_project_markers", False))
+        self._rag_inventory_digests: dict[str, tuple[tuple[int, int], float]] = {}
         self._touch_lock = threading.Lock()
         self._last_touch: dict[str, float] = {}
         self._touch_debounce_seconds = max(1.0, _safe_float(self.cfg.get("touch_debounce_seconds"), 15.0))
@@ -600,6 +601,7 @@ class ProjectPreprocessor:
         with self._db_lock:
             getattr(self, "_rag_batch_limits", {}).pop(root, None)
             getattr(self, "_rag_batch_successes", {}).pop(root, None)
+            getattr(self, "_rag_inventory_digests", {}).pop(root, None)
         with self._dirty_lock:
             self._dirty_paths.pop(root, None)
             self._watch_revisions.pop(root, None)
@@ -688,6 +690,7 @@ class ProjectPreprocessor:
                     PRIMARY KEY(root,path)
                 );
                 CREATE INDEX IF NOT EXISTS idx_source_index_root_hash ON source_index(root,content_hash);
+                CREATE INDEX IF NOT EXISTS idx_source_index_hash ON source_index(content_hash);
                 CREATE TABLE IF NOT EXISTS content_cards (
                     card_key TEXT PRIMARY KEY,
                     content_hash TEXT NOT NULL,
@@ -3898,8 +3901,26 @@ class ProjectPreprocessor:
                 seen = {str(item["path"]) for item in preferred}
                 pending = (list(preferred) + [item for item in pending if str(item["path"]) not in seen])[:limit]
             if not pending:
-                all_paths = [str(r[0]) for r in con.execute("SELECT path FROM file_refs WHERE root=? ORDER BY path", (root,)).fetchall()]
+                force = bool(row.get("force_refresh"))
+                rev_row = con.execute("SELECT revision FROM file_refs_revision WHERE root=?", (root,)).fetchone()
+                curr_rev = int(rev_row[0]) if rev_row is not None else 0
+                count_row = con.execute("SELECT count(*) FROM file_refs WHERE root=?", (root,)).fetchone()
+                curr_count = int(count_row[0]) if count_row is not None else 0
+                inventory_digest = (curr_rev, curr_count)
+                cadence = float(self.cfg.get("rag_idle_audit_cadence_seconds", 300.0))
+                now = time.time()
+                cached_digest, last_audit = getattr(self, "_rag_inventory_digests", {}).get(root, (None, 0.0))
+                if not force and cached_digest == inventory_digest and (now - last_audit) < cadence:
+                    all_paths = None
+                else:
+                    all_paths = [str(r[0]) for r in con.execute("SELECT path FROM file_refs WHERE root=? ORDER BY path", (root,)).fetchall()]
         if not pending:
+            if all_paths is None:
+                with self._db_lock:
+                    batch_limits.pop(root, None)
+                    batch_successes.pop(root, None)
+                self._set_project(root, phase="files")
+                return True
             with self._db_lock, closing(self._connect()) as con:
                 semantic_rows = con.execute(
                     """SELECT f.path,f.content_hash
@@ -3913,9 +3934,9 @@ class ProjectPreprocessor:
                 and bool(self.cfg.get("skip_rag_for_deterministic_declarative", True))
             )
             semantic_paths = [
-                str(item["path"])
+                str(item["path"] if isinstance(item, sqlite3.Row) else item[0])
                 for item in semantic_rows
-                if not skip_declarative or self.deterministic.semantic_needed(root, str(item["path"]))
+                if not skip_declarative or self.deterministic.semantic_needed(root, str(item["path"] if isinstance(item, sqlite3.Row) else item[0]))
             ]
             if semantic_paths:
                 indexed_paths = self.rag.indexed_paths(workspace=workspace, paths=semantic_paths)
@@ -3923,7 +3944,10 @@ class ProjectPreprocessor:
                     raise RuntimeError("RAG indexed-path check returned an invalid result")
                 missing_paths = [path for path in semantic_paths if path not in indexed_paths]
                 if missing_paths:
-                    hashes = {str(item["path"]): str(item["content_hash"]) for item in semantic_rows}
+                    hashes = {
+                        str(item["path"] if isinstance(item, sqlite3.Row) else item[0]): str(item["content_hash"] if isinstance(item, sqlite3.Row) else item[1])
+                        for item in semantic_rows
+                    }
                     now = time.time()
                     with self._db_lock, closing(self._connect()) as con:
                         con.executemany(
@@ -3932,6 +3956,7 @@ class ProjectPreprocessor:
                             [(now, root, path, hashes[path]) for path in missing_paths],
                         )
                         con.commit()
+                    getattr(self, "_rag_inventory_digests", {}).pop(root, None)
                     return True
             with self._db_lock:
                 batch_limits.pop(root, None)
@@ -3940,6 +3965,9 @@ class ProjectPreprocessor:
             if deleted:
                 with self._stats_lock:
                     self._stats["rag_deleted_files"] = self._stats.get("rag_deleted_files", 0) + deleted
+            if not hasattr(self, "_rag_inventory_digests"):
+                self._rag_inventory_digests = {}
+            self._rag_inventory_digests[root] = (inventory_digest, time.time())
             self._set_project(root, phase="files")
             return True
         pending_hashes = {str(item["path"]): str(item["content_hash"]) for item in pending}
@@ -3972,6 +4000,48 @@ class ProjectPreprocessor:
             return True
 
         paths = [str(p["path"]) for p in needed_items]
+        base = Path(root)
+        stale_paths: list[str] = []
+        for rel in paths:
+            fpath = (base / rel).resolve(strict=False)
+            try:
+                if not fpath.is_file():
+                    continue
+                expected_h = pending_hashes.get(rel) or ""
+                reader = getattr(getattr(self, "repo_tools", None), "_read_snapshot", None)
+                if callable(reader):
+                    disk_hash, _ = reader(fpath)
+                else:
+                    disk_hash = hashlib.sha256(fpath.read_bytes()).hexdigest()
+                is_sha256 = len(expected_h) == 64 and all(c in "0123456789abcdefABCDEF" for c in expected_h)
+                if is_sha256:
+                    stale = (disk_hash != expected_h)
+                else:
+                    stale = (fpath.read_bytes() != expected_h.encode("utf-8", errors="replace")) and (disk_hash != expected_h)
+                if stale:
+                    stale_paths.append(rel)
+            except Exception:
+                continue
+
+        if stale_paths:
+            with self._db_lock, closing(self._connect()) as con:
+                tables = {r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+                has_fts = "source_fts" in tables
+                has_index = "source_index" in tables
+                with write_transaction(con, max_duration_seconds=5.0, rollback_label="preprocessor stale unwatched refs"):
+                    for rel in stale_paths:
+                        con.execute(
+                            "UPDATE file_refs SET needs_hash=1, rag_hash=NULL WHERE root=? AND path=?",
+                            (root, rel),
+                        )
+                        if has_index:
+                            con.execute("DELETE FROM source_index WHERE root=? AND path=?", (root, rel))
+                        if has_fts:
+                            con.execute("DELETE FROM source_fts WHERE root=? AND path=?", (root, rel))
+            stale_set = set(stale_paths)
+            paths = [p for p in paths if p not in stale_set]
+            if not paths:
+                return True
         content_overrides: dict[str, str] = {}
         placeholders = ",".join("?" for _ in paths)
         with self._db_lock, closing(self._connect()) as con:

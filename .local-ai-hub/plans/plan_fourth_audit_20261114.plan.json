@@ -1,0 +1,101 @@
+{
+  "default_target_ref": "refs/heads/master",
+  "description": "Realizace ctvreho auditu HUB-076-112: CI mypy numpy (P0), async jobs, constraints, search fusion, evidence merge, AST outline, modern dashboard, benchmarky a release acceptance.",
+  "id": "plan_fourth_audit_20261114",
+  "lifecycle": "completed",
+  "schema_version": 1,
+  "spec_refs": [],
+  "tasks": {
+    "task_wave1_ci_and_data": {
+      "acceptance_criteria": [
+        "CI mypy a numpy compatibility vyresena pro py3.11 i py3.13 bez oslabeni strict (HUB-076)",
+        "Async jobs callback a resource telemetry opraveno (HUB-077)",
+        "Search fusion O(1) deduplikace a bounded top-k (HUB-083, HUB-084)",
+        "Evidence merge linearni, bounded read, validovane score a freshness policy (HUB-085, HUB-086, HUB-087, HUB-088)",
+        "Preprocessing pipeline audit a oprava test_rag_does_not_publish_cached_text_after_unwatched_edit (HUB-092)",
+        "AST outline truthful completeness a polyglot scanner (HUB-089, HUB-090)",
+        "Modern dashboard parita: host status, live polling, settings a coordination (HUB-093-102)",
+        "Akceptacni matice a audit_acceptance.json se vsemi dukazy HUB-001 az HUB-112 (HUB-111, HUB-112)"
+      ],
+      "blocker": null,
+      "clarifications": [],
+      "depends_on": [],
+      "description": "CI P0 opravy, async jobs, search fusion, evidence merge a preprocessing pipeline.",
+      "kind": "code",
+      "next_action": "final_acceptance",
+      "title": "Wave 0 & 1: CI, async jobs, search, evidence merge a preprocess (HUB-076-079, HUB-082-088, HUB-092)",
+      "work_phase": "verification",
+      "work_status": "done"
+    },
+    "task_wave2_quality_and_perf": {
+      "acceptance_criteria": [
+        "HUB-089: AST outline truthful completeness, canonical enum, max_source_bytes safety",
+        "HUB-090: Polyglot lexical scanner verifikovan na fixtures (JS/TS, C#, PHP, Rust)",
+        "HUB-091: Klidove reindexovani a root inventory digest",
+        "HUB-109: Performance observability gate, metrics budget baseline"
+      ],
+      "blocker": null,
+      "clarifications": [],
+      "depends_on": [],
+      "description": "AST outline completeness, polyglot lexical scanner, idle RAG inventory digest a performance observability.",
+      "kind": "code",
+      "next_action": "",
+      "title": "Wave 2: Kvalita a vykon (HUB-089-091, HUB-109)",
+      "work_status": "done"
+    },
+    "task_wave3_modern_dashboard": {
+      "acceptance_criteria": [
+        "HUB-093: Pravdivy stav hostu Codex/Antigravity",
+        "HUB-094: Ziva a pristupna kontrola health stavu",
+        "HUB-095: 11->7 parita workflow, canonical mappings",
+        "HUB-096: Akcni Task Board/Coordination v nove UI",
+        "HUB-097: Model Manager a Laya Studio bez automatickych pullu",
+        "HUB-098: Settings Basic/Advanced pres typovany kontrakt",
+        "HUB-099-102: Error UX, request cancel, a11y/visual baseline, frontend assety a onboarding"
+      ],
+      "blocker": null,
+      "clarifications": [],
+      "depends_on": [],
+      "description": "Dokoncit moderni dashboard jako realnou aplikaci: host readiness, live polling, parita, task board, models, settings, error UX a a11y.",
+      "kind": "code",
+      "next_action": "",
+      "title": "Wave 3: Moderni dashboard parita a aplikace (HUB-093-102)",
+      "work_status": "done"
+    },
+    "task_wave4_live_hardware": {
+      "acceptance_criteria": [
+        "HUB-103: Bilingvni kvalita a no-model rezim (klasifikace BLOCKED_MODEL_ABSENT bez downlaodu)",
+        "HUB-104,105: Ziva Codex a Antigravity host-session acceptance (zaznamenany transcript nebo explicitni BLOCKED)",
+        "HUB-106: Browser permission a sitove hranice (truthful isolation evidence)",
+        "HUB-107: VRAM koexistence na RTX 5070 Ti (overeni scheduleru bez naruseni aktivni rezervace)",
+        "HUB-108: Multiplatformni sluzba, instalace a recovery (3 OS bundle / BLOCKED evidence)"
+      ],
+      "blocker": null,
+      "clarifications": [],
+      "depends_on": [],
+      "description": "Overeni ziveho provozu, hardware a externich integraci s pravdivym reportovanim BLOCKED pri absenci externiho prostredi.",
+      "kind": "code",
+      "next_action": "",
+      "title": "Wave 4: Zivy provoz, hardware a externi integrace (HUB-103-108)",
+      "work_status": "done"
+    },
+    "task_wave5_final_release": {
+      "acceptance_criteria": [
+        "HUB-080: Realne overeni wheel/sdist a provenance pro v6",
+        "HUB-081: Zpresnit pravdivost release a dokonceni roadmap",
+        "HUB-110: Security/hardening vcetne negativnich scenaru a path confinement",
+        "HUB-111: Sjednoceni reportovani stavu a audit_acceptance.json",
+        "HUB-112: Tagging/release/no-regression finalni uzaverka"
+      ],
+      "blocker": null,
+      "clarifications": [],
+      "depends_on": [],
+      "description": "Security hardening, packaging/wheel overeni, machine-readable acceptance matice a release uzaverka.",
+      "kind": "code",
+      "next_action": "",
+      "title": "Wave 5: Security, evidence, packaging a release uzaverka (HUB-080-081, HUB-110-112)",
+      "work_status": "done"
+    }
+  },
+  "title": "Local AI Hub: Ctvrty delta audit a realizacni plan (HUB-076-112)"
+}

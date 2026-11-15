@@ -33,6 +33,9 @@ class _Scheduler:
     def __init__(self) -> None:
         self.calls = []
 
+    def resource_status(self):
+        return {"available": True, "pressure_level": "nominal", "context_budget_factor": 1.0}
+
     def enqueue(self, model, *, source, execute, priority=1, background=True):
         self.calls.append({"model": model, "source": source, "execute": execute, "priority": priority, "background": background})
         return _Job()

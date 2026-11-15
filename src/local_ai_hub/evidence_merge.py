@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import math
 from pathlib import Path, PurePosixPath
 from typing import cast
 
@@ -10,6 +11,31 @@ from .process_utils import is_rooted_path, is_safe_path
 
 
 EvidenceRecord = dict[str, object]
+
+MAX_FILE_BYTES = 10 * 1024 * 1024
+MAX_MERGED_LINES = 50_000
+
+
+def _safe_line_number(val: object, default: int = 1, max_line: int = 5_000_000) -> int:
+    if isinstance(val, bool) or val is None:
+        return default
+    try:
+        n = int(cast(int | float | str, val))
+        if 1 <= n <= max_line:
+            return n
+        return default
+    except (ValueError, TypeError, OverflowError):
+        return default
+
+
+def _safe_score(val: object, default: float = 0.0) -> float:
+    if isinstance(val, bool) or val is None:
+        return default
+    try:
+        f = float(cast(int | float | str, val))
+        return f if math.isfinite(f) else default
+    except (ValueError, TypeError, OverflowError):
+        return default
 
 
 def merge_overlapping_line_ranges(
@@ -19,13 +45,13 @@ def merge_overlapping_line_ranges(
     valid = []
     for item in ranges:
         if isinstance(item, (tuple, list)) and len(item) >= 2:
-            try:
-                start, end = int(item[0]), int(item[1])
-                if start > end:
-                    start, end = end, start
-                valid.append((start, end))
-            except (TypeError, ValueError):
+            start = _safe_line_number(item[0], -1)
+            end = _safe_line_number(item[1], -1)
+            if start == -1 or end == -1:
                 continue
+            if start > end:
+                start, end = end, start
+            valid.append((start, end))
     if not valid:
         return []
     sorted_ranges = sorted(valid, key=lambda item: (item[0], item[1]))
@@ -111,34 +137,35 @@ def merge_overlapping_evidence(
             continue
 
         def get_range(item: EvidenceRecord) -> tuple[int, int]:
-            start = int(cast(int | float | str, item.get("start_line", 1) or 1))
-            end = int(cast(int | float | str, item.get("end_line", start) or start))
+            start = _safe_line_number(item.get("start_line"), 1)
+            end = _safe_line_number(item.get("end_line"), start)
             return (min(start, end), max(start, end))
 
-        sorted_items = sorted(items, key=lambda item: get_range(item))
+        sorted_items = sorted(items, key=lambda it: get_range(it))
 
-        clusters: list[list[EvidenceRecord]] = []
+        clusters: list[tuple[int, int, list[EvidenceRecord]]] = []
         for item in sorted_items:
-            item_range = get_range(item)
+            item_start, item_end = get_range(item)
             if not clusters:
-                clusters.append([item])
+                clusters.append((item_start, item_end, [item]))
             else:
-                cluster = clusters[-1]
-                cluster_end = max(get_range(part)[1] for part in cluster)
-                if item_range[0] <= cluster_end + 1:
-                    cluster.append(item)
+                c_start, c_end, c_items = clusters[-1]
+                if item_start <= c_end + 1:
+                    clusters[-1] = (c_start, max(c_end, item_end), c_items)
+                    c_items.append(item)
                 else:
-                    clusters.append([item])
+                    clusters.append((item_start, item_end, [item]))
 
-        for cluster in clusters:
+        for cluster_start, cluster_end, cluster in clusters:
             if len(cluster) == 1:
                 result.append(cluster[0])
                 continue
 
-            cluster_start = min(get_range(item)[0] for item in cluster)
-            cluster_end = max(get_range(item)[1] for item in cluster)
+            if cluster_end - cluster_start > MAX_MERGED_LINES:
+                cluster_end = cluster_start + MAX_MERGED_LINES
+
             max_score = max(
-                float(cast(float | int | str, item.get("score", 0.0) or 0.0))
+                _safe_score(item.get("score"))
                 for item in cluster
             )
 
@@ -151,18 +178,42 @@ def merge_overlapping_evidence(
             merged_symbol = ", ".join(symbols) if symbols else ""
 
             merged_text = ""
+            snapshot_verified = False
+            freshness = "unverified"
+            fallback_reason = ""
+            source_kind = "in_memory_evidence"
+
             file_on_disk = (resolved_root / path) if (resolved_root and _is_confined_to_root(resolved_root, path)) else None
-            if file_on_disk and file_on_disk.is_file():
+            if file_on_disk and file_on_disk.is_file() and not file_on_disk.is_symlink():
                 try:
-                    raw_bytes = file_on_disk.read_bytes()
-                    # Content-addressed guard: if cluster expects a specific hash, verify disk file matches it
-                    disk_hash = hashlib.sha256(raw_bytes).hexdigest()
-                    if not chash or disk_hash == chash:
-                        all_lines = raw_bytes.decode("utf-8", errors="replace").splitlines()
-                        slice_lines = all_lines[max(0, cluster_start - 1) : cluster_end]
-                        merged_text = "\n".join(slice_lines)
+                    file_size = file_on_disk.stat().st_size
+                    if file_size > MAX_FILE_BYTES:
+                        fallback_reason = "file_too_large"
+                    else:
+                        raw_bytes = file_on_disk.read_bytes()
+                        # Content-addressed guard: verify disk file matches expected hash
+                        disk_hash = hashlib.sha256(raw_bytes).hexdigest()
+                        if chash and disk_hash == chash:
+                            all_lines = raw_bytes.decode("utf-8", errors="replace").splitlines()
+                            slice_lines = all_lines[max(0, cluster_start - 1) : cluster_end]
+                            merged_text = "\n".join(slice_lines)
+                            snapshot_verified = True
+                            freshness = "verified"
+                            source_kind = "disk_snapshot"
+                        elif not chash:
+                            all_lines = raw_bytes.decode("utf-8", errors="replace").splitlines()
+                            slice_lines = all_lines[max(0, cluster_start - 1) : cluster_end]
+                            merged_text = "\n".join(slice_lines)
+                            snapshot_verified = False
+                            freshness = "unverified"
+                            fallback_reason = "missing_content_hash"
+                            source_kind = "unverified_disk"
+                        else:
+                            fallback_reason = "disk_hash_mismatch"
+                            freshness = "stale"
                 except Exception:
                     merged_text = ""
+                    fallback_reason = "disk_read_failed"
 
             if not merged_text:
                 line_map: dict[int, str] = {}
@@ -180,15 +231,18 @@ def merge_overlapping_evidence(
 
             best_item = max(
                 cluster,
-                key=lambda item: float(
-                    cast(float | int | str, item.get("score", 0.0) or 0.0)
-                ),
+                key=lambda item: _safe_score(item.get("score")),
             )
             merged_item = dict(best_item)
             merged_item["start_line"] = cluster_start
             merged_item["end_line"] = cluster_end
             merged_item["score"] = max_score
             merged_item["text"] = merged_text
+            merged_item["snapshot_verified"] = snapshot_verified
+            merged_item["freshness"] = freshness
+            if fallback_reason:
+                merged_item["fallback_reason"] = fallback_reason
+            merged_item["source_kind"] = source_kind
             if "content" in merged_item:
                 merged_item["content"] = merged_text
             if merged_symbol:

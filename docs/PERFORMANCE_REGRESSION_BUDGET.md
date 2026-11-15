@@ -14,6 +14,11 @@ This document defines performance budgets and baseline benchmark results for Loc
 | **Exact FTS / Code Search** | Warm query latency | ~12.5 ms | < 50 ms | `tools/benchmark_exact_search.py` |
 | **Pending RAG Scan** | Median duration (10k items) | 9.20 ms | < 20 ms | `tools/benchmark_preprocess_pending.py` |
 | **Pending RAG Scan (Legacy)**| Median duration | 12.54 ms | - | -26.6% improvement in current architecture |
+| **Idle RAG Step (HUB-091)** | Median duration (digest match) | 0.60 ms | < 10 ms | `tools/perf_gate.py` |
+| **Search Fusion (HUB-083/084)** | Median duration (1k items) | 7.08 ms | < 50 ms | `tools/perf_gate.py` |
+| **Evidence Merge (HUB-085/088)** | Median duration (1k intervals)| 0.22 ms | < 10 ms | `tools/perf_gate.py` |
+| **Source Outline (HUB-089/090)** | Median duration (AST extract) | 4.97 ms | < 30 ms | `tools/perf_gate.py` |
+| **Hash Index Lookup (HUB-082)**| Median duration (5k items) | 0.11 ms | < 10 ms | `tools/perf_gate.py` |
 | **Code Index Inventory** | Bounded batch median | 171.47 ms | < 250 ms | `tools/benchmark_code_index_inventory.py` |
 | **Code Index Inventory** | Bounded batch p95 | 194.18 ms | < 300 ms | `tools/benchmark_code_index_inventory.py` |
 | **Code Index Peak Memory** | Peak Python heap | 7.79 MB | < 12 MB | Bounded batch vs 15.15 MB full materialization (-48.5%) |

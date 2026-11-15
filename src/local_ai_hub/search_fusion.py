@@ -55,6 +55,7 @@ def fuse_search_candidates(
     limit: int = 100,
     matches_per_file: int = 8,
     case_sensitive: bool = True,
+    max_input_candidates: int | None = None,
 ) -> list[dict[str, Any]]:
     """Fuse per-file ranks and retain bounded, typed chunk evidence.
 
@@ -68,9 +69,13 @@ def fuse_search_candidates(
         raise ValueError("matches_per_file must be a positive integer")
     if type(case_sensitive) is not bool:
         raise ValueError("case_sensitive must be a boolean")
+    if max_input_candidates is not None and (type(max_input_candidates) is not int or max_input_candidates < 1):
+        raise ValueError("max_input_candidates must be a positive integer or None")
 
     combined: dict[str, dict[str, Any]] = {}
-    for source, candidates in (("lexical", lexical), ("semantic", semantic)):
+    lex_in = lexical[:max_input_candidates] if max_input_candidates is not None else lexical
+    sem_in = semantic[:max_input_candidates] if max_input_candidates is not None else semantic
+    for source, candidates in (("lexical", lex_in), ("semantic", sem_in)):
         seen_files: dict[str, int] = {}
         rank = 0
         for candidate in candidates:
@@ -95,6 +100,7 @@ def fuse_search_candidates(
                     "source_breakdown": {},
                     "fusion_score": 0.0,
                     "matches": [],
+                    "_identity_map": {},
                 }
                 combined[key] = item
             if first_for_source:
@@ -105,7 +111,7 @@ def fuse_search_candidates(
             rel_val = _parse_relevance(candidate.get("relevance"))
             match = {
                 name: value for name, value in candidate.items()
-                if name not in {"path", "sources", "source_breakdown", "fusion_score", "matches", "relevance_by_source"}
+                if name not in {"path", "sources", "source_breakdown", "fusion_score", "matches", "relevance_by_source", "_identity_map"}
             }
             match["path"] = path
             match["source"] = source
@@ -118,9 +124,14 @@ def fuse_search_candidates(
                 match["relevance"] = None
 
             identity = _match_key(match)
-            existing = next((row for row in item["matches"] if identity is not None and row.get("_identity") == identity), None)
+            identity_map: dict[tuple[str, str, str], dict[str, Any]] = item["_identity_map"]
+            existing: dict[str, Any] | None = identity_map.get(identity) if identity is not None else None
             if existing is None:
                 match["_identity"] = identity
+                if identity is None:
+                    match["identity_unknown"] = True
+                else:
+                    identity_map[identity] = match
                 match["sources"] = [source]
                 item["matches"].append(match)
             else:
@@ -137,6 +148,7 @@ def fuse_search_candidates(
 
     ranked: list[dict[str, Any]] = []
     for item in combined.values():
+        item.pop("_identity_map", None)
         for m in item["matches"]:
             m["sources"] = sorted(set(m.get("sources", [])))
         matches = sorted(

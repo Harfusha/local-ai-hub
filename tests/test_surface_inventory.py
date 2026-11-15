@@ -263,7 +263,7 @@ def test_operation_contract_metadata(row):
     assert row["owner_task"] in MODULE._OPERATION_OWNER_TASKS
     assert row["acceptance"]
     assert row["evidence"]
-    assert row["state"] in {"verified", "conditional", "unsupported", "removed"}
+    assert row["state"] in {"verified", "conditional", "unsupported", "removed", "not_verified"}
     if row["test_coverage"] == "metadata only; operation behavior unverified":
         assert row["behavioral_disposition"] == "no asserted operation test linked; behavior unverified"
         assert row["test_ids"] == [

@@ -16,6 +16,8 @@ Run `install.ps1` on Windows or `./install.sh` on macOS/Linux. A terminal run op
 
 The interactive wizard can enable MCP, skills, and instructions separately for Codex, Claude Code, Gemini CLI, Cursor, Windsurf, and VS Code/Copilot. Per-agent choices are remembered alongside the component selections. When agent setup is disabled, its saved per-agent choices remain available for a later run.
 
+Selecting an agent's Skills component installs companion skills, including Caveman and the six Ponytail skills, in supported user homes. The default is controlled by `setup.install_companion_skills`; `--skip-companion-skills` skips them for one run and also skips pinned Superpowers for Gemini/Antigravity. On Windows, profile discovery includes MultiGravity homes. This installs skills only; it does not install or auto-trust Ponytail's Codex lifecycle hooks. See [INSTALLER_RECOVERY.md](INSTALLER_RECOVERY.md#optional-ponytail-plugin) for plugin-specific setup.
+
 `setup-report.json` records Token Economy dependency and wrapper results, plus whether optional external CLI helpers were detected after setup. If a package manager updated `PATH`, open a new terminal before treating a helper as unavailable.
 
 The model section of `setup-report.json` lists configured Ollama models requested, ready, skipped by choice, or unavailable. It also records managed llama.cpp selection/readiness, per-model NLP/OpenVINO preload outcomes, and whether the configured Laya checkpoint directory is present. Setup does not hash or load the Laya model; the runtime verifies configured file hashes on first eligible inference. Laya packages install only when selected, and setup does not download the checkpoint because configuration requires a locally supplied, hash-pinned directory.

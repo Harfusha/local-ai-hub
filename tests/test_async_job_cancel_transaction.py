@@ -17,6 +17,9 @@ class _Job:
 class _Scheduler:
     config = {"models": {"heavy_code": "test-model"}}
 
+    def resource_status(self):
+        return {"available": True, "pressure_level": "nominal", "context_budget_factor": 1.0}
+
     def enqueue(self, *_args, **_kwargs):
         return _Job()
 

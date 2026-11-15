@@ -139,7 +139,8 @@ def test_ast_outline_bounded_large_file(tmp_path):
     result = ast_outline(str(tmp_path), "huge.js", max_source_bytes=4096)
     assert result["success"] is True
     assert result.get("truncated") is True
-    assert result.get("partial") is False
+    assert result.get("partial") is True
+    assert result.get("completeness") == "partial"
     assert result.get("fallback_type") == "truncated_head"
     assert "suggested_slice" in result
     assert result["suggested_slice"]["start_line"] == 1
@@ -164,3 +165,28 @@ def test_ast_outline_binary_file_rejected(tmp_path):
     assert result["error_code"] == "binary_file"
 
 
+def test_ast_outline_max_source_bytes_safety_and_completeness_enum(tmp_path):
+    source = tmp_path / "example.py"
+    source.write_text("def hello():\n    return 'world'\n", encoding="utf-8")
+
+    # Negative max_source_bytes should not crash or read(-1)
+    res_neg = ast_outline(str(tmp_path), "example.py", max_source_bytes=-1)
+    assert res_neg["success"] is True
+    assert res_neg.get("completeness") == "complete"
+    assert res_neg.get("partial") is False
+
+    # Boolean max_source_bytes
+    res_bool = ast_outline(str(tmp_path), "example.py", max_source_bytes=True)  # type: ignore[arg-type]
+    assert res_bool["success"] is True
+    assert res_bool.get("completeness") == "complete"
+
+
+def test_fold_brace_blocks_target_symbols_exact_identifier_match():
+    # Target symbol "run" should NOT match "grunt" or "running"
+    code = (
+        "function grunt() {\n  return 1;\n}\n"
+        "function run() {\n  return 2;\n}\n"
+    )
+    folded = fold_brace_blocks(code, target_symbols={"run"})
+    assert "return 1" not in folded  # folded
+    assert "return 2" in folded  # preserved exact target
