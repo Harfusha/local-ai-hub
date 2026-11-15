@@ -78,6 +78,7 @@ jobs:
           tests/test_dashboard_host_inspection.py
           tests/test_dashboard_runtime_contracts.py
           tests/test_structural_search_php_contract.py
+          tests/test_rag_incremental_index_io.py
           tests/unit/test_evidence_merge.py
           tests/test_http_post_route_registry_t18.py
           tests/test_http_admin_action_auth_t18.py
