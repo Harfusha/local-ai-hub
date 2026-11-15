@@ -372,8 +372,9 @@ def pytest_collection_modifyitems(config, items):
             if not selected:
                 config._all_tests_cached = True
     else:
+        # Fresh CI/coverage runs do not need to fingerprint any test module.
         for item in items:
-            item._cached_sig = _test_item_signature(item)
+            item._cached_sig = None
 
 
 def pytest_sessionfinish(session, exitstatus):
