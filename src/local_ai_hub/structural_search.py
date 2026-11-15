@@ -114,16 +114,36 @@ def search_structurally(
     match_offset: int = 0,
 ) -> dict[str, Any]:
     """Syntax-aware structural code search across Python and multi-language repositories."""
-    canon_root = canonical_root(root)
+    if (
+        not isinstance(root, (str, Path))
+        or not str(root).strip()
+        or len(str(root)) > 4096
+        or "\0" in str(root)
+    ):
+        return {"success": False, "status_code": 400, "terminal": True, "retryable": False,
+                "error": "root must identify a valid repository directory"}
+    try:
+        canon_root = canonical_root(root)
+    except (OSError, RuntimeError, ValueError, TypeError):
+        return {"success": False, "status_code": 400, "terminal": True, "retryable": False,
+                "error": "root could not be resolved"}
     root_path = Path(canon_root)
     if not root_path.is_dir():
         return {"success": False, "status_code": 404, "terminal": True, "retryable": False,
                 "error": f"invalid root directory: {root}"}
 
-    target_pattern = (pattern or "").strip().lower()
+    if not isinstance(pattern, str) or len(pattern) > 512 or "\0" in pattern:
+        return {"success": False, "status_code": 400, "terminal": True, "retryable": False,
+                "error": "pattern must be a string of at most 512 characters without NUL"}
+    target_pattern = pattern.strip().lower()
     if not target_pattern:
         return {"success": False, "status_code": 400, "terminal": True, "retryable": False,
                 "error": "pattern is required"}
+    if path is not None and (
+        not isinstance(path, str) or len(path) > 4096 or "\0" in path
+    ):
+        return {"success": False, "status_code": 400, "terminal": True, "retryable": False,
+                "error": "path must be a bounded string without NUL"}
 
     if type(file_offset) is not int or not 0 <= file_offset <= 100_000:
         return {"success": False, "status_code": 400, "error": "file_offset must be an integer between 0 and 100000"}

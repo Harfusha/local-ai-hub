@@ -87,6 +87,7 @@ jobs:
           tests/test_http_scoped_tasks.py
           tests/test_companion_skill_installation.py
           tests/test_ci_event_policy.py
+          tests/test_operation_contracts.py::test_memory_mutations_accept_absolute_windows_paths_without_accepting_drive_relative
           tests/test_release_contract.py::test_no_personal_paths_or_runtime_payloads_in_tracked_release_sources
       # Catch pinned Windows CUDA asset discovery regressions early on Linux.
       - run: >-

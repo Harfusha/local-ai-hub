@@ -263,3 +263,20 @@ def test_structural_search_returns_explicit_http_error_codes(tmp_path):
     ):
         Handler._send_service_result(sender, payload)
         assert sent[-1] == (expected, payload)
+
+
+def test_structural_search_rejects_malformed_transport_fields_without_exceptions(tmp_path):
+    source = tmp_path / "main.php"
+    source.write_text("<?php function needle() {}\n", encoding="utf-8")
+    for root in ("", "\x00", 12):
+        result = _scan(root, "fn:needle")
+        assert result["success"] is False
+        assert result["status_code"] == 400
+    for pattern in (None, 123, "a" * 513, "needle\x00"):
+        result = _scan(tmp_path, pattern)
+        assert result["success"] is False
+        assert result["status_code"] == 400
+    for path in (23, ["main.php"], "x" * 4097, "main.php\x00"):
+        result = _scan(tmp_path, "fn:needle", path=path)
+        assert result["success"] is False
+        assert result["status_code"] == 400
