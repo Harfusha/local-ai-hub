@@ -4003,6 +4003,9 @@ class ProjectPreprocessor:
         base = Path(root)
         stale_paths: list[str] = []
         for rel in paths:
+            # Never inspect an outside symlink target during stale detection.
+            if checked_relative_source(root, rel) != "inside_regular_file":
+                continue
             fpath = (base / rel).resolve(strict=False)
             try:
                 if not fpath.is_file():
@@ -4030,14 +4033,27 @@ class ProjectPreprocessor:
                 has_index = "source_index" in tables
                 with write_transaction(con, max_duration_seconds=5.0, rollback_label="preprocessor stale unwatched refs"):
                     for rel in stale_paths:
-                        con.execute(
-                            "UPDATE file_refs SET needs_hash=1, rag_hash=NULL WHERE root=? AND path=?",
-                            (root, rel),
-                        )
-                        if has_index:
-                            con.execute("DELETE FROM source_index WHERE root=? AND path=?", (root, rel))
-                        if has_fts:
-                            con.execute("DELETE FROM source_fts WHERE root=? AND path=?", (root, rel))
+                        expected_hash = pending_hashes[rel]
+                        changed = con.execute(
+                            "UPDATE file_refs SET needs_hash=1, rag_hash=NULL "
+                            "WHERE root=? AND path=? AND content_hash=? AND needs_hash=0",
+                            (root, rel, expected_hash),
+                        ).rowcount
+                        # A newer source generation is never invalidated by an
+                        # older RAG batch, including the FTS view of that path.
+                        if changed:
+                            if has_index:
+                                con.execute(
+                                    "DELETE FROM source_index WHERE root=? AND path=? AND content_hash=?",
+                                    (root, rel, expected_hash),
+                                )
+                            if has_fts:
+                                con.execute(
+                                    "DELETE FROM source_fts WHERE root=? AND path=? "
+                                    "AND NOT EXISTS (SELECT 1 FROM source_index "
+                                    "WHERE root=? AND path=?)",
+                                    (root, rel, root, rel),
+                                )
             stale_set = set(stale_paths)
             paths = [p for p in paths if p not in stale_set]
             if not paths:

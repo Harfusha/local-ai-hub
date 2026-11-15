@@ -180,3 +180,26 @@ def test_index_paths_step_preserves_sqlite_publish_timeout_detail(tmp_path, monk
     assert result["success"] is False
     assert result["error"] == "publish_failed"
     assert result["error_detail"] == timeout_message
+
+
+def test_changed_file_rejects_stale_content_override_at_index_boundary(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "guide.md").write_text("current and correct text\n", encoding="utf-8")
+    store = RAGStore(
+        {
+            "server": {"state_dir": str(tmp_path / "state")},
+            "models": {"embedding": "test-embedding", "embedding_dimension": 3},
+            "rag": {"dedup_near_duplicates": False},
+        },
+        services=_EmbeddingStub(),
+    )
+    ws = store.workspace_id(str(repo))
+    result = store.index_paths_step(
+        str(repo), workspace=ws, paths=["guide.md"],
+        content_overrides={"guide.md": "STALE TEXT"},
+    )
+    assert result["success"] is True
+    assert result["processed_paths"] == []
+    assert "guide.md" in result["read_uncertain_paths"]
+    assert store.indexed_paths(workspace=ws, paths=["guide.md"]) == set()
