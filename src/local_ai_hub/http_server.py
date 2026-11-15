@@ -5914,7 +5914,10 @@ class Handler(BaseHTTPRequestHandler):
 
     def _send_service_result(self, result: Any) -> None:
         status = result.get("status_code", 200) if isinstance(result, dict) else 200
-        self._send(status if status in {400, 404, 409, 422, 500, 503} else 200, result)
+        # Preserve every valid failure status, including root/path denial (403).
+        # Never let bool, string or out-of-range payload values set an HTTP code.
+        http_status = status if type(status) is int and 400 <= status <= 599 else 200
+        self._send(http_status, result)
 
     def do_POST(self) -> None:
         path = urlparse(self.path).path

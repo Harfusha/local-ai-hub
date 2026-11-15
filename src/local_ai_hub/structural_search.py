@@ -117,11 +117,13 @@ def search_structurally(
     canon_root = canonical_root(root)
     root_path = Path(canon_root)
     if not root_path.is_dir():
-        return {"success": False, "error": f"invalid root directory: {root}"}
+        return {"success": False, "status_code": 404, "terminal": True, "retryable": False,
+                "error": f"invalid root directory: {root}"}
 
     target_pattern = (pattern or "").strip().lower()
     if not target_pattern:
-        return {"success": False, "error": "pattern is required"}
+        return {"success": False, "status_code": 400, "terminal": True, "retryable": False,
+                "error": "pattern is required"}
 
     if type(file_offset) is not int or not 0 <= file_offset <= 100_000:
         return {"success": False, "status_code": 400, "error": "file_offset must be an integer between 0 and 100000"}

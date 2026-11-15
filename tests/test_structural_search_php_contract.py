@@ -228,3 +228,38 @@ def test_go_function_search_supports_receiver_methods(tmp_path):
     assert [item["line"] for item in _scan(tmp_path, "fn:Handle")["matches"]] == [2]
     assert [item["line"] for item in _scan(tmp_path, "fn:Standalone")["matches"]] == [3]
     assert _scan(tmp_path, "fn:Fake")["matches"] == []
+
+
+def test_structural_search_returns_explicit_http_error_codes(tmp_path):
+    from types import SimpleNamespace
+    from local_ai_hub.http_server import Handler
+
+    missing_root = _scan(tmp_path / "missing", "fn:needle")
+    missing_pattern = _scan(tmp_path, "  ")
+    assert (missing_root["success"], missing_root["status_code"]) == (False, 404)
+    assert (missing_pattern["success"], missing_pattern["status_code"]) == (False, 400)
+
+    denied = tmp_path / "external.php"
+    denied.write_text("<?php function needle() {}\n", encoding="utf-8")
+    symbolic = tmp_path / "alias.php"
+    try:
+        symbolic.symlink_to(denied)
+    except (OSError, NotImplementedError):
+        import pytest
+        pytest.skip("symlinks unavailable on this platform")
+    denied_result = _scan(tmp_path, "fn:needle", path="alias.php")
+    assert (denied_result["success"], denied_result["status_code"]) == (False, 403)
+
+    sent = []
+    sender = SimpleNamespace(_send=lambda status, payload: sent.append((status, payload)))
+    for payload, expected in (
+        (denied_result, 403),
+        (missing_root, 404),
+        (missing_pattern, 400),
+        ({"success": False, "status_code": 429}, 429),
+        ({"success": False, "status_code": True}, 200),
+        ({"success": False, "status_code": "403"}, 200),
+        ({"success": False, "status_code": 999}, 200),
+    ):
+        Handler._send_service_result(sender, payload)
+        assert sent[-1] == (expected, payload)
