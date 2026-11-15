@@ -8,7 +8,7 @@ import os
 import stat
 import time
 from pathlib import Path, PurePosixPath
-from typing import cast
+from typing import Callable, cast
 
 from .process_utils import is_rooted_path, is_safe_path
 
@@ -98,7 +98,10 @@ def _read_verified_source(root: Path, relative: str) -> bytes:
     current = root
     for component in PurePosixPath(relative).parts:
         current = current / component
-        if current.is_symlink() or getattr(current, "is_junction", lambda: False)():
+        # Path.is_junction is only available on recent Python versions.
+        # Keep the optional Windows check explicitly typed for strict mypy.
+        is_junction = cast(Callable[[], bool] | None, getattr(current, "is_junction", None))
+        if current.is_symlink() or (is_junction is not None and is_junction()):
             raise PermissionError("evidence path includes a link")
     resolved = path.resolve(strict=True)
     resolved.relative_to(root)
@@ -225,7 +228,7 @@ def merge_overlapping_evidence(
             verified_read_at: float | None = None
 
             file_on_disk = (resolved_root / path) if (resolved_root and _is_confined_to_root(resolved_root, path)) else None
-            if file_on_disk and file_on_disk.is_file():
+            if resolved_root is not None and file_on_disk is not None and file_on_disk.is_file():
                 try:
                     if not chash:
                         # Unhashed evidence remains tied to its own provenance.
