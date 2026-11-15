@@ -1947,6 +1947,9 @@ class RAGStore:
             stored_chunker_version = self._stored_workspace_chunker_version(con, workspace)
         chunker_version_changed = stored_chunker_version != RAG_CHUNKER_VERSION
         old_files = {r[0]: {"mtime_ns": int(r[1]), "size": int(r[2]), "content_hash": r[3]} for r in old_files_rows}
+        # A surviving files row does not prove its searchable chunks survived.
+        # Missing chunks must be repaired even when size, mtime and hash match.
+        paths_with_chunks = {str(row[0]) for row in old_chunk_rows}
         persisted_spaces = {
             str(r[3]).strip()
             for r in old_chunk_rows
@@ -2052,7 +2055,17 @@ class RAGStore:
                     unchanged_paths.append(rel)
                     continue
                 if file_hash == old.get("content_hash"):
-                    unchanged_paths.append(rel)
+                    if rel not in paths_with_chunks and self._chunks(
+                        raw.decode("utf-8", errors="replace").replace("\r\n", "\n"),
+                        path=rel,
+                    ):
+                        # Lost-chunk recovery: an unchanged nonblank document
+                        # with no persisted chunks is not a complete index.
+                        changed_paths.append(rel)
+                        verified_raw_by_path[rel] = raw
+                    else:
+                        # Whitespace-only documents legitimately have no chunks.
+                        unchanged_paths.append(rel)
                 else:
                     changed_paths.append(rel)
                     verified_raw_by_path[rel] = raw

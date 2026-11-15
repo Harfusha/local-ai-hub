@@ -41,6 +41,78 @@ def test_indexed_paths_reports_only_persisted_workspace_files(tmp_path):
     ) == {"guide.md"}
 
 
+
+def test_full_index_recovers_missing_chunks_with_unchanged_file_metadata(tmp_path):
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / "lost.md").write_text("A document whose chunk rows will be removed.\n", encoding="utf-8")
+    (root / "stable.md").write_text("A separate document that remains indexed.\n", encoding="utf-8")
+    store = RAGStore(
+        {
+            "server": {"state_dir": str(tmp_path / "state")},
+            "models": {"embedding": "test-embedding", "embedding_dimension": 3},
+            "rag": {"dedup_near_duplicates": False},
+        },
+        services=_EmbeddingStub(),
+    )
+    ws = store.workspace_id(str(root))
+    first = store.index(str(root))
+    assert first["success"] is True
+    with closing(store._connect()) as con:
+        original_file = con.execute(
+            "SELECT mtime_ns,size,content_hash FROM files WHERE workspace=? AND path=?",
+            (ws, "lost.md"),
+        ).fetchone()
+        original_count = con.execute(
+            "SELECT COUNT(*) FROM chunks WHERE workspace=? AND path=?", (ws, "lost.md"),
+        ).fetchone()[0]
+        assert original_count > 0
+        con.execute("DELETE FROM chunks WHERE workspace=? AND path=?", (ws, "lost.md"))
+        con.commit()
+
+    repaired = store.index(str(root))
+    assert repaired["success"] is True
+    assert repaired["changed_files"] == 1
+    assert repaired["unchanged_files"] == 1
+    with closing(store._connect()) as con:
+        current_file = con.execute(
+            "SELECT mtime_ns,size,content_hash FROM files WHERE workspace=? AND path=?",
+            (ws, "lost.md"),
+        ).fetchone()
+        current_chunks = con.execute(
+            "SELECT text FROM chunks WHERE workspace=? AND path=? ORDER BY chunk_no",
+            (ws, "lost.md"),
+        ).fetchall()
+        stable_chunks = con.execute(
+            "SELECT COUNT(*) FROM chunks WHERE workspace=? AND path=?",
+            (ws, "stable.md"),
+        ).fetchone()[0]
+    assert tuple(current_file) == tuple(original_file)
+    assert len(current_chunks) == original_count
+    assert "whose chunk rows" in " ".join(str(row[0]) for row in current_chunks)
+    assert stable_chunks > 0
+
+
+def test_full_index_does_not_rebuild_legitimately_empty_chunk_document(tmp_path):
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / "whitespace.md").write_text("  \n\t\n", encoding="utf-8")
+    store = RAGStore(
+        {
+            "server": {"state_dir": str(tmp_path / "state")},
+            "models": {"embedding": "test-embedding", "embedding_dimension": 3},
+            "rag": {"dedup_near_duplicates": False},
+        },
+        services=_EmbeddingStub(),
+    )
+    first = store.index(str(root))
+    assert first["success"] is True
+    second = store.index(str(root))
+    assert second["success"] is True
+    assert second["changed_files"] == 0
+    assert second["unchanged_files"] == 1
+
+
 def test_unchanged_index_does_not_read_all_embedding_blobs(tmp_path, monkeypatch):
     repo = tmp_path / "repo"
     repo.mkdir()
