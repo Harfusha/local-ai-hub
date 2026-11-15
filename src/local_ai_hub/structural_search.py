@@ -70,6 +70,7 @@ def search_structurally(
     else:
         files_to_scan = []
         for cur_root, dirs, filenames in os.walk(root_path):
+            dirs.sort()
             safe_dirs = []
             for dirname in dirs:
                 if dirname in ignore_dirs or dirname.startswith("."):
@@ -81,8 +82,8 @@ def search_structurally(
                 else:
                     safe_dirs.append(dirname)
             dirs[:] = safe_dirs
-            for f in filenames:
-                if f.endswith((".py", ".ts", ".js", ".go", ".rs", ".cs")):
+            for f in sorted(filenames):
+                if f.endswith((".py", ".php", ".ts", ".tsx", ".js", ".jsx", ".go", ".rs", ".cs")):
                     files_to_scan.append(Path(cur_root) / f)
                     if len(files_to_scan) > file_limit:
                         break
@@ -377,6 +378,10 @@ def search_structurally(
         "matches": returned_matches,
         "files_scanned": files_scanned,
         "truncated": bool(truncation_reasons),
+        "complete": not truncation_reasons,
+        "has_more": file_limit_reached or len(results) > output_limit,
+        "file_limit": file_limit,
+        "unscanned_file_count": None if file_limit_reached else 0,
         "truncation_reasons": truncation_reasons,
         "read_errors": read_errors,
         "parse_errors": parse_errors,
