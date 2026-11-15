@@ -104,11 +104,18 @@ Tests are multi-tagged dynamically in `pytest_collection_modifyitems`:
 
 Combine tags: `pytest -m "rag and fast"`, `pytest -m "agent and critical and not slow"`. Explicit file/directory targets (e.g. `pytest tests/unit/test_rag_*.py`) are always permitted directly. Use `pytest --run-all` or `RUN_ALL_TESTS=1` when an unconstrained run is explicitly required.
 
-### Smart test caching (default: enabled)
+### Local test-result caching (explicit opt-in)
 
-Passed test outcomes and their file/dependency signatures are cached automatically. Tests that previously passed and whose test file and imported `local_ai_hub` source modules are unchanged are skipped automatically (`deselected`).
-- To force fresh execution of all matching tests (bypass cache): pass `--no-cache` or set `NO_TEST_CACHE=1`.
-  Example: `pytest -m "rag" --no-cache`
+**Default is fresh test execution.** No test is skipped based on a previous success.
+For interactive development, `pytest -m fast --test-result-cache` may reuse
+previously passed outcomes, with conservative project-wide source and fixture
+fingerprinting. Avoid this opt-in when checking regressions, coverage, security,
+packaging or release readiness; it is automatically disabled under CI and
+coverage.
+
+For authoritative verification, use `pytest -m critical --no-cache` or
+`pytest --run-all --no-cache` and preserve actual JUnit/coverage artifacts.
+Set `NO_TEST_CACHE=1` to disable result caching regardless of flags.
 
 For an installed instance:
 

@@ -233,6 +233,7 @@ GET_ROUTE_HANDLER_BOUNDARIES: Mapping[str, str] = MappingProxyType({
 TELEMETRY_SAFE_GET_ROUTE_LABELS = frozenset({
     "/",
     "/api/adoption",
+    "/api/agent/hosts",
     "/api/agent-state/events",
     "/api/agent-state/events/stream",
     "/api/agent-state/swarm",

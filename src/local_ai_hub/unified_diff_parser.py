@@ -28,6 +28,9 @@ class _DiffParser:
     def consume_hunk_content(self, line: str, *, next_file_header: bool) -> bool:
         if not (self.old_remaining or self.new_remaining):
             return False
+        # A malformed hunk may declare more lines than it actually contains.
+        # A valid ---/+++ file-header pair always starts the next file, even
+        # when its leading '-' could otherwise look like deleted source text.
         if next_file_header:
             self.old_remaining = self.new_remaining = 0
             return False

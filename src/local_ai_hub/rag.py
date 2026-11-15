@@ -2526,19 +2526,25 @@ class RAGStore:
                         policy_deleted.add(rel)
                         continue
                     override = (content_overrides or {}).get(rel)
-                    if override is None:
-                        raw = _read_bounded_file(path, max_bytes)
-                        if raw is None:
-                            read_uncertain_paths.add(rel)
-                            continue
-                        text = raw.decode("utf-8", errors="replace").replace("\r\n", "\n")
-                        file_hash = hashlib.sha1(raw, usedforsecurity=False).hexdigest()
-                    else:
-                        text = str(override).replace("\r\n", "\n")
-                        if len(text.encode("utf-8")) > max_bytes:
-                            policy_deleted.add(rel)
-                            continue
-                        file_hash = hashlib.sha1(text.encode("utf-8"), usedforsecurity=False).hexdigest()
+                    if override is not None and len(str(override).encode("utf-8")) > max_bytes:
+                        # An explicitly oversized override is a policy denial,
+                        # even if the current file is small.
+                        policy_deleted.add(rel)
+                        continue
+                    # A cached lexical snapshot cannot prove the file is still
+                    # identical. Re-read the bounded live bytes at the final
+                    # indexing boundary, even when an override was supplied.
+                    raw = _read_bounded_file(path, max_bytes)
+                    if raw is None:
+                        read_uncertain_paths.add(rel)
+                        continue
+                    text = raw.decode("utf-8", errors="replace").replace("\r\n", "\n")
+                    if override is not None and text != str(override).replace("\r\n", "\n"):
+                        # Do not publish cached stale bytes under the new file's
+                        # identity; preprocessing must hash and retry the source.
+                        read_uncertain_paths.add(rel)
+                        continue
+                    file_hash = hashlib.sha1(raw, usedforsecurity=False).hexdigest()
                     chunks = list(self._chunks(text, path=rel))
                     file_data.append({"rel": rel, "stat": stat, "file_hash": file_hash, "chunks": chunks})
                 except Exception:

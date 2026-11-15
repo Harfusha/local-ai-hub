@@ -4766,27 +4766,57 @@ class Handler(BaseHTTPRequestHandler):
                     }); return
                 include_stale = str((query.get("include_stale") or ["false"])[0]).lower() in ("true", "1", "yes")
                 task_query = (query.get("query") or [""])[0]
-                tasks = APP.agent_tasks.list_tasks(
-                    status=status_filter,
-                    limit=limit + 1,
-                    offset=offset,
-                    include_stale=include_stale,
-                    query=task_query,
-                )
-                has_more = len(tasks) > limit
-                page_tasks = tasks[:limit]
-                response = {
-                    "success": True,
-                    "tasks": [t.to_dict() for t in page_tasks if not request_root or self._task_matches_request(t, request_root)],
-                    "total_count": APP.agent_tasks.count(),
-                    "active_count": APP.agent_tasks.count(TaskStatus.ACTIVE),
-                    "offset": offset,
-                    "limit": limit,
-                    "next_offset": offset + min(len(tasks), limit),
-                    "has_more": has_more,
-                }
-                if getattr(tasks, "query_truncated", False):
-                    response["query_truncated"] = True
+                # Opt-in preserves the existing GET response contract
+                # for CLI/older clients. The modern dashboard explicitly
+                # requests correct post-scope page semantics.
+                scoped_page = str((query.get("scoped_page") or ["false"])[0]).strip().lower() in ("true", "1", "yes")
+                if request_root and scoped_page:
+                    from .http_scoped_tasks import page_scoped_tasks
+                    page = page_scoped_tasks(
+                        APP.agent_tasks.list_tasks,
+                        lambda task: self._task_matches_request(task, request_root),
+                        status=status_filter,
+                        limit=limit,
+                        offset=offset,
+                        include_stale=include_stale,
+                        query=task_query,
+                    )
+                    response = {
+                        "success": True,
+                        "tasks": [task.to_dict() for task in page["tasks"]],
+                        "total_count": page["total_count"],
+                        "active_count": None,
+                        "global_total_count": APP.agent_tasks.count(),
+                        "global_active_count": APP.agent_tasks.count(TaskStatus.ACTIVE),
+                        "count_scope": "repository",
+                        "root": request_root,
+                        "offset": offset,
+                        "limit": limit,
+                        "next_offset": page["next_offset"],
+                        "has_more": page["has_more"],
+                        "query_truncated": page["incomplete"],
+                    }
+                else:
+                    tasks = APP.agent_tasks.list_tasks(
+                        status=status_filter,
+                        limit=limit + 1,
+                        offset=offset,
+                        include_stale=include_stale,
+                        query=task_query,
+                    )
+                    has_more = len(tasks) > limit
+                    response = {
+                        "success": True,
+                        "tasks": [t.to_dict() for t in tasks[:limit] if not request_root or self._task_matches_request(t, request_root)],
+                        "total_count": APP.agent_tasks.count(),
+                        "active_count": APP.agent_tasks.count(TaskStatus.ACTIVE),
+                        "offset": offset,
+                        "limit": limit,
+                        "next_offset": offset + min(len(tasks), limit),
+                        "has_more": has_more,
+                    }
+                    if getattr(tasks, "query_truncated", False):
+                        response["query_truncated"] = True
                 self._send(200, response); return
             if path == "/api/agent-state/incidents":
                 if not getattr(APP, "agent_incidents", None) or not APP.agent_incidents.state_store.enabled:
@@ -9500,7 +9530,7 @@ class Handler(BaseHTTPRequestHandler):
             if 'post_package_audit_1' in post_route_ids:
                 self._send(200, APP.services.package_audit(str(payload.get("root", ".")), lockfile_path=payload.get("lockfile_path"))); return
             if 'post_repo_structural_search_1' in post_route_ids:
-                self._send(200, APP.services.structural_search(str(payload.get("root", ".")), str(payload.get("pattern", "")), path=payload.get("path"), max_results=int(payload.get("max_results", 30)))); return
+                self._send_service_result(APP.services.structural_search(str(payload.get("root", ".")), str(payload.get("pattern", "")), path=payload.get("path"), max_results=payload.get("max_results", 30), file_offset=payload.get("offset", 0), match_offset=payload.get("match_offset", 0))); return
             if 'post_context_budget_1' in post_route_ids:
                 self._send(200, APP.services.context_budget(str(payload.get("root", ".")), files=payload.get("files"), max_tokens=int(payload.get("max_tokens", 4000)))); return
             if 'post_ingest_document_1' in post_route_ids:

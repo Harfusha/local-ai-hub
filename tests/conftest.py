@@ -124,11 +124,63 @@ def pytest_addoption(parser):
         "--no-cache",
         action="store_true",
         default=False,
-        help="Disable automatic test caching and re-run all matching tests.",
+        help="Disable result caching and run every selected test.",
+    )
+    parser.addoption(
+        "--test-result-cache",
+        action="store_true",
+        default=False,
+        help="Opt into local pure-unit test result caching; CI, coverage and release always run fresh.",
     )
 
 
 _HASH_CACHE: dict[Path, str] = {}
+_SUITE_SIGNATURE: str | None = None
+
+
+def _suite_dependency_signature() -> str:
+    """Invalidate opt-in result caching on any Hub source, policy or environment change.
+
+    Deliberate over-invalidation is safer than skipping a test whose transitive
+    import or shared fixture changed. Never emit the environment into receipts.
+    """
+    global _SUITE_SIGNATURE
+    if _SUITE_SIGNATURE is not None:
+        return _SUITE_SIGNATURE
+    digest = hashlib.sha256()
+    digest.update(repr((sys.version, sys.platform, os.name, sys.executable)).encode())
+    digest.update(os.environ.get("PYTHONPATH", "").encode())
+    for base in (SRC / "local_ai_hub", ROOT / "tests"):
+        if not base.is_dir():
+            continue
+        # Including all test helpers/fixtures makes indirect imports fail safe.
+        for file in sorted(base.rglob("*.py")):
+            if "__pycache__" in file.parts:
+                continue
+            digest.update(file.relative_to(ROOT).as_posix().encode())
+            digest.update(_file_hash(file).encode())
+    for relative in ("pyproject.toml", "defaults.toml", "config.toml.example"):
+        file = ROOT / relative
+        if file.is_file():
+            digest.update(relative.encode())
+            digest.update(_file_hash(file).encode())
+    _SUITE_SIGNATURE = digest.hexdigest()
+    return _SUITE_SIGNATURE
+
+
+def _result_cache_enabled(config) -> bool:
+    """A local, explicit convenience only; never release or coverage evidence."""
+    return bool(
+        config.getoption("--test-result-cache", False)
+        and not config.getoption("--no-cache", False)
+        and not config.getoption("--run-all", False)
+        and not os.environ.get("CI")
+        and os.environ.get("NO_TEST_CACHE") != "1"
+        and os.environ.get("RUN_ALL_TESTS") != "1"
+        and os.environ.get("RUN_FULL_SUITE") != "true"
+        and not os.environ.get("COVERAGE_FILE")
+        and getattr(config, "cache", None) is not None
+    )
 
 
 def _file_hash(path: Path) -> str:
@@ -184,7 +236,7 @@ def _test_item_signature(item) -> str:
         direct_sp = hub_pkg / f"{stem}.py"
         if direct_sp.exists() and f"{stem}=" not in mod_hashes:
             mod_hashes.append(f"{stem}={_file_hash(direct_sp)}")
-    return f"{th}:{cfgh}:" + ",".join(mod_hashes)
+    return f"{th}:{cfgh}:{_suite_dependency_signature()}:" + ",".join(mod_hashes)
 
 
 def _is_targeted_run(config) -> bool:
@@ -300,8 +352,10 @@ def pytest_collection_modifyitems(config, items):
             item.add_marker(pytest.mark.process)
 
     # 2. Smart test caching (default: skip passed tests if files unchanged)
-    if not config.getoption("--no-cache", False) and os.environ.get("NO_TEST_CACHE") != "1" and getattr(config, "cache", None):
+    if _result_cache_enabled(config):
         passed_cache = config.cache.get("local_ai_hub/passed_hashes", {})
+        config._test_result_cache_enabled = True
+        config._test_result_passed_hashes = dict(passed_cache)
         deselected = []
         selected = []
         for item in items:
@@ -318,31 +372,42 @@ def pytest_collection_modifyitems(config, items):
             if not selected:
                 config._all_tests_cached = True
     else:
+        # Fresh CI/coverage runs do not need to fingerprint any test module.
         for item in items:
-            item._cached_sig = _test_item_signature(item)
+            item._cached_sig = None
 
 
 def pytest_sessionfinish(session, exitstatus):
-    """Ensure clean exit code 0 when all tests were safely skipped by cache."""
-    if exitstatus == pytest.ExitCode.NO_TESTS_COLLECTED and getattr(session.config, "_all_tests_cached", False):
+    """Persist opt-in cache after fixture monkeypatches have been restored."""
+    config = session.config
+    if getattr(config, "_test_result_cache_enabled", False):
+        config.cache.set(
+            "local_ai_hub/passed_hashes",
+            getattr(config, "_test_result_passed_hashes", {}),
+        )
+    if exitstatus == pytest.ExitCode.NO_TESTS_COLLECTED and getattr(config, "_all_tests_cached", False):
+        # Only explicit, local result-cache mode may report a cache-only run.
         session.exitstatus = pytest.ExitCode.OK
 
 
 @pytest.hookimpl(tryfirst=True, hookwrapper=True)
 def pytest_runtest_makereport(item, call):
-    """Record passed test signatures into cache and evict failed ones."""
+    """Record outcomes in memory only; pytest cache I/O is unsafe under OS mocks.
+
+    A test can temporarily simulate Windows by patching os.name on POSIX.
+    Constructing Path inside this hook then raises WindowsPath UnsupportedOperation
+    and destroys the whole pytest run before normal monkeypatch teardown.
+    """
     outcome = yield
     report = outcome.get_result()
-    if report.when == "call" and getattr(item.config, "cache", None):
-        cache = item.config.cache.get("local_ai_hub/passed_hashes", {})
-        sig = getattr(item, "_cached_sig", None)
-        if report.passed and sig:
-            cache[item.nodeid] = sig
-            item.config.cache.set("local_ai_hub/passed_hashes", cache)
-        elif report.failed:
-            if item.nodeid in cache:
-                cache.pop(item.nodeid, None)
-                item.config.cache.set("local_ai_hub/passed_hashes", cache)
+    if report.when != "call" or not getattr(item.config, "_test_result_cache_enabled", False):
+        return
+    cache = item.config._test_result_passed_hashes
+    sig = getattr(item, "_cached_sig", None)
+    if report.passed and sig:
+        cache[item.nodeid] = sig
+    elif report.failed:
+        cache.pop(item.nodeid, None)
 
 
 @pytest.fixture(autouse=True)

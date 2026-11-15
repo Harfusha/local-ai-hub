@@ -6,6 +6,7 @@ and explicitly classified blocked states across HUB-076 through HUB-112.
 
 from __future__ import annotations
 
+import argparse
 import json
 import platform
 import subprocess
@@ -345,7 +346,7 @@ AUDIT_ITEMS: list[dict[str, Any]] = [
         "priority": "P1",
         "category": "Acceptance / Hardware",
         "status": "BLOCKED_RESERVATION",
-        "verification_command": "python -c \"from pathlib import Path; assert Path('C:/Users/Adam/.local-ai-hub/gpu_reservation.lock').exists() or True\"",
+        "verification_command": "MANUAL: verify GPU reservation provenance and obtain explicit user consent for live GPU test",
         "evidence_receipt": "BLOCKED: Live GPU reservation active or requires operator pre-consent; cannot mutate GPU reservation file",
         "files": [],
     },
@@ -402,15 +403,60 @@ AUDIT_ITEMS: list[dict[str, Any]] = [
 ]
 
 
-def generate_acceptance(output_path: Path = Path("audit_acceptance.json")) -> dict[str, Any]:
+def generate_acceptance(
+    output_path: Path = Path("audit_acceptance.json"),
+    *,
+    receipts_dir: Path | None = None,
+) -> dict[str, Any]:
+    """Create an evidence-aware audit inventory; a source claim is never a test pass.
+
+    Local receipts can establish only a local test outcome, not CI_GREEN or a
+    live external integration. The GitHub release workflow itself must gate on
+    successful jobs for the exact commit.
+    """
     head_sha = get_git_head()
     now_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    output_items: list[dict[str, Any]] = []
 
-    verified = [item for item in AUDIT_ITEMS if item["status"] in ("SOURCE_VERIFIED", "CI_VERIFIED")]
-    blocked = [item for item in AUDIT_ITEMS if item["status"].startswith("BLOCKED_")]
+    for original in AUDIT_ITEMS:
+        item = dict(original)
+        claimed_status = str(item.pop("status", "UNVERIFIED"))
+        claim_text = item.pop("evidence_receipt", None)
+        item["historical_claim"] = claim_text
+        item["verification_status"] = "UNVERIFIED"
+        item["verification_receipt"] = None
+
+        if claimed_status.startswith("BLOCKED_"):
+            item["verification_status"] = claimed_status
+        elif receipts_dir is not None and head_sha != "unknown":
+            file = receipts_dir / (str(item["id"]) + ".json")
+            try:
+                receipt = json.loads(file.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                receipt = None
+            if (
+                isinstance(receipt, dict)
+                and receipt.get("item_id") == item["id"]
+                and receipt.get("source_sha") == head_sha
+                and receipt.get("command") == item["verification_command"]
+                and receipt.get("exit_code") == 0
+                and isinstance(receipt.get("timestamp_utc"), str)
+                and receipt.get("timestamp_utc")
+            ):
+                item["verification_status"] = "LOCAL_TESTED"
+                item["verification_receipt"] = receipt
+        output_items.append(item)
+
+    status_counts: dict[str, int] = {}
+    for item in output_items:
+        status = str(item["verification_status"])
+        status_counts[status] = status_counts.get(status, 0) + 1
+    blocked = sum(count for status, count in status_counts.items() if status.startswith("BLOCKED_"))
+    unknown = status_counts.get("UNVERIFIED", 0)
+    locally_tested = status_counts.get("LOCAL_TESTED", 0)
 
     document: dict[str, Any] = {
-        "schema_version": "1.0",
+        "schema_version": "2.0",
         "audit_name": "Fourth Audit Action Plan (HUB-076–HUB-112)",
         "generated_at": now_iso,
         "git_head_sha": head_sha,
@@ -418,39 +464,34 @@ def generate_acceptance(output_path: Path = Path("audit_acceptance.json")) -> di
             "platform": sys.platform,
             "os": platform.platform(),
             "python_version": sys.version.split()[0],
-            "hardware_profile": "high",
-            "gpu_target": "RTX 5070 Ti 16GB",
+            "hardware_profile": None,
+            "gpu_target": None,
         },
         "summary": {
-            "total_items": len(AUDIT_ITEMS),
-            "verified_count": len(verified),
-            "blocked_count": len(blocked),
-            "regressions_count": 0,
-            "overall_status": "READY_FOR_RELEASE_CANDIDATE",
+            "total_items": len(output_items),
+            "verified_count": 0,
+            "locally_tested_count": locally_tested,
+            "unverified_count": unknown,
+            "blocked_count": blocked,
+            "regressions_count": None,
+            "overall_status": "BLOCKED",
+            "status_counts": status_counts,
         },
-        "blocked_reasons": {
-            "HUB-103": "BLOCKED_MODEL_ABSENT: No embedding model installed; downloads require explicit operator action",
-            "HUB-104": "BLOCKED_EVIDENCE: Codex CLI not present in test harness",
-            "HUB-105": "BLOCKED_EVIDENCE: Live Antigravity host trace requires external IDE session capture",
-            "HUB-106": "BLOCKED_EXTERNAL: Playwright MCP CLI not installed in harness; Chrome permission gate",
-            "HUB-107": "BLOCKED_RESERVATION: Live GPU reservation active or requires operator pre-consent",
-            "HUB-108": "BLOCKED_PLATFORM_ABSENT: Linux and macOS runners absent in current Windows environment",
+        "release_gate": {
+            "approved": False,
+            "reason": "Generated local receipts cannot prove release CI or external integration acceptance.",
+            "ci": "UNKNOWN",
         },
-        "items": AUDIT_ITEMS,
+        "items": output_items,
     }
-
-    output_path.write_text(json.dumps(document, indent=2), encoding="utf-8")
+    output_path.write_text(json.dumps(document, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     return document
 
 
 if __name__ == "__main__":
-    doc = generate_acceptance()
-    print("=" * 60)
-    print("Local AI Hub Audit Acceptance Generator (HUB-111)")
-    print("=" * 60)
-    print(f"  Total items:    {doc['summary']['total_items']}")
-    print(f"  Verified items: {doc['summary']['verified_count']}")
-    print(f"  Blocked items:  {doc['summary']['blocked_count']}")
-    print(f"  Regressions:    {doc['summary']['regressions_count']}")
-    print(f"  Git commit:     {doc['git_head_sha']}")
-    print("\nReport written to audit_acceptance.json")
+    parser = argparse.ArgumentParser(description="Generate fail-closed audit inventory")
+    parser.add_argument("--output", type=Path, default=Path("audit_acceptance.json"))
+    parser.add_argument("--receipts-dir", type=Path, default=None)
+    args = parser.parse_args()
+    doc = generate_acceptance(args.output, receipts_dir=args.receipts_dir)
+    print(json.dumps({"summary": doc["summary"], "head": doc["git_head_sha"]}, sort_keys=True))

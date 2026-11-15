@@ -14,6 +14,95 @@ from .process_utils import canonical_root
 logger = logging.getLogger(__name__)
 
 
+
+def _masked_declaration_lines(source: str, suffix: str) -> list[str]:
+    """Mask C-family strings/comments while retaining line/column positions.
+
+    This is a conservative lexical fallback, not a full PHP/JS/TS parser.
+    Template interpolation and PHP markup are treated as non-code. Other
+    structure heuristics intentionally use the original source.
+    """
+    chars = list(source)
+    state = "code"
+    in_php = suffix != ".php"
+    i = 0
+    length = len(source)
+
+    def mask(start: int, stop: int) -> None:
+        for pos in range(start, stop):
+            if source[pos] not in "\r\n":
+                chars[pos] = " "
+
+    while i < length:
+        current = source[i]
+        following = source[i + 1] if i + 1 < length else ""
+
+        if state == "line_comment":
+            if current in "\r\n":
+                state = "code"
+            else:
+                mask(i, i + 1)
+                i += 1
+                continue
+        elif state == "block_comment":
+            if current == "*" and following == "/":
+                mask(i, i + 2)
+                i += 2
+                state = "code"
+                continue
+            mask(i, i + 1)
+            i += 1
+            continue
+        elif state in {"'", '"', "`"}:
+            if current == "\\":
+                mask(i, min(i + 2, length))
+                i += 2
+                continue
+            mask(i, i + 1)
+            i += 1
+            if current == state:
+                state = "code"
+            continue
+
+        if suffix == ".php" and not in_php:
+            if source.startswith("<?", i):
+                tag_len = 5 if source[i:i+5].lower() == "<?php" else 3 if source.startswith("<?=", i) else 2
+                mask(i, i + tag_len)
+                i += tag_len
+                in_php = True
+                continue
+            mask(i, i + 1)
+            i += 1
+            continue
+        if suffix == ".php" and source.startswith("?>", i):
+            mask(i, i + 2)
+            i += 2
+            in_php = False
+            continue
+        if current == "/" and following == "/":
+            mask(i, i + 2)
+            i += 2
+            state = "line_comment"
+            continue
+        if current == "/" and following == "*":
+            mask(i, i + 2)
+            i += 2
+            state = "block_comment"
+            continue
+        if suffix == ".php" and current == "#":
+            mask(i, i + 1)
+            i += 1
+            state = "line_comment"
+            continue
+        if current in {"'", '"', "`"}:
+            state = current
+            mask(i, i + 1)
+            i += 1
+            continue
+        i += 1
+    return "".join(chars).splitlines()
+
+
 def search_structurally(
     root: str,
     pattern: str,
@@ -21,6 +110,8 @@ def search_structurally(
     max_results: int = 30,
     *,
     is_symlink_or_reparse_point: Callable[[Path], bool],
+    file_offset: int = 0,
+    match_offset: int = 0,
 ) -> dict[str, Any]:
     """Syntax-aware structural code search across Python and multi-language repositories."""
     canon_root = canonical_root(root)
@@ -32,13 +123,34 @@ def search_structurally(
     if not target_pattern:
         return {"success": False, "error": "pattern is required"}
 
-    output_limit = max(0, int(max_results))
+    if type(file_offset) is not int or not 0 <= file_offset <= 100_000:
+        return {"success": False, "status_code": 400, "error": "file_offset must be an integer between 0 and 100000"}
+    if path and file_offset:
+        return {"success": False, "status_code": 400, "error": "file_offset cannot be combined with an exact path"}
+    if type(match_offset) is not int or not 0 <= match_offset <= 100_000:
+        return {"success": False, "status_code": 400, "error": "match_offset must be an integer between 0 and 100000"}
+    if type(max_results) is not int or not 1 <= max_results <= 1000:
+        return {"success": False, "status_code": 400, "error": "max_results must be an integer between 1 and 1000"}
+    output_limit = max_results
     result_probe_limit = output_limit + 1
     file_limit = 400
     results: list[dict[str, Any]] = []
     read_errors = 0
     parse_errors = 0
     ignore_dirs = {".git", "node_modules", "vendor", "__pycache__", ".venv", "venv", "dist", "build"}
+
+    file_index = -1
+    file_match_count = 0
+    first_file_seen = 0
+
+    def emit(result: dict[str, Any]) -> None:
+        nonlocal file_match_count, first_file_seen
+        file_match_count += 1
+        if file_index == 0:
+            first_file_seen += 1
+            if first_file_seen <= match_offset:
+                return
+        results.append(result)
 
     def authorized_path(candidate: Path) -> Path:
         relative = candidate.relative_to(root_path)
@@ -69,7 +181,9 @@ def search_structurally(
             files_to_scan = [candidate] if candidate.is_file() else []
     else:
         files_to_scan = []
+        skipped_candidates = 0
         for cur_root, dirs, filenames in os.walk(root_path):
+            dirs.sort()
             safe_dirs = []
             for dirname in dirs:
                 if dirname in ignore_dirs or dirname.startswith("."):
@@ -81,8 +195,11 @@ def search_structurally(
                 else:
                     safe_dirs.append(dirname)
             dirs[:] = safe_dirs
-            for f in filenames:
-                if f.endswith((".py", ".ts", ".js", ".go", ".rs", ".cs")):
+            for f in sorted(filenames):
+                if f.endswith((".py", ".php", ".ts", ".tsx", ".js", ".jsx", ".go", ".rs", ".cs")):
+                    if skipped_candidates < file_offset:
+                        skipped_candidates += 1
+                        continue
                     files_to_scan.append(Path(cur_root) / f)
                     if len(files_to_scan) > file_limit:
                         break
@@ -94,10 +211,11 @@ def search_structurally(
         file_limit_reached = False
 
     files_scanned = 0
-    for fpath in files_to_scan:
+    for file_index, fpath in enumerate(files_to_scan):
         if len(results) >= result_probe_limit:
             break
         files_scanned += 1
+        file_match_count = 0
         try:
             rel_p = str(fpath.relative_to(root_path)).replace("\\", "/")
             checked = authorized_path(fpath)
@@ -127,6 +245,13 @@ def search_structurally(
             continue
 
         lines = content.splitlines()
+        declaration_lines = (
+            _masked_declaration_lines(content, fpath.suffix)
+            if fpath.suffix != ".py" and target_pattern.startswith((
+                "fn:", "function:", "class:", "struct:", "interface:",
+            ))
+            else lines
+        )
         file_result_start = len(results)
         parse_failed = False
 
@@ -147,7 +272,7 @@ def search_structurally(
                         kinds = (ast.ClassDef,) if prefix == "class" else (ast.FunctionDef, ast.AsyncFunctionDef)
                         if isinstance(node, kinds) and node.name.lower() == name:
                             label = "class" if prefix == "class" else "function"
-                            results.append({
+                            emit({
                                 "file": rel_p,
                                 "line": node.lineno,
                                 "structure": f"{label}:{name}",
@@ -161,7 +286,7 @@ def search_structurally(
                                     break
                                 if handler.type is None:
                                     snip = lines[handler.lineno - 1].strip() if handler.lineno <= len(lines) else ""
-                                    results.append({
+                                    emit({
                                         "file": rel_p,
                                         "line": handler.lineno,
                                         "structure": "bare_except",
@@ -171,7 +296,7 @@ def search_structurally(
                                 elif isinstance(handler.type, ast.Name) and handler.type.id in {"Exception", "BaseException"}:
                                     if len(handler.body) == 1 and isinstance(handler.body[0], ast.Pass):
                                         snip = lines[handler.lineno - 1].strip() if handler.lineno <= len(lines) else ""
-                                        results.append({
+                                        emit({
                                             "file": rel_p,
                                             "line": handler.lineno,
                                             "structure": "silent_except_pass",
@@ -183,7 +308,7 @@ def search_structurally(
                         if isinstance(node, ast.Assign):
                             if isinstance(node.value, ast.Call) and isinstance(node.value.func, ast.Name) and node.value.func.id == "open":
                                 snip = lines[node.lineno - 1].strip() if node.lineno <= len(lines) else ""
-                                results.append({
+                                emit({
                                     "file": rel_p,
                                     "line": node.lineno,
                                     "structure": "open_without_with",
@@ -196,7 +321,7 @@ def search_structurally(
                             has_await = any(isinstance(child, (ast.Await, ast.AsyncWith, ast.AsyncFor)) for child in ast.walk(node))
                             if not has_await:
                                 snip = lines[node.lineno - 1].strip() if node.lineno <= len(lines) else ""
-                                results.append({
+                                emit({
                                     "file": rel_p,
                                     "line": node.lineno,
                                     "structure": "async_without_await",
@@ -220,7 +345,7 @@ def search_structurally(
                                         dec_id = dec.func.attr
                                 if dec_target.lower() in dec_id.lower():
                                     snip = lines[node.lineno - 1].strip() if node.lineno <= len(lines) else ""
-                                    results.append({
+                                    emit({
                                         "file": rel_p,
                                         "line": node.lineno,
                                         "structure": f"decorator:{dec_id}",
@@ -240,7 +365,7 @@ def search_structurally(
                                     base_id = base.attr
                                 if sub_target.lower() in base_id.lower():
                                     snip = lines[node.lineno - 1].strip() if node.lineno <= len(lines) else ""
-                                    results.append({
+                                    emit({
                                         "file": rel_p,
                                         "line": node.lineno,
                                         "structure": f"subclass:{base_id}",
@@ -259,7 +384,7 @@ def search_structurally(
                                 call_id = node.func.attr
                             if fn_target.lower() in call_id.lower():
                                 snip = lines[node.lineno - 1].strip() if node.lineno <= len(lines) else ""
-                                results.append({
+                                emit({
                                     "file": rel_p,
                                     "line": node.lineno,
                                     "structure": f"call:{call_id}",
@@ -270,14 +395,22 @@ def search_structurally(
                 parse_errors += 1
                 parse_failed = True
 
-        if (parse_failed or len(results) == file_result_start or fpath.suffix != ".py") and not (
+        if (parse_failed or file_match_count == 0 or fpath.suffix != ".py") and not (
             fpath.suffix == ".py" and target_pattern.startswith(("fn:", "function:", "class:"))
         ):
             for idx, line in enumerate(lines, 1):
                 if len(results) >= result_probe_limit:
                     break
                 raw_line = line.strip()
-                if not raw_line or raw_line.startswith(("//", "#", "/*", "*")):
+                declaration_line = declaration_lines[idx - 1].strip()
+                if not raw_line:
+                    continue
+                if declaration_lines is not lines:
+                    # A declaration may follow a closed block comment on the
+                    # same line; only skip lines with no remaining code.
+                    if not declaration_line:
+                        continue
+                elif raw_line.startswith(("//", "#", "/*", "*")):
                     continue
                 matched = False
                 desc = ""
@@ -331,13 +464,33 @@ def search_structurally(
                 # Universal prefix queries: fn:name, class:name, struct:name, interface:name
                 elif target_pattern.startswith("fn:") or target_pattern.startswith("function:"):
                     fn_name = target_pattern.split(":", 1)[1].strip().lower()
-                    if re.search(rf"\b(?:def|function|fn|func)\s+{re.escape(fn_name)}\b", raw_line, re.I):
+                    escaped_name = re.escape(fn_name)
+                    ordinary_declaration = re.search(
+                        rf"\b(?:def|function|fn|func)\s+\*?\s*{escaped_name}\b",
+                        declaration_line, re.I,
+                    )
+                    go_receiver = (
+                        fpath.suffix == ".go"
+                        and re.search(
+                            rf"\bfunc\s*\([^()]*\)\s*{escaped_name}\b",
+                            declaration_line, re.I,
+                        )
+                    )
+                    js_assignment = (
+                        fpath.suffix in {".js", ".jsx", ".ts", ".tsx"}
+                        and re.search(
+                            rf"\b(?:const|let|var)\s+{escaped_name}\s*=\s*"
+                            rf"(?:async\s+)?(?:function\b|\([^)]*\)\s*=>|[A-Za-z_$][\w$]*\s*=>)",
+                            declaration_line, re.I,
+                        )
+                    )
+                    if ordinary_declaration or go_receiver or js_assignment:
                         matched = True
                         struct_type = f"function:{fn_name}"
                         desc = f"Function declaration matching '{fn_name}'"
                 elif target_pattern.startswith("class:") or target_pattern.startswith("struct:") or target_pattern.startswith("interface:"):
                     prefix, ent_name = target_pattern.split(":", 1)
-                    if re.search(rf"\b(?:class|struct|interface|type)\s+{re.escape(ent_name.strip())}\b", raw_line, re.I):
+                    if re.search(rf"\b(?:class|struct|interface|type)\s+{re.escape(ent_name.strip())}\b", declaration_line, re.I):
                         matched = True
                         struct_type = f"{prefix}:{ent_name.strip()}"
                         desc = f"{prefix.capitalize()} declaration matching '{ent_name.strip()}'"
@@ -351,7 +504,7 @@ def search_structurally(
                     desc = f"Pattern match for '{target_pattern}'"
 
                 if matched:
-                    results.append({
+                    emit({
                         "file": rel_p,
                         "line": idx,
                         "structure": struct_type,
@@ -360,10 +513,27 @@ def search_structurally(
                     })
 
     returned_matches = results[:output_limit]
+    overflow = len(results) > output_limit
+    next_offset: int | None = None
+    next_match_offset: int | None = None
+    if overflow:
+        # The probe result belongs to the current file. Resuming at the next
+        # file would silently lose the remaining matches in this one.
+        returned_in_current_file = max(0, output_limit - file_result_start)
+        next_offset = file_offset + files_scanned - 1 if not path else None
+        next_match_offset = (
+            (match_offset if files_scanned == 1 else 0) + returned_in_current_file
+        )
+    elif not path and (file_limit_reached or files_scanned < len(files_to_scan)):
+        next_offset = file_offset + files_scanned
+        next_match_offset = 0
+    if next_offset is not None and next_offset > 100_000:
+        next_offset = None
+        next_match_offset = None
     truncation_reasons: list[str] = []
     if file_limit_reached:
         truncation_reasons.append("file_limit")
-    if len(results) > output_limit:
+    if overflow:
         truncation_reasons.append("result_limit")
     if read_errors:
         truncation_reasons.append("read_errors")
@@ -377,6 +547,15 @@ def search_structurally(
         "matches": returned_matches,
         "files_scanned": files_scanned,
         "truncated": bool(truncation_reasons),
+        "complete": not truncation_reasons,
+        "has_more": file_limit_reached or overflow or files_scanned < len(files_to_scan),
+        "file_offset": file_offset,
+        "match_offset": match_offset,
+        "next_offset": next_offset,
+        "next_match_offset": next_match_offset,
+        "pagination": "file_offset + match_offset; unstable if repository files change between requests",
+        "file_limit": file_limit,
+        "unscanned_file_count": None if file_limit_reached else 0,
         "truncation_reasons": truncation_reasons,
         "read_errors": read_errors,
         "parse_errors": parse_errors,

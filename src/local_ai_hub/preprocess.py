@@ -3902,15 +3902,43 @@ class ProjectPreprocessor:
                 pending = (list(preferred) + [item for item in pending if str(item["path"]) not in seen])[:limit]
             if not pending:
                 force = bool(row.get("force_refresh"))
-                rev_row = con.execute("SELECT revision FROM file_refs_revision WHERE root=?", (root,)).fetchone()
+                # Older test/migrating databases may not yet contain the
+                # inventory revision table. Fall back to a full audit rather
+                # than crashing or assuming a completed RAG inventory.
+                has_revision_table = con.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='file_refs_revision'"
+                ).fetchone() is not None
+                rev_row = (
+                    con.execute("SELECT revision FROM file_refs_revision WHERE root=?", (root,)).fetchone()
+                    if has_revision_table else None
+                )
                 curr_rev = int(rev_row[0]) if rev_row is not None else 0
                 count_row = con.execute("SELECT count(*) FROM file_refs WHERE root=?", (root,)).fetchone()
                 curr_count = int(count_row[0]) if count_row is not None else 0
-                inventory_digest = (curr_rev, curr_count)
+                # Include real semantic-index state in the idle identity.
+                # file_refs revision alone cannot notice an externally reset
+                # RAG DB or a lost chunk table during the audit cadence.
+                rag_snapshot: tuple[int, int, int] | None = None
+                stats_provider = getattr(self.rag, "workspace_stats", None)
+                if callable(stats_provider):
+                    try:
+                        workspace_counts = stats_provider([workspace])
+                        counts = workspace_counts.get(workspace, {}) if isinstance(workspace_counts, dict) else None
+                        if isinstance(counts, dict):
+                            rag_snapshot = (
+                                int(counts.get("files", 0)),
+                                int(counts.get("chunks", 0)),
+                                int(counts.get("chunked_files", 0)),
+                            )
+                    except (OSError, ValueError, TypeError, sqlite3.Error):
+                        # A broken/unavailable semantic index must not be treated
+                        # as an unchanged, fully audited index.
+                        rag_snapshot = None
+                inventory_digest = (curr_rev, curr_count, rag_snapshot)
                 cadence = float(self.cfg.get("rag_idle_audit_cadence_seconds", 300.0))
                 now = time.time()
                 cached_digest, last_audit = getattr(self, "_rag_inventory_digests", {}).get(root, (None, 0.0))
-                if not force and cached_digest == inventory_digest and (now - last_audit) < cadence:
+                if has_revision_table and not force and cached_digest == inventory_digest and (now - last_audit) < cadence:
                     all_paths = None
                 else:
                     all_paths = [str(r[0]) for r in con.execute("SELECT path FROM file_refs WHERE root=? ORDER BY path", (root,)).fetchall()]
@@ -4003,6 +4031,9 @@ class ProjectPreprocessor:
         base = Path(root)
         stale_paths: list[str] = []
         for rel in paths:
+            # Never inspect an outside symlink target during stale detection.
+            if checked_relative_source(root, rel) != "inside_regular_file":
+                continue
             fpath = (base / rel).resolve(strict=False)
             try:
                 if not fpath.is_file():
@@ -4014,11 +4045,13 @@ class ProjectPreprocessor:
                 else:
                     disk_hash = hashlib.sha256(fpath.read_bytes()).hexdigest()
                 is_sha256 = len(expected_h) == 64 and all(c in "0123456789abcdefABCDEF" for c in expected_h)
-                if is_sha256:
-                    stale = (disk_hash != expected_h)
-                else:
-                    stale = (fpath.read_bytes() != expected_h.encode("utf-8", errors="replace")) and (disk_hash != expected_h)
-                if stale:
+                if not is_sha256:
+                    # Legacy opaque hashes cannot be compared to SHA-256 bytes.
+                    # Do not invalidate their DB row using an incomparable
+                    # digest. The RAG index step verifies live bytes against
+                    # any cached content override before publication.
+                    continue
+                if disk_hash != expected_h:
                     stale_paths.append(rel)
             except Exception:
                 continue
@@ -4030,14 +4063,27 @@ class ProjectPreprocessor:
                 has_index = "source_index" in tables
                 with write_transaction(con, max_duration_seconds=5.0, rollback_label="preprocessor stale unwatched refs"):
                     for rel in stale_paths:
-                        con.execute(
-                            "UPDATE file_refs SET needs_hash=1, rag_hash=NULL WHERE root=? AND path=?",
-                            (root, rel),
-                        )
-                        if has_index:
-                            con.execute("DELETE FROM source_index WHERE root=? AND path=?", (root, rel))
-                        if has_fts:
-                            con.execute("DELETE FROM source_fts WHERE root=? AND path=?", (root, rel))
+                        expected_hash = pending_hashes[rel]
+                        changed = con.execute(
+                            "UPDATE file_refs SET needs_hash=1, rag_hash=NULL "
+                            "WHERE root=? AND path=? AND content_hash=? AND needs_hash=0",
+                            (root, rel, expected_hash),
+                        ).rowcount
+                        # A newer source generation is never invalidated by an
+                        # older RAG batch, including the FTS view of that path.
+                        if changed:
+                            if has_index:
+                                con.execute(
+                                    "DELETE FROM source_index WHERE root=? AND path=? AND content_hash=?",
+                                    (root, rel, expected_hash),
+                                )
+                            if has_fts:
+                                con.execute(
+                                    "DELETE FROM source_fts WHERE root=? AND path=? "
+                                    "AND NOT EXISTS (SELECT 1 FROM source_index "
+                                    "WHERE root=? AND path=?)",
+                                    (root, rel, root, rel),
+                                )
             stale_set = set(stale_paths)
             paths = [p for p in paths if p not in stale_set]
             if not paths:

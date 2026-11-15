@@ -286,3 +286,54 @@ def test_rag_idle_skips_full_inventory_scan_when_digest_matches(tmp_path):
     # Fourth call: force_refresh -> full audit triggers
     assert pre._step_rag({"root": str(root), "workspace": "ws", "force_refresh": 1})
     assert len(prune_calls) == 3
+
+
+
+def test_rag_idle_detects_lost_chunk_inventory_inside_audit_cadence(tmp_path):
+    root = tmp_path / "repo"
+    root.mkdir()
+    db = tmp_path / "index.sqlite"
+    with closing(sqlite3.connect(db)) as con:
+        con.execute("CREATE TABLE file_refs(root TEXT, path TEXT, content_hash TEXT, needs_hash INTEGER, rag_hash TEXT, last_accessed_at REAL, size INTEGER, updated_at REAL)")
+        con.execute("CREATE TABLE file_refs_revision(root TEXT PRIMARY KEY, revision INTEGER)")
+        con.execute("INSERT INTO file_refs VALUES(?, 'a.py', 'h1', 0, 'h1', 0, 10, 0)", (str(root),))
+        con.execute("INSERT INTO file_refs_revision VALUES(?, 1)", (str(root),))
+        con.commit()
+
+    class Rag:
+        def __init__(self):
+            self.chunks = 2
+            self.prune_calls = 0
+
+        def workspace_stats(self, workspaces):
+            return {workspaces[0]: {"files": 1 if self.chunks else 0, "chunks": self.chunks,
+                                    "chunked_files": 1 if self.chunks else 0}}
+
+        def indexed_paths(self, *, workspace, paths):
+            return set(paths) if self.chunks else set()
+
+        def prune_missing(self, root, workspace, all_paths):
+            self.prune_calls += 1
+            return 0
+
+    rag = Rag()
+    prep = ProjectPreprocessor.__new__(ProjectPreprocessor)
+    prep._db_lock = threading.RLock()
+    prep._stats_lock = threading.RLock()
+    prep._stats = {}
+    prep._rag_inventory_digests = {}
+    prep._connect = lambda: sqlite3.connect(db)
+    prep._yield = lambda: False
+    prep.cfg = {"rag_idle_audit_cadence_seconds": 300.0}
+    prep.deterministic = None
+    prep.rag = rag
+    prep._set_project = lambda *args, **kwargs: None
+    assert prep._step_rag({"root": str(root), "workspace": "ws"})
+    assert rag.prune_calls == 1
+    assert prep._step_rag({"root": str(root), "workspace": "ws"})
+    assert rag.prune_calls == 1
+    rag.chunks = 0
+    assert prep._step_rag({"root": str(root), "workspace": "ws"})
+    assert rag.prune_calls == 1  # Missing index triggers rag_hash invalidation instead of false DONE.
+    with closing(sqlite3.connect(db)) as con:
+        assert con.execute("SELECT rag_hash FROM file_refs").fetchone()[0] is None

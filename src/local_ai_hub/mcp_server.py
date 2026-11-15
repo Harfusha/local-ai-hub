@@ -3722,6 +3722,8 @@ def _local_ai_repo_impl(
     limit: int | None = None,
     summarize_results: bool = False,
     offset: int = 0,
+    match_offset: int = 0,
+    file_offset: int | None = None,
     search_mode: str | None = None,
     old_symbol: str | None = None,
     new_symbol: str | None = None,
@@ -4655,9 +4657,16 @@ def _local_ai_repo_impl(
             "root": root, "lockfile_path": path or None,
         }, timeout=_timeout("quick")), "architecture")
     if action == "structural_search":
+        if file_offset is not None and offset != 0:
+            return contract_error("structural_search accepts file_offset or offset, not both")
+        effective_file_offset = offset if file_offset is None else file_offset
         return _compact(CLIENT.post("/api/repo/structural_search", {
-            "root": root, "pattern": query, "path": path or None, "max_results": max_tokens or 30,
-        }, timeout=_timeout("quick")), "architecture")
+            "root": root, "pattern": query, "path": path or None,
+            "max_results": max_tokens or 30, "offset": effective_file_offset, "match_offset": match_offset,
+        }, timeout=_timeout("quick")), "architecture", extra_fields=[
+            "truncated", "truncation_reasons", "complete", "has_more",
+            "file_limit", "file_offset", "match_offset", "next_offset", "next_match_offset", "pagination",
+        ])
     if action == "context_budget":
         files_arg = [path] if path else ([query] if query and not query.startswith("-") else [])
         return _compact(CLIENT.post("/api/repo/context_budget", {
@@ -4808,6 +4817,8 @@ def local_ai_repo(
     limit: int | None = None,
     summarize_results: bool = False,
     offset: int = 0,
+    match_offset: int = 0,
+    file_offset: int | None = None,
     search_mode: str | None = None,
     old_symbol: str | None = None,
     new_symbol: str | None = None,
@@ -4966,8 +4977,8 @@ def local_ai_repo(
         include_diagnostics, clone_id, worktree_id, branch, repository_id, session_id, repository_revision,
         changed_paths, phase, focus, preload_profile, guarded, since_hash, approval, override_reason,
         token_budget, is_worktree, parent_root, steps, limit=limit,
-        summarize_results=summarize_results, offset=offset,
-        search_mode=search_mode,
+        summarize_results=summarize_results, offset=offset, match_offset=match_offset,
+        file_offset=file_offset, search_mode=search_mode,
         old_symbol=old_symbol, new_symbol=new_symbol, old_code=old_code, new_code=new_code, rev1=rev1, rev2=rev2,
         max_commits=max_commits, author=author, since=since, until=until, days=days, depth=depth, pattern=pattern, target=target, replacement=replacement, head=head, start_line=start_line, end_line=end_line, line_start=line_start, line_end=line_end, file=file, owner=owner, lease_id=lease_id, **forward,
     )

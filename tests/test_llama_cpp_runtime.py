@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 import hashlib
 import io
 import socket
@@ -880,7 +882,8 @@ class LlamaCppRuntimeTests(unittest.TestCase):
             })
             runtime.runtime_dir.mkdir(parents=True)
             runtime.model_dir.mkdir(parents=True)
-            binary = runtime.runtime_dir / "llama-server.exe"
+            binary_name = "llama-server.exe" if runtime._host_platform()[0] == "win32" else "llama-server"
+            binary = runtime.runtime_dir / binary_name
             binary.write_bytes(b"server")
             _, asset_digest, _ = runtime.runtime_asset()
             (runtime.runtime_dir / ".runtime-sha256").write_text(asset_digest, encoding="utf-8")
@@ -901,9 +904,14 @@ class LlamaCppRuntimeTests(unittest.TestCase):
                 "llama_cpp": {"managed_model_filename": "candidate.gguf", "managed_model_sha256": "a" * 64},
             })
             runtime.runtime_dir.mkdir(parents=True)
-            (runtime.runtime_dir / "llama-server.exe").write_bytes(b"server")
+            binary_name = "llama-server.exe" if runtime._host_platform()[0] == "win32" else "llama-server"
+            (runtime.runtime_dir / binary_name).write_bytes(b"server")
             (runtime.runtime_dir / ".runtime-sha256").write_text(runtime.runtime_asset()[1], encoding="utf-8")
-            with patch.object(Path, "is_symlink", return_value=True):
+            original_is_symlink = Path.is_symlink
+            with patch.object(
+                Path, "is_symlink",
+                lambda candidate: candidate == runtime.model_path or original_is_symlink(candidate),
+            ):
                 with self.assertRaisesRegex(RuntimeError, "managed model.*link"):
                     runtime.provision()
 
@@ -1211,3 +1219,26 @@ class LlamaCppRuntimeTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_managed_server_discovery_respects_target_platform_and_rejects_symlinks(tmp_path):
+    runtime = LlamaCppManagedRuntime({"server": {"state_dir": str(tmp_path)}})
+    runtime.runtime_dir.mkdir(parents=True)
+    win_binary = runtime.runtime_dir / "llama-server.exe"
+    linux_binary = runtime.runtime_dir / "llama-server"
+    win_binary.write_bytes(b"windows server")
+    linux_binary.write_bytes(b"linux server")
+    with patch.object(runtime, "_host_platform", return_value=("win32", "amd64")):
+        assert runtime._find_server(runtime.runtime_dir) == win_binary
+    with patch.object(runtime, "_host_platform", return_value=("linux", "x86_64")):
+        assert runtime._find_server(runtime.runtime_dir) == linux_binary
+    link = tmp_path / "symlink-bin"
+    link.mkdir()
+    target = tmp_path / "external"
+    target.write_bytes(b"external payload")
+    try:
+        (link / "llama-server").symlink_to(target)
+    except (OSError, NotImplementedError):
+        pytest.skip("Symlink creation is unavailable on this platform")
+    with patch.object(runtime, "_host_platform", return_value=("linux", "x86_64")):
+        assert runtime._find_server(link) is None

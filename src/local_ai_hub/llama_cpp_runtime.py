@@ -338,13 +338,26 @@ class LlamaCppManagedRuntime:
         self._write_preset()
         return binary
 
-    @staticmethod
-    def _find_server(root: Path) -> Path | None:
-        name = "llama-server.exe" if os.name == "nt" else "llama-server"
-        found = next((path for path in root.rglob(name) if path.is_file()), None)
-        if found and os.name != "nt":
-            found.chmod(found.stat().st_mode | 0o111)
-        return found
+    def _find_server(self, root: Path) -> Path | None:
+        """Find the binary matching the selected release platform.
+
+        The target OS must come from the same source as runtime_asset(), not
+        the test runner's os.name. Reject symlinked executables to avoid
+        trusting a marker beside an executable outside the managed tree.
+        """
+        target_os, _ = self._host_platform()
+        name = "llama-server.exe" if target_os == "win32" else "llama-server"
+        for candidate in root.rglob(name):
+            try:
+                if candidate.is_symlink() or not candidate.is_file():
+                    continue
+                candidate.resolve(strict=True).relative_to(root.resolve(strict=True))
+                if target_os != "win32":
+                    candidate.chmod(candidate.stat().st_mode | 0o111)
+                return candidate
+            except (OSError, ValueError, RuntimeError):
+                continue
+        return None
 
     @staticmethod
     def _sha256(path: Path) -> str:

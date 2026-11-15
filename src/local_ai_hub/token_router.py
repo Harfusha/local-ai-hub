@@ -203,7 +203,10 @@ class LosslessTokenRouter:
                 continue
             start = max(1, start - context_lines)
             end = min(max_line, end + context_lines)
-            raw_score = item.get("score")
+            # Older minimal model outputs sometimes omit confidence while
+            # providing valid line coordinates. Admit only that omission with
+            # an explicitly neutral score; explicit null remains invalid.
+            raw_score = item.get("score", 0.5)
             if raw_score is None:
                 continue
             elif isinstance(raw_score, bool):
