@@ -430,9 +430,15 @@ def search_structurally(
                 # keyword ends this line; no comments, strings or markup can
                 # supply a fake symbol to this lexical fallback.
                 declaration_probe = declaration_line
-                if (
-                    fpath.suffix == ".php"
-                    and re.search(r"\b(?:function|class|interface|trait)\s*$", declaration_line, re.I)
+                if fpath.suffix == ".php" and (
+                    (
+                        target_pattern.startswith(("fn:", "function:"))
+                        and re.search(r"\bfunction\s*$", declaration_line, re.I)
+                    )
+                    or (
+                        target_pattern.startswith(("class:", "struct:", "interface:"))
+                        and re.search(r"\b(?:class|interface|trait)\s*$", declaration_line, re.I)
+                    )
                 ):
                     declaration_probe = " ".join(declaration_lines[idx - 1:idx + 3])
                 if not raw_line:
