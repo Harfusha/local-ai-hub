@@ -161,8 +161,10 @@ def merge_overlapping_evidence(
                 result.append(cluster[0])
                 continue
 
-            if cluster_end - cluster_start > MAX_MERGED_LINES:
-                cluster_end = cluster_start + MAX_MERGED_LINES
+            full_end_line = cluster_end
+            omitted_lines = max(0, cluster_end - cluster_start + 1 - MAX_MERGED_LINES)
+            if omitted_lines:
+                cluster_end = cluster_start + MAX_MERGED_LINES - 1
 
             max_score = max(
                 _safe_score(item.get("score"))
@@ -189,6 +191,11 @@ def merge_overlapping_evidence(
                     file_size = file_on_disk.stat().st_size
                     if file_size > MAX_FILE_BYTES:
                         fallback_reason = "file_too_large"
+                    elif not chash:
+                        # Without an expected digest, current disk text cannot be
+                        # attributed to the supplied historical evidence.
+                        fallback_reason = "missing_content_hash"
+                        freshness = "unverified"
                     else:
                         raw_bytes = file_on_disk.read_bytes()
                         # Content-addressed guard: verify disk file matches expected hash
@@ -200,14 +207,6 @@ def merge_overlapping_evidence(
                             snapshot_verified = True
                             freshness = "verified"
                             source_kind = "disk_snapshot"
-                        elif not chash:
-                            all_lines = raw_bytes.decode("utf-8", errors="replace").splitlines()
-                            slice_lines = all_lines[max(0, cluster_start - 1) : cluster_end]
-                            merged_text = "\n".join(slice_lines)
-                            snapshot_verified = False
-                            freshness = "unverified"
-                            fallback_reason = "missing_content_hash"
-                            source_kind = "unverified_disk"
                         else:
                             fallback_reason = "disk_hash_mismatch"
                             freshness = "stale"
@@ -236,6 +235,11 @@ def merge_overlapping_evidence(
             merged_item = dict(best_item)
             merged_item["start_line"] = cluster_start
             merged_item["end_line"] = cluster_end
+            merged_item["truncated"] = omitted_lines > 0
+            merged_item["omitted_lines"] = omitted_lines
+            if omitted_lines:
+                merged_item["original_end_line"] = full_end_line
+                merged_item["truncation_reason"] = "max_merged_lines"
             merged_item["score"] = max_score
             merged_item["text"] = merged_text
             merged_item["snapshot_verified"] = snapshot_verified
