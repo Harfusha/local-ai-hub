@@ -317,6 +317,82 @@ def test_incremental_index_rejects_symlink_swap_during_embedding(tmp_path):
 
 
 
+
+def test_rag_bounded_read_rejects_symlink_file_and_parent(tmp_path):
+    import pytest
+
+    root = tmp_path / "repo"
+    root.mkdir()
+    actual = root / "actual.md"
+    actual.write_text("ordinary source\n", encoding="utf-8")
+    alias = root / "alias.md"
+    nested = root / "nested"
+    nested.mkdir()
+    (nested / "doc.md").write_text("nested source\n", encoding="utf-8")
+    directory_alias = root / "alias-directory"
+    try:
+        alias.symlink_to(actual)
+        directory_alias.symlink_to(nested, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip("symlinks unavailable")
+    assert rag_module._read_bounded_file(actual, 128, root=root) == b"ordinary source\n"
+    assert rag_module._read_bounded_file(alias, 128, root=root) is None
+    assert rag_module._read_bounded_file(directory_alias / "doc.md", 128, root=root) is None
+
+
+def test_rag_bounded_read_rejects_replaced_descriptor(tmp_path, monkeypatch):
+    root = tmp_path / "repo"
+    root.mkdir()
+    expected = root / "expected.md"
+    other = root / "other.md"
+    expected.write_bytes(b"trusted bytes\n")
+    other.write_bytes(b"other bytes!\n")
+    original_open = rag_module.os.open
+
+    def redirect_open(path, flags, *args, **kwargs):
+        if path == expected:
+            return original_open(other, flags, *args, **kwargs)
+        return original_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(rag_module.os, "open", redirect_open)
+    assert rag_module._read_bounded_file(expected, 128, root=root) is None
+
+
+def test_incremental_rag_never_embeds_an_in_root_symlink(tmp_path):
+    import pytest
+
+    root = tmp_path / "repo"
+    root.mkdir()
+    source = root / "source.md"
+    source.write_text("original document\n", encoding="utf-8")
+    alias = root / "alias.md"
+    try:
+        alias.symlink_to(source)
+    except (OSError, NotImplementedError):
+        pytest.skip("symlinks unavailable")
+
+    class CountingEmbedding(_EmbeddingStub):
+        calls = 0
+
+        def embed(self, texts, **kwargs):
+            self.calls += 1
+            return super().embed(texts, **kwargs)
+
+    backend = CountingEmbedding()
+    store = RAGStore(
+        {"server": {"state_dir": str(tmp_path / "state")},
+         "models": {"embedding": "test-embedding", "embedding_dimension": 3},
+         "rag": {"dedup_near_duplicates": False}},
+        services=backend,
+    )
+    ws = store.workspace_id(str(root))
+    result = store.index_paths_step(str(root), workspace=ws, paths=["alias.md"])
+    assert result["success"] is True
+    assert result["processed_paths"] == []
+    assert "alias.md" in result["read_uncertain_paths"]
+    assert backend.calls == 0
+
+
 def test_changed_file_rejects_stale_content_override_at_index_boundary(tmp_path):
     repo = tmp_path / "repo"
     repo.mkdir()

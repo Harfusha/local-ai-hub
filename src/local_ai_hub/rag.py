@@ -558,12 +558,67 @@ def _serialize_embedding(vector: Any) -> bytes | str | None:
         return None
 
 
-def _read_bounded_file(path: Path, max_bytes: int) -> bytes | None:
-    """Read at most max_bytes plus one byte to detect growth after stat."""
+def _read_bounded_file(
+    path: Path, max_bytes: int, *, root: Path | None = None,
+) -> bytes | None:
+    """Bounded no-follow source read, rejecting path/descriptor identity races.
+
+    Reject symlinks and Windows reparse points before reading, and compare
+    opened descriptor identity with the path both before and after the read.
+    The root (when supplied) constrains every traversed path component.
+    """
     limit = max(0, int(max_bytes))
-    with path.open("rb") as source:
-        raw = source.read(limit + 1)
-    return raw if len(raw) <= limit else None
+    try:
+        def safe_components() -> bool:
+            if root is None:
+                return True
+            relative = path.relative_to(root)
+            if not relative.parts or ".." in relative.parts:
+                return False
+            current = root
+            for part in relative.parts:
+                current = current / part
+                component_stat = current.stat(follow_symlinks=False)
+                if (
+                    stat.S_ISLNK(component_stat.st_mode)
+                    or bool(getattr(component_stat, "st_file_attributes", 0) & 0x400)
+                ):
+                    return False
+            return True
+
+        if not safe_components():
+            return None
+        before = path.stat(follow_symlinks=False)
+        if (
+            not stat.S_ISREG(before.st_mode)
+            or bool(getattr(before, "st_file_attributes", 0) & 0x400)
+        ):
+            return None
+        flags = (
+            os.O_RDONLY | getattr(os, "O_BINARY", 0)
+            | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+        )
+        descriptor = os.open(path, flags)
+        with os.fdopen(descriptor, "rb") as source:
+            opened = os.fstat(source.fileno())
+            raw = source.read(limit + 1)
+            finished = os.fstat(source.fileno())
+        after = path.stat(follow_symlinks=False)
+        identity = lambda info: (
+            info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns,
+        )
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or len(raw) > limit
+            or identity(before) != identity(opened)
+            or identity(opened) != identity(finished)
+            or identity(finished) != identity(after)
+            or not safe_components()
+        ):
+            return None
+        return raw
+    except (OSError, RuntimeError, ValueError, TypeError):
+        return None
 
 
 def _rag_source_still_current(
@@ -1973,7 +2028,7 @@ class RAGStore:
                 # Stat metadata can be preserved across edits. Verify the
                 # persisted content digest before trusting an indexed file.
                 try:
-                    raw = _read_bounded_file(_path, max_file_bytes)
+                    raw = _read_bounded_file(_path, max_file_bytes, root=root_path)
                     if raw is None:
                         skipped += 1
                         read_uncertain_paths.add(rel)
@@ -2036,7 +2091,7 @@ class RAGStore:
             try:
                 raw = verified_raw_by_path.pop(rel, None)
                 if raw is None:
-                    raw = _read_bounded_file(path, max_file_bytes)
+                    raw = _read_bounded_file(path, max_file_bytes, root=root_path)
                 if raw is None:
                     skipped += 1
                     read_uncertain_paths.add(rel)
@@ -2558,10 +2613,16 @@ class RAGStore:
                         "reused_chunks": reused_chunks,
                     }
                 rel = str(rel).replace("\\", "/")
-                path = (root_path / rel).resolve(strict=False)
+                # Preserve the caller's original path for no-follow I/O.
+                # Resolving it here would hide an in-root symlink from the reader.
+                path = root_path / rel
+                if ".." in path.relative_to(root_path).parts:
+                    read_uncertain_paths.add(rel)
+                    continue
                 try:
-                    relative_path = path.relative_to(root_path)
-                except ValueError:
+                    relative_path = path.resolve(strict=False).relative_to(root_path)
+                except (OSError, RuntimeError, ValueError):
+                    read_uncertain_paths.add(rel)
                     continue
                 ignored_parts = relative_path.parts[:-1]
                 requested_path = Path(os.path.normpath(rel))
@@ -2602,7 +2663,7 @@ class RAGStore:
                     # A cached lexical snapshot cannot prove the file is still
                     # identical. Re-read the bounded live bytes at the final
                     # indexing boundary, even when an override was supplied.
-                    raw = _read_bounded_file(path, max_bytes)
+                    raw = _read_bounded_file(path, max_bytes, root=root_path)
                     if raw is None:
                         read_uncertain_paths.add(rel)
                         continue
