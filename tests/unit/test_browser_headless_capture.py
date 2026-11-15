@@ -14,6 +14,19 @@ from local_ai_hub import browser_bridge
 from local_ai_hub.artifacts import ArtifactStore
 
 
+def test_browser_bridge_finds_windows_chrome_outside_path(tmp_path, monkeypatch):
+    chrome = tmp_path / "Google" / "Chrome" / "Application" / "chrome.exe"
+    chrome.parent.mkdir(parents=True)
+    chrome.touch()
+    monkeypatch.delenv("LOCAL_AI_CHROME", raising=False)
+    monkeypatch.setenv("ProgramFiles", str(tmp_path))
+    monkeypatch.delenv("ProgramFiles(x86)", raising=False)
+    monkeypatch.delenv("LOCALAPPDATA", raising=False)
+    monkeypatch.setattr(browser_bridge.shutil, "which", lambda _: None)
+
+    assert browser_bridge.BrowserBridge().executable == str(chrome)
+
+
 def test_browser_capture_artifacts_keep_full_dom_and_binary(tmp_path, monkeypatch):
     png = b"\x89PNG\r\n\x1a\n" + b"image payload"
     dom = "<html>" + "body" * 3000 + "</html>"
