@@ -49,6 +49,15 @@ def test_idempotent_companion_install_retains_modified_owned_skill(tmp_path):
     assert isinstance(json.loads(manifest.read_text(encoding="utf-8")).get("skills"), dict)
 
 
+
+def test_token_economizer_generator_matches_checked_in_skill():
+    """Generated skills must match their checked-in canonical source."""
+    from local_ai_hub.generator import TOKEN_ECONOMIZER_SKILL_MD
+
+    source = (REPO_ROOT / "skills" / "token-economizer" / "SKILL.md").read_text(encoding="utf-8")
+    assert source == TOKEN_ECONOMIZER_SKILL_MD
+
+
 def test_mcp_only_skill_setup_can_skip_companions(tmp_path):
     install_dir = tmp_path / "install"
     source = install_dir / "skills" / "local-ai-orchestrator"

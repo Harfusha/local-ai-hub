@@ -1027,93 +1027,50 @@ def generate_global_policy(cfg: dict[str, Any]) -> str:
 
 TOKEN_ECONOMIZER_SKILL_MD = """---
 name: token-economizer
-description: Use when starting any coding or repository task involving source discovery, file reading, tests, command output, or code review.
+description: Reduce repetitive agent context and tool output while preserving verification, source citations and critical details.
 ---
 
 # Token Economizer
 
-Load and follow this skill before any coding or repository task. Apply its discovery, reading, and output limits even when a task is urgent; use the token-economy tools whenever they are available.
+Use this skill when agent tasks involve large repositories, repeated retrieval
+passes, or long-running multi-step work. It is a workflow discipline, not a
+promise to suppress necessary evidence.
 
-## Available Token-Saving Tooling
+## Procedure
 
-1. **`tokcount <path|stdin>`**:
-   - Computes exact token count (o200k/Astra, cl100k/Codex) for any file, folder, or pipe.
-   - Example: `tokcount src/` or `git diff | tokcount`
+1. Define the exact task, current repository revision, acceptance criteria and
+   last verified checkpoint before retrieving more context.
+2. Use a targeted search for file names and symbols before opening entire files.
+   Prefer a bounded source slice with a line range and stable root identity to
+   dumping a whole repository or huge command logs.
+3. Reuse fresh, commit-matched RAG evidence. If its revision, file hash,
+   provenance or freshness is unknown, inspect the actual source rather than
+   silently trusting a summary.
+4. Extract and retain decisions, errors, failing tests, tool arguments and exact
+   next steps into a durable task checkpoint. Avoid repeating unaffected
+   diagnostics in each subsequent conversation.
+5. For code edits, quote only minimal source context needed to apply a precise
+   patch. Always inspect dependent APIs and run focused tests before broader
+   release tests.
+6. Collapse successful repetitive output into a count and reference. Preserve
+   complete failure details when needed for diagnosis, including file names,
+   relevant traces, and reproducible commands.
+7. Do not omit security checks, critical warnings, uncertainty, exact citations,
+   or evidence needed to prove acceptance in order to reduce token use.
+8. If current data differs from stored evidence, invalidate the stored summary
+   and redo the relevant verification.
 
-2. **`trim-run [-n 40] <command>` / `cmd | trim-run`**:
-   - Safe output wrapper: allows bundled `tokcount`/`repo-map` and read-only `rg`/`fd`/`grep-ast` commands; it also trims stdin pipelines. It never runs arbitrary shell commands.
-   - Example: `repo-map . | trim-run -n 40` or `git log | trim-run`
+## Integration with Local AI Hub
 
-3. **`repo-map [dir] [-n 200]`**:
-   - Generates high-density AST skeleton (classes, methods, signatures) of the whole repo using Tree-sitter / grep-ast without reading file bodies.
+- `local_ai_repo`: locate files, topology, symbols and diff context.
+- `local_ai_artifact`: obtain bounded source with provenance.
+- `local_ai_rag`: retrieve cross-file semantic context when lexical navigation is
+  insufficient, while checking document freshness.
+- `local_ai_coord`: record checkpoints and verification receipts; do not write
+  the Hub's internal task database directly.
 
-4. **`grep-ast <pattern> <file>`**:
-   - AST-aware search: returns matching lines with parent class/function scope instead of dumping the file.
-
-5. **`ast-grep scan --pattern '<pattern>'` (or `sg`)**:
-   - Fast structural AST search across codebase without loading files into context.
-
-6. **`repomix --compress --output <file>`**:
-   - Packs repo with comment stripping, blank line removal, Tree-sitter compression, and token counts.
-
-7. **`files-to-prompt -c <paths...>`**:
-   - Formats selected files into structured LLM XML without shell overhead.
-
-8. **`local_ai_artifact(action="slice")`**:
-   - Fetches exact slice of a file (e.g. lines 120-160) without reading entire file.
-
-9. **Host native command tool**:
-   - Run bounded validation commands in the target repository.
-
-10. **`rg` (`ripgrep`)**:
-    - Fast regex code search: always bound matches with `-m <N>` or `--max-columns <N>` to avoid context floods.
-
-11. **`fd` (`fd-find`)**:
-    - Fast file/dir discovery: use `fd <pattern> -d <depth>` instead of wide recursive trees.
-
-12. **`jq <filter>`**:
-    - Stream JSON filter: slice and project only necessary fields from API responses or command outputs (`cmd | jq '...'`).
-
-## Rules of Engagement
-
-### 1. Zero Full-File Dumping
-- **NEVER** use `cat`, `type`, `Get-Content` or unconstrained reads on files larger than 80 lines.
-- Use `repo-map` or `grep-ast` for orientation.
-- Use `rg -m 5` or `fd` for bounded targeted search instead of unconstrained directory scans.
-- Use targeted line ranges (`view_file` with `StartLine`/`EndLine`) or `local_ai_artifact(action="slice")`.
-- Use **Serena** (`find_symbol`, `find_referencing_symbols`) or `ast-grep` before opening files.
-
-### 2. Bounded Command & Test Outputs
-- **NEVER** run verbose build/test commands raw into context.
-- Run tests/builds with the agent host native command tool; use `trim-run` only with bundled `tokcount`/`repo-map`, read-only `rg`/`fd`/`grep-ast`, or to trim stdin pipelines.
-- Filter large JSON outputs with `jq` to extract only relevant fields before returning to LLM.
-- Use minimal test flags: `pytest -q --tb=short`, `dotnet test --verbosity quiet`.
-- Use compact git commands: `git status -s`, `git diff --stat`, `git log -n 5 --oneline`.
-
-### 3. Surgical Edits (Diffs Over Rewrites)
-- Prefer single-block replacements (`replace_file_content` / targeted patches) over rewriting entire files.
-- Do not recite or parrot existing file contents before or after changes.
-
-### 4. Optional Local AI Hub Models
-- Local semantic delegation is optional. Use only models available under the active profile and user policy; configured routes do not prove installation or quality.
-- Preprocessing-only models must not handle foreground work. Do not pull models or start a backend just to satisfy delegation.
-- Use deterministic/indexed Hub tools for exact facts, symbols, diffs, and tests; model output cannot replace that evidence.
-
-### 5. Concise Output (Caveman Protocol)
-- Omit conversational filler, decorative preambles, and post-execution summaries of obvious changes.
-- Focus strictly on file links, diff summaries, and failure diagnostics.
-- Use terse Caveman style for local model prose; keep every fact, requirement, constraint, exception, uncertainty, code block, and requested structure.
-
-### 6. MCP Response Economy
-- Hub responses are aggregate-bounded; use `max_response_tokens` only for a bounded exception.
-- `response_budget.returned_tokens` measures the final serialized response envelope in `estimated_tokens` and stays at or below the requested budget.
-- Preserve protected status, error, evidence, and context-identity fields; keep exact detail artifact-backed.
-- Claim savings only with a current `baseline_evidence_id`; report signed `token_savings_delta_est`, including negative values; keep `protocol_tokens_est`, `schema_tokens_est`, and `local_compute_reused_tokens_est` separate.
-- Reject `max_response_tokens` below 128; never raise the request silently.
-- For Hub outages, native fallback requires explicit `terminal=true` and `retryable=false`; for Hub-unknown commands, require `native_fallback_allowed=true` plus native-tool authorization.
-- On `outcome_unknown` or `in_progress`, do independent work; never poll or repeat the identical operation.
-- Prefer compact/minimal profiles, stable `reuse_key` values, cache reuse, and artifact slices.
-- Keep command output at summary/status level; fetch exact logs only when needed.
+Do not claim that a task or test passed based on cached narrative alone.
+Do not enable an autonomous workflow or download a model without permission.
 """
 
 
