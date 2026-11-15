@@ -199,6 +199,47 @@ def test_php_class_and_function_queries_ignore_markup_and_comments(tmp_path):
     assert [m["line"] for m in _scan(tmp_path, "fn:real_function")["matches"]] == [7]
 
 
+
+
+def test_php_namespace_and_multiline_method_declarations(tmp_path):
+    source = tmp_path / "Invoice.php"
+    source.write_text(
+        "<?php\n"
+        "namespace App\\\\Billing;\n"
+        "final class\n"
+        "InvoiceProcessor {\n"
+        "    public function\n"
+        "    calculateTotal(\n"
+        "        int $amount\n"
+        "    ): int { return $amount; }\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    assert [item["line"] for item in _scan(tmp_path, "class:InvoiceProcessor")["matches"]] == [3]
+    assert [item["line"] for item in _scan(tmp_path, "fn:calculateTotal")["matches"]] == [5]
+
+
+def test_declaration_queries_do_not_match_literal_query_text(tmp_path):
+    php = tmp_path / "untrusted.php"
+    php.write_text(
+        "<?php\n"
+        '$value = "fn:fakeMethod class:FakeClass";\n'
+        "// fn:fakeMethod\n"
+        "/* class:FakeClass */\n"
+        "?>\n"
+        "<p>class:FakeClass</p>\n",
+        encoding="utf-8",
+    )
+    ts = tmp_path / "untrusted.ts"
+    ts.write_text(
+        'const hints = "fn:fakeMethod class:FakeClass";\n'
+        "// fn:fakeMethod class:FakeClass\n",
+        encoding="utf-8",
+    )
+    assert _scan(tmp_path, "fn:fakeMethod")["matches"] == []
+    assert _scan(tmp_path, "class:FakeClass")["matches"] == []
+
+
 def test_typescript_function_search_supports_assigned_arrow_and_function_expressions(tmp_path):
     source = tmp_path / "functions.ts"
     source.write_text(

@@ -425,6 +425,16 @@ def search_structurally(
                     break
                 raw_line = line.strip()
                 declaration_line = declaration_lines[idx - 1].strip()
+                # PHP declarations permit the identifier to start on a later
+                # line. Only join a small masked lookahead when a declaration
+                # keyword ends this line; no comments, strings or markup can
+                # supply a fake symbol to this lexical fallback.
+                declaration_probe = declaration_line
+                if (
+                    fpath.suffix == ".php"
+                    and re.search(r"\b(?:function|class|interface|trait)\s*$", declaration_line, re.I)
+                ):
+                    declaration_probe = " ".join(declaration_lines[idx - 1:idx + 3])
                 if not raw_line:
                     continue
                 if declaration_lines is not lines:
@@ -489,13 +499,13 @@ def search_structurally(
                     escaped_name = re.escape(fn_name)
                     ordinary_declaration = re.search(
                         rf"\b(?:def|function|fn|func)\s+\*?\s*{escaped_name}\b",
-                        declaration_line, re.I,
+                        declaration_probe, re.I,
                     )
                     go_receiver = (
                         fpath.suffix == ".go"
                         and re.search(
                             rf"\bfunc\s*\([^()]*\)\s*{escaped_name}\b",
-                            declaration_line, re.I,
+                            declaration_probe, re.I,
                         )
                     )
                     js_assignment = (
@@ -503,7 +513,7 @@ def search_structurally(
                         and re.search(
                             rf"\b(?:const|let|var)\s+{escaped_name}\s*=\s*"
                             rf"(?:async\s+)?(?:function\b|\([^)]*\)\s*=>|[A-Za-z_$][\w$]*\s*=>)",
-                            declaration_line, re.I,
+                            declaration_probe, re.I,
                         )
                     )
                     if ordinary_declaration or go_receiver or js_assignment:
@@ -512,7 +522,7 @@ def search_structurally(
                         desc = f"Function declaration matching '{fn_name}'"
                 elif target_pattern.startswith("class:") or target_pattern.startswith("struct:") or target_pattern.startswith("interface:"):
                     prefix, ent_name = target_pattern.split(":", 1)
-                    if re.search(rf"\b(?:class|struct|interface|type)\s+{re.escape(ent_name.strip())}\b", declaration_line, re.I):
+                    if re.search(rf"\b(?:class|struct|interface|type)\s+{re.escape(ent_name.strip())}\b", declaration_probe, re.I):
                         matched = True
                         struct_type = f"{prefix}:{ent_name.strip()}"
                         desc = f"{prefix.capitalize()} declaration matching '{ent_name.strip()}'"
@@ -521,7 +531,10 @@ def search_structurally(
                     matched = True
                     struct_type = "sql_injection"
                     desc = "Potential raw string concatenation in SQL statement"
-                elif target_pattern in raw_line.lower():
+                elif (
+                    not target_pattern.startswith(("fn:", "function:", "class:", "struct:", "interface:"))
+                    and target_pattern in raw_line.lower()
+                ):
                     matched = True
                     desc = f"Pattern match for '{target_pattern}'"
 

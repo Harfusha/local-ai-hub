@@ -153,3 +153,12 @@ Změny níže jsou **skutečně commitnuté do PR #8**, nikoliv jen návrhy. Jde
 - [`eb7d8b19`](https://github.com/Harfusha/local-ai-hub/commit/eb7d8b193f868b2d1fe176ad4f01bad2eb0f0356): oprava pořadí `from __future__` v runtime testu.
 - [`a8ca62f5`](https://github.com/Harfusha/local-ai-hub/commit/a8ca62f5d57bd1d544a75e209a5b04af40fa2bf1): izolované mockování symlinku výhradně u modelu; nedotýká se validního executable.
 - Starý CI run `43726782408` selhal v Python 3.14 na 35 testech a 12 platform-smoke jobech s dirty-tree detekcí; jeho výsledky se **nesmějí** zaměňovat za výsledky nové větve. Poslední aktuální run je ve frontě. Nové regression smoke testy a tracked-source privacy test jsou přidány do `fast-contract`. Je nutné získat zelené exact-SHA JUnit a distribuční packaging evidence, než PR opustí draft.
+
+## 10. Další kontrola – přesné regresní testy a pokračování strukturálního vyhledávání (2026-11-15)
+
+- Na starším HEAD `3ed1448e` měl GitHub Actions run [43749429162](https://github.com/Harfusha/local-ai-hub/actions/runs/43749429162) sedm selhání ve full Ubuntu/Python 3.14 (17 426 passed, 219 skipped). Ostatních 28 dostupných jobs mělo success s výjimkou následně skipped packaging.
+- [`e51b85bd`](https://github.com/Harfusha/local-ai-hub/commit/e51b85bdc92330683796d432a6d72d2ba12afed5) opravuje cíleně scoped Laya shadow task ID, MCP test oddělující telemetrii, HTTP test při podporovaném hardware profilu, hostem izolovanou Windows Chrome detekci, preferenci validovaných pinned context cest a chybějící audit endpoint.
+- [`28fafb9a`](https://github.com/Harfusha/local-ai-hub/commit/28fafb9a869d514728206e968bec0ea9ac8b7e0d) doplňuje soupis odpovědních polí do auditního záznamu `GET /api/repair-priorities`.
+- Následný commit přidává regresní případy pro PHP namespaced/multiline deklarace a zakazuje falešné výsledky typu `fn:...` nebo `class:...` pocházející pouze z textového řetězce či komentáře.
+- **Pozor:** žádný zde vyjmenovaný commit sám neznamená PASS finálního SHA; před merge a release ověř nejnovější GitHub Actions run včetně `integration (ubuntu-latest, 3.14)`, `critical-coverage` a `package`. Potvrzení modelů, GPU, browseru a host CLI vyžaduje externí akceptaci.
+- **Nedokončeno:** cursor/revision guard pro strukturální vyhledávání mezi změnami stromu souborů a kompletní AST parser PHP; číselný file/match offset je nadále nestabilní při změnách repozitáře.
