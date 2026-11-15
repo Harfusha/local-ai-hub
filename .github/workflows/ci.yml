@@ -15,6 +15,9 @@ on:
 permissions:
   contents: read
 
+env:
+  NO_TEST_CACHE: "1"
+
 jobs:
   lint:
     runs-on: ubuntu-latest
@@ -62,6 +65,10 @@ jobs:
       - run: >-
           python -m pytest -q
           tests/test_mcp_contract_dispatch.py
+          tests/test_dashboard_host_inspection.py
+          tests/test_dashboard_runtime_contracts.py
+          tests/test_structural_search_php_contract.py
+          tests/unit/test_evidence_merge.py
           tests/test_http_post_route_registry_t18.py
           tests/test_http_admin_action_auth_t18.py
           tests/test_http_debug_trace_toggle.py
@@ -296,6 +303,7 @@ jobs:
           tests/unit/test_capability_grant_validity.py
           tests/unit/test_capability_grant_canonical_inputs.py
           tests/test_audit_critical_coverage_contract.py
+          tests/test_command_rollback.py
           tests/test_audit_review_delivery_quality.py
           tests/test_audit_retrieval_gold_contract.py
           tests/test_audit_quality_eval_contract.py

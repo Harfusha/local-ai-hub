@@ -41,14 +41,17 @@ def test_evidence_merge_uses_best_score_and_preserves_symbol_order():
 
 
 def test_evidence_merge_prefers_file_snapshot_when_root_contains_path(tmp_path):
+    import hashlib
+
     source = tmp_path / "src" / "a.py"
     source.parent.mkdir()
     source.write_text("line 1\nline 2\nline 3\nline 4\n", encoding="utf-8")
 
+    digest = hashlib.sha256(source.read_bytes()).hexdigest()
     merged = merge_overlapping_evidence(
         [
-            {"path": "src/a.py", "start_line": 2, "end_line": 2, "text": "stale"},
-            {"path": "src/a.py", "start_line": 3, "end_line": 3, "text": "stale"},
+            {"path": "src/a.py", "start_line": 2, "end_line": 2, "text": "stale", "content_hash": digest},
+            {"path": "src/a.py", "start_line": 3, "end_line": 3, "text": "stale", "content_hash": digest},
         ],
         root=tmp_path,
     )
@@ -175,3 +178,32 @@ def test_evidence_merge_bounded_file_read_and_symlink_protection(tmp_path):
     assert merged[0]["fallback_reason"] == "file_too_large"
     assert merged[0]["snapshot_verified"] is False
 
+
+
+
+def test_unhashed_evidence_never_replaced_by_current_disk(tmp_path):
+    source = tmp_path / "a.py"
+    source.write_text("new line 1\nnew line 2\n", encoding="utf-8")
+    records = [
+        {"path": "a.py", "start_line": 1, "end_line": 1, "text": "original line 1"},
+        {"path": "a.py", "start_line": 2, "end_line": 2, "text": "original line 2"},
+    ]
+    merged = merge_overlapping_evidence(records, root=tmp_path)
+    assert merged[0]["text"] == "original line 1\noriginal line 2"
+    assert merged[0]["snapshot_verified"] is False
+    assert merged[0]["freshness"] == "unverified"
+    assert merged[0]["fallback_reason"] == "missing_content_hash"
+
+
+def test_large_merged_range_reports_exact_omitted_lines():
+    merged = merge_overlapping_evidence([
+        {"path": "a.py", "start_line": 1, "end_line": 2, "text": "one\ntwo"},
+        {"path": "a.py", "start_line": 2, "end_line": 50005, "text": "two"},
+    ])
+    assert len(merged) == 1
+    assert merged[0]["start_line"] == 1
+    assert merged[0]["end_line"] == 50000
+    assert merged[0]["original_end_line"] == 50005
+    assert merged[0]["omitted_lines"] == 5
+    assert merged[0]["truncated"] is True
+    assert merged[0]["truncation_reason"] == "max_merged_lines"
