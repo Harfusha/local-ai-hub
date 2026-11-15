@@ -2015,6 +2015,12 @@ class RAGStore:
                 "error": "embedding-space reindex could not inspect previously indexed files",
             }
         deleted_paths = sorted(old_paths - current_paths)
+        # A path that was physically missing during discovery must not be
+        # silently pruned if it reappears while embeddings are computed.
+        # Paths excluded by current project policy still need normal pruning.
+        physically_absent_deletions = {
+            rel for rel in deleted_paths if not (root_path / rel).exists()
+        }
         unchanged_paths: list[str] = []
         changed_paths: list[str] = []
         rag_cfg = self.config.get("rag", {})
@@ -2253,16 +2259,26 @@ class RAGStore:
         # Run this on every SQLite publish attempt, not once before its busy
         # retries: source bytes can change while waiting for the writer lock.
         def assert_current_sources() -> None:
-            stale_sources = sorted(
+            stale_sources = [
                 rel for rel, mtime_ns, size, file_hash in file_rows
                 if not _rag_source_still_current(
                     root_path, rel, expected_hash=file_hash,
                     expected_size=size, expected_mtime_ns=mtime_ns,
                     max_bytes=max_file_bytes,
                 )
-            )
+            ]
+            for rel in physically_absent_deletions:
+                try:
+                    (root_path / rel).lstat()
+                except FileNotFoundError:
+                    continue
+                except OSError:
+                    # Uncertain existence cannot authorize an irreversible
+                    # deletion of previously committed indexed chunks.
+                    pass
+                stale_sources.append(rel)
             if stale_sources:
-                raise _RAGSourceChangedBeforePublish(stale_sources)
+                raise _RAGSourceChangedBeforePublish(sorted(set(stale_sources)))
 
         chunker_version_publishable = (
             not chunker_version_changed

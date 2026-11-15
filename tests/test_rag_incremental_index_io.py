@@ -93,6 +93,62 @@ def test_full_index_recovers_missing_chunks_with_unchanged_file_metadata(tmp_pat
     assert stable_chunks > 0
 
 
+
+def test_full_index_does_not_prune_deleted_file_restored_during_embedding(tmp_path):
+    root = tmp_path / "repo"
+    root.mkdir()
+    guide = root / "guide.md"
+    guide.write_text("original searchable guide\n", encoding="utf-8")
+
+    class RestoringEmbedding(_EmbeddingStub):
+        restore_on_embed = False
+
+        def embed(self, texts, **kwargs):
+            if self.restore_on_embed:
+                self.restore_on_embed = False
+                guide.write_text("original searchable guide\n", encoding="utf-8")
+            return super().embed(texts, **kwargs)
+
+    embedder = RestoringEmbedding()
+    store = RAGStore(
+        {
+            "server": {"state_dir": str(tmp_path / "state")},
+            "models": {"embedding": "test-embedding", "embedding_dimension": 3},
+            "rag": {"dedup_near_duplicates": False},
+        },
+        services=embedder,
+    )
+    ws = store.workspace_id(str(root))
+    assert store.index(str(root))["success"] is True
+    with closing(store._connect()) as con:
+        original = [tuple(row) for row in con.execute(
+            "SELECT path,text FROM chunks WHERE workspace=? ORDER BY path,chunk_no", (ws,),
+        ).fetchall()]
+    assert original and original[0][0] == "guide.md"
+
+    guide.unlink()
+    (root / "new.md").write_text("a newly discovered separate document\n", encoding="utf-8")
+    embedder.restore_on_embed = True
+    rejected = store.index(str(root))
+    assert rejected["success"] is False
+    assert rejected["retryable"] is True
+    assert rejected["error"] == "source_changed_before_publish"
+    assert rejected["stale_source_paths"] == ["guide.md"]
+    with closing(store._connect()) as con:
+        preserved = [tuple(row) for row in con.execute(
+            "SELECT path,text FROM chunks WHERE workspace=? ORDER BY path,chunk_no", (ws,),
+        ).fetchall()]
+    assert preserved == original
+
+    retry = store.index(str(root))
+    assert retry["success"] is True
+    with closing(store._connect()) as con:
+        current = [tuple(row) for row in con.execute(
+            "SELECT path,text FROM chunks WHERE workspace=? ORDER BY path,chunk_no", (ws,),
+        ).fetchall()]
+    assert {row[0] for row in current} == {"guide.md", "new.md"}
+
+
 def test_full_index_does_not_rebuild_legitimately_empty_chunk_document(tmp_path):
     root = tmp_path / "repo"
     root.mkdir()
