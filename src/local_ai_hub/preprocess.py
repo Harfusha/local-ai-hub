@@ -3906,7 +3906,26 @@ class ProjectPreprocessor:
                 curr_rev = int(rev_row[0]) if rev_row is not None else 0
                 count_row = con.execute("SELECT count(*) FROM file_refs WHERE root=?", (root,)).fetchone()
                 curr_count = int(count_row[0]) if count_row is not None else 0
-                inventory_digest = (curr_rev, curr_count)
+                # Include real semantic-index state in the idle identity.
+                # file_refs revision alone cannot notice an externally reset
+                # RAG DB or a lost chunk table during the audit cadence.
+                rag_snapshot: tuple[int, int, int] | None = None
+                stats_provider = getattr(self.rag, "workspace_stats", None)
+                if callable(stats_provider):
+                    try:
+                        workspace_counts = stats_provider([workspace])
+                        counts = workspace_counts.get(workspace, {}) if isinstance(workspace_counts, dict) else None
+                        if isinstance(counts, dict):
+                            rag_snapshot = (
+                                int(counts.get("files", 0)),
+                                int(counts.get("chunks", 0)),
+                                int(counts.get("chunked_files", 0)),
+                            )
+                    except (OSError, ValueError, TypeError, sqlite3.Error):
+                        # A broken/unavailable semantic index must not be treated
+                        # as an unchanged, fully audited index.
+                        rag_snapshot = None
+                inventory_digest = (curr_rev, curr_count, rag_snapshot)
                 cadence = float(self.cfg.get("rag_idle_audit_cadence_seconds", 300.0))
                 now = time.time()
                 cached_digest, last_audit = getattr(self, "_rag_inventory_digests", {}).get(root, (None, 0.0))
