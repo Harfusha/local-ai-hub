@@ -65,3 +65,31 @@ def test_antigravity_json_comment_cannot_fake_registration(tmp_path, monkeypatch
     cfg.parent.mkdir(parents=True)
     cfg.write_text(json.dumps({"comment": "local-ai", "mcpServers": {"other": {"command": "python"}}}), encoding="utf-8")
     assert _hosts()["antigravity"]["mcp_registered"] is False
+
+
+def test_codex_symlink_and_oversized_manifest_do_not_validate(tmp_path, monkeypatch):
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.delenv("CODEX_HOME", raising=False)
+    monkeypatch.setattr(dashboard_frontend.shutil, "which", lambda n: "/usr/bin/codex" if n == "codex" else None)
+    folder = tmp_path / ".codex"
+    folder.mkdir()
+    manifest = folder / "config.toml"
+    elsewhere = tmp_path / "real.toml"
+    elsewhere.write_text('[mcp_servers.local-ai]\ncommand = "python"\n', encoding="utf-8")
+    try:
+        manifest.symlink_to(elsewhere)
+    except (OSError, NotImplementedError):
+        pass
+    else:
+        assert _hosts()["codex"]["mcp_registered"] is False
+        manifest.unlink()
+    manifest.write_bytes(b"x" * (256 * 1024 + 1))
+    assert _hosts()["codex"]["mcp_registered"] is False
+
+
+def test_redaction_requires_real_home_descendant(tmp_path, monkeypatch):
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    home_file = tmp_path / ".codex" / "config.toml"
+    assert dashboard_frontend._redact_path(home_file) == "~/.codex/config.toml"
+    adjacent = Path(str(tmp_path) + "-other") / "config.toml"
+    assert dashboard_frontend._redact_path(adjacent) == str(adjacent)
