@@ -4656,8 +4656,12 @@ def _local_ai_repo_impl(
         }, timeout=_timeout("quick")), "architecture")
     if action == "structural_search":
         return _compact(CLIENT.post("/api/repo/structural_search", {
-            "root": root, "pattern": query, "path": path or None, "max_results": max_tokens or 30,
-        }, timeout=_timeout("quick")), "architecture")
+            "root": root, "pattern": query, "path": path or None,
+            "max_results": max_tokens or 30, "offset": offset,
+        }, timeout=_timeout("quick")), "architecture", extra_fields=[
+            "truncated", "truncation_reasons", "complete", "has_more",
+            "file_limit", "file_offset", "next_offset", "pagination",
+        ])
     if action == "context_budget":
         files_arg = [path] if path else ([query] if query and not query.startswith("-") else [])
         return _compact(CLIENT.post("/api/repo/context_budget", {

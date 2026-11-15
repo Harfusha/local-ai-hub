@@ -46,3 +46,26 @@ def test_exact_path_is_not_accidentally_clipped_by_file_budget(tmp_path):
     result = _scan(tmp_path, "fn:target", path="0404.php")
     assert result["count"] == 1
     assert result["complete"] is True
+
+
+def test_file_offset_resumes_past_400th_php_file(tmp_path):
+    for idx in range(405):
+        name = f"{idx:04d}.php"
+        content = "<?php function needleAtEnd() {}\n" if idx == 404 else "<?php function irrelevant() {}\n"
+        (tmp_path / name).write_text(content, encoding="utf-8")
+    first = _scan(tmp_path, "fn:needleAtEnd")
+    assert first["count"] == 0
+    assert first["next_offset"] == 400
+    second = _scan(tmp_path, "fn:needleAtEnd", file_offset=first["next_offset"])
+    assert [x["file"] for x in second["matches"]] == ["0404.php"]
+    assert second["next_offset"] is None
+    assert second["complete"] is True
+
+
+def test_invalid_file_offset_fails_closed(tmp_path):
+    (tmp_path / "a.php").write_text("<?php function visible() {}\n", encoding="utf-8")
+    for offset in (-1, 100001, True, "10", 1.2):
+        result = _scan(tmp_path, "fn:visible", file_offset=offset)
+        assert result["success"] is False
+        assert result["status_code"] == 400
+    assert _scan(tmp_path, "fn:visible", path="a.php", file_offset=1)["status_code"] == 400

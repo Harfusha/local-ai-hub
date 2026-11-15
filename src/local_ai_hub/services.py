@@ -5803,8 +5803,14 @@ class LocalAIServices:
     def package_audit(self, root: str, lockfile_path: str | None = None) -> dict[str, Any]:
         return self.deterministic_operation("package-audit", root, {"lockfile": lockfile_path}, lambda: self.deterministic.package_audit(root, lockfile_path))
 
-    def structural_search(self, root: str, pattern: str, path: str | None = None, max_results: int = 30) -> dict[str, Any]:
-        return self.deterministic_operation("structural-search", root, {"pattern": pattern, "path": path, "max_results": max_results}, lambda: self.deterministic.structural_search(root, pattern, path=path, max_results=max_results))
+    def structural_search(self, root: str, pattern: str, path: str | None = None, max_results: int = 30, *, file_offset: int = 0) -> dict[str, Any]:
+        return self.deterministic_operation(
+            "structural-search", root,
+            {"pattern": pattern, "path": path, "max_results": max_results, "file_offset": file_offset},
+            lambda: self.deterministic.structural_search(
+                root, pattern, path=path, max_results=max_results, file_offset=file_offset,
+            ),
+        )
 
     def context_budget(self, root: str, files: list[str] | None = None, max_tokens: int = 4000) -> dict[str, Any]:
         return self.deterministic_operation("context-budget", root, {"files": files, "max_tokens": max_tokens}, lambda: self.deterministic.context_budget(root, files=files, max_tokens=max_tokens))

@@ -21,6 +21,7 @@ def search_structurally(
     max_results: int = 30,
     *,
     is_symlink_or_reparse_point: Callable[[Path], bool],
+    file_offset: int = 0,
 ) -> dict[str, Any]:
     """Syntax-aware structural code search across Python and multi-language repositories."""
     canon_root = canonical_root(root)
@@ -32,6 +33,10 @@ def search_structurally(
     if not target_pattern:
         return {"success": False, "error": "pattern is required"}
 
+    if type(file_offset) is not int or not 0 <= file_offset <= 100_000:
+        return {"success": False, "status_code": 400, "error": "file_offset must be an integer between 0 and 100000"}
+    if path and file_offset:
+        return {"success": False, "status_code": 400, "error": "file_offset cannot be combined with an exact path"}
     output_limit = max(0, int(max_results))
     result_probe_limit = output_limit + 1
     file_limit = 400
@@ -69,6 +74,7 @@ def search_structurally(
             files_to_scan = [candidate] if candidate.is_file() else []
     else:
         files_to_scan = []
+        skipped_candidates = 0
         for cur_root, dirs, filenames in os.walk(root_path):
             dirs.sort()
             safe_dirs = []
@@ -84,6 +90,9 @@ def search_structurally(
             dirs[:] = safe_dirs
             for f in sorted(filenames):
                 if f.endswith((".py", ".php", ".ts", ".tsx", ".js", ".jsx", ".go", ".rs", ".cs")):
+                    if skipped_candidates < file_offset:
+                        skipped_candidates += 1
+                        continue
                     files_to_scan.append(Path(cur_root) / f)
                     if len(files_to_scan) > file_limit:
                         break
@@ -379,7 +388,10 @@ def search_structurally(
         "files_scanned": files_scanned,
         "truncated": bool(truncation_reasons),
         "complete": not truncation_reasons,
-        "has_more": file_limit_reached or len(results) > output_limit,
+        "has_more": file_limit_reached or len(results) > output_limit or files_scanned < len(files_to_scan),
+        "file_offset": file_offset,
+        "next_offset": file_offset + files_scanned if not path and (file_limit_reached or files_scanned < len(files_to_scan)) else None,
+        "pagination": "file_offset; unstable if repository files change between requests",
         "file_limit": file_limit,
         "unscanned_file_count": None if file_limit_reached else 0,
         "truncation_reasons": truncation_reasons,
