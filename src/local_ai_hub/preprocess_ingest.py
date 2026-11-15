@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import hashlib
+import stat
 import threading
 import time
 from dataclasses import dataclass, field
@@ -21,6 +22,8 @@ class IngestedFile:
     ast_tree: Any | None
     timestamp: float
     ast_attempted: bool = True
+    # Opportunistic local-file freshness hint, never used in place of an explicit expected_hash.
+    source_signature: tuple[int, int, int, int, int] | None = None
     _ast_lock: Any = field(default_factory=threading.Lock, repr=False, compare=False)
 
 
@@ -50,6 +53,26 @@ class SinglePassIngestCache:
         if content_hash:
             return f"{norm}:{content_hash}"
         return norm
+
+    @staticmethod
+    def _source_signature(base: Path, rel_path: str) -> tuple[int, int, int, int, int] | None:
+        """Conservatively identify stable regular files for repeat ingest reads.
+
+        A missing, non-regular or symlinked source is never trusted from metadata
+        alone; the repository reader remains authoritative for source bytes.
+        """
+        try:
+            candidate = base
+            for part in PurePosixPath(rel_path).parts:
+                candidate = candidate / part
+                if candidate.is_symlink():
+                    return None
+            info = candidate.stat(follow_symlinks=False)
+            if not stat.S_ISREG(info.st_mode):
+                return None
+            return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+        except (OSError, ValueError):
+            return None
 
     def has(self, rel_path: str, root: str | None = None, content_hash: str | None = None) -> bool:
         norm = rel_path.replace("\\", "/").lstrip("/")
@@ -258,11 +281,21 @@ class SinglePassIngestCache:
                 if cached is not None:
                     return cached
             elif expected_hash is None:
-                current_hash, _current_lines = repo_tools._read_snapshot(base / Path(normalized))
-                if current_hash == cached.content_hash:
+                # The common case must not reread the entire file in every
+                # parallel caller after the first single-flight ingest finishes.
+                current_signature = self._source_signature(base, normalized)
+                if current_signature is not None and current_signature == cached.source_signature:
                     cached = ensure_current(cached)
                     if cached is not None:
                         return cached
+                else:
+                    # Unknown/changed metadata cannot prove source freshness.
+                    # Fall back to the exact source digest instead of assuming.
+                    current_hash, _current_lines = repo_tools._read_snapshot(base / Path(normalized))
+                    if current_hash == cached.content_hash:
+                        cached = ensure_current(cached)
+                        if cached is not None:
+                            return cached
             self.invalidate(normalized, root=root_str)
 
         event_key = self._key(normalized, root_str, expected_hash)
@@ -300,7 +333,12 @@ class SinglePassIngestCache:
 
         try:
             target = base / Path(normalized)
+            signature_before = self._source_signature(base, normalized)
             c_hash, lines = repo_tools._read_snapshot(target)
+            signature_after = self._source_signature(base, normalized)
+            source_signature = (
+                signature_after if signature_before is not None and signature_before == signature_after else None
+            )
             source = "\n".join(lines)
             if not c_hash:
                 c_hash = hashlib.sha256(source.encode("utf-8", errors="replace")).hexdigest()
@@ -323,6 +361,7 @@ class SinglePassIngestCache:
                 ast_tree=tree,
                 timestamp=time.time(),
                 ast_attempted=parse_ast or not is_python,
+                source_signature=source_signature,
             )
             self.put(ingested, root=root_str)
             return ingested

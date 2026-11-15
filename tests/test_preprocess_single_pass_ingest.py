@@ -275,6 +275,37 @@ def test_demand_reloads_source_if_invalidated_during_ast_parse(tmp_path, monkeyp
         assert pending.result(timeout=5) == ['pkg/c.py']
 
 
+
+def test_stable_ingest_uses_metadata_to_avoid_rehashing_unchanged_file(tmp_path: Path, monkeypatch):
+    source = tmp_path / "stable.py"
+    source.write_text("value = 1\n", encoding="utf-8")
+    tools = RepositoryTools({})
+    cache = SinglePassIngestCache()
+    original_read = tools._read_snapshot
+    reads = []
+
+    def counting_read(*args, **kwargs):
+        reads.append(1)
+        return original_read(*args, **kwargs)
+
+    monkeypatch.setattr(tools, "_read_snapshot", counting_read)
+    original = cache.get_or_ingest(tmp_path, "stable.py", tools)
+    for _ in range(5):
+        assert cache.get_or_ingest(tmp_path, "stable.py", tools) is original
+    assert reads == [1]
+
+    # An equally sized edit with explicitly changed mtime must invalidate the
+    # fast path even without a watcher event or expected content hash.
+    previous = source.stat()
+    source.write_text("value = 2\n", encoding="utf-8")
+    import os
+    os.utime(source, ns=(previous.st_atime_ns, previous.st_mtime_ns + 2_000_000_000))
+    refreshed = cache.get_or_ingest(tmp_path, "stable.py", tools)
+    assert refreshed.text == "value = 2"
+    assert refreshed is not original
+    assert len(reads) >= 2
+
+
 def test_single_pass_ingest_lru_bounds(tmp_path: Path):
     tools = RepositoryTools({})
     cache = SinglePassIngestCache(max_entries=3)
