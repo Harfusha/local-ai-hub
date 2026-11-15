@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 from copy import deepcopy
 from functools import lru_cache
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Any
 
 from .search_pagination import MAX_PAGE_SIZE, MAX_PAGE_WINDOW, pagination_bounds_error
@@ -2460,7 +2460,13 @@ def validate_operation_arguments(
         root = arguments.get("root")
         if not isinstance(root, str) or not root.strip():
             return f"root is required for action='{action}'"
-        if not Path(root).expanduser().is_absolute():
+        # A Windows client may supply a rooted drive or UNC path even when
+        # contracts are inspected on Linux/macOS. Do not accept drive-relative
+        # Windows paths such as C:work, which resolve against ambient cwd.
+        if not (
+            Path(root).expanduser().is_absolute()
+            or PureWindowsPath(root).is_absolute()
+        ):
             return f"root must be an absolute path for action='{action}'"
         scope = arguments.get("scope")
         if not isinstance(scope, str) or not scope:

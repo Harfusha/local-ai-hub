@@ -145,6 +145,26 @@ def test_memory_record_requires_explicit_identity_and_preserves_session_id(tmp_p
         ) is not None
 
 
+
+def test_memory_mutations_accept_absolute_windows_paths_without_accepting_drive_relative():
+    for action in ("memory_record", "memory_delete", "memory_promote"):
+        payload = {"action": action, "scope": "repository"}
+        if action == "memory_record":
+            payload.update(key="fixture", value="value")
+        else:
+            payload["record_id"] = "record-test-01"
+        if action == "memory_promote":
+            payload["target_scope"] = "global"
+        for root in ("C:/fixture/repo", r"\\server\share\repo"):
+            assert validate_operation_arguments(
+                "local_ai_coord", action, {**payload, "root": root},
+            ) is None
+        for invalid in ("relative/path", "C:relative\\folder", "", "."):
+            assert validate_operation_arguments(
+                "local_ai_coord", action, {**payload, "root": invalid},
+            ) is not None
+
+
 def test_hub_client_rejects_incomplete_memory_record_before_http():
     calls = []
     client = SimpleNamespace(post=lambda *args, **kwargs: calls.append((args, kwargs)))
