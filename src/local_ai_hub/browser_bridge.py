@@ -259,6 +259,11 @@ class _LoopbackProxy(ThreadingHTTPServer):
         super().server_close()
 
 
+def _is_windows_host() -> bool:
+    """Allow Windows discovery to be tested without patching process-wide os.name."""
+    return os.name == "nt"
+
+
 class BrowserBridge:
     """Capture a bounded DOM snapshot from an explicitly local web page."""
 
@@ -274,7 +279,7 @@ class BrowserBridge:
                 self.executable = shutil.which(name)
                 if self.executable:
                     break
-        if not self.executable and os.name == "nt":
+        if not self.executable and _is_windows_host():
             roots = (os.environ.get("ProgramFiles", r"C:\Program Files"),
                      os.environ.get("ProgramFiles(x86)"), os.environ.get("LOCALAPPDATA"))
             for root in roots:

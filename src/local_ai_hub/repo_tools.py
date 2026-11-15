@@ -3044,6 +3044,14 @@ class RepositoryTools:
         else:
             candidate_budget = candidate_limit + 1
             priority_terms = {term.casefold() for term in terms if isinstance(term, str) and term}
+            # Pinned context has already passed project policy and symlink
+            # checks in _iter_project_search_files. Search it before a noisy
+            # repository prefix exhausts the bounded accelerator match budget.
+            pinned_paths = {
+                item.replace("\\", "/")
+                for item in getattr(project_settings, "pinned_context", ())
+                if isinstance(item, str)
+            } if project_settings is not None else set()
             priority_candidates: list[Path] = []
             remaining_candidates: list[Path] = []
             for candidate in project_candidates:
@@ -3058,9 +3066,11 @@ class RepositoryTools:
                     or (len(term) >= 4 and path_stem.startswith(term))
                     or (len(path_stem) >= 4 and term.startswith(path_stem))
                 )
-                (priority_candidates if overlap else remaining_candidates).append(candidate)
+                (priority_candidates if overlap or candidate.relative_to(base).as_posix() in pinned_paths
+                 else remaining_candidates).append(candidate)
 
             priority_candidates.sort(key=lambda candidate: (
+                0 if candidate.relative_to(base).as_posix() in pinned_paths else 1,
                 0 if candidate.relative_to(base).stem.casefold() in priority_terms else 1,
                 len(candidate.relative_to(base).stem),
                 candidate.as_posix().casefold(),

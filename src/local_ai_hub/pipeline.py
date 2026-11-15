@@ -67,6 +67,8 @@ def _queue_laya_context_budget_shadow(
     """Queue a completed delegated response for an automatically selected context budget."""
     if (
         type(args) is not dict
+        or not isinstance(args.get("task_id"), str)
+        or not args["task_id"].strip()
         or args.get("context_tokens") not in (None, 0, "")
         or not isinstance(root, str)
         or not root.strip()
@@ -210,6 +212,8 @@ def _queue_laya_delegation_shadow(
     """Queue the deterministic adaptive worker-escalation decision for shadow review."""
     if (
         type(args) is not dict
+        or not isinstance(args.get("task_id"), str)
+        or not args["task_id"].strip()
         or not isinstance(root, str)
         or not root.strip()
         or not isinstance(task, str)

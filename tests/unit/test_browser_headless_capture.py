@@ -23,6 +23,7 @@ def test_browser_bridge_finds_windows_chrome_outside_path(tmp_path, monkeypatch)
     monkeypatch.delenv("ProgramFiles(x86)", raising=False)
     monkeypatch.delenv("LOCALAPPDATA", raising=False)
     monkeypatch.setattr(browser_bridge.shutil, "which", lambda _: None)
+    monkeypatch.setattr(browser_bridge, "_is_windows_host", lambda: True)
 
     assert browser_bridge.BrowserBridge().executable == str(chrome)
 

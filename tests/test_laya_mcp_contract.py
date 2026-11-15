@@ -143,8 +143,10 @@ def test_mcp_curate_dataset_forwards_nested_laya_operation(monkeypatch, tmp_path
     )
 
     assert result["success"] is True, result
-    assert len(calls) == 1
-    path, payload, _timeout = calls[0]
+    # Instrumentation may also POST independent telemetry accounting.
+    task_calls = [call for call in calls if call[0] == "/api/agent-state/tasks"]
+    assert len(task_calls) == 1
+    path, payload, _timeout = task_calls[0]
     assert path == "/api/agent-state/tasks"
     assert payload["action"] == "curate_dataset"
     assert payload["laya_operation"] == operation

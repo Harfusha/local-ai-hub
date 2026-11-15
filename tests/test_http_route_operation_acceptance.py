@@ -1057,6 +1057,8 @@ def test_http_post_coord_plan_routes_acceptance(running_http_hub, tmp_path):
 
 def test_http_post_complete_acceptance(running_http_hub, monkeypatch, tmp_path):
     base_url, app = running_http_hub
+    # Hardware gate stays active; this positive route test uses a permitted profile.
+    monkeypatch.setitem(app.config, "_hardware", {"profile": "medium"})
     monkeypatch.setattr(
         app.services,
         "complete_code",
