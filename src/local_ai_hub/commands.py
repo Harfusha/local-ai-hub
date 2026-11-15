@@ -4613,7 +4613,14 @@ class CommandBroker:
                     try:
                         os.killpg(process.pid, 0)
                     except ProcessLookupError:
-                        return True
+                        # A missing *process group* does not prove that the
+                        # parent process exited. Continue to the owned process
+                        # cleanup path when the process handle is still live.
+                        try:
+                            if process.poll() is not None:
+                                return True
+                        except Exception:
+                            return False
                     except PermissionError:
                         return False
                     except Exception:
