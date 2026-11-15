@@ -182,6 +182,141 @@ def test_index_paths_step_preserves_sqlite_publish_timeout_detail(tmp_path, monk
     assert result["error_detail"] == timeout_message
 
 
+
+def test_incremental_index_rejects_source_rewrite_during_embedding(tmp_path):
+    root = tmp_path / "repo"
+    root.mkdir()
+    guide = root / "guide.md"
+    guide.write_text("original persisted content\n", encoding="utf-8")
+
+    class MutatingEmbedding(_EmbeddingStub):
+        on_embed = None
+
+        def embed(self, texts, **kwargs):
+            if self.on_embed is not None:
+                callback, self.on_embed = self.on_embed, None
+                callback()
+            return super().embed(texts, **kwargs)
+
+    backend = MutatingEmbedding()
+    store = RAGStore(
+        {"server": {"state_dir": str(tmp_path / "state")},
+         "models": {"embedding": "test-embedding", "embedding_dimension": 3},
+         "rag": {"dedup_near_duplicates": False}},
+        services=backend,
+    )
+    ws = store.workspace_id(str(root))
+    assert store.index_paths_step(str(root), workspace=ws, paths=["guide.md"])["success"]
+    with closing(store._connect()) as con:
+        previous = con.execute(
+            "SELECT text FROM chunks WHERE workspace=? AND path=?",
+            (ws, "guide.md"),
+        ).fetchall()
+    guide.write_text("second content to embed\n", encoding="utf-8")
+    backend.on_embed = lambda: guide.write_text("third content after read\n", encoding="utf-8")
+
+    rejected = store.index_paths_step(str(root), workspace=ws, paths=["guide.md"])
+    assert rejected["success"] is False
+    assert rejected["retryable"] is True
+    assert rejected["error"] == "source_changed_before_publish"
+    assert rejected["stale_source_paths"] == ["guide.md"]
+    with closing(store._connect()) as con:
+        assert con.execute(
+            "SELECT text FROM chunks WHERE workspace=? AND path=?",
+            (ws, "guide.md"),
+        ).fetchall() == previous
+
+    accepted = store.index_paths_step(str(root), workspace=ws, paths=["guide.md"])
+    assert accepted["success"] is True
+    with closing(store._connect()) as con:
+        rows = con.execute(
+            "SELECT text FROM chunks WHERE workspace=? AND path=?",
+            (ws, "guide.md"),
+        ).fetchall()
+    assert "third content after read" in " ".join(str(row[0]) for row in rows)
+
+
+def test_full_index_rejects_source_rewrite_during_embedding(tmp_path):
+    root = tmp_path / "repo"
+    root.mkdir()
+    guide = root / "guide.md"
+    guide.write_text("original persisted content\n", encoding="utf-8")
+
+    class MutatingEmbedding(_EmbeddingStub):
+        on_embed = None
+
+        def embed(self, texts, **kwargs):
+            if self.on_embed is not None:
+                callback, self.on_embed = self.on_embed, None
+                callback()
+            return super().embed(texts, **kwargs)
+
+    backend = MutatingEmbedding()
+    store = RAGStore(
+        {"server": {"state_dir": str(tmp_path / "state")},
+         "models": {"embedding": "test-embedding", "embedding_dimension": 3},
+         "rag": {"dedup_near_duplicates": False}},
+        services=backend,
+    )
+    assert store.index(str(root))["success"]
+    ws = store.workspace_id(str(root))
+    with closing(store._connect()) as con:
+        previous = con.execute(
+            "SELECT text FROM chunks WHERE workspace=? AND path=?",
+            (ws, "guide.md"),
+        ).fetchall()
+    guide.write_text("second content to embed\n", encoding="utf-8")
+    backend.on_embed = lambda: guide.write_text("third content after read\n", encoding="utf-8")
+
+    rejected = store.index(str(root))
+    assert rejected["success"] is False
+    assert rejected["retryable"] is True
+    assert rejected["error"] == "source_changed_before_publish"
+    assert rejected["stale_source_paths"] == ["guide.md"]
+    with closing(store._connect()) as con:
+        assert con.execute(
+            "SELECT text FROM chunks WHERE workspace=? AND path=?",
+            (ws, "guide.md"),
+        ).fetchall() == previous
+
+
+def test_incremental_index_rejects_symlink_swap_during_embedding(tmp_path):
+    import pytest
+
+    root = tmp_path / "repo"
+    root.mkdir()
+    guide = root / "guide.md"
+    guide.write_text("trusted content\n", encoding="utf-8")
+    external = tmp_path / "external.md"
+    external.write_text("external content\n", encoding="utf-8")
+    probe = root / "probe"
+    try:
+        probe.symlink_to(external)
+        probe.unlink()
+    except (OSError, NotImplementedError):
+        pytest.skip("symlinks unavailable")
+
+    class MutatingEmbedding(_EmbeddingStub):
+        def embed(self, texts, **kwargs):
+            guide.unlink()
+            guide.symlink_to(external)
+            return super().embed(texts, **kwargs)
+
+    store = RAGStore(
+        {"server": {"state_dir": str(tmp_path / "state")},
+         "models": {"embedding": "test-embedding", "embedding_dimension": 3},
+         "rag": {"dedup_near_duplicates": False}},
+        services=MutatingEmbedding(),
+    )
+    workspace = store.workspace_id(str(root))
+    rejected = store.index_paths_step(str(root), workspace=workspace, paths=["guide.md"])
+    assert rejected["success"] is False
+    assert rejected["error"] == "source_changed_before_publish"
+    assert rejected["retryable"] is True
+    assert store.indexed_paths(workspace=workspace, paths=["guide.md"]) == set()
+
+
+
 def test_changed_file_rejects_stale_content_override_at_index_boundary(tmp_path):
     repo = tmp_path / "repo"
     repo.mkdir()

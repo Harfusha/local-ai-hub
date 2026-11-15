@@ -566,6 +566,55 @@ def _read_bounded_file(path: Path, max_bytes: int) -> bytes | None:
     return raw if len(raw) <= limit else None
 
 
+def _rag_source_still_current(
+    root: Path, rel: str, *, expected_hash: str, expected_size: int,
+    expected_mtime_ns: int, max_bytes: int,
+) -> bool:
+    """Recheck actual bytes and identity after embedding, before publishing.
+
+    A workspace lock does not prevent the editor from rewriting a file.
+    This deliberately rejects same-size/mtime rollbacks and symlink swaps;
+    it is a bounded last-moment check, not an immutable filesystem snapshot.
+    """
+    if not rel or not isinstance(expected_hash, str):
+        return False
+    relative = Path(rel.replace("\\", "/"))
+    if relative.is_absolute() or ".." in relative.parts:
+        return False
+    candidate = root
+    try:
+        for part in relative.parts:
+            candidate = candidate / part
+            if candidate.is_symlink():
+                return False
+        if candidate.resolve(strict=True) != candidate:
+            return False
+        before = candidate.stat(follow_symlinks=False)
+        if not stat.S_ISREG(before.st_mode) or (
+            before.st_size != expected_size or before.st_mtime_ns != expected_mtime_ns
+        ):
+            return False
+        flags = (
+            os.O_RDONLY | getattr(os, "O_BINARY", 0)
+            | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+        )
+        fd = os.open(candidate, flags)
+        with os.fdopen(fd, "rb") as stream:
+            opened = os.fstat(stream.fileno())
+            raw = stream.read(max_bytes + 1)
+            closed = os.fstat(stream.fileno())
+        after = candidate.stat(follow_symlinks=False)
+        identity = lambda s: (s.st_dev, s.st_ino, s.st_size, s.st_mtime_ns)
+        return bool(
+            len(raw) <= max_bytes
+            and identity(before) == identity(opened) == identity(closed) == identity(after)
+            and not candidate.is_symlink()
+            and candidate.resolve(strict=True) == candidate
+            and hashlib.sha1(raw, usedforsecurity=False).hexdigest() == expected_hash
+        )
+    except (OSError, RuntimeError, ValueError):
+        return False
+
 class RAGStore:
     """Persistent semantic index with file-level incremental updates.
 
@@ -2122,6 +2171,25 @@ class RAGStore:
         else:
             report_progress(85.0, "embedding complete (0 new chunks)")
 
+
+        # A model call may outlive the source snapshot used to build vectors.
+        # A stale source must not replace a previously committed index.
+        stale_sources = sorted(
+            rel for rel, mtime_ns, size, file_hash in file_rows
+            if not _rag_source_still_current(
+                root_path, rel, expected_hash=file_hash,
+                expected_size=size, expected_mtime_ns=mtime_ns,
+                max_bytes=max_file_bytes,
+            )
+        )
+        if stale_sources:
+            return {
+                "success": False, "retryable": True, "workspace": workspace,
+                "error": "source_changed_before_publish",
+                "stale_source_paths": stale_sources,
+                "read_uncertain_paths": sorted(set(read_uncertain_paths) | set(stale_sources)),
+            }
+
         chunker_version_publishable = (
             not chunker_version_changed
             or (
@@ -2546,7 +2614,7 @@ class RAGStore:
                         continue
                     file_hash = hashlib.sha1(raw, usedforsecurity=False).hexdigest()
                     chunks = list(self._chunks(text, path=rel))
-                    file_data.append({"rel": rel, "stat": stat, "file_hash": file_hash, "chunks": chunks})
+                    file_data.append({"rel": rel, "stat": stat, "file_hash": file_hash, "chunks": chunks, "max_bytes": max_bytes})
                 except Exception:
                     read_uncertain_paths.add(rel)
                     continue
@@ -2709,6 +2777,28 @@ class RAGStore:
                     "success": True, "workspace": workspace, "preempted": True,
                     "processed_paths": processed_paths, "embedded_chunks": embedded_chunks,
                     "reused_chunks": reused_chunks,
+                }
+
+
+            # Publish nothing when a file changed while embedding; preprocessing
+            # retries after re-hashing the source instead of publishing stale bytes.
+            stale_sources = sorted(
+                item["rel"] for item in file_data
+                if not _rag_source_still_current(
+                    root_path, item["rel"], expected_hash=item["file_hash"],
+                    expected_size=int(item["stat"].st_size),
+                    expected_mtime_ns=int(item["stat"].st_mtime_ns),
+                    max_bytes=int(item["max_bytes"]),
+                )
+            )
+            if stale_sources:
+                stale = set(stale_sources)
+                self._publish_workspace_read_uncertainty(workspace, stale)
+                return {
+                    "success": False, "retryable": True, "workspace": workspace,
+                    "error": "source_changed_before_publish",
+                    "stale_source_paths": stale_sources,
+                    "read_uncertain_paths": sorted(read_uncertain_paths | stale),
                 }
 
             # 5. Bulk SQLite transaction
