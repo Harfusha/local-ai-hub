@@ -5198,7 +5198,7 @@ class LocalAIServices:
 
         return self._repo_cached("map", root, {"max_symbols": max_symbols}, compute)
 
-    def deterministic_operation(self, operation: str, root: str, params: dict[str, Any], compute: Any) -> dict[str, Any]:
+    def deterministic_operation(self, operation: str, root: str, params: dict[str, Any], compute: Any, *, cache_results: bool = True) -> dict[str, Any]:
         """Cache expensive deterministic analyses by repository fingerprint.
 
         These operations are pure derived views of repository state. Sharing the same
@@ -5210,7 +5210,7 @@ class LocalAIServices:
             if isinstance(res, dict):
                 res["preprocessed_hit"] = bool(res.get("success", True))
             return res
-        return self._repo_cached(f"det:{operation}", root, params, wrapped_compute)
+        return self._repo_cached(f"det:{operation}", root, params, wrapped_compute, cache_results=cache_results)
 
     def _repository_test_impact_service(self):
         from .repository_test_impact import RepositoryTestImpactService
@@ -5821,13 +5821,17 @@ class LocalAIServices:
     def package_audit(self, root: str, lockfile_path: str | None = None) -> dict[str, Any]:
         return self.deterministic_operation("package-audit", root, {"lockfile": lockfile_path}, lambda: self.deterministic.package_audit(root, lockfile_path))
 
-    def structural_search(self, root: str, pattern: str, path: str | None = None, max_results: int = 30, *, file_offset: int = 0, match_offset: int = 0) -> dict[str, Any]:
+    def structural_search(self, root: str, pattern: str, path: str | None = None, max_results: int = 30, *, file_offset: int = 0, match_offset: int = 0, expected_revision: str | None = None) -> dict[str, Any]:
         return self.deterministic_operation(
             "structural-search", root,
-            {"pattern": pattern, "path": path, "max_results": max_results, "file_offset": file_offset, "match_offset": match_offset},
+            {"pattern": pattern, "path": path, "max_results": max_results,
+             "file_offset": file_offset, "match_offset": match_offset, "expected_revision": expected_revision},
             lambda: self.deterministic.structural_search(
                 root, pattern, path=path, max_results=max_results, file_offset=file_offset, match_offset=match_offset,
+                expected_revision=expected_revision,
             ),
+            # Never serve cached search pages whose revision guard may be stale.
+            cache_results=False,
         )
 
     def context_budget(self, root: str, files: list[str] | None = None, max_tokens: int = 4000) -> dict[str, Any]:
