@@ -4,7 +4,7 @@ from .json_utils import dumps as json_dumps
 
 import copy
 import math
-from typing import Any
+from typing import Any, Sequence
 
 from . import __version__
 from .cache import SQLiteCache, SingleFlightCache, TieredCache, stable_hash
@@ -68,8 +68,6 @@ def _queue_laya_context_budget_shadow(
     if (
         type(args) is not dict
         or args.get("context_tokens") not in (None, 0, "")
-        or not isinstance(args.get("task_id"), str)
-        or not args["task_id"].strip()
         or not isinstance(root, str)
         or not root.strip()
         or not isinstance(task, str)
@@ -212,8 +210,6 @@ def _queue_laya_delegation_shadow(
     """Queue the deterministic adaptive worker-escalation decision for shadow review."""
     if (
         type(args) is not dict
-        or not isinstance(args.get("task_id"), str)
-        or not args["task_id"].strip()
         or not isinstance(root, str)
         or not root.strip()
         or not isinstance(task, str)
@@ -320,6 +316,100 @@ def _queue_laya_delegation_shadow(
         ))
     except Exception:
         return False
+
+
+def _queue_laya_redundant_step_shadow(
+    services: Any,
+    args: Any,
+    *,
+    root: str,
+    task: str,
+    step_name: str,
+    is_duplicate: bool,
+    evidence_ids: Sequence[str],
+) -> bool:
+    """Queue redundant_step decision for shadow review."""
+    if (
+        type(args) is not dict
+        or not isinstance(root, str)
+        or not root.strip()
+        or not isinstance(step_name, str)
+        or not step_name.strip()
+        or not evidence_ids
+    ):
+        return False
+    queue = getattr(services, "_queue_laya_shadow_observation", None)
+    if not callable(queue):
+        return False
+    suggestion = "possible_duplicate" if is_duplicate else "validation_still_required"
+    observed_args = dict(args)
+    observed_args["evidence_ids"] = list(evidence_ids)
+    task_input = _bounded_capture_text(task, 4 * 1024)
+    return bool(
+        queue(
+            observed_args,
+            root=root,
+            category="redundant_step",
+            options=["possible_duplicate", "validation_still_required"],
+            state={
+                "step_name": step_name[:64],
+                "duplicate_signal": "cache_hit" if is_duplicate else "fresh_execution",
+            },
+            training_content={"task_input": task_input or step_name},
+            baseline={
+                "method": "command_broker_dedup",
+                "suggestion": suggestion,
+                "evidence_id": evidence_ids[0],
+            },
+        )
+    )
+
+
+def _queue_laya_next_step_shadow(
+    services: Any,
+    args: Any,
+    *,
+    root: str,
+    task: str,
+    current_stage: str,
+    suggestion: str,
+    evidence_ids: Sequence[str],
+) -> bool:
+    """Queue next_step decision for shadow review."""
+    if (
+        type(args) is not dict
+        or not isinstance(root, str)
+        or not root.strip()
+        or not isinstance(current_stage, str)
+        or not current_stage.strip()
+        or not evidence_ids
+        or suggestion not in {"inspect_source", "run_test", "retrieve_evidence", "ask_human"}
+    ):
+        return False
+    queue = getattr(services, "_queue_laya_shadow_observation", None)
+    if not callable(queue):
+        return False
+    observed_args = dict(args)
+    observed_args["evidence_ids"] = list(evidence_ids)
+    task_input = _bounded_capture_text(task, 4 * 1024)
+    return bool(
+        queue(
+            observed_args,
+            root=root,
+            category="next_step",
+            options=["inspect_source", "run_test", "retrieve_evidence", "ask_human"],
+            state={
+                "current_stage": current_stage[:64],
+                "next_step_heuristic": suggestion,
+            },
+            training_content={"task_input": task_input or current_stage},
+            baseline={
+                "method": "pipeline_step_progress",
+                "suggestion": suggestion,
+                "evidence_id": evidence_ids[0],
+            },
+        )
+    )
 
 
 def _is_repetition_loop(response: Any) -> bool:
@@ -908,6 +998,57 @@ class LocalAgentPipeline:
             preliminary=preliminary,
             response={"success": worker.get("success") is True, "text": worker_text},
         )
+        pipeline_evidence_ids: list[str] = []
+        for stage_res in (
+            packed,
+            explorer.get("structured") if isinstance(explorer, dict) else {},
+            worker.get("structured") if isinstance(worker, dict) else {},
+        ):
+            if not isinstance(stage_res, dict):
+                continue
+            ev = stage_res.get("evidence")
+            if isinstance(ev, (list, tuple)):
+                for item in ev:
+                    eid = item.get("evidence_id") if isinstance(item, dict) else None
+                    if isinstance(eid, str) and eid.strip() and eid not in pipeline_evidence_ids:
+                        pipeline_evidence_ids.append(eid)
+                        if len(pipeline_evidence_ids) >= 64:
+                            break
+            if len(pipeline_evidence_ids) >= 64:
+                break
+
+        if pipeline_evidence_ids:
+            next_step_suggestion = (
+                "ask_human"
+                if (critic and not critic_success) or risk_score >= 80
+                else "run_test"
+                if (isinstance(impact, dict) and impact.get("suggested_tests"))
+                else "retrieve_evidence"
+                if isinstance(packed, dict) and packed.get("gap")
+                else "inspect_source"
+            )
+            _queue_laya_next_step_shadow(
+                self.services,
+                args,
+                root=root,
+                task=task,
+                current_stage="pipeline_completion",
+                suggestion=next_step_suggestion,
+                evidence_ids=pipeline_evidence_ids,
+            )
+            stage_hit = bool(
+                (isinstance(worker, dict) and worker.get("stage_cache_hit"))
+                or (isinstance(explorer, dict) and explorer.get("stage_cache_hit"))
+            )
+            _queue_laya_redundant_step_shadow(
+                self.services,
+                args,
+                root=root,
+                task=task,
+                step_name="worker_stage",
+                is_duplicate=stage_hit,
+                evidence_ids=pipeline_evidence_ids,
+            )
         return result
 
     def stats(self) -> dict[str, Any]:

@@ -1,5 +1,6 @@
 """Exercise preprocessing against strict current RAG and hybrid call signatures."""
 
+import hashlib
 import sqlite3
 import threading
 from collections import defaultdict
@@ -43,6 +44,7 @@ def prep(tmp_path):
                 root TEXT, path TEXT, content_hash TEXT, needs_hash INTEGER,
                 rag_hash TEXT, last_accessed_at REAL, size INTEGER, updated_at REAL
             );
+            CREATE TABLE file_refs_revision (root TEXT PRIMARY KEY, revision INTEGER NOT NULL DEFAULT 0);
             CREATE TABLE source_index (root TEXT, path TEXT, content_hash TEXT, text TEXT);
             CREATE TABLE source_fts (root TEXT, path TEXT, content TEXT);
             CREATE TABLE hot_query_state (
@@ -145,8 +147,14 @@ def test_declarative_skip_removes_stale_paths_and_marks_synced(prep, tmp_path):
 def test_indexing_passes_cached_content_and_cleans_missing_paths(prep, tmp_path, exists):
     root = str(tmp_path)
     if exists:
-        (tmp_path / "module.py").write_text("pass", encoding="utf-8")
+        (tmp_path / "module.py").write_text("cached text", encoding="utf-8")
     add_pending(prep, root, "module.py")
+    if exists:
+        content_hash = hashlib.sha256(b"cached text").hexdigest()
+        with closing(prep._connect()) as con:
+            con.execute("UPDATE file_refs SET content_hash=? WHERE root=? AND path=?", (content_hash, root, "module.py"))
+            con.execute("UPDATE source_index SET content_hash=? WHERE root=? AND path=?", (content_hash, root, "module.py"))
+            con.commit()
     prep.rag.index_paths_step.return_value = {
         "success": True, "processed_paths": ["module.py"] if exists else [],
     }

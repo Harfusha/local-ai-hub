@@ -130,7 +130,7 @@ def test_content_card_reuse_preserves_linking_for_scoped_batch(isolated_preproce
     file_0 = Path(root) / "src/file_0.py"
     digest = prep.repo_tools._hash_file_only(file_0)
 
-    from local_ai_hub import __version__
+    from local_ai_hub.preprocess import PREPROCESS_ANALYZER_VERSION
     con = connect_sqlite(prep.db_path)
     try:
         con.execute(
@@ -138,7 +138,7 @@ def test_content_card_reuse_preserves_linking_for_scoped_batch(isolated_preproce
             INSERT INTO content_cards(card_key, content_hash, model, analyzer_version, card_json, created_at, accessed_at, hits)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            ("card_key_file_0", digest, "model_v1", __version__, "{}", 1000.0, 1000.0, 1),
+            ("card_key_file_0", digest, "model_v1", PREPROCESS_ANALYZER_VERSION, "{}", 1000.0, 1000.0, 1),
         )
         con.commit()
     finally:

@@ -34,7 +34,7 @@ def test_token_router_route_text_hardening(tmp_path: Path):
 
 def test_token_router_parse_ranges_hardening():
     # Booleans in start/end should be skipped and not coerced to int(True)=1
-    json_text = '{"ranges": [{"start": true, "end": 10}, {"start": 5, "end": false}, {"start": 2, "end": 4}]}'
+    json_text = '{"ranges": [{"start": true, "end": 10}, {"start": 5, "end": false}, {"start": 2, "end": 4, "score": 0.8}]}'
     ranges = LosslessTokenRouter._parse_ranges(json_text, max_line=10, max_ranges=5, context_lines=0)
     assert len(ranges) == 1
     assert ranges[0][0] == 2

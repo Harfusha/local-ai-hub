@@ -1240,6 +1240,9 @@ def test_adaptive_retrieval_skips_optional_backends_when_builtin_confidence_is_h
 def test_adaptive_retrieval_skips_optional_backends_when_deadline_is_exhausted(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    from types import SimpleNamespace
+    from local_ai_hub import services as services_module
+
     class FakeRepoTools:
         @staticmethod
         def context_pack_paths(root: str, query: str, paths: list[str], *, max_tokens: int, top_k: int) -> dict:
@@ -1281,17 +1284,17 @@ def test_adaptive_retrieval_skips_optional_backends_when_deadline_is_exhausted(
 
     def fake_perf() -> float:
         calls[0] += 1
-        if calls[0] >= 3:
+        if calls[0] >= 4:
             return orig_perf() + 10.0
         return orig_perf()
 
-    monkeypatch.setattr(time, "perf_counter", fake_perf)
+    monkeypatch.setattr(services_module, "time", SimpleNamespace(perf_counter=fake_perf))
 
     result = services._hybrid_context_uncached(
         str(tmp_path), "find local evidence", workspace=None, max_tokens=400, quality_first=True
     )
 
-    assert result["retrieval"]["backend_states"]["serena"] == "skipped"
+    assert result["retrieval"]["backend_states"]["serena"] == "skipped", result["retrieval"]["backend_selection"]
     assert result["retrieval"]["backend_selection"]["decision"] == "deadline_exhausted"
     assert FakeExternal.calls == 0
 

@@ -798,6 +798,86 @@ class LocalAIApp:
                 self.logger.debug("watchdog: scoped task reaping failed: %s", type(exc).__name__)
         return reaped
 
+    def _observe_laya_watchdog_lifecycle(self) -> None:
+        """Observe active task lifecycle states as shadow watchdog decisions."""
+        config = getattr(self, "config", {})
+        laya_cfg = config.get("laya", {}) if isinstance(config, Mapping) else {}
+        if not laya_cfg.get("enabled", True):
+            return
+        runtime_cfg = laya_cfg.get("runtime", {}) if isinstance(laya_cfg, Mapping) else {}
+        if not runtime_cfg.get("checkpoint_path"):
+            return
+        tasks = getattr(self, "agent_tasks", None)
+        if tasks is None or not hasattr(tasks, "list_tasks"):
+            return
+        try:
+            from .agent_tasks import TaskStatus, _task_scope_root
+            from .laya_decisions import (
+                DecisionCategory,
+                allowed_decision_options,
+                derive_watchdog_lifecycle_baseline,
+            )
+        except ImportError:
+            return
+
+        now = time.time()
+        cooldown = getattr(self, "_laya_watchdog_task_cooldown", None)
+        if cooldown is None:
+            cooldown = self._laya_watchdog_task_cooldown = {}
+        for tid, ts in list(cooldown.items()):
+            if now - ts > 60.0:
+                del cooldown[tid]
+
+        watchdog_options = sorted(allowed_decision_options(DecisionCategory.WATCHDOG))
+        for status in (TaskStatus.ACTIVE, TaskStatus.VERIFYING):
+            task_list = tasks.list_tasks(status=status, limit=8)
+            for task in getattr(task_list, "tasks", ()):
+                task_id = getattr(task, "task_id", None)
+                if not isinstance(task_id, str) or not task_id or task_id in cooldown:
+                    continue
+                checkpoint = getattr(task, "checkpoint", None)
+                checkpoint_evidence_ids = getattr(checkpoint, "evidence_ids", ())
+                if not checkpoint_evidence_ids:
+                    continue
+                valid_ids = [
+                    eid for eid in checkpoint_evidence_ids if isinstance(eid, str) and eid.strip()
+                ]
+                if not valid_ids:
+                    continue
+                try:
+                    repo_root = _task_scope_root(task)
+                except Exception:
+                    continue
+                if not repo_root:
+                    continue
+                baseline = derive_watchdog_lifecycle_baseline(
+                    status=getattr(task, "status", None),
+                    request_evidence_ids=valid_ids,
+                    checkpoint_evidence_ids=valid_ids,
+                    options=watchdog_options,
+                )
+                if not baseline:
+                    continue
+                evidence_id = baseline["evidence_id"]
+                operation = {
+                    "action": "evaluate_decision",
+                    "task_id": task_id,
+                    "decision": {
+                        "category": DecisionCategory.WATCHDOG.value,
+                        "evidence_ids": [evidence_id],
+                        "options": watchdog_options,
+                        "state": {
+                            "task_status": getattr(getattr(task, "status", None), "value", str(getattr(task, "status", ""))),
+                        },
+                        "training_content": {},
+                    },
+                }
+                try:
+                    self.queue_laya_decision_observation(operation, repo_root, baseline)
+                    cooldown[task_id] = now
+                except Exception as exc:
+                    self.logger.debug("watchdog: laya shadow observation failed: %s", type(exc).__name__)
+
     def _watchdog_loop(self) -> None:
         cfg = self.config.get("resilience", {})
         interval = max(1.0, float(cfg.get("watchdog_interval_seconds", 5.0)))
@@ -817,6 +897,10 @@ class LocalAIApp:
                         self._reap_expired_task_scopes()
                     except Exception as exc:
                         self.logger.debug("watchdog: reap_expired_heartbeats failed: %s", type(exc).__name__)
+                    try:
+                        self._observe_laya_watchdog_lifecycle()
+                    except Exception as exc:
+                        self.logger.debug("watchdog: laya shadow observation failed: %s", type(exc).__name__)
                 sched = self.scheduler.status()
                 if (sched.get("queued", 0) or sched.get("inflight", 0)) and not self.runtime.is_online():
                     self.runtime.ensure_running()
@@ -2967,6 +3051,8 @@ class LocalAIApp:
                 DecisionCategory.COMPLETION_GAP: "agent_os_completion_gate",
                 DecisionCategory.WATCHDOG: "agent_os_task_lifecycle",
                 DecisionCategory.DELEGATION: "pipeline_worker_escalation",
+                DecisionCategory.REDUNDANT_STEP: "command_broker_dedup",
+                DecisionCategory.NEXT_STEP: "pipeline_step_progress",
             }.get(request.category)
             supplied_baseline = dict(_server_baseline)
             baseline_suggestion_valid = supplied_baseline.get("suggestion") in request.options
@@ -3317,6 +3403,9 @@ class LocalAIApp:
                 DecisionCategory.CONTEXT_BUDGET: "repo_context_token_budget",
                 DecisionCategory.COMPLETION_GAP: "agent_os_completion_gate",
                 DecisionCategory.DELEGATION: "pipeline_worker_escalation",
+                DecisionCategory.WATCHDOG: "agent_os_task_lifecycle",
+                DecisionCategory.REDUNDANT_STEP: "command_broker_dedup",
+                DecisionCategory.NEXT_STEP: "pipeline_step_progress",
             }.get(request.category)
             baseline_value = dict(baseline)
             baseline_suggestion_valid = baseline_value.get("suggestion") in request.options

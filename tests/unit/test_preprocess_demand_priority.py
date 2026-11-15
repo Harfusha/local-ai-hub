@@ -60,9 +60,10 @@ def test_rag_batches_reserve_regular_work_when_demand_is_hot(tmp_path):
         con.execute("CREATE TABLE file_refs(root TEXT, path TEXT, size INTEGER, content_hash TEXT, needs_hash INTEGER, rag_hash TEXT, last_accessed_at REAL)")
         con.execute("CREATE TABLE source_index(root TEXT, path TEXT, content_hash TEXT, text TEXT)")
         con.execute("CREATE VIRTUAL TABLE source_fts USING fts5(root UNINDEXED, path UNINDEXED, content)")
+        content_hash = hashlib.sha256(b"body").hexdigest()
         for name in ["a.py", "b.py", "z_hot.py"]:
             (root / name).write_text("body", encoding="utf-8")
-            con.execute("INSERT INTO file_refs VALUES(?,?,10,'hash',0,NULL,0)", (str(root), name))
+            con.execute("INSERT INTO file_refs VALUES(?,?,10,?,0,NULL,0)", (str(root), name, content_hash))
             con.execute("INSERT INTO source_fts VALUES(?,?,?)", (str(root), name, "rare_demand" if name == "z_hot.py" else "other"))
         con.commit()
 

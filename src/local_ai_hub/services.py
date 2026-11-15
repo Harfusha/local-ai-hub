@@ -887,6 +887,21 @@ class LocalAIServices:
         observer = getattr(self, "laya_decision_observer", None)
         task_id = args.get("task_id") if isinstance(args, Mapping) else None
         evidence_ids = args.get("evidence_ids") if isinstance(args, Mapping) else None
+        if not (isinstance(task_id, str) and task_id.strip()):
+            session_id = args.get("session_id") if isinstance(args, Mapping) else None
+            clean_session = str(session_id).strip() if session_id else ""
+            task_id = f"adhoc_{clean_session or 'default'}"
+        if (type(evidence_ids) not in (list, tuple) or not evidence_ids) and isinstance(args, Mapping):
+            single_evidence = args.get("evidence_id")
+            if isinstance(single_evidence, str) and single_evidence.strip():
+                evidence_ids = [single_evidence.strip()]
+        if (
+            (type(evidence_ids) not in (list, tuple) or not evidence_ids)
+            and isinstance(baseline, Mapping)
+            and isinstance(baseline.get("evidence_id"), str)
+            and baseline.get("evidence_id").strip()
+        ):
+            evidence_ids = [baseline.get("evidence_id").strip()]
         if (
             not callable(observer)
             or not isinstance(root, str)
@@ -925,6 +940,9 @@ class LocalAIServices:
                 DecisionCategory.MODEL_ROUTE: "model_router_classify",
                 DecisionCategory.CONTEXT_BUDGET: "repo_context_token_budget",
                 DecisionCategory.DELEGATION: "pipeline_worker_escalation",
+                DecisionCategory.REDUNDANT_STEP: "command_broker_dedup",
+                DecisionCategory.NEXT_STEP: "pipeline_step_progress",
+                DecisionCategory.WATCHDOG: "agent_os_task_lifecycle",
             }.get(decision_category)
             if expected_method is None or baseline_value.get("method") != expected_method:
                 return False

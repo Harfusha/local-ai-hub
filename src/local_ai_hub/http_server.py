@@ -9001,6 +9001,8 @@ class Handler(BaseHTTPRequestHandler):
                                 if repository_failed and not auto_injected_task:
                                     if isinstance(result, dict):
                                         result.setdefault("stop_code", "context_task_context_incomplete")
+                                        if isinstance(unified, dict) and isinstance(unified.get("text"), str) and unified["text"].strip():
+                                            result["task_context"] = unified
                                     status_code = 503 if isinstance(result, dict) and result.get("retryable") is True else 500
                                     self._send(status_code, result); return
                                 if not auto_injected_task:

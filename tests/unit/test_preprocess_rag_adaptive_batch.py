@@ -1,3 +1,4 @@
+import hashlib
 import sqlite3
 import threading
 from contextlib import closing
@@ -12,13 +13,15 @@ def test_preemption_reduces_batch_until_progress_and_keeps_other_roots_independe
     with closing(sqlite3.connect(db)) as con:
         con.execute('CREATE TABLE file_refs(root TEXT, path TEXT, content_hash TEXT, needs_hash INTEGER, rag_hash TEXT, last_accessed_at REAL, size INTEGER, updated_at REAL)')
         con.execute('CREATE TABLE source_index(root TEXT, path TEXT, content_hash TEXT, text TEXT)')
+        con.execute('CREATE TABLE file_refs_revision(root TEXT PRIMARY KEY, revision INTEGER NOT NULL DEFAULT 0)')
+        content_hash = hashlib.sha256(b'text').hexdigest()
         for root in roots:
             root.mkdir()
             for i in range(8):
                 name = f'{i}.py'
                 (root / name).write_text('text', encoding='utf-8')
-                con.execute('INSERT INTO file_refs VALUES(?, ?, ?, 0, NULL, 0, 4, 0)', (str(root), name, name))
-                con.execute('INSERT INTO source_index VALUES(?, ?, ?, ?)', (str(root), name, name, 'text'))
+                con.execute('INSERT INTO file_refs VALUES(?, ?, ?, 0, NULL, 0, 4, 0)', (str(root), name, content_hash))
+                con.execute('INSERT INTO source_index VALUES(?, ?, ?, ?)', (str(root), name, content_hash, 'text'))
         con.commit()
 
     def connect():
@@ -70,11 +73,13 @@ def test_batch_recovers_after_sustained_progress(tmp_path):
     with closing(sqlite3.connect(db)) as con:
         con.execute('CREATE TABLE file_refs(root TEXT, path TEXT, content_hash TEXT, needs_hash INTEGER, rag_hash TEXT, last_accessed_at REAL, size INTEGER, updated_at REAL)')
         con.execute('CREATE TABLE source_index(root TEXT, path TEXT, content_hash TEXT, text TEXT)')
+        con.execute('CREATE TABLE file_refs_revision(root TEXT PRIMARY KEY, revision INTEGER NOT NULL DEFAULT 0)')
+        content_hash = hashlib.sha256(b'text').hexdigest()
         for i in range(20):
             name = f'{i:02}.py'
             (root / name).write_text('text', encoding='utf-8')
-            con.execute('INSERT INTO file_refs VALUES(?, ?, ?, 0, NULL, 0, 4, 0)', (str(root), name, name))
-            con.execute('INSERT INTO source_index VALUES(?, ?, ?, ?)', (str(root), name, name, 'text'))
+            con.execute('INSERT INTO file_refs VALUES(?, ?, ?, 0, NULL, 0, 4, 0)', (str(root), name, content_hash))
+            con.execute('INSERT INTO source_index VALUES(?, ?, ?, ?)', (str(root), name, content_hash, 'text'))
         con.commit()
 
     def connect():
@@ -188,7 +193,9 @@ def test_real_rag_preemption_preserves_snapshot_and_reduces_batch(tmp_path, monk
     with closing(sqlite3.connect(db)) as con:
         con.execute('CREATE TABLE file_refs(root TEXT, path TEXT, content_hash TEXT, needs_hash INTEGER, rag_hash TEXT, last_accessed_at REAL, size INTEGER, updated_at REAL)')
         con.execute('CREATE TABLE source_index(root TEXT, path TEXT, content_hash TEXT, text TEXT)')
-        con.execute('INSERT INTO file_refs VALUES(?, ?, ?, 0, NULL, 0, 10, 0)', (str(root), 'module.py', 'new-hash'))
+        con.execute('CREATE TABLE file_refs_revision(root TEXT PRIMARY KEY, revision INTEGER NOT NULL DEFAULT 0)')
+        content_hash = hashlib.sha256(path.read_bytes()).hexdigest()
+        con.execute('INSERT INTO file_refs VALUES(?, ?, ?, 0, NULL, 0, 10, 0)', (str(root), 'module.py', content_hash))
         con.commit()
 
     def connect():
