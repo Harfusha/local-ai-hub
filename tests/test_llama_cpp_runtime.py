@@ -907,7 +907,11 @@ class LlamaCppRuntimeTests(unittest.TestCase):
             binary_name = "llama-server.exe" if runtime._host_platform()[0] == "win32" else "llama-server"
             (runtime.runtime_dir / binary_name).write_bytes(b"server")
             (runtime.runtime_dir / ".runtime-sha256").write_text(runtime.runtime_asset()[1], encoding="utf-8")
-            with patch.object(Path, "is_symlink", return_value=True):
+            original_is_symlink = Path.is_symlink
+            with patch.object(
+                Path, "is_symlink",
+                lambda candidate: candidate == runtime.model_path or original_is_symlink(candidate),
+            ):
                 with self.assertRaisesRegex(RuntimeError, "managed model.*link"):
                     runtime.provision()
 
