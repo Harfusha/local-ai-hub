@@ -138,3 +138,10 @@ Změny níže jsou **skutečně commitnuté do PR #8**, nikoliv jen návrhy. Jde
 
 **Release stav:** PR zůstává draft; bez kompletního zeleného CI a externích důkazů není v6.0.0 připravena na merge/tag.
 
+
+## 8. Navazující změny strukturálního vyhledávání
+
+- [`19de2cc6`](https://github.com/Harfusha/local-ai-hub/commit/19de2cc62940bcece449c26edf0f32c45a4cd5ca): dovnitřsouborové pokračování `match_offset` + page boundary bez ztráty shod, přenos přes HTTP/MCP, strict bounds a PHP regresní testy. Číselný offset stále **není snapshot-stable**.
+- [`f5b8609c`](https://github.com/Harfusha/local-ai-hub/commit/f5b8609c7d118983c89520c808520e04dd94edb1): `match_offset` doplněn do veřejného action-aware MCP JSON schema; ostatní akce tento parametr nesmějí přijímat.
+- [`5173ec1f`](https://github.com/Harfusha/local-ai-hub/commit/5173ec1fb1806a7d2b51b865fe609bf73965f0d5): samostatný `file_offset` 0–100000 pro MCP velké repozitáře bez zvětšení limitu běžného `offset` u ostatních akcí.
+- Předčasné `CI GREEN` nebo `release-ready` tvrzení je nepřípustné. Závěrečná akceptace vyžaduje exact-SHA CI a nové JUnit + packaging receipts.
