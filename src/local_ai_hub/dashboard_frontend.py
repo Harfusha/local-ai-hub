@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import time
+import tomllib
 from importlib.resources import files
 from pathlib import Path
 from types import MappingProxyType
@@ -48,122 +50,121 @@ def dashboard_frontend_asset(name: str) -> tuple[str, bytes] | None:
 
 
 def _redact_path(path: str | Path | None) -> str | None:
+    """Redact only real home-directory descendants, never a string prefix."""
     if not path:
         return None
-    p_str = str(path)
-    home = str(Path.home())
-    if p_str.startswith(home):
-        return "~" + p_str[len(home):]
-    return p_str
+    value = str(path)
+    try:
+        relative = Path(value).expanduser().relative_to(Path.home())
+        return "~" if str(relative) == "." else "~/" + relative.as_posix()
+    except ValueError:
+        return value
+
+
+def _mcp_entry_valid(value: object) -> bool:
+    if not isinstance(value, dict):
+        return False
+    command = value.get("command")
+    url = value.get("url")
+    # Registration describes a runnable transport, not a successful handshake.
+    return (isinstance(command, str) and bool(command.strip())) or (
+        isinstance(url, str) and url.startswith(("http://127.0.0.1:", "http://localhost:", "http://[::1]:"))
+    )
+
+
+def _codex_mcp_registered(path: Path | None) -> bool:
+    if path is None:
+        return False
+    try:
+        value = tomllib.loads(path.read_text(encoding="utf-8"))
+        servers = value.get("mcp_servers")
+        return isinstance(servers, dict) and _mcp_entry_valid(servers.get("local-ai"))
+    except (OSError, ValueError, TypeError):
+        return False
+
+
+def _antigravity_mcp_registered(path: Path | None) -> bool:
+    if path is None:
+        return False
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        servers = data.get("mcpServers") if isinstance(data, dict) else None
+        return isinstance(servers, dict) and _mcp_entry_valid(servers.get("local-ai"))
+    except (OSError, ValueError, TypeError):
+        return False
 
 
 def inspect_agent_hosts(config: dict[str, Any] | None = None) -> dict[str, Any]:
-    """Inspect installed agent host CLI binaries, MCP registration, and handshake state (HUB-093).
+    """Report installation and registration separately from unobserved sessions.
 
-    Truthful reporting: never reports a host as ready if the CLI binary is missing
-    or MCP is unconfigured.
+    Local configuration files cannot demonstrate MCP connectivity or a live
+    host handshake. Those facts remain unknown until host-issued evidence exists.
     """
-    hosts_report: list[dict[str, Any]] = []
-    now = time.time()
+    observed_at = time.time()
+    home = Path.home()
+    codex_cli = shutil.which("codex") or shutil.which("codex.cmd")
+    codex_dir = Path(os.environ.get("CODEX_HOME") or home / ".codex")
+    codex_config = codex_dir / "config.toml"
+    codex_registered = _codex_mcp_registered(codex_config)
+    codex_skills = (codex_dir / "skills" / "local-ai-orchestrator" / "SKILL.md").is_file() or (
+        home / ".agents" / "skills" / "local-ai-orchestrator" / "SKILL.md"
+    ).is_file()
 
-    # 1. Codex CLI inspection
-    codex_bin = shutil.which("codex") or shutil.which("codex.cmd")
-    codex_home = os.environ.get("CODEX_HOME")
-    codex_mcp_path: Path | None = None
-    if codex_home:
-        candidate = Path(codex_home) / "config.json"
-        if candidate.exists():
-            codex_mcp_path = candidate
-    if codex_mcp_path is None:
-        default_codex = Path.home() / ".codex" / "config.json"
-        if default_codex.exists():
-            codex_mcp_path = default_codex
+    gemini_home = Path(os.environ.get("GEMINI_CLI_HOME") or home / ".gemini")
+    agy_cli = shutil.which("agy") or shutil.which("agy.cmd") or shutil.which("antigravity")
+    agy_env_detected = bool(os.environ.get("ANTIGRAVITY_ENV") or os.environ.get("GEMINI_CLI_HOME"))
+    agy_candidates = (
+        gemini_home / "config" / "mcp_config.json",
+        gemini_home / "mcp_config.json",
+        gemini_home / "settings.json",
+    )
+    agy_config = next((candidate for candidate in agy_candidates if candidate.is_file()), None)
+    agy_registered = any(_antigravity_mcp_registered(candidate) for candidate in agy_candidates if candidate.is_file())
+    agy_skills = (gemini_home / "skills" / "local-ai-orchestrator" / "SKILL.md").is_file() or (
+        gemini_home / "config" / "skills" / "local-ai-orchestrator" / "SKILL.md"
+    ).is_file()
+    agy_detected = bool(agy_cli) or agy_env_detected or agy_registered or agy_skills
 
-    codex_mcp_registered = False
-    if codex_mcp_path is not None and codex_mcp_path.exists():
-        try:
-            txt = codex_mcp_path.read_text(encoding="utf-8", errors="ignore")
-            codex_mcp_registered = "local-ai" in txt
-        except Exception:
-            codex_mcp_registered = False
-
-    codex_status = "not_installed"
-    codex_remediation = "Install Codex CLI via official installer or package manager."
-    if codex_bin:
-        if codex_mcp_registered:
-            codex_status = "ready"
-            codex_remediation = "Codex CLI is installed and configured with Local AI Hub MCP."
+    def describe_host(
+        host_id: str, name: str, binary: str | None, detected: bool,
+        registered: bool, skills: bool, config_path: Path | None,
+    ) -> dict[str, Any]:
+        # No handshake data is available from a static inspection; never fake it.
+        status = "degraded" if detected else "not_installed"
+        if not detected:
+            remediation = "Host not detected. Install the host and configure its Local AI Hub MCP connection."
+        elif not registered:
+            remediation = "Host detected but Local AI Hub MCP is not registered in its host configuration."
         else:
-            codex_status = "degraded"
-            codex_remediation = "Codex CLI is installed, but Local AI Hub MCP is not configured in ~/.codex/config.json."
-
-    hosts_report.append({
-        "host_id": "codex",
-        "display_name": "Codex CLI",
-        "status": codex_status,
-        "detected_cli": _redact_path(codex_bin),
-        "version": None,
-        "mcp_config_path": _redact_path(codex_mcp_path),
-        "mcp_registered": codex_mcp_registered,
-        "skills_state": "installed" if codex_mcp_registered else "missing",
-        "last_handshake": None,
-        "stale": False,
-        "remediation": codex_remediation,
-    })
-
-    # 2. Antigravity IDE / CLI inspection
-    agy_bin = shutil.which("agy") or shutil.which("agy.cmd") or shutil.which("antigravity")
-    agy_env = os.environ.get("ANTIGRAVITY_ENV") or os.environ.get("GEMINI_CLI_HOME")
-    agy_mcp_path: Path | None = None
-
-    # Check known Antigravity MCP paths
-    candidates = [
-        Path.home() / ".gemini" / "antigravity" / "mcp" / "local-ai",
-        Path.home() / ".gemini" / "antigravity" / "mcp_config.json",
-        Path.home() / ".gemini" / "settings.json",
-    ]
-    for c in candidates:
-        if c.exists():
-            agy_mcp_path = c
-            break
-
-    agy_mcp_registered = False
-    if agy_mcp_path is not None:
-        try:
-            if agy_mcp_path.is_dir():
-                agy_mcp_registered = (agy_mcp_path / "instructions.md").exists() or any(agy_mcp_path.glob("*.json"))
-            else:
-                txt = agy_mcp_path.read_text(encoding="utf-8", errors="ignore")
-                agy_mcp_registered = "local-ai" in txt
-        except Exception:
-            agy_mcp_registered = False
-
-    agy_status = "not_installed"
-    agy_remediation = "Install Antigravity IDE or CLI."
-    if agy_bin or agy_env:
-        if agy_mcp_registered:
-            agy_status = "ready"
-            agy_remediation = "Antigravity is configured with Local AI Hub MCP."
-        else:
-            agy_status = "degraded"
-            agy_remediation = "Antigravity detected, but Local AI Hub MCP registration is missing."
-
-    hosts_report.append({
-        "host_id": "antigravity",
-        "display_name": "Antigravity IDE / CLI",
-        "status": agy_status,
-        "detected_cli": _redact_path(agy_bin) if agy_bin else ("env:" + str(agy_env) if agy_env else None),
-        "version": None,
-        "mcp_config_path": _redact_path(agy_mcp_path),
-        "mcp_registered": agy_mcp_registered,
-        "skills_state": "installed" if agy_mcp_registered else "missing",
-        "last_handshake": now if agy_env else None,
-        "stale": False,
-        "remediation": agy_remediation,
-    })
+            remediation = "MCP registered, live connectivity not verified. Run a host session handshake."
+        return {
+            "host_id": host_id,
+            "display_name": name,
+            "status": status,
+            "detected_cli": _redact_path(binary) if binary else ("host configuration detected" if detected else None),
+            "cli_installed": bool(binary),
+            "mcp_config_path": _redact_path(config_path) if config_path and config_path.exists() else None,
+            "mcp_registered": registered,
+            "mcp_connection": "unverified" if registered else "not_configured",
+            "skills_state": "installed" if skills else "missing",
+            "handshake_verified": False,
+            "last_handshake": None,
+            "stale": False,
+            "remediation": remediation,
+            "version": None,
+        }
 
     return {
         "success": True,
-        "hosts": hosts_report,
-        "observed_at": now,
+        "hosts": [
+            describe_host(
+                "codex", "Codex CLI", codex_cli,
+                bool(codex_cli), codex_registered, codex_skills, codex_config,
+            ),
+            describe_host(
+                "antigravity", "Antigravity IDE / CLI", agy_cli,
+                agy_detected, agy_registered, agy_skills, agy_config,
+            ),
+        ],
+        "observed_at": observed_at,
     }
