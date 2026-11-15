@@ -337,7 +337,10 @@ async function loadTasks() {
 
   if (!listEl) return;
   const epoch = ++sectionRequestEpochs.tasks;
-  if (root && !/^(?:[a-zA-Z]:[\\\\/]|\\\\\\\\|\\/)/.test(root)) {
+  const isAbsoluteRoot = root.startsWith("/") || root.startsWith("\\\\") ||
+    (root.length >= 3 && /^[A-Za-z]$/.test(root[0]) && root[1] === ":" &&
+     (root[2] === "\\" || root[2] === "/"));
+  if (root && !isAbsoluteRoot) {
     if (statusEl) statusEl.textContent = "Repository root must be absolute.";
     return;
   }
@@ -456,7 +459,7 @@ async function loadTelemetryTimeline(loadMore = false) {
   const events = res.data.timeline;
   if (statusEl) {
     statusEl.textContent = events.length
-      ? `Loaded ${events.length} historical telemetry events; this is not live health.`
+      ? `Loaded ${events.length} historical events; the timeline does not show current runtime health or request traces.`
       : (loadMore ? "No older events found." : "No telemetry events recorded yet.");
   }
   const cursor = res.data.next_cursor;
