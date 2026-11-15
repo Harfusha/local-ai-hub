@@ -207,3 +207,70 @@ def test_large_merged_range_reports_exact_omitted_lines():
     assert merged[0]["omitted_lines"] == 5
     assert merged[0]["truncated"] is True
     assert merged[0]["truncation_reason"] == "max_merged_lines"
+
+
+
+def test_verified_large_snapshot_advertises_hash_bound_recovery(tmp_path):
+    import hashlib
+
+    source = tmp_path / "sample.py"
+    source.write_text("\n".join(f"line-{n}" for n in range(1, 50_008)) + "\n", encoding="utf-8")
+    digest = hashlib.sha256(source.read_bytes()).hexdigest()
+    records = [
+        {"path": "sample.py", "start_line": 1, "end_line": 2, "text": "stale",
+         "content_hash": digest, "repository_revision": "abc123", "source_kind": "FTS"},
+        {"path": "sample.py", "start_line": 2, "end_line": 50_007, "text": "stale",
+         "content_hash": digest, "repository_revision": "abc123", "source_kind": "FTS"},
+    ]
+    item = merge_overlapping_evidence(records, root=tmp_path)[0]
+    assert item["snapshot_verified"] is True
+    assert item["partial"] is True
+    assert item["read_at"] > 0
+    assert item["original_source_kind"] == "FTS"
+    assert item["revision_verified"] is False  # Digest cannot prove Git revision.
+    assert item["requested_end_line"] == 50_007
+    assert item["returned_end_line"] == 50_000
+    assert item["omitted_lines"] == 7
+    assert item["slice_recovery"] == {
+        "path": "sample.py",
+        "start_line": 50_001,
+        "end_line": 50_007,
+        "content_hash": digest,
+        "repository_revision": "abc123",
+    }
+
+
+def test_unverified_large_snapshot_discloses_missing_recovery(tmp_path):
+    source = tmp_path / "sample.py"
+    source.write_text("new contents\n", encoding="utf-8")
+    merged = merge_overlapping_evidence([
+        {"path": "sample.py", "start_line": 1, "end_line": 2, "text": "a\nb"},
+        {"path": "sample.py", "start_line": 2, "end_line": 50_002, "text": "b"},
+    ], root=tmp_path)
+    item = merged[0]
+    assert item["partial"] is True
+    assert item["slice_recovery"] is None
+    assert item["snapshot_verified"] is False
+    assert item["omitted_lines"] == 2
+
+
+def test_evidence_disk_read_rejects_inner_symlink(tmp_path):
+    root = tmp_path / "repo"
+    outside = tmp_path / "outside.py"
+    root.mkdir()
+    outside.write_text("secret outside\n", encoding="utf-8")
+    link = root / "link.py"
+    try:
+        link.symlink_to(outside)
+    except (OSError, NotImplementedError):
+        return
+    import hashlib
+
+    digest = hashlib.sha256(outside.read_bytes()).hexdigest()
+    merged = merge_overlapping_evidence([
+        {"path": "link.py", "start_line": 1, "end_line": 1, "text": "original",
+         "content_hash": digest},
+        {"path": "link.py", "start_line": 2, "end_line": 2, "text": "original 2",
+         "content_hash": digest},
+    ], root=root)
+    assert merged == []
