@@ -4,9 +4,9 @@ Updated 2026-11-10. This records execution evidence for the sequential audit dir
 
 ## Scope and ownership
 
-- Main checkout: `C:/Users/Adam/.local-ai-hub`, branch `master`, HEAD `ecf259c75b3644497e7b9588db215c7ca79f9c1f` at resume.
+- Main checkout: `<LOCAL_USER_HOME>/.local-ai-hub`, branch `master`, HEAD `ecf259c75b3644497e7b9588db215c7ca79f9c1f` at resume.
 - Preserve all pre-existing dirty and untracked paths. No commit, reset, stash, or cleanup was performed.
-- OpenCode support is out of scope on main. The separate extraction worktree is `C:/Users/Adam/.codex/worktrees/opencode-extraction/.local-ai-hub`, branch `codex/opencode-extraction`, HEAD `9e5b00c626a49dc41495056d1a3407cae7181749`; it was clean when inspected.
+- OpenCode support is out of scope on main. The separate extraction worktree is `<LOCAL_USER_HOME>/.codex/worktrees/opencode-extraction/.local-ai-hub`, branch `codex/opencode-extraction`, HEAD `9e5b00c626a49dc41495056d1a3407cae7181749`; it was clean when inspected.
 - User approved removing Hub API-token authentication across the Hub, with loopback binding and command/capability/root/approval/lease/rate/audit protections retained. No OpenCode provider support is being added to main.
 - User authorized installed models only. Do not pull models.
 

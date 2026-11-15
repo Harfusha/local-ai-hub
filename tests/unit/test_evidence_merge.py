@@ -164,14 +164,18 @@ def test_evidence_merge_linear_scaling_and_safe_numeric_validation():
 
 
 def test_evidence_merge_bounded_file_read_and_symlink_protection(tmp_path):
+    import hashlib
+
     root = tmp_path / "repo"
     root.mkdir()
     target = root / "large.py"
-    # Create file that exceeds MAX_FILE_BYTES
+    # The file-size guard is reached only with hash-bound evidence;
+    # unverified records correctly take the missing_content_hash fallback.
     target.write_bytes(b"A" * (11 * 1024 * 1024))
+    digest = hashlib.sha256(target.read_bytes()).hexdigest()
     evidence = [
-        {"path": "large.py", "start_line": 1, "end_line": 2, "text": "chunk1"},
-        {"path": "large.py", "start_line": 2, "end_line": 3, "text": "chunk2"},
+        {"path": "large.py", "start_line": 1, "end_line": 2, "text": "chunk1", "content_hash": digest},
+        {"path": "large.py", "start_line": 2, "end_line": 3, "text": "chunk2", "content_hash": digest},
     ]
     merged = merge_overlapping_evidence(evidence, root=root)
     assert len(merged) == 1
