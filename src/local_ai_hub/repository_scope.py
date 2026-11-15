@@ -43,6 +43,11 @@ def authorized_repository_root(config: Mapping[str, Any], raw: Any) -> str:
     allowed = security.get("allowed_roots", [])
     if not isinstance(allowed, list):
         raise RepositoryScopeError("invalid root authorization configuration", "invalid_security", 403)
+    # A missing allowlist retains the historical local-owner policy. An
+    # explicitly configured empty allowlist is a deny-all, not an override
+    # permitting every readable directory.
+    if "allowed_roots" in security and not allowed:
+        raise RepositoryScopeError("no repository roots are allowed", "root_not_allowed", 403)
     if allowed:
         for entry in allowed:
             try:
