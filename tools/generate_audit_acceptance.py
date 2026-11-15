@@ -346,7 +346,7 @@ AUDIT_ITEMS: list[dict[str, Any]] = [
         "priority": "P1",
         "category": "Acceptance / Hardware",
         "status": "BLOCKED_RESERVATION",
-        "verification_command": "python -c \"from pathlib import Path; assert Path('C:/Users/Adam/.local-ai-hub/gpu_reservation.lock').exists() or True\"",
+        "verification_command": "MANUAL: verify GPU reservation provenance and obtain explicit user consent for live GPU test",
         "evidence_receipt": "BLOCKED: Live GPU reservation active or requires operator pre-consent; cannot mutate GPU reservation file",
         "files": [],
     },

@@ -4766,7 +4766,11 @@ class Handler(BaseHTTPRequestHandler):
                     }); return
                 include_stale = str((query.get("include_stale") or ["false"])[0]).lower() in ("true", "1", "yes")
                 task_query = (query.get("query") or [""])[0]
-                if request_root:
+                # Opt-in preserves the existing GET response contract
+                # for CLI/older clients. The modern dashboard explicitly
+                # requests correct post-scope page semantics.
+                scoped_page = str((query.get("scoped_page") or ["false"])[0]).strip().lower() in ("true", "1", "yes")
+                if request_root and scoped_page:
                     from .http_scoped_tasks import page_scoped_tasks
                     page = page_scoped_tasks(
                         APP.agent_tasks.list_tasks,
@@ -4803,10 +4807,9 @@ class Handler(BaseHTTPRequestHandler):
                     has_more = len(tasks) > limit
                     response = {
                         "success": True,
-                        "tasks": [t.to_dict() for t in tasks[:limit]],
+                        "tasks": [t.to_dict() for t in tasks[:limit] if not request_root or self._task_matches_request(t, request_root)],
                         "total_count": APP.agent_tasks.count(),
                         "active_count": APP.agent_tasks.count(TaskStatus.ACTIVE),
-                        "count_scope": "installation",
                         "offset": offset,
                         "limit": limit,
                         "next_offset": offset + min(len(tasks), limit),

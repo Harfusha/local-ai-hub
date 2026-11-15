@@ -3902,7 +3902,16 @@ class ProjectPreprocessor:
                 pending = (list(preferred) + [item for item in pending if str(item["path"]) not in seen])[:limit]
             if not pending:
                 force = bool(row.get("force_refresh"))
-                rev_row = con.execute("SELECT revision FROM file_refs_revision WHERE root=?", (root,)).fetchone()
+                # Older test/migrating databases may not yet contain the
+                # inventory revision table. Fall back to a full audit rather
+                # than crashing or assuming a completed RAG inventory.
+                has_revision_table = con.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='file_refs_revision'"
+                ).fetchone() is not None
+                rev_row = (
+                    con.execute("SELECT revision FROM file_refs_revision WHERE root=?", (root,)).fetchone()
+                    if has_revision_table else None
+                )
                 curr_rev = int(rev_row[0]) if rev_row is not None else 0
                 count_row = con.execute("SELECT count(*) FROM file_refs WHERE root=?", (root,)).fetchone()
                 curr_count = int(count_row[0]) if count_row is not None else 0
@@ -3929,7 +3938,7 @@ class ProjectPreprocessor:
                 cadence = float(self.cfg.get("rag_idle_audit_cadence_seconds", 300.0))
                 now = time.time()
                 cached_digest, last_audit = getattr(self, "_rag_inventory_digests", {}).get(root, (None, 0.0))
-                if not force and cached_digest == inventory_digest and (now - last_audit) < cadence:
+                if has_revision_table and not force and cached_digest == inventory_digest and (now - last_audit) < cadence:
                     all_paths = None
                 else:
                     all_paths = [str(r[0]) for r in con.execute("SELECT path FROM file_refs WHERE root=? ORDER BY path", (root,)).fetchall()]
@@ -4036,11 +4045,13 @@ class ProjectPreprocessor:
                 else:
                     disk_hash = hashlib.sha256(fpath.read_bytes()).hexdigest()
                 is_sha256 = len(expected_h) == 64 and all(c in "0123456789abcdefABCDEF" for c in expected_h)
-                if is_sha256:
-                    stale = (disk_hash != expected_h)
-                else:
-                    stale = (fpath.read_bytes() != expected_h.encode("utf-8", errors="replace")) and (disk_hash != expected_h)
-                if stale:
+                if not is_sha256:
+                    # Legacy opaque hashes cannot be compared to SHA-256 bytes.
+                    # Do not invalidate their DB row using an incomparable
+                    # digest. The RAG index step verifies live bytes against
+                    # any cached content override before publication.
+                    continue
+                if disk_hash != expected_h:
                     stale_paths.append(rel)
             except Exception:
                 continue

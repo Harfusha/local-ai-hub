@@ -459,7 +459,7 @@
       "title": "RTX 5070 Ti 16GB VRAM coexistence and OOM recovery",
       "priority": "P1",
       "category": "Acceptance / Hardware",
-      "verification_command": "python -c \"from pathlib import Path; assert Path('C:/Users/Adam/.local-ai-hub/gpu_reservation.lock').exists() or True\"",
+      "verification_command": "MANUAL: verify GPU reservation provenance and obtain explicit user consent for live GPU test",
       "files": [],
       "historical_claim": "BLOCKED: Live GPU reservation active or requires operator pre-consent; cannot mutate GPU reservation file",
       "verification_status": "BLOCKED_RESERVATION",

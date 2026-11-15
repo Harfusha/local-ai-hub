@@ -354,7 +354,10 @@ async function loadTasks(loadMore = false) {
   const previousOffset = taskCursor;
   if (statusEl) statusEl.textContent = "Loading tasks…";
   const params = new URLSearchParams({ limit: "50", offset: String(taskCursor) });
-  if (root) params.set("root", root);
+  if (root) {
+    params.set("root", root);
+    params.set("scoped_page", "true");
+  }
   const res = await request(`/api/agent-state/tasks?${params.toString()}`);
   if (!isCurrentSectionRequest("tasks", epoch) || rootInput?.value.trim() !== root) return;
   if (!res.ok || !res.data || !Array.isArray(res.data.tasks) ||
