@@ -7,6 +7,15 @@ import pytest
 from local_ai_hub.rag import RAGStore
 
 
+def test_text_chunking_bounds_overlap_to_chunk_size(tmp_path: Path) -> None:
+    engine = RAGStore(config={"server": {"state_dir": str(tmp_path)}})
+
+    chunks = engine._text_chunks("x" * 1000, size=32, overlap=450)
+
+    assert len(chunks) < 100
+    assert chunks[-1].endswith("x")
+
+
 def test_python_ast_chunking_with_parent_headers(tmp_path: Path) -> None:
     config = {
         "server": {"state_dir": str(tmp_path)},

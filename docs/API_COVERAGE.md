@@ -1,8 +1,8 @@
 # API surface coverage
 
 Deterministic source inventory. Status describes static evidence, not runtime health or asserted behavior. Full contracts, fixtures, provenance, and coverage details live in `API_COVERAGE.json`.
-Reproduce with `python tools/surface_inventory.py --check`.
-<!-- coverage-task-id:  -->
+Reproduce with `python tools/surface_inventory.py --check --task-id task_eefe699c115e`.
+<!-- coverage-task-id: task_eefe699c115e -->
 
 | Surface | Name | Evidence status | Owner | Operation ID |
 |---|---|---|---|---|
@@ -24,7 +24,6 @@ Reproduce with `python tools/surface_inventory.py --check`.
 | HTTP GET | /api/agent-state/swarm | conditional | src/local_ai_hub/http_server.py | op-6668f590a0db |
 | HTTP GET | /api/agent-state/swarm/ | conditional | src/local_ai_hub/http_server.py | op-394fd93d45c9 |
 | HTTP GET | /api/agent-state/tasks | conditional | src/local_ai_hub/http_server.py | op-8a32e6e43634 |
-| HTTP GET | /api/agent/hosts | confirmed | src/local_ai_hub/http_server.py | op-1b57d3fe4ade |
 | HTTP GET | /api/audit/tail | confirmed | src/local_ai_hub/http_server.py | op-8564f8460f97 |
 | HTTP GET | /api/audit_dependencies | conditional | src/local_ai_hub/http_server.py | op-63f1b40f1ca1 |
 | HTTP GET | /api/benchmark/summary | conditional | src/local_ai_hub/http_server.py | op-92275db2a76f |
@@ -67,6 +66,7 @@ Reproduce with `python tools/surface_inventory.py --check`.
 | HTTP GET | /api/project/config | confirmed | src/local_ai_hub/http_server.py | op-d09245aa7a04 |
 | HTTP GET | /api/rag/workspaces | confirmed | src/local_ai_hub/http_server.py | op-dfdb6971e40c |
 | HTTP GET | /api/refactor_impact | conditional | src/local_ai_hub/http_server.py | op-17da2f2b1a1d |
+| HTTP GET | /api/repair-priorities | confirmed | src/local_ai_hub/http_server.py | op-03565de09352 |
 | HTTP GET | /api/repo/ | confirmed | src/local_ai_hub/http_server.py | op-6a713d7296a5 |
 | HTTP GET | /api/repo/affected_tests | conditional | src/local_ai_hub/http_server.py | op-d7d905e14f41 |
 | HTTP GET | /api/repo/dead_code | conditional | src/local_ai_hub/http_server.py | op-eb50388c805b |
@@ -81,11 +81,7 @@ Reproduce with `python tools/surface_inventory.py --check`.
 | HTTP GET | /api/telemetry/timeline | confirmed | src/local_ai_hub/http_server.py | op-d7ed59a7d1a4 |
 | HTTP GET | /api/test_matrix | conditional | src/local_ai_hub/http_server.py | op-7e21dfa39869 |
 | HTTP GET | /dashboard | conditional | src/local_ai_hub/http_server.py | op-f5f8517aa982 |
-| HTTP GET | /dashboard-assets/ | conditional | src/local_ai_hub/http_server.py | op-ed30dc86185d |
-| HTTP GET | /dashboard-assets/app.css | confirmed | src/local_ai_hub/http_server.py | op-fb3a808593b2 |
-| HTTP GET | /dashboard-assets/app.js | confirmed | src/local_ai_hub/http_server.py | op-5835050c112b |
 | HTTP GET | /dashboard/legacy | conditional | src/local_ai_hub/http_server.py | op-571e2e1bff71 |
-| HTTP GET | /dashboard/next | conditional | src/local_ai_hub/http_server.py | op-bb3baf2ce868 |
 | HTTP GET | /favicon.ico | confirmed | src/local_ai_hub/http_server.py | op-85e915b2262e |
 | HTTP GET | /health | confirmed | src/local_ai_hub/http_server.py | op-fdaca5a0d036 |
 | HTTP GET | /ready | conditional | src/local_ai_hub/http_server.py | op-a5f57d02a8dd |
@@ -694,8 +690,10 @@ Reproduce with `python tools/surface_inventory.py --check`.
 | HubClient target | POST /api/rag/ingest_diagram | confirmed | src/local_ai_hub/client.py | op-69fef0ffcfae |
 | HubClient target | POST /api/agent-state/tasks | confirmed | src/local_ai_hub/client.py | op-c7342144ec03 |
 | CLI operation | agent-state | confirmed | tools/hubctl.py | op-7e8d2221e554 |
+| CLI operation | caveman-compress | confirmed | tools/hubctl.py | op-0cf2adc425ec |
 | CLI operation | clean | confirmed | tools/hubctl.py | op-02e6bf344b35 |
 | CLI operation | cleanup | confirmed | tools/hubctl.py | op-78d6f8c8a97e |
+| CLI operation | compress-instructions | confirmed | tools/hubctl.py | op-6b0bff11e28a |
 | CLI operation | dashboard | confirmed | tools/hubctl.py | op-a7abef5e4884 |
 | CLI operation | doctor | confirmed | tools/hubctl.py | op-b33c959eab65 |
 | CLI operation | generate | confirmed | tools/hubctl.py | op-53d2882e6404 |
