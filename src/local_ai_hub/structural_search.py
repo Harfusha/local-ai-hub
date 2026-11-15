@@ -457,7 +457,27 @@ def search_structurally(
                 # Universal prefix queries: fn:name, class:name, struct:name, interface:name
                 elif target_pattern.startswith("fn:") or target_pattern.startswith("function:"):
                     fn_name = target_pattern.split(":", 1)[1].strip().lower()
-                    if re.search(rf"\b(?:def|function|fn|func)\s+{re.escape(fn_name)}\b", declaration_line, re.I):
+                    escaped_name = re.escape(fn_name)
+                    ordinary_declaration = re.search(
+                        rf"\b(?:def|function|fn|func)\s+\*?\s*{escaped_name}\b",
+                        declaration_line, re.I,
+                    )
+                    go_receiver = (
+                        fpath.suffix == ".go"
+                        and re.search(
+                            rf"\bfunc\s*\([^()]*\)\s*{escaped_name}\b",
+                            declaration_line, re.I,
+                        )
+                    )
+                    js_assignment = (
+                        fpath.suffix in {".js", ".jsx", ".ts", ".tsx"}
+                        and re.search(
+                            rf"\b(?:const|let|var)\s+{escaped_name}\s*=\s*"
+                            rf"(?:async\s+)?(?:function\b|\([^)]*\)\s*=>|[A-Za-z_$][\w$]*\s*=>)",
+                            declaration_line, re.I,
+                        )
+                    )
+                    if ordinary_declaration or go_receiver or js_assignment:
                         matched = True
                         struct_type = f"function:{fn_name}"
                         desc = f"Function declaration matching '{fn_name}'"

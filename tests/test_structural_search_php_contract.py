@@ -197,3 +197,34 @@ def test_php_class_and_function_queries_ignore_markup_and_comments(tmp_path):
     assert _scan(tmp_path, "fn:NotReal")["matches"] == []
     assert [m["line"] for m in _scan(tmp_path, "class:RealClass")["matches"]] == [6]
     assert [m["line"] for m in _scan(tmp_path, "fn:real_function")["matches"]] == [7]
+
+
+def test_typescript_function_search_supports_assigned_arrow_and_function_expressions(tmp_path):
+    source = tmp_path / "functions.ts"
+    source.write_text(
+        "export const compute = (left: number, right: number) => left + right;\n"
+        "const fetchData = async (id: string) => id;\n"
+        "let regular = function() { return 1; };\n"
+        "const inline = async value => value;\n"
+        'const misleading = "const fake = () => 2";\n'
+        "// const ignored = () => 2;\n",
+        encoding="utf-8",
+    )
+    for name, line in (("compute", 1), ("fetchData", 2), ("regular", 3), ("inline", 4)):
+        assert [item["line"] for item in _scan(tmp_path, f"fn:{name}")["matches"]] == [line]
+    assert _scan(tmp_path, "fn:fake")["matches"] == []
+    assert _scan(tmp_path, "fn:ignored")["matches"] == []
+
+
+def test_go_function_search_supports_receiver_methods(tmp_path):
+    source = tmp_path / "widget.go"
+    source.write_text(
+        "package widget\n"
+        "func (w *Widget) Handle(ctx Context) {}\n"
+        "func Standalone() {}\n"
+        'var text = "func (w *Widget) Fake() {}"\n',
+        encoding="utf-8",
+    )
+    assert [item["line"] for item in _scan(tmp_path, "fn:Handle")["matches"]] == [2]
+    assert [item["line"] for item in _scan(tmp_path, "fn:Standalone")["matches"]] == [3]
+    assert _scan(tmp_path, "fn:Fake")["matches"] == []
