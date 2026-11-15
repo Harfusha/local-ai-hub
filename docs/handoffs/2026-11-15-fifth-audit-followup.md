@@ -175,3 +175,10 @@ Repo state is read from the live PR #8 branch; the commit hash in the original d
 - **Remaining:** verify *exact-HEAD* CI including full Ubuntu/Python 3.14 integration, all platform-smoke combinations, Windows critical-coverage and the installed wheel/package job. Browser, local GPU, live Codex/Antigravity handshake and model retrieval remain external acceptance blockers.
 
 - Po SQLite busy/backoff se provádí opětovná kontrola aktuálních bytes před každým pokusem o publikování (full i incremental). Nový fault-injection test mění zdroj během prvního nezdařeného pokusu a vyžaduje fail-closed místo zapsání starého embeddingu.
+
+## 12. Master drift and cancelled dashboard preview (2026-11-15)
+
+- Master advanced to [`f14666a`](https://github.com/Harfusha/local-ai-hub/commit/f14666a77a816c09fd77676ab0d467ca17951dc3), intentionally removing the cancelled `/dashboard/next` preview, `ui_static` assets, and its preview-specific host diagnostics. Preserve the existing `/dashboard` interface. **Do not restore or reimplement the cancelled preview.**
+- PR #8's CI had begun checking out a synthetic merge with this newer master and therefore attempted to run removed `tests/test_dashboard_host_inspection.py`. `tests/test_dashboard_runtime_contracts.py` also depended on a deleted preview-only JavaScript bundle. Drop these invalid preview-only tests and their explicit fast-contract entries; retain dashboard tests for the supported existing `/dashboard` interface and `tools/check_dashboard.py`.
+- Windows critical-coverage on [run 43759417630](https://github.com/Harfusha/local-ai-hub/actions/runs/43759417630) failed because 100k-row `mark_stale_for_revision` exceeded a bounded write transaction (5346ms > 5000ms). Commit [`be07e14`](https://github.com/Harfusha/local-ai-hub/commit/be07e14f8947ae521c6e24a4e03e1a72324bd5a2) avoids repeated root normalization on the query hot path without raising the transaction budget. Validate on Windows critical-coverage in exact-HEAD CI.
+- Do not infer PASS from old PR runs. Check all CI for the exact merged branch SHA before changing Draft status or release gates.

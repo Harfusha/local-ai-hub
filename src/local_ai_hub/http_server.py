@@ -159,7 +159,6 @@ from .trace_context import reset_context, reset_observer, set_context, set_obser
 from .http_route_registry import select_get_handler, select_http_routes, select_post_handler
 from .http_post_repository_analysis import handle_post_repository_analysis, handle_post_plan
 from .dashboard import DASHBOARD_HTML
-from .dashboard_frontend import dashboard_frontend_asset, dashboard_frontend_html, inspect_agent_hosts
 from .config import ConfigError, deep_merge, load_config, save_runtime_overrides, validate_config
 from .delivery import decide_delivery
 from .resilience import RecoveryJournal
@@ -454,7 +453,7 @@ def _invoke_cancellable_request(
 # Monitoring/control reads must never appear as workload. Keep this hard safety set
 # independent of user config so a dashboard refresh cannot create immortal active jobs.
 MONITOR_PATHS = {
-    "/health", "/ready", "/dashboard", "/dashboard/legacy", "/dashboard/next", "/favicon.ico", "/api/live", "/api/live/status",
+    "/health", "/ready", "/dashboard", "/dashboard/legacy", "/favicon.ico", "/api/live", "/api/live/status",
     "/api/status", "/api/mode", "/api/capabilities", "/api/metrics", "/api/adoption",
     "/api/telemetry/report", "/api/telemetry/tool-accounting", "/api/telemetry/timeline", "/api/repair-priorities",
     "/api/telemetry/endpoint-stats",
@@ -462,7 +461,6 @@ MONITOR_PATHS = {
     "/api/config", "/api/logs/tail", "/api/hardware/system", "/api/hardware/gpu",
     "/api/mode", "/api/admin/mode",
     "/api/debug-traces",
-    "/api/agent/hosts",
 }
 READINESS_COMPONENTS = (
     "artifacts",
@@ -493,11 +491,7 @@ def _dashboard_html_with_trace_notice() -> str:
         "Agent debug traces · full input/output only when enabled · complete stored details shown as recorded · local access only · separate local retention policy",
         1,
     )
-    return html.replace(
-        '<div class="tabs">',
-        '<div class="tabs"><a class="btn" href="/dashboard/next" aria-label="Open the new dashboard preview">New dashboard preview</a>',
-        1,
-    )
+    return html
 
 
 def _is_loopback_peer(handler: Any) -> bool:
@@ -1728,7 +1722,7 @@ class Handler(BaseHTTPRequestHandler):
             raise
 
     def _common_headers(
-        self, *, html: bool = False, nonce: str | None = None, self_hosted_assets: bool = False,
+        self, *, html: bool = False, nonce: str | None = None,
     ) -> None:
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
@@ -1747,11 +1741,8 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Access-Control-Allow-Headers", "Content-Type")
             self.send_header("Vary", "Origin")
         if html:
-            if self_hosted_assets:
-                policy = "default-src 'none'; connect-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
-            else:
-                script_source = f"'nonce-{nonce}'" if nonce else "'none'"
-                policy = f"default-src 'none'; connect-src 'self'; img-src 'self' data:; style-src 'unsafe-inline'; script-src {script_source}; script-src-attr 'unsafe-inline'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
+            script_source = f"'nonce-{nonce}'" if nonce else "'none'"
+            policy = f"default-src 'none'; connect-src 'self'; img-src 'self' data:; style-src 'unsafe-inline'; script-src {script_source}; script-src-attr 'unsafe-inline'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
             self.send_header("Content-Security-Policy", policy)
 
     def _finish_static_response(
@@ -1797,7 +1788,7 @@ class Handler(BaseHTTPRequestHandler):
         finally:
             self._telemetry_finished = True
 
-    def _send_html(self, status: int, html: str, *, self_hosted_assets: bool = False) -> None:
+    def _send_html(self, status: int, html: str) -> None:
         nonce = uuid.uuid4().hex
         body = html.replace("<script>", f'<script nonce="{nonce}">', 1).encode("utf-8")
         sent = False
@@ -1805,7 +1796,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send_response(status)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Connection", "close")
-            self._common_headers(html=True, nonce=nonce, self_hosted_assets=self_hosted_assets)
+            self._common_headers(html=True, nonce=nonce)
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
@@ -1818,29 +1809,6 @@ class Handler(BaseHTTPRequestHandler):
                 status, len(body), "static_html", success=sent and 200 <= status < 400,
             )
             self.close_connection = True
-
-    def _send_dashboard_frontend_asset(self, name: str) -> bool:
-        asset = dashboard_frontend_asset(name)
-        if asset is None:
-            return False
-        content_type, body = asset
-        sent = False
-        try:
-            self.send_response(200)
-            self.send_header("Content-Type", content_type)
-            self.send_header("Connection", "close")
-            self._common_headers()
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
-            sent = True
-        except OSError as exc:
-            if not _is_client_disconnect(exc):
-                raise
-        finally:
-            self._finish_static_response(200, len(body), "static_dashboard_asset", success=sent)
-            self.close_connection = True
-        return True
 
     server_version = f"LocalAIHub/{__version__}"
 
@@ -2819,7 +2787,7 @@ class Handler(BaseHTTPRequestHandler):
             or (path == "/api/mode" and not read_only)
         ):
             return "admin:read" if read_only else "admin:write"
-        if path in {"/", "/dashboard", "/dashboard/legacy", "/dashboard/next", "/api/metrics", "/api/status", "/api/agent/hosts"}:
+        if path in {"/", "/dashboard", "/dashboard/legacy", "/api/metrics", "/api/status"}:
             return "dashboard:read"
         return "api:read" if read_only else "api:write"
 
@@ -4517,7 +4485,7 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/api/mode":
             if not self._validate_host_and_origin():
                 return
-        elif path not in {"/", "/dashboard", "/dashboard/legacy", "/dashboard/next", "/favicon.ico", "/dashboard-assets/app.css", "/dashboard-assets/app.js", "/api/agent/hosts"} and not self._require_authorized():
+        elif path not in {"/", "/dashboard", "/dashboard/legacy", "/favicon.ico"} and not self._require_authorized():
             return
         mode_error = _http_mode_gate_error("GET", path)
         if mode_error is not None:
@@ -4609,18 +4577,6 @@ class Handler(BaseHTTPRequestHandler):
                 if not bool(APP.config.get("monitoring", {}).get("dashboard_enabled", True)) or not bool(APP.config.get("features", {}).get("dashboard", True)):
                     self._send(404, {"error": "dashboard disabled"}); return
                 self._send_html(200, _dashboard_html_with_trace_notice()); return
-            if path == "/dashboard/next":
-                if not bool(APP.config.get("monitoring", {}).get("dashboard_enabled", True)) or not bool(APP.config.get("features", {}).get("dashboard", True)):
-                    self._send(404, {"error": "dashboard disabled"}); return
-                self._send_html(200, dashboard_frontend_html(), self_hosted_assets=True); return
-            if path.startswith("/dashboard-assets/"):
-                if not bool(APP.config.get("monitoring", {}).get("dashboard_enabled", True)) or not bool(APP.config.get("features", {}).get("dashboard", True)):
-                    self._send(404, {"error": "dashboard disabled"}); return
-                if self._send_dashboard_frontend_asset(path.removeprefix("/dashboard-assets/")):
-                    return
-                self._send(404, {"error": "not found"}); return
-            if path == "/api/agent/hosts":
-                self._send(200, inspect_agent_hosts(getattr(APP, "config", None))); return
             if path == "/favicon.ico":
                 sent = False
                 try:
@@ -4736,57 +4692,101 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, status); return
             if path == "/api/repair-priorities":
                 diagnostics_enabled = detailed_diagnostics_enabled(APP.config, store=APP.debug_traces)
+                try:
+                    error_offset = int((query.get("error_offset") or [0])[0])
+                except (TypeError, ValueError, OverflowError):
+                    self._send(400, {"success": False, "error": "error_offset must be an integer between 0 and 100000", "terminal": True, "retryable": False}); return
+                if not 0 <= error_offset <= 100_000:
+                    self._send(400, {"success": False, "error": "error_offset must be an integer between 0 and 100000", "terminal": True, "retryable": False}); return
                 status = project_status_response(APP.status(scope="process"), enabled=diagnostics_enabled)
                 telemetry = project_aggregate_response(
-                    APP.telemetry.report(days=7, recent_errors=25, scope="process"),
+                    APP.telemetry.report(days=7, recent_errors=100, error_offset=error_offset, scope="window"),
                     enabled=diagnostics_enabled,
                 )
                 endpoint_stats = getattr(APP, "endpoint_stats", None)
-                stats = endpoint_stats.get_stats(include_unused=False) if endpoint_stats is not None else {"success": False, "items": []}
+                stats = endpoint_stats.get_stats(include_unused=True) if endpoint_stats is not None else {"success": False, "items": []}
                 priorities: list[dict[str, Any]] = []
+                def add_priority(priority: str, kind: str, name: str, evidence: dict[str, Any], action: str, score: int, confidence: str) -> None:
+                    priorities.append({"priority": priority, "priority_score": score, "confidence": confidence, "kind": kind, "name": name, "evidence": evidence, "action": action})
+
+                if status.get("hub_online") is False:
+                    add_priority("P0", "hub", "runtime", {"hub_online": False}, "Restore the Hub process.", 100, "high")
                 for name, component in (status.get("dependency_status") or {}).items():
                     if isinstance(component, dict) and (component.get("degraded") or component.get("status") == "degraded"):
-                        priorities.append({"priority": "P1", "kind": "component", "name": str(name), "evidence": component, "action": "Inspect component health and restore dependency."})
+                        add_priority("P1", "component", str(name), component, "Inspect component health and restore dependency.", 85, "high")
                 if status.get("degraded") and not any(item["kind"] == "component" for item in priorities):
-                    priorities.append({"priority": "P1", "kind": "hub", "name": "runtime", "evidence": {"success": status.get("success"), "degraded": True}, "action": "Inspect Hub runtime status and degraded dependencies."})
+                    add_priority("P1", "hub", "runtime", {"success": status.get("success"), "degraded": True}, "Inspect Hub runtime status and degraded dependencies.", 85, "high")
                 for error in (telemetry.get("error_fingerprints") or []):
                     if not isinstance(error, dict):
                         continue
-                    count = int(error.get("count", error.get("events", 1)) or 1)
-                    priorities.append({
-                        "priority": "P1" if count >= 5 else "P2", "kind": "error",
-                        "name": str(error.get("component") or error.get("operation") or error.get("error_type") or "unknown"),
-                        "evidence": {key: error.get(key) for key in ("fingerprint", "error_type", "error_code", "component", "operation", "count", "last_seen") if key in error},
-                        "action": "Resolve recurring error and verify recovery." if count >= 5 else "Inspect and resolve this error.",
-                    })
-                for item in (stats.get("items") or []):
-                    if not isinstance(item, dict) or not item.get("issues"):
+                    count = max(0, int(error.get("count", 0) or 0))
+                    recovered = max(0, int(error.get("recovered_count", 0) or 0))
+                    unresolved = max(0, count - recovered)
+                    if not unresolved:
                         continue
-                    failing = "failing" in item["issues"]
-                    priorities.append({
-                        "priority": "P1" if failing and (item.get("success_rate") or 0) < 50 else ("P2" if failing else "P3"),
-                        "kind": "endpoint", "name": str(item.get("name", "")),
-                        "evidence": {key: item.get(key) for key in ("calls", "fail_calls", "success_rate", "p95_ms", "issues")},
-                        "action": "Fix endpoint failures." if failing else "Reduce endpoint latency.",
-                    })
+                    critical = str(error.get("error_type", "")) in {"MemoryError", "SystemExit", "FatalError"}
+                    priority = "P1" if critical or unresolved >= 5 else ("P2" if unresolved >= 2 else "P3")
+                    evidence = {key: error.get(key) for key in ("fingerprint", "error_type", "component", "operation", "last_seen") if key in error}
+                    evidence.update({"occurrences": count, "unresolved_occurrences": unresolved, "recovered_occurrences": recovered})
+                    if diagnostics_enabled and error.get("safe_message"):
+                        evidence["safe_message"] = error["safe_message"]
+                    add_priority(priority, "error", str(error.get("component") or error.get("operation") or error.get("error_type") or "unknown"), evidence,
+                                 "Resolve this unresolved error group.", {"P1": 75, "P2": 50, "P3": 25}[priority] + min(24, unresolved * 3), "high" if unresolved >= 10 else "medium" if unresolved >= 3 else "low")
+                route_stats = ((telemetry.get("http_tail_latency") or {}).get("by_action") or [])
+                observed_routes = {str(item.get("action", "")) for item in route_stats if isinstance(item, dict) and item.get("action")}
+                for item in route_stats:
+                    if not isinstance(item, dict) or item.get("action") == path:
+                        continue
+                    events = max(0, int(item.get("events", 0) or 0))
+                    failures = max(0, int(item.get("failures", 0) or 0))
+                    rate = float(item.get("failure_rate", failures / events if events else 0.0) or 0.0)
+                    confidence = "high" if events >= 20 else "medium" if events >= 5 else "low"
+                    route = str(item.get("action", "unknown"))
+                    if failures:
+                        priority = "P1" if (events >= 3 and rate >= 0.8) or (events >= 5 and rate >= 0.5) else ("P2" if events >= 5 and rate >= 0.1 else "P3")
+                        add_priority(priority, "endpoint_error_rate", route,
+                                     {key: item.get(key) for key in ("events", "failures", "failure_rate")},
+                                     "Investigate recent endpoint failures.", {"P1": 75, "P2": 50, "P3": 25}[priority] + min(24, int(rate * 20) + events // 10), confidence)
+                    p95 = item.get("p95_duration_ms")
+                    if events >= 10 and isinstance(p95, (int, float)) and p95 >= 2500:
+                        priority = "P1" if p95 >= 30000 else "P2" if p95 >= 10000 else "P3"
+                        add_priority(priority, "endpoint_latency", route,
+                                     {"events": events, "p95_duration_ms": p95},
+                                     "Investigate endpoint tail latency against its service objective.", {"P1": 75, "P2": 50, "P3": 25}[priority] + min(24, int(p95 // 2500)), confidence)
+                    queue_p95 = item.get("p95_queue_wait_ms")
+                    if events >= 5 and isinstance(queue_p95, (int, float)) and queue_p95 >= 500:
+                        priority = "P1" if queue_p95 >= 5000 else "P2" if queue_p95 >= 1000 else "P3"
+                        add_priority(priority, "endpoint_queue", route,
+                                     {"events": events, "p95_queue_wait_ms": queue_p95},
+                                     "Reduce time spent waiting in the request queue.", {"P1": 75, "P2": 50, "P3": 25}[priority] + min(24, int(queue_p95 // 500)), confidence)
                 for hotspot in (telemetry.get("hotspots") or []):
                     if isinstance(hotspot, dict):
                         kind = str(hotspot.get("type", "quality"))
-                        priorities.append({"priority": "P1" if kind in {"reliability", "observability"} else "P2", "kind": kind, "name": str(hotspot.get("signal", "hotspot")), "evidence": hotspot, "action": "Investigate telemetry hotspot."})
+                        priority = "P1" if kind in {"reliability", "observability"} else "P2"
+                        add_priority(priority, kind, str(hotspot.get("signal", "hotspot")), hotspot, "Investigate telemetry hotspot.", 80 if priority == "P1" else 55, "medium")
                 quality = ((telemetry.get("evaluation") or {}).get("cohorts") or {}).get("hub_on", {})
                 quality_rate = quality.get("quality_pass_rate")
-                if quality.get("quality_evaluated", 0) >= 10 and isinstance(quality_rate, (int, float)) and quality_rate < 0.8:
-                    priorities.append({"priority": "P1" if quality_rate < 0.5 else "P2", "kind": "quality", "name": "hub_on", "evidence": {"evaluated": quality["quality_evaluated"], "pass_rate": quality_rate}, "action": "Investigate failed quality evaluations and improve the affected workflows."})
-                rank = {"P0": 0, "P1": 1, "P2": 2, "P3": 3}
-                priorities.sort(key=lambda item: (rank[item["priority"]], -int((item.get("evidence") or {}).get("count", (item.get("evidence") or {}).get("fail_calls", 0)) or 0), item["kind"], item["name"]))
+                quality_samples = int(quality.get("quality_evaluated", 0) or 0)
+                if quality_samples >= 10 and isinstance(quality_rate, (int, float)) and quality_rate < 0.8:
+                    priority = "P1" if quality_rate < 0.5 else "P2"
+                    add_priority(priority, "quality", "hub_on", {"evaluated": quality_samples, "pass_rate": quality_rate, "matched_tasks": (telemetry.get("evaluation") or {}).get("matched_tasks", 0), "endpoint_attribution": False}, "Investigate failed quality evaluations and improve the affected workflows.", 80 if priority == "P1" else 55, "high")
+                priorities.sort(key=lambda item: (-item["priority_score"], item["kind"], item["name"]))
                 telemetry_available = bool(telemetry) and telemetry.get("success", True) is not False and not telemetry.get("error") and telemetry.get("enabled", True) is True
+                registered_routes = {str(item.get("name")) for item in (stats.get("items") or []) if isinstance(item, dict) and item.get("type") == "endpoint" and item.get("name") != path}
+                unobserved_routes = sorted(registered_routes - observed_routes)
+                error_page = telemetry.get("error_fingerprints_page") or {}
+                complete = bool(status) and telemetry_available and bool(stats.get("success")) and diagnostics_enabled and error_page.get("next_offset") is None
                 self._send(200, {
                     "success": True, "generated_at": datetime.now(timezone.utc).isoformat(),
-                    "window": {"telemetry_days": 7, "endpoint_stats": stats.get("window", "unavailable")},
-                    "health": {"success": status.get("success"), "degraded": status.get("degraded"), "dependencies": status.get("dependency_status", {})},
+                    "window": {"telemetry_days": 7, "endpoint_stats": "catalog_only; lifetime counts excluded from priority"},
+                    "complete": complete,
+                    "health": {"success": status.get("success"), "degraded": status.get("degraded"), "runtime_online": status.get("ollama_online"), "runtime_status": status.get("ollama_status"), "dependencies": status.get("dependency_status", {})},
                     "telemetry_available": telemetry_available,
                     "endpoint_stats_available": bool(stats.get("success")),
-                    "quality_evidence": "evaluation samples only; no inference when fewer than 10 are available",
+                    "diagnostic_details_available": diagnostics_enabled,
+                    "coverage": {"observed_routes_7d": len(observed_routes), "registered_routes": len(registered_routes), "unobserved_routes": unobserved_routes[:100], "unobserved_route_count": len(unobserved_routes), "unobserved_truncated": len(unobserved_routes) > 100, "error_groups_total": error_page.get("total"), "error_groups_returned": len(telemetry.get("error_fingerprints") or []), "error_offset": error_offset, "next_error_offset": error_page.get("next_offset"), "error_groups_more": bool(error_page.get("next_offset") is not None) if diagnostics_enabled else None},
+                    "quality_evidence": {"available": diagnostics_enabled and quality_samples >= 10, "evaluated": quality_samples, "minimum_samples": 10, "endpoint_attribution": False, "reason": "diagnostics disabled" if not diagnostics_enabled else "quality and test evaluations are cohort-level, not endpoint-level" if quality_samples >= 10 else "fewer than 10 evaluation samples"},
+                    "priority_policy": {"endpoint_error_p1": "failure_rate >= 80% with >=3 samples, or >=50% with >=5 samples", "endpoint_error_p2": "failure_rate >=10% with >=5 samples", "latency_samples": 10, "latency_p3_p95_ms": 2500, "latency_p2_p95_ms": 10000, "latency_p1_p95_ms": 30000},
                     "priorities": priorities,
                 }); return
             if path == "/api/agent-state/tasks":

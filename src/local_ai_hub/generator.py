@@ -931,6 +931,9 @@ def generate_global_policy(cfg: dict[str, Any]) -> str:
             + ". Use only live MCP action enums; runtime authorization and quality gates apply."
         )
     prioritization_bullets.append(
+        "> - **Git operations**: The active MCP connection and its advertised schema determine which Hub actions are available; instructions do not create tools. When exposed, `git_status` and `git_diff` inspect state; `synthesize_commit` drafts a message. These actions do not run `git commit` or `git push`. Hub prioritization alone does not require a Hub approval or receipt for Git; apply a Hub-only gate only when explicit project instructions require an exposed action. If that required action is unavailable, report the mismatch and stop the mutation. Dashboard diagnostics affect diagnostic detail only; they do not expose or enable tools."
+    )
+    prioritization_bullets.append(
         "> - **Tests, builds, lint, execution**: Use the agent host's native command tool for bounded checks in the target repository."
     )
     if fs.repo:

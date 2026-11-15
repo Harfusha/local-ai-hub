@@ -14,17 +14,18 @@
     "total_items": 37,
     "verified_count": 0,
     "locally_tested_count": 0,
-    "unverified_count": 31,
+    "unverified_count": 19,
     "blocked_count": 6,
     "regressions_count": null,
     "overall_status": "BLOCKED",
     "status_counts": {
-      "UNVERIFIED": 31,
+      "UNVERIFIED": 19,
       "BLOCKED_MODEL_ABSENT": 1,
       "BLOCKED_EVIDENCE": 2,
       "BLOCKED_EXTERNAL": 1,
       "BLOCKED_RESERVATION": 1,
-      "BLOCKED_PLATFORM_ABSENT": 1
+      "BLOCKED_PLATFORM_ABSENT": 1,
+      "USER_CANCELLED": 12
     }
   },
   "release_gate": {
@@ -275,139 +276,110 @@
       "id": "HUB-093",
       "title": "Truthful agent host inspection (Codex/Antigravity)",
       "priority": "P1",
-      "category": "Dashboard & Hosts",
-      "verification_command": "python -m pytest -q tests/test_dashboard_frontend_assets.py",
-      "files": [
-        "src/local_ai_hub/dashboard_frontend.py",
-        "src/local_ai_hub/http_server.py",
-        "src/local_ai_hub/ui_static/app.js"
-      ],
-      "historical_claim": "GET /api/agent/hosts checks CLI binary, MCP config, and handshake; reports not_installed when missing",
-      "verification_status": "UNVERIFIED",
+      "category": "User decision",
+      "verification_command": "",
+      "files": [],
+      "historical_claim": "Cancelled by user on 2026-11-15: do not build, restore, redesign, or reskin the modern dashboard preview.",
+      "verification_status": "USER_CANCELLED",
       "verification_receipt": null
     },
     {
       "id": "HUB-094",
       "title": "Visibility-aware live health polling with adaptive backoff",
       "priority": "P1",
-      "category": "Dashboard & Client",
-      "verification_command": "python -m pytest -q tests/test_dashboard_frontend_assets.py",
-      "files": [
-        "src/local_ai_hub/ui_static/app.js"
-      ],
-      "historical_claim": "AbortController with 5s timeout, window focus refresh, 30s background throttle, CSS reset",
-      "verification_status": "UNVERIFIED",
+      "category": "User decision",
+      "verification_command": "",
+      "files": [],
+      "historical_claim": "Cancelled by user on 2026-11-15: do not build, restore, redesign, or reskin the modern dashboard preview.",
+      "verification_status": "USER_CANCELLED",
       "verification_receipt": null
     },
     {
       "id": "HUB-095",
       "title": "Complete 11->7 dashboard parity plan",
       "priority": "P1",
-      "category": "Dashboard & Parity",
-      "verification_command": "python -m pytest -q tests/test_dashboard_frontend_assets.py",
-      "files": [
-        "docs/DASHBOARD_PARITY_PLAN.md",
-        "src/local_ai_hub/dashboard_frontend.py"
-      ],
-      "historical_claim": "docs/DASHBOARD_PARITY_PLAN.md documents mapping of all 11 legacy pages; permanent /dashboard/legacy alias",
-      "verification_status": "UNVERIFIED",
+      "category": "User decision",
+      "verification_command": "",
+      "files": [],
+      "historical_claim": "Cancelled by user on 2026-11-15: do not build, restore, redesign, or reskin the modern dashboard preview.",
+      "verification_status": "USER_CANCELLED",
       "verification_receipt": null
     },
     {
       "id": "HUB-096",
       "title": "Task board & coordination UI in modern dashboard",
       "priority": "P1",
-      "category": "Dashboard & Tasks",
-      "verification_command": "python -m pytest -q tests/test_dashboard_frontend_assets.py",
-      "files": [
-        "src/local_ai_hub/ui_static/app.js",
-        "src/local_ai_hub/ui_static/index.html"
-      ],
-      "historical_claim": "Root-scoped task listing, acceptance criteria disclosure, worktree lease view",
-      "verification_status": "UNVERIFIED",
+      "category": "User decision",
+      "verification_command": "",
+      "files": [],
+      "historical_claim": "Cancelled by user on 2026-11-15: do not build, restore, redesign, or reskin the modern dashboard preview.",
+      "verification_status": "USER_CANCELLED",
       "verification_receipt": null
     },
     {
       "id": "HUB-097",
       "title": "Model manager without automatic downloads",
       "priority": "P1",
-      "category": "Dashboard & Models",
-      "verification_command": "python -m pytest -q tests/test_dashboard_frontend_assets.py",
-      "files": [
-        "src/local_ai_hub/ui_static/app.js",
-        "src/local_ai_hub/ui_static/index.html"
-      ],
-      "historical_claim": "Model inventory loaded via /api/models; not_installed state displays manual CLI instructions",
-      "verification_status": "UNVERIFIED",
+      "category": "User decision",
+      "verification_command": "",
+      "files": [],
+      "historical_claim": "Cancelled by user on 2026-11-15: do not build, restore, redesign, or reskin the modern dashboard preview.",
+      "verification_status": "USER_CANCELLED",
       "verification_receipt": null
     },
     {
       "id": "HUB-098",
       "title": "Settings configuration typed snapshot",
       "priority": "P1",
-      "category": "Dashboard & Settings",
-      "verification_command": "python -m pytest -q tests/test_dashboard_frontend_assets.py",
-      "files": [
-        "src/local_ai_hub/ui_static/app.js",
-        "src/local_ai_hub/ui_static/index.html"
-      ],
-      "historical_claim": "Read-only configuration snapshot via /api/config; secret values redacted by server",
-      "verification_status": "UNVERIFIED",
+      "category": "User decision",
+      "verification_command": "",
+      "files": [],
+      "historical_claim": "Cancelled by user on 2026-11-15: do not build, restore, redesign, or reskin the modern dashboard preview.",
+      "verification_status": "USER_CANCELLED",
       "verification_receipt": null
     },
     {
       "id": "HUB-099",
       "title": "Request state management, error UX, and cancellation",
       "priority": "P2",
-      "category": "Dashboard & Client",
-      "verification_command": "python -m pytest -q tests/test_dashboard_frontend_assets.py",
-      "files": [
-        "src/local_ai_hub/ui_static/app.js"
-      ],
-      "historical_claim": "request() helper with monotonic revisions, AbortController, and cursor-based telemetry pagination",
-      "verification_status": "UNVERIFIED",
+      "category": "User decision",
+      "verification_command": "",
+      "files": [],
+      "historical_claim": "Cancelled by user on 2026-11-15: do not build, restore, redesign, or reskin the modern dashboard preview.",
+      "verification_status": "USER_CANCELLED",
       "verification_receipt": null
     },
     {
       "id": "HUB-100",
       "title": "Modern UI visual/a11y and asset tests",
       "priority": "P2",
-      "category": "Dashboard & A11y",
-      "verification_command": "python -m pytest -q tests/test_dashboard_frontend_assets.py",
-      "files": [
-        "tests/test_dashboard_frontend_assets.py"
-      ],
-      "historical_claim": "9 passed in 0.95s; skip link, role=status, aria-live, CSP strictness verified",
-      "verification_status": "UNVERIFIED",
+      "category": "User decision",
+      "verification_command": "",
+      "files": [],
+      "historical_claim": "Cancelled by user on 2026-11-15: do not build, restore, redesign, or reskin the modern dashboard preview.",
+      "verification_status": "USER_CANCELLED",
       "verification_receipt": null
     },
     {
       "id": "HUB-101",
       "title": "Lightweight CSP-strict frontend assets",
       "priority": "P2",
-      "category": "Dashboard & Security",
-      "verification_command": "python -m pytest -q tests/test_dashboard_frontend_assets.py",
-      "files": [
-        "src/local_ai_hub/ui_static/app.css",
-        "src/local_ai_hub/ui_static/app.js",
-        "src/local_ai_hub/ui_static/index.html"
-      ],
-      "historical_claim": "app.css and app.js under 50KB total; default-src none, script-src self, style-src self",
-      "verification_status": "UNVERIFIED",
+      "category": "User decision",
+      "verification_command": "",
+      "files": [],
+      "historical_claim": "Cancelled by user on 2026-11-15: do not build, restore, redesign, or reskin the modern dashboard preview.",
+      "verification_status": "USER_CANCELLED",
       "verification_receipt": null
     },
     {
       "id": "HUB-102",
       "title": "User guidance & conceptual distinction docs",
       "priority": "P2",
-      "category": "Documentation",
-      "verification_command": "git diff --check docs/DASHBOARD_PARITY_PLAN.md",
-      "files": [
-        "docs/DASHBOARD_PARITY_PLAN.md",
-        "src/local_ai_hub/ui_static/index.html"
-      ],
-      "historical_claim": "Disclosures distinguishing installed vs loaded in VRAM, indexed vs verified, MCP vs handshake",
-      "verification_status": "UNVERIFIED",
+      "category": "User decision",
+      "verification_command": "",
+      "files": [],
+      "historical_claim": "Cancelled by user on 2026-11-15: do not build, restore, redesign, or reskin the modern dashboard preview.",
+      "verification_status": "USER_CANCELLED",
       "verification_receipt": null
     },
     {
@@ -425,22 +397,22 @@
       "id": "HUB-104",
       "title": "Real Codex host-session acceptance",
       "priority": "P1",
-      "category": "Acceptance / Host",
-      "verification_command": "python -m pytest -q tests/test_dashboard_frontend_assets.py -k test_inspect_agent_hosts",
+      "category": "User decision",
+      "verification_command": "",
       "files": [],
-      "historical_claim": "BLOCKED: Codex CLI binary not present in runner environment; static contracts and not_installed detection verified",
-      "verification_status": "BLOCKED_EVIDENCE",
+      "historical_claim": "Cancelled by user on 2026-11-15: do not build, restore, redesign, or reskin the modern dashboard preview.",
+      "verification_status": "USER_CANCELLED",
       "verification_receipt": null
     },
     {
       "id": "HUB-105",
       "title": "Real Antigravity host-session acceptance",
       "priority": "P1",
-      "category": "Acceptance / Host",
-      "verification_command": "python -m pytest -q tests/test_dashboard_frontend_assets.py -k test_inspect_agent_hosts",
+      "category": "User decision",
+      "verification_command": "",
       "files": [],
-      "historical_claim": "BLOCKED: Live Antigravity host trace recording requires external operator capture; static MCP integration verified",
-      "verification_status": "BLOCKED_EVIDENCE",
+      "historical_claim": "Cancelled by user on 2026-11-15: do not build, restore, redesign, or reskin the modern dashboard preview.",
+      "verification_status": "USER_CANCELLED",
       "verification_receipt": null
     },
     {

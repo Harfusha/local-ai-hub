@@ -1323,6 +1323,8 @@ class RAGStore:
 
     def _text_chunks(self, text: str, size: int, overlap: int) -> list[str]:
         """Paragraph/newline-aware overlap chunker (original logic)."""
+        size = max(1, size)
+        overlap = min(max(0, overlap), size // 3)
         if len(text) <= size:
             return [text] if text.strip() else []
         chunks: list[str] = []
