@@ -10,7 +10,7 @@ from local_ai_hub.token_accounting import (
     replay_accounting,
     token_efficiency_metadata,
 )
-from local_ai_hub.trace_context import current, reset_metadata, set_metadata
+from local_ai_hub.trace_context import current, reset_context, reset_metadata, set_context, set_metadata
 
 
 FIXTURE = Path(__file__).parent / "fixtures" / "token_efficiency_cases.jsonl"
@@ -56,6 +56,9 @@ def test_future_metadata_is_bounded_and_never_keeps_payload_text() -> None:
 
 
 def test_trace_context_exposes_optional_metadata_without_changing_base_fields() -> None:
+    # Trace context belongs to the current request; a previous test may have
+    # installed one. Isolate the base-field assertion without clearing it.
+    context_tokens = set_context(request_id="", trace_id="")
     token = set_metadata(
         root_family="repo-family",
         task_id="task-14",
@@ -79,6 +82,7 @@ def test_trace_context_exposes_optional_metadata_without_changing_base_fields() 
         assert value["token_efficiency"]["input_tokens_est"] == 100
     finally:
         reset_metadata(token)
+        reset_context(context_tokens)
 
 
 def test_replay_fixture_reports_raw_reused_generated_and_avoided_separately() -> None:

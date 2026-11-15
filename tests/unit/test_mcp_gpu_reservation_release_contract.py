@@ -9,7 +9,10 @@ from local_ai_hub.operation_contracts import validate_operation_output
 def test_successful_gpu_release_response_satisfies_mcp_output_contract(monkeypatch):
     seen = {}
     def post(path, payload, **kwargs):
-        seen.update(path=path, payload=payload)
+        # Tool accounting may emit an independent telemetry POST after the
+        # reservation response. Inspect the operation, not the last POST.
+        if path == "/api/gpu-reservation":
+            seen.update(path=path, payload=payload)
         return {"success": True, "mutation_applied": True, "generation": "generation-1"}
     monkeypatch.setattr(mcp_server.CLIENT, "post", post)
 
@@ -29,7 +32,8 @@ def test_successful_gpu_release_response_satisfies_mcp_output_contract(monkeypat
 def test_authorized_current_release_response_satisfies_mcp_output_contract(monkeypatch):
     seen = {}
     def post(path, payload, **kwargs):
-        seen.update(path=path, payload=payload)
+        if path == "/api/gpu-reservation":
+            seen.update(path=path, payload=payload)
         return {"success": True, "mutation_applied": True}
     monkeypatch.setattr(mcp_server.CLIENT, "post", post)
 

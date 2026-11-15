@@ -9531,7 +9531,14 @@ class Handler(BaseHTTPRequestHandler):
             if 'post_package_audit_1' in post_route_ids:
                 self._send(200, APP.services.package_audit(str(payload.get("root", ".")), lockfile_path=payload.get("lockfile_path"))); return
             if 'post_repo_structural_search_1' in post_route_ids:
-                self._send_service_result(APP.services.structural_search(str(payload.get("root", ".")), str(payload.get("pattern", "")), path=payload.get("path"), max_results=payload.get("max_results", 30), file_offset=payload.get("offset", 0), match_offset=payload.get("match_offset", 0))); return
+                result = APP.services.structural_search(
+                    str(payload.get("root", ".")), str(payload.get("pattern", "")),
+                    path=payload.get("path"),
+                    max_results=payload.get("max_results", 30),
+                    file_offset=payload.get("offset", 0),
+                    match_offset=payload.get("match_offset", 0),
+                )
+                self._send_service_result(result); return
             if 'post_context_budget_1' in post_route_ids:
                 self._send(200, APP.services.context_budget(str(payload.get("root", ".")), files=payload.get("files"), max_tokens=int(payload.get("max_tokens", 4000)))); return
             if 'post_ingest_document_1' in post_route_ids:

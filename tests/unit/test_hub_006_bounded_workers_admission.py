@@ -167,7 +167,11 @@ def test_priority_and_starvation_aging_contract(tmp_path: Path):
         while not dispatched_order and time.time() - start < 5.0:
             time.sleep(0.02)
 
-        assert dispatched_order == ["low_aged"], f"Expected low_aged due to starvation aging, got {dispatched_order}"
+        # A fast worker may also finish med_new before this assertion;
+        # the priority contract is about which job is dispatched first.
+        assert dispatched_order and dispatched_order[0] == "low_aged", (
+            f"Expected low_aged first due to starvation aging, got {dispatched_order}"
+        )
     finally:
         mgr.close()
 
