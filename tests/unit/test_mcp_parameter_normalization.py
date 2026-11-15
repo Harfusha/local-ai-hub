@@ -99,16 +99,17 @@ def test_repo_forwards_canonical_changed_paths_and_phase(monkeypatch, tmp_path):
     result = mcp_server.local_ai_repo(
         action="context",
         root=str(tmp_path),
+        task_id="task_context_normalization",
         query="find changes",
         changed_paths=["src/changed.py"],
         phase="review",
         focus=["src/focus.py"],
         guarded=True,
-        task_id="task-change-review",
     )
 
     assert captured.get("url") == "/api/context/pack", repr(result)
     assert captured["payload"]["changed_paths"] == ["src/changed.py"]
+    assert captured["payload"]["task_id"] == "task_context_normalization"
     assert captured["payload"]["phase"] == "review"
 
 
