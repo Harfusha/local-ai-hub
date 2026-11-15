@@ -67,7 +67,25 @@ pythonpath = [".", "src"]
 addopts = "-ra"
 markers = [
   "slow: marks tests as slow or resource-intensive (deselect with -m not slow)",
+  "fast: marks lightweight unit tests without heavy I/O or subprocesses",
+  "critical: marks critical security, auth, command broker, and memory contract tests",
   "integration: marks tests as integration tests",
+  "unit: marks isolated unit tests",
+  "acceptance: marks end-to-end acceptance tests",
+  "rag: marks RAG, embedding, docset, vector retrieval, and search tests",
+  "preprocess: marks polyglot preprocessing, tree-sitter parser, AST outline, and code indexing tests",
+  "models: marks AI model lifecycle, Ollama, VRAM, accelerators, token routing, and prompt tests",
+  "training: marks fine-tuning, dataset merging/curation, laya runtime, and benchmark tests",
+  "mcp: marks Model Context Protocol server, tools, and schema contract tests",
+  "http: marks HTTP API routes, server, auth, transport, and SSE stream tests",
+  "agent: marks Agent OS, tasks, memory, blackboard, leases, and coordination tests",
+  "repo: marks repository tools, git worktrees, AST diff, and patch tests",
+  "automation: marks browser automation, browser bridge, async jobs, and scheduler tests",
+  "security: marks security, audit, auth, redaction, and permission tests",
+  "artifacts: marks artifact storage, paging, slicing, and compaction tests",
+  "storage: marks SQLite persistence, transactions, and file lock tests",
+  "token_economy: marks token accounting, budget enforcement, repo-map, and trim-run tests",
+  "process: marks process management, supervisor, launcher, and signal tests",
 ]
 filterwarnings = [
   "error::ResourceWarning",

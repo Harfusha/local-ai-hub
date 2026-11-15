@@ -88,9 +88,27 @@ From the repository root:
 ```bash
 python tools/release_check.py
 python -m compileall -q src tools tests
-python -m pytest -q
+# Targeted test validation (unconstrained bare pytest across 17,500+ tests is blocked):
+python -m pytest tests/test_test_environment_isolation.py -q
+# Or run by category: python -m pytest -m "critical" -q
+# Full suite only when explicitly requested: python -m pytest --run-all -q
 python tools/selftest.py
 ```
+
+### Test categorization and execution policy
+
+Running all 17,500+ tests without a selector is blocked in `tests/conftest.py` to prevent freezing development sessions.
+Tests are multi-tagged dynamically in `pytest_collection_modifyitems`:
+- **Domain topics:** `-m rag`, `-m preprocess`, `-m models`, `-m training`, `-m mcp`, `-m http`, `-m agent`, `-m repo`, `-m automation`, `-m security`, `-m artifacts`, `-m storage`, `-m token_economy`, `-m process`
+- **Execution speed/layer:** `-m fast`, `-m slow`, `-m critical`, `-m unit`, `-m integration`, `-m acceptance`
+
+Combine tags: `pytest -m "rag and fast"`, `pytest -m "agent and critical and not slow"`. Explicit file/directory targets (e.g. `pytest tests/unit/test_rag_*.py`) are always permitted directly. Use `pytest --run-all` or `RUN_ALL_TESTS=1` when an unconstrained run is explicitly required.
+
+### Smart test caching (default: enabled)
+
+Passed test outcomes and their file/dependency signatures are cached automatically. Tests that previously passed and whose test file and imported `local_ai_hub` source modules are unchanged are skipped automatically (`deselected`).
+- To force fresh execution of all matching tests (bypass cache): pass `--no-cache` or set `NO_TEST_CACHE=1`.
+  Example: `pytest -m "rag" --no-cache`
 
 For an installed instance:
 

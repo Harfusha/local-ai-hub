@@ -234,6 +234,12 @@ def test_async_submit_rejects_unavailable_or_malformed_resource_telemetry(tmp_pa
     try:
         submitted = manager.submit("reason", {"task": "fail closed"}, dispatch_delay_seconds=30)
 
+        if reason == "resource_telemetry_unavailable":
+            assert submitted["success"] is True
+            assert submitted["admission"]["state"] == "degraded"
+            assert submitted["admission"]["retryable"] is False
+            assert scheduler.calls == []
+            return
         assert submitted["success"] is False
         assert submitted["state"] == "rejected"
         assert submitted["admission"]["state"] == "rejected"

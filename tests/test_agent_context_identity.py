@@ -116,8 +116,9 @@ def test_context_identity_streams_full_legacy_payload(monkeypatch: pytest.Monkey
     def reject_dumps(*args, **kwargs):
         pytest.fail("etag must stream JSONEncoder chunks instead of materializing json.dumps output")
 
-    monkeypatch.setattr(ContextElement, "to_dict", track_full_dict)
-    monkeypatch.setattr(agent_context.json, "dumps", reject_dumps)
+    with monkeypatch.context() as patcher:
+        patcher.setattr(ContextElement, "to_dict", track_full_dict)
+        patcher.setattr(agent_context.json, "dumps", reject_dumps)
 
-    assert len(context.etag()) == 12
-    assert calls == 1
+        assert len(context.etag()) == 12
+        assert calls == 1

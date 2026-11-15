@@ -245,10 +245,14 @@ def status_inventory_lines(st: dict) -> tuple[str, str]:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Control the Local AI Hub singleton")
-    parser.add_argument("action", choices=["status", "start", "stop", "restart", "watch", "dashboard", "service-status", "agent-state", "cleanup", "clean", "generate", "tasks", "plans", "memory", "doctor", "logs", "pause", "resume", "mode"])
+    parser.add_argument("action", choices=["status", "start", "stop", "restart", "watch", "dashboard", "service-status", "agent-state", "cleanup", "clean", "generate", "tasks", "plans", "memory", "doctor", "logs", "pause", "resume", "mode", "caveman-compress", "compress-instructions"])
     parser.add_argument("mode_value", nargs="?", choices=ACTIVITY_MODES, metavar="MODE")
     parser.add_argument("--config", type=Path, default=None, help="Path to config.toml")
     parser.add_argument("--install", action="store_true", help="Also deploy generated skill/instructions to configured agents")
+    parser.add_argument("--all-agents", action="store_true", help="Discover and compress instructions across all configured agent directories (.gemini, .codex, .claude, etc.)")
+    parser.add_argument("--apply", action="store_true", help="Apply reviewed compressed candidates in-place (default: preview/stage only)")
+    parser.add_argument("--model", type=str, default="", help="Model name for caveman compression (defaults to configured model)")
+    parser.add_argument("--staging-dir", type=Path, default=None, help="Directory for backups and candidates")
     parser.add_argument("--task-id", type=str, default="", help="Task ID for task lookup")
     parser.add_argument("--status", type=str, default="", help="Task status filter (planned, active, verifying, completed, failed, blocked)")
     parser.add_argument("--complete", action="store_true", help="Mark task as completed")
@@ -316,6 +320,92 @@ def main() -> int:
             setup_mod.configure_agents(install_dir, python_bin, None, cfg)
         print(json.dumps({"success": True, "generated": res}, indent=2, ensure_ascii=False))
         return 0
+    if args.action in {"caveman-compress", "compress-instructions"}:
+        cfg = load_config(_config_arg(args.config))
+        from local_ai_hub import caveman_instructions
+        from tools import setup as setup_mod
+
+        roots: list[Path] = []
+        if args.all_agents:
+            for u_home in setup_mod.get_user_homes():
+                for d_name in (".gemini", ".codex", ".claude", ".agents", ".cursor", ".copilot"):
+                    d_path = u_home / d_name
+                    if d_path.is_dir():
+                        roots.append(d_path)
+        else:
+            target_root = args.root or Path.cwd()
+            roots.append(Path(target_root).resolve())
+
+        try:
+            files = caveman_instructions.discover_instruction_files(roots)
+        except Exception as exc:
+            print(f"Discovery error: {exc}", file=sys.stderr)
+            return 1
+
+        if not files:
+            print(f"No eligible instruction files found under: {', '.join(str(r) for r in roots)}")
+            return 0
+
+        model = args.model or cfg.get("models", {}).get("reasoning") or cfg.get("models", {}).get("heavy_code") or "qwen3.5:9b-nvfp4"
+        review_model = cfg.get("models", {}).get("reasoning") or model
+        endpoint = cfg.get("ollama", {}).get("endpoint") or "http://127.0.0.1:11434"
+
+        state_dir = Path(cfg.get("server", {}).get("state_dir", ROOT / "state"))
+        staging_dir = args.staging_dir or (state_dir / "caveman-staging")
+        staging_dir.mkdir(parents=True, exist_ok=True)
+
+        print(f"Found {len(files)} instruction file(s) across {len(roots)} root(s).")
+        print(f"Compressor model: {model} | Review model: {review_model}")
+        print(f"Staging/backup: {staging_dir}")
+        print(f"Mode: {'APPLY (in-place replacement)' if args.apply else 'PREVIEW / STAGE (pass --apply to overwrite)'}\n")
+
+        prepared = []
+        for f in files:
+            try:
+                prepared.append(caveman_instructions.backup_instruction(f, staging_dir))
+            except Exception as exc:
+                print(f"[SKIP] Backup failed for {f.name}: {exc}")
+
+        applied = 0
+        failed = 0
+        total_before = 0
+        total_after = 0
+
+        for item in prepared:
+            try:
+                res = caveman_instructions.compress_backed_up_instruction(
+                    item,
+                    lambda text: caveman_instructions.compress_with_caveman(
+                        text, model=model, endpoint=endpoint
+                    ),
+                    lambda orig, cand: caveman_instructions.review_instruction_semantics(
+                        orig, cand, model=review_model, endpoint=endpoint
+                    ),
+                )
+                before = len(res.backup.read_bytes())
+                after = len(res.candidate.read_bytes()) if res.candidate else before
+                saved_pct = ((before - after) / before) * 100 if before > 0 else 0
+                total_before += before
+                total_after += after
+
+                if args.apply:
+                    caveman_instructions.apply_instruction(res)
+                    status_lbl = "APPLIED"
+                    applied += 1
+                else:
+                    status_lbl = "STAGED"
+
+                print(f"[{status_lbl}] {item.source.name} ({item.source.parent.name}) — {before}B -> {after}B (-{saved_pct:.1f}%) in {res.duration_seconds:.1f}s")
+            except Exception as exc:
+                failed += 1
+                print(f"[FAILED] {item.source.name}: {exc}")
+
+        net_saved = ((total_before - total_after) / total_before) * 100 if total_before > 0 else 0
+        print("\n" + "=" * 55)
+        print(f"Summary: {len(prepared) - failed}/{len(prepared)} succeeded. Total bytes: {total_before}B -> {total_after}B (-{net_saved:.1f}%)")
+        if not args.apply and (len(prepared) - failed) > 0:
+            print("Note: Run with --apply to apply candidates in-place.")
+        return 0 if failed == 0 else 1
     if args.action == "watch":
         return subprocess.call([sys.executable, str(ROOT / "tools" / "monitor.py")])
     if args.action == "dashboard":

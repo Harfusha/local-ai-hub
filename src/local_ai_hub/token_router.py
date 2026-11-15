@@ -205,7 +205,7 @@ class LosslessTokenRouter:
             end = min(max_line, end + context_lines)
             raw_score = item.get("score")
             if raw_score is None:
-                score_val = 1.0
+                continue
             elif isinstance(raw_score, bool):
                 continue
             else:

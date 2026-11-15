@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import ast
+import hashlib
 import json
 import os
 import socket
@@ -108,6 +110,239 @@ def pytest_unconfigure(config):
         _TEST_PORT_GUARD.close()
         _TEST_PORT_GUARD = None
     _ORIGINAL_CONFIG_CAPTURED = False
+
+
+def pytest_addoption(parser):
+    """Register CLI options for test suite execution control."""
+    parser.addoption(
+        "--run-all",
+        action="store_true",
+        default=False,
+        help="Explicitly permit running the entire test suite without markers or target paths.",
+    )
+    parser.addoption(
+        "--no-cache",
+        action="store_true",
+        default=False,
+        help="Disable automatic test caching and re-run all matching tests.",
+    )
+
+
+_HASH_CACHE: dict[Path, str] = {}
+
+
+def _file_hash(path: Path) -> str:
+    cached = _HASH_CACHE.get(path)
+    if cached is not None:
+        return cached
+    try:
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()[:16]
+    except OSError:
+        digest = ""
+    _HASH_CACHE[path] = digest
+    return digest
+
+
+def _extract_imported_hub_modules(test_path: Path) -> set[str]:
+    try:
+        tree = ast.parse(test_path.read_text(encoding="utf-8", errors="ignore"))
+    except Exception:
+        return set()
+    modules: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name.startswith("local_ai_hub."):
+                    parts = alias.name.split(".")
+                    if len(parts) > 1:
+                        modules.add(parts[1])
+        elif isinstance(node, ast.ImportFrom):
+            if node.module and node.module.startswith("local_ai_hub."):
+                parts = node.module.split(".")
+                if len(parts) > 1:
+                    modules.add(parts[1])
+            elif node.module == "local_ai_hub":
+                for alias in node.names:
+                    modules.add(alias.name)
+    return modules
+
+
+def _test_item_signature(item) -> str:
+    test_path = Path(str(item.fspath))
+    th = _file_hash(test_path)
+    conftest_path = ROOT / "tests" / "conftest.py"
+    cfgh = _file_hash(conftest_path) if conftest_path.exists() else ""
+    modules = _extract_imported_hub_modules(test_path)
+    mod_hashes: list[str] = []
+    hub_pkg = SRC / "local_ai_hub"
+    if hub_pkg.is_dir():
+        for mod in sorted(modules):
+            sp = hub_pkg / f"{mod}.py"
+            if sp.exists():
+                mod_hashes.append(f"{mod}={_file_hash(sp)}")
+        stem = test_path.stem.removeprefix("test_")
+        direct_sp = hub_pkg / f"{stem}.py"
+        if direct_sp.exists() and f"{stem}=" not in mod_hashes:
+            mod_hashes.append(f"{stem}={_file_hash(direct_sp)}")
+    return f"{th}:{cfgh}:" + ",".join(mod_hashes)
+
+
+def _is_targeted_run(config) -> bool:
+    """Determine whether the invocation targets a subset or attempts a full-suite run."""
+    if config.option.collectonly or config.getoption("--run-all", False):
+        return True
+    if os.environ.get("RUN_FULL_SUITE") == "true" or os.environ.get("RUN_ALL_TESTS") == "1":
+        return True
+    if config.option.markexpr or config.option.keyword:
+        return True
+
+    raw_args = list(getattr(config.invocation_params, "args", ())) or sys.argv[1:]
+    file_targets = []
+    skip_next = False
+    for arg in raw_args:
+        if skip_next:
+            skip_next = False
+            continue
+        if arg in ("-c", "-o", "-m", "-k", "-p", "--override-ini", "--rootdir", "--confcutdir"):
+            skip_next = True
+            continue
+        if arg.startswith("-"):
+            continue
+        normalized = arg.replace("\\", "/").rstrip("/")
+        file_targets.append(normalized)
+
+    # If any specific non-root target was passed (e.g. child_dir in isolated tests or tests/unit)
+    if any(t not in ("tests", ".") for t in file_targets):
+        return True
+
+    return False
+
+
+def pytest_sessionstart(session):
+    """Enforce test execution guard before expensive 17,500+ test collection."""
+    if not _is_targeted_run(session.config):
+        raise pytest.UsageError(
+            "Spuštění všech 17 500+ testů bez filtru je zakázáno!\n"
+            "Vyberte testy podle kategorie, rychlosti nebo cesty:\n"
+            "  - Podle tématu: pytest -m rag, pytest -m preprocess, pytest -m models, pytest -m training\n"
+            "  - Podle odvětví: pytest -m agent, pytest -m http, pytest -m mcp, pytest -m repo, pytest -m automation\n"
+            "  - Podle rychlosti: pytest -m fast, pytest -m critical, pytest -m slow\n"
+            "  - Konkrétní soubor/složka: pytest tests/unit/test_rag.py, pytest tests/unit/\n"
+            "  - Všechny testy (pokud opravdu chcete): pytest --run-all (nebo RUN_ALL_TESTS=1)"
+        )
+
+
+def pytest_collection_modifyitems(config, items):
+    """Categorize tests with domain/speed markers."""
+    for item in items:
+        path = str(item.fspath).replace("\\", "/").lower()
+        nodeid = item.nodeid.lower()
+
+        # Speed / execution layer
+        if "/acceptance/" in path or "acceptance" in nodeid:
+            item.add_marker(pytest.mark.acceptance)
+            item.add_marker(pytest.mark.integration)
+            item.add_marker(pytest.mark.slow)
+        elif "/unit/" in path:
+            item.add_marker(pytest.mark.unit)
+            item.add_marker(pytest.mark.fast)
+        else:
+            if any(k in path for k in ("subprocesses", "sleep", "daemon", "timeout_cleanup")):
+                item.add_marker(pytest.mark.slow)
+            else:
+                item.add_marker(pytest.mark.fast)
+
+        # Critical / audit / security
+        if any(k in path or k in nodeid for k in ("critical", "security", "auth", "audit", "rollback", "quarantine", "fence")):
+            item.add_marker(pytest.mark.critical)
+
+        # Domains / Topics (each test can receive multiple tags)
+        if any(k in path or k in nodeid for k in ("rag", "docset", "ingest", "retrieval", "vector", "embedding", "search_fusion", "hybrid")):
+            item.add_marker(pytest.mark.rag)
+
+        if any(k in path or k in nodeid for k in ("preprocess", "treesitter", "parser", "ast_", "outline", "skeleton", "polyglot", "code_index", "symbols")):
+            item.add_marker(pytest.mark.preprocess)
+
+        if any(k in path or k in nodeid for k in ("model", "ollama", "vram", "accelerator", "prompt", "token_router", "tiered", "inference", "whisper", "vision")):
+            item.add_marker(pytest.mark.models)
+
+        if any(k in path or k in nodeid for k in ("training", "finetun", "dataset", "laya", "curate", "benchmark", "evaluation", "eval_")):
+            item.add_marker(pytest.mark.training)
+
+        if any(k in path or k in nodeid for k in ("mcp", "tool_", "tools_", "action_guide", "action_alias")):
+            item.add_marker(pytest.mark.mcp)
+
+        if any(k in path or k in nodeid for k in ("http", "route", "client", "api_", "transport", "sse", "socket", "network")):
+            item.add_marker(pytest.mark.http)
+
+        if any(k in path or k in nodeid for k in ("agent", "task", "memory", "blackboard", "fence", "lease", "work_orchestrator", "semaphore", "coord", "incident", "policy", "delegate")):
+            item.add_marker(pytest.mark.agent)
+
+        if any(k in path or k in nodeid for k in ("repo", "git", "diff", "worktree", "source_", "patch", "file_info", "call_graph", "affected_tests")):
+            item.add_marker(pytest.mark.repo)
+
+        if any(k in path or k in nodeid for k in ("automation", "browser", "async_job", "scheduler", "daemon", "watchdog", "async_")):
+            item.add_marker(pytest.mark.automation)
+
+        if any(k in path or k in nodeid for k in ("security", "audit", "auth", "redact", "leak", "uninstall", "ratchet", "quarantine", "permission")):
+            item.add_marker(pytest.mark.security)
+
+        if any(k in path or k in nodeid for k in ("artifact", "slice", "compaction")):
+            item.add_marker(pytest.mark.artifacts)
+
+        if any(k in path or k in nodeid for k in ("sqlite", "database", "db_", "lock", "state_", "persistence", "journal")):
+            item.add_marker(pytest.mark.storage)
+
+        if any(k in path or k in nodeid for k in ("token_", "tokcount", "repo_map", "trim_run", "budget")):
+            item.add_marker(pytest.mark.token_economy)
+
+        if any(k in path or k in nodeid for k in ("process", "supervisor", "subprocesses", "launcher", "cleanup", "shutdown", "signal")):
+            item.add_marker(pytest.mark.process)
+
+    # 2. Smart test caching (default: skip passed tests if files unchanged)
+    if not config.getoption("--no-cache", False) and os.environ.get("NO_TEST_CACHE") != "1" and getattr(config, "cache", None):
+        passed_cache = config.cache.get("local_ai_hub/passed_hashes", {})
+        deselected = []
+        selected = []
+        for item in items:
+            sig = _test_item_signature(item)
+            item._cached_sig = sig
+            if passed_cache.get(item.nodeid) == sig:
+                deselected.append(item)
+            else:
+                selected.append(item)
+
+        if deselected:
+            config.hook.pytest_deselected(items=deselected)
+            items[:] = selected
+            if not selected:
+                config._all_tests_cached = True
+    else:
+        for item in items:
+            item._cached_sig = _test_item_signature(item)
+
+
+def pytest_sessionfinish(session, exitstatus):
+    """Ensure clean exit code 0 when all tests were safely skipped by cache."""
+    if exitstatus == pytest.ExitCode.NO_TESTS_COLLECTED and getattr(session.config, "_all_tests_cached", False):
+        session.exitstatus = pytest.ExitCode.OK
+
+
+@pytest.hookimpl(tryfirst=True, hookwrapper=True)
+def pytest_runtest_makereport(item, call):
+    """Record passed test signatures into cache and evict failed ones."""
+    outcome = yield
+    report = outcome.get_result()
+    if report.when == "call" and getattr(item.config, "cache", None):
+        cache = item.config.cache.get("local_ai_hub/passed_hashes", {})
+        sig = getattr(item, "_cached_sig", None)
+        if report.passed and sig:
+            cache[item.nodeid] = sig
+            item.config.cache.set("local_ai_hub/passed_hashes", cache)
+        elif report.failed:
+            if item.nodeid in cache:
+                cache.pop(item.nodeid, None)
+                item.config.cache.set("local_ai_hub/passed_hashes", cache)
 
 
 @pytest.fixture(autouse=True)

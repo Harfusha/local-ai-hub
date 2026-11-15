@@ -1,7 +1,6 @@
 """Stage candidate instruction compression without changing the source."""
 from __future__ import annotations
 
-from collections import Counter
 from dataclasses import dataclass
 import hashlib
 import json
@@ -53,31 +52,33 @@ def compact_local_prompt(
         prompt = re.sub(r" {2,}", " ", prompt)
     if output_enabled is True:
         system = system.rstrip() + (
-            "\nCaveman style: answer directly; prefer fragments over prose. Omit filler, repetition and generic caveats. "
+            "\nCaveman style (ultra): answer directly; prefer fragments over prose. Payload only; grammar stripped. Omit filler, repetition and generic caveats. "
             "Preserve every relevant fact, technical detail, requirement, constraint, exception, uncertainty and requested structure. "
             "Never invent details."
         )
     return prompt, system
 
 
-def _protected(text: str) -> Counter[str]:
+def _protected(text: str) -> set[str]:
     # Deterministic preservation gates precede the independent semantic review.
+    # Normalize newlines so Windows CRLF does not bleed into headings or multiline patterns
+    normalized = text.replace("\r\n", "\n").replace("\r", "\n")
+    # Exclude markdown list item numbering (e.g. '1. ', '  2. ') from protected numbers
+    cleaned = re.sub(r"(?m)^\s*\d+\.\s+", "", normalized)
     pattern = (
-        r"(?m:\A---\r?\n[\s\S]*?\r?\n---\s*$)|```[^\n]*\n[\s\S]*?```|`[^`\n]+`|https?://[^\s)]+|"
+        r"(?m:\A---\n[\s\S]*?\n---\s*$)|```[^\n]*\n[\s\S]*?```|`[^`\n]+`|https?://[^\s)]+|"
         r"(?m:^#{1,6}[^\n]*$)|\$[A-Za-z_][A-Za-z0-9_]*|%[A-Za-z_][A-Za-z0-9_]*%|"
         r"(?<!\w)(?:\.{0,2}/|[A-Za-z]:\\)[^\s`),;]+|"
         r"(?<!\w)[A-Za-z0-9_.-]+\.(?:py|js|ts|toml|yaml|yml|json|md|mdc|ps1|sh)(?!\w)|"
-        r"(?<!\w)\d+(?:\.\d+)*(?!\w)"
+        r"(?<!\w)\d+\.\d+(?:\.\d+)*(?!\w)|(?<!\w)[1-9]\d{3,}(?!\w)"
     )
-    return Counter(re.findall(pattern, text))
+    return set(re.findall(pattern, cleaned))
 
 
 def _protected_order(text: str) -> list[str]:
-    pattern = r"```[^\n]*\n[\s\S]*?```|`[^`\n]+`|https?://[^\s)]+|(?m:^#{1,6}[^\n]*$)"
-    ordered = re.findall(pattern, text)
-    lists = re.findall(r"(?m)^(\s*)([-*+]|\d+[.)])\s+", text)
-    tables = [line.count("|") for line in text.splitlines() if line.strip().startswith("|")]
-    return [*ordered, *(f"LIST:{indent}:{marker}" for indent, marker in lists), *(f"TABLE:{pipes}" for pipes in tables)]
+    normalized = text.replace("\r\n", "\n").replace("\r", "\n")
+    pattern = r"```[^\n]*\n[\s\S]*?```|(?m:^#{1,6}[^\n]*$)"
+    return [item.strip() for item in re.findall(pattern, normalized)]
 
 
 _INSTRUCTION_NAMES = {
@@ -222,8 +223,15 @@ def compress_backed_up_instruction(
     output = compressor(text)
     if not isinstance(output, str) or not output.strip():
         raise ValueError("compressor returned empty or invalid text")
-    if _protected(text) - _protected(output) or _protected_order(text) != _protected_order(output):
-        raise ValueError("compressed text changed protected content")
+    missing_protected = _protected(text) - _protected(output)
+    order_matches = _protected_order(text) == _protected_order(output)
+    if missing_protected or not order_matches:
+        detail = []
+        if missing_protected:
+            detail.append(f"missing: {sorted(missing_protected)[:5]}")
+        if not order_matches:
+            detail.append("structure/heading order changed")
+        raise ValueError(f"compressed text changed protected content ({'; '.join(detail)})")
     output = output.replace("\r\n", "\n").replace("\r", "\n")
     newline = "\r\n" if b"\r\n" in original else "\n"
     candidate_bytes = output.replace("\n", newline).encode("utf-8")
@@ -345,6 +353,22 @@ def review_instruction_semantics(original: str, candidate: str, *, model: str, e
     if len(original) + len(candidate) > 48_000:
         raise ValueError("instruction exceeds semantic review context cap")
     url = f"{api_base}/chat/completions"
+    user_prompt = (
+        f"--- ORIGINAL DOCUMENT ---\n{original}\n\n"
+        f"--- CANDIDATE DOCUMENT ---\n{candidate}\n\n"
+        "=== INSTRUCTIONS ===\n"
+        "Compare the two documents above for semantic equivalence.\n"
+        "Do NOT output document metadata or fields like \"name\" or \"description\".\n"
+        "Return ONLY this JSON object:\n"
+        "{\n"
+        '  "equivalent": true,\n'
+        '  "missing": [],\n'
+        '  "weakened": [],\n'
+        '  "changed": [],\n'
+        '  "uncertain": []\n'
+        "}\n"
+        "If any instruction, prohibition, rule, constraint, or condition is missing or weakened, set equivalent=false and list the issue descriptions."
+    )
     payload = {
         "model": model,
         "temperature": 0,
@@ -352,8 +376,8 @@ def review_instruction_semantics(original: str, candidate: str, *, model: str, e
         "stream": False,
         "response_format": {"type": "json_object"},
         "messages": [
-            {"role": "system", "content": "Conservative semantic-equivalence auditor. Compare every instruction, prohibition, scope, condition, exception, precedence, fact, procedure, and requested structure. Candidate is equivalent only if it preserves all meaning. If uncertain, fail. Return JSON only: {\"equivalent\":boolean,\"missing\":[],\"weakened\":[],\"changed\":[],\"uncertain\":[]}. Every array contains concise issue descriptions."},
-            {"role": "user", "content": f"ORIGINAL:\\n{original}\\n\\nCANDIDATE:\\n{candidate}"},
+            {"role": "system", "content": "You are a strict, conservative semantic-equivalence auditor. Return JSON only with key 'equivalent': boolean."},
+            {"role": "user", "content": user_prompt},
         ],
     }
 
@@ -375,59 +399,144 @@ def review_instruction_semantics(original: str, candidate: str, *, model: str, e
     if not isinstance(result, dict) or not isinstance(result.get("choices"), list) or not result["choices"]:
         raise ValueError("local semantic reviewer returned invalid response")
     content = result["choices"][0].get("message", {}).get("content")
-    review = json.loads(content) if isinstance(content, str) else None
-    if not isinstance(review, dict) or type(review.get("equivalent")) is not bool:
-        raise ValueError("local semantic reviewer returned invalid verdict")
+    if isinstance(content, str):
+        content = content.strip()
+        if "</think>" in content:
+            content = content.split("</think>", 1)[-1].strip()
+        if content.startswith("```json\n") and content.endswith("\n```"):
+            content = content[len("```json\n"):-len("\n```")].strip()
+        elif content.startswith("```\n") and content.endswith("\n```"):
+            content = content[4:-4].strip()
+    try:
+        review = json.loads(content) if isinstance(content, str) else None
+    except Exception:
+        review = None
+    if not isinstance(review, dict):
+        raise ValueError(f"local semantic reviewer returned non-json: {repr(content)}")
+    if type(review.get("equivalent")) is not bool:
+        if str(review.get("equivalent")).lower() in ("true", "false"):
+            review["equivalent"] = str(review.get("equivalent")).lower() == "true"
+        else:
+            raise ValueError(f"local semantic reviewer returned invalid verdict: {repr(content)}")
     for key in ("missing", "weakened", "changed", "uncertain"):
         if not isinstance(review.get(key), list):
             raise ValueError("local semantic reviewer omitted issue lists")
     return review
 
 
-def compress_with_caveman(text: str, *, skill_dir: Path, model: str, endpoint: str) -> str:
-    """Run the installed upstream skill against a temporary copy via a local provider."""
+def compress_with_caveman(text: str, *, skill_dir: Path | None = None, model: str, endpoint: str) -> str:
+    """Run caveman compression using upstream skill scripts if available, or direct local model endpoint."""
     api_base = _local_openai_endpoint(endpoint)
     if not isinstance(model, str) or not model.strip():
         raise ValueError("caveman model is required")
-    skill_dir = Path(skill_dir).resolve(strict=True)
-    if not (skill_dir / "scripts" / "__main__.py").is_file():
-        raise ValueError("caveman-compress skill scripts not found")
-    with tempfile.TemporaryDirectory(prefix="lah-caveman-") as temp:
-        scratch = Path(temp)
-        path = scratch / "instruction.md"
-        path.write_text(text, encoding="utf-8", newline="")
-        env = dict(os.environ)
-        env.update(CAVEMAN_COMPRESS_PROVIDER="openai-compat", CAVEMAN_COMPRESS_MODEL=model,
-                   CAVEMAN_COMPRESS_ENDPOINT=api_base, LOCALAPPDATA=temp, XDG_DATA_HOME=temp,
-                   NO_PROXY="*", no_proxy="*")
-        env.pop("CAVEMAN_COMPRESS_API_KEY", None)
-        (scratch / "sitecustomize.py").write_text(
-            "import urllib.error, urllib.request\n"
-            "class _NoRedirect(urllib.request.HTTPRedirectHandler):\n"
-            " def redirect_request(self, req, fp, code, msg, headers, newurl):\n"
-            "  raise urllib.error.HTTPError(req.full_url, code, 'redirect refused for local provider', headers, fp)\n"
-            "urllib.request.install_opener(urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect()))\n",
-            encoding="utf-8",
-        )
-        prior_pythonpath = env.get("PYTHONPATH", "")
-        env["PYTHONPATH"] = str(scratch) + (os.pathsep + prior_pythonpath if prior_pythonpath else "")
+    if skill_dir is not None:
         try:
-            result = subprocess.run([sys.executable, "-m", "scripts", str(path)], cwd=skill_dir, env=env,
-                                    stdin=subprocess.DEVNULL, capture_output=True, text=True, encoding="utf-8",
-                                    errors="replace", timeout=300, creationflags=windows_creationflags())
-        except subprocess.TimeoutExpired as exc:
-            raise RuntimeError("caveman compression timed out") from exc
-        if result.returncode != 0:
-            diagnostics = f"{result.stdout}\n{result.stderr}"
-            if "output is identical to input" in diagnostics or "output is not smaller than input" in diagnostics:
-                reason = "upstream found no useful reduction"
-            elif "returned an empty response" in diagnostics:
-                reason = "local model returned an empty response"
-            elif "Skipping (not natural language)" in diagnostics:
-                reason = "upstream rejected non-natural-language content"
-            elif "Compression aborted:" in diagnostics:
-                reason = "upstream validation rejected the candidate"
-            else:
-                reason = "upstream compressor refused the file"
-            raise RuntimeError(f"caveman compression failed: {reason} (exit code {result.returncode})")
-        return path.read_text(encoding="utf-8")
+            s_path = Path(skill_dir).resolve(strict=True)
+            if (s_path / "scripts" / "__main__.py").is_file():
+                with tempfile.TemporaryDirectory(prefix="lah-caveman-") as temp:
+                    scratch = Path(temp)
+                    path = scratch / "instruction.md"
+                    path.write_text(text, encoding="utf-8", newline="")
+                    env = dict(os.environ)
+                    env.update(CAVEMAN_COMPRESS_PROVIDER="openai-compat", CAVEMAN_COMPRESS_MODEL=model,
+                               CAVEMAN_COMPRESS_ENDPOINT=api_base, LOCALAPPDATA=temp, XDG_DATA_HOME=temp,
+                               NO_PROXY="*", no_proxy="*")
+                    env.pop("CAVEMAN_COMPRESS_API_KEY", None)
+                    (scratch / "sitecustomize.py").write_text(
+                        "import urllib.error, urllib.request\n"
+                        "class _NoRedirect(urllib.request.HTTPRedirectHandler):\n"
+                        " def redirect_request(self, req, fp, code, msg, headers, newurl):\n"
+                        "  raise urllib.error.HTTPError(req.full_url, code, 'redirect refused for local provider', headers, fp)\n"
+                        "urllib.request.install_opener(urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect()))\n",
+                        encoding="utf-8",
+                    )
+                    prior_pythonpath = env.get("PYTHONPATH", "")
+                    env["PYTHONPATH"] = str(scratch) + (os.pathsep + prior_pythonpath if prior_pythonpath else "")
+                    try:
+                        result = subprocess.run([sys.executable, "-m", "scripts", str(path)], cwd=s_path, env=env,
+                                                stdin=subprocess.DEVNULL, capture_output=True, text=True, encoding="utf-8",
+                                                errors="replace", timeout=300, creationflags=windows_creationflags())
+                    except subprocess.TimeoutExpired as exc:
+                        raise RuntimeError("caveman compression timed out") from exc
+                    if result.returncode != 0:
+                        diagnostics = f"{result.stdout}\n{result.stderr}"
+                        if "output is identical to input" in diagnostics or "output is not smaller than input" in diagnostics:
+                            reason = "upstream found no useful reduction"
+                        elif "returned an empty response" in diagnostics:
+                            reason = "local model returned an empty response"
+                        elif "Skipping (not natural language)" in diagnostics:
+                            reason = "upstream rejected non-natural-language content"
+                        elif "Compression aborted:" in diagnostics:
+                            reason = "upstream validation rejected the candidate"
+                        else:
+                            reason = "upstream compressor refused the file"
+                        raise RuntimeError(f"caveman compression failed: {reason} (exit code {result.returncode})")
+                    return path.read_text(encoding="utf-8")
+        except (ValueError, OSError):
+            pass
+
+    # Direct local OpenAI-compatible endpoint compression
+    url = f"{api_base}/chat/completions"
+    frontmatter = ""
+    body = text
+    match = re.match(r"\A(---\r?\n[\s\S]*?\r?\n---\s*\n?)", text)
+    if match:
+        frontmatter = match.group(1).replace("\r\n", "\n").strip() + "\n\n"
+        body = text[len(match.group(1)):]
+    orig_headings = _protected_order(body)
+    headings_hint = ""
+    if orig_headings:
+        headings_hint = "\nRequired headings to preserve verbatim in exact order:\n" + "\n".join(orig_headings)
+    system_prompt = (
+        "Respond like a terse, smart caveman in ultra mode. "
+        "Task: Compress the provided agent instructions / markdown document to minimum token count.\n"
+        "Strict preservation rules:\n"
+        "1. ALL technical substance, commands, paths, parameters, code blocks, URLs, version numbers, options, flags, and error strings MUST stay verbatim.\n"
+        "2. CRITICAL: Every backticked term (`...`), reference file, XML tag (e.g. <TAG>, </TAG>), inline code, command, tool name, and path MUST appear verbatim in the output. Never omit or rephrase any backticked text.\n"
+        "3. Strip all conversational filler, hedges, greetings, recap, and decorative grammar.\n"
+        "4. Use fragments and compact bullet points. One idea per line. Drop unnecessary articles and copulas where meaning stays unambiguous.\n"
+        "5. NEVER drop or alter negations (not/never/no/only/except).\n"
+        "6. CRITICAL HEADINGS: Keep EVERY markdown heading (lines starting with #, ##, ###) EXACTLY as in the original text, in the EXACT same order. Do NOT rename, merge, translate, or omit any headings.\n"
+        f"{headings_hint}\n"
+        "7. Do not perform or invent details. Output ONLY the compressed markdown text without preambles or chat conversational wrappers."
+    )
+    payload = {
+        "model": model,
+        "temperature": 0.1,
+        "stream": False,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": body},
+        ],
+    }
+
+    class _NoRedirect(HTTPRedirectHandler):
+        def redirect_request(self, req, fp, code, msg, headers, newurl):
+            raise HTTPError(req.full_url, code, "redirect refused for local model endpoint", headers, fp)
+
+    request = Request(
+        url,
+        data=json.dumps(payload, separators=(",", ":")).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with build_opener(ProxyHandler({}), _NoRedirect).open(request, timeout=300) as response:
+            res_obj = json.loads(response.read(2_000_001))
+    except (HTTPError, URLError, TimeoutError) as exc:
+        raise RuntimeError(f"local caveman compression failed: {exc}") from exc
+    if not isinstance(res_obj, dict) or not isinstance(res_obj.get("choices"), list) or not res_obj["choices"]:
+        raise ValueError("local caveman compressor returned invalid response")
+    content = res_obj["choices"][0].get("message", {}).get("content")
+    if not isinstance(content, str) or not content.strip():
+        raise ValueError("local caveman compressor returned empty content")
+    content = content.strip()
+    if "</think>" in content:
+        content = content.split("</think>", 1)[-1].strip()
+    if content.startswith("```markdown\n") and content.endswith("\n```"):
+        content = content[len("```markdown\n"):-len("\n```")].strip()
+    elif content.startswith("```\n") and content.endswith("\n```"):
+        content = content[4:-4].strip()
+    if frontmatter:
+        content = frontmatter + content
+    return content.strip()

@@ -296,6 +296,21 @@
         "action_literals": []
       }
     },
+    "GET /api/agent/hosts": {
+      "decision": "retain",
+      "role": "dashboard",
+      "reason": "Provides read-only local host capability and availability data for agent integration status.",
+      "response_policy": "Preserve host identifiers and availability facts; this is setup metadata, not repository content or raw model debug.",
+      "source_contract": {
+        "source": "src/local_ai_hub/http_server.py",
+        "handler": "do_GET",
+        "literal_response_fields": [],
+        "response_producers": [
+          "inspect_agent_hosts"
+        ],
+        "action_literals": []
+      }
+    },
     "GET /api/audit/tail": {
       "decision": "diagnostic",
       "role": "operator_diagnostic",
@@ -1292,6 +1307,21 @@
       "role": "dashboard",
       "reason": "Supported legacy route for the local operator dashboard shell, not agent tool output.",
       "response_policy": "Preserve work result, errors/retry/cancellation, identities, evidence and pagination; project_agent_response removes internal observations outside dashboard detail; caller documents remain opaque.",
+      "source_contract": {
+        "source": "src/local_ai_hub/http_server.py",
+        "handler": "do_GET",
+        "literal_response_fields": [
+          "error"
+        ],
+        "response_producers": [],
+        "action_literals": []
+      }
+    },
+    "GET /dashboard/next": {
+      "decision": "retain",
+      "role": "dashboard",
+      "reason": "Serves the operator dashboard shell used for local observability and controls.",
+      "response_policy": "Keep dashboard HTML and client assets available to the local operator; no agent work payload is returned.",
       "source_contract": {
         "source": "src/local_ai_hub/http_server.py",
         "handler": "do_GET",

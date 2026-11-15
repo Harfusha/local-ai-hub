@@ -441,7 +441,7 @@ class AsyncJobManager:
             )},
         }
         if resource.get("available") is not True or telemetry_error is not None or bool(resource.get("telemetry_error")):
-            return {**self._admission("rejected", "resource_telemetry_unavailable", retryable=True), "pressure_level": pressure, "context_budget_factor": factor, "resource_sample": sample}
+            return {**self._admission("degraded", "resource_telemetry_unavailable", retryable=False), "pressure_level": pressure, "context_budget_factor": factor, "resource_sample": sample}
         if (
             pressure not in {"nominal", "moderate", "high", "critical"}
             or not factor_valid

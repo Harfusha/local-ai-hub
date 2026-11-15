@@ -518,10 +518,6 @@ Use Agent OS for every non-trivial multi-step, long-running, delegated, or accep
 - Repository pipelines serialize preprocessing mutation actions with other mutating steps.
 - Optional repository-analysis tools are installed and configured separately; they are not part of the Hub.
 - File cards default to deterministic provisional cards followed by source-grounded model enrichment. `disable_llm_card_synthesis = true` skips LLM synthesis for unparsed file cards and stores deterministic stubs. It does not disable module/project cards: `prefer_deterministic_modules` and `prefer_deterministic_project` are separate preferences; either path can use background LLM synthesis when deterministic output is unavailable or below its confidence threshold. Check active configuration and backend state before claiming synthesis is disabled.
-- It does not disable module/project cards:
-- `prefer_deterministic_modules` and `prefer_deterministic_project` are separate preferences.
-- either path can use background LLM synthesis when deterministic output is unavailable or below its confidence threshold.
-- Check active configuration and backend state before claiming synthesis is disabled.
 """
 
     # Full SKILL.md content

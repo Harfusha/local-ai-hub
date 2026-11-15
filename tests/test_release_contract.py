@@ -55,6 +55,9 @@ def test_release_uses_only_current_local_ai_hub_contracts():
         if path == ROOT / "tools" / "release_inventory.py":
             # OSV versions its external API independently of the Hub contract.
             text = text.replace("https://api.osv.dev/" + "v1" + "/querybatch", "OSV_QUERYBATCH")
+        if path == ROOT / "tools" / "generate_audit_acceptance.py":
+            # Python's interpreter selector is unrelated to Hub schema versions.
+            text = text.replace("--python-" + "version ", "PYTHON_VERSION_ARGUMENT ")
         if path in {ROOT / "tests" / "unit" / "test_search_endpoint_precision.py",
                     ROOT / "tests" / "test_mixed_scheduler_integration.py"}:
             # The OpenAI-compatible upstream protocol is not the retired Hub API.

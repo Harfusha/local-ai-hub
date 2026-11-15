@@ -4,6 +4,7 @@ import json
 import threading
 import time
 from contextlib import closing
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -55,7 +56,9 @@ def manager_factory(tmp_path: Any, monkeypatch):
                 "server": {"state_dir": str(tmp_path)},
                 "async_jobs": {"max_attempts": 3, "result_ttl_seconds": 600},
             },
-            scheduler=object(),
+            scheduler=SimpleNamespace(resource_status=lambda: {
+                "available": True, "pressure_level": "nominal", "context_budget_factor": 1.0,
+            }),
             artifacts=artifacts if artifacts is not None else default_artifacts,
             executor=executor,
             execution_pool=execution_pool,

@@ -184,3 +184,36 @@ then restart the managed service (`python tools/service.py restart`). Verify
 the actual answer again. This is a compatibility fallback, not a claim that
 every AMD or Intel adapter requires CPU inference. Keep the model downloads;
 switching execution backends does not require downloading them again.
+
+---
+
+## Token Economy & Caveman Ultra Configuration
+
+Local AI Hub enables global token-saving optimizations by default across all devices and profiles:
+
+```toml
+[token_saving]
+concise_local_output = true    # Default: true — injects Caveman style (ultra) into all local LLM generations
+compress_local_input = true    # Default: true — compacts excessive whitespace in safe plain-text prompts
+```
+
+### Instruction & Skill Compression CLI (`caveman-compress`)
+
+To automatically compress agent instructions (`AGENTS.md`, `CLAUDE.md`, `GEMINI.md`, `rules.md`, `*.mdc`, `SKILL.md`) using local models in Caveman Ultra mode:
+
+```bash
+# Preview token savings on project instructions (creates byte-verified backups in staging, no file changes):
+python tools/hubctl.py caveman-compress --root /path/to/project
+
+# Apply compressed instructions in-place (atomic replace with SHA-256 manifest backup):
+python tools/hubctl.py caveman-compress --root /path/to/project --apply
+
+# Discover and compress all agent skills and instructions across all user environments:
+python tools/hubctl.py caveman-compress --all-agents --apply
+```
+
+All compressions strictly enforce:
+1. Exact preservation of code blocks, inline backticks, URLs, file paths, versions, and structure.
+2. Independent semantic review for equivalence (`{"equivalent": true, "missing": [], "weakened": []}`).
+3. Hash-verified backup retention with reversible manifests.
+

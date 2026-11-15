@@ -136,40 +136,43 @@ def test_inline_json_size_is_rejected_before_json_loads(monkeypatch: pytest.Monk
             raise AssertionError("oversized inline JSON reached json.loads")
         return original_loads(value, *args, **kwargs)
 
-    monkeypatch.setattr(json, "loads", fail_if_called)
-    with pytest.raises(FrontendReviewError) as raised:
-        build_model_context(
-            prompt="Review",
-            screenshot_data_url="data:image/png;base64,AA==",
-            dom={"redaction": "none", "elements": [{"element_id": "root"}]},
-            accessibility={},
-            computed_styles={},
-            viewport={},
-            runtime=raw,
-        )
+    with monkeypatch.context() as patcher:
+        patcher.setattr(json, "loads", fail_if_called)
+        with pytest.raises(FrontendReviewError) as raised:
+            build_model_context(
+                prompt="Review",
+                screenshot_data_url="data:image/png;base64,AA==",
+                dom={"redaction": "none", "elements": [{"element_id": "root"}]},
+                accessibility={},
+                computed_styles={},
+                viewport={},
+                runtime=raw,
+            )
 
     assert raised.value.code == "frontend_context_too_large"
 
 
 def test_deep_inline_json_is_rejected_before_recursion(monkeypatch: pytest.MonkeyPatch) -> None:
     raw = '{"next":' * 32 + "{}" + "}" * 32
+    original_loads = json.loads
 
     def fail_with_recursion(value: object, *args: object, **kwargs: object) -> object:
         if value == raw:
             raise RecursionError("simulated parser recursion")
-        return json.loads(value, *args, **kwargs)
+        return original_loads(value, *args, **kwargs)
 
-    monkeypatch.setattr(json, "loads", fail_with_recursion)
-    with pytest.raises(FrontendReviewError) as raised:
-        build_model_context(
-            prompt="Review",
-            screenshot_data_url="data:image/png;base64,AA==",
-            dom={"redaction": "none", "elements": [{"element_id": "root"}]},
-            accessibility={},
-            computed_styles={},
-            viewport={},
-            runtime=raw,
-        )
+    with monkeypatch.context() as patcher:
+        patcher.setattr(json, "loads", fail_with_recursion)
+        with pytest.raises(FrontendReviewError) as raised:
+            build_model_context(
+                prompt="Review",
+                screenshot_data_url="data:image/png;base64,AA==",
+                dom={"redaction": "none", "elements": [{"element_id": "root"}]},
+                accessibility={},
+                computed_styles={},
+                viewport={},
+                runtime=raw,
+            )
 
     assert raised.value.code == "frontend_context_too_deep"
 

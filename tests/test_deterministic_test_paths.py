@@ -85,7 +85,7 @@ def test_test_matrix_worker_dispatch_caps_pool_and_preserves_map_order(monkeypat
         def map(self, worker, items):
             return map(worker, items)
 
-    monkeypatch.setattr(test_paths, "ThreadPoolExecutor", RecordingExecutor, raising=False)
+    monkeypatch.setattr(test_paths.concurrent.futures, "ThreadPoolExecutor", RecordingExecutor)
 
     assert test_paths.run_test_matrix_workers(lambda item: item * 2, list(range(10))) == [
         0, 2, 4, 6, 8, 10, 12, 14, 16, 18,
@@ -111,7 +111,7 @@ def test_test_matrix_worker_dispatch_uses_selected_count_for_small_batches(monke
         def map(self, worker, items):
             return map(worker, items)
 
-    monkeypatch.setattr(test_paths, "ThreadPoolExecutor", RecordingExecutor, raising=False)
+    monkeypatch.setattr(test_paths.concurrent.futures, "ThreadPoolExecutor", RecordingExecutor)
 
     assert test_paths.run_test_matrix_workers(str, [1, 2]) == ["1", "2"]
     assert created_limits == [2]

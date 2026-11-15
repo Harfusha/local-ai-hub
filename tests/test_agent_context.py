@@ -393,8 +393,11 @@ def test_context_etag_matches_legacy_canonical_json_without_json_dumps(monkeypat
         raise AssertionError("etag should use the configured orjson fast path for large canonical elements")
 
     if agent_context.json_backend_name() == "orjson":
-        monkeypatch.setattr(agent_context.json, "dumps", forbidden_dumps)
-    assert pack.etag() == expected
+        with monkeypatch.context() as patcher:
+            patcher.setattr(agent_context.json, "dumps", forbidden_dumps)
+            assert pack.etag() == expected
+    else:
+        assert pack.etag() == expected
 
 
 @pytest.mark.parametrize(

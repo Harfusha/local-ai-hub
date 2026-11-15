@@ -64,8 +64,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     if caveman_mode:
         from pathlib import Path
         from . import caveman_instructions
-        if args.generate or not args.caveman_skill_dir or not args.caveman_model or not args.caveman_staging_dir:
-            raise SystemExit("Caveman compression requires skill directory, compressor model, and staging directory; cannot combine with --generate")
+        if args.generate or not args.caveman_model or not args.caveman_staging_dir:
+            raise SystemExit("Caveman compression requires compressor model and staging directory; cannot combine with --generate")
         roots = [Path(value) for value in (args.discover_caveman or [])]
         files = [Path(value) for value in (args.stage_caveman or [])]
         if roots:
@@ -94,7 +94,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 result = caveman_instructions.compress_backed_up_instruction(
                     item,
                     lambda text: caveman_instructions.compress_with_caveman(
-                        text, skill_dir=Path(args.caveman_skill_dir), model=args.caveman_model, endpoint=endpoint
+                        text, skill_dir=Path(args.caveman_skill_dir) if args.caveman_skill_dir else None, model=args.caveman_model, endpoint=endpoint
                     ),
                     lambda original, candidate: caveman_instructions.review_instruction_semantics(
                         original, candidate, model=args.caveman_review_model, endpoint=endpoint

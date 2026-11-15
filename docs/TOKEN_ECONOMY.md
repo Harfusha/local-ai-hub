@@ -161,4 +161,32 @@ When paired with an AI coding agent, the following rules are permanently active 
 
 The MCP boundary enforces an aggregate response budget, not only per-field truncation. Agents should use compact/minimal profiles, stable `reuse_key` values, `response_profile="delta"` for repeated changing queries, cached result reuse, and artifact slices for exact detail. Independent local tasks should use the existing batch action. Command responses keep status, summary, changed paths, and failures inline; full stdout/stderr remains artifact-backed.
 
+---
+
+## 6. Caveman Ultra & Instruction File Compaction
+
+Local AI Hub ships with Caveman Ultra mode enabled by default on all endpoints:
+
+1. **Endpoint Level**:
+   - `[token_saving].concise_local_output = true` (default in `defaults.toml`): every local model invocation automatically receives Caveman Ultra system instructions ("answer directly, payload only, grammar stripped, no filler, preserve all technical facts").
+   - `[token_saving].compress_local_input = true` (default): safe whitespace compaction for plain text inputs.
+
+2. **Automated File Compression (`hubctl caveman-compress`)**:
+   Compress project-level `AGENTS.md` and installed skills/rules across Antigravity, Codex, Claude, Cursor, Copilot:
+   ```bash
+   # Preview savings for current project AGENTS.md
+   python tools/hubctl.py caveman-compress --root .
+
+   # Apply in-place with hash-verified backup in state/caveman-staging
+   python tools/hubctl.py caveman-compress --root . --apply
+
+   # Compress all installed instructions across all agents and user profiles
+   python tools/hubctl.py caveman-compress --all-agents --apply
+   ```
+   Safety guarantees:
+   - Full byte-for-byte SHA-256 backup before any candidate is generated.
+   - Deterministic verification: code fences, backticks, URLs, file paths, and version numbers must match.
+   - Model semantic equivalence review: local LLM verifies no meaning, condition, or negation is weakened or missing.
+   - Reversible at any time via `manifest.json`.
+
 The telemetry ledger separates raw response estimate, projected response estimate, saved estimate, operation category, cache outcome, and budget reason. The bounded context ledger adds recent metadata-only pressure and cache summaries. This enables before/after analysis of Hub, search, command, validation, edit, artifact, and coordination context without persisting prompts or source content.

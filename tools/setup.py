@@ -899,8 +899,13 @@ def _configure_gemini_instance_impl(
         and _agent_component_enabled(agent_components, "gemini", "instructions")
     ):
         doc = gemini_dir / "GEMINI.md"
-        merge_global_policy(doc, backup_enabled, cfg=cfg)
-        merge_token_economy_policy(doc, backup_enabled, cfg=cfg)
+        try:
+            merge_global_policy(doc, backup_enabled, cfg=cfg)
+            merge_token_economy_policy(doc, backup_enabled, cfg=cfg)
+        except ValueError as exc:
+            if "external block has no ownership record" not in str(exc):
+                raise
+            log(f"Manual agent setup required: Gemini instructions preserved: {doc} ({exc})")
         if bool(cfg.get("setup", {}).get("install_antigravity_style_policy", False)):
             merge_antigravity_skill_policy(gemini_dir / "AGENTS.md", backup_enabled)
             merge_antigravity_skill_policy((project_root or Path.cwd()) / "AGENTS.md", backup_enabled)
@@ -1688,8 +1693,15 @@ def _configure_agents_impl(
             and _agent_component_enabled(agent_components, "claude", "instructions")
         ):
             doc = Path.home() / ".claude" / "CLAUDE.md"
-            merge_global_policy(doc, backup_enabled, cfg=cfg)
-            merge_token_economy_policy(doc, backup_enabled, cfg=cfg)
+            try:
+                merge_global_policy(doc, backup_enabled, cfg=cfg)
+                merge_token_economy_policy(doc, backup_enabled, cfg=cfg)
+            except ValueError as exc:
+                if "external block has no ownership record" not in str(exc):
+                    raise
+                manual_action = f"Claude instructions preserved: {doc} ({exc})"
+                manual_actions.append(manual_action)
+                log(f"Manual agent setup required: {manual_action}")
         if _agent_component_enabled(agent_components, "claude", "mcp"):
             json_mcp_merge(Path.home() / ".claude.json", build_mcp_entries(install_dir, hub_python, serena, "claude", cfg), backup_enabled)
     if agents_cfg.get("gemini", True):

@@ -33,6 +33,7 @@ def test_t1_02_owned_model_timeout_includes_bounded_stderr():
 
     script = (
         "import sys, time; "
+        "sys.stderr.write('worker ready'); sys.stderr.flush(); "
         "sys.stdin.readline(); "
         "sys.stderr.write('predict still running worker stderr output'); "
         "sys.stderr.flush(); "
@@ -40,8 +41,13 @@ def test_t1_02_owned_model_timeout_includes_bounded_stderr():
     )
     process = _ModelProcess([sys.executable, "-u", "-c", script])
     try:
+        assert process._stderr_ready.wait(timeout=5)
+        with process._stderr_lock:
+            assert b"worker ready" in process._stderr_tail
+            process._stderr_tail.clear()
+            process._stderr_ready.clear()
         with pytest.raises(TimeoutError, match="model operation timed out") as raised:
-            process.request({"operation": "predict"}, timeout=0.1)
+            process.request({"operation": "predict"}, timeout=1)
         assert "predict still running worker stderr output" in str(raised.value)
     finally:
         process.close()

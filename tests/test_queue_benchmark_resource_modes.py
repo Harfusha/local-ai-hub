@@ -11,7 +11,7 @@ from local_ai_hub.async_jobs import AsyncJobManager
     ("nominal", False, 1.0, "accepted", False),
     ("moderate", False, 1.0, "degraded", False),
     ("high", False, 1.0, "degraded", False),
-    ("unknown", False, 0.25, "degraded", False),
+    ("unknown", False, 0.25, "rejected", True),
     ("high", True, 0.5, "rejected", True),
     ("critical", False, 0.25, "rejected", True),
 ])
