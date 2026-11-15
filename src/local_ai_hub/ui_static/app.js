@@ -530,20 +530,28 @@ async function handleProjectAction(action) {
 
   if (statusEl) statusEl.textContent = `Executing ${action} for ${root}…`;
 
-  let url = "/api/preprocess/status";
-  let body = { root };
-  if (action === "reindex") {
+  let url;
+  let options;
+  if (action === "check") {
+    url = `/api/preprocess/status?root=${encodeURIComponent(root)}`;
+    options = { method: "GET" };
+  } else if (action === "reindex") {
     url = "/api/preprocess";
+    options = {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "refresh", root }),
+    };
   } else if (action === "unregister") {
-    url = "/api/preprocess/unregister";
-    body = { root, purge_data: false };
+    url = "/api/preprocess";
+    options = {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "unregister", root, purge_data: false }),
+    };
+  } else {
+    if (statusEl) statusEl.textContent = "Unsupported project action.";
+    return;
   }
-
-  const res = await request(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
+  const res = await request(url, options);
 
   if (!res.ok || !res.data) {
     if (statusEl) statusEl.textContent = `Action ${action} failed: ` + (res.data?.error || "unknown error");
