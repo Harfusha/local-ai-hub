@@ -103,6 +103,7 @@ jobs:
           tests/unit/test_mcp_gpu_reservation_release_contract.py
           tests/unit/test_hub_006_bounded_workers_admission.py::test_priority_and_starvation_aging_contract
           tests/test_t10_acceptance.py::test_adaptive_retrieval_skips_optional_backends_when_deadline_is_exhausted
+          tests/unit/test_search_mode_fusion.py::test_hybrid_fallback_uses_expansion_and_entry_points_for_code_index_queries
       # Catch pinned Windows CUDA asset discovery regressions early on Linux.
       - run: >-
           python -m pytest -q tests/test_llama_cpp_runtime.py

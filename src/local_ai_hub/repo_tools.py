@@ -3178,6 +3178,13 @@ class RepositoryTools:
                         stem = Path(rel).stem.lower()
                         title_matches = sum(1 for term in expanded_terms if term in stem)
                         score += min(40.0, title_matches * 20.0)
+                        # A precise expanded identifier should not disappear
+                        # behind dozens of identical generic-token lines in the
+                        # same file when per-file snippets are bounded.
+                        score += max((
+                            min(3.0, len(term) / 5.0)
+                            for term in matched if term in expanded_terms
+                        ), default=0.0)
                     if phrase and len(phrase) <= 120 and phrase in low: score += 8
                     if installation_intent_priority:
                         score += _intent_path_adjustment(query, rel)
