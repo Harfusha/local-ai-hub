@@ -9,7 +9,7 @@ from local_ai_hub import http_server
 from local_ai_hub.app import LocalAIApp
 
 
-def test_context_infers_guarded_when_changed_paths_provided(monkeypatch):
+def test_context_infers_guarded_when_changed_paths_provided(monkeypatch, tmp_path):
     captured = {}
     class DummyClient:
         def post(self, url, payload, **kwargs):
@@ -18,12 +18,12 @@ def test_context_infers_guarded_when_changed_paths_provided(monkeypatch):
     monkeypatch.setattr("local_ai_hub.mcp_server.CLIENT", DummyClient())
     from local_ai_hub.mcp_server import local_ai_repo
 
-    res = local_ai_repo(action="context", root="C:/test/root", query="my task", changed_paths=["src/a.py"])
+    res = local_ai_repo(action="context", root=str(tmp_path), query="my task", task_id="task-context-1", changed_paths=["src/a.py"])
     assert res.get("success") is True
     assert captured.get("guarded") is True
     assert captured.get("changed_paths") == ["src/a.py"]
 
-def test_context_infers_guarded_when_focus_provided(monkeypatch):
+def test_context_infers_guarded_when_focus_provided(monkeypatch, tmp_path):
     captured = {}
     class DummyClient:
         def post(self, url, payload, **kwargs):
@@ -32,7 +32,7 @@ def test_context_infers_guarded_when_focus_provided(monkeypatch):
     monkeypatch.setattr("local_ai_hub.mcp_server.CLIENT", DummyClient())
     from local_ai_hub.mcp_server import local_ai_repo
 
-    res = local_ai_repo(action="context", root="C:/test/root", query="my task", focus=["src/a.py"])
+    res = local_ai_repo(action="context", root=str(tmp_path), query="my task", task_id="task-context-2", focus=["src/a.py"])
     assert res.get("success") is True
     assert captured.get("guarded") is True
     assert captured.get("focus") == ["src/a.py"]

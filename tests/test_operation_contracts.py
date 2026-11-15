@@ -120,14 +120,14 @@ def test_artifact_runtime_validation_matches_action_contract():
     assert validate_operation_arguments(TOOL, "list", {"offset": 0}) == "offset is not valid for action='list'"
 
 
-def test_memory_record_requires_explicit_identity_and_preserves_session_id():
+def test_memory_record_requires_explicit_identity_and_preserves_session_id(tmp_path):
     assert validate_operation_arguments(
         "local_ai_coord", "memory_record", {"action": "memory_record"}
     ) == "root is required for action='memory_record'"
 
     valid = {
         "action": "memory_record",
-        "root": "C:/fixture/repo",
+        "root": str(tmp_path),
         "scope": "repository",
         "key": "finding",
         "value": "value",

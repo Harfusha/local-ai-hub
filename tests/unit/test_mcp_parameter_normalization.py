@@ -104,6 +104,7 @@ def test_repo_forwards_canonical_changed_paths_and_phase(monkeypatch, tmp_path):
         phase="review",
         focus=["src/focus.py"],
         guarded=True,
+        task_id="task-change-review",
     )
 
     assert captured.get("url") == "/api/context/pack", repr(result)
