@@ -1068,7 +1068,8 @@ def test_http_post_complete_acceptance(running_http_hub, monkeypatch, tmp_path):
         headers={"Content-Type": "application/json", "Connection": "close"},
         method="POST",
     )
-    with urllib_request.urlopen(req) as resp:
+    # On rejection expose the JSON response reason instead of only HTTP 403.
+    with _urlopen_with_error_body(req) as resp:
         assert resp.status == 200
         res = json.loads(resp.read().decode("utf-8"))
         assert res["success"] is True

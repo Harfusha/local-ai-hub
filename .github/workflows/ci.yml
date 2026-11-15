@@ -89,6 +89,20 @@ jobs:
           tests/test_ci_event_policy.py
           tests/test_operation_contracts.py::test_memory_mutations_accept_absolute_windows_paths_without_accepting_drive_relative
           tests/test_release_contract.py::test_no_personal_paths_or_runtime_payloads_in_tracked_release_sources
+      # Keep actual historical regression scenarios close to the changed code.
+      - run: >-
+          python -m pytest -q
+          tests/test_review_diff_path_scope.py::test_diff_facts_treats_header_like_hunk_lines_as_content
+          tests/test_review_diff_path_scope.py::test_malformed_hunk_still_starts_a_new_file_when_real_header_has_hunk
+          tests/test_plan_reconcile_steering.py::test_recovery_retries_after_projection_record_write_failure
+          tests/test_plan_reconcile_steering.py::test_retry_finishes_pending_record_after_binding_was_already_saved
+          tests/test_embedding_gpu_lease_heartbeat.py::test_embedding_renews_gpu_fence_until_long_inference_finishes
+          tests/test_token_economy_tools.py::test_response_budget_and_fallback_contracts_match_all_agent_instructions
+          tests/test_token_economy_tools.py::test_token_economizer_skill_md
+          tests/test_token_efficiency.py::test_trace_context_exposes_optional_metadata_without_changing_base_fields
+          tests/unit/test_mcp_gpu_reservation_release_contract.py
+          tests/unit/test_hub_006_bounded_workers_admission.py::test_priority_and_starvation_aging_contract
+          tests/test_t10_acceptance.py::test_adaptive_retrieval_skips_optional_backends_when_deadline_is_exhausted
       # Catch pinned Windows CUDA asset discovery regressions early on Linux.
       - run: >-
           python -m pytest -q tests/test_llama_cpp_runtime.py

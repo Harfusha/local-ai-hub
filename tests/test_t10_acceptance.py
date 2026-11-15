@@ -1252,6 +1252,11 @@ def test_adaptive_retrieval_skips_optional_backends_when_deadline_is_exhausted(
     class SlowDeterministic:
         @staticmethod
         def related_paths(_root: str, _query: str, *, limit: int) -> list[str]:
+            # Consume the actual 50-ms optional-backend budget instead of
+            # monkeypatching time.perf_counter globally (which also affects
+            # unrelated context/deadline helpers and makes the assertion
+            # dependent on implementation-specific call counts).
+            time.sleep(0.10)
             return ["src/local.py"]
 
     class FakeExternal:
@@ -1275,17 +1280,6 @@ def test_adaptive_retrieval_skips_optional_backends_when_deadline_is_exhausted(
     services.external_tools = FakeExternal()
     services.evidence_store = None
     services.rag = None
-
-    orig_perf = time.perf_counter
-    calls = [0]
-
-    def fake_perf() -> float:
-        calls[0] += 1
-        if calls[0] >= 3:
-            return orig_perf() + 10.0
-        return orig_perf()
-
-    monkeypatch.setattr(time, "perf_counter", fake_perf)
 
     result = services._hybrid_context_uncached(
         str(tmp_path), "find local evidence", workspace=None, max_tokens=400, quality_first=True
