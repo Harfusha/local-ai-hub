@@ -161,6 +161,91 @@ def test_mcp_structural_search_large_repository_file_offset_schema():
     }) is not None
 
 
+
+def test_revision_guard_rejects_inserted_file_between_pages(tmp_path):
+    (tmp_path / "b.php").write_text("<?php function needle() {}\n", encoding="utf-8")
+    (tmp_path / "c.php").write_text("<?php function needle() {}\n", encoding="utf-8")
+    first = _scan(tmp_path, "fn:needle", max_results=1)
+    assert first["success"] is True
+    assert len(first["inventory_revision"]) == 64
+    assert first["has_more"] is True
+
+    second = _scan(
+        tmp_path, "fn:needle", max_results=1,
+        file_offset=first["next_offset"], match_offset=first["next_match_offset"],
+        expected_revision=first["inventory_revision"],
+    )
+    assert second["success"] is True
+    assert second["inventory_revision"] == first["inventory_revision"]
+    assert [item["file"] for item in second["matches"]] == ["c.php"]
+
+    (tmp_path / "a.php").write_text("<?php function needle() {}\n", encoding="utf-8")
+    stale = _scan(
+        tmp_path, "fn:needle", max_results=1,
+        file_offset=first["next_offset"], match_offset=first["next_match_offset"],
+        expected_revision=first["inventory_revision"],
+    )
+    assert (stale["success"], stale["status_code"], stale["error_code"]) == (
+        False, 409, "stale_search_revision",
+    )
+    assert (stale["restart_offset"], stale["restart_match_offset"]) == (0, 0)
+
+
+def test_revision_guard_rejects_rewrite_and_cross_query_reuse(tmp_path):
+    source = tmp_path / "methods.php"
+    source.write_text("<?php\nfunction needle() {}\nfunction needle() {}\n", encoding="utf-8")
+    first = _scan(tmp_path, "fn:needle", max_results=1)
+    token = first["inventory_revision"]
+    assert first["has_more"] is True
+    source.write_text(
+        "<?php\nfunction needle() {}\nfunction needle() {}\nfunction needle() {}\n",
+        encoding="utf-8",
+    )
+    stale = _scan(
+        tmp_path, "fn:needle", max_results=1,
+        file_offset=first["next_offset"], match_offset=first["next_match_offset"],
+        expected_revision=token,
+    )
+    assert (stale["success"], stale["status_code"]) == (False, 409)
+    wrong_query = _scan(tmp_path, "class:needle", expected_revision=token)
+    assert (wrong_query["success"], wrong_query["status_code"]) == (False, 409)
+    malformed = _scan(tmp_path, "fn:needle", expected_revision="not-a-revision")
+    assert (malformed["success"], malformed["status_code"]) == (False, 400)
+
+
+def test_revision_guard_supports_exact_path_and_legacy_numeric_offsets(tmp_path):
+    (tmp_path / "methods.php").write_text(
+        "<?php\nfunction needle() {}\nfunction needle() {}\n", encoding="utf-8",
+    )
+    first = _scan(tmp_path, "fn:needle", path="methods.php", max_results=1)
+    assert first["inventory_revision"]
+    assert first["next_offset"] is None
+    guarded = _scan(
+        tmp_path, "fn:needle", path="methods.php", max_results=1,
+        match_offset=first["next_match_offset"], expected_revision=first["inventory_revision"],
+    )
+    assert guarded["success"] is True
+    assert [item["line"] for item in guarded["matches"]] == [3]
+    legacy = _scan(tmp_path, "fn:needle", path="methods.php", max_results=1, match_offset=1)
+    assert [item["line"] for item in legacy["matches"]] == [3]
+
+
+def test_mcp_expected_revision_is_scoped_to_structural_search():
+    from local_ai_hub.operation_contracts import operation_parameters_schema, validate_operation_arguments
+
+    properties = operation_parameters_schema("local_ai_repo")["properties"]
+    assert properties["expected_revision"]["pattern"] == "^[0-9a-f]{64}$"
+    assert validate_operation_arguments("local_ai_repo", "structural_search", {
+        "root": "/repo", "query": "fn:needle", "expected_revision": "a" * 64,
+    }) is None
+    assert validate_operation_arguments("local_ai_repo", "structural_search", {
+        "root": "/repo", "query": "fn:needle", "expected_revision": "a" * 63,
+    }) is not None
+    assert validate_operation_arguments("local_ai_repo", "search", {
+        "root": "/repo", "query": "needle", "expected_revision": "a" * 64,
+    }) is not None
+
+
 def test_c_family_function_and_class_queries_ignore_multiline_comments_and_strings(tmp_path):
     script = tmp_path / "app.ts"
     script.write_text(
