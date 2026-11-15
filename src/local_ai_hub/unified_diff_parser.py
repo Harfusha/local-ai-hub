@@ -54,9 +54,6 @@ class _DiffParser:
             return True
         if line.startswith("\\ No newline"):
             return True
-        if next_file_header:
-            self.old_remaining = self.new_remaining = 0
-            return False
         self.old_remaining = self.new_remaining = 0
         return False
 

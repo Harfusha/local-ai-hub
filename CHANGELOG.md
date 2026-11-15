@@ -1,5 +1,9 @@
 # Changelog
 
+## 6.1.0 — 2026-11-15
+
+- Restore canonical content for the pinned Superpowers archive and align release metadata with the v6.1 source tag.
+
 ## 6.0.0 — 2026-11-07
 
 - Major version bump to 6.0.0: Versioned runtime state checks; persistent state is preserved.

@@ -268,7 +268,21 @@ class BrowserBridge:
 
     def __init__(self, executable: str | None = None, *, timeout_seconds: float = 20.0,
                  scratch_dir: str | Path | None = None) -> None:
-        self.executable = executable or os.environ.get("LOCAL_AI_CHROME") or shutil.which("chrome") or shutil.which("chrome.exe")
+        self.executable = executable or os.environ.get("LOCAL_AI_CHROME")
+        if not self.executable:
+            for name in ("chrome", "chrome.exe", "chromium", "chromium.exe"):
+                self.executable = shutil.which(name)
+                if self.executable:
+                    break
+        if not self.executable and os.name == "nt":
+            roots = (os.environ.get("ProgramFiles", r"C:\Program Files"),
+                     os.environ.get("ProgramFiles(x86)"), os.environ.get("LOCALAPPDATA"))
+            for root in roots:
+                if root:
+                    candidate = Path(root) / "Google" / "Chrome" / "Application" / "chrome.exe"
+                    if candidate.is_file():
+                        self.executable = str(candidate)
+                        break
         self.timeout_seconds = max(1.0, min(float(timeout_seconds), 60.0))
         self.scratch_dir = scratch_dir
 

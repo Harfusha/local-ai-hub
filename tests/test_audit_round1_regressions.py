@@ -13,6 +13,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from local_ai_hub import __version__
 from local_ai_hub.search_modes import classify_query, prefers_lexical_precision
 
 
@@ -54,12 +55,12 @@ def test_t1_02_owned_model_timeout_includes_bounded_stderr():
 
 
 def test_t1_03_upgrade_contract_consistency(tmp_path: Path):
-    """T1-03 (P0-3): RELEASE.json version is 6.0.0 and state lifecycle requires valid version."""
+    """T1-03 (P0-3): RELEASE.json version matches the package and state lifecycle rejects newer versions."""
     root = Path(__file__).resolve().parent.parent
     release_json = root / "RELEASE.json"
     assert release_json.exists()
     data = json.loads(release_json.read_text(encoding="utf-8"))
-    assert data.get("version") == "6.0.0"
+    assert data.get("version") == __version__
 
     from local_ai_hub.state_lifecycle import ensure_state_version
     tmp_state = tmp_path / "test_state_compat"

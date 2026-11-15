@@ -526,6 +526,13 @@ class AffinityScheduler:
                 continue
             try:
                 value = candidate()
+                if isinstance(value, dict) and value.get("telemetry_stale") is True:
+                    try:
+                        fresh = candidate(force=True)
+                        if isinstance(fresh, dict) and fresh.get("telemetry_stale") is not True:
+                            value = fresh
+                    except TypeError:
+                        pass
             except Exception:
                 continue
             if isinstance(value, dict):

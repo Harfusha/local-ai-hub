@@ -50,6 +50,8 @@ _RUNTIME_BASELINE_METHODS = {
     DecisionCategory.DELEGATION: "pipeline_worker_escalation",
     DecisionCategory.COMPLETION_GAP: "agent_os_completion_gate",
     DecisionCategory.WATCHDOG: "agent_os_task_lifecycle",
+    DecisionCategory.REDUNDANT_STEP: "command_broker_dedup",
+    DecisionCategory.NEXT_STEP: "pipeline_step_progress",
 }
 _MAX_CANDIDATES_PER_EXPORT = 20_000
 _MAX_SPLIT_SHINGLES = 1_000_000
@@ -60,6 +62,24 @@ _DECISION_REVIEW_RUBRIC_VERSION = "laya-decision-review-v1"
 _IDENT = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}\Z")
 _LANG = re.compile(r"[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})*\Z")
 _STATES = {"captured", "pending", "reviewed", "verified", "rejected", "ambiguous", "exported"}
+
+
+@dataclass(frozen=True)
+class _AdhocTaskContext:
+    session_id: str
+    repository_id: str | None = None
+
+    def get(self, key: str, default: Any = None) -> Any:
+        return getattr(self, key, default)
+
+
+class _AdhocTask:
+    def __init__(self, task_id: str, session_id: str, root: str = "") -> None:
+        self.task_id = task_id
+        self.root = root
+        self.context = _AdhocTaskContext(session_id)
+        self.checkpoint = None
+        self.status = "active"
 
 
 @dataclass(frozen=True)
@@ -422,6 +442,10 @@ class LayaCandidateStore:
         for task in task_store.list_tasks(limit=5000):
             if task.task_id == task_id and _task_matches_scope(task, root, None):
                 return task
+        if isinstance(task_id, str) and task_id.startswith("adhoc_") and len(task_id) > 6:
+            session_part = task_id[6:]
+            if _IDENT.fullmatch(session_part):
+                return _AdhocTask(task_id, session_part, root)
         raise ValueError("task_id is outside the authorized repository scope")
 
     @staticmethod
