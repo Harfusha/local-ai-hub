@@ -403,7 +403,14 @@ def search_structurally(
                     break
                 raw_line = line.strip()
                 declaration_line = declaration_lines[idx - 1].strip()
-                if not raw_line or raw_line.startswith(("//", "#", "/*", "*")):
+                if not raw_line:
+                    continue
+                if declaration_lines is not lines:
+                    # A declaration may follow a closed block comment on the
+                    # same line; only skip lines with no remaining code.
+                    if not declaration_line:
+                        continue
+                elif raw_line.startswith(("//", "#", "/*", "*")):
                     continue
                 matched = False
                 desc = ""
