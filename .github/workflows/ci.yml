@@ -74,6 +74,7 @@ jobs:
           tests/test_http_debug_trace_toggle.py
           tests/test_async_job_http_status_mapping.py
           tests/test_audit_acceptance_truth.py
+          tests/test_http_scoped_tasks.py
 
   platform-smoke:
     timeout-minutes: 90
@@ -124,6 +125,7 @@ jobs:
         if: ${{ env.RUN_FULL_SUITE != 'true' }}
         run: >-
           python -m coverage run -m pytest -q -ra -p tools.ci_diagnostics
+          --junitxml=${{ runner.temp }}/platform-smoke-junit.xml
           tests/test_process_utils.py
           tests/test_process_utils_timeout_cleanup.py
           tests/test_process_group_identity_guard.py
@@ -163,6 +165,13 @@ jobs:
           tests/test_scheduler_status_external_reservation.py
           tests/test_command_rollback.py::test_rollback_snapshot_and_restore_accept_nested_paths
           tests/test_command_rollback.py::test_command_rollback_preserves_filesystem_security_metadata
+      - name: Preserve per-platform test outcomes
+        if: ${{ always() && env.RUN_FULL_SUITE != 'true' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: junit-platform-smoke-${{ matrix.os }}-py${{ matrix.python-version }}
+          path: ${{ runner.temp }}/platform-smoke-junit.xml
+          if-no-files-found: warn
       - name: Export measured branch coverage
         if: ${{ always() && env.RUN_FULL_SUITE != 'true' }}
         run: python -m coverage json -o "${{ runner.temp }}/coverage.json"
@@ -221,7 +230,14 @@ jobs:
           python -m pip install -e ".[dev]"
       - name: Run full integration suite
         if: ${{ env.RUN_FULL_SUITE == 'true' }}
-        run: python -m coverage run -m pytest -ra -p tools.ci_diagnostics
+        run: python -m coverage run -m pytest -ra -p tools.ci_diagnostics --junitxml=${{ runner.temp }}/integration-junit.xml
+      - name: Preserve full-integration test outcomes
+        if: ${{ always() && env.RUN_FULL_SUITE == 'true' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: junit-integration-${{ matrix.os }}-py${{ matrix.python-version }}
+          path: ${{ runner.temp }}/integration-junit.xml
+          if-no-files-found: warn
       - name: Export integration coverage
         if: ${{ always() && env.RUN_FULL_SUITE == 'true' }}
         run: python -m coverage json -o "${{ runner.temp }}/integration-coverage.json"
@@ -253,6 +269,7 @@ jobs:
       - name: Run fixed critical regression cohort
         run: >-
           python -m coverage run -m pytest -q
+          --junitxml=${{ runner.temp }}/critical-junit.xml
           tests/test_audit_remediation.py
           tests/test_audit_protocol_remediation.py
           tests/test_audit_transport_remediation.py
@@ -313,6 +330,13 @@ jobs:
           tests/unit/test_rollback_quarantine_identity.py
           tests/unit/test_quality_floor_threshold_validation.py
           tests/unit/test_prompt_contracts_hardening_wave18.py
+      - name: Preserve critical test outcomes
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: junit-critical-coverage-windows-py3.13
+          path: ${{ runner.temp }}/critical-junit.xml
+          if-no-files-found: warn
       - run: python -m coverage json -o "${{ runner.temp }}/critical-coverage.json"
       - name: Reject per-module branch coverage regression
         run: python tools/check_critical_coverage.py "${{ runner.temp }}/critical-coverage.json" --baseline tools/critical-coverage-win32-py3.13.json
