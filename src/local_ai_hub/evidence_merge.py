@@ -121,7 +121,9 @@ def _read_verified_source(root: Path, relative: str) -> bytes:
     if len(data) > MAX_FILE_BYTES:
         raise ValueError("file_too_large")
     now = path.stat(follow_symlinks=False)
-    identity = lambda item: (item.st_dev, item.st_ino, item.st_size, item.st_mtime_ns)
+    def identity(item: os.stat_result) -> tuple[int, int, int, int]:
+        return (item.st_dev, item.st_ino, item.st_size, item.st_mtime_ns)
+
     if identity(before) != identity(opened) or identity(opened) != identity(after) or identity(after) != identity(now):
         raise PermissionError("evidence file changed during read")
     if path.resolve(strict=True) != resolved:
