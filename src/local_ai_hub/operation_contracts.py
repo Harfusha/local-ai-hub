@@ -664,6 +664,7 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
             "days": {"type": "integer", "minimum": 1, "maximum": 3650, "default": 30},
             "depth": {"type": "integer", "minimum": 1, "maximum": 5, "default": 1},
             "offset": {"type": "integer", "minimum": 0, "maximum": MAX_PAGE_WINDOW - 1, "default": 0},
+            "match_offset": {"type": "integer", "minimum": 0, "maximum": 100_000, "default": 0},
             "include_diagnostics": {"type": "boolean", "default": False},
             **{name: {"type": "string", "default": ""} for name in (
                 "clone_id", "worktree_id", "branch", "repository_id", "session_id", "repository_revision",

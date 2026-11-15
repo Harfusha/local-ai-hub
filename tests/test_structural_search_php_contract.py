@@ -127,3 +127,18 @@ def test_mcp_structural_search_cursor_contract():
     assert validate_operation_arguments("local_ai_repo", "structural_search", {
         "root": "/repo", "query": "fn:needle", "offset": 400, "match_offset": 2,
     }) is None
+
+
+def test_mcp_structural_search_match_offset_is_in_public_schema():
+    from local_ai_hub.operation_contracts import operation_parameters_schema, validate_operation_arguments
+
+    properties = operation_parameters_schema("local_ai_repo")["properties"]
+    assert properties["match_offset"]["type"] == "integer"
+    assert properties["match_offset"]["minimum"] == 0
+    assert properties["match_offset"]["maximum"] == 100_000
+    assert validate_operation_arguments("local_ai_repo", "structural_search", {
+        "root": "/repo", "query": "fn:needle", "offset": 0, "match_offset": -1,
+    }) is not None
+    assert validate_operation_arguments("local_ai_repo", "search", {
+        "root": "/repo", "query": "needle", "match_offset": 1,
+    }) is not None
