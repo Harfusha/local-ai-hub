@@ -69,3 +69,61 @@ def test_invalid_file_offset_fails_closed(tmp_path):
         assert result["success"] is False
         assert result["status_code"] == 400
     assert _scan(tmp_path, "fn:visible", path="a.php", file_offset=1)["status_code"] == 400
+
+
+def test_result_page_can_resume_within_single_php_file(tmp_path):
+    source = tmp_path / "functions.php"
+    source.write_text("<?php\n" + "".join("function needle() {}\n" for _ in range(11)), encoding="utf-8")
+    offset = 0
+    collected = []
+    for _ in range(5):
+        page = _scan(tmp_path, "fn:needle", max_results=3, match_offset=offset)
+        collected.extend(item["line"] for item in page["matches"])
+        if not page["has_more"]:
+            assert page["complete"] is True
+            break
+        assert page["next_offset"] == 0
+        assert "result_limit" in page["truncation_reasons"]
+        offset = page["next_match_offset"]
+    assert collected == list(range(2, 13))
+
+
+def test_result_page_resumes_in_second_file_without_missing_matches(tmp_path):
+    (tmp_path / "a.php").write_text("<?php function needle() {}\n", encoding="utf-8")
+    (tmp_path / "b.php").write_text("<?php\n" + "function needle() {}\n" * 5, encoding="utf-8")
+    (tmp_path / "c.php").write_text("<?php function needle() {}\n", encoding="utf-8")
+    collected = []
+    file_offset = match_offset = 0
+    for _ in range(10):
+        page = _scan(tmp_path, "fn:needle", max_results=2, file_offset=file_offset, match_offset=match_offset)
+        collected.extend((item["file"], item["line"]) for item in page["matches"])
+        if not page["has_more"]:
+            break
+        file_offset, match_offset = page["next_offset"], page["next_match_offset"]
+    assert collected == [("a.php", 1)] + [("b.php", i) for i in range(2, 7)] + [("c.php", 1)]
+
+
+def test_exact_php_path_matches_can_be_paged(tmp_path):
+    (tmp_path / "a.php").write_text("<?php\n" + "function needle() {}\n" * 5, encoding="utf-8")
+    first = _scan(tmp_path, "fn:needle", path="a.php", max_results=2)
+    assert first["has_more"] is True
+    assert first["next_offset"] is None
+    assert first["next_match_offset"] == 2
+    second = _scan(tmp_path, "fn:needle", path="a.php", max_results=2, match_offset=first["next_match_offset"])
+    assert [item["line"] for item in second["matches"]] == [4, 5]
+
+
+def test_structural_search_bounded_result_and_match_offsets(tmp_path):
+    (tmp_path / "a.php").write_text("<?php function needle() {}\n", encoding="utf-8")
+    for kwargs in ({"max_results": 0}, {"max_results": True}, {"max_results": 1001}, {"max_results": "4"},
+                   {"match_offset": -1}, {"match_offset": True}, {"match_offset": "1"}, {"match_offset": 100001}):
+        response = _scan(tmp_path, "fn:needle", **kwargs)
+        assert response["success"] is False
+        assert response["status_code"] == 400
+
+
+def test_mcp_structural_search_cursor_contract():
+    from local_ai_hub.operation_contracts import validate_operation_arguments
+    assert validate_operation_arguments("local_ai_repo", "structural_search", {
+        "root": "/repo", "query": "fn:needle", "offset": 400, "match_offset": 2,
+    }) is None

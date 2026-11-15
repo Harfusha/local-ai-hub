@@ -4321,6 +4321,7 @@ def test_{sym}_regression_edge_cases():
         path: str | None = None,
         max_results: int = 30,
         file_offset: int = 0,
+        match_offset: int = 0,
     ) -> dict[str, Any]:
         """Syntax-aware structural code search across Python and multi-language repositories."""
         return search_structurally(
@@ -4329,6 +4330,7 @@ def test_{sym}_regression_edge_cases():
             path=path,
             max_results=max_results,
             file_offset=file_offset,
+            match_offset=match_offset,
             is_symlink_or_reparse_point=_is_symlink_or_reparse_point,
         )
 

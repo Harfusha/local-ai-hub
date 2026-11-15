@@ -22,6 +22,7 @@ def search_structurally(
     *,
     is_symlink_or_reparse_point: Callable[[Path], bool],
     file_offset: int = 0,
+    match_offset: int = 0,
 ) -> dict[str, Any]:
     """Syntax-aware structural code search across Python and multi-language repositories."""
     canon_root = canonical_root(root)
@@ -37,13 +38,30 @@ def search_structurally(
         return {"success": False, "status_code": 400, "error": "file_offset must be an integer between 0 and 100000"}
     if path and file_offset:
         return {"success": False, "status_code": 400, "error": "file_offset cannot be combined with an exact path"}
-    output_limit = max(0, int(max_results))
+    if type(match_offset) is not int or not 0 <= match_offset <= 100_000:
+        return {"success": False, "status_code": 400, "error": "match_offset must be an integer between 0 and 100000"}
+    if type(max_results) is not int or not 1 <= max_results <= 1000:
+        return {"success": False, "status_code": 400, "error": "max_results must be an integer between 1 and 1000"}
+    output_limit = max_results
     result_probe_limit = output_limit + 1
     file_limit = 400
     results: list[dict[str, Any]] = []
     read_errors = 0
     parse_errors = 0
     ignore_dirs = {".git", "node_modules", "vendor", "__pycache__", ".venv", "venv", "dist", "build"}
+
+    file_index = -1
+    file_match_count = 0
+    first_file_seen = 0
+
+    def emit(result: dict[str, Any]) -> None:
+        nonlocal file_match_count, first_file_seen
+        file_match_count += 1
+        if file_index == 0:
+            first_file_seen += 1
+            if first_file_seen <= match_offset:
+                return
+        results.append(result)
 
     def authorized_path(candidate: Path) -> Path:
         relative = candidate.relative_to(root_path)
@@ -104,10 +122,11 @@ def search_structurally(
         file_limit_reached = False
 
     files_scanned = 0
-    for fpath in files_to_scan:
+    for file_index, fpath in enumerate(files_to_scan):
         if len(results) >= result_probe_limit:
             break
         files_scanned += 1
+        file_match_count = 0
         try:
             rel_p = str(fpath.relative_to(root_path)).replace("\\", "/")
             checked = authorized_path(fpath)
@@ -157,7 +176,7 @@ def search_structurally(
                         kinds = (ast.ClassDef,) if prefix == "class" else (ast.FunctionDef, ast.AsyncFunctionDef)
                         if isinstance(node, kinds) and node.name.lower() == name:
                             label = "class" if prefix == "class" else "function"
-                            results.append({
+                            emit({
                                 "file": rel_p,
                                 "line": node.lineno,
                                 "structure": f"{label}:{name}",
@@ -171,7 +190,7 @@ def search_structurally(
                                     break
                                 if handler.type is None:
                                     snip = lines[handler.lineno - 1].strip() if handler.lineno <= len(lines) else ""
-                                    results.append({
+                                    emit({
                                         "file": rel_p,
                                         "line": handler.lineno,
                                         "structure": "bare_except",
@@ -181,7 +200,7 @@ def search_structurally(
                                 elif isinstance(handler.type, ast.Name) and handler.type.id in {"Exception", "BaseException"}:
                                     if len(handler.body) == 1 and isinstance(handler.body[0], ast.Pass):
                                         snip = lines[handler.lineno - 1].strip() if handler.lineno <= len(lines) else ""
-                                        results.append({
+                                        emit({
                                             "file": rel_p,
                                             "line": handler.lineno,
                                             "structure": "silent_except_pass",
@@ -193,7 +212,7 @@ def search_structurally(
                         if isinstance(node, ast.Assign):
                             if isinstance(node.value, ast.Call) and isinstance(node.value.func, ast.Name) and node.value.func.id == "open":
                                 snip = lines[node.lineno - 1].strip() if node.lineno <= len(lines) else ""
-                                results.append({
+                                emit({
                                     "file": rel_p,
                                     "line": node.lineno,
                                     "structure": "open_without_with",
@@ -206,7 +225,7 @@ def search_structurally(
                             has_await = any(isinstance(child, (ast.Await, ast.AsyncWith, ast.AsyncFor)) for child in ast.walk(node))
                             if not has_await:
                                 snip = lines[node.lineno - 1].strip() if node.lineno <= len(lines) else ""
-                                results.append({
+                                emit({
                                     "file": rel_p,
                                     "line": node.lineno,
                                     "structure": "async_without_await",
@@ -230,7 +249,7 @@ def search_structurally(
                                         dec_id = dec.func.attr
                                 if dec_target.lower() in dec_id.lower():
                                     snip = lines[node.lineno - 1].strip() if node.lineno <= len(lines) else ""
-                                    results.append({
+                                    emit({
                                         "file": rel_p,
                                         "line": node.lineno,
                                         "structure": f"decorator:{dec_id}",
@@ -250,7 +269,7 @@ def search_structurally(
                                     base_id = base.attr
                                 if sub_target.lower() in base_id.lower():
                                     snip = lines[node.lineno - 1].strip() if node.lineno <= len(lines) else ""
-                                    results.append({
+                                    emit({
                                         "file": rel_p,
                                         "line": node.lineno,
                                         "structure": f"subclass:{base_id}",
@@ -269,7 +288,7 @@ def search_structurally(
                                 call_id = node.func.attr
                             if fn_target.lower() in call_id.lower():
                                 snip = lines[node.lineno - 1].strip() if node.lineno <= len(lines) else ""
-                                results.append({
+                                emit({
                                     "file": rel_p,
                                     "line": node.lineno,
                                     "structure": f"call:{call_id}",
@@ -280,7 +299,7 @@ def search_structurally(
                 parse_errors += 1
                 parse_failed = True
 
-        if (parse_failed or len(results) == file_result_start or fpath.suffix != ".py") and not (
+        if (parse_failed or file_match_count == 0 or fpath.suffix != ".py") and not (
             fpath.suffix == ".py" and target_pattern.startswith(("fn:", "function:", "class:"))
         ):
             for idx, line in enumerate(lines, 1):
@@ -361,7 +380,7 @@ def search_structurally(
                     desc = f"Pattern match for '{target_pattern}'"
 
                 if matched:
-                    results.append({
+                    emit({
                         "file": rel_p,
                         "line": idx,
                         "structure": struct_type,
@@ -370,10 +389,27 @@ def search_structurally(
                     })
 
     returned_matches = results[:output_limit]
+    overflow = len(results) > output_limit
+    next_offset: int | None = None
+    next_match_offset: int | None = None
+    if overflow:
+        # The probe result belongs to the current file. Resuming at the next
+        # file would silently lose the remaining matches in this one.
+        returned_in_current_file = max(0, output_limit - file_result_start)
+        next_offset = file_offset + files_scanned - 1 if not path else None
+        next_match_offset = (
+            (match_offset if files_scanned == 1 else 0) + returned_in_current_file
+        )
+    elif not path and (file_limit_reached or files_scanned < len(files_to_scan)):
+        next_offset = file_offset + files_scanned
+        next_match_offset = 0
+    if next_offset is not None and next_offset > 100_000:
+        next_offset = None
+        next_match_offset = None
     truncation_reasons: list[str] = []
     if file_limit_reached:
         truncation_reasons.append("file_limit")
-    if len(results) > output_limit:
+    if overflow:
         truncation_reasons.append("result_limit")
     if read_errors:
         truncation_reasons.append("read_errors")
@@ -388,10 +424,12 @@ def search_structurally(
         "files_scanned": files_scanned,
         "truncated": bool(truncation_reasons),
         "complete": not truncation_reasons,
-        "has_more": file_limit_reached or len(results) > output_limit or files_scanned < len(files_to_scan),
+        "has_more": file_limit_reached or overflow or files_scanned < len(files_to_scan),
         "file_offset": file_offset,
-        "next_offset": file_offset + files_scanned if not path and (file_limit_reached or files_scanned < len(files_to_scan)) else None,
-        "pagination": "file_offset; unstable if repository files change between requests",
+        "match_offset": match_offset,
+        "next_offset": next_offset,
+        "next_match_offset": next_match_offset,
+        "pagination": "file_offset + match_offset; unstable if repository files change between requests",
         "file_limit": file_limit,
         "unscanned_file_count": None if file_limit_reached else 0,
         "truncation_reasons": truncation_reasons,

@@ -5803,12 +5803,12 @@ class LocalAIServices:
     def package_audit(self, root: str, lockfile_path: str | None = None) -> dict[str, Any]:
         return self.deterministic_operation("package-audit", root, {"lockfile": lockfile_path}, lambda: self.deterministic.package_audit(root, lockfile_path))
 
-    def structural_search(self, root: str, pattern: str, path: str | None = None, max_results: int = 30, *, file_offset: int = 0) -> dict[str, Any]:
+    def structural_search(self, root: str, pattern: str, path: str | None = None, max_results: int = 30, *, file_offset: int = 0, match_offset: int = 0) -> dict[str, Any]:
         return self.deterministic_operation(
             "structural-search", root,
-            {"pattern": pattern, "path": path, "max_results": max_results, "file_offset": file_offset},
+            {"pattern": pattern, "path": path, "max_results": max_results, "file_offset": file_offset, "match_offset": match_offset},
             lambda: self.deterministic.structural_search(
-                root, pattern, path=path, max_results=max_results, file_offset=file_offset,
+                root, pattern, path=path, max_results=max_results, file_offset=file_offset, match_offset=match_offset,
             ),
         )
 
