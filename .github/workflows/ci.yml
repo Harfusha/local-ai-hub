@@ -87,6 +87,13 @@ jobs:
           tests/test_http_scoped_tasks.py
           tests/test_companion_skill_installation.py
           tests/test_ci_event_policy.py
+          tests/test_release_contract.py::test_no_personal_paths_or_runtime_payloads_in_tracked_release_sources
+      # Catch pinned Windows CUDA asset discovery regressions early on Linux.
+      - run: >-
+          python -m pytest -q tests/test_llama_cpp_runtime.py
+          -k "custom_managed_model_requires_matching_existing_file
+          or custom_model_refuses_symlink or explicit_cuda_provision
+          or cuda_provision_omits_cpu_variants or managed_server_discovery"
 
   platform-smoke:
     timeout-minutes: 90

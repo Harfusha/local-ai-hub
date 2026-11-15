@@ -145,3 +145,11 @@ Změny níže jsou **skutečně commitnuté do PR #8**, nikoliv jen návrhy. Jde
 - [`f5b8609c`](https://github.com/Harfusha/local-ai-hub/commit/f5b8609c7d118983c89520c808520e04dd94edb1): `match_offset` doplněn do veřejného action-aware MCP JSON schema; ostatní akce tento parametr nesmějí přijímat.
 - [`5173ec1f`](https://github.com/Harfusha/local-ai-hub/commit/5173ec1fb1806a7d2b51b865fe609bf73965f0d5): samostatný `file_offset` 0–100000 pro MCP velké repozitáře bez zvětšení limitu běžného `offset` u ostatních akcí.
 - Předčasné `CI GREEN` nebo `release-ready` tvrzení je nepřípustné. Závěrečná akceptace vyžaduje exact-SHA CI a nové JUnit + packaging receipts.
+
+## 9. Pokračování 2026-11-15: release privacy a managed llama.cpp
+
+- [`9f65a234`](https://github.com/Harfusha/local-ai-hub/commit/9f65a234779c3d7347b00f6530f1646c6a7f9492): odstranění konkrétní osobní Windows cesty v `docs/FINAL_COMPLETION_PLAN.md`. Původní cesta byla doložena ve starším release privacy selhání.
+- [`0f5bd52d`](https://github.com/Harfusha/local-ai-hub/commit/0f5bd52d8311cf566225c623dd40abd848009a92): `_find_server` vybírá `llama-server(.exe)` podle `_host_platform()` (cílový pinovaný balíček), ne podle `os.name` CI runneru. Odmítá symlinkovaný executable; aktualizované runtime fixture pro host OS.
+- [`eb7d8b19`](https://github.com/Harfusha/local-ai-hub/commit/eb7d8b193f868b2d1fe176ad4f01bad2eb0f0356): oprava pořadí `from __future__` v runtime testu.
+- [`a8ca62f5`](https://github.com/Harfusha/local-ai-hub/commit/a8ca62f5d57bd1d544a75e209a5b04af40fa2bf1): izolované mockování symlinku výhradně u modelu; nedotýká se validního executable.
+- Starý CI run `43726782408` selhal v Python 3.14 na 35 testech a 12 platform-smoke jobech s dirty-tree detekcí; jeho výsledky se **nesmějí** zaměňovat za výsledky nové větve. Poslední aktuální run je ve frontě. Nové regression smoke testy a tracked-source privacy test jsou přidány do `fast-contract`. Je nutné získat zelené exact-SHA JUnit a distribuční packaging evidence, než PR opustí draft.
