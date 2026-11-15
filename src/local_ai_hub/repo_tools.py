@@ -3233,6 +3233,18 @@ class RepositoryTools:
                 if project_candidates is not None
                 else self.iter_files(str(base), max_files=self.python_fallback_max_files + 1)
             )
+            if expanded_terms:
+                # Bounded Python fallback has no ripgrep ranking stage. Visit a
+                # filename matching a precise expanded term before the generic
+                # inventory prefix; otherwise the first repetitive lines can
+                # exhaust its candidate budget before that file is examined.
+                fallback_paths = sorted(
+                    fallback_paths,
+                    key=lambda p: (
+                        p.stem.casefold() not in expanded_terms,
+                        p.as_posix().casefold(),
+                    ),
+                )
             fallback_jobs: list[tuple[str, Path]] = []
             for path in fallback_paths:
                 if python_fallback_scanned >= self.python_fallback_max_files:
@@ -3251,6 +3263,11 @@ class RepositoryTools:
                 if error is not None:
                     read_errors += 1
                     continue
+                full_precision_file = (
+                    bool(expanded_terms)
+                    and len(lines) <= 4096
+                    and Path(rel).stem.casefold() in expanded_terms
+                )
                 for idx, line in enumerate(lines):
                     low = line.lower()
                     matched = [t for t in terms if t in low]
@@ -3261,6 +3278,13 @@ class RepositoryTools:
                     if phrase and len(phrase) <= 120 and phrase in low:
                         score += 8
                     score += sum(min(low.count(t), 3) * 0.5 for t in matched)
+                    if expanded_terms:
+                        stem = Path(rel).stem.casefold()
+                        score += min(40.0, 20.0 * sum(1 for term in expanded_terms if term in stem))
+                        score += max((
+                            min(3.0, len(term) / 5.0)
+                            for term in matched if term in expanded_terms
+                        ), default=0.0)
                     if installation_intent_priority:
                         score += _intent_path_adjustment(query, rel)
                     start = max(0, idx - effective_snippet_lines)
@@ -3271,10 +3295,18 @@ class RepositoryTools:
                         "score": round(score, 3), "text": snippet, "file_sha256": file_hash,
                     })
                     if len(hits) > candidate_limit:
-                        hits.pop()
+                        if full_precision_file:
+                            # Rank all lines in only this small, query-named
+                            # file before selecting its best evidence, while
+                            # keeping the candidate list strictly bounded.
+                            hits.sort(key=lambda x: (-x["score"], x["path"], x["start_line"]))
+                            del hits[candidate_limit:]
+                        else:
+                            hits.pop()
                         if "result_limit" not in truncation_reasons:
                             truncation_reasons.append("result_limit")
-                        break
+                        if not full_precision_file:
+                            break
                 if "result_limit" in truncation_reasons:
                     break
         hits.sort(key=lambda x: (-x["score"], x["path"], x["start_line"]))
