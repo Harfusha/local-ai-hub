@@ -142,3 +142,20 @@ def test_mcp_structural_search_match_offset_is_in_public_schema():
     assert validate_operation_arguments("local_ai_repo", "search", {
         "root": "/repo", "query": "needle", "match_offset": 1,
     }) is not None
+
+
+def test_mcp_structural_search_large_repository_file_offset_schema():
+    from local_ai_hub.operation_contracts import operation_parameters_schema, validate_operation_arguments
+
+    properties = operation_parameters_schema("local_ai_repo")["properties"]
+    assert properties["file_offset"]["maximum"] == 100_000
+    assert properties["offset"]["maximum"] < properties["file_offset"]["maximum"]
+    assert validate_operation_arguments("local_ai_repo", "structural_search", {
+        "root": "/repo", "query": "fn:needle", "file_offset": 8000, "match_offset": 3,
+    }) is None
+    assert validate_operation_arguments("local_ai_repo", "structural_search", {
+        "root": "/repo", "query": "fn:needle", "file_offset": -1,
+    }) is not None
+    assert validate_operation_arguments("local_ai_repo", "search", {
+        "root": "/repo", "query": "needle", "file_offset": 8000,
+    }) is not None
