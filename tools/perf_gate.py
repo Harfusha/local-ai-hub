@@ -15,12 +15,11 @@ docs/PERFORMANCE_REGRESSION_BUDGET.md.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import platform
-import subprocess
-import sys
-import json
 import sqlite3
+import subprocess
 import sys
 import threading
 import time
