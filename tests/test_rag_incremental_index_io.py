@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from contextlib import closing
 import re
+import sqlite3
 
 from local_ai_hub import async_jobs as async_jobs_module
 from local_ai_hub import rag as rag_module
@@ -391,6 +392,107 @@ def test_incremental_rag_never_embeds_an_in_root_symlink(tmp_path):
     assert result["processed_paths"] == []
     assert "alias.md" in result["read_uncertain_paths"]
     assert backend.calls == 0
+
+
+
+def test_sqlite_timeout_after_delete_preserves_previous_rag_snapshot(tmp_path, monkeypatch):
+    root = tmp_path / "repo"
+    root.mkdir()
+    guide = root / "guide.md"
+    guide.write_text("previous indexed document\n", encoding="utf-8")
+    store = RAGStore(
+        {"server": {"state_dir": str(tmp_path / "state")},
+         "models": {"embedding": "test-embedding", "embedding_dimension": 3},
+         "rag": {"dedup_near_duplicates": False}},
+        services=_EmbeddingStub(),
+    )
+    ws = store.workspace_id(str(root))
+    assert store.index_paths_step(str(root), workspace=ws, paths=["guide.md"])["success"]
+
+    def snapshot():
+        with closing(store._connect()) as con:
+            return {
+                "files": [tuple(row) for row in con.execute(
+                    "SELECT path,content_hash FROM files WHERE workspace=? ORDER BY path", (ws,),
+                ).fetchall()],
+                "chunks": [tuple(row) for row in con.execute(
+                    "SELECT path,chunk_no,text FROM chunks WHERE workspace=? ORDER BY path,chunk_no", (ws,),
+                ).fetchall()],
+            }
+
+    previous = snapshot()
+    guide.write_text("updated document for publication\n", encoding="utf-8")
+    original_check = rag_module._check_rag_publish_budget
+
+    def fail_after_delete(*, started_at, stage, budget_seconds):
+        if stage == "delete_old_rows":
+            raise TimeoutError("simulated publish timeout after deleting original chunks")
+        return original_check(
+            started_at=started_at, stage=stage, budget_seconds=budget_seconds,
+        )
+
+    monkeypatch.setattr(rag_module, "_check_rag_publish_budget", fail_after_delete)
+    rejected = store.index_paths_step(str(root), workspace=ws, paths=["guide.md"])
+    assert rejected["success"] is False
+    assert rejected["error"] == "publish_failed"
+    assert rejected["retryable"] is False
+    assert "simulated publish timeout" in rejected["error_detail"]
+    assert snapshot() == previous
+
+    monkeypatch.setattr(rag_module, "_check_rag_publish_budget", original_check)
+    recovered = store.index_paths_step(str(root), workspace=ws, paths=["guide.md"])
+    assert recovered["success"] is True
+    assert snapshot() != previous
+    assert "updated document for publication" in str(snapshot()["chunks"])
+
+
+def test_transient_sqlite_busy_retries_publish_without_reembedding(tmp_path, monkeypatch):
+    root = tmp_path / "repo"
+    root.mkdir()
+    guide = root / "guide.md"
+    guide.write_text("original version\n", encoding="utf-8")
+
+    class CountingEmbedding(_EmbeddingStub):
+        calls = 0
+
+        def embed(self, texts, **kwargs):
+            self.calls += 1
+            return super().embed(texts, **kwargs)
+
+    backend = CountingEmbedding()
+    store = RAGStore(
+        {"server": {"state_dir": str(tmp_path / "state")},
+         "models": {"embedding": "test-embedding", "embedding_dimension": 3},
+         "rag": {"dedup_near_duplicates": False}},
+        services=backend,
+    )
+    ws = store.workspace_id(str(root))
+    assert store.index_paths_step(str(root), workspace=ws, paths=["guide.md"])["success"]
+    prior_calls = backend.calls
+    guide.write_text("replacement after lock\n", encoding="utf-8")
+
+    original_check = rag_module._check_rag_publish_budget
+    injected = {"count": 0}
+
+    def transient_busy(*, started_at, stage, budget_seconds):
+        if stage == "delete_old_rows" and injected["count"] == 0:
+            injected["count"] += 1
+            raise sqlite3.OperationalError("database is locked")
+        return original_check(
+            started_at=started_at, stage=stage, budget_seconds=budget_seconds,
+        )
+
+    monkeypatch.setattr(rag_module, "_check_rag_publish_budget", transient_busy)
+    result = store.index_paths_step(str(root), workspace=ws, paths=["guide.md"])
+    assert result["success"] is True
+    assert injected["count"] == 1
+    assert backend.calls == prior_calls + 1
+    with closing(store._connect()) as con:
+        chunks = con.execute(
+            "SELECT text FROM chunks WHERE workspace=? AND path=? ORDER BY chunk_no",
+            (ws, "guide.md"),
+        ).fetchall()
+    assert "replacement after lock" in " ".join(str(row[0]) for row in chunks)
 
 
 def test_changed_file_rejects_stale_content_override_at_index_boundary(tmp_path):

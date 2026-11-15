@@ -162,3 +162,14 @@ Změny níže jsou **skutečně commitnuté do PR #8**, nikoliv jen návrhy. Jde
 - Následný commit přidává regresní případy pro PHP namespaced/multiline deklarace a zakazuje falešné výsledky typu `fn:...` nebo `class:...` pocházející pouze z textového řetězce či komentáře.
 - **Pozor:** žádný zde vyjmenovaný commit sám neznamená PASS finálního SHA; před merge a release ověř nejnovější GitHub Actions run včetně `integration (ubuntu-latest, 3.14)`, `critical-coverage` a `package`. Potvrzení modelů, GPU, browseru a host CLI vyžaduje externí akceptaci.
 - **Nedokončeno:** cursor/revision guard pro strukturální vyhledávání mezi změnami stromu souborů a kompletní AST parser PHP; číselný file/match offset je nadále nestabilní při změnách repozitáře.
+
+## 11. Continuation — RAG source races, no-follow reads and transactional fault injection
+
+Repo state is read from the live PR #8 branch; the commit hash in the original document heading is historical and must not be taken as current HEAD.
+
+- Post-embedding publication now compares bounded live source content and file identity for full and incremental RAG indexing. A mismatch rejects publication with retryable \`source_changed_before_publish\` and preserves the existing committed chunks.
+- Pre-embedding file reads use \`os.open\` with \`O_NOFOLLOW\` where supported, verify path components against symlinks/reparse points, compare pre/open/post file identity, and reject escaped paths. Incremental code intentionally preserves the source path before validation instead of hiding a symlink through \`resolve()\`.
+- Regression tests cover in-embedding edits, symlink swaps, aliased paths, wrong opened file descriptors, and publication failures. \`tests/test_rag_incremental_index_io.py\` is part of fast-contract CI.
+- Fault injection now checks that a simulated SQLite timeout after deleting rows **rolls the transaction back** to the previous snapshot, and that one transient \`database is locked\` event retries the publish without rerunning embeddings.
+- **Remaining concurrency boundary:** these are best-effort identity checks around the embedding/publish boundary, *not* a filesystem snapshot pinned across arbitrary concurrent edits. SQLite atomicity covers persisted rows; external filesystem mutation after the final check can still race. Do not claim stronger consistency.
+- **Remaining:** verify *exact-HEAD* CI including full Ubuntu/Python 3.14 integration, all platform-smoke combinations, Windows critical-coverage and the installed wheel/package job. Browser, local GPU, live Codex/Antigravity handshake and model retrieval remain external acceptance blockers.
