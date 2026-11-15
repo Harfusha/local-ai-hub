@@ -151,3 +151,19 @@ def test_loopback_authorization_is_tokenless(monkeypatch, method):
     assert handler._authorized(action="files:read", permission="read") is True
     assert handler._authorization_actor == "local"
     assert handler._authorization_permissions == frozenset()
+
+
+
+def test_explicit_empty_allowed_roots_denies_every_path(tmp_path):
+    root = tmp_path / "repo"
+    root.mkdir()
+    with pytest.raises(RepositoryScopeError) as caught:
+        authorized_repository_root({"security": {"allowed_roots": []}}, str(root))
+    assert caught.value.code == "root_not_allowed"
+    assert caught.value.status_code == 403
+
+
+def test_absent_allowlist_retains_local_owner_policy(tmp_path):
+    root = tmp_path / "repo"
+    root.mkdir()
+    assert authorized_repository_root({"security": {}}, str(root)) == str(root.resolve())
