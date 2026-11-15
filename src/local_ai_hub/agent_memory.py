@@ -1240,18 +1240,45 @@ class MemoryStore:
             published_events: list[AgentEvent] = []
             stale_count = 0
             try:
-                con.create_function(
-                    "canonical_scope_root",
-                    1,
-                    lambda value: _normalise_scope_root(str(value)) if value else "",
-                )
-                con.create_function(
-                    "canonical_repo_path",
-                    2,
-                    lambda value, repo_root: (
-                        self._canonical_repo_path(str(repo_root), str(value)) if value is not None else ""
-                    ),
-                )
+                # SQLite evaluates these UDFs for every candidate row.
+                # Repository roots often repeat across hundreds of thousands
+                # of records; do not normalize the same root on every row.
+                scope_roots: dict[str, str] = {}
+
+                def canonical_scope_root_cached(value: Any) -> str:
+                    if not value:
+                        return ""
+                    key = str(value)
+                    cached = scope_roots.get(key)
+                    if cached is not None:
+                        return cached
+                    normalized = _normalise_scope_root(key)
+                    if len(scope_roots) >= 64:
+                        scope_roots.clear()
+                    scope_roots[key] = normalized
+                    return normalized
+
+                def canonical_repo_path_fast(value: Any, repo_root: Any) -> str:
+                    if value is None:
+                        return ""
+                    raw = str(value).replace("\\", "/")
+                    # The common case is already a normalized relative path.
+                    # Avoid abspath/normpath/relpath and root normalization for
+                    # every row. All other inputs must use the canonical path
+                    # resolver so traversal, absolute paths and Windows drives
+                    # preserve existing matching semantics.
+                    if (
+                        raw
+                        and not raw.startswith("/")
+                        and ":" not in raw
+                        and all(part not in {"", ".", ".."} for part in raw.split("/"))
+                        and not os.path.isabs(raw)
+                    ):
+                        return os.path.normcase(raw).replace("\\", "/")
+                    return self._canonical_repo_path(str(repo_root), str(value))
+
+                con.create_function("canonical_scope_root", 1, canonical_scope_root_cached)
+                con.create_function("canonical_repo_path", 2, canonical_repo_path_fast)
                 with self.state_store.ordered_event_publication(con) as publish:
                     with write_transaction(
                         con,
