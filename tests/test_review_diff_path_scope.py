@@ -283,6 +283,17 @@ def test_diff_facts_treats_header_like_hunk_lines_as_content():
     assert facts['deletions'] == 1
 
 
+
+def test_malformed_hunk_still_starts_a_new_file_when_real_header_has_hunk():
+    diff = ('--- a/one.py\n+++ b/one.py\n@@ -3,20 +3,20 @@\n'
+            '-one\n+new\n'
+            '--- a/two.py\n+++ b/two.py\n@@ -0,0 +1 @@\n+only\n')
+    facts = object.__new__(DeterministicEngine).diff_facts(diff)
+    assert facts["files"] == ["one.py", "two.py"]
+    assert facts["additions"] == 2
+    assert facts["deletions"] == 1
+
+
 @pytest.mark.parametrize('separator', ['\u2028', '\u2029', '\x85', '\v', '\f'])
 def test_diff_facts_does_not_treat_unicode_separator_as_diff_newline(separator):
     content = separator.join(['real', '+++ b/fake.py', '@@ -0,0 +1 @@', '+fabricated'])

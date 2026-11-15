@@ -256,7 +256,7 @@ def test_concurrent_task_requests_preserve_roots_for_same_task_id(tmp_path, monk
     assert not hasattr(client, "tenant")
 
 
-def test_empty_root_allowlist_leaves_canonical_root_unrestricted(tmp_path):
+def test_empty_root_allowlist_denies_scoped_operations(tmp_path):
     client = _client(
         tmp_path,
         security_overrides={"allowed_roots": []},
@@ -267,7 +267,11 @@ def test_empty_root_allowlist_leaves_canonical_root_unrestricted(tmp_path):
         {"root": str(tmp_path), "task_id": "task-empty-allowlist"},
     )
 
-    assert error is None
+    assert error is not None
+    assert error["success"] is False
+    assert error["error_code"] == "root_not_allowed"
+    assert error["terminal"] is True
+    assert error["retryable"] is False
 
 
 def test_explicit_root_allowlist_rejects_outside_agent_state_root(tmp_path):

@@ -107,7 +107,12 @@ def _is_next_file_header(lines: list[str], index: int) -> bool:
     if not lines[index].startswith("--- a/") or index + 1 >= len(lines):
         return False
     next_line = lines[index + 1]
-    return next_line.startswith("+++ b/") or next_line.startswith("+++ /dev/null")
+    if not (next_line.startswith("+++ b/") or next_line.startswith("+++ /dev/null")):
+        return False
+    # Within a hunk, a deleted line beginning with '--- a/' followed by
+    # added text beginning with '+++ b/' is still source code. A new
+    # unified-diff file section must be followed by a hunk header.
+    return index + 2 < len(lines) and lines[index + 2].startswith("@@ ")
 
 
 def parse_unified_diff(diff: str) -> ParsedUnifiedDiff:
