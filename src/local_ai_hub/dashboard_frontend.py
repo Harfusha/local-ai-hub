@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import stat
 import time
 import tomllib
 from importlib.resources import files
@@ -61,6 +62,35 @@ def _redact_path(path: str | Path | None) -> str | None:
         return value
 
 
+_MAX_HOST_CONFIG_BYTES = 256 * 1024
+
+
+def _bounded_host_config(path: Path) -> str:
+    """Only inspect small regular manifest files; never follow host symlinks.
+
+    This diagnostic has no reason to read arbitrary files outside known host
+    config paths, and status is UNKNOWN if a file cannot be parsed.
+    """
+    info = path.lstat()
+    if not stat.S_ISREG(info.st_mode) or info.st_size > _MAX_HOST_CONFIG_BYTES:
+        raise ValueError("host manifest is not a small regular file")
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(path, flags)
+    with os.fdopen(fd, "rb") as stream:
+        opened = os.fstat(stream.fileno())
+        if not stat.S_ISREG(opened.st_mode) or opened.st_size > _MAX_HOST_CONFIG_BYTES:
+            raise ValueError("host manifest identity changed")
+        raw = stream.read(_MAX_HOST_CONFIG_BYTES + 1)
+        if len(raw) > _MAX_HOST_CONFIG_BYTES:
+            raise ValueError("host manifest exceeded size limit")
+        checked = path.lstat()
+        if (opened.st_dev, opened.st_ino, opened.st_size, opened.st_mtime_ns) != (
+            checked.st_dev, checked.st_ino, checked.st_size, checked.st_mtime_ns
+        ):
+            raise ValueError("host manifest changed during read")
+    return raw.decode("utf-8")
+
+
 def _mcp_entry_valid(value: object) -> bool:
     if not isinstance(value, dict):
         return False
@@ -76,7 +106,7 @@ def _codex_mcp_registered(path: Path | None) -> bool:
     if path is None:
         return False
     try:
-        value = tomllib.loads(path.read_text(encoding="utf-8"))
+        value = tomllib.loads(_bounded_host_config(path))
         servers = value.get("mcp_servers")
         return isinstance(servers, dict) and _mcp_entry_valid(servers.get("local-ai"))
     except (OSError, ValueError, TypeError):
@@ -87,7 +117,7 @@ def _antigravity_mcp_registered(path: Path | None) -> bool:
     if path is None:
         return False
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(_bounded_host_config(path))
         servers = data.get("mcpServers") if isinstance(data, dict) else None
         return isinstance(servers, dict) and _mcp_entry_valid(servers.get("local-ai"))
     except (OSError, ValueError, TypeError):
@@ -118,8 +148,8 @@ def inspect_agent_hosts(config: dict[str, Any] | None = None) -> dict[str, Any]:
         gemini_home / "mcp_config.json",
         gemini_home / "settings.json",
     )
-    agy_config = next((candidate for candidate in agy_candidates if candidate.is_file()), None)
-    agy_registered = any(_antigravity_mcp_registered(candidate) for candidate in agy_candidates if candidate.is_file())
+    agy_config = next((candidate for candidate in agy_candidates if candidate.is_file() and not candidate.is_symlink()), None)
+    agy_registered = any(_antigravity_mcp_registered(candidate) for candidate in agy_candidates if candidate.is_file() and not candidate.is_symlink())
     agy_skills = (gemini_home / "skills" / "local-ai-orchestrator" / "SKILL.md").is_file() or (
         gemini_home / "config" / "skills" / "local-ai-orchestrator" / "SKILL.md"
     ).is_file()
