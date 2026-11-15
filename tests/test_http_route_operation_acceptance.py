@@ -1055,6 +1055,57 @@ def test_http_post_coord_plan_routes_acceptance(running_http_hub, tmp_path):
         assert res["success"] is True
 
 
+
+def test_http_structural_search_rejects_stale_inventory_revision(running_http_hub, tmp_path):
+    base_url, _app = running_http_hub
+    root = tmp_path / "source"
+    root.mkdir()
+    (root / "b.php").write_text("<?php function needle() {}\n", encoding="utf-8")
+    (root / "c.php").write_text("<?php function needle() {}\n", encoding="utf-8")
+    url = f"{base_url}/api/repo/structural_search"
+
+    def request(payload):
+        return urllib_request.Request(
+            url, data=json.dumps({"root": str(root), "pattern": "fn:needle", **payload}).encode("utf-8"),
+            headers={"Content-Type": "application/json", "Connection": "close"},
+            method="POST",
+        )
+
+    with urllib_request.urlopen(request({"max_results": 1})) as response:
+        assert response.status == 200
+        page = json.loads(response.read().decode("utf-8"))
+    assert page["success"] is True
+    assert page["has_more"] is True
+    assert len(page["inventory_revision"]) == 64
+    with urllib_request.urlopen(request({
+        "max_results": 1, "offset": page["next_offset"],
+        "match_offset": page["next_match_offset"],
+        "expected_revision": page["inventory_revision"],
+    })) as response:
+        assert response.status == 200
+        next_page = json.loads(response.read().decode("utf-8"))
+    assert next_page["success"] is True
+    assert [row["file"] for row in next_page["matches"]] == ["c.php"]
+
+    (root / "a.php").write_text("<?php function needle() {}\n", encoding="utf-8")
+    with pytest.raises(HTTPError) as stale:
+        urllib_request.urlopen(request({
+            "max_results": 1, "offset": page["next_offset"],
+            "match_offset": page["next_match_offset"],
+            "expected_revision": page["inventory_revision"],
+        }))
+    assert stale.value.code == 409
+    payload = json.loads(stale.value.read().decode("utf-8"))
+    assert payload["error_code"] == "stale_search_revision"
+    assert payload["success"] is False
+    assert "matches" not in payload
+
+    with pytest.raises(HTTPError) as invalid:
+        urllib_request.urlopen(request({"expected_revision": "invalid"}))
+    assert invalid.value.code == 400
+    invalid.value.close()
+
+
 def test_http_post_complete_acceptance(running_http_hub, monkeypatch, tmp_path):
     base_url, app = running_http_hub
     # Hardware gate stays active; this positive route test uses a permitted profile.

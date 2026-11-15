@@ -76,6 +76,7 @@ jobs:
           python -m pytest -q
           tests/test_mcp_contract_dispatch.py
           tests/test_structural_search_php_contract.py
+          tests/test_http_route_operation_acceptance.py::test_http_structural_search_rejects_stale_inventory_revision
           tests/test_rag_incremental_index_io.py
           tests/unit/test_evidence_merge.py
           tests/test_http_post_route_registry_t18.py

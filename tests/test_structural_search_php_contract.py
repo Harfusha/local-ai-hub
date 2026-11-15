@@ -263,6 +263,39 @@ def test_revision_guard_rechecks_after_source_read_during_page(tmp_path):
     assert "matches" not in result
 
 
+
+def test_mcp_structural_search_transports_revision_and_cursor(monkeypatch):
+    from local_ai_hub import mcp_server
+
+    token = "a" * 64
+    calls = []
+
+    def fake_post(route, payload, *, timeout=None):
+        calls.append((route, payload))
+        return {
+            "success": True, "count": 1, "matches": [
+                {"file": "file.php", "line": 2, "structure": "function:needle"},
+            ],
+            "inventory_revision": token, "revision_scope": "source paths and stat metadata",
+            "has_more": True, "next_offset": 1, "next_match_offset": 0,
+        }
+
+    monkeypatch.setattr(mcp_server.CLIENT, "post", fake_post)
+    response = mcp_server._local_ai_repo_impl(
+        "structural_search", root="/tmp/repo", query="fn:needle",
+        file_offset=2, match_offset=3, expected_revision=token,
+    )
+    assert len(calls) == 1
+    route, payload = calls[0]
+    assert route == "/api/repo/structural_search"
+    assert payload["offset"] == 2
+    assert payload["match_offset"] == 3
+    assert payload["expected_revision"] == token
+    assert response["success"] is True
+    assert response["inventory_revision"] == token
+    assert response["next_offset"] == 1
+
+
 def test_mcp_expected_revision_is_scoped_to_structural_search():
     from local_ai_hub.operation_contracts import operation_parameters_schema, validate_operation_arguments
 
