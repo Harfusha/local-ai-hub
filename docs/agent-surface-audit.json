@@ -271,19 +271,24 @@
     "GET /api/agent-state/tasks": {
       "decision": "retain",
       "role": "agent",
-      "reason": "Scoped task/memory/verification/event/board/lease coordination backing MCP and dashboard. Caller-owned records and actionable lifecycle state must survive projection.",
-      "response_policy": "Preserve work result, errors/retry/cancellation, identities, evidence and pagination; project_agent_response removes internal observations outside dashboard detail; caller documents remain opaque.",
+      "reason": "Scoped task/memory/verification/event/board/lease coordination backing MCP and dashboard. Caller-owned records and actionable lifecycle state must survive projection. The optional scoped_page=true contract enables bounded repository-scoped pagination without breaking legacy GET fields.",
+      "response_policy": "Preserve work result, errors/retry/cancellation, identities, evidence and pagination; project_agent_response removes internal observations outside dashboard detail; caller documents remain opaque. Explicit scoped_page requests disclose count_scope, root, global counts and incomplete scans; unspecified scoped_page retains legacy response.",
       "source_contract": {
         "source": "src/local_ai_hub/http_server.py",
         "handler": "do_GET",
         "literal_response_fields": [
           "active_count",
+          "count_scope",
           "error",
+          "global_active_count",
+          "global_total_count",
           "has_more",
           "limit",
           "next_offset",
           "offset",
+          "query_truncated",
           "retryable",
+          "root",
           "success",
           "task",
           "tasks",
@@ -291,7 +296,8 @@
           "total_count"
         ],
         "response_producers": [
-          "local:response"
+          "local:response",
+          "page_scoped_tasks"
         ],
         "action_literals": []
       }
