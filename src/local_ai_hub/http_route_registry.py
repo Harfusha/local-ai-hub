@@ -253,6 +253,7 @@ TELEMETRY_SAFE_GET_ROUTE_LABELS = frozenset({
     "/api/preprocess/status",
     "/api/project/config",
     "/api/rag/workspaces",
+    "/api/repair-priorities",
     "/api/status",
     "/api/telemetry/report",
     "/api/telemetry/endpoint-stats",

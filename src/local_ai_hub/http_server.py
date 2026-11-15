@@ -21,6 +21,7 @@ import uuid
 import time
 import traceback
 import threading
+from datetime import datetime, timezone
 from collections import deque
 from contextlib import nullcontext
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -455,7 +456,7 @@ def _invoke_cancellable_request(
 MONITOR_PATHS = {
     "/health", "/ready", "/dashboard", "/dashboard/legacy", "/dashboard/next", "/favicon.ico", "/api/live", "/api/live/status",
     "/api/status", "/api/mode", "/api/capabilities", "/api/metrics", "/api/adoption",
-    "/api/telemetry/report", "/api/telemetry/tool-accounting", "/api/telemetry/timeline",
+    "/api/telemetry/report", "/api/telemetry/tool-accounting", "/api/telemetry/timeline", "/api/repair-priorities",
     "/api/telemetry/endpoint-stats",
     "/api/audit/tail",
     "/api/config", "/api/logs/tail", "/api/hardware/system", "/api/hardware/gpu",
@@ -581,7 +582,7 @@ HTTP_MODE_OPERATOR_GET_PATHS = frozenset({
     "/api/debug-traces", "/api/hardware/gpu", "/api/hardware/system",
     "/api/live/status", "/api/logs/tail", "/api/metrics", "/api/mode",
     "/api/models/manage", "/api/preprocess/status", "/api/status",
-    "/api/telemetry/report", "/api/telemetry/timeline",
+    "/api/telemetry/report", "/api/telemetry/timeline", "/api/repair-priorities",
     "/api/telemetry/endpoint-stats",
 })
 HTTP_MODE_GAMING_READ_GET_PATHS = frozenset({
@@ -619,6 +620,7 @@ def _http_admin_action(method: str, path: str) -> str | None:
             "/api/models/manage": "model.manage",
             "/api/mode": "status.read",
             "/api/status": "status.read",
+            "/api/repair-priorities": "telemetry.read",
             "/api/telemetry/report": "telemetry.read",
             "/api/telemetry/timeline": "telemetry.read",
         }.get(path)
@@ -4732,6 +4734,61 @@ class Handler(BaseHTTPRequestHandler):
                 if isinstance(self.server, LocalAIHTTPServer):
                     status["http_concurrency"] = self.server.concurrency_stats()
                 self._send(200, status); return
+            if path == "/api/repair-priorities":
+                diagnostics_enabled = detailed_diagnostics_enabled(APP.config, store=APP.debug_traces)
+                status = project_status_response(APP.status(scope="process"), enabled=diagnostics_enabled)
+                telemetry = project_aggregate_response(
+                    APP.telemetry.report(days=7, recent_errors=25, scope="process"),
+                    enabled=diagnostics_enabled,
+                )
+                endpoint_stats = getattr(APP, "endpoint_stats", None)
+                stats = endpoint_stats.get_stats(include_unused=False) if endpoint_stats is not None else {"success": False, "items": []}
+                priorities: list[dict[str, Any]] = []
+                for name, component in (status.get("dependency_status") or {}).items():
+                    if isinstance(component, dict) and (component.get("degraded") or component.get("status") == "degraded"):
+                        priorities.append({"priority": "P1", "kind": "component", "name": str(name), "evidence": component, "action": "Inspect component health and restore dependency."})
+                if status.get("degraded") and not any(item["kind"] == "component" for item in priorities):
+                    priorities.append({"priority": "P1", "kind": "hub", "name": "runtime", "evidence": {"success": status.get("success"), "degraded": True}, "action": "Inspect Hub runtime status and degraded dependencies."})
+                for error in (telemetry.get("error_fingerprints") or []):
+                    if not isinstance(error, dict):
+                        continue
+                    count = int(error.get("count", error.get("events", 1)) or 1)
+                    priorities.append({
+                        "priority": "P1" if count >= 5 else "P2", "kind": "error",
+                        "name": str(error.get("component") or error.get("operation") or error.get("error_type") or "unknown"),
+                        "evidence": {key: error.get(key) for key in ("fingerprint", "error_type", "error_code", "component", "operation", "count", "last_seen") if key in error},
+                        "action": "Resolve recurring error and verify recovery." if count >= 5 else "Inspect and resolve this error.",
+                    })
+                for item in (stats.get("items") or []):
+                    if not isinstance(item, dict) or not item.get("issues"):
+                        continue
+                    failing = "failing" in item["issues"]
+                    priorities.append({
+                        "priority": "P1" if failing and (item.get("success_rate") or 0) < 50 else ("P2" if failing else "P3"),
+                        "kind": "endpoint", "name": str(item.get("name", "")),
+                        "evidence": {key: item.get(key) for key in ("calls", "fail_calls", "success_rate", "p95_ms", "issues")},
+                        "action": "Fix endpoint failures." if failing else "Reduce endpoint latency.",
+                    })
+                for hotspot in (telemetry.get("hotspots") or []):
+                    if isinstance(hotspot, dict):
+                        kind = str(hotspot.get("type", "quality"))
+                        priorities.append({"priority": "P1" if kind in {"reliability", "observability"} else "P2", "kind": kind, "name": str(hotspot.get("signal", "hotspot")), "evidence": hotspot, "action": "Investigate telemetry hotspot."})
+                quality = ((telemetry.get("evaluation") or {}).get("cohorts") or {}).get("hub_on", {})
+                quality_rate = quality.get("quality_pass_rate")
+                if quality.get("quality_evaluated", 0) >= 10 and isinstance(quality_rate, (int, float)) and quality_rate < 0.8:
+                    priorities.append({"priority": "P1" if quality_rate < 0.5 else "P2", "kind": "quality", "name": "hub_on", "evidence": {"evaluated": quality["quality_evaluated"], "pass_rate": quality_rate}, "action": "Investigate failed quality evaluations and improve the affected workflows."})
+                rank = {"P0": 0, "P1": 1, "P2": 2, "P3": 3}
+                priorities.sort(key=lambda item: (rank[item["priority"]], -int((item.get("evidence") or {}).get("count", (item.get("evidence") or {}).get("fail_calls", 0)) or 0), item["kind"], item["name"]))
+                telemetry_available = bool(telemetry) and telemetry.get("success", True) is not False and not telemetry.get("error") and telemetry.get("enabled", True) is True
+                self._send(200, {
+                    "success": True, "generated_at": datetime.now(timezone.utc).isoformat(),
+                    "window": {"telemetry_days": 7, "endpoint_stats": stats.get("window", "unavailable")},
+                    "health": {"success": status.get("success"), "degraded": status.get("degraded"), "dependencies": status.get("dependency_status", {})},
+                    "telemetry_available": telemetry_available,
+                    "endpoint_stats_available": bool(stats.get("success")),
+                    "quality_evidence": "evaluation samples only; no inference when fewer than 10 are available",
+                    "priorities": priorities,
+                }); return
             if path == "/api/agent-state/tasks":
                 if not getattr(APP, "agent_tasks", None) or not APP.agent_tasks.state_store.enabled:
                     self._send(403, {"success": False, "error": "agent_state is disabled", "terminal": True, "retryable": False}); return

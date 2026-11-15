@@ -64,6 +64,8 @@ Trace detail may include the original API request, effective model prompt/payloa
 
 The service defaults to `127.0.0.1:11435`. `/health` is a lightweight liveness endpoint. Runtime/status endpoints include `/api/status`, `/api/capabilities`, `/api/live/status`, metrics/telemetry, hardware status, models, leases and preprocessing.
 
+`GET /api/repair-priorities` returns a severity-sorted repair queue from current component health, seven days of telemetry errors/hotspots, and endpoint failure/latency statistics. Each item includes evidence and a suggested next action. Endpoint statistics persist since their last reset; telemetry errors and hotspots use the seven-day window. Missing sources are marked unavailable; an empty queue means no issue was detected in available evidence, not proof that every component works. Requires `telemetry.read` when HTTP admin authorization is enabled.
+
 `POST /api/leases/claim_batch` returns HTTP 200 only when the full requested scope is leased. Active-scope conflicts and lease deadlocks return HTTP 409 with `success: false`, `status_code: 409`, and the conflicting scope details. Invalid claim requests return HTTP 400.
 
 `GET /api/telemetry/report?error_limit=25&error_cursor=` starts a stable error-group snapshot; continue with returned `report.error_fingerprints_page.next_cursor`. Cursor pages order by fingerprint, type, component and operation; cursor carries an event-ID watermark and fixed cutoff, so later writes or rolling-window expiry do not move groups mid-walk. Normal telemetry retention cleanup can still remove expired rows. `error_offset` remains for legacy callers; do not combine it with a cursor. Malformed or mixed cursors return HTTP 400.
