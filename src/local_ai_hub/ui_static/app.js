@@ -9,7 +9,12 @@ let currentPollTimer = null;
 let activeAbortController = null;
 let lastSuccessAt = 0;
 let consecutiveErrors = 0;
-let requestRevision = 0;
+let healthRequestEpoch = 0;
+const sectionRequestEpochs = { agents: 0, tasks: 0, models: 0, diagnostics: 0, settings: 0 };
+
+function isCurrentSectionRequest(section, epoch) {
+  return activeSection === section && sectionRequestEpochs[section] === epoch;
+}
 
 const SECTIONS = {
   overview: {
@@ -53,46 +58,34 @@ const SECTIONS = {
  * Shared fetch helper with AbortController, timeout, and monotonic revision tracking (HUB-099).
  */
 async function request(url, options = {}) {
-  const revision = ++requestRevision;
-  const timeoutMs = options.timeout || 8000;
+  const { timeout: timeoutMs = 8000, signal: externalSignal, headers: extraHeaders, ...fetchOptions } = options;
   const controller = new AbortController();
+  const onAbort = () => controller.abort();
+  if (externalSignal) {
+    if (externalSignal.aborted) controller.abort();
+    else externalSignal.addEventListener("abort", onAbort, { once: true });
+  }
   const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
-
-  const mergedHeaders = {
-    Accept: "application/json",
-    ...(options.headers || {}),
-  };
 
   try {
     const response = await fetch(url, {
-      ...options,
+      ...fetchOptions,
       signal: controller.signal,
-      headers: mergedHeaders,
+      headers: { Accept: "application/json", ...(extraHeaders || {}) },
     });
-    clearTimeout(timeoutId);
-
     const contentType = response.headers.get("content-type") || "";
-    let data = null;
-    if (contentType.includes("application/json")) {
-      data = await response.json();
-    } else {
-      data = await response.text();
-    }
-
-    return {
-      ok: response.ok,
-      status: response.status,
-      data,
-      revision,
-    };
+    const data = contentType.includes("application/json") ? await response.json() : await response.text();
+    const rejected = data !== null && typeof data === "object" && data.success === false;
+    return { ok: response.ok && !rejected, status: response.status, data };
   } catch (err) {
-    clearTimeout(timeoutId);
     return {
       ok: false,
-      status: err.name === "AbortError" ? 408 : 0,
-      data: { error: err.message || "Network request failed" },
-      revision,
+      status: err?.name === "AbortError" ? 408 : 0,
+      data: { error: err?.message || "Network request failed" },
     };
+  } finally {
+    clearTimeout(timeoutId);
+    externalSignal?.removeEventListener("abort", onAbort);
   }
 }
 
@@ -127,59 +120,45 @@ function updatePill(elementId, state, text) {
  * Visibility-aware live health checking with adaptive backoff (HUB-094).
  */
 async function checkHub() {
-  if (activeAbortController) {
-    activeAbortController.abort();
-  }
-  activeAbortController = new AbortController();
-
+  if (activeAbortController) activeAbortController.abort();
+  const controller = new AbortController();
+  activeAbortController = controller;
+  const epoch = ++healthRequestEpoch;
   const statusLabel = document.getElementById("api-status");
   const heartbeatValue = document.getElementById("heartbeat-value");
   const heartbeatDetail = document.getElementById("heartbeat-detail");
   const checkedAt = document.getElementById("checked-at");
 
   try {
-    const res = await request("/ready", { timeout: 4000 });
+    const res = await request("/ready", { timeout: 4000, signal: controller.signal });
+    // Ignore old responses arriving after focus/visibility refreshes.
+    if (epoch !== healthRequestEpoch) return;
     const now = Date.now();
-
-    if (res.ok && res.data && (res.data.ready === true || res.data.success === true)) {
+    if (res.ok && res.data && res.data.ready === true) {
       lastSuccessAt = now;
       consecutiveErrors = 0;
       updateStatusDot("api-dot", "good");
       updatePill("api-pill", "good", "READY");
       if (statusLabel) statusLabel.textContent = "Hub online";
       if (heartbeatValue) heartbeatValue.textContent = "Hub is ready";
-      if (heartbeatDetail) {
-        heartbeatDetail.textContent = "Local AI Hub service is responding normally to local loopback queries.";
-      }
-      if (checkedAt) {
-        checkedAt.textContent = "Observed " + new Date().toLocaleTimeString();
-      }
+      if (heartbeatDetail) heartbeatDetail.textContent = "Local AI Hub service is responding to local loopback queries.";
+      if (checkedAt) checkedAt.textContent = "Observed " + new Date().toLocaleTimeString();
     } else {
       consecutiveErrors++;
       const isDegraded = res.status === 200 || res.status === 503;
       updateStatusDot("api-dot", isDegraded ? "warning" : "danger");
       updatePill("api-pill", isDegraded ? "warn" : "danger", isDegraded ? "DEGRADED" : "OFFLINE");
-      if (statusLabel) {
-        statusLabel.textContent = isDegraded ? "Hub degraded" : "Hub offline";
-      }
-      if (heartbeatValue) {
-        heartbeatValue.textContent = isDegraded ? "Hub is degraded" : "Hub is unreachable";
-      }
-      if (heartbeatDetail) {
-        heartbeatDetail.textContent = (res.data && res.data.reason) ? String(res.data.reason) : "Could not reach local service.";
-      }
-      if (checkedAt) {
-        checkedAt.textContent = "Attempted " + new Date().toLocaleTimeString();
-      }
+      if (statusLabel) statusLabel.textContent = isDegraded ? "Hub degraded" : "Hub offline";
+      if (heartbeatValue) heartbeatValue.textContent = isDegraded ? "Hub is degraded" : "Hub is unreachable";
+      if (heartbeatDetail) heartbeatDetail.textContent =
+        (res.data && typeof res.data.reason === "string") ? res.data.reason : "Could not reach local service.";
+      if (checkedAt) checkedAt.textContent = "Attempted " + new Date().toLocaleTimeString();
     }
-  } catch (_e) {
-    consecutiveErrors++;
-    updateStatusDot("api-dot", "danger");
-    updatePill("api-pill", "danger", "OFFLINE");
-    if (statusLabel) statusLabel.textContent = "Hub offline";
-    if (heartbeatValue) heartbeatValue.textContent = "Hub is unreachable";
   } finally {
-    scheduleNextPoll();
+    if (epoch === healthRequestEpoch) {
+      activeAbortController = null;
+      scheduleNextPoll();
+    }
   }
 }
 
@@ -213,6 +192,9 @@ window.addEventListener("focus", () => {
  */
 function setSection(name) {
   if (!SECTIONS[name]) return;
+  if (activeSection !== name) {
+    for (const section of Object.keys(sectionRequestEpochs)) sectionRequestEpochs[section]++;
+  }
   activeSection = name;
 
   document.querySelectorAll(".nav-item").forEach((btn) => {
@@ -274,10 +256,12 @@ async function loadAgentHosts() {
   const listEl = document.getElementById("hosts-list");
   if (!listEl) return;
 
+  const epoch = ++sectionRequestEpochs.agents;
   if (statusEl) statusEl.textContent = "Checking agent host CLIs and MCP configuration…";
   listEl.replaceChildren();
 
   const res = await request("/api/agent/hosts");
+  if (!isCurrentSectionRequest("agents", epoch)) return;
   if (!res.ok || !res.data || !Array.isArray(res.data.hosts)) {
     if (statusEl) statusEl.textContent = "Could not query agent hosts: " + (res.data?.error || "service unavailable");
     return;
@@ -352,11 +336,17 @@ async function loadTasks() {
   const root = rootInput ? rootInput.value.trim() : "";
 
   if (!listEl) return;
+  const epoch = ++sectionRequestEpochs.tasks;
+  if (root && !/^(?:[a-zA-Z]:[\\\\/]|\\\\\\\\|\\/)/.test(root)) {
+    if (statusEl) statusEl.textContent = "Repository root must be absolute.";
+    return;
+  }
   if (statusEl) statusEl.textContent = "Loading tasks…";
   listEl.replaceChildren();
 
   const url = root ? `/api/agent-state/tasks?root=${encodeURIComponent(root)}` : "/api/agent-state/tasks";
   const res = await request(url);
+  if (!isCurrentSectionRequest("tasks", epoch) || rootInput?.value.trim() !== root) return;
 
   if (!res.ok || !res.data) {
     if (statusEl) statusEl.textContent = "Failed to load tasks: " + (res.data?.error || "service unavailable");
@@ -394,6 +384,7 @@ async function loadTasks() {
   const wtResponse = document.getElementById("worktree-response");
   if (wtResponse && root) {
     const wtRes = await request(`/api/coord/worktrees?root=${encodeURIComponent(root)}`);
+    if (!isCurrentSectionRequest("tasks", epoch) || rootInput?.value.trim() !== root) return;
     if (wtRes.ok && wtRes.data) {
       wtResponse.textContent = JSON.stringify(wtRes.data, null, 2);
     } else {
@@ -409,42 +400,30 @@ async function loadModels() {
   const statusEl = document.getElementById("models-status");
   const listEl = document.getElementById("model-list");
   if (!listEl) return;
-
+  const epoch = ++sectionRequestEpochs.models;
   if (statusEl) statusEl.textContent = "Loading installed models…";
   listEl.replaceChildren();
 
   const res = await request("/api/models");
-  if (!res.ok || !res.data) {
-    if (statusEl) statusEl.textContent = "Failed to load models: " + (res.data?.error || "service unavailable");
+  if (!isCurrentSectionRequest("models", epoch)) return;
+  if (!res.ok || !res.data || res.data.object !== "list" || !Array.isArray(res.data.data)) {
+    if (statusEl) statusEl.textContent = "Model inventory unavailable or response contract changed.";
     return;
   }
-
-  const models = Array.isArray(res.data.models) ? res.data.models : [];
+  // The server currently lists installed Ollama IDs, not VRAM residency or digest.
+  const models = res.data.data;
   if (models.length === 0) {
-    if (statusEl) statusEl.textContent = "No local models installed in Ollama/llama.cpp runtime.";
-    const notice = document.createElement("div");
-    notice.className = "task-card";
-    const h3 = document.createElement("h3");
-    h3.textContent = "Model installation required";
-    const p = document.createElement("p");
-    p.textContent = "Automatic model downloads are disabled. To install recommended models, run: ollama pull qwen2.5-coder:1.5b (for preprocessing) or qwen2.5-coder:7b (for coding).";
-    notice.append(h3, p);
-    listEl.append(notice);
+    if (statusEl) statusEl.textContent = "No Ollama models reported as installed; other providers were not queried.";
     return;
   }
-
-  if (statusEl) statusEl.textContent = `Found ${models.length} installed models. Automatic downloads disabled.`;
-
-  for (const m of models) {
+  if (statusEl) statusEl.textContent = `Found ${models.length} installed Ollama model IDs (loaded/routable state unknown).`;
+  for (const model of models) {
     const card = document.createElement("article");
     card.className = "task-card";
-
     const title = document.createElement("h3");
-    title.textContent = m.name || m.model || "Unknown model";
-
+    title.textContent = model.id || "Unknown model ID";
     const meta = document.createElement("p");
-    meta.textContent = `Size: ${m.size ? Math.round(m.size / (1024 * 1024)) + " MB" : "unknown"} · Digest: ${m.digest || "none"}`;
-
+    meta.textContent = `Source: ${model.owned_by || "unknown"} · GPU residency: unverified · Digest: unavailable`;
     card.append(title, meta);
     listEl.append(card);
   }
@@ -458,57 +437,55 @@ async function loadTelemetryTimeline(loadMore = false) {
   const listEl = document.getElementById("telemetry-timeline");
   const loadMoreBtn = document.getElementById("load-older-telemetry");
   if (!listEl) return;
-
+  const epoch = ++sectionRequestEpochs.diagnostics;
   if (!loadMore) {
     timelineCursor = null;
     listEl.replaceChildren();
   }
-
   if (statusEl) statusEl.textContent = "Loading telemetry events…";
-
   const params = new URLSearchParams({ limit: "50" });
-  if (timelineCursor) {
-    params.set("before_id", String(timelineCursor));
-  }
+  if (timelineCursor !== null) params.set("before_id", String(timelineCursor));
 
   const res = await request(`/api/telemetry/timeline?${params.toString()}`);
-  if (!res.ok || !res.data) {
-    if (statusEl) statusEl.textContent = "Telemetry unavailable (detailed diagnostics may be disabled in settings).";
+  if (!isCurrentSectionRequest("diagnostics", epoch)) return;
+  if (!res.ok || !res.data || !Array.isArray(res.data.timeline) || typeof res.data.has_more !== "boolean") {
+    if (statusEl) statusEl.textContent = "Telemetry unavailable or response contract changed.";
     return;
   }
 
-  const events = Array.isArray(res.data.events) ? res.data.events : [];
-  if (events.length === 0) {
-    if (statusEl) statusEl.textContent = loadMore ? "No older events found." : "No telemetry events recorded yet.";
-    if (loadMoreBtn) loadMoreBtn.setAttribute("hidden", "");
-    return;
-  }
-
+  const events = res.data.timeline;
   if (statusEl) {
-    statusEl.textContent = `Loaded ${events.length} telemetry events. The timeline does not show current runtime health or request traces.`;
+    statusEl.textContent = events.length
+      ? `Loaded ${events.length} historical telemetry events; this is not live health.`
+      : (loadMore ? "No older events found." : "No telemetry events recorded yet.");
   }
-
-  timelineCursor = events[events.length - 1].id || null;
+  const cursor = res.data.next_cursor;
+  timelineCursor = Number.isSafeInteger(cursor) && cursor >= 0 ? cursor : null;
   if (loadMoreBtn) {
-    loadMoreBtn.removeAttribute("hidden");
+    loadMoreBtn.disabled = !res.data.has_more;
+    if (res.data.has_more) loadMoreBtn.removeAttribute("hidden");
+    else loadMoreBtn.setAttribute("hidden", "");
   }
 
-  for (const ev of events) {
+  const fragment = document.createDocumentFragment();
+  for (const event of events) {
     const article = document.createElement("article");
     article.className = "task-card";
-
     const title = document.createElement("h3");
-    title.textContent = `${ev.operation || "Event"} · ${ev.created_at ? new Date(ev.created_at * 1000).toLocaleTimeString() : ""}`;
-
+    const time = typeof event.timestamp === "number"
+      ? new Date(event.timestamp * 1000).toLocaleTimeString() : "Unknown time";
+    title.textContent = `${event.event_type || "Event"} · ${event.action || "unknown"} · ${time}`;
     const metadata = document.createElement("p");
-    metadata.textContent = `Duration: ${ev.duration_ms ? ev.duration_ms.toFixed(1) + "ms" : "-"} · Tokens: ${ev.tokens || 0}`;
-
+    const duration = Number.isFinite(event.duration_ms) ? event.duration_ms.toFixed(1) + "ms" : "-";
+    metadata.textContent = `Duration: ${duration} · Net tokens saved: ${event.net_tokens_saved ?? "unknown"}`;
     const outcome = document.createElement("p");
-    outcome.textContent = ev.success ? "Success" : (ev.error || "Failed");
-
+    outcome.textContent = event.success ? "Success" : (event.error_type || "Failed");
     article.append(title, metadata, outcome);
-    listEl.append(article);
+    fragment.append(article);
   }
+  // API pages are oldest-to-newest; older pages precede already displayed events.
+  if (loadMore) listEl.prepend(fragment);
+  else listEl.append(fragment);
 }
 
 /**
@@ -519,9 +496,11 @@ async function loadSettings() {
   const recordsEl = document.getElementById("settings-records");
   if (!recordsEl) return;
 
+  const epoch = ++sectionRequestEpochs.settings;
   if (statusEl) statusEl.textContent = "Loading configuration snapshot…";
 
   const res = await request("/api/config");
+  if (!isCurrentSectionRequest("settings", epoch)) return;
   if (!res.ok || !res.data) {
     if (statusEl) statusEl.textContent = "Could not load settings: " + (res.data?.error || "service unavailable");
     return;
