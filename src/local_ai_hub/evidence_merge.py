@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import hashlib
 import math
+import os
+import stat
+import time
 from pathlib import Path, PurePosixPath
 from typing import cast
 
@@ -86,6 +89,41 @@ def _is_confined_to_root(resolved_root: Path, path: str) -> bool:
         return True
     except (ValueError, OSError):
         return False
+
+
+def _read_verified_source(root: Path, relative: str) -> bytes:
+    """Open one confined regular-file identity, with a hard byte ceiling."""
+    path = root / relative
+    # Validate all path components, not just the final name.
+    current = root
+    for component in PurePosixPath(relative).parts:
+        current = current / component
+        if current.is_symlink() or getattr(current, "is_junction", lambda: False)():
+            raise PermissionError("evidence path includes a link")
+    resolved = path.resolve(strict=True)
+    resolved.relative_to(root)
+    before = path.stat(follow_symlinks=False)
+    if not stat.S_ISREG(before.st_mode):
+        raise PermissionError("evidence source is not a regular file")
+    if before.st_size > MAX_FILE_BYTES:
+        raise ValueError("file_too_large")
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(path, flags)
+    with os.fdopen(descriptor, "rb") as stream:
+        opened = os.fstat(stream.fileno())
+        if not stat.S_ISREG(opened.st_mode):
+            raise PermissionError("evidence source changed type")
+        data = stream.read(MAX_FILE_BYTES + 1)
+        after = os.fstat(stream.fileno())
+    if len(data) > MAX_FILE_BYTES:
+        raise ValueError("file_too_large")
+    now = path.stat(follow_symlinks=False)
+    identity = lambda item: (item.st_dev, item.st_ino, item.st_size, item.st_mtime_ns)
+    if identity(before) != identity(opened) or identity(opened) != identity(after) or identity(after) != identity(now):
+        raise PermissionError("evidence file changed during read")
+    if path.resolve(strict=True) != resolved:
+        raise PermissionError("evidence source path changed")
+    return data
 
 
 def merge_overlapping_evidence(
@@ -184,34 +222,31 @@ def merge_overlapping_evidence(
             freshness = "unverified"
             fallback_reason = ""
             source_kind = "in_memory_evidence"
+            verified_read_at: float | None = None
 
             file_on_disk = (resolved_root / path) if (resolved_root and _is_confined_to_root(resolved_root, path)) else None
-            if file_on_disk and file_on_disk.is_file() and not file_on_disk.is_symlink():
+            if file_on_disk and file_on_disk.is_file():
                 try:
-                    file_size = file_on_disk.stat().st_size
-                    if file_size > MAX_FILE_BYTES:
-                        fallback_reason = "file_too_large"
-                    elif not chash:
-                        # Without an expected digest, current disk text cannot be
-                        # attributed to the supplied historical evidence.
+                    if not chash:
+                        # Unhashed evidence remains tied to its own provenance.
                         fallback_reason = "missing_content_hash"
-                        freshness = "unverified"
                     else:
-                        raw_bytes = file_on_disk.read_bytes()
-                        # Content-addressed guard: verify disk file matches expected hash
+                        raw_bytes = _read_verified_source(resolved_root, path)
                         disk_hash = hashlib.sha256(raw_bytes).hexdigest()
-                        if chash and disk_hash == chash:
+                        if disk_hash == chash:
                             all_lines = raw_bytes.decode("utf-8", errors="replace").splitlines()
-                            slice_lines = all_lines[max(0, cluster_start - 1) : cluster_end]
+                            slice_lines = all_lines[max(0, cluster_start - 1):cluster_end]
                             merged_text = "\n".join(slice_lines)
                             snapshot_verified = True
                             freshness = "verified"
                             source_kind = "disk_snapshot"
+                            verified_read_at = time.time()
                         else:
                             fallback_reason = "disk_hash_mismatch"
                             freshness = "stale"
-                except Exception:
-                    merged_text = ""
+                except ValueError as exc:
+                    fallback_reason = "file_too_large" if str(exc) == "file_too_large" else "disk_read_failed"
+                except (OSError, PermissionError):
                     fallback_reason = "disk_read_failed"
 
             if not merged_text:
@@ -236,7 +271,25 @@ def merge_overlapping_evidence(
             merged_item["start_line"] = cluster_start
             merged_item["end_line"] = cluster_end
             merged_item["truncated"] = omitted_lines > 0
+            merged_item["partial"] = omitted_lines > 0
+            merged_item["requested_end_line"] = full_end_line
+            merged_item["returned_end_line"] = cluster_end
             merged_item["omitted_lines"] = omitted_lines
+            merged_item["original_source_kind"] = _source
+            merged_item["revision_verified"] = bool(best_item.get("revision_verified")) and snapshot_verified
+            if verified_read_at is not None:
+                merged_item["read_at"] = verified_read_at
+            if omitted_lines:
+                # A recovery descriptor is only emitted when the exact bytes
+                # were proven against a full content digest. Every caller must
+                # still reauthorize root/path and revalidate content_hash.
+                merged_item["slice_recovery"] = ({
+                    "path": path,
+                    "start_line": cluster_end + 1,
+                    "end_line": full_end_line,
+                    "content_hash": chash,
+                    "repository_revision": rev or None,
+                } if snapshot_verified else None)
             if omitted_lines:
                 merged_item["original_end_line"] = full_end_line
                 merged_item["truncation_reason"] = "max_merged_lines"
