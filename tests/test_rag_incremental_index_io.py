@@ -495,6 +495,54 @@ def test_transient_sqlite_busy_retries_publish_without_reembedding(tmp_path, mon
     assert "replacement after lock" in " ".join(str(row[0]) for row in chunks)
 
 
+
+def test_sqlite_busy_retry_detects_source_change_before_second_publish(tmp_path, monkeypatch):
+    root = tmp_path / "repo"
+    root.mkdir()
+    guide = root / "guide.md"
+    guide.write_text("original indexed version\n", encoding="utf-8")
+    store = RAGStore(
+        {"server": {"state_dir": str(tmp_path / "state")},
+         "models": {"embedding": "test-embedding", "embedding_dimension": 3},
+         "rag": {"dedup_near_duplicates": False}},
+        services=_EmbeddingStub(),
+    )
+    ws = store.workspace_id(str(root))
+    assert store.index_paths_step(str(root), workspace=ws, paths=["guide.md"])["success"]
+    with closing(store._connect()) as con:
+        previous = [tuple(row) for row in con.execute(
+            "SELECT content_hash,text FROM chunks WHERE workspace=? AND path=?",
+            (ws, "guide.md"),
+        ).fetchall()]
+
+    guide.write_text("second text before publish\n", encoding="utf-8")
+    initial_check = rag_module._check_rag_publish_budget
+    injected = {"count": 0}
+
+    def mutate_and_raise_busy(*, started_at, stage, budget_seconds):
+        if stage == "delete_old_rows" and injected["count"] == 0:
+            injected["count"] += 1
+            guide.write_text("third text during busy retry\n", encoding="utf-8")
+            raise sqlite3.OperationalError("database is locked")
+        return initial_check(
+            started_at=started_at, stage=stage, budget_seconds=budget_seconds,
+        )
+
+    monkeypatch.setattr(rag_module, "_check_rag_publish_budget", mutate_and_raise_busy)
+    rejected = store.index_paths_step(str(root), workspace=ws, paths=["guide.md"])
+    assert rejected["success"] is False
+    assert rejected["retryable"] is True
+    assert rejected["error"] == "source_changed_before_publish"
+    assert rejected["stale_source_paths"] == ["guide.md"]
+    assert injected["count"] == 1
+    with closing(store._connect()) as con:
+        after = [tuple(row) for row in con.execute(
+            "SELECT content_hash,text FROM chunks WHERE workspace=? AND path=?",
+            (ws, "guide.md"),
+        ).fetchall()]
+    assert after == previous
+
+
 def test_changed_file_rejects_stale_content_override_at_index_boundary(tmp_path):
     repo = tmp_path / "repo"
     repo.mkdir()

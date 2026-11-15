@@ -182,6 +182,14 @@ class ProjectPolicySyncError(RuntimeError):
         self.retryable = retryable
 
 
+class _RAGSourceChangedBeforePublish(RuntimeError):
+    """Source revision invalidated while a background publish was pending."""
+
+    def __init__(self, paths: list[str]) -> None:
+        super().__init__("source_changed_before_publish")
+        self.paths = sorted(set(paths))
+
+
 
 def _reverse_text_order(value: str) -> tuple[int, ...]:
     """Heap key where lexically smaller text has higher semantic rank."""
@@ -2227,23 +2235,19 @@ class RAGStore:
             report_progress(85.0, "embedding complete (0 new chunks)")
 
 
-        # A model call may outlive the source snapshot used to build vectors.
-        # A stale source must not replace a previously committed index.
-        stale_sources = sorted(
-            rel for rel, mtime_ns, size, file_hash in file_rows
-            if not _rag_source_still_current(
-                root_path, rel, expected_hash=file_hash,
-                expected_size=size, expected_mtime_ns=mtime_ns,
-                max_bytes=max_file_bytes,
+        # Run this on every SQLite publish attempt, not once before its busy
+        # retries: source bytes can change while waiting for the writer lock.
+        def assert_current_sources() -> None:
+            stale_sources = sorted(
+                rel for rel, mtime_ns, size, file_hash in file_rows
+                if not _rag_source_still_current(
+                    root_path, rel, expected_hash=file_hash,
+                    expected_size=size, expected_mtime_ns=mtime_ns,
+                    max_bytes=max_file_bytes,
+                )
             )
-        )
-        if stale_sources:
-            return {
-                "success": False, "retryable": True, "workspace": workspace,
-                "error": "source_changed_before_publish",
-                "stale_source_paths": stale_sources,
-                "read_uncertain_paths": sorted(set(read_uncertain_paths) | set(stale_sources)),
-            }
+            if stale_sources:
+                raise _RAGSourceChangedBeforePublish(stale_sources)
 
         chunker_version_publishable = (
             not chunker_version_changed
@@ -2257,6 +2261,7 @@ class RAGStore:
         # The embed phase is intentionally outside this retry: a transient writer
         # must not cause expensive model work to run again.
         def publish() -> None:
+            assert_current_sources()
             publish_budget_seconds = 5.0
             with self._get_workspace_lock(workspace,), closing(self._connect()) as con, write_transaction(
                 con, max_duration_seconds=publish_budget_seconds, rollback_label="RAG index publish"
@@ -2343,11 +2348,19 @@ class RAGStore:
                 )
 
         report_progress(90.0, "publishing index")
-        retry_busy(
-            publish,
-            retries=self._sqlite_write_retries,
-            base_delay_seconds=min(0.25, max(0.01, self._sqlite_busy_seconds / 10.0)),
-        )
+        try:
+            retry_busy(
+                publish,
+                retries=self._sqlite_write_retries,
+                base_delay_seconds=min(0.25, max(0.01, self._sqlite_busy_seconds / 10.0)),
+            )
+        except _RAGSourceChangedBeforePublish as exc:
+            return {
+                "success": False, "retryable": True, "workspace": workspace,
+                "error": "source_changed_before_publish",
+                "stale_source_paths": exc.paths,
+                "read_uncertain_paths": sorted(set(read_uncertain_paths) | set(exc.paths)),
+            }
 
         with closing(self._connect()) as con:
             chunk_count = con.execute(
@@ -2841,26 +2854,20 @@ class RAGStore:
                 }
 
 
-            # Publish nothing when a file changed while embedding; preprocessing
-            # retries after re-hashing the source instead of publishing stale bytes.
-            stale_sources = sorted(
-                item["rel"] for item in file_data
-                if not _rag_source_still_current(
-                    root_path, item["rel"], expected_hash=item["file_hash"],
-                    expected_size=int(item["stat"].st_size),
-                    expected_mtime_ns=int(item["stat"].st_mtime_ns),
-                    max_bytes=int(item["max_bytes"]),
+            # Re-validate after each SQLite busy/backoff, not merely after
+            # embeddings: an editor may have changed the file during retry.
+            def assert_current_sources() -> None:
+                stale_sources = sorted(
+                    item["rel"] for item in file_data
+                    if not _rag_source_still_current(
+                        root_path, item["rel"], expected_hash=item["file_hash"],
+                        expected_size=int(item["stat"].st_size),
+                        expected_mtime_ns=int(item["stat"].st_mtime_ns),
+                        max_bytes=int(item["max_bytes"]),
+                    )
                 )
-            )
-            if stale_sources:
-                stale = set(stale_sources)
-                self._publish_workspace_read_uncertainty(workspace, stale)
-                return {
-                    "success": False, "retryable": True, "workspace": workspace,
-                    "error": "source_changed_before_publish",
-                    "stale_source_paths": stale_sources,
-                    "read_uncertain_paths": sorted(read_uncertain_paths | stale),
-                }
+                if stale_sources:
+                    raise _RAGSourceChangedBeforePublish(stale_sources)
 
             # 5. Bulk SQLite transaction
             chunks_to_insert: list[tuple[Any, ...]] = []
@@ -2874,6 +2881,7 @@ class RAGStore:
                 processed_paths.append(rel)
 
             def publish() -> None:
+                assert_current_sources()
                 publish_budget_seconds = 5.0
                 with closing(self._connect()) as con, write_transaction(
                     con, max_duration_seconds=publish_budget_seconds,
@@ -2959,6 +2967,15 @@ class RAGStore:
                     retries=self._sqlite_write_retries,
                     base_delay_seconds=min(0.25, max(0.01, self._sqlite_busy_seconds / 10.0)),
                 )
+            except _RAGSourceChangedBeforePublish as exc:
+                stale = set(exc.paths)
+                self._publish_workspace_read_uncertainty(workspace, stale)
+                return {
+                    "success": False, "retryable": True, "workspace": workspace,
+                    "error": "source_changed_before_publish",
+                    "stale_source_paths": exc.paths,
+                    "read_uncertain_paths": sorted(read_uncertain_paths | stale),
+                }
             except Exception as exc:
                 result = {
                     "success": False, "workspace": workspace,
