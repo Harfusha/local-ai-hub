@@ -1560,7 +1560,7 @@ class AffinityScheduler:
                     self._release_internal_gpu()
                 self._switching = False
                 self._cond.notify_all()
-                return bool(clean)
+        return bool(clean)
 
     def reserve_external_gpu(self, owner: str, *, owner_vram_budget_bytes: int) -> str | None:
         """Reserve an idle scheduler for a future coordinated external session.

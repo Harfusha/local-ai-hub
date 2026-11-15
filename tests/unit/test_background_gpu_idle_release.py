@@ -158,3 +158,41 @@ def test_real_idle_timer_releases_scheduler_fence(tmp_path, monkeypatch):
         with worker._setup_lock:
             worker._cancel_idle_release_locked()
         scheduler.close()
+
+def test_background_gpu_acquisition_fails_closed_when_inventory_is_unavailable(tmp_path):
+    """Inventory uncertainty must clear the switching flag and release the fence."""
+    import time
+
+    scheduler = AffinityScheduler(
+        SimpleNamespace(loaded_model_inventory=lambda **_kwargs: {"complete": False}),
+        {"server": {"state_dir": str(tmp_path)}},
+    )
+    try:
+        with scheduler._cond:
+            scheduler._last_foreground_activity = time.monotonic() - 100
+        assert scheduler.acquire_background_gpu(min_idle_seconds=0) is False
+        assert scheduler._background_gpu_lease is False
+        assert scheduler._switching is False
+        assert scheduler._internal_gpu_digest is None
+    finally:
+        scheduler.close()
+
+
+def test_background_gpu_acquisition_empty_verified_inventory(tmp_path):
+    """Verified empty inventory may lend GPU without masking cleanup failures."""
+    import time
+
+    inventory = lambda **_kwargs: {"complete": True, "backend_available": True, "errors": {}, "models": []}
+    scheduler = AffinityScheduler(
+        SimpleNamespace(loaded_model_inventory=inventory),
+        {"server": {"state_dir": str(tmp_path)}},
+    )
+    try:
+        with scheduler._cond:
+            scheduler._last_foreground_activity = time.monotonic() - 100
+        assert scheduler.acquire_background_gpu(min_idle_seconds=0) is True
+        assert scheduler._background_gpu_lease is True
+        assert scheduler._switching is False
+        assert scheduler.release_background_gpu() is True
+    finally:
+        scheduler.close()
