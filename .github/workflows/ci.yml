@@ -1,7 +1,11 @@
 name: CI
 
+# Feature branches with an open PR run once per update through pull_request.
+# Keep independent master and tagged-release pushes fully verified.
 on:
   push:
+    branches: [master]
+    tags: ["v*"]
   pull_request:
   schedule:
     - cron: "17 2 * * 2"
@@ -14,6 +18,12 @@ on:
 
 permissions:
   contents: read
+
+# New commits supersede stale PR runs; never cancel master, tag, scheduled,
+# or explicitly dispatched verification.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || format('{0}-{1}', github.event_name, github.ref) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   NO_TEST_CACHE: "1"
@@ -76,6 +86,7 @@ jobs:
           tests/test_audit_acceptance_truth.py
           tests/test_http_scoped_tasks.py
           tests/test_companion_skill_installation.py
+          tests/test_ci_event_policy.py
 
   platform-smoke:
     timeout-minutes: 90
