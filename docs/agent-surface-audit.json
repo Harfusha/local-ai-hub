@@ -1066,6 +1066,9 @@
         "source": "src/local_ai_hub/http_server.py",
         "handler": "do_GET",
         "literal_response_fields": [
+          "degraded",
+          "dependencies",
+          "endpoint_stats",
           "endpoint_stats_available",
           "generated_at",
           "health",
@@ -1073,6 +1076,7 @@
           "quality_evidence",
           "success",
           "telemetry_available",
+          "telemetry_days",
           "window"
         ],
         "response_producers": [],
