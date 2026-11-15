@@ -577,6 +577,25 @@ def search_structurally(
                         "snippet": raw_line[:120],
                     })
 
+    if expected_revision is not None:
+        # The repository can change after the initial inventory check and
+        # while reading/parsing source files. Recheck before returning a page:
+        # otherwise a valid incoming token could authorize mixed revisions.
+        post_scan_revision = source_inventory_revision(
+            root_path, target_pattern, files_to_scan[0] if path and files_to_scan else None,
+            ignore_dirs, is_symlink_or_reparse_point=is_symlink_or_reparse_point,
+        )
+        if post_scan_revision is None:
+            return {"success": False, "status_code": 503, "terminal": False,
+                    "retryable": True, "error_code": "search_revision_unavailable",
+                    "error": "source inventory could not be verified after scanning"}
+        if post_scan_revision != expected_revision:
+            return {"success": False, "status_code": 409, "terminal": True,
+                    "retryable": False, "error_code": "stale_search_revision",
+                    "error": "source inventory changed while scanning; restart pagination at zero",
+                    "current_revision": post_scan_revision,
+                    "restart_offset": 0, "restart_match_offset": 0}
+
     returned_matches = results[:output_limit]
     overflow = len(results) > output_limit
     next_offset: int | None = None

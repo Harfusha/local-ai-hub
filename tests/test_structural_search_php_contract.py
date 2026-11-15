@@ -230,6 +230,39 @@ def test_revision_guard_supports_exact_path_and_legacy_numeric_offsets(tmp_path)
     assert [item["line"] for item in legacy["matches"]] == [3]
 
 
+
+def test_revision_guard_rechecks_after_source_read_during_page(tmp_path):
+    source = tmp_path / "methods.php"
+    source.write_text("<?php\nfunction needle() {}\nfunction needle() {}\n", encoding="utf-8")
+    first = _scan(tmp_path, "fn:needle", path="methods.php", max_results=1)
+    assert first["success"] and first["has_more"]
+
+    changed = {"applied": False}
+
+    def rewrite_after_initial_inventory(candidate):
+        # The first inventory hashes metadata without reading bytes; force a
+        # normal editor-like rewrite between that check and the source read.
+        if candidate == source and not changed["applied"]:
+            changed["applied"] = True
+            source.write_text(
+                "<?php\nfunction needle() {}\nfunction needle() {}\nfunction needle() {}\n",
+                encoding="utf-8",
+            )
+        return candidate.is_symlink()
+
+    result = search_structurally(
+        str(tmp_path), "fn:needle", path="methods.php", max_results=1,
+        match_offset=first["next_match_offset"],
+        expected_revision=first["inventory_revision"],
+        is_symlink_or_reparse_point=rewrite_after_initial_inventory,
+    )
+    assert changed["applied"] is True
+    assert (result["success"], result["status_code"], result["error_code"]) == (
+        False, 409, "stale_search_revision",
+    )
+    assert "matches" not in result
+
+
 def test_mcp_expected_revision_is_scoped_to_structural_search():
     from local_ai_hub.operation_contracts import operation_parameters_schema, validate_operation_arguments
 
