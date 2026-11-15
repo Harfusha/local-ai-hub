@@ -111,3 +111,30 @@ Po každé úspěšné sadě ulož strojově čitelný receipt a do dokumentu do
 3. Pracuj v existujícím PR #8, nezakládej duplicitní PR ani vedlejší kompletní rewrite. Změny seskupuj do revizovatelných commitů, zachovej bezpečnostní kontrakty.
 4. Než označíš bod jako dokončený, dej mu nový test či důkaz, přesný Git SHA a CI job / JUnit / coverage link.
 5. Do `master` a produkčního release sáhni až po **kompletních zelených povinných kontrolách** a výslovném vyhodnocení externích gate. Dokud chybí, nech PR jako **draft**.
+
+## 7. Pokračování auditu — nové opravy po původním handoffu (15. 11. 2026)
+
+Změny níže jsou **skutečně commitnuté do PR #8**, nikoliv jen návrhy. Jde o následné revize původního handoffu po SHA `987fd7bd`. Stav testů ber jen podle **finálního HEAD** z GitHub Actions, nikoliv podle starších úspěšných jobs.
+
+| Commit | Změna | Ověření |
+|---|---|---|
+| [`a32c1b84`](https://github.com/Harfusha/local-ai-hub/commit/a32c1b84b6ee0d21f06b9001ee8a89f263421417) | Oprava deterministického CI dirty-tree: generovaný `token-economizer/SKILL.md` odpovídá verzované verzi; parity test ve fast-contract. | Zdrojová oprava + regresní test; nové CI zatím bez potvrzeného výsledku. |
+| [`4742671a`](https://github.com/Harfusha/local-ai-hub/commit/4742671a93eaf53e25914bc865c1eb0434a2a02f) | `SinglePassIngestCache` omezuje nadbytečné reready stabilních souborů; při změně/nejistotě znovu čte hash; regresní test změny stejné velikosti. | Zdrojová oprava + test; čeká na integrační běh. Metadata jsou optimalizační indikátor, **nikoliv bezpečnostní důkaz SHA256**. |
+| [`d7daf50c`](https://github.com/Harfusha/local-ai-hub/commit/d7daf50c47e388d5bc5b98f0575556109799fcd7) | GPU scheduler nevrací z `finally` (Python 3.14 SyntaxWarning a maskování výjimek); regresní test bezpečné nepřipravenosti i získání/uvolnění lease. | Zdrojová oprava + test; čeká na relevantní CI. |
+| [`9af1600f`](https://github.com/Harfusha/local-ai-hub/commit/9af1600fa3c12648dc31199dfd6ba43ec55e5825) | CI už neduplikuje feature-branch push a PR, staré PR matrix běhy budou při dalších změnách přerušované; master/tag/schedule/manual zůstávají plně zachovány. | Nový test event policy ve fast-contract; ověření nového workflow nutné. |
+
+### Nový konkrétní důkaz z již dokončeného staršího CI
+
+- GitHub Actions [`43726782408`](https://github.com/Harfusha/local-ai-hub/actions/runs/43726782408) na `e04a4460` (starší SHA, **ne aktuální**): lint, mypy 3.11/3.13, fast-contract, critical-coverage = PASS. Dvanáct `platform-smoke` jobs mělo FAIL v `Reject tracked test mutations` kvůli přepisování `skills/token-economizer/SKILL.md` generátorem, což motivovalo commit `a32c1b84`. Linux/Python 3.14 full integration stále FAIL.
+- V historickém full integration logu se vyskytl `test_t2_13_ingest_contention_isolated_across_roots` s opakovanými čteními snapshotu (`4 != 1`), na což míří commit `4742671a`. Zůstaly také další nesouvisející chyby, např. `test_command_rollback.py`; je potřeba získat **nový** aktuální failure list. Chromium zygote SIGABRT je environment blocker, nikoli úspěšný E2E.
+- Starší výsledky nijak nedokazují PASS na novějším SHA. `package` byl u staršího běhu přeskočen, protože `needs` nebyly zelené.
+
+### Nejbližší P0 kroky pro dalšího agenta
+
+1. Na nejnovějším HEAD ověř Actions fast-contract, lint, typing, Windows critical-coverage, 12 platform-smoke, Linux/Python 3.14 full integration a až potom package/wheel smoke. Specificky očekávej kontrolu dirty-tree a `tests/test_ci_event_policy.py`.
+2. Pokud integrační testy stále selhávají, klasifikuj pouze aktuální reprodukovatelná selhání. Nevyvozuj počet zbývajících chyb z historického logu `43726782408`.
+3. U ingest-cache ověř chování na NTFS/reparse point, same-size/timestamp rollback a race s invalidate; správnost musí být důležitější než metadata fast-path. Nesmí být obejita root autorizace ani cryptographic provenance pro RAG.
+4. Dokonči důvěryhodné exact-SHA CI/coverage/package receipts, RAG fault injection, dashboard parity a externí host/browser/GPU acceptance podle sekcí 3–5.
+
+**Release stav:** PR zůstává draft; bez kompletního zeleného CI a externích důkazů není v6.0.0 připravena na merge/tag.
+
