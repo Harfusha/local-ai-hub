@@ -3154,15 +3154,30 @@ class RepositoryTools:
                 if project_settings is not None and not self._project_file_allowed(base, path, project_settings):
                     continue
                 read_jobs.append(((rel, line_numbers), path))
+            # A filename nominated by a precise expansion can arrive from
+            # ripgrep's bounded fallback without being in priority_relpaths.
+            # Ensure a small number of these already-opened source snapshots
+            # have their full line span ranked, otherwise ripgrep's per-file
+            # max-count can hide the actual identifier near EOF.
+            named_file_scan_slots = 4
             for (rel, line_numbers), file_hash, lines, error in self._read_search_snapshots(read_jobs):
                 if error is not None:
                     read_errors += 1
                     continue
                 scanned += 1
                 path_lower = rel.lower()
+                named_expansion = (
+                    named_file_scan_slots > 0
+                    and bool(expanded_terms)
+                    and len(lines) <= 4096
+                    and Path(rel).stem.casefold() in expanded_terms
+                    and rel not in priority_relpaths
+                )
+                if named_expansion:
+                    named_file_scan_slots -= 1
                 source_lines = (
                     range(1, len(lines) + 1)
-                    if rel in priority_relpaths else line_numbers
+                    if rel in priority_relpaths or named_expansion else line_numbers
                 )
                 for line_no in source_lines:
                     idx = line_no - 1

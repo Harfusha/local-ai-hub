@@ -1240,6 +1240,9 @@ def test_adaptive_retrieval_skips_optional_backends_when_builtin_confidence_is_h
 def test_adaptive_retrieval_skips_optional_backends_when_deadline_is_exhausted(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    from types import SimpleNamespace
+    from local_ai_hub import services as services_module
+
     class FakeRepoTools:
         @staticmethod
         def context_pack_paths(root: str, query: str, paths: list[str], *, max_tokens: int, top_k: int) -> dict:
@@ -1252,11 +1255,6 @@ def test_adaptive_retrieval_skips_optional_backends_when_deadline_is_exhausted(
     class SlowDeterministic:
         @staticmethod
         def related_paths(_root: str, _query: str, *, limit: int) -> list[str]:
-            # Consume the actual 50-ms optional-backend budget instead of
-            # monkeypatching time.perf_counter globally (which also affects
-            # unrelated context/deadline helpers and makes the assertion
-            # dependent on implementation-specific call counts).
-            time.sleep(0.10)
             return ["src/local.py"]
 
     class FakeExternal:
@@ -1280,6 +1278,15 @@ def test_adaptive_retrieval_skips_optional_backends_when_deadline_is_exhausted(
     services.external_tools = FakeExternal()
     services.evidence_store = None
     services.rag = None
+
+    # Repository/index preparation is intentionally outside the optional
+    # backend time budget. Simulate expiry AFTER that budget starts rather
+    # than sleeping in a preparation stage or patching time globally.
+    ticks = iter((10.0, 10.0, 10.0, 10.1))
+    monkeypatch.setattr(
+        services_module, "time",
+        SimpleNamespace(perf_counter=lambda: next(ticks, 10.1)),
+    )
 
     result = services._hybrid_context_uncached(
         str(tmp_path), "find local evidence", workspace=None, max_tokens=400, quality_first=True
