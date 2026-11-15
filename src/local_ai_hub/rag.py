@@ -2616,13 +2616,13 @@ class RAGStore:
                 # Preserve the caller's original path for no-follow I/O.
                 # Resolving it here would hide an in-root symlink from the reader.
                 path = root_path / rel
-                if ".." in path.relative_to(root_path).parts:
-                    read_uncertain_paths.add(rel)
-                    continue
                 try:
+                    if ".." in path.relative_to(root_path).parts:
+                        continue
                     relative_path = path.resolve(strict=False).relative_to(root_path)
                 except (OSError, RuntimeError, ValueError):
-                    read_uncertain_paths.add(rel)
+                    # Absolute, escaped or invalid paths are not valid RAG
+                    # inventory entries and must not reach a file reader.
                     continue
                 ignored_parts = relative_path.parts[:-1]
                 requested_path = Path(os.path.normpath(rel))
