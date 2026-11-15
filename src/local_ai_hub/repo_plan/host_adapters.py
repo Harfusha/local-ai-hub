@@ -335,7 +335,9 @@ def resolve_antigravity_cli() -> Path | None:
         if located:
             candidates.append(Path(located))
     local_app_data = os.environ.get("LOCALAPPDATA")
-    if os.name == "nt" and local_app_data:
+    # LOCALAPPDATA is an explicit installation hint, including compatibility
+    # environments on POSIX. The path must still identify a regular file.
+    if local_app_data:
         candidates.append(Path(local_app_data) / "agy" / "bin" / "agy.exe")
 
     for candidate in candidates:
