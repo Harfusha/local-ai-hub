@@ -59,6 +59,12 @@ def test_embedding_renews_gpu_fence_until_long_inference_finishes(tmp_path, monk
     model._encode_request_key = lambda _texts, _query: "long-inference"
     model._encode_uncached = long_inference
     monkeypatch.setattr("local_ai_hub.embeddings.uses_torch_cuda", lambda *_args: True)
+    # This test verifies the lease heartbeat, not physical GPU discovery.
+    # Simulate a valid VRAM budget on GPU-free CI workers.
+    monkeypatch.setattr(
+        "local_ai_hub.external_gpu_reservation.conservative_gpu_capacity_budget_bytes",
+        lambda: 1024 * 1024 * 1024,
+    )
 
     result = model.encode(["slow query"], query=True)
 

@@ -2294,7 +2294,9 @@ def test_execute_does_not_kill_or_reap_after_tree_cleanup_is_unconfirmed(
     assert cleanup_calls == [(process.pid, 2.0)]
     assert process.kill_calls == 0
     assert process.wait_calls == 0
-    assert group_signals == []
+    # Signal 0 is a non-mutating process-group existence probe; no kill or
+    # reap is attempted after tree termination remains unconfirmed.
+    assert group_signals == [(process.pid, 0)]
     assert result["cleanup_unconfirmed"] is True
     assert result["outcome_unknown"] is True
     assert result["fail_closed"] is True

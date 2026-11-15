@@ -1032,9 +1032,7 @@ description: Reduce repetitive agent context and tool output while preserving ve
 
 # Token Economizer
 
-Use this skill when agent tasks involve large repositories, repeated retrieval
-passes, or long-running multi-step work. It is a workflow discipline, not a
-promise to suppress necessary evidence.
+Use when starting any coding or repository task. Load and follow this skill before any coding or repository task, including multi-step work under deadline pressure. It is a workflow discipline, not a promise to suppress necessary evidence.
 
 ## Procedure
 
@@ -1059,6 +1057,21 @@ promise to suppress necessary evidence.
    or evidence needed to prove acceptance in order to reduce token use.
 8. If current data differs from stored evidence, invalidate the stored summary
    and redo the relevant verification.
+
+## Zero Full-File Dumping
+
+Avoid dumping source files longer than 80 lines; prefer precise, bounded slices
+and scoped indexed search. Use `tokcount` to measure actual token use and
+`trim-run` only for supported read-only or summary-producing commands.
+
+## Response budget and safe fallback
+
+- `response_budget.returned_tokens` measures the final serialized response envelope in `estimated_tokens` and stays at or below the requested budget.
+- Preserve protected status, error, evidence, and context-identity fields; keep exact detail artifact-backed.
+- Claim savings only with a current `baseline_evidence_id`; report signed `token_savings_delta_est`, including negative values; keep `protocol_tokens_est`, `schema_tokens_est`, and `local_compute_reused_tokens_est` separate.
+- Reject `max_response_tokens` below 128; never raise the request silently.
+- For Hub outages, native fallback requires explicit `terminal=true` and `retryable=false`; for Hub-unknown commands, require `native_fallback_allowed=true` plus native-tool authorization.
+- On `outcome_unknown` or `in_progress`, do independent work; never poll or repeat the identical operation.
 
 ## Integration with Local AI Hub
 
