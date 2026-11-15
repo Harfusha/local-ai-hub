@@ -5,6 +5,8 @@
 
 let activeSection = "overview";
 let timelineCursor = null;
+let taskCursor = 0;
+let taskLoadedRoot = "";
 let currentPollTimer = null;
 let activeAbortController = null;
 let lastSuccessAt = 0;
@@ -329,12 +331,12 @@ async function loadAgentHosts() {
 /**
  * Task Board & Coordination (HUB-096).
  */
-async function loadTasks() {
+async function loadTasks(loadMore = false) {
   const statusEl = document.getElementById("tasks-status");
   const listEl = document.getElementById("task-list");
   const rootInput = document.getElementById("tasks-root");
+  const loadMoreBtn = document.getElementById("load-more-tasks");
   const root = rootInput ? rootInput.value.trim() : "";
-
   if (!listEl) return;
   const epoch = ++sectionRequestEpochs.tasks;
   const isAbsoluteRoot = root.startsWith("/") || root.startsWith("\\\\") ||
@@ -344,55 +346,63 @@ async function loadTasks() {
     if (statusEl) statusEl.textContent = "Repository root must be absolute.";
     return;
   }
+  if (!loadMore || root !== taskLoadedRoot) {
+    taskCursor = 0;
+    taskLoadedRoot = root;
+    listEl.replaceChildren();
+  }
+  const previousOffset = taskCursor;
   if (statusEl) statusEl.textContent = "Loading tasks…";
-  listEl.replaceChildren();
-
-  const url = root ? `/api/agent-state/tasks?root=${encodeURIComponent(root)}` : "/api/agent-state/tasks";
-  const res = await request(url);
+  const params = new URLSearchParams({ limit: "50", offset: String(taskCursor) });
+  if (root) params.set("root", root);
+  const res = await request(`/api/agent-state/tasks?${params.toString()}`);
   if (!isCurrentSectionRequest("tasks", epoch) || rootInput?.value.trim() !== root) return;
-
-  if (!res.ok || !res.data) {
-    if (statusEl) statusEl.textContent = "Failed to load tasks: " + (res.data?.error || "service unavailable");
+  if (!res.ok || !res.data || !Array.isArray(res.data.tasks) ||
+      typeof res.data.has_more !== "boolean") {
+    if (statusEl) statusEl.textContent = "Failed to load task records or the API contract changed.";
     return;
   }
-
-  const items = Array.isArray(res.data.tasks) ? res.data.tasks : [];
+  const items = res.data.tasks;
   if (statusEl) {
-    statusEl.textContent = items.length === 0 ? "No active tasks recorded." : `Showing ${items.length} tasks. Expand a task to inspect every field returned by the stored record.`;
+    const scope = root ? "selected repository" : "this installation";
+    const partial = res.data.query_truncated ? " Scan incomplete; additional records may exist." : "";
+    statusEl.textContent = `Loaded ${items.length} tasks for ${scope} on this page.${partial}`;
   }
-
   for (const record of items) {
     const card = document.createElement("article");
     card.className = "task-card";
-
     const title = document.createElement("h3");
     title.textContent = (record.task_id || "Task") + " · " + (record.status || "unknown");
-
     const desc = document.createElement("p");
     desc.textContent = record.title || record.acceptance_criteria || "No description";
-
     const details = document.createElement("details");
     const summary = document.createElement("summary");
     summary.textContent = "Show stored task details";
-
     const payload = document.createElement("pre");
     payload.textContent = JSON.stringify(record, null, 2);
-
     details.append(summary, payload);
     card.append(title, desc, details);
     listEl.append(card);
   }
 
-  // Also query worktrees if root provided
+  const next = res.data.next_offset;
+  const progressed = Number.isSafeInteger(next) && next > previousOffset;
+  taskCursor = progressed ? next : previousOffset;
+  if (loadMoreBtn) {
+    loadMoreBtn.disabled = !res.data.has_more || !progressed;
+    if (res.data.has_more && progressed) loadMoreBtn.removeAttribute("hidden");
+    else loadMoreBtn.setAttribute("hidden", "");
+  }
+
   const wtResponse = document.getElementById("worktree-response");
-  if (wtResponse && root) {
+  if (wtResponse && root && !loadMore) {
     const wtRes = await request(`/api/coord/worktrees?root=${encodeURIComponent(root)}`);
     if (!isCurrentSectionRequest("tasks", epoch) || rootInput?.value.trim() !== root) return;
-    if (wtRes.ok && wtRes.data) {
-      wtResponse.textContent = JSON.stringify(wtRes.data, null, 2);
-    } else {
-      wtResponse.textContent = "Worktrees unavailable: " + (wtRes.data?.error || "error");
-    }
+    wtResponse.textContent = wtRes.ok && wtRes.data
+      ? JSON.stringify(wtRes.data, null, 2)
+      : "Worktrees unavailable: " + (wtRes.data?.error || "error");
+  } else if (wtResponse && !root && !loadMore) {
+    wtResponse.textContent = "Choose a repository root to inspect its worktrees.";
   }
 }
 
@@ -623,7 +633,9 @@ document.addEventListener("DOMContentLoaded", () => {
   if (loadHostsBtn) loadHostsBtn.addEventListener("click", loadAgentHosts);
 
   const loadTasksBtn = document.getElementById("load-tasks");
-  if (loadTasksBtn) loadTasksBtn.addEventListener("click", loadTasks);
+  if (loadTasksBtn) loadTasksBtn.addEventListener("click", () => loadTasks(false));
+  const loadMoreTasksBtn = document.getElementById("load-more-tasks");
+  if (loadMoreTasksBtn) loadMoreTasksBtn.addEventListener("click", () => loadTasks(true));
 
   const loadModelsBtn = document.getElementById("load-models");
   if (loadModelsBtn) loadModelsBtn.addEventListener("click", loadModels);
