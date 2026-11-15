@@ -15,6 +15,10 @@ docs/PERFORMANCE_REGRESSION_BUDGET.md.
 from __future__ import annotations
 
 import argparse
+import os
+import platform
+import subprocess
+import sys
 import json
 import sqlite3
 import sys
@@ -207,7 +211,23 @@ def run_all(iterations: int = 7) -> dict[str, Any]:
         if p95 > b_p95:
             violations.append(f"{name} p95={p95:.2f}ms exceeds budget {b_p95:.2f}ms")
 
+    try:
+        revision = subprocess.run(
+            ["git", "rev-parse", "HEAD"], capture_output=True, text=True,
+            check=True, timeout=3,
+        ).stdout.strip()
+    except (OSError, ValueError, subprocess.SubprocessError):
+        revision = None
     return {
+        "scope": "synthetic_microbench_only",
+        "repository_workload": "NOT_RUN",
+        "model_pipeline": "NOT_RUN",
+        "environment": {
+            "git_head_sha": revision,
+            "platform": platform.platform(),
+            "python": sys.version.split()[0],
+            "cpu_count": os.cpu_count(),
+        },
         "success": len(violations) == 0,
         "iterations": iterations,
         "metrics": results,
@@ -234,7 +254,7 @@ def main() -> int:
         for v in report["violations"]:
             print(f"  [FAIL] {v}")
     else:
-        print("\nALL PERFORMANCE BUDGETS SATISFIED (0 regressions)")
+        print("\nSYNTHETIC MICROBENCH BUDGETS SATISFIED (full workload/model pipeline NOT RUN)")
 
     if args.output:
         out_path = Path(args.output)

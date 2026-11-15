@@ -75,6 +75,7 @@ jobs:
           tests/test_async_job_http_status_mapping.py
           tests/test_audit_acceptance_truth.py
           tests/test_http_scoped_tasks.py
+          tests/test_companion_skill_installation.py
 
   platform-smoke:
     timeout-minutes: 90
