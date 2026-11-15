@@ -268,10 +268,16 @@ def test_structural_search_returns_explicit_http_error_codes(tmp_path):
 def test_structural_search_rejects_malformed_transport_fields_without_exceptions(tmp_path):
     source = tmp_path / "main.php"
     source.write_text("<?php function needle() {}\n", encoding="utf-8")
-    for root in ("", "\x00", 12):
+    for root in ("", "\x00"):
         result = _scan(root, "fn:needle")
         assert result["success"] is False
         assert result["status_code"] == 400
+    # The convenience _scan helper stringifies root, so test invalid types
+    # against the public search engine directly.
+    invalid_root = search_structurally(
+        12, "fn:needle", is_symlink_or_reparse_point=lambda path: path.is_symlink(),
+    )
+    assert (invalid_root["success"], invalid_root["status_code"]) == (False, 400)
     for pattern in (None, 123, "a" * 513, "needle\x00"):
         result = _scan(tmp_path, pattern)
         assert result["success"] is False
