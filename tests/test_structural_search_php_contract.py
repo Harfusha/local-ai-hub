@@ -159,3 +159,41 @@ def test_mcp_structural_search_large_repository_file_offset_schema():
     assert validate_operation_arguments("local_ai_repo", "search", {
         "root": "/repo", "query": "needle", "file_offset": 8000,
     }) is not None
+
+
+def test_c_family_function_and_class_queries_ignore_multiline_comments_and_strings(tmp_path):
+    script = tmp_path / "app.ts"
+    script.write_text(
+        '/* class TargetFake { }\\n'
+        'function TargetFake() {} */\\n'
+        'const example = "function TargetFake() {}";\\n'
+        'const template = `class TargetFake {}`;\\n'
+        '// function TargetFake() {}\\n'
+        '/* start */ class ActualTarget {}\\n'
+        'function ActualFunction() {} // class TargetFake {}\\n',
+        encoding="utf-8",
+    )
+    assert _scan(tmp_path, "class:TargetFake")["matches"] == []
+    assert _scan(tmp_path, "fn:TargetFake")["matches"] == []
+    assert [(m["file"], m["line"]) for m in _scan(tmp_path, "class:ActualTarget")["matches"]] == [("app.ts", 6)]
+    assert [(m["file"], m["line"]) for m in _scan(tmp_path, "fn:ActualFunction")["matches"]] == [("app.ts", 7)]
+
+
+def test_php_class_and_function_queries_ignore_markup_and_comments(tmp_path):
+    source = tmp_path / "page.php"
+    source.write_text(
+        '<div>class FakeMarkup {}</div>\\n'
+        '<?php\\n'
+        '# function NotReal() {}\\n'
+        '$text = "class FakeMarkup {}";\\n'
+        '/* function NotReal() {} */\\n'
+        'class RealClass {}\\n'
+        'function real_function() {}\\n'
+        '?>\\n'
+        '<div>function NotReal() {}</div>\\n',
+        encoding="utf-8",
+    )
+    assert _scan(tmp_path, "class:FakeMarkup")["matches"] == []
+    assert _scan(tmp_path, "fn:NotReal")["matches"] == []
+    assert [m["line"] for m in _scan(tmp_path, "class:RealClass")["matches"]] == [6]
+    assert [m["line"] for m in _scan(tmp_path, "fn:real_function")["matches"]] == [7]

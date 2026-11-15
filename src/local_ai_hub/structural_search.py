@@ -14,6 +14,95 @@ from .process_utils import canonical_root
 logger = logging.getLogger(__name__)
 
 
+
+def _masked_declaration_lines(source: str, suffix: str) -> list[str]:
+    """Mask C-family strings/comments while retaining line/column positions.
+
+    This is a conservative lexical fallback, not a full PHP/JS/TS parser.
+    Template interpolation and PHP markup are treated as non-code. Other
+    structure heuristics intentionally use the original source.
+    """
+    chars = list(source)
+    state = "code"
+    in_php = suffix != ".php"
+    i = 0
+    length = len(source)
+
+    def mask(start: int, stop: int) -> None:
+        for pos in range(start, stop):
+            if source[pos] not in "\r\n":
+                chars[pos] = " "
+
+    while i < length:
+        current = source[i]
+        following = source[i + 1] if i + 1 < length else ""
+
+        if state == "line_comment":
+            if current in "\r\n":
+                state = "code"
+            else:
+                mask(i, i + 1)
+                i += 1
+                continue
+        elif state == "block_comment":
+            if current == "*" and following == "/":
+                mask(i, i + 2)
+                i += 2
+                state = "code"
+                continue
+            mask(i, i + 1)
+            i += 1
+            continue
+        elif state in {"'", '"', "`"}:
+            if current == "\\":
+                mask(i, min(i + 2, length))
+                i += 2
+                continue
+            mask(i, i + 1)
+            i += 1
+            if current == state:
+                state = "code"
+            continue
+
+        if suffix == ".php" and not in_php:
+            if source.startswith("<?", i):
+                tag_len = 5 if source[i:i+5].lower() == "<?php" else 3 if source.startswith("<?=", i) else 2
+                mask(i, i + tag_len)
+                i += tag_len
+                in_php = True
+                continue
+            mask(i, i + 1)
+            i += 1
+            continue
+        if suffix == ".php" and source.startswith("?>", i):
+            mask(i, i + 2)
+            i += 2
+            in_php = False
+            continue
+        if current == "/" and following == "/":
+            mask(i, i + 2)
+            i += 2
+            state = "line_comment"
+            continue
+        if current == "/" and following == "*":
+            mask(i, i + 2)
+            i += 2
+            state = "block_comment"
+            continue
+        if suffix == ".php" and current == "#":
+            mask(i, i + 1)
+            i += 1
+            state = "line_comment"
+            continue
+        if current in {"'", '"', "`"}:
+            state = current
+            mask(i, i + 1)
+            i += 1
+            continue
+        i += 1
+    return "".join(chars).splitlines()
+
+
 def search_structurally(
     root: str,
     pattern: str,
@@ -156,6 +245,13 @@ def search_structurally(
             continue
 
         lines = content.splitlines()
+        declaration_lines = (
+            _masked_declaration_lines(content, fpath.suffix)
+            if fpath.suffix != ".py" and target_pattern.startswith((
+                "fn:", "function:", "class:", "struct:", "interface:",
+            ))
+            else lines
+        )
         file_result_start = len(results)
         parse_failed = False
 
@@ -306,6 +402,7 @@ def search_structurally(
                 if len(results) >= result_probe_limit:
                     break
                 raw_line = line.strip()
+                declaration_line = declaration_lines[idx - 1].strip()
                 if not raw_line or raw_line.startswith(("//", "#", "/*", "*")):
                     continue
                 matched = False
@@ -360,13 +457,13 @@ def search_structurally(
                 # Universal prefix queries: fn:name, class:name, struct:name, interface:name
                 elif target_pattern.startswith("fn:") or target_pattern.startswith("function:"):
                     fn_name = target_pattern.split(":", 1)[1].strip().lower()
-                    if re.search(rf"\b(?:def|function|fn|func)\s+{re.escape(fn_name)}\b", raw_line, re.I):
+                    if re.search(rf"\b(?:def|function|fn|func)\s+{re.escape(fn_name)}\b", declaration_line, re.I):
                         matched = True
                         struct_type = f"function:{fn_name}"
                         desc = f"Function declaration matching '{fn_name}'"
                 elif target_pattern.startswith("class:") or target_pattern.startswith("struct:") or target_pattern.startswith("interface:"):
                     prefix, ent_name = target_pattern.split(":", 1)
-                    if re.search(rf"\b(?:class|struct|interface|type)\s+{re.escape(ent_name.strip())}\b", raw_line, re.I):
+                    if re.search(rf"\b(?:class|struct|interface|type)\s+{re.escape(ent_name.strip())}\b", declaration_line, re.I):
                         matched = True
                         struct_type = f"{prefix}:{ent_name.strip()}"
                         desc = f"{prefix.capitalize()} declaration matching '{ent_name.strip()}'"
