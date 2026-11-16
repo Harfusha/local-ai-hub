@@ -148,7 +148,27 @@ def test_hybrid_fallback_prioritizes_pinned_context_before_noisy_candidates(tmp_
 
     assert result["success"] is True
     assert result["result_source"] == "lexical_fallback"
-    assert "docs/INSTALLATION.md" in {row["path"] for row in result["results"]}
+    paths = {row["path"] for row in result["results"]}
+    if "docs/INSTALLATION.md" not in paths:
+        # Diagnose whether pinned evidence was rejected by policy, lost in
+        # candidate enumeration or dropped by the bounded score ordering.
+        from local_ai_hub.project_config import resolve_project_context
+        context = resolve_project_context(root, tmp_path / "state")
+        indexed = list(tools._iter_project_search_files(
+            root, context.settings, 25, candidate_limit=272,
+        ))
+        backend = tools.search(
+            str(root), "Local AI Hub installation", project_settings=context.settings,
+            limit=10, exact_count=False, installation_intent_priority=True,
+        )
+        pytest.fail(str({
+            "pinned": context.settings.pinned_context,
+            "candidate_contains_pin": target in indexed,
+            "candidate_first": [p.relative_to(root).as_posix() for p in indexed[:12]],
+            "backend_engine": backend.get("engine"),
+            "backend_paths": [x.get("path") for x in backend.get("results", [])[:12]],
+            "service_paths": sorted(paths),
+        }))
     assert inventory_calls == [True]
 
 
