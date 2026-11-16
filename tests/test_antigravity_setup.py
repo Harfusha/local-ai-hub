@@ -48,7 +48,7 @@ def test_superpowers_install_preserves_custom_skill_and_uses_pinned_archive(tmp_
     data = io.BytesIO()
     with zipfile.ZipFile(data, "w") as archive:
         archive.writestr("repo/skills/using-superpowers/SKILL.md", "bootstrap")
-        archive.writestr("repo/skills/brainstorming/SKILL.md", "upstream")
+        archive.writestr("repo/skills/brainstorming/SKILL.md", "upstream\nline\n")
     payload = data.getvalue()
     monkeypatch.setattr(setup, "SUPERPOWERS_ARCHIVE_SHA256", hashlib.sha256(payload).hexdigest())
     monkeypatch.setattr(setup, "download_superpowers_archive", lambda: payload)
@@ -61,7 +61,9 @@ def test_superpowers_install_preserves_custom_skill_and_uses_pinned_archive(tmp_
     assert (target / "using-superpowers" / "SKILL.md").read_text(encoding="utf-8") == "bootstrap"
     setup.install_superpowers_skills(target)
     assert custom.read_text(encoding="utf-8") == "mine"
-    cached = tmp_path / ".local-ai-hub-superpowers" / "skills" / "using-superpowers" / "SKILL.md"
+    cached = tmp_path / ".local-ai-hub-superpowers" / "skills" / "brainstorming" / "SKILL.md"
+    cached.write_bytes(cached.read_bytes().replace(b"\n", b"\r\n"))
+    setup.install_superpowers_skills(target)
     cached.write_text("tampered", encoding="utf-8")
     with pytest.raises(ValueError, match="differs from pinned archive"):
         setup.install_superpowers_skills(target)

@@ -442,7 +442,7 @@ def install_superpowers_skills(target: Path, manifest: Path | None = None) -> No
                         if total_bytes > 20_000_000:
                             raise ValueError("Superpowers source exceeds size limit")
                         with path.open("rb") as stream:
-                            result[path.relative_to(directory).as_posix()] = hashlib.file_digest(stream, "sha256").hexdigest()
+                            result[path.relative_to(directory).as_posix()] = hashlib.sha256(stream.read().replace(b"\r\n", b"\n")).hexdigest()
                 return result
             if not existing.is_dir() or inventory(existing) != inventory(stage):
                 raise ValueError("Existing Superpowers source differs from pinned archive; review required")
