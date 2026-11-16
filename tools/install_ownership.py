@@ -217,7 +217,7 @@ def adopt_external_block(
     start = text.index(begin)
     stop = text.index(end) + len(end)
     block = text[start:stop]
-    if block != expected_block:
+    if block != expected_block and block.replace("\r\n", "\n") != expected_block:
         raise ValueError("external block changed since review")
 
     key = (str(target), begin, end)
@@ -228,7 +228,7 @@ def adopt_external_block(
         raise ValueError("duplicate external block ownership records")
     if matching:
         record = matching[0]
-        if record["last_hub_written_digest"] == _digest(block):
+        if record["last_hub_written_digest"] == _digest(expected_block):
             return False
         raise ValueError(f"owned external block was edited: {target}")
 
@@ -271,7 +271,7 @@ def adopt_external_block(
         "owner_marker": {"begin": begin, "end": end},
         "created_by_hub": False,
         "preimage_digest": _digest(block),
-        "last_hub_written_digest": _digest(block),
+        "last_hub_written_digest": _digest(expected_block),
         "rollback_reference": rollback_path.relative_to(root).as_posix(),
         "adoption_reason": audit_reason.strip(),
     })

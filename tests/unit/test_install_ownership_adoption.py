@@ -40,13 +40,15 @@ class ExternalBlockAdoptionTests(unittest.TestCase):
 
     def test_adopts_exact_block_with_rollback_and_idempotent_record(self) -> None:
         adopted = install_ownership.adopt_external_block(
-            self.root, self.target, owner_marker=self.marker, expected_block=self.block, consent=True,
+            self.root, self.target, owner_marker=self.marker,
+            expected_block=self.block.replace("\r\n", "\n"), consent=True,
             audit_reason="operator requested profile installation",
         )
 
         self.assertTrue(adopted)
         install_ownership.assert_external_block_writable(
-            self.root, self.target, owner_marker=self.marker, current_block=self.block,
+            self.root, self.target, owner_marker=self.marker,
+            current_block=self.block.replace("\r\n", "\n"),
         )
         manifest = json.loads((self.root / install_ownership.MANIFEST_NAME).read_text(encoding="utf-8"))
         record = manifest["external_ownership"][0]
@@ -56,7 +58,8 @@ class ExternalBlockAdoptionTests(unittest.TestCase):
         rollback = self.root / record["rollback_reference"]
         self.assertEqual(rollback.read_bytes().decode("utf-8"), self.block)
         self.assertEqual(install_ownership.adopt_external_block(
-            self.root, self.target, owner_marker=self.marker, expected_block=self.block, consent=True,
+            self.root, self.target, owner_marker=self.marker,
+            expected_block=self.block.replace("\r\n", "\n"), consent=True,
             audit_reason="operator requested profile installation",
         ), False)
 
