@@ -474,7 +474,7 @@ If any required skill or the Hub is unavailable, report the precise limitation a
     unmanaged = pattern.sub("", text)
     separator = "" if not unmanaged else "\n" if unmanaged.startswith("\n") else "\n\n"
     updated = policy + separator + unmanaged
-    if updated == text:
+    if updated == text or (preimage is not None and preimage.replace("\r\n", "\n") == policy):
         return
     if preimage is not None and _ACTIVE_INSTALL_ROOT is not None:
         assert_external_block_writable(_ACTIVE_INSTALL_ROOT, path, owner_marker=marker, current_block=preimage)

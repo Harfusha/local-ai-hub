@@ -43,7 +43,8 @@ def test_antigravity_policy_is_prepended_and_targets_discoverable_skills(tmp_pat
 def test_antigravity_policy_accepts_exact_unowned_block_without_rewriting(tmp_path, monkeypatch):
     rules = tmp_path / "AGENTS.md"
     setup.merge_antigravity_skill_policy(rules, False)
-    before = rules.read_bytes()
+    before = rules.read_bytes().replace(b"\n", b"\r\n")
+    rules.write_bytes(before)
     monkeypatch.setattr(setup, "_ACTIVE_INSTALL_ROOT", tmp_path / "install")
 
     setup.merge_antigravity_skill_policy(rules, False)
