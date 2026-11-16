@@ -2738,10 +2738,8 @@ class ProjectPreprocessor:
         now = time.time()
         order_sql, order_params = self._scheduler_order(now)
         watcher_active = bool(getattr(self, "_watcher_active", False))
+        self._write_retry(self._rebalance_processing_slots)
         with self._db_lock, closing(self._connect()) as con:
-            # Keep one durable queue order across CPU and GPU selectors.
-            self._rebalance_processing_slots(con)
-            con.commit()
             rows = con.execute(
                 """SELECT * FROM projects
                    WHERE paused=0 AND retry_after<=?
@@ -2928,10 +2926,9 @@ class ProjectPreprocessor:
     def _next_gpu_project(self) -> sqlite3.Row | None:
         now = time.time()
         order_sql, order_params = self._scheduler_order(now)
+        self._write_retry(self._rebalance_processing_slots)
         with self._db_lock, closing(self._connect()) as con:
             # GPU-bound phases: files, modules, project, hot_queries
-            self._rebalance_processing_slots(con)
-            con.commit()
             rows = con.execute(
                 """SELECT * FROM projects
                    WHERE paused=0 AND retry_after<=? AND status IN ('queued','running','error')

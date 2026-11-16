@@ -1,10 +1,13 @@
+import concurrent.futures
 import sqlite3
 import threading
+import time
 from contextlib import closing
 
 import pytest
 
 from local_ai_hub.preprocess import ProjectPreprocessor
+from local_ai_hub.preprocess_write_actor import PreprocessWriteActor
 
 
 @pytest.fixture
@@ -29,8 +32,10 @@ def scheduler(tmp_path, monkeypatch):
         con.commit()
 
     instance = ProjectPreprocessor.__new__(ProjectPreprocessor)
+    instance.db_path = db
     instance._connect = connect
     instance._db_lock = threading.RLock()
+    instance._sqlite_write_retries = 1
     instance.max_preprocessing_projects = 4
     instance._watcher_active = True
     now = [1_000_000.0]
@@ -372,6 +377,7 @@ def test_restart_resumes_from_persisted_phase(scheduler):
     resumed = ProjectPreprocessor.__new__(ProjectPreprocessor)
     resumed._connect = connect
     resumed._db_lock = threading.RLock()
+    resumed._sqlite_write_retries = 1
     resumed.max_preprocessing_projects = 4
 
     row = resumed._next_cpu_project()
@@ -398,3 +404,58 @@ def test_gpu_selector_respects_global_phase_order_and_files_precedes_modules(sch
     add(connect, "files", "files", updated_at=now - 10, last_requested_at=now - 5)
 
     assert instance._next_gpu_project()["root"] == "files"
+
+
+@pytest.mark.parametrize("selector", ["_next_cpu_project", "_next_gpu_project"])
+def test_scheduler_selector_serializes_rebalance_with_writer_actor(scheduler, selector):
+    instance, connect = scheduler
+    now = instance._test_now[0]
+    for index in range(5):
+        add(connect, f"project-{index}", "inventory", updated_at=now - 10, last_requested_at=now - 5)
+
+    actor = PreprocessWriteActor(instance.db_path, timeout_seconds=1)
+    actor.start()
+    actor_started = threading.Event()
+    selector_started = threading.Event()
+    release_actor = threading.Event()
+    selector_pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+    writer_pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+    try:
+        instance._write_actor = actor
+
+        def connect_with_short_timeout():
+            con = sqlite3.connect(actor.db_path, timeout=0.01)
+            con.row_factory = sqlite3.Row
+            return con
+
+        def hold_writer_transaction(con):
+            con.execute("UPDATE projects SET updated_at=updated_at WHERE root='project-0'")
+            actor_started.set()
+            release_actor.wait(2.0)
+
+        instance._connect = connect_with_short_timeout
+        blocker = writer_pool.submit(
+            actor.submit,
+            hold_writer_transaction,
+        )
+        assert actor_started.wait(1.0)
+
+        def select_project():
+            selector_started.set()
+            return getattr(instance, selector)()
+
+        selected = selector_pool.submit(select_project)
+        assert selector_started.wait(1.0)
+        time.sleep(0.05)
+        if selected.done():
+            selected.result()
+        assert not selected.done()
+
+        release_actor.set()
+        blocker.result(timeout=1.0)
+        selected.result(timeout=1.0)
+    finally:
+        release_actor.set()
+        actor.stop()
+        selector_pool.shutdown(wait=True)
+        writer_pool.shutdown(wait=True)
