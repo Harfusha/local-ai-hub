@@ -3135,6 +3135,11 @@ class ProjectPreprocessor:
                 continue
             try:
                 row = self._next_gpu_project()
+            except TimeoutError as exc:
+                logger.warning("GPU preprocessing project selection timed out (%s)", type(exc).__name__)
+                self._gpu_wakeup.wait(poll)
+                self._gpu_wakeup.clear()
+                continue
             except Exception as exc:
                 if not self._is_locked_error(exc):
                     raise
