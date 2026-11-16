@@ -128,6 +128,28 @@ def test_hybrid_fallback_prioritizes_pinned_context_before_noisy_candidates(tmp_
     monkeypatch.setattr(
         tools, "_git_files", lambda _root: inventory_calls.append(True) or None,
     )
+    # Temporary CI diagnosis: trace the exact backend call, not a different
+    # follow-up search with a different expansion/page size.
+    backend_observations = []
+    original_search = tools.search
+
+    def observed_search(*args, **kwargs):
+        value = original_search(*args, **kwargs)
+        backend_observations.append({
+            "query": args[1] if len(args) > 1 else None,
+            "candidate_query": kwargs.get("candidate_query"),
+            "limit": kwargs.get("limit"),
+            "installation_intent_priority": kwargs.get("installation_intent_priority"),
+            "candidate_paths": kwargs.get("candidate_paths"),
+            "engine": value.get("engine"),
+            "terms": value.get("terms"),
+            "truncated": value.get("truncated"),
+            "reasons": value.get("truncation_reasons"),
+            "paths": [hit.get("path") for hit in value.get("results", [])],
+        })
+        return value
+
+    monkeypatch.setattr(tools, "search", observed_search)
     service = object.__new__(LocalAIServices)
     service.config = {
         "server": {"state_dir": str(tmp_path / "state")},
@@ -148,7 +170,9 @@ def test_hybrid_fallback_prioritizes_pinned_context_before_noisy_candidates(tmp_
 
     assert result["success"] is True
     assert result["result_source"] == "lexical_fallback"
-    assert "docs/INSTALLATION.md" in {row["path"] for row in result["results"]}
+    returned_paths = {row["path"] for row in result["results"]}
+    if "docs/INSTALLATION.md" not in returned_paths:
+        pytest.fail(str({"backend": backend_observations, "service_paths": sorted(returned_paths)}))
     assert inventory_calls == [True]
 
 
