@@ -224,6 +224,8 @@ def validate_config(data: dict[str, Any]) -> None:
     _number(scheduler, "max_caller_wait_timeout_seconds", minimum=1, maximum=86400)
 
     laya = data.get("laya", {})
+    if type(laya.get("enabled", True)) is not bool:
+        raise ConfigError("laya.enabled must be boolean")
     _number(laya, "idle_unload_seconds", minimum=600, maximum=600, label="laya.idle_unload_seconds")
     idle_unload_seconds = laya.get("idle_unload_seconds") if isinstance(laya, dict) else None
     if isinstance(idle_unload_seconds, (int, float)) and not isinstance(idle_unload_seconds, bool) and not math.isfinite(float(idle_unload_seconds)):

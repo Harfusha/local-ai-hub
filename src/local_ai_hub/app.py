@@ -800,10 +800,10 @@ class LocalAIApp:
 
     def _observe_laya_watchdog_lifecycle(self) -> None:
         """Observe active task lifecycle states as shadow watchdog decisions."""
+        if not self._laya_inference_enabled():
+            return
         config = getattr(self, "config", {})
         laya_cfg = config.get("laya", {}) if isinstance(config, Mapping) else {}
-        if not laya_cfg.get("enabled", True):
-            return
         runtime_cfg = laya_cfg.get("runtime", {}) if isinstance(laya_cfg, Mapping) else {}
         if not runtime_cfg.get("checkpoint_path"):
             return
@@ -2854,6 +2854,8 @@ class LocalAIApp:
         baseline: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Run one typed shadow decision and capture its actual runtime outcome."""
+        if not self._laya_inference_enabled():
+            raise RuntimeError("Laya inference is disabled")
         if type(operation) is not dict or set(operation) != {
             "action", "task_id", "session_id", "evidence",
         }:
@@ -2975,6 +2977,8 @@ class LocalAIApp:
         _server_baseline: Mapping[str, str] | None = None,
     ) -> dict[str, Any]:
         """Run a caller-requested typed shadow decision without changing Hub behavior."""
+        if not self._laya_inference_enabled():
+            raise RuntimeError("Laya inference is disabled")
         if type(operation) is not dict or set(operation) != {"action", "task_id", "decision"}:
             raise ValueError("Laya decision fields invalid")
         if operation["action"] != "evaluate_decision":
@@ -3206,8 +3210,16 @@ class LocalAIApp:
             self.logger.warning("Laya capture telemetry failed: %s", type(exc).__name__)
             return False
 
+    def _laya_inference_enabled(self) -> bool:
+        config = getattr(self, "config", {})
+        laya_cfg = config.get("laya", {}) if isinstance(config, Mapping) else {}
+        return not (isinstance(laya_cfg, Mapping) and laya_cfg.get("enabled", True) is False)
+
     def queue_laya_completion_observation(self, operation: Any, root: str) -> dict[str, str]:
         """Persist a typed completion outcome asynchronously without affecting the gate."""
+        if not self._laya_inference_enabled():
+            self._record_laya_capture_observation("skipped", "laya_disabled")
+            return {"status": "skipped", "reason": "laya_disabled"}
         if (
             type(operation) is not dict
             or set(operation) != {"task_id", "session_id", "outcome"}
@@ -3350,6 +3362,8 @@ class LocalAIApp:
             self._record_laya_capture_observation("skipped", reason)
             return {"status": "skipped", "reason": reason}
 
+        if not self._laya_inference_enabled():
+            return skipped("laya_disabled")
         if type(operation) is not dict or set(operation) != {"action", "task_id", "decision"}:
             return skipped("decision_invalid")
         if operation.get("action") != "evaluate_decision" or not isinstance(root, str) or not root.strip():
@@ -3519,6 +3533,8 @@ class LocalAIApp:
         result: Any,
     ) -> dict[str, Any]:
         """Collect one real, incomplete context decision in shadow mode only."""
+        if not self._laya_inference_enabled():
+            return {"status": "skipped", "reason": "laya_disabled"}
         if not isinstance(result, dict) or result.get("success") is not True:
             return {"status": "skipped", "reason": "context_unavailable"}
         task_id = str(getattr(request, "task_id", "") or "").strip()

@@ -402,6 +402,12 @@ def test_config_accepts_the_fixed_ten_minute_laya_timeout():
     validate_config({"laya": {"idle_unload_seconds": 600}})
 
 
+def test_config_requires_boolean_laya_enabled():
+    validate_config({"laya": {"enabled": False}})
+    with pytest.raises(ConfigError, match="laya.enabled must be boolean"):
+        validate_config({"laya": {"enabled": "false"}})
+
+
 def test_configured_laya_checkpoint_is_valid_even_when_legacy_enabled_is_false(tmp_path):
     checkpoint = tmp_path / "pinned-revision"
     validate_config({"laya": {"idle_unload_seconds": 600, "runtime": {
