@@ -2983,6 +2983,7 @@ class RepositoryTools:
         candidate_engine = "python"
         project_candidates = None
         priority_relpaths: set[str] = set()
+        pinned_paths: set[str] = set()
         search_phase_timings_ms: dict[str, float] = {
             "git_inventory_ms": 0.0,
             "project_file_iteration_ms": 0.0,
@@ -3302,6 +3303,12 @@ class RepositoryTools:
                         ), default=0.0)
                     if installation_intent_priority:
                         score += _intent_path_adjustment(query, rel)
+                    # The pure-Python fallback must honor validated pinned
+                    # files exactly like the accelerated candidate path.
+                    # Pinned paths came from project_candidates, already
+                    # checked against project path and symlink policy.
+                    if rel in pinned_paths and project_settings is not None:
+                        score += 32.0
                     start = max(0, idx - effective_snippet_lines)
                     end = min(len(lines), idx + effective_snippet_lines + 1)
                     snippet = self._format_search_snippet(lines, start, end)
