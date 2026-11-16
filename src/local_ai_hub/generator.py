@@ -1100,10 +1100,7 @@ def generate_token_economy_policy(cfg: dict[str, Any] | None = None) -> str:
             if task_actions:
                 action_list = "|".join(f"`{action}`" for action in task_actions)
                 local_model_line = (
-                    f"- Local model routing follows the active `{fs.hardware_profile}` hardware profile and user overrides. "
-                    f"This profile exposes `local_ai_task` actions: {action_list}; use only these actions. "
-                    "Consult `docs/MODEL_CAPABILITIES.md`; configured routes do not prove models are installed. "
-                    "Deterministic/indexed tools remain authoritative for exact facts, symbols, diff and tests.\n"
+                    f"- Active `{fs.hardware_profile}` profile; use only exposed `local_ai_task` actions: {action_list}.\n"
                 )
         except Exception:
             pass
@@ -1115,12 +1112,10 @@ def generate_token_economy_policy(cfg: dict[str, Any] | None = None) -> str:
         "- Compress repo snapshots with `repomix --compress`/`files-to-prompt -c`; use `tokcount` for exact tokens.\n"
         "- Run tests/builds with the native command tool; use `trim-run` only with bundled `tokcount`/`repo-map`, read-only `rg`/`fd`/`grep-ast`, or stdin pipelines. Use `jq` for JSON.\n"
         "- Surgical edits: Prefer targeted block replacements over rewriting entire files.\n"
-        + "- `response_budget.returned_tokens` measures the final serialized response envelope in `estimated_tokens` and stays at or below the requested budget.\n"
-        + "- Preserve protected status, error, evidence, and context-identity fields; keep exact detail artifact-backed.\n"
-        + "- Claim savings only with a current `baseline_evidence_id`; report signed `token_savings_delta_est`, including negative values; keep `protocol_tokens_est`, `schema_tokens_est`, and `local_compute_reused_tokens_est` separate.\n"
-        + "- Reject `max_response_tokens` below 128; never raise the request silently.\n"
-        + "- For Hub outages, native fallback requires explicit `terminal=true` and `retryable=false`; for Hub-unknown commands, require `native_fallback_allowed=true` plus native-tool authorization.\n"
-        + "- On `outcome_unknown` or `in_progress`, do independent work; never poll or repeat the identical operation.\n"
+        + "- Keep `max_response_tokens` >=128; preserve status/error/evidence/context identity and artifact exact detail within budget.\n"
+        + "- Report savings only against current `baseline_evidence_id`, with signed delta and separate protocol/schema/reuse estimates.\n"
+        + "- Native fallback needs `terminal=true`, `retryable=false`; unknown commands also need `native_fallback_allowed=true` and host authorization.\n"
+        + "- For `outcome_unknown`/`in_progress`, do independent work; never poll or retry the same operation.\n"
         + local_model_line
         + "<!-- END TOKEN ECONOMY POLICY -->"
     )
