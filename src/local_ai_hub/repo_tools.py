@@ -3331,7 +3331,15 @@ class RepositoryTools:
                             break
                 if "result_limit" in truncation_reasons:
                     break
-        hits.sort(key=lambda x: (-x["score"], x["path"], x["start_line"]))
+        # Pinned files are ranked ahead of generic-token noise only after
+        # normal repository authorization and a real content match. A numeric
+        # bonus alone is insufficient when query expansion raises the scores
+        # of dozens of repetitive files; it can still bury valid pinned
+        # evidence outside the bounded first page.
+        hits.sort(key=lambda x: (
+            0 if x["path"] in pinned_paths and project_settings is not None else 1,
+            -x["score"], x["path"], x["start_line"],
+        ))
         dedup: list[dict[str, Any]] = []
         seen: set[tuple[str, int]] = set()
         per_file: Counter[str] = Counter()
