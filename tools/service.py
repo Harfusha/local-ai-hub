@@ -329,8 +329,6 @@ def native_stop() -> dict[str, object]:
     hub_stopped = kill_hub()
     if not supervisor_stopped:
         errors.append("supervisor_stop_unverified")
-    if not hub_stopped:
-        errors.append("hub_stop_unverified")
     port = int(CFG.get("server", {}).get("port", 11435))
     deadline = time.monotonic() + 2.0
     listener = find_listening_pid(port)
@@ -339,6 +337,10 @@ def native_stop() -> dict[str, object]:
         listener = find_listening_pid(port)
     if listener is not None:
         errors.append("hub_port_listener_remains")
+    elif not hub_stopped:
+        hub_stopped = _role_stopped("hub")
+    if not hub_stopped:
+        errors.append("hub_stop_unverified")
     ollama_stopped = stop_managed_ollama()
     if not ollama_stopped:
         errors.append("managed_ollama_stop_unverified")

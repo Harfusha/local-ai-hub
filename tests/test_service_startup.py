@@ -213,6 +213,35 @@ def test_kill_hub_accepts_process_exiting_after_terminate_failure(tmp_path, monk
     assert service.kill_hub() is True
 
 
+def test_native_stop_rechecks_hub_after_listener_closes(tmp_path, monkeypatch):
+    import subprocess
+    from types import SimpleNamespace
+
+    module = importlib.util.spec_from_file_location(
+        "test_hub_service_stop_final_check", Path(__file__).parents[1] / "tools" / "service.py"
+    )
+    service = importlib.util.module_from_spec(module)
+    module.loader.exec_module(service)
+    monkeypatch.setattr(service, "os", SimpleNamespace(name="nt"))
+    monkeypatch.setattr(service, "CFG", {"server": {"port": 11435}})
+    monkeypatch.setattr(service, "mark_disabled", lambda _disabled: None)
+    monkeypatch.setattr(
+        service,
+        "run",
+        lambda command, **_kwargs: subprocess.CompletedProcess(command, 0, stdout="", stderr=""),
+    )
+    monkeypatch.setattr(service, "kill_supervisor", lambda: True)
+    monkeypatch.setattr(service, "kill_hub", lambda: False)
+    monkeypatch.setattr(service, "find_listening_pid", lambda _port: None)
+    monkeypatch.setattr(service, "_role_stopped", lambda role: role == "hub")
+    monkeypatch.setattr(service, "stop_managed_ollama", lambda: True)
+
+    result = service.native_stop()
+
+    assert result["success"] is True
+    assert result["hub_stopped"] is True
+
+
 def test_kill_hub_does_not_signal_unverified_listener_child(tmp_path, monkeypatch):
     spec = importlib.util.spec_from_file_location(
         "test_hub_service_unverified_child",
