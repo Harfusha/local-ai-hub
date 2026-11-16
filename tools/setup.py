@@ -471,19 +471,20 @@ If any required skill or the Hub is unavailable, report the precise limitation a
         raise RuntimeError(f"multiple Antigravity policy blocks found in {path}")
     preimage = matches[0].group(0).rstrip("\r\n") if matches else None
     marker = {"begin": ANTIGRAVITY_POLICY_BEGIN, "end": ANTIGRAVITY_POLICY_END}
-    if preimage is not None and _ACTIVE_INSTALL_ROOT is not None:
-        assert_external_block_writable(_ACTIVE_INSTALL_ROOT, path, owner_marker=marker, current_block=preimage)
     unmanaged = pattern.sub("", text)
     separator = "" if not unmanaged else "\n" if unmanaged.startswith("\n") else "\n\n"
     updated = policy + separator + unmanaged
-    if updated != text:
-        backup(path, backup_enabled)
-        path.write_bytes(updated.encode("utf-8"))
-        if _ACTIVE_INSTALL_ROOT is not None:
-            record_external_block(
-                _ACTIVE_INSTALL_ROOT, path, kind="text_block", owner_marker=marker,
-                preimage=preimage, postimage=policy,
-            )
+    if updated == text:
+        return
+    if preimage is not None and _ACTIVE_INSTALL_ROOT is not None:
+        assert_external_block_writable(_ACTIVE_INSTALL_ROOT, path, owner_marker=marker, current_block=preimage)
+    backup(path, backup_enabled)
+    path.write_bytes(updated.encode("utf-8"))
+    if _ACTIVE_INSTALL_ROOT is not None:
+        record_external_block(
+            _ACTIVE_INSTALL_ROOT, path, kind="text_block", owner_marker=marker,
+            preimage=preimage, postimage=policy,
+        )
 
 
 def get_user_homes() -> list[Path]:

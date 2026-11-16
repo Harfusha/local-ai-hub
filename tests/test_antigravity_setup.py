@@ -40,6 +40,22 @@ def test_antigravity_policy_is_prepended_and_targets_discoverable_skills(tmp_pat
     assert "ultra mode" in text
 
 
+def test_antigravity_policy_accepts_exact_unowned_block_without_rewriting(tmp_path, monkeypatch):
+    rules = tmp_path / "AGENTS.md"
+    setup.merge_antigravity_skill_policy(rules, False)
+    before = rules.read_bytes()
+    monkeypatch.setattr(setup, "_ACTIVE_INSTALL_ROOT", tmp_path / "install")
+
+    setup.merge_antigravity_skill_policy(rules, False)
+
+    assert rules.read_bytes() == before
+    edited = before.replace(b"Antigravity automatic skill activation", b"My Antigravity instructions")
+    rules.write_bytes(edited)
+    with pytest.raises(ValueError, match="ownership marker is missing"):
+        setup.merge_antigravity_skill_policy(rules, False)
+    assert rules.read_bytes() == edited
+
+
 def test_superpowers_install_preserves_custom_skill_and_uses_pinned_archive(tmp_path, monkeypatch):
     import io
     import zipfile
