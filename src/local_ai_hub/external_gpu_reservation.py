@@ -567,6 +567,7 @@ class ExternalGpuReservationStore:
                     "released_at": self._clock(),
                 })
         except OSError:
+            self._write_capacity_leases(capacity)
             return None
         return updated
 

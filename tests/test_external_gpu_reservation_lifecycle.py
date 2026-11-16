@@ -346,6 +346,30 @@ def test_capacity_snapshot_reaps_only_confirmed_dead_laya_owners(tmp_path, monke
     assert event["generation"] == dead_laya["generation"]
 
 
+def test_capacity_snapshot_preserves_lease_when_reap_audit_fails(tmp_path, monkeypatch):
+    from local_ai_hub import process_utils
+
+    store = ExternalGpuReservationStore(tmp_path / "external-gpu-reservation")
+    lease = {
+        "lease_id": "dead-laya-lease",
+        "generation": "dead-laya-generation",
+        "owner": "laya-runtime:424242:revision",
+        "requested_bytes": 1024,
+        "reservation_generation": None,
+        "created_at": 1.0,
+    }
+    assert store._write_capacity_leases({"schema_version": 1, "leases": [lease]})
+    monkeypatch.setattr(process_utils, "process_is_alive", lambda _pid: False)
+
+    def fail_audit(_event):
+        raise OSError("audit unavailable")
+
+    monkeypatch.setattr(store, "_append_audit", fail_audit)
+
+    assert store.capacity_snapshot() is None
+    assert store._read_capacity_leases_unlocked() == {"schema_version": 1, "leases": [lease]}
+
+
 def test_consented_release_current_clears_unknown_legacy_fence_and_audits(tmp_path):
     path = tmp_path / "external-gpu-reservation"
     path.write_text(_digest("legacy-owner"), encoding="ascii")
