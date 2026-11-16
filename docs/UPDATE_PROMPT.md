@@ -32,6 +32,8 @@ The installation-wide diagnostics export may contain captured request and respon
 
 GPU reservation status `internal` means the running scheduler has verified its own GPU fence; it is active work, not a malformed external reservation. `unknown` remains fail-closed and may require operator investigation.
 
+`local_ai_coord(action="gpu_capacity_lease_release")` requires exact `lease_id`, `owner`, `generation`, `consent=true`, and `audit_reason`. It releases only an unreserved `laya-runtime` capacity lease after the owner PID is confirmed absent; live or indeterminate PIDs, mismatched generations, and reservation-bound leases fail closed. The release writes a local audit event. Never edit or unlink the capacity ledger directly.
+
 After 30 seconds without background GPU work, the Hub stops its managed background server and releases the GPU fence only after confirmed shutdown. New work cancels the idle timer; an unconfirmed stop or release remains fail-closed.
 
 Preprocessing scheduling is project-fair and layered. A registered project is active for 24 hours after its last foreground agent request for that canonical root; background preprocessing and internal lookups do not refresh activity. Active projects are scheduled through inventory, hash, code index, deterministic, and lexical phases before RAG/files, then optional phases. Legacy `serena` checkpoints remain resumable after files; fresh projects enter lexical directly. Inactive projects follow the same layers at lower priority, with aging to prevent starvation. CPU and GPU workers share durable ordering and bounded batches; existing concurrency, CPU/RAM, time, queue, model, and GPU admission limits remain in force. Diagnostics stays separate and disabled by default.

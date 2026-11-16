@@ -8251,6 +8251,8 @@ class Handler(BaseHTTPRequestHandler):
                     generation=payload.get("generation", ""),
                     consent=payload.get("consent"),
                     audit_reason=payload.get("audit_reason", ""),
+                    lease_id=payload.get("lease_id", ""),
+                    owner=payload.get("owner", ""),
                 )
                 self._send(200, res); return
             if 'post_delegate_repo_1' in post_route_ids:

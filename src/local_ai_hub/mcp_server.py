@@ -2335,7 +2335,7 @@ def _instrumented_tool():
             budget_rejection = _explicit_budget_rejection(arguments)
             if budget_rejection is not None:
                 return budget_rejection
-            if (fn.__name__ == "local_ai_coord" and arguments.get("action") in {"claim", "release", "gpu_reservation_release", "gpu_reservation_release_authorized"}
+            if (fn.__name__ == "local_ai_coord" and arguments.get("action") in {"claim", "release", "gpu_reservation_release", "gpu_reservation_release_authorized", "gpu_capacity_lease_release"}
                     and type(arguments.get("max_response_tokens")) is int
                     and 0 < arguments["max_response_tokens"] < 512):
                 return {"success": False, "error": "lease mutation requires max_response_tokens >= 512",
@@ -2356,7 +2356,7 @@ def _instrumented_tool():
             )
             operator_status = fn.__name__ == "local_ai_status" and not requires_heavy_work
             reservation_control = (fn.__name__ == "local_ai_coord" and arguments.get("action") in {
-                "gpu_reservation_status", "gpu_reservation_release", "gpu_reservation_release_authorized",
+                "gpu_reservation_status", "gpu_reservation_release", "gpu_reservation_release_authorized", "gpu_capacity_lease_release",
             })
             if mode_rejection is not None and not operator_status and not reservation_control:
                 return mode_rejection
@@ -5296,12 +5296,15 @@ def local_ai_coord(
     """Coordination for Hub work and GPU reservations. `gpu_reservation_status` takes only `action` (no root) and reports owner, generation, state and expiry; reports `reaped=true` after expiry cleanup. Unresolved state includes a non-secret `reason_code` and remains fail-closed. `gpu_reservation_release` requires `generation`, `consent=true` and a non-empty `audit_reason`; release is allowed after expiry or when the owner process is confirmed gone. `gpu_reservation_release_authorized` requires explicit consent and an audit reason, without a status or owner-liveness preflight. It releases a valid reservation and capacity leases for that exact generation, or records a durable operator-release marker when the reservation file is already missing, allowing the scheduler to clear only stale in-memory external admission. Other generations are preserved; release can interrupt GPU work using the released generation. Malformed metadata and symlinks remain fail-closed. Never unlink reservation files directly. ask persists a repository/session-scoped question; retrieve it later with the same question_id, root and session_id. answer records an operator response under the authorized repository root. Public actions are limited to the contract enum; unscoped memory relation/reaping storage remains private. Claim overlapping edit paths before concurrent Hub work. Use scoped Agent OS memory_find/memory_record for reusable findings; workspace memo actions are operator-only and unavailable through this tool. Native peer subagents are coordinated by Codex rather than by this Hub tool."""
     if not FEATURES.coord:
         return {"success": False, "unsupported": True, "error": "local_ai_coord is disabled in configuration"}
-    if action in {"gpu_reservation_status", "gpu_reservation_release", "gpu_reservation_release_authorized"}:
+    if action in {"gpu_reservation_status", "gpu_reservation_release", "gpu_reservation_release_authorized", "gpu_capacity_lease_release"}:
         supplied = {"action": action}
         if action == "gpu_reservation_release":
             supplied.update(generation=generation, consent=consent, audit_reason=audit_reason)
         elif action == "gpu_reservation_release_authorized":
             supplied.update(consent=consent, audit_reason=audit_reason)
+        elif action == "gpu_capacity_lease_release":
+            supplied.update(lease_id=lease_id, owner=owner, generation=generation, consent=consent,
+                            audit_reason=audit_reason)
         contract_error_value = validate_operation_arguments("local_ai_coord", action, supplied)
         if contract_error_value:
             return contract_error(contract_error_value, status_code=400)
@@ -5310,11 +5313,14 @@ def local_ai_coord(
                 "gpu_reservation_status": "status",
                 "gpu_reservation_release": "release",
                 "gpu_reservation_release_authorized": "release_authorized",
+                "gpu_capacity_lease_release": "release_laya_capacity_lease",
             }[action],
             "generation": generation,
             "consent": consent,
             "audit_reason": audit_reason,
         }
+        if action == "gpu_capacity_lease_release":
+            operation.update(lease_id=lease_id, owner=owner)
         try:
             return CLIENT.post("/api/gpu-reservation", operation, timeout=_timeout("quick"))
         except Exception:

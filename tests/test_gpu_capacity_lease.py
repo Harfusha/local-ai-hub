@@ -96,6 +96,92 @@ def test_capacity_lease_releases_only_for_matching_owner_and_generation(tmp_path
     assert store.release_capacity_lease(lease["lease_id"], lease["owner"], lease["generation"])
 
 
+def test_authorized_orphaned_laya_capacity_lease_release_requires_dead_owner_and_null_reservation(
+    tmp_path, monkeypatch,
+):
+    from local_ai_hub import process_utils
+
+    store = ExternalGpuReservationStore(tmp_path / "gpu")
+    dead = store.acquire_capacity_lease(
+        owner="laya-runtime:12345:deadbeef", requested_bytes=2 * 1024**3,
+        total_bytes=16 * 1024**3, available_bytes=16 * 1024**3,
+    )
+    active = store.acquire_capacity_lease(
+        owner="laya-runtime:12346:deadbeef", requested_bytes=2 * 1024**3,
+        total_bytes=16 * 1024**3, available_bytes=16 * 1024**3,
+    )
+    assert dead is not None and active is not None
+    monkeypatch.setattr(process_utils, "process_is_alive", lambda pid: pid == 12346)
+
+    assert not store.release_orphaned_laya_capacity_lease(
+        dead["lease_id"], dead["owner"], "stale-generation",
+        consent=True, audit_reason="operator approved exact stale lease",
+    )
+    assert not store.release_orphaned_laya_capacity_lease(
+        dead["lease_id"], dead["owner"], dead["generation"],
+        consent=False, audit_reason="operator approved exact stale lease",
+    )
+    assert store.release_orphaned_laya_capacity_lease(
+        dead["lease_id"], dead["owner"], dead["generation"],
+        consent=True, audit_reason="operator approved exact stale lease",
+    )
+    assert not store.release_orphaned_laya_capacity_lease(
+        active["lease_id"], active["owner"], active["generation"],
+        consent=True, audit_reason="operator approved exact stale lease",
+    )
+    assert [item["lease_id"] for item in store.capacity_snapshot()["leases"]] == [active["lease_id"]]
+    event = json.loads(store.audit_path.read_text(encoding="utf-8").splitlines()[-1])
+    assert event["action"] == "consented_capacity_lease_release_dead_laya_owner"
+    assert event["lease_id"] == dead["lease_id"]
+    assert event["reservation_generation"] is None
+
+
+def test_scheduler_dispatches_exact_orphaned_laya_capacity_release(tmp_path, monkeypatch):
+    from local_ai_hub import process_utils
+    from local_ai_hub.scheduler import AffinityScheduler
+
+    store = ExternalGpuReservationStore(tmp_path / "gpu")
+    lease = store.acquire_capacity_lease(
+        owner="laya-runtime:12345:deadbeef", requested_bytes=2 * 1024**3,
+        total_bytes=16 * 1024**3, available_bytes=16 * 1024**3,
+    )
+    assert lease is not None
+    monkeypatch.setattr(process_utils, "process_is_alive", lambda pid: False)
+    scheduler = object.__new__(AffinityScheduler)
+    scheduler._external_gpu_store = store
+
+    result = scheduler.gpu_reservation_operation(
+        action="release_laya_capacity_lease", lease_id=lease["lease_id"],
+        owner=lease["owner"], generation=lease["generation"], consent=True,
+        audit_reason="operator approved exact stale lease",
+    )
+
+    assert result["success"] and result["mutation_applied"]
+    assert result["lease_id"] == lease["lease_id"]
+    assert store.capacity_snapshot()["leases"] == []
+
+
+def test_authorized_orphaned_laya_capacity_lease_release_rejects_reservation_bound_lease(
+    tmp_path, monkeypatch,
+):
+    from local_ai_hub import process_utils
+
+    store = ExternalGpuReservationStore(tmp_path / "gpu")
+    reservation = store.reserve(_digest("owner"), owner="external-owner", owner_vram_budget_bytes=8 * 1024**3)
+    lease = store.acquire_capacity_lease(
+        owner="laya-runtime:12345:deadbeef", requested_bytes=2 * 1024**3,
+        total_bytes=16 * 1024**3, available_bytes=8 * 1024**3,
+    )
+    assert reservation is not None and lease is not None
+    monkeypatch.setattr(process_utils, "process_is_alive", lambda pid: False)
+
+    assert not store.release_orphaned_laya_capacity_lease(
+        lease["lease_id"], lease["owner"], lease["generation"],
+        consent=True, audit_reason="operator approved exact stale lease",
+    )
+    assert store.capacity_snapshot()["leases"] == [lease]
+
+
 def test_capacity_lease_aggregates_multiple_owners(tmp_path):
     store = ExternalGpuReservationStore(tmp_path / "gpu")
     store.reserve(_digest("owner"), owner="external-owner", owner_vram_budget_bytes=4 * 1024**3)

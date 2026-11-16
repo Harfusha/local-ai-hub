@@ -200,8 +200,8 @@ def describe_coord(
         supported = set(features.supported_coord_actions())
         actions = sorted(supported)
         reservation_note = (
-            " GPU reservation status is owner-global and takes no root; gpu_reservation_release requires consent=true, generation and audit_reason, then expiry or confirmed owner death. gpu_reservation_release_authorized requires explicit consent=true and audit_reason, without a generation or owner-liveness preflight. It releases a valid reservation, including capacity leases for that exact generation, or records a durable operator-release marker when the reservation file is already missing, allowing the scheduler to clear only stale in-memory external admission. Other generations are preserved; this can interrupt GPU work using the released generation. Malformed metadata and symlinks remain fail-closed."
-            if {"gpu_reservation_status", "gpu_reservation_release", "gpu_reservation_release_authorized"}.issubset(actions)
+            " GPU reservation status is owner-global and takes no root; gpu_reservation_release requires consent=true, generation and audit_reason, then expiry or confirmed owner death. gpu_reservation_release_authorized requires explicit consent=true and audit_reason, without a generation or owner-liveness preflight. It releases a valid reservation, including capacity leases for that exact generation, or records a durable operator-release marker when the reservation file is already missing, allowing the scheduler to clear only stale in-memory external admission. gpu_capacity_lease_release requires exact lease_id, owner, generation, consent=true and audit_reason; it releases only an unreserved Laya runtime lease after the owner PID is confirmed absent, with a durable audit entry. Other generations are preserved; this can interrupt GPU work using the released generation. Malformed metadata and symlinks remain fail-closed."
+            if {"gpu_reservation_status", "gpu_reservation_release", "gpu_reservation_release_authorized", "gpu_capacity_lease_release"}.issubset(actions)
             else ""
         )
         purpose = (

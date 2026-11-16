@@ -2562,7 +2562,7 @@ class AffinityScheduler:
 
     def gpu_reservation_operation(
         self, *, action: str, generation: str = "", consent: bool | None = None,
-        audit_reason: str = "",
+        audit_reason: str = "", lease_id: str = "", owner: str = "",
     ) -> dict[str, Any]:
         """Read or release the reservation using this scheduler's live state store."""
         store = self._external_gpu_store
@@ -2609,6 +2609,27 @@ class AffinityScheduler:
                 result["error"] = "no valid current GPU reservation could be released"
             else:
                 self.status()  # observe the operator marker and clear stale in-memory admission
+            return result
+        if action == "release_laya_capacity_lease":
+            if (type(consent) is not bool or not consent
+                    or not isinstance(lease_id, str) or not lease_id
+                    or not isinstance(owner, str) or not owner
+                    or not isinstance(generation, str) or not generation
+                    or not isinstance(audit_reason, str) or not audit_reason.strip()):
+                return {"success": False, "operation_not_started": True,
+                        "error": "orphaned Laya capacity release requires exact lease identity, consent=true, and audit_reason"}
+            try:
+                released = store.release_orphaned_laya_capacity_lease(
+                    lease_id, owner, generation, consent=consent, audit_reason=audit_reason,
+                )
+            except OSError:
+                released = False
+            result = {
+                "success": released, "mutation_applied": released,
+                "lease_id": lease_id, "generation": generation,
+            }
+            if not released:
+                result["error"] = "lease is missing, changed, reservation-bound, or owner process is not confirmed gone"
             return result
         if action != "release":
             return {"success": False, "operation_not_started": True,

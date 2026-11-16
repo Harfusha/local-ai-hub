@@ -417,6 +417,67 @@ class ExternalGpuReservationStore:
             remaining = [item for item in leases if item not in matched]
             return self._write_capacity_leases({"schema_version": 1, "leases": remaining})
 
+    def release_orphaned_laya_capacity_lease(
+        self, lease_id: str, owner: str, generation: str, *, consent: bool, audit_reason: str,
+    ) -> bool:
+        if (type(consent) is not bool or not consent
+                or not isinstance(lease_id, str) or not lease_id
+                or not isinstance(owner, str) or not owner.strip() or len(owner) > 256
+                or not isinstance(generation, str) or not generation
+                or not isinstance(audit_reason, str) or not audit_reason.strip() or len(audit_reason) > 1000
+                or not self._laya_owner_process_is_gone(owner)):
+            return False
+        with self._locked():
+            capacity = self._read_capacity_leases_unlocked()
+            if capacity is None or not self._laya_owner_process_is_gone(owner):
+                return False
+            matched = [item for item in capacity["leases"] if (
+                item["lease_id"] == lease_id
+                and item["owner"] == owner
+                and item["generation"] == generation
+                and item["reservation_generation"] is None
+            )]
+            if len(matched) != 1:
+                return False
+            lease = matched[0]
+            try:
+                self._append_audit({
+                    "action": "consented_capacity_lease_release_dead_laya_owner",
+                    "lease_id": lease_id,
+                    "owner": owner,
+                    "generation": generation,
+                    "reservation_generation": None,
+                    "requested_bytes": lease["requested_bytes"],
+                    "reason": audit_reason.strip(),
+                    "released_at": self._clock(),
+                })
+            except OSError:
+                return False
+            if not self._laya_owner_process_is_gone(owner):
+                return False
+            remaining = [item for item in capacity["leases"] if item is not lease]
+            return self._write_capacity_leases({"schema_version": 1, "leases": remaining})
+
+    @staticmethod
+    def _laya_owner_process_is_gone(owner: Any) -> bool:
+        if not isinstance(owner, str):
+            return False
+        parts = owner.split(":")
+        if len(parts) != 3 or parts[0] != "laya-runtime" or not parts[2]:
+            return False
+        try:
+            pid = int(parts[1])
+        except (TypeError, ValueError):
+            return False
+        if pid <= 0:
+            return False
+        try:
+            from .process_utils import process_is_alive
+
+            return process_is_alive(pid) is False
+        except Exception:
+            return False
+
     def has_capacity_lease(self) -> bool:
         """Fail closed for malformed ledgers and report active residency claims."""
         with self._locked():

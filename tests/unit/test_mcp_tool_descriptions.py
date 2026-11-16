@@ -123,6 +123,7 @@ def test_coord_description_keeps_agent_os_and_reservation_contracts() -> None:
                 "gpu_reservation_status",
                 "gpu_reservation_release",
                 "gpu_reservation_release_authorized",
+                "gpu_capacity_lease_release",
                 "plan_list",
             )
 
@@ -139,6 +140,7 @@ def test_coord_description_keeps_agent_os_and_reservation_contracts() -> None:
 
     assert description.startswith("Agent OS coordination for task contracts")
     assert "gpu_reservation_release_authorized requires explicit consent=true" in description
+    assert "gpu_capacity_lease_release requires exact lease_id" in description
     assert "Malformed metadata and symlinks remain fail-closed." in description
     assert "Plan notes." in description
     assert "Trigger local_ai_coord." in description
