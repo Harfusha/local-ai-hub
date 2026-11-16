@@ -114,6 +114,13 @@ def test_qualified_call_graph_through_loopback_mcp(tmp_path, monkeypatch):
         assert any(item["callee"] == "helper" for item in result["callees"])
         assert any(item["caller"] == "caller" for item in result["callers"])
         assert result["partial"] is True  # qualified callers remain syntactic and freshness unchecked
+        _, unsupported = asyncio.run(mcp_server.mcp.call_tool("local_ai_repo", {
+            "action": "callers", "root": str(project),
+            "query": "SingleplayerGameplayCoordinator.TryDeliver",
+            "limit": 5, "response_profile": "compact",
+        }))
+        assert unsupported["status_code"] == 400, unsupported
+        assert unsupported["coverage"]["resolution"] == "unsupported_qualification"
     finally:
         client.close()
         server.shutdown()

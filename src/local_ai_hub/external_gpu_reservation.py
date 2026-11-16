@@ -491,6 +491,12 @@ class ExternalGpuReservationStore:
         if expected_internal_digest is not None:
             _validate_digest(expected_internal_digest)
         with self._locked():
+            leases = self._read_capacity_leases_unlocked()
+            if leases is None:
+                return None
+            leases = self._reap_dead_laya_capacity_leases_unlocked(leases)
+            if leases is None:
+                return None
             reservation = self._read_unlocked()
             if (reservation is not None and reservation["expires_at"] <= self._clock()
                     and not self._has_capacity_lease_for_generation_unlocked(reservation["generation"])):
@@ -508,9 +514,6 @@ class ExternalGpuReservationStore:
                     self.path.exists() or self.path.is_symlink()
                     or self.metadata_path.exists() or self.metadata_path.is_symlink()):
                 return None
-            leases = self._read_capacity_leases_unlocked()
-            if leases is None:
-                return None
             reservation_generation = (
                 reservation.get("generation") if reservation is not None
                 else f"internal:{internal_fence_digest}" if internal_fence_digest is not None
@@ -525,6 +528,47 @@ class ExternalGpuReservationStore:
             if internal_fence_digest is not None:
                 snapshot["internal_fence_digest"] = internal_fence_digest
             return snapshot
+
+    def _reap_dead_laya_capacity_leases_unlocked(self, capacity: dict[str, Any]) -> dict[str, Any] | None:
+        """Drop only Laya leases whose recorded owner process is confirmed dead."""
+        from .process_utils import process_is_alive
+
+        remaining = []
+        reaped = []
+        for lease in capacity["leases"]:
+            owner = lease["owner"].split(":", 2)
+            if len(owner) == 3 and owner[0] == "laya-runtime" and owner[1].isdecimal() and owner[2]:
+                try:
+                    pid = int(owner[1])
+                except ValueError:
+                    pid = 0
+                if pid > 0:
+                    try:
+                        # shortcut: live or unverifiable PIDs stay reserved; persist process start identity before reclaiming reused PIDs.
+                        if process_is_alive(pid) is False:
+                            reaped.append(lease)
+                            continue
+                    except Exception:
+                        pass
+            remaining.append(lease)
+        if not reaped:
+            return capacity
+
+        updated = {"schema_version": 1, "leases": remaining}
+        if not self._write_capacity_leases(updated):
+            return None
+        try:
+            for lease in reaped:
+                self._append_audit({
+                    "action": "dead_laya_capacity_lease_reaped",
+                    "owner": lease["owner"],
+                    "generation": lease["generation"],
+                    "reason": "recorded owner process is confirmed dead",
+                    "released_at": self._clock(),
+                })
+        except OSError:
+            return None
+        return updated
 
     def _read_internal_digest_unlocked(self) -> str | None:
         if self.path.is_symlink() or self.metadata_path.exists() or self.metadata_path.is_symlink():

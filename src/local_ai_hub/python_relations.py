@@ -31,7 +31,7 @@ def find_python_relations(
         direction == "callees" and "." in sym and ("::" not in sym or "." in sym.split("::", 1)[1])
     ):
         return {
-            "success": False, "terminal": True, "retryable": False,
+            "success": False, "status_code": 400, "terminal": True, "retryable": False,
             "error": "deterministic Python relation fallback requires an unqualified symbol or canonical :: qualification",
             "coverage": {"complete": False, "scope": "python_ast", "resolution": "unsupported_qualification"},
         }

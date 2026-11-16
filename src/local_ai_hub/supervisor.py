@@ -499,6 +499,13 @@ class Supervisor:
 
     def spawn_hub(self) -> subprocess.Popen[Any]:
         env = os.environ.copy()
+        from .owned_model import _cuda_worker_environment
+
+        cuda_environment = _cuda_worker_environment({"device": "cuda"})
+        if cuda_environment is not None:
+            env["CUBLASLT_DISABLE_CPU_INSTRUCTIONS_MASK"] = cuda_environment[
+                "CUBLASLT_DISABLE_CPU_INSTRUCTIONS_MASK"
+            ]
         env["LOCAL_AI_CONFIG"] = self.config_path
         source_root = str(Path(__file__).resolve().parents[1])
         env["PYTHONPATH"] = source_root + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
