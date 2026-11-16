@@ -116,6 +116,13 @@ def discover_torch_devices(
 ) -> tuple[DeviceCandidate, ...]:
     """Probe only Laya's installed Torch devices; no drivers or providers are loaded."""
     if torch_module is None:
+        from .owned_model import _cuda_worker_environment
+
+        compatibility_environment = _cuda_worker_environment({"device": "cuda"})
+        if compatibility_environment is not None:
+            os.environ["CUBLASLT_DISABLE_CPU_INSTRUCTIONS_MASK"] = compatibility_environment[
+                "CUBLASLT_DISABLE_CPU_INSTRUCTIONS_MASK"
+            ]
         torch_module = importlib.import_module("torch")
     if quality_results is not None and not isinstance(quality_results, Mapping):
         raise ValueError("quality_results must be a mapping")
