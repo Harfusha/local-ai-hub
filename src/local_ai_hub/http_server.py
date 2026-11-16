@@ -9596,6 +9596,7 @@ class Handler(BaseHTTPRequestHandler):
                     max_results=payload.get("max_results", 30),
                     file_offset=payload.get("offset", 0),
                     match_offset=payload.get("match_offset", 0),
+                    expected_revision=payload.get("expected_revision"),
                 )
                 self._send_service_result(result); return
             if 'post_context_budget_1' in post_route_ids:

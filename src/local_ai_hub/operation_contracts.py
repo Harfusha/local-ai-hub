@@ -410,6 +410,7 @@ _ACTION_SCOPED_FIELDS = {
         "offset": frozenset({"search", "code_index", "callers", "callees", "implementations", "find_files", "glob", "structural_search"}),
         "match_offset": frozenset({"structural_search"}),
         "file_offset": frozenset({"structural_search"}),
+        "expected_revision": frozenset({"structural_search"}),
         "directory_hints": frozenset({"context"}),
         "exclude_paths": frozenset({"context"}),
         "force_include_paths": frozenset({"context"}),
@@ -597,7 +598,7 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
             "explain_query": ("root", "query", "path"),
             "api_spec": ("root", "query"),
             "dependency_slice": ("root", "query", "path", "max_tokens"),
-            "structural_search": ("root", "query", "path", "max_tokens", "pattern", "offset", "match_offset", "file_offset"),
+            "structural_search": ("root", "query", "path", "max_tokens", "pattern", "offset", "match_offset", "file_offset", "expected_revision"),
             "migration_drift": ("root", "path"),
             "package_audit": ("root", "path"),
             "git_diff": ("root", "path", "staged", "max_tokens", "rev1", "rev2", "base", "head"),
@@ -667,6 +668,8 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
             "offset": {"type": "integer", "minimum": 0, "maximum": MAX_PAGE_WINDOW - 1, "default": 0},
             "match_offset": {"type": "integer", "minimum": 0, "maximum": 100_000, "default": 0},
             "file_offset": {"type": ["integer", "null"], "minimum": 0, "maximum": 100_000, "default": None},
+            "expected_revision": {"type": ["string", "null"], "minLength": 64, "maxLength": 64,
+                                  "pattern": "^[0-9a-f]{64}$", "default": None},
             "include_diagnostics": {"type": "boolean", "default": False},
             **{name: {"type": "string", "default": ""} for name in (
                 "clone_id", "worktree_id", "branch", "repository_id", "session_id", "repository_revision",
@@ -2487,6 +2490,13 @@ def validate_operation_arguments(
             return "key must be a non-empty string for action='memory_record'"
         if not isinstance(arguments.get("value"), str):
             return "value must be a string for action='memory_record'"
+    if tool == "local_ai_repo" and action == "structural_search":
+        revision = arguments.get("expected_revision")
+        if revision is not None and (
+            not isinstance(revision, str) or len(revision) != 64
+            or any(char not in "0123456789abcdef" for char in revision)
+        ):
+            return "expected_revision must be a lowercase 64-character SHA-256 digest"
     if tool == "local_ai_repo" and action == "context":
         mode = arguments.get("mode", properties.get("mode", {}).get("default", "adaptive"))
         if mode != "adaptive":

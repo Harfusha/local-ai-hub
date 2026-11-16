@@ -13,7 +13,7 @@ def test_structural_search_reports_incomplete_400_file_scan(tmp_path: Path, monk
         (tmp_path / filename).write_text("needle\n" if filename == filenames[-1] else "pass\n", encoding="utf-8")
     monkeypatch.setattr(
         "local_ai_hub.deterministic.os.walk",
-        lambda _root: iter([(str(tmp_path), [], filenames)]),
+        lambda _root, **_kwargs: iter([(str(tmp_path), [], filenames)]),
     )
 
     result = DeterministicEngine().structural_search(str(tmp_path), pattern="needle")

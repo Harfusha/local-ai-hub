@@ -162,3 +162,32 @@ Změny níže jsou **skutečně commitnuté do PR #8**, nikoliv jen návrhy. Jde
 - Následný commit přidává regresní případy pro PHP namespaced/multiline deklarace a zakazuje falešné výsledky typu `fn:...` nebo `class:...` pocházející pouze z textového řetězce či komentáře.
 - **Pozor:** žádný zde vyjmenovaný commit sám neznamená PASS finálního SHA; před merge a release ověř nejnovější GitHub Actions run včetně `integration (ubuntu-latest, 3.14)`, `critical-coverage` a `package`. Potvrzení modelů, GPU, browseru a host CLI vyžaduje externí akceptaci.
 - **Nedokončeno:** cursor/revision guard pro strukturální vyhledávání mezi změnami stromu souborů a kompletní AST parser PHP; číselný file/match offset je nadále nestabilní při změnách repozitáře.
+
+## 11. Continuation — RAG source races, no-follow reads and transactional fault injection
+
+Repo state is read from the live PR #8 branch; the commit hash in the original document heading is historical and must not be taken as current HEAD.
+
+- Post-embedding publication now compares bounded live source content and file identity for full and incremental RAG indexing. A mismatch rejects publication with retryable `source_changed_before_publish` and preserves the existing committed chunks.
+- Pre-embedding file reads use `os.open` with `O_NOFOLLOW` where supported, verify path components against symlinks/reparse points, compare pre/open/post file identity, and reject escaped paths. Incremental code intentionally preserves the source path before validation instead of hiding a symlink through `resolve()`.
+- Regression tests cover in-embedding edits, symlink swaps, aliased paths, wrong opened file descriptors, and publication failures. `tests/test_rag_incremental_index_io.py` is part of fast-contract CI.
+- Fault injection now checks that a simulated SQLite timeout after deleting rows **rolls the transaction back** to the previous snapshot, and that one transient `database is locked` event retries the publish without rerunning embeddings.
+- **Remaining concurrency boundary:** these are best-effort identity checks around the embedding/publish boundary, *not* a filesystem snapshot pinned across arbitrary concurrent edits. SQLite atomicity covers persisted rows; external filesystem mutation after the final check can still race. Do not claim stronger consistency.
+- **Remaining:** verify *exact-HEAD* CI including full Ubuntu/Python 3.14 integration, all platform-smoke combinations, Windows critical-coverage and the installed wheel/package job. Browser, local GPU, live Codex/Antigravity handshake and model retrieval remain external acceptance blockers.
+
+- Po SQLite busy/backoff se provádí opětovná kontrola aktuálních bytes před každým pokusem o publikování (full i incremental). Nový fault-injection test mění zdroj během prvního nezdařeného pokusu a vyžaduje fail-closed místo zapsání starého embeddingu.
+
+## 12. Master drift and cancelled dashboard preview (2026-11-15)
+
+- Master advanced to [`f14666a`](https://github.com/Harfusha/local-ai-hub/commit/f14666a77a816c09fd77676ab0d467ca17951dc3), intentionally removing the cancelled `/dashboard/next` preview, `ui_static` assets, and its preview-specific host diagnostics. Preserve the existing `/dashboard` interface. **Do not restore or reimplement the cancelled preview.**
+- PR #8's CI had begun checking out a synthetic merge with this newer master and therefore attempted to run removed `tests/test_dashboard_host_inspection.py`. `tests/test_dashboard_runtime_contracts.py` also depended on a deleted preview-only JavaScript bundle. Drop these invalid preview-only tests and their explicit fast-contract entries; retain dashboard tests for the supported existing `/dashboard` interface and `tools/check_dashboard.py`.
+- Windows critical-coverage on [run 43759417630](https://github.com/Harfusha/local-ai-hub/actions/runs/43759417630) failed because 100k-row `mark_stale_for_revision` exceeded a bounded write transaction (5346ms > 5000ms). Commit [`be07e14`](https://github.com/Harfusha/local-ai-hub/commit/be07e14f8947ae521c6e24a4e03e1a72324bd5a2) avoids repeated root normalization on the query hot path without raising the transaction budget. Validate on Windows critical-coverage in exact-HEAD CI.
+- Do not infer PASS from old PR runs. Check all CI for the exact merged branch SHA before changing Draft status or release gates.
+
+## 13. Structural-search inventory revision guard
+
+- Structural search now exposes an `inventory_revision` token (SHA-256 over bounded source paths, relevant directory names, query/target, and filesystem stat metadata). Pass it as optional `expected_revision` when advancing `file_offset`/`match_offset` for the same root, query, and path. On detected changes return HTTP 409 `stale_search_revision` and restart from offset zero.
+- The revision parameter is wired through deterministic search, services, the direct HTTP route and the MCP `local_ai_repo(action="structural_search")` schema. Structural searches bypass the repository TTL result cache so a stale cache cannot bypass revision validation.
+- Original numeric-only offsets remain backwards-compatible but unprotected. This metadata revision is **not** a fully immutable content snapshot: metadata-preserving rewrites or changes after verification still require a pinned immutable Git worktree for a strict no-duplicate/no-omission guarantee.
+- Inventory hashing is bounded and avoids file-content reads. A requested revision that cannot be verified fails retryably rather than silently accepting an unverified page.
+- Regression tests cover successful continuation, insertion before page, same-file rewrite, changed query, invalid token, exact-file paging and old numeric behavior. Exact-HEAD CI and external integration gates remain outstanding.
+- On an incoming `expected_revision`, the structural search scans the inventory both **before and after** source reads. This closes the previously open race where a token validated before file scans could return matches from an edited file. The regression test rewrites the source between the first check and reading and expects `stale_search_revision` with no matches.

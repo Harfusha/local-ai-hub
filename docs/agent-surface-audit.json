@@ -302,21 +302,6 @@
         "action_literals": []
       }
     },
-    "GET /api/agent/hosts": {
-      "decision": "retain",
-      "role": "dashboard",
-      "reason": "Provides read-only local host capability and availability data for agent integration status.",
-      "response_policy": "Preserve host identifiers and availability facts; this is setup metadata, not repository content or raw model debug.",
-      "source_contract": {
-        "source": "src/local_ai_hub/http_server.py",
-        "handler": "do_GET",
-        "literal_response_fields": [],
-        "response_producers": [
-          "inspect_agent_hosts"
-        ],
-        "action_literals": []
-      }
-    },
     "GET /api/audit/tail": {
       "decision": "diagnostic",
       "role": "operator_diagnostic",
@@ -1066,17 +1051,47 @@
         "source": "src/local_ai_hub/http_server.py",
         "handler": "do_GET",
         "literal_response_fields": [
+          "available",
+          "complete",
+          "coverage",
           "degraded",
           "dependencies",
+          "diagnostic_details_available",
+          "endpoint_attribution",
+          "endpoint_error_p1",
+          "endpoint_error_p2",
           "endpoint_stats",
           "endpoint_stats_available",
+          "error",
+          "error_groups_more",
+          "error_groups_returned",
+          "error_groups_total",
+          "error_offset",
+          "evaluated",
           "generated_at",
           "health",
+          "latency_p1_p95_ms",
+          "latency_p2_p95_ms",
+          "latency_p3_p95_ms",
+          "latency_samples",
+          "minimum_samples",
+          "next_error_offset",
+          "observed_routes_7d",
           "priorities",
+          "priority_policy",
           "quality_evidence",
+          "reason",
+          "registered_routes",
+          "retryable",
+          "runtime_online",
+          "runtime_status",
           "success",
           "telemetry_available",
           "telemetry_days",
+          "terminal",
+          "unobserved_route_count",
+          "unobserved_routes",
+          "unobserved_truncated",
           "window"
         ],
         "response_producers": [],
@@ -1339,21 +1354,6 @@
       "role": "dashboard",
       "reason": "Supported legacy route for the local operator dashboard shell, not agent tool output.",
       "response_policy": "Preserve work result, errors/retry/cancellation, identities, evidence and pagination; project_agent_response removes internal observations outside dashboard detail; caller documents remain opaque.",
-      "source_contract": {
-        "source": "src/local_ai_hub/http_server.py",
-        "handler": "do_GET",
-        "literal_response_fields": [
-          "error"
-        ],
-        "response_producers": [],
-        "action_literals": []
-      }
-    },
-    "GET /dashboard/next": {
-      "decision": "retain",
-      "role": "dashboard",
-      "reason": "Serves the operator dashboard shell used for local observability and controls.",
-      "response_policy": "Keep dashboard HTML and client assets available to the local operator; no agent work payload is returned.",
       "source_contract": {
         "source": "src/local_ai_hub/http_server.py",
         "handler": "do_GET",

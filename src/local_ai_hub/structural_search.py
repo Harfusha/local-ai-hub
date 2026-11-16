@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from .process_utils import canonical_root
+from .structural_inventory_revision import source_inventory_revision
 
 
 logger = logging.getLogger(__name__)
@@ -112,6 +113,7 @@ def search_structurally(
     is_symlink_or_reparse_point: Callable[[Path], bool],
     file_offset: int = 0,
     match_offset: int = 0,
+    expected_revision: str | None = None,
 ) -> dict[str, Any]:
     """Syntax-aware structural code search across Python and multi-language repositories."""
     if (
@@ -151,6 +153,12 @@ def search_structurally(
         return {"success": False, "status_code": 400, "error": "file_offset cannot be combined with an exact path"}
     if type(match_offset) is not int or not 0 <= match_offset <= 100_000:
         return {"success": False, "status_code": 400, "error": "match_offset must be an integer between 0 and 100000"}
+    if expected_revision is not None and (
+        not isinstance(expected_revision, str)
+        or re.fullmatch(r"[0-9a-f]{64}", expected_revision) is None
+    ):
+        return {"success": False, "status_code": 400, "terminal": True, "retryable": False,
+                "error": "expected_revision must be a lowercase SHA-256 hex digest"}
     if type(max_results) is not int or not 1 <= max_results <= 1000:
         return {"success": False, "status_code": 400, "error": "max_results must be an integer between 1 and 1000"}
     output_limit = max_results
@@ -231,6 +239,22 @@ def search_structurally(
         files_to_scan = files_to_scan[:file_limit]
     if path:
         file_limit_reached = False
+
+    inventory_revision = source_inventory_revision(
+        root_path, target_pattern, files_to_scan[0] if path and files_to_scan else None,
+        ignore_dirs, is_symlink_or_reparse_point=is_symlink_or_reparse_point,
+    ) if (not path or files_to_scan) else None
+    if expected_revision is not None:
+        if inventory_revision is None:
+            return {"success": False, "status_code": 503, "terminal": False, "retryable": True,
+                    "error_code": "search_revision_unavailable",
+                    "error": "source inventory could not be verified; retry when available"}
+        if expected_revision != inventory_revision:
+            return {"success": False, "status_code": 409, "terminal": True, "retryable": False,
+                    "error_code": "stale_search_revision",
+                    "error": "source inventory changed; restart pagination at zero",
+                    "current_revision": inventory_revision,
+                    "restart_offset": 0, "restart_match_offset": 0}
 
     files_scanned = 0
     for file_index, fpath in enumerate(files_to_scan):
@@ -553,6 +577,25 @@ def search_structurally(
                         "snippet": raw_line[:120],
                     })
 
+    if expected_revision is not None:
+        # The repository can change after the initial inventory check and
+        # while reading/parsing source files. Recheck before returning a page:
+        # otherwise a valid incoming token could authorize mixed revisions.
+        post_scan_revision = source_inventory_revision(
+            root_path, target_pattern, files_to_scan[0] if path and files_to_scan else None,
+            ignore_dirs, is_symlink_or_reparse_point=is_symlink_or_reparse_point,
+        )
+        if post_scan_revision is None:
+            return {"success": False, "status_code": 503, "terminal": False,
+                    "retryable": True, "error_code": "search_revision_unavailable",
+                    "error": "source inventory could not be verified after scanning"}
+        if post_scan_revision != expected_revision:
+            return {"success": False, "status_code": 409, "terminal": True,
+                    "retryable": False, "error_code": "stale_search_revision",
+                    "error": "source inventory changed while scanning; restart pagination at zero",
+                    "current_revision": post_scan_revision,
+                    "restart_offset": 0, "restart_match_offset": 0}
+
     returned_matches = results[:output_limit]
     overflow = len(results) > output_limit
     next_offset: int | None = None
@@ -594,7 +637,9 @@ def search_structurally(
         "match_offset": match_offset,
         "next_offset": next_offset,
         "next_match_offset": next_match_offset,
-        "pagination": "file_offset + match_offset; unstable if repository files change between requests",
+        "pagination": "file_offset + match_offset; pass inventory_revision as expected_revision to reject changed source inventory",
+        "inventory_revision": inventory_revision,
+        "revision_scope": "source paths and stat metadata; not an immutable source-content snapshot",
         "file_limit": file_limit,
         "unscanned_file_count": None if file_limit_reached else 0,
         "truncation_reasons": truncation_reasons,

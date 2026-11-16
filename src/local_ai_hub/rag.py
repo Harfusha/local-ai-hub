@@ -182,6 +182,14 @@ class ProjectPolicySyncError(RuntimeError):
         self.retryable = retryable
 
 
+class _RAGSourceChangedBeforePublish(RuntimeError):
+    """Source revision invalidated while a background publish was pending."""
+
+    def __init__(self, paths: list[str]) -> None:
+        super().__init__("source_changed_before_publish")
+        self.paths = sorted(set(paths))
+
+
 
 def _reverse_text_order(value: str) -> tuple[int, ...]:
     """Heap key where lexically smaller text has higher semantic rank."""
@@ -558,13 +566,117 @@ def _serialize_embedding(vector: Any) -> bytes | str | None:
         return None
 
 
-def _read_bounded_file(path: Path, max_bytes: int) -> bytes | None:
-    """Read at most max_bytes plus one byte to detect growth after stat."""
-    limit = max(0, int(max_bytes))
-    with path.open("rb") as source:
-        raw = source.read(limit + 1)
-    return raw if len(raw) <= limit else None
+def _read_bounded_file(
+    path: Path, max_bytes: int, *, root: Path | None = None,
+) -> bytes | None:
+    """Bounded no-follow source read, rejecting path/descriptor identity races.
 
+    Reject symlinks and Windows reparse points before reading, and compare
+    opened descriptor identity with the path both before and after the read.
+    The root (when supplied) constrains every traversed path component.
+    """
+    limit = max(0, int(max_bytes))
+    try:
+        def safe_components() -> bool:
+            if root is None:
+                return True
+            relative = path.relative_to(root)
+            if not relative.parts or ".." in relative.parts:
+                return False
+            current = root
+            for part in relative.parts:
+                current = current / part
+                component_stat = current.stat(follow_symlinks=False)
+                if (
+                    stat.S_ISLNK(component_stat.st_mode)
+                    or bool(getattr(component_stat, "st_file_attributes", 0) & 0x400)
+                ):
+                    return False
+            return True
+
+        if not safe_components():
+            return None
+        before = path.stat(follow_symlinks=False)
+        if (
+            not stat.S_ISREG(before.st_mode)
+            or bool(getattr(before, "st_file_attributes", 0) & 0x400)
+        ):
+            return None
+        flags = (
+            os.O_RDONLY | getattr(os, "O_BINARY", 0)
+            | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+        )
+        descriptor = os.open(path, flags)
+        with os.fdopen(descriptor, "rb") as source:
+            opened = os.fstat(source.fileno())
+            raw = source.read(limit + 1)
+            finished = os.fstat(source.fileno())
+        after = path.stat(follow_symlinks=False)
+        identity = lambda info: (
+            info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns,
+        )
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or len(raw) > limit
+            or identity(before) != identity(opened)
+            or identity(opened) != identity(finished)
+            or identity(finished) != identity(after)
+            or not safe_components()
+        ):
+            return None
+        return raw
+    except (OSError, RuntimeError, ValueError, TypeError):
+        return None
+
+
+def _rag_source_still_current(
+    root: Path, rel: str, *, expected_hash: str, expected_size: int,
+    expected_mtime_ns: int, max_bytes: int,
+) -> bool:
+    """Recheck actual bytes and identity after embedding, before publishing.
+
+    A workspace lock does not prevent the editor from rewriting a file.
+    This deliberately rejects same-size/mtime rollbacks and symlink swaps;
+    it is a bounded last-moment check, not an immutable filesystem snapshot.
+    """
+    if not rel or not isinstance(expected_hash, str):
+        return False
+    relative = Path(rel.replace("\\", "/"))
+    if relative.is_absolute() or ".." in relative.parts:
+        return False
+    candidate = root
+    try:
+        for part in relative.parts:
+            candidate = candidate / part
+            if candidate.is_symlink():
+                return False
+        if candidate.resolve(strict=True) != candidate:
+            return False
+        before = candidate.stat(follow_symlinks=False)
+        if not stat.S_ISREG(before.st_mode) or (
+            before.st_size != expected_size or before.st_mtime_ns != expected_mtime_ns
+        ):
+            return False
+        flags = (
+            os.O_RDONLY | getattr(os, "O_BINARY", 0)
+            | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+        )
+        fd = os.open(candidate, flags)
+        with os.fdopen(fd, "rb") as stream:
+            opened = os.fstat(stream.fileno())
+            raw = stream.read(max_bytes + 1)
+            closed = os.fstat(stream.fileno())
+        after = candidate.stat(follow_symlinks=False)
+        identity = lambda s: (s.st_dev, s.st_ino, s.st_size, s.st_mtime_ns)
+        return bool(
+            len(raw) <= max_bytes
+            and identity(before) == identity(opened) == identity(closed) == identity(after)
+            and not candidate.is_symlink()
+            and candidate.resolve(strict=True) == candidate
+            and hashlib.sha1(raw, usedforsecurity=False).hexdigest() == expected_hash
+        )
+    except (OSError, RuntimeError, ValueError):
+        return False
 
 class RAGStore:
     """Persistent semantic index with file-level incremental updates.
@@ -1883,6 +1995,9 @@ class RAGStore:
             stored_chunker_version = self._stored_workspace_chunker_version(con, workspace)
         chunker_version_changed = stored_chunker_version != RAG_CHUNKER_VERSION
         old_files = {r[0]: {"mtime_ns": int(r[1]), "size": int(r[2]), "content_hash": r[3]} for r in old_files_rows}
+        # A surviving files row does not prove its searchable chunks survived.
+        # Missing chunks must be repaired even when size, mtime and hash match.
+        paths_with_chunks = {str(row[0]) for row in old_chunk_rows}
         persisted_spaces = {
             str(r[3]).strip()
             for r in old_chunk_rows
@@ -1948,6 +2063,12 @@ class RAGStore:
                 "error": "embedding-space reindex could not inspect previously indexed files",
             }
         deleted_paths = sorted(old_paths - current_paths)
+        # A path that was physically missing during discovery must not be
+        # silently pruned if it reappears while embeddings are computed.
+        # Paths excluded by current project policy still need normal pruning.
+        physically_absent_deletions = {
+            rel for rel in deleted_paths if not (root_path / rel).exists()
+        }
         unchanged_paths: list[str] = []
         changed_paths: list[str] = []
         rag_cfg = self.config.get("rag", {})
@@ -1974,7 +2095,7 @@ class RAGStore:
                 # Stat metadata can be preserved across edits. Verify the
                 # persisted content digest before trusting an indexed file.
                 try:
-                    raw = _read_bounded_file(_path, max_file_bytes)
+                    raw = _read_bounded_file(_path, max_file_bytes, root=root_path)
                     if raw is None:
                         skipped += 1
                         read_uncertain_paths.add(rel)
@@ -1988,7 +2109,17 @@ class RAGStore:
                     unchanged_paths.append(rel)
                     continue
                 if file_hash == old.get("content_hash"):
-                    unchanged_paths.append(rel)
+                    if rel not in paths_with_chunks and self._chunks(
+                        raw.decode("utf-8", errors="replace").replace("\r\n", "\n"),
+                        path=rel,
+                    ):
+                        # Lost-chunk recovery: an unchanged nonblank document
+                        # with no persisted chunks is not a complete index.
+                        changed_paths.append(rel)
+                        verified_raw_by_path[rel] = raw
+                    else:
+                        # Whitespace-only documents legitimately have no chunks.
+                        unchanged_paths.append(rel)
                 else:
                     changed_paths.append(rel)
                     verified_raw_by_path[rel] = raw
@@ -2037,7 +2168,7 @@ class RAGStore:
             try:
                 raw = verified_raw_by_path.pop(rel, None)
                 if raw is None:
-                    raw = _read_bounded_file(path, max_file_bytes)
+                    raw = _read_bounded_file(path, max_file_bytes, root=root_path)
                 if raw is None:
                     skipped += 1
                     read_uncertain_paths.add(rel)
@@ -2172,6 +2303,31 @@ class RAGStore:
         else:
             report_progress(85.0, "embedding complete (0 new chunks)")
 
+
+        # Run this on every SQLite publish attempt, not once before its busy
+        # retries: source bytes can change while waiting for the writer lock.
+        def assert_current_sources() -> None:
+            stale_sources = [
+                rel for rel, mtime_ns, size, file_hash in file_rows
+                if not _rag_source_still_current(
+                    root_path, rel, expected_hash=file_hash,
+                    expected_size=size, expected_mtime_ns=mtime_ns,
+                    max_bytes=max_file_bytes,
+                )
+            ]
+            for rel in physically_absent_deletions:
+                try:
+                    (root_path / rel).lstat()
+                except FileNotFoundError:
+                    continue
+                except OSError:
+                    # Uncertain existence cannot authorize an irreversible
+                    # deletion of previously committed indexed chunks.
+                    pass
+                stale_sources.append(rel)
+            if stale_sources:
+                raise _RAGSourceChangedBeforePublish(sorted(set(stale_sources)))
+
         chunker_version_publishable = (
             not chunker_version_changed
             or (
@@ -2184,6 +2340,7 @@ class RAGStore:
         # The embed phase is intentionally outside this retry: a transient writer
         # must not cause expensive model work to run again.
         def publish() -> None:
+            assert_current_sources()
             publish_budget_seconds = 120.0
             with self._get_workspace_lock(workspace,), closing(self._connect()) as con, write_transaction(
                 con, max_duration_seconds=publish_budget_seconds, rollback_label="RAG index publish"
@@ -2279,11 +2436,19 @@ class RAGStore:
                 )
 
         report_progress(90.0, "publishing index")
-        retry_busy(
-            publish,
-            retries=self._sqlite_write_retries,
-            base_delay_seconds=min(0.25, max(0.01, self._sqlite_busy_seconds / 10.0)),
-        )
+        try:
+            retry_busy(
+                publish,
+                retries=self._sqlite_write_retries,
+                base_delay_seconds=min(0.25, max(0.01, self._sqlite_busy_seconds / 10.0)),
+            )
+        except _RAGSourceChangedBeforePublish as exc:
+            return {
+                "success": False, "retryable": True, "workspace": workspace,
+                "error": "source_changed_before_publish",
+                "stale_source_paths": exc.paths,
+                "read_uncertain_paths": sorted(set(read_uncertain_paths) | set(exc.paths)),
+            }
 
         with closing(self._connect()) as con:
             chunk_count = con.execute(
@@ -2553,10 +2718,16 @@ class RAGStore:
                         "reused_chunks": reused_chunks,
                     }
                 rel = str(rel).replace("\\", "/")
-                path = (root_path / rel).resolve(strict=False)
+                # Preserve the caller's original path for no-follow I/O.
+                # Resolving it here would hide an in-root symlink from the reader.
+                path = root_path / rel
                 try:
-                    relative_path = path.relative_to(root_path)
-                except ValueError:
+                    if ".." in path.relative_to(root_path).parts:
+                        continue
+                    relative_path = path.resolve(strict=False).relative_to(root_path)
+                except (OSError, RuntimeError, ValueError):
+                    # Absolute, escaped or invalid paths are not valid RAG
+                    # inventory entries and must not reach a file reader.
                     continue
                 ignored_parts = relative_path.parts[:-1]
                 requested_path = Path(os.path.normpath(rel))
@@ -2597,7 +2768,7 @@ class RAGStore:
                     # A cached lexical snapshot cannot prove the file is still
                     # identical. Re-read the bounded live bytes at the final
                     # indexing boundary, even when an override was supplied.
-                    raw = _read_bounded_file(path, max_bytes)
+                    raw = _read_bounded_file(path, max_bytes, root=root_path)
                     if raw is None:
                         read_uncertain_paths.add(rel)
                         continue
@@ -2609,7 +2780,7 @@ class RAGStore:
                         continue
                     file_hash = hashlib.sha1(raw, usedforsecurity=False).hexdigest()
                     chunks = list(self._chunks(text, path=rel))
-                    file_data.append({"rel": rel, "stat": stat, "file_hash": file_hash, "chunks": chunks})
+                    file_data.append({"rel": rel, "stat": stat, "file_hash": file_hash, "chunks": chunks, "max_bytes": max_bytes})
                 except Exception:
                     read_uncertain_paths.add(rel)
                     continue
@@ -2774,6 +2945,22 @@ class RAGStore:
                     "reused_chunks": reused_chunks,
                 }
 
+
+            # Re-validate after each SQLite busy/backoff, not merely after
+            # embeddings: an editor may have changed the file during retry.
+            def assert_current_sources() -> None:
+                stale_sources = sorted(
+                    item["rel"] for item in file_data
+                    if not _rag_source_still_current(
+                        root_path, item["rel"], expected_hash=item["file_hash"],
+                        expected_size=int(item["stat"].st_size),
+                        expected_mtime_ns=int(item["stat"].st_mtime_ns),
+                        max_bytes=int(item["max_bytes"]),
+                    )
+                )
+                if stale_sources:
+                    raise _RAGSourceChangedBeforePublish(stale_sources)
+
             # 5. Bulk SQLite transaction
             chunks_to_insert: list[tuple[Any, ...]] = []
             files_to_insert: list[tuple[Any, ...]] = []
@@ -2786,6 +2973,7 @@ class RAGStore:
                 processed_paths.append(rel)
 
             def publish() -> None:
+                assert_current_sources()
                 publish_budget_seconds = 120.0
                 with closing(self._connect()) as con, write_transaction(
                     con, max_duration_seconds=publish_budget_seconds,
@@ -2892,6 +3080,15 @@ class RAGStore:
                     retries=self._sqlite_write_retries,
                     base_delay_seconds=min(0.25, max(0.01, self._sqlite_busy_seconds / 10.0)),
                 )
+            except _RAGSourceChangedBeforePublish as exc:
+                stale = set(exc.paths)
+                self._publish_workspace_read_uncertainty(workspace, stale)
+                return {
+                    "success": False, "retryable": True, "workspace": workspace,
+                    "error": "source_changed_before_publish",
+                    "stale_source_paths": exc.paths,
+                    "read_uncertain_paths": sorted(read_uncertain_paths | stale),
+                }
             except Exception as exc:
                 result = {
                     "success": False, "workspace": workspace,

@@ -2983,6 +2983,7 @@ class RepositoryTools:
         candidate_engine = "python"
         project_candidates = None
         priority_relpaths: set[str] = set()
+        pinned_paths: set[str] = set()
         search_phase_timings_ms: dict[str, float] = {
             "git_inventory_ms": 0.0,
             "project_file_iteration_ms": 0.0,
@@ -3213,6 +3214,11 @@ class RepositoryTools:
                     if phrase and len(phrase) <= 120 and phrase in low: score += 8
                     if installation_intent_priority:
                         score += _intent_path_adjustment(query, rel)
+                    # A verified pinned context file must survive a bounded
+                    # top-k page when many generic-token files match. Pinning
+                    # changes ranking only, never authorization or matching.
+                    if rel in priority_relpaths and rel in pinned_paths:
+                        score += 32.0
                     start = max(0, idx - effective_snippet_lines); end = min(len(lines), idx + effective_snippet_lines + 1)
                     snippet = self._format_search_snippet(lines, start, end)
                     hits.append({"path": rel, "start_line": start + 1, "end_line": end, "score": round(score, 3), "text": snippet, "file_sha256": file_hash})
@@ -3244,15 +3250,19 @@ class RepositoryTools:
                 else self.iter_files(str(base), max_files=self.python_fallback_max_files + 1)
             )
             if expanded_terms:
-                # Bounded Python fallback has no ripgrep ranking stage. Visit a
-                # filename matching a precise expanded term before the generic
-                # inventory prefix; otherwise the first repetitive lines can
-                # exhaust its candidate budget before that file is examined.
+                # Preserve authorized pinned paths before the generic source
+                # inventory when reordering by expanded filename terms.
+                # Otherwise sorting moves docs/INSTALLATION.md behind noisy
+                # alphabetically-earlier files and the strict hit budget is
+                # exhausted before the pinned file is even read. Only already
+                # validated candidates reach this bounded fallback.
+                pinned_keys = {os.path.normcase(path) for path in pinned_paths}
                 fallback_paths = sorted(
                     fallback_paths,
-                    key=lambda p: (
-                        p.stem.casefold() not in expanded_terms,
-                        p.as_posix().casefold(),
+                    key=lambda candidate: (
+                        os.path.normcase(candidate.relative_to(base).as_posix()) not in pinned_keys,
+                        candidate.stem.casefold() not in expanded_terms,
+                        candidate.as_posix().casefold(),
                     ),
                 )
             fallback_jobs: list[tuple[str, Path]] = []
@@ -3297,6 +3307,12 @@ class RepositoryTools:
                         ), default=0.0)
                     if installation_intent_priority:
                         score += _intent_path_adjustment(query, rel)
+                    # The pure-Python fallback must honor validated pinned
+                    # files exactly like the accelerated candidate path.
+                    # Pinned paths came from project_candidates, already
+                    # checked against project path and symlink policy.
+                    if rel in pinned_paths and project_settings is not None:
+                        score += 32.0
                     start = max(0, idx - effective_snippet_lines)
                     end = min(len(lines), idx + effective_snippet_lines + 1)
                     snippet = self._format_search_snippet(lines, start, end)
@@ -3319,7 +3335,15 @@ class RepositoryTools:
                             break
                 if "result_limit" in truncation_reasons:
                     break
-        hits.sort(key=lambda x: (-x["score"], x["path"], x["start_line"]))
+        # Pinned files are ranked ahead of generic-token noise only after
+        # normal repository authorization and a real content match. A numeric
+        # bonus alone is insufficient when query expansion raises the scores
+        # of dozens of repetitive files; it can still bury valid pinned
+        # evidence outside the bounded first page.
+        hits.sort(key=lambda x: (
+            0 if x["path"] in pinned_paths and project_settings is not None else 1,
+            -x["score"], x["path"], x["start_line"],
+        ))
         dedup: list[dict[str, Any]] = []
         seen: set[tuple[str, int]] = set()
         per_file: Counter[str] = Counter()

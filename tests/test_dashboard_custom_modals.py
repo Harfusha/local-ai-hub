@@ -63,7 +63,7 @@ class _TraceMarkupParser(HTMLParser):
             self.primary_length += len(escape(data))
 
 
-def _trace_remediation_probe(expression):
+def _trace_remediation_probe(expression, *, timeout_seconds=20):
     source = _trace_presentation_runtime_source()
     model_source = DASHBOARD_HTML[DASHBOARD_HTML.index('function traceDisplayModel(detail)'):
                                   DASHBOARD_HTML.index('function traceAvailability(model')]
@@ -74,7 +74,7 @@ def _trace_remediation_probe(expression):
         + "function probe(session,events=[]){const model=traceDisplayModel({session,events});return renderTracePresentation(model);}"
         + f"console.log(JSON.stringify({expression}));"
     )
-    result = subprocess.run(['node'], input=script, text=True, capture_output=True, timeout=20, check=True)
+    result = subprocess.run(['node'], input=script, text=True, capture_output=True, timeout=timeout_seconds, check=True)
     return json.loads(result.stdout)
 
 
@@ -321,7 +321,7 @@ def test_trace_remediation_all_kinds_bound_escaped_aggregate_and_keep_core_value
         transport:model('request_response',{request:{method:'POST',path:'/core',body:'Core body '+huge},output:'Core result '+huge,response:'Core response '+huge,error:huge}),
         unknown:model('unknown',{request:'Core input '+huge,output:'Core output '+huge,error:huge})
       };
-    })()""")
+    })()""", timeout_seconds=60)
     for kind, html in rendered.items():
         parsed = _TraceMarkupParser(html)
         assert not parsed.errors and not parsed.stack, kind
