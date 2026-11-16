@@ -634,6 +634,7 @@ class LocalAIServices:
     consistency_guard: Any = None
     _adaptive_relevance_backoff_init_lock = threading.Lock()
     _ADAPTIVE_RELEVANCE_QUEUE_BACKOFF_SECONDS = 5.0
+    _ADAPTIVE_RELEVANCE_TIMEOUT_BACKOFF_SECONDS = 30.0
 
     def _adaptive_relevance_queue_state(self) -> dict[str, Any]:
         state = getattr(self, "_adaptive_relevance_queue_backoff", None)
@@ -642,7 +643,7 @@ class LocalAIServices:
         with self._adaptive_relevance_backoff_init_lock:
             state = getattr(self, "_adaptive_relevance_queue_backoff", None)
             if not isinstance(state, dict):
-                state = {"lock": threading.Lock(), "until": 0.0}
+                state = {"lock": threading.Lock(), "until": 0.0, "reason": "backend_queue_full"}
                 self._adaptive_relevance_queue_backoff = state
         return state
 
@@ -6569,7 +6570,7 @@ class LocalAIServices:
                         return {
                             "success": False,
                             "degraded": True,
-                            "degraded_reason": "backend_queue_full",
+                            "degraded_reason": queue_state["reason"],
                             "warnings": [],
                         }
                 try:
@@ -6603,8 +6604,15 @@ class LocalAIServices:
                                 queue_state["until"],
                                 time.monotonic() + self._ADAPTIVE_RELEVANCE_QUEUE_BACKOFF_SECONDS,
                             )
+                            queue_state["reason"] = "backend_queue_full"
                         degraded_reason = "backend_queue_full"
                     elif timed_out or error_code == "model_request_timeout":
+                        with queue_state["lock"]:
+                            queue_state["until"] = max(
+                                queue_state["until"],
+                                time.monotonic() + self._ADAPTIVE_RELEVANCE_TIMEOUT_BACKOFF_SECONDS,
+                            )
+                            queue_state["reason"] = "backend_timeout"
                         degraded_reason = "backend_timeout"
                     elif error_code == "local_backend_transport":
                         degraded_reason = "backend_transport"
