@@ -35,6 +35,30 @@ def test_windows_supervisor_uses_console_python_for_hub_child(tmp_path: Path, mo
     assert [call.args[0] for call in kernel32.SetErrorMode.call_args_list] == [0x0001 | 0x0002, 0]
 
 
+def test_windows_supervisor_passes_cuda_compatibility_environment_to_hub_child(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from local_ai_hub import owned_model
+
+    pythonw = tmp_path / "pythonw.exe"
+    console_python = tmp_path / "python.exe"
+    console_python.touch()
+    _isolate_windows_interpreter(monkeypatch, pythonw)
+    kernel32 = SimpleNamespace(SetErrorMode=Mock(return_value=0))
+    monkeypatch.setattr(supervisor.ctypes, "WinDLL", lambda *args, **kwargs: kernel32, raising=False)
+    mask = "CUBLASLT_DISABLE_CPU_INSTRUCTIONS_MASK"
+    monkeypatch.setattr(owned_model, "_cuda_worker_environment", lambda _kwargs: {mask: "1"})
+    popen = Mock(return_value=object())
+    monkeypatch.setattr(supervisor.subprocess, "Popen", popen)
+    instance = supervisor.Supervisor.__new__(supervisor.Supervisor)
+    instance.config_path = str(tmp_path / "config.toml")
+    instance.state_dir = tmp_path / "state"
+
+    instance.spawn_hub()
+
+    assert popen.call_args.kwargs["env"][mask] == "1"
+
+
 def test_windows_supervisor_suppresses_child_crash_dialog_and_restores_mode(
     tmp_path: Path, monkeypatch
 ) -> None:
