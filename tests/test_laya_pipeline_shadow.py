@@ -57,6 +57,17 @@ def test_queue_laya_delegation_and_budget_adhoc_session():
     # Missing task_id, only session_id
     args = {"session_id": "sess-pipeline-adhoc"}
 
+    # Session alone is insufficient for durable shadow attribution.
+    assert _queue_laya_delegation_shadow(
+        services, args, root="C:/repo", task="Test delegation",
+        mode="adaptive", route={"task_type": "code", "complexity": "fast"},
+        risk_score=10.0, plan={"worker": True}, need_worker=True,
+        explorer={"success": True, "structured": {"evidence": [{"evidence_id": "ev-del-1"}]}},
+        packed={"success": True, "evidence": [{"evidence_id": "ev-del-1"}]},
+        response={"success": True, "text": "worker output"},
+    ) is False
+    assert observed == []
+    args["task_id"] = "task-pipeline-adhoc"
     ok_del = _queue_laya_delegation_shadow(
         services,
         args,
