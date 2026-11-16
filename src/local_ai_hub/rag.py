@@ -2263,6 +2263,13 @@ class RAGStore:
                     55.0 + 30.0 * offset / total_embedding_chunks,
                     f"embedding chunks ({offset}/{total_embedding_chunks})",
                 )
+                if callable(should_yield) and should_yield():
+                    self._publish_workspace_read_uncertainty(workspace, read_uncertain_paths)
+                    return {
+                        "success": True, "workspace": workspace, "preempted": True,
+                        "processed_paths": processed_paths, "embedded_chunks": embedded_chunks,
+                        "reused_chunks": reused_chunks,
+                    }
                 batch_texts = [str(changed_records[idx]["text"]) for idx in batch_indices]
                 try:
                     vectors_result = self.services.embed(batch_texts, priority=2, query=False)
@@ -2300,6 +2307,13 @@ class RAGStore:
                     55.0 + 30.0 * completed_embeddings / total_embedding_chunks,
                     f"embedding chunks ({completed_embeddings}/{total_embedding_chunks})",
                 )
+                if callable(should_yield) and should_yield():
+                    self._publish_workspace_read_uncertainty(workspace, read_uncertain_paths)
+                    return {
+                        "success": True, "workspace": workspace, "preempted": True,
+                        "processed_paths": processed_paths, "embedded_chunks": embedded_chunks,
+                        "reused_chunks": reused_chunks,
+                    }
         else:
             report_progress(85.0, "embedding complete (0 new chunks)")
 
