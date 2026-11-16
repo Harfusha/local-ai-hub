@@ -3250,15 +3250,19 @@ class RepositoryTools:
                 else self.iter_files(str(base), max_files=self.python_fallback_max_files + 1)
             )
             if expanded_terms:
-                # Bounded Python fallback has no ripgrep ranking stage. Visit a
-                # filename matching a precise expanded term before the generic
-                # inventory prefix; otherwise the first repetitive lines can
-                # exhaust its candidate budget before that file is examined.
+                # Preserve authorized pinned paths before the generic source
+                # inventory when reordering by expanded filename terms.
+                # Otherwise sorting moves docs/INSTALLATION.md behind noisy
+                # alphabetically-earlier files and the strict hit budget is
+                # exhausted before the pinned file is even read. Only already
+                # validated candidates reach this bounded fallback.
+                pinned_keys = {os.path.normcase(path) for path in pinned_paths}
                 fallback_paths = sorted(
                     fallback_paths,
-                    key=lambda p: (
-                        p.stem.casefold() not in expanded_terms,
-                        p.as_posix().casefold(),
+                    key=lambda candidate: (
+                        os.path.normcase(candidate.relative_to(base).as_posix()) not in pinned_keys,
+                        candidate.stem.casefold() not in expanded_terms,
+                        candidate.as_posix().casefold(),
                     ),
                 )
             fallback_jobs: list[tuple[str, Path]] = []
