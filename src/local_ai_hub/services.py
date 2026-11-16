@@ -6574,7 +6574,7 @@ class LocalAIServices:
                         }
                 try:
                     models = getattr(self, "config", {}).get("models", {})
-                    model = getattr(self, "config", {}).get("context_relevance_model") or models.get("fast_code") or models.get("general") or "context-relevance"
+                    model = getattr(self, "config", {}).get("context_relevance_model") or models.get("context_relevance_model") or models.get("fast_code") or models.get("general") or "context-relevance"
                     generated = self._generate(
                         str(model),
                         json.dumps(payload, ensure_ascii=True, separators=(",", ":")),

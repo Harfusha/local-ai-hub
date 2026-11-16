@@ -10,6 +10,42 @@ class _Guard:
         return [{"evidence_id": "evidence-1", "path": "src/main.py"}]
 
 
+def test_adaptive_relevance_prefers_configured_context_relevance_model():
+    service = LocalAIServices.__new__(LocalAIServices)
+    service.consistency_guard = _Guard()
+    service.config = {
+        "models": {
+            "context_relevance_model": "qwen2.5-coder:3b",
+            "fast_code": "qwen2.5-coder:7b",
+        }
+    }
+    captured = {}
+    service._generate = lambda model, *_args, **_kwargs: captured.update(model=model) or {
+        "success": False,
+        "error_type": "TimeoutError",
+        "error_code": "model_request_timeout",
+        "timed_out": True,
+    }
+    service._repo_cached = lambda _op, _root, _params, compute: compute()
+    request = SimpleNamespace(
+        root="C:/repo",
+        task_id="task-1",
+        session_id="session-1",
+        phase="edit",
+        preload_profile="default",
+        focus=(),
+        changed_paths=(),
+        query="inspect code",
+        token_budget=512,
+    )
+
+    service._adaptive_relevance(
+        request, ({"evidence_id": "evidence-1", "path": "src/main.py"},), "rev-1", "mem-1"
+    )
+
+    assert captured["model"] == "qwen2.5-coder:3b"
+
+
 @pytest.mark.parametrize(("failure", "expected_reason"), [
     ({"error_type": "QueueFullError", "error_code": "local_backend_transport", "retryable": True}, "backend_queue_full"),
     ({"error_type": "TimeoutError", "error_code": "model_request_timeout", "timed_out": True}, "backend_timeout"),
