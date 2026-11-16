@@ -410,7 +410,17 @@ def _prewarm_admission_state(scheduler: Any) -> str:
     if not isinstance(status, dict):
         return "status_unavailable"
     state = status.get("gpu_admission_state")
-    return state if isinstance(state, str) and state else "unknown"
+    if not isinstance(state, str) or not state:
+        return "unknown"
+    if state == "available":
+        capacity_sharing_active = getattr(scheduler, "_capacity_sharing_active", None)
+        if callable(capacity_sharing_active):
+            try:
+                if capacity_sharing_active():
+                    return "capacity_sharing"
+            except Exception:
+                return "status_unavailable"
+    return state
 
 
 def _prewarm_should_retry(scheduler: Any) -> bool:
@@ -740,13 +750,20 @@ class LocalAIApp:
                         self.logger.warning("prewarm attempt failed: %s", type(exc).__name__)
                     admission_state = _prewarm_admission_state(self.scheduler)
                     if admission_state not in _PREWARM_RETRYABLE_GPU_STATES:
-                        self.logger.warning(
-                            "prewarm stopped: gpu_admission_state=%s", admission_state,
-                        )
-                        self.telemetry.record_system(
-                            "prewarm_stopped_gpu_admission_unavailable",
-                            model=str(model), gpu_admission_state=admission_state,
-                        )
+                        if admission_state == "capacity_sharing":
+                            self.logger.info("prewarm skipped: GPU capacity is shared")
+                            self.telemetry.record_system(
+                                "prewarm_skipped_shared_capacity", model=str(model),
+                                gpu_admission_state="available",
+                            )
+                        else:
+                            self.logger.warning(
+                                "prewarm stopped: gpu_admission_state=%s", admission_state,
+                            )
+                            self.telemetry.record_system(
+                                "prewarm_stopped_gpu_admission_unavailable",
+                                model=str(model), gpu_admission_state=admission_state,
+                            )
                         return
                     self._shutdown.wait(min(15.0, 1.5 + attempts * 0.5))
             self._prewarm_thread = threading.Thread(target=warm, name="local-ai-prewarm", daemon=True)
