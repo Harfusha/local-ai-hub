@@ -18,6 +18,7 @@ from local_ai_hub.services import LocalAIServices
 def prep(tmp_path):
     worker = ProjectPreprocessor.__new__(ProjectPreprocessor)
     worker.cfg = {"hot_queries": ["architecture"]}
+    worker._sqlite_write_retries = 6
     worker.rag = create_autospec(RAGStore, instance=True, spec_set=True)
     worker.services = create_autospec(LocalAIServices, instance=True, spec_set=True)
     worker.deterministic = None
