@@ -301,7 +301,7 @@ def test_consented_release_current_clears_only_its_capacity_leases(tmp_path):
     assert event["released_capacity_leases"] == 1
 
 
-def test_capacity_snapshot_reaps_only_confirmed_dead_laya_owners(tmp_path, monkeypatch):
+def test_capacity_snapshot_does_not_reap_dead_laya_owner_without_operator_action(tmp_path, monkeypatch):
     from local_ai_hub import process_utils
 
     store = ExternalGpuReservationStore(tmp_path / "external-gpu-reservation")
@@ -340,34 +340,12 @@ def test_capacity_snapshot_reaps_only_confirmed_dead_laya_owners(tmp_path, monke
     snapshot = store.capacity_snapshot()
 
     assert snapshot is not None
-    assert snapshot["leases"] == [live_laya, unknown_laya, unrelated]
-    event = json.loads(store.audit_path.read_text(encoding="utf-8").splitlines()[-1])
-    assert event["action"] == "dead_laya_capacity_lease_reaped"
-    assert event["generation"] == dead_laya["generation"]
-
-
-def test_capacity_snapshot_preserves_lease_when_reap_audit_fails(tmp_path, monkeypatch):
-    from local_ai_hub import process_utils
-
-    store = ExternalGpuReservationStore(tmp_path / "external-gpu-reservation")
-    lease = {
-        "lease_id": "dead-laya-lease",
-        "generation": "dead-laya-generation",
-        "owner": "laya-runtime:424242:revision",
-        "requested_bytes": 1024,
-        "reservation_generation": None,
-        "created_at": 1.0,
+    assert snapshot["leases"] == [dead_laya, live_laya, unknown_laya, unrelated]
+    assert store._read_capacity_leases_unlocked() == {
+        "schema_version": 1,
+        "leases": [dead_laya, live_laya, unknown_laya, unrelated],
     }
-    assert store._write_capacity_leases({"schema_version": 1, "leases": [lease]})
-    monkeypatch.setattr(process_utils, "process_is_alive", lambda _pid: False)
-
-    def fail_audit(_event):
-        raise OSError("audit unavailable")
-
-    monkeypatch.setattr(store, "_append_audit", fail_audit)
-
-    assert store.capacity_snapshot() is None
-    assert store._read_capacity_leases_unlocked() == {"schema_version": 1, "leases": [lease]}
+    assert not store.audit_path.exists()
 
 
 def test_consented_release_current_clears_unknown_legacy_fence_and_audits(tmp_path):

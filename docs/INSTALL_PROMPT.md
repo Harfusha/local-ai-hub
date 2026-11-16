@@ -30,6 +30,8 @@ The installation-wide diagnostics export may contain captured request and respon
 
 Use the existing MCP `local_ai_coord(action=\"curate_dataset\")` or root-authorized HTTP `POST /api/agent-state/tasks` with `action=\"curate_dataset\"` and nested `laya_operation` for typed Laya decisions, read-only `runtime_status`, local review and candidate lifecycle. `runtime_status` never loads the model. Keep proposals shadow-only and deterministic Hub behavior authoritative. First eligible inference lazily loads the configured pinned checkpoint; retain it through active work and 600 seconds after the latest completed Laya request. Capture has no per-example consent/receipt gate. Labels stay local/operator-confirmed; model review stays separately attributed. No SSH reviewer keys/quorum or cloud fallback.
 
+For `evaluate_decision`, pass `laya_operation={action:'evaluate_decision',task_id,decision:{category,evidence_ids,options,state,training_content}}`. The task must exist under the authorized root and carry a genuine non-empty `session_id`; Hub derives identity from the task, verifies evidence, and returns `decision.suggestion` plus the deterministic `baseline`. Missing session or evidence rejects. Never invent or override identity; keep the proposal shadow-only.
+
 GPU reservation status `internal` means the running scheduler has verified its own GPU fence; it is active work, not a malformed external reservation. `unknown` remains fail-closed and may require operator investigation.
 
 After 30 seconds without background GPU work, the Hub stops its managed background server and releases the GPU fence only after confirmed shutdown. New work cancels the idle timer; an unconfirmed stop or release remains fail-closed.

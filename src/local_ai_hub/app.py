@@ -3111,6 +3111,7 @@ class LocalAIApp:
                 "reason_codes": list(decision.reason_codes),
                 "redacted_training_fields": list(decision_input.redacted_fields),
             },
+            "baseline": baseline,
             "runtime": vars(outcome.runtime) if outcome.runtime is not None else None,
             "candidate": {key: captured[key] for key in ("candidate_id", "duplicate", "status", "runtime_output_recorded") if key in captured},
         }
@@ -3178,7 +3179,7 @@ class LocalAIApp:
         """Persist typed capture lifecycle metadata without request content."""
         statuses = {"skipped", "queued", "captured", "failed"}
         reasons = {
-            "context_unavailable", "task_identity_unavailable",
+            "laya_disabled", "context_unavailable", "task_identity_unavailable",
             "task_scope_unavailable", "session_identity_mismatch",
             "retrieval_provenance_unavailable", "backend_states_unavailable",
             "fewer_than_two_verified_sources", "no_unresolved_evidence_gap",
@@ -3186,7 +3187,7 @@ class LocalAIApp:
             "capture_queue_unavailable", "runtime_error", "outcome_not_captured",
             "runtime_outcome", "queued", "unspecified", "capture_exception",
             "checkpoint_unavailable", "decision_scope_unavailable",
-            "decision_evidence_unavailable", "decision_invalid",
+            "decision_evidence_unavailable", "decision_context_unavailable", "decision_invalid",
             "completion_outcome", "completion_outcome_unavailable",
             "completion_no_candidate", "completion_scope_unavailable",
         }
@@ -3296,8 +3297,66 @@ class LocalAIApp:
             future.add_done_callback(observe_dispatch)
         if operation["outcome"].get("status") == "rejected":
             self._queue_laya_completion_gap_observation(operation, root)
+        self._queue_laya_completion_next_step_observation(operation, root)
         self._record_laya_capture_observation("queued", "completion_outcome")
         return {"status": "queued", "reason": "completion_outcome"}
+
+    def _queue_laya_completion_next_step_observation(
+        self, operation: Mapping[str, Any], root: str
+    ) -> dict[str, str]:
+        """Capture bounded next-step context from a genuine completion validation."""
+        try:
+            from .laya_decisions import DecisionCategory, allowed_decision_options
+
+            status = operation["outcome"].get("status")
+            mutation_generation = operation["outcome"].get("mutation_generation")
+            if status not in {"passed", "rejected"} or type(mutation_generation) is not int or mutation_generation < 0:
+                return {"status": "skipped", "reason": "completion_scope_unavailable"}
+            canonical_root = str(Path(root).resolve(strict=True))
+            task = self.laya_candidates._find_task(self.agent_tasks, canonical_root, operation["task_id"])
+            if self.laya_candidates._session_for_task(task) != operation["session_id"]:
+                return {"status": "skipped", "reason": "completion_scope_unavailable"}
+            checkpoint = getattr(task, "checkpoint", None)
+            evidence_id = next(
+                (item for item in getattr(checkpoint, "evidence_ids", ()) if isinstance(item, str) and item.strip()),
+                None,
+            )
+            criteria = getattr(getattr(task, "contract", None), "acceptance_criteria", ())
+            if evidence_id is None or not isinstance(criteria, (list, tuple)) or not criteria:
+                self._record_laya_capture_observation("skipped", "decision_evidence_unavailable")
+                return {"status": "skipped", "reason": "decision_evidence_unavailable"}
+            task_input = "\n".join(item for item in criteria if isinstance(item, str) and item.strip())
+            task_input = task_input.encode("utf-8", errors="replace")[:4096].decode("utf-8", errors="ignore").strip()
+            if not task_input:
+                self._record_laya_capture_observation("skipped", "decision_context_unavailable")
+                return {"status": "skipped", "reason": "decision_context_unavailable"}
+            decision_operation = {
+                "action": "evaluate_decision",
+                "task_id": operation["task_id"],
+                "decision": {
+                    "category": DecisionCategory.NEXT_STEP.value,
+                    "evidence_ids": [evidence_id],
+                    "options": sorted(allowed_decision_options(DecisionCategory.NEXT_STEP)),
+                    "state": {
+                        "completion_status": status,
+                        "reason_code": f"completion_validation_{status}",
+                        "mutation_generation": str(mutation_generation),
+                    },
+                    "training_content": {"task_input": task_input},
+                },
+            }
+            return self.queue_laya_decision_observation(
+                decision_operation,
+                canonical_root,
+                {
+                    "method": "pipeline_step_progress",
+                    "suggestion": "ask_human" if status == "passed" else "run_test",
+                    "evidence_id": evidence_id,
+                },
+            )
+        except Exception:
+            self._record_laya_capture_observation("skipped", "completion_scope_unavailable")
+            return {"status": "skipped", "reason": "completion_scope_unavailable"}
 
     def _queue_laya_completion_gap_observation(
         self, operation: Mapping[str, Any], root: str

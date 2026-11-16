@@ -3141,7 +3141,7 @@ class ProjectPreprocessor:
                 self._gpu_wakeup.clear()
                 continue
             except Exception as exc:
-                if not self._is_locked_error(exc) and not isinstance(exc, TimeoutError):
+                if not self._is_locked_error(exc):
                     raise
                 self._gpu_wakeup.wait(min(0.5, poll))
                 self._gpu_wakeup.clear()

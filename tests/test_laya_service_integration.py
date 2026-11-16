@@ -242,7 +242,7 @@ def test_completion_outcome_is_queued_and_records_metadata_only() -> None:
     callbacks[0]()
 
     assert candidate_calls == [(operation, {"root": "C:/repo", "task_store": app.agent_tasks})]
-    assert [event["stage"] for event in telemetry_events] == ["queued", "captured"]
+    assert [event["stage"] for event in telemetry_events] == ["skipped", "queued", "captured"]
     assert all("operation" not in event and "root" not in event for event in telemetry_events)
 
 
@@ -301,6 +301,53 @@ def test_rejected_completion_queues_typed_shadow_gap_decision(tmp_path) -> None:
         "suggestion": "not_ready",
         "evidence_id": "ev-verified-1",
     }
+
+
+def test_completion_next_step_uses_verified_task_context(tmp_path) -> None:
+    app = LocalAIApp.__new__(LocalAIApp)
+    telemetry_events = []
+    decisions = []
+    task = SimpleNamespace(
+        checkpoint=SimpleNamespace(evidence_ids=("ev-verified-1",)),
+        contract=SimpleNamespace(acceptance_criteria=["Run focused validation", "Review the diff"]),
+    )
+    app.telemetry = SimpleNamespace(record_stage=lambda **event: telemetry_events.append(event))
+    app.agent_tasks = object()
+    app.laya_candidates = SimpleNamespace(
+        _find_task=lambda _store, root, task_id: task,
+        _session_for_task=lambda _task: "session-1",
+    )
+    app.queue_laya_decision_observation = lambda operation, root, baseline: (
+        decisions.append((operation, root, baseline)) or {"status": "queued"}
+    )
+    operation = {
+        "task_id": "task-1",
+        "session_id": "session-1",
+        "outcome": {"status": "passed", "mutation_generation": 2},
+    }
+
+    result = app._queue_laya_completion_next_step_observation(operation, str(tmp_path))
+
+    assert result == {"status": "queued"}
+    decision, root, baseline = decisions[0]
+    assert root == str(tmp_path)
+    assert decision["decision"] == {
+        "category": "next_step",
+        "evidence_ids": ["ev-verified-1"],
+        "options": ["ask_human", "inspect_source", "retrieve_evidence", "run_test"],
+        "state": {
+            "completion_status": "passed",
+            "reason_code": "completion_validation_passed",
+            "mutation_generation": "2",
+        },
+        "training_content": {"task_input": "Run focused validation\nReview the diff"},
+    }
+    assert baseline == {
+        "method": "pipeline_step_progress",
+        "suggestion": "ask_human",
+        "evidence_id": "ev-verified-1",
+    }
+    assert telemetry_events == []
 
 
 def test_completion_outcome_without_task_id_is_skipped_before_queueing() -> None:
@@ -375,7 +422,7 @@ def test_completion_outcome_waits_behind_queued_decision_capture() -> None:
     app._drain_laya_capture_queue()
 
     assert events == ["decision", "completion"]
-    assert [event["stage"] for event in telemetry_events] == ["queued", "captured", "captured"]
+    assert [event["stage"] for event in telemetry_events] == ["skipped", "queued", "captured", "captured"]
 
 
 def test_delegate_queues_model_route_observation_after_primary_generation() -> None:

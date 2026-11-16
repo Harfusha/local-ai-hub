@@ -196,8 +196,12 @@ def describe_coord(
     plan_coord_note: Callable[[], str],
     specialized_note: Callable[[str], str],
 ) -> str:
+    supported = set(features.supported_coord_actions())
+    laya_note = (
+        " Typed Laya proposals use curate_dataset with laya_operation={action:'evaluate_decision', task_id, decision:{category,evidence_ids,options,state,training_content}}. The authorized Agent OS task must carry a real session_id; Hub verifies evidence and returns decision.suggestion plus the deterministic baseline. Proposal stays shadow-only."
+        if "curate_dataset" in supported else ""
+    )
     if lean_schemas:
-        supported = set(features.supported_coord_actions())
         actions = sorted(supported)
         reservation_note = (
             " GPU reservation status is owner-global and takes no root; gpu_reservation_release requires consent=true, generation and audit_reason, then expiry or confirmed owner death. gpu_reservation_release_authorized requires explicit consent=true and audit_reason, without a generation or owner-liveness preflight. It releases a valid reservation, including capacity leases for that exact generation, or records a durable operator-release marker when the reservation file is already missing, allowing the scheduler to clear only stale in-memory external admission. gpu_capacity_lease_release requires exact lease_id, owner, generation, consent=true and audit_reason; it releases only an unreserved Laya runtime lease after the owner PID is confirmed absent, with a durable audit entry. Other generations are preserved; this can interrupt GPU work using the released generation. Malformed metadata and symlinks remain fail-closed."
@@ -213,6 +217,7 @@ def describe_coord(
             f"{actions_note(actions)}"
             f"{reservation_note}"
             f"{plan_coord_note()}"
+            f"{laya_note}"
             " Use when: any non-trivial task benefits from durable state/verification, or Hub workers share edit paths or reusable findings."
             " Skip when: task is a trivial one-step lookup with no shared state to preserve."
             f"{specialized_note('local_ai_coord')}"
@@ -237,6 +242,7 @@ def describe_coord(
         "Cross-agent coordination for ownership, checkpoints, and verification receipts."
         f"{actions_note(features.supported_coord_actions())}"
         f"{plan_coord_note()}"
+        f"{laya_note}"
         f"{agent_os_note}"
         " Claim overlapping edit paths before concurrent Hub work."
         " Use scoped Agent OS memory_find/memory_record for reusable findings; workspace memo actions are operator-only and unavailable through this tool."

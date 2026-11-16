@@ -3006,6 +3006,12 @@ class TelemetryStore:
                           COALESCE(SUM(fallback_used),0),COALESCE(SUM(retry_count),0)
                    FROM events WHERE created_at>=? GROUP BY action,event_type ORDER BY COUNT(*) DESC LIMIT 50""", (cutoff,)
             ).fetchall()
+            laya_capture_stages = con.execute(
+                """SELECT stage,COUNT(*),COALESCE(SUM(CASE WHEN success=0 THEN 1 ELSE 0 END),0)
+                   FROM events WHERE created_at>=? AND event_type='stage' AND action='laya_capture'
+                   GROUP BY stage ORDER BY stage LIMIT 10""",
+                (cutoff,),
+            ).fetchall()
             routes = con.execute(
                 """SELECT route,task_type,complexity,COUNT(*),COALESCE(AVG(duration_ms),0),COALESCE(SUM(CASE WHEN success=0 THEN 1 ELSE 0 END),0)
                    FROM events WHERE created_at>=? AND event_type='http' AND route<>''
@@ -3172,6 +3178,10 @@ class TelemetryStore:
             "by_operation": [
                 {"action": r[0], "event_type": r[1], "calls": int(r[2]), "avg_ms": round(float(r[3]), 1), "avg_queue_wait_ms": round(float(r[4]), 1), "failures": int(r[5]), "cache_hits": int(r[6]), "fallbacks": int(r[7]), "retries": int(r[8])}
                 for r in actions
+            ],
+            "laya_capture_stages": [
+                {"stage": r[0], "calls": int(r[1]), "failures": int(r[2])}
+                for r in laya_capture_stages
             ],
             "execution_routes": [
                 {"route": r[0], "task_type": r[1], "complexity": r[2], "calls": int(r[3]), "avg_ms": round(float(r[4]), 1), "failures": int(r[5])}

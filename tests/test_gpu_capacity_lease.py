@@ -136,6 +136,53 @@ def test_authorized_orphaned_laya_capacity_lease_release_requires_dead_owner_and
     assert event["reservation_generation"] is None
 
 
+def test_orphaned_laya_release_does_not_audit_when_capacity_write_fails(tmp_path, monkeypatch):
+    from local_ai_hub import process_utils
+
+    store = ExternalGpuReservationStore(tmp_path / "gpu")
+    lease = store.acquire_capacity_lease(
+        owner="laya-runtime:12345:deadbeef", requested_bytes=2 * 1024**3,
+        total_bytes=16 * 1024**3, available_bytes=16 * 1024**3,
+    )
+    assert lease is not None
+    monkeypatch.setattr(process_utils, "process_is_alive", lambda _pid: False)
+    monkeypatch.setattr(store, "_write_capacity_leases", lambda _payload: False)
+
+    assert not store.release_orphaned_laya_capacity_lease(
+        lease["lease_id"], lease["owner"], lease["generation"],
+        consent=True, audit_reason="operator approved exact stale lease",
+    )
+    assert store._read_capacity_leases_unlocked()["leases"] == [lease]
+    events = [
+        json.loads(line) for line in store.audit_path.read_text(encoding="utf-8").splitlines()
+    ] if store.audit_path.exists() else []
+    assert not any(event["action"] == "consented_capacity_lease_release_dead_laya_owner" for event in events)
+
+
+def test_orphaned_laya_release_rolls_back_when_audit_fails(tmp_path, monkeypatch):
+    from local_ai_hub import process_utils
+
+    store = ExternalGpuReservationStore(tmp_path / "gpu")
+    lease = store.acquire_capacity_lease(
+        owner="laya-runtime:12345:deadbeef", requested_bytes=2 * 1024**3,
+        total_bytes=16 * 1024**3, available_bytes=16 * 1024**3,
+    )
+    assert lease is not None
+    monkeypatch.setattr(process_utils, "process_is_alive", lambda _pid: False)
+
+    def fail_after_capacity_change(_event):
+        assert store._read_capacity_leases_unlocked()["leases"] == []
+        raise OSError("audit unavailable")
+
+    monkeypatch.setattr(store, "_append_audit", fail_after_capacity_change)
+
+    assert not store.release_orphaned_laya_capacity_lease(
+        lease["lease_id"], lease["owner"], lease["generation"],
+        consent=True, audit_reason="operator approved exact stale lease",
+    )
+    assert store._read_capacity_leases_unlocked()["leases"] == [lease]
+
+
 def test_scheduler_dispatches_exact_orphaned_laya_capacity_release(tmp_path, monkeypatch):
     from local_ai_hub import process_utils
     from local_ai_hub.scheduler import AffinityScheduler
