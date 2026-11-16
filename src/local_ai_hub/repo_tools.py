@@ -3213,6 +3213,11 @@ class RepositoryTools:
                     if phrase and len(phrase) <= 120 and phrase in low: score += 8
                     if installation_intent_priority:
                         score += _intent_path_adjustment(query, rel)
+                    # A verified pinned context file must survive a bounded
+                    # top-k page when many generic-token files match. Pinning
+                    # changes ranking only, never authorization or matching.
+                    if rel in priority_relpaths and rel in pinned_paths:
+                        score += 32.0
                     start = max(0, idx - effective_snippet_lines); end = min(len(lines), idx + effective_snippet_lines + 1)
                     snippet = self._format_search_snippet(lines, start, end)
                     hits.append({"path": rel, "start_line": start + 1, "end_line": end, "score": round(score, 3), "text": snippet, "file_sha256": file_hash})
