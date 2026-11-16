@@ -262,6 +262,45 @@ def test_consented_release_current_removes_active_reservation_without_owner_prob
     assert event["owner"] == "embedding:424242:17"
 
 
+def test_consented_release_current_clears_only_its_capacity_leases(tmp_path):
+    path = tmp_path / "external-gpu-reservation"
+    store = ExternalGpuReservationStore(path, clock=lambda: 100.0)
+    reservation = store.reserve(
+        _digest("active-owner"),
+        owner_vram_budget_bytes=16 * 1024**3,
+        owner="embedding:424242:17",
+    )
+    assert reservation is not None
+    capacity_lease = store.acquire_capacity_lease(
+        owner="scheduler-job:1",
+        requested_bytes=1024,
+        total_bytes=4096,
+        available_bytes=4096,
+        expected_reservation_generation=reservation["generation"],
+    )
+    assert capacity_lease is not None
+    unrelated_lease = {
+        **capacity_lease,
+        "lease_id": "other-lease",
+        "generation": "other-generation",
+        "reservation_generation": "0" * 32,
+    }
+    assert store._write_capacity_leases({
+        "schema_version": 1,
+        "leases": [capacity_lease, unrelated_lease],
+    })
+
+    assert store.release_current_with_consent(
+        consent=True,
+        audit_reason="operator approved stale GPU lease cleanup",
+    )
+
+    remaining = store._read_capacity_leases_unlocked()["leases"]
+    assert remaining == [unrelated_lease]
+    event = json.loads(store.audit_path.read_text(encoding="utf-8").splitlines()[-1])
+    assert event["released_capacity_leases"] == 1
+
+
 def test_consented_release_current_clears_unknown_legacy_fence_and_audits(tmp_path):
     path = tmp_path / "external-gpu-reservation"
     path.write_text(_digest("legacy-owner"), encoding="ascii")

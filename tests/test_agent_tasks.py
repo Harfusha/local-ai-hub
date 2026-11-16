@@ -306,6 +306,37 @@ def test_task_checkpoint_waits_for_short_external_writer_lock(store: TaskStore, 
             runner.join(3)
 
 
+def test_task_checkpoint_allows_a_slow_bounded_sqlite_commit(store: TaskStore, monkeypatch):
+    task = store.create(
+        GoalContract(goal="Exercise bounded task checkpoint commit"),
+        ScopeContext(task_id="task-slow-commit"),
+        task_id="task-slow-commit",
+    )
+    original_refresh = store._refresh_task_search_index
+
+    def slow_refresh(connection, task_id):
+        time.sleep(2.1)
+        return original_refresh(connection, task_id)
+
+    monkeypatch.setattr(store, "_refresh_task_search_index", slow_refresh)
+    checkpoint = TaskCheckpoint(
+        phase="slow-commit",
+        next_action="continue after bounded write",
+        blockers=(),
+        evidence_ids=(),
+        state_data={},
+    )
+
+    updated = store.checkpoint(
+        task.task_id,
+        checkpoint,
+        actor="agent",
+        idempotency_key="checkpoint-after-slow-write",
+    )
+
+    assert updated.checkpoint.phase == "slow-commit"
+
+
 def test_completion_gate_reports_typed_laya_outcome_without_changing_result(store: TaskStore):
     task_id = "laya-completion-observer"
     task = store.create(

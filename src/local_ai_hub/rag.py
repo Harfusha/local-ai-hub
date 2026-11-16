@@ -832,14 +832,29 @@ class RAGStore:
 
         found: set[str] = set()
         with closing(self._connect()) as con:
+            embedding_space = (
+                self._stored_workspace_reindex_target(con, workspace)
+                or self._stored_workspace_embedding_space(con, workspace)
+            )
             # Leave room for the workspace parameter below SQLite's usual
             # bound-variable limit.
             for offset in range(0, len(normalized), 900):
                 batch = normalized[offset:offset + 900]
                 placeholders = ",".join("?" for _ in batch)
+                space_filter = ""
+                params: tuple[Any, ...] = (workspace, *batch)
+                if embedding_space:
+                    space_filter = (
+                        " AND NOT EXISTS (SELECT 1 FROM chunks c "
+                        "WHERE c.workspace=f.workspace AND c.path=f.path "
+                        "AND (COALESCE(c.embedding_space,'')<>? "
+                        "OR c.embedding IS NULL OR length(c.embedding)=0))"
+                    )
+                    params = (*params, embedding_space)
                 rows = con.execute(
-                    f"SELECT path FROM files WHERE workspace=? AND path IN ({placeholders})",
-                    (workspace, *batch),
+                    f"SELECT f.path FROM files f WHERE f.workspace=? "
+                    f"AND f.path IN ({placeholders}){space_filter}",
+                    params,
                 ).fetchall()
                 found.update(str(row[0]) for row in rows)
         return found
@@ -1654,6 +1669,39 @@ class RAGStore:
         row = con.execute("SELECT value FROM rag_meta WHERE key=?", (key,)).fetchone()
         return str(row[0]) if row and row[0] else None
 
+    @staticmethod
+    def _workspace_reindex_target_key(workspace: str) -> str:
+        return f"workspace_reindex_target:{workspace}"
+
+    def _stored_workspace_reindex_target(
+        self, con: sqlite3.Connection, workspace: str
+    ) -> str | None:
+        row = con.execute(
+            "SELECT value FROM rag_meta WHERE key=?",
+            (self._workspace_reindex_target_key(workspace),),
+        ).fetchone()
+        return str(row[0]) if row and row[0] else None
+
+    def _request_workspace_reindex(self, workspace: str, embedding_space: str) -> None:
+        key = self._workspace_reindex_target_key(workspace)
+
+        def persist() -> None:
+            with closing(self._connect()) as con, write_transaction(
+                con, max_duration_seconds=5.0, rollback_label="RAG embedding-space reindex request"
+            ):
+                if self._stored_workspace_reindex_target(con, workspace) != embedding_space:
+                    con.execute(
+                        "INSERT OR REPLACE INTO rag_meta(key,value) VALUES(?,?)",
+                        (key, embedding_space),
+                    )
+                    self._bump_workspace_index_generation(con, workspace)
+
+        retry_busy(
+            persist,
+            retries=self._sqlite_write_retries,
+            base_delay_seconds=min(0.25, max(0.01, self._sqlite_busy_seconds / 10.0)),
+        )
+
     def _store_workspace_embedding_space(
         self, con: sqlite3.Connection, workspace: str, embedding_space: str
     ) -> None:
@@ -2136,7 +2184,7 @@ class RAGStore:
         # The embed phase is intentionally outside this retry: a transient writer
         # must not cause expensive model work to run again.
         def publish() -> None:
-            publish_budget_seconds = 5.0
+            publish_budget_seconds = 120.0
             with self._get_workspace_lock(workspace,), closing(self._connect()) as con, write_transaction(
                 con, max_duration_seconds=publish_budget_seconds, rollback_label="RAG index publish"
             ):
@@ -2154,7 +2202,16 @@ class RAGStore:
                     con.executemany("DELETE FROM chunks WHERE workspace=? AND path=?", del_paths)
                     con.executemany("DELETE FROM files WHERE workspace=? AND path=?", del_paths)
                     if fts_exists:
-                        con.executemany("DELETE FROM chunk_fts WHERE workspace=? AND path=?", del_paths)
+                        con.execute("CREATE TEMP TABLE rag_publish_paths(path TEXT PRIMARY KEY)")
+                        con.executemany(
+                            "INSERT OR IGNORE INTO rag_publish_paths(path) VALUES(?)",
+                            ((path,) for _workspace, path in del_paths),
+                        )
+                        con.execute(
+                            "DELETE FROM chunk_fts WHERE workspace=? AND path IN "
+                            "(SELECT path FROM rag_publish_paths)",
+                            (workspace,),
+                        )
                 _check_rag_publish_budget(
                     started_at=publish_started, stage="delete_old_rows", budget_seconds=publish_budget_seconds,
                 )
@@ -2414,6 +2471,7 @@ class RAGStore:
             initialize_chunker_version = not workspace_has_index
             with closing(self._connect()) as con:
                 stored_space = self._stored_workspace_embedding_space(con, workspace)
+                reindex_target = self._stored_workspace_reindex_target(con, workspace)
                 legacy_rows = (
                     con.execute(
                         "SELECT DISTINCT COALESCE(TRIM(CAST(embedding_space AS TEXT)), '') "
@@ -2476,6 +2534,9 @@ class RAGStore:
             elif stored_space is not None and not self._embedding_space_is_resolved():
                 embedding_space = stored_space
             embedding_space_resolved = bool(stored_space or self._embedding_space_is_resolved())
+            if reindex_target:
+                embedding_space = reindex_target
+                embedding_space_resolved = True
             # 1. Read files and chunk
             file_data: list[dict[str, Any]] = []
             policy_deleted: set[str] = set()
@@ -2725,7 +2786,7 @@ class RAGStore:
                 processed_paths.append(rel)
 
             def publish() -> None:
-                publish_budget_seconds = 5.0
+                publish_budget_seconds = 120.0
                 with closing(self._connect()) as con, write_transaction(
                     con, max_duration_seconds=publish_budget_seconds,
                     rollback_label="RAG batch index publish",
@@ -2743,8 +2804,17 @@ class RAGStore:
                         placeholders = ",".join("?" for _ in batch_rels)
                         con.execute(f"DELETE FROM chunks WHERE workspace=? AND path IN ({placeholders})", (workspace, *batch_rels))
                         con.execute(f"DELETE FROM files WHERE workspace=? AND path IN ({placeholders})", (workspace, *batch_rels))
-                        if fts_exists:
-                            con.execute(f"DELETE FROM chunk_fts WHERE workspace=? AND path IN ({placeholders})", (workspace, *batch_rels))
+                    if fts_exists and all_rels:
+                        con.execute("CREATE TEMP TABLE rag_publish_paths(path TEXT PRIMARY KEY)")
+                        con.executemany(
+                            "INSERT OR IGNORE INTO rag_publish_paths(path) VALUES(?)",
+                            ((rel,) for rel in all_rels),
+                        )
+                        con.execute(
+                            "DELETE FROM chunk_fts WHERE workspace=? AND path IN "
+                            "(SELECT path FROM rag_publish_paths)",
+                            (workspace,),
+                        )
                     _check_rag_publish_budget(
                         started_at=publish_started, stage="delete_old_rows",
                         budget_seconds=publish_budget_seconds,
@@ -2789,6 +2859,18 @@ class RAGStore:
                     )
                     if embedding_space:
                         self._store_workspace_embedding_space(con, workspace, embedding_space)
+                    if reindex_target:
+                        target_key = self._workspace_reindex_target_key(workspace)
+                        if reindex_target == embedding_space:
+                            con.execute(
+                                "DELETE FROM rag_meta WHERE key=? AND value=?",
+                                (target_key, reindex_target),
+                            )
+                        else:
+                            con.execute(
+                                "UPDATE rag_meta SET value=? WHERE key=? AND value=?",
+                                (embedding_space, target_key, reindex_target),
+                            )
                     if initialize_chunker_version:
                         self._store_workspace_chunker_version(con, workspace)
                     uncertainty_changed = self._update_workspace_read_uncertainty(
@@ -3118,6 +3200,17 @@ class RAGStore:
             )
             hit, coalesced = False, False
         result = dict(raw) if isinstance(raw, dict) else {"success": False, "error": "search failed"}
+        if result.get("fallback") == "embedding_space_mismatch" and result.get("reindex_required") is True:
+            target_space = result.get("embedding_space_id")
+            if isinstance(target_space, str) and target_space:
+                try:
+                    self._request_workspace_reindex(workspace, target_space)
+                    result["reindex_scheduled"] = True
+                except Exception as exc:
+                    result["reindex_scheduled"] = False
+                    result["reindex_schedule_error"] = str(exc)
+            else:
+                result["reindex_scheduled"] = False
         result["index_revision"] = revision
         result["search_cache"] = {"hit": hit, "coalesced": coalesced, "revision": revision}
         if not latest_chunker_index_current:
@@ -3423,7 +3516,7 @@ class RAGStore:
                 "success": True, "workspace": workspace, "results": [],
                 "degraded": True, "fallback": "embedding_space_mismatch",
                 "reason": "indexed vectors do not match the active query embedding space",
-                "reindex_required": True,
+                "reindex_required": True, "embedding_space_id": self._embedding_space_id(),
             }
 
         if semantic_only and not has_chunks:
@@ -3526,7 +3619,7 @@ class RAGStore:
                 "success": True, "workspace": workspace, "results": [],
                 "degraded": True, "fallback": "embedding_space_mismatch",
                 "reason": "indexed vectors do not match the active query embedding space",
-                "reindex_required": True,
+                "reindex_required": True, "embedding_space_id": embedding_space,
             }
         embedding_space_resolved = self._embedding_space_is_resolved(query_result)
         stored_embedding_space: str | None = None
@@ -3992,6 +4085,11 @@ class RAGStore:
                 else:
                     stats["chunks"] = int(row[2])
                     stats["chunked_files"] = int(row[3])
+            with closing(self._connect()) as con:
+                for workspace in batch:
+                    counts.setdefault(workspace, {})["index_generation"] = self._workspace_index_generation(
+                        con, workspace
+                    )
         return counts
 
     def docset_index(self, name: str, *, root: str) -> dict[str, Any]:

@@ -963,10 +963,12 @@ class ProjectPreprocessor:
                WHERE paused=0 AND phase<>?
                  AND (status='running' OR (status IN ('queued','waiting','error') AND retry_after<=?))
                ORDER BY CASE WHEN updated_at<=? THEN 0 ELSE 1 END,
+                        CASE WHEN updated_at<=? AND last_requested_at>=? THEN 0 ELSE 1 END,
                         CASE WHEN updated_at<=? THEN updated_at END ASC,
                         CASE WHEN root=? THEN 0 ELSE 1 END,
                         force_refresh DESC,last_requested_at DESC,updated_at DESC""",
-            (self.PHASES[-1], now, fairness_cutoff, fairness_cutoff, preferred_root or ""),
+            (self.PHASES[-1], now, fairness_cutoff, fairness_cutoff, fairness_cutoff,
+             fairness_cutoff, preferred_root or ""),
         ).fetchall()
         guard = getattr(self, "_step_locks_guard", None)
         with guard if guard is not None else nullcontext():
@@ -3045,7 +3047,16 @@ class ProjectPreprocessor:
                 self._cpu_wakeup.wait(poll)
                 self._cpu_wakeup.clear()
                 continue
-            row = self._next_cpu_project()
+            try:
+                row = self._next_cpu_project()
+            except Exception as exc:
+                if not self._is_locked_error(exc):
+                    raise
+                with self._stats_lock:
+                    self._stats["yields"] += 1
+                self._cpu_wakeup.wait(min(0.5, poll))
+                self._cpu_wakeup.clear()
+                continue
             if row is None:
                 self._run_idle_database_maintenance()
                 self._cpu_wakeup.wait(poll)
@@ -3125,7 +3136,14 @@ class ProjectPreprocessor:
                 self._gpu_wakeup.wait(poll)
                 self._gpu_wakeup.clear()
                 continue
-            row = self._next_gpu_project()
+            try:
+                row = self._next_gpu_project()
+            except Exception as exc:
+                if not self._is_locked_error(exc):
+                    raise
+                self._gpu_wakeup.wait(min(0.5, poll))
+                self._gpu_wakeup.clear()
+                continue
             if row is None:
                 self._gpu_wakeup.wait(poll)
                 self._gpu_wakeup.clear()
@@ -3918,7 +3936,7 @@ class ProjectPreprocessor:
                 # Include real semantic-index state in the idle identity.
                 # file_refs revision alone cannot notice an externally reset
                 # RAG DB or a lost chunk table during the audit cadence.
-                rag_snapshot: tuple[int, int, int] | None = None
+                rag_snapshot: tuple[int, int, int, int] | None = None
                 stats_provider = getattr(self.rag, "workspace_stats", None)
                 if callable(stats_provider):
                     try:
@@ -3929,6 +3947,7 @@ class ProjectPreprocessor:
                                 int(counts.get("files", 0)),
                                 int(counts.get("chunks", 0)),
                                 int(counts.get("chunked_files", 0)),
+                                int(counts.get("index_generation", 0)),
                             )
                     except (OSError, ValueError, TypeError, sqlite3.Error):
                         # A broken/unavailable semantic index must not be treated
@@ -4896,7 +4915,9 @@ class ProjectPreprocessor:
 
     def _claim_file_card_enrichment(self, content_hash: str, model: str) -> bool:
         now = time.time()
-        with self._db_lock, closing(self._connect()) as con:
+        pipeline_version = self._file_card_pipeline_version()
+
+        def claim(con: sqlite3.Connection) -> bool:
             cur = con.execute(
                 """INSERT INTO file_card_enrichment(
                        content_hash,model,pipeline_version,status,attempts,retry_after,lease_until,last_error,updated_at
@@ -4908,17 +4929,19 @@ class ProjectPreprocessor:
                      AND file_card_enrichment.attempts<3
                      AND file_card_enrichment.retry_after<=?
                      AND (file_card_enrichment.status!='running' OR file_card_enrichment.lease_until<=?)""",
-                (content_hash, model, self._file_card_pipeline_version(), now + 900.0, None, now, now, now),
+                (content_hash, model, pipeline_version, now + 900.0, None, now, now, now),
             )
-            con.commit()
             return cur.rowcount == 1
+
+        return bool(self._write_retry(claim))
 
     def _finish_file_card_enrichment(self, content_hash: str, model: str, *, success: bool,
                                      error: str | None = None, preempted: bool = False) -> None:
         now = time.time()
         status = "complete" if success else ("pending" if preempted else "failed")
         retry_after = now if preempted else (now + 60.0 if not success else 0.0)
-        with self._db_lock, closing(self._connect()) as con:
+
+        def finish(con: sqlite3.Connection) -> None:
             con.execute(
                 """UPDATE file_card_enrichment SET status=?,
                    attempts=CASE WHEN ? THEN MAX(0,attempts-1) ELSE attempts END,
@@ -4927,7 +4950,8 @@ class ProjectPreprocessor:
                 (status, int(preempted), retry_after, (str(error)[:240] if error else None), now,
                  content_hash, model, self._file_card_pipeline_version()),
             )
-            con.commit()
+
+        self._write_retry(finish)
 
     def _learned_priority_paths(self, root: str) -> tuple[str, ...]:
         """Use bounded learned queries as advisory background scheduling hints."""
@@ -5005,15 +5029,15 @@ class ProjectPreprocessor:
             last_accessed_clause = "(COALESCE(last_accessed_at, 0) > 0) DESC," if "last_accessed_at" in f_cols else ""
             centrality_clause = "COALESCE(centrality_score, 0.0) DESC," if "centrality_score" in f_cols else ""
             if enrich_cards:
-                card_filter = """(card_key IS NULL OR (card_key IN (
+                card_filter = """(card_key IS NULL OR card_key IN (
                     SELECT card_key FROM content_cards
                     WHERE model IN ('deterministic','deterministic-stub','deterministic-barrel')
-                ) AND NOT EXISTS (
+                )) AND NOT EXISTS (
                     SELECT 1 FROM file_card_enrichment e
                     WHERE e.content_hash=file_refs.content_hash AND e.model=? AND e.pipeline_version=?
-                      AND ((e.status='running' AND e.lease_until>?)
-                           OR (e.status='failed' AND (e.attempts>=3 OR e.retry_after>?)))
-                )))"""
+                      AND (e.attempts>=3 OR e.retry_after>?
+                           OR (e.status='running' AND e.lease_until>?))
+                )"""
                 selection_params: tuple[Any, ...] = (
                     root, background_model, self._file_card_pipeline_version(), now, now, max_bytes,
                 )
@@ -5081,7 +5105,7 @@ class ProjectPreprocessor:
     def _store_file_card(self, root: str, item: sqlite3.Row, card_key: str, data: dict[str, Any], model: str,
                          expected_hash: str | None = None) -> bool:
         now = time.time()
-        with self._db_lock, closing(self._connect()) as con:
+        def store(con: sqlite3.Connection) -> bool:
             source_hash = expected_hash or str(item["content_hash"])
             current = con.execute(
                 "SELECT content_hash FROM file_refs WHERE root=? AND path=?",
@@ -5095,8 +5119,9 @@ class ProjectPreprocessor:
             )
             con.execute("UPDATE file_refs SET card_key=?,updated_at=? WHERE root=? AND path=? AND content_hash=?",
                          (card_key, now, root, item["path"], source_hash))
-            con.commit()
             return True
+
+        return bool(self._write_retry(store))
 
     def _run_background_generate(self, model: str, prompt: str, system: str, schema: dict[str, Any], max_tokens: int, source: str) -> dict[str, Any]:
         from .operational_mode import load_operational_mode, operational_mode_gate_error, preprocessing_mode_ready
@@ -5210,7 +5235,7 @@ class ProjectPreprocessor:
         batch_size = max(1, int(bg_cfg.get("file_batch_size", 64)))
         items = self._find_next_files(root, batch_size)
         if not items:
-            with self._db_lock, closing(self._connect()) as con:
+            def store_oversized(con: sqlite3.Connection) -> None:
                 oversized = con.execute("SELECT * FROM file_refs WHERE root=? AND card_key IS NULL", (root,)).fetchall()
                 for item in oversized:
                     content_hash = str(item["content_hash"])
@@ -5221,7 +5246,7 @@ class ProjectPreprocessor:
                         (card_key, content_hash, "deterministic-oversized", PREPROCESS_ANALYZER_VERSION, json_dumps(data), time.time(), time.time()),
                     )
                     con.execute("UPDATE file_refs SET card_key=?,updated_at=? WHERE root=? AND path=?", (card_key, time.time(), root, item["path"]))
-                con.commit()
+            self._write_retry(store_oversized)
             if str(row.get("phase")) == "file_card_enrichment":
                 completed_at = time.time()
                 interval = max(30, int(self.cfg.get("auto_recheck_seconds", 1800)))
@@ -5243,7 +5268,7 @@ class ProjectPreprocessor:
             ))
             cache_updates: list[tuple[str, str]] = []
             now = time.time()
-            with self._db_lock, closing(self._connect()) as con:
+            def update_cache(con: sqlite3.Connection) -> None:
                 for batch in sqlite_batches(content_hashes):
                     placeholders = ",".join("?" for _ in batch)
                     cached_rows = con.execute(
@@ -5286,7 +5311,7 @@ class ProjectPreprocessor:
                         "UPDATE file_refs SET card_key=?,updated_at=? WHERE root=? AND path=?",
                         [(card_key, now, root, path) for card_key, path in cache_updates],
                     )
-                    con.commit()
+            self._write_retry(update_cache)
             if cache_updates:
                 with self._stats_lock:
                     self._stats["file_card_hits"] += len(cache_updates)

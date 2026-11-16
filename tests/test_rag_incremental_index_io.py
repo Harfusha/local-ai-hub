@@ -203,3 +203,40 @@ def test_changed_file_rejects_stale_content_override_at_index_boundary(tmp_path)
     assert result["processed_paths"] == []
     assert "guide.md" in result["read_uncertain_paths"]
     assert store.indexed_paths(workspace=ws, paths=["guide.md"]) == set()
+
+
+def test_reindex_deletes_fts_paths_in_one_workspace_scan(tmp_path, monkeypatch):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    for index in range(3):
+        (repo / f"doc-{index}.md").write_text("old text\n", encoding="utf-8")
+    store = RAGStore(
+        {
+            "server": {"state_dir": str(tmp_path / "state")},
+            "models": {"embedding": "test-embedding", "embedding_dimension": 3},
+            "rag": {"dedup_near_duplicates": False},
+        },
+        services=_EmbeddingStub(),
+    )
+    assert store.index(str(repo))["success"] is True
+
+    delete_statements = []
+    original_connect = store._connect
+
+    def traced_connect():
+        connection = original_connect()
+        connection.set_trace_callback(
+            lambda statement: delete_statements.append(statement)
+            if statement.lstrip().upper().startswith("DELETE FROM CHUNK_FTS")
+            else None
+        )
+        return connection
+
+    monkeypatch.setattr(store, "_connect", traced_connect)
+    for index in range(3):
+        (repo / f"doc-{index}.md").write_text("updated text\n", encoding="utf-8")
+
+    assert store.index(str(repo))["success"] is True
+    assert len(delete_statements) == 1
+    assert " PATH IN (" in delete_statements[0].upper()
+    assert "RAG_PUBLISH_PATHS" in delete_statements[0].upper()

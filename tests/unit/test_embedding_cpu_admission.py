@@ -77,6 +77,35 @@ def test_auto_backend_still_requires_gpu_reservation(tmp_path, monkeypatch):
     assert model.encode(['uncached'])['error_code'] == 'gpu_reserved'
 
 
+def test_auto_device_uses_cpu_fallback_when_gpu_admission_is_denied(tmp_path, monkeypatch):
+    model = EmbeddingModel({'server': {'state_dir': str(tmp_path)},
+                            'models': {'embedding': 'model', 'embedding_backend': 'auto', 'embedding_device': 'auto'},
+                            'cache': {'embeddings': False}})
+    candidates = [('sentence-transformers', 'cuda:0'), ('sentence-transformers', 'cpu')]
+    loaded = []
+    monkeypatch.setattr(model, '_candidate_specs', lambda **_kwargs: candidates)
+    monkeypatch.setattr(model, '_claim_embedding_gpu', lambda: False)
+
+    def load_candidate(index, *, ollama_fallback=False):
+        loaded.append((index, ollama_fallback))
+        model._model = object()
+        model.active_backend = 'sentence-transformers'
+        model.active_device = 'cpu'
+        return True
+
+    monkeypatch.setattr(model, '_load_candidate', load_candidate)
+    monkeypatch.setattr(model, '_encode_uncached', lambda *_args, **_kwargs: {
+        'success': True, 'embeddings': [[1.0, 2.0]],
+    })
+
+    result = model.encode(['uncached'])
+
+    assert result['success'] is True
+    assert result['embedding_device'] == 'cpu'
+    assert result['fallback_reason'] == 'GPU admission unavailable; used CPU fallback'
+    assert loaded == [(1, False)]
+
+
 def test_cpu_preflight_rechecks_device_before_unfenced_inference(tmp_path, monkeypatch):
     observed, resume = threading.Event(), threading.Event()
     class CpuModel:

@@ -611,15 +611,24 @@ class ExternalGpuReservationStore:
         if not isinstance(audit_reason, str) or not audit_reason.strip() or len(audit_reason) > 1000:
             return False
         with self._locked():
+            capacity = self._read_capacity_leases_unlocked()
+            if capacity is None:
+                return False
             if self.metadata_path.is_symlink() or self.path.is_symlink():
                 return False
 
             record = self._read_unlocked()
             if record is not None:
+                matching = [
+                    item for item in capacity["leases"]
+                    if item["reservation_generation"] == record["generation"]
+                ]
+                remaining = [item for item in capacity["leases"] if item not in matching]
                 event = {
                     "action": "consented_release_current_reservation",
                     "generation": record["generation"],
                     "owner": record["owner"],
+                    "released_capacity_leases": len(matching),
                     "reason": audit_reason.strip(),
                     "released_at": self._clock(),
                 }
@@ -629,22 +638,38 @@ class ExternalGpuReservationStore:
                     return False
                 if not self._write_operator_release_marker():
                     return False
+                if matching and not self._write_capacity_leases({
+                    "schema_version": 1,
+                    "leases": remaining,
+                }):
+                    return False
                 return self._remove_unlocked(record["generation"])
 
             if not self.path.exists() and self.metadata_path.exists():
                 orphan = self._read_metadata_unlocked()
                 if orphan is None:
                     return False
+                matching = [
+                    item for item in capacity["leases"]
+                    if item["reservation_generation"] == orphan["generation"]
+                ]
+                remaining = [item for item in capacity["leases"] if item not in matching]
                 event = {
                     "action": "consented_release_orphaned_metadata",
                     "generation": orphan["generation"],
                     "owner": orphan["owner"],
+                    "released_capacity_leases": len(matching),
                     "reason": audit_reason.strip(),
                     "released_at": self._clock(),
                 }
                 try:
                     self._append_audit(event)
                     if not self._write_operator_release_marker():
+                        return False
+                    if matching and not self._write_capacity_leases({
+                        "schema_version": 1,
+                        "leases": remaining,
+                    }):
                         return False
                     self.metadata_path.unlink()
                 except OSError:
@@ -654,6 +679,8 @@ class ExternalGpuReservationStore:
             if self.metadata_path.exists():
                 return False
             if not self.path.exists():
+                if capacity["leases"]:
+                    return False
                 try:
                     self._append_audit({
                         "action": "consented_release_no_current_reservation",
@@ -664,6 +691,8 @@ class ExternalGpuReservationStore:
                 except OSError:
                     return False
                 return self._write_operator_release_marker()
+            if capacity["leases"]:
+                return False
             try:
                 with self.path.open("rb") as stream:
                     before = os.fstat(stream.fileno())

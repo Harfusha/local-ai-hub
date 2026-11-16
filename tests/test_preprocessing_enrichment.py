@@ -36,6 +36,185 @@ def test_background_worker_fails_closed_when_mode_module_is_unavailable(monkeypa
     assert result[0]["error_code"] == "operational_mode_paused"
 
 
+def test_file_card_enrichment_claim_and_finish_use_single_writer(tmp_path, monkeypatch):
+    import sqlite3
+
+    cfg = {
+        "server": {"state_dir": str(tmp_path / "state")},
+        "preprocessing": {"model": "configured-model"},
+    }
+    prep = ProjectPreprocessor(cfg, _Noop(), SimpleNamespace(index_reset=False, workspace_id=lambda path: "workspace"), _Noop(), _Noop(), RepositoryTools(cfg))
+    try:
+        def fail_connect():
+            raise sqlite3.OperationalError("database is locked")
+
+        with monkeypatch.context() as patch:
+            patch.setattr(prep, "_connect", fail_connect)
+            assert prep._claim_file_card_enrichment("source-hash", "configured-model") is True
+            prep._finish_file_card_enrichment("source-hash", "configured-model", success=True)
+
+        with closing(prep._connect()) as con:
+            row = con.execute(
+                "SELECT status, attempts FROM file_card_enrichment WHERE content_hash=?",
+                ("source-hash",),
+            ).fetchone()
+        assert tuple(row) == ("complete", 1)
+    finally:
+        prep.close()
+
+
+def test_file_card_store_uses_single_writer(tmp_path, monkeypatch):
+    import sqlite3
+
+    root = tmp_path / "project"
+    root.mkdir()
+    (root / "notes.md").write_text("A useful explanation of a project component.\n", encoding="utf-8")
+    cfg = {
+        "server": {"state_dir": str(tmp_path / "state")},
+        "preprocessing": {
+            "enabled": False, "model": "configured-model", "reject_temp_projects": False,
+        },
+    }
+    prep = ProjectPreprocessor(cfg, _Noop(), SimpleNamespace(index_reset=False, workspace_id=lambda path: "workspace"), _Noop(), _Noop(), RepositoryTools(cfg))
+    try:
+        prep.enabled = True
+        assert prep.register(str(root))["success"] is True
+        assert prep._step_inventory(dict(prep._project_row(str(root)))) is True
+        item = prep._find_next_file(str(root))
+        assert item is not None
+        source_hash = str(item["content_hash"])
+
+        def fail_connect():
+            raise sqlite3.OperationalError("database is locked")
+
+        with monkeypatch.context() as patch:
+            patch.setattr(prep, "_connect", fail_connect)
+            assert prep._store_file_card(
+                str(root), item, "card-key", {"purpose": "test"}, "deterministic-stub", source_hash,
+            ) is True
+
+        with closing(prep._connect()) as con:
+            row = con.execute("SELECT card_key FROM file_refs WHERE root=? AND path=?", (str(root), item["path"])).fetchone()
+            card = con.execute("SELECT content_hash FROM content_cards WHERE card_key=?", ("card-key",)).fetchone()
+        assert row[0] == "card-key"
+        assert card[0] == source_hash
+    finally:
+        prep.close()
+
+
+def test_file_card_cache_updates_use_single_writer(tmp_path, monkeypatch):
+    root = tmp_path / "project"
+    root.mkdir()
+    (root / "notes.md").write_text("A useful explanation of a project component.\n", encoding="utf-8")
+    cfg = {
+        "server": {"state_dir": str(tmp_path / "state")},
+        "preprocessing": {
+            "enabled": False, "model": "configured-model", "reject_temp_projects": False,
+            "exclusive": {"enrich_stub_cards": True},
+        },
+    }
+    prep = ProjectPreprocessor(cfg, _Noop(), SimpleNamespace(index_reset=False, workspace_id=lambda path: "workspace"), _Noop(), _Noop(), RepositoryTools(cfg))
+    try:
+        prep.enabled = True
+        assert prep.register(str(root))["success"] is True
+        assert prep._step_inventory(dict(prep._project_row(str(root)))) is True
+        item = prep._find_next_file(str(root))
+        assert item is not None
+        card_key = prep._content_card_key(str(item["content_hash"]))
+        assert prep._store_file_card(
+            str(root), item, card_key, {"purpose": "cached"}, prep._configured_preprocessing_model(), str(item["content_hash"]),
+        ) is True
+
+        monkeypatch.setattr(prep, "_valid_enriched_file_card", lambda _data: True)
+        write_calls = []
+        write_retry = prep._write_retry
+        monkeypatch.setattr(prep, "_write_retry", lambda callback: (write_calls.append(callback), write_retry(callback))[1])
+        with closing(prep._connect()) as con:
+            cached_item = con.execute("SELECT * FROM file_refs WHERE root=? AND path=?", (str(root), item["path"])).fetchone()
+        monkeypatch.setattr(prep, "_find_next_files", lambda _root, _limit: [cached_item])
+        row = dict(prep._project_row(str(root)))
+        row["phase"] = "files"
+        prep._step_file_card(row)
+        assert any(callback.__name__ == "update_cache" for callback in write_calls)
+    finally:
+        prep.close()
+
+
+def test_oversized_file_card_uses_single_writer(tmp_path, monkeypatch):
+    root = tmp_path / "project"
+    root.mkdir()
+    (root / "large.txt").write_text("x" * 100, encoding="utf-8")
+    cfg = {
+        "server": {"state_dir": str(tmp_path / "state")},
+        "preprocessing": {
+            "enabled": False, "model": "configured-model", "reject_temp_projects": False,
+            "file_card_max_bytes": 50,
+        },
+    }
+    prep = ProjectPreprocessor(cfg, _Noop(), SimpleNamespace(index_reset=False, workspace_id=lambda path: "workspace"), _Noop(), _Noop(), RepositoryTools(cfg))
+    try:
+        prep.enabled = True
+        assert prep.register(str(root))["success"] is True
+        assert prep._step_inventory(dict(prep._project_row(str(root)))) is True
+        with closing(prep._connect()) as con:
+            con.execute("UPDATE file_refs SET size=51 WHERE root=?", (str(root),))
+            con.commit()
+        monkeypatch.setattr(prep, "_find_next_files", lambda _root, _limit: [])
+        write_calls = []
+        write_retry = prep._write_retry
+        monkeypatch.setattr(prep, "_write_retry", lambda callback: (write_calls.append(callback), write_retry(callback))[1])
+        row = dict(prep._project_row(str(root)))
+        row["phase"] = "files"
+        assert prep._step_file_card(row) is True
+        assert any(callback.__name__ == "store_oversized" for callback in write_calls)
+        with closing(prep._connect()) as con:
+            assert con.execute("SELECT card_key FROM file_refs WHERE root=?", (str(root),)).fetchone()[0]
+    finally:
+        prep.close()
+
+
+def test_file_selection_skips_blocked_enrichment_claims(tmp_path):
+    root = tmp_path / "project"
+    root.mkdir()
+    (root / "failed.py").write_text("def failed(): return 1\n", encoding="utf-8")
+    (root / "running.py").write_text("def running(): return 2\n", encoding="utf-8")
+    (root / "complete.py").write_text("def complete(): return 4\n", encoding="utf-8")
+    (root / "available.py").write_text("def available(): return 3\n", encoding="utf-8")
+    cfg = {
+        "server": {"state_dir": str(tmp_path / "state")},
+        "preprocessing": {
+            "enabled": False, "model": "configured-model", "reject_temp_projects": False,
+            "exclusive": {"enrich_stub_cards": True},
+        },
+    }
+    prep = ProjectPreprocessor(cfg, _Noop(), SimpleNamespace(index_reset=False, workspace_id=lambda path: "workspace"), _Noop(), _Noop(), RepositoryTools(cfg))
+    try:
+        prep.enabled = True
+        assert prep.register(str(root))["success"] is True
+        assert prep._step_inventory(dict(prep._project_row(str(root)))) is True
+        model = prep._configured_preprocessing_model()
+        pipeline = prep._file_card_pipeline_version()
+        now = time.time()
+        with closing(prep._connect()) as con:
+            rows = {Path(row["path"]).name: row for row in con.execute("SELECT * FROM file_refs WHERE root=?", (str(root),))}
+            for name in ("failed.py", "running.py", "complete.py", "available.py"):
+                con.execute("UPDATE file_refs SET content_hash=? WHERE root=? AND path=?", (name, str(root), rows[name]["path"]))
+            con.executemany(
+                "INSERT INTO file_card_enrichment(content_hash,model,pipeline_version,status,attempts,retry_after,lease_until,last_error,updated_at) VALUES(?,?,?,?,?,?,?,?,?)",
+                [
+                    ("failed.py", model, pipeline, "failed", 3, 0, 0, "retry limit", now),
+                    ("running.py", model, pipeline, "running", 1, 0, now + 900, None, now),
+                    ("complete.py", model, pipeline, "complete", 1, 0, 0, None, now),
+                ],
+            )
+            con.commit()
+
+        selected = {Path(row["path"]).name for row in prep._find_next_files(str(root), 64)}
+        assert selected == {"available.py", "complete.py"}
+    finally:
+        prep.close()
+
+
 def test_unchanged_inventory_does_not_skip_pending_stub_enrichment(tmp_path):
     root = tmp_path / "project"
     root.mkdir()

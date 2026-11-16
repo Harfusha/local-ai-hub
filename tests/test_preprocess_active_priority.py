@@ -53,6 +53,82 @@ def test_waiting_project_outside_admitted_slots_cannot_run_on_gpu(scheduler):
     assert instance._next_gpu_project() is None
 
 
+def test_recently_requested_project_gets_admitted_slot(scheduler):
+    instance, connect = scheduler
+    instance.max_preprocessing_projects = 1
+    add(connect, "inactive", "queued", 9499, 0)
+    add(connect, "active", "waiting", 9500, 9999)
+
+    with closing(connect()) as con:
+        instance._rebalance_processing_slots(con)
+        con.commit()
+        states = {row[0]: row[1] for row in con.execute("SELECT root,status FROM projects")}
+
+    assert states == {"inactive": "waiting", "active": "queued"}
+
+
+def test_cpu_worker_survives_locked_queue_database(scheduler, monkeypatch):
+    instance, _ = scheduler
+    instance.cfg = {"startup_delay_seconds": 0, "poll_seconds": 0.2}
+    instance.cpu_priority = 0
+    instance._stop = threading.Event()
+    instance._paused = threading.Event()
+    instance._stats_lock = threading.Lock()
+    instance._stats = {"loops": 0, "yields": 0}
+    instance.cpu_runs_during_foreground = True
+    instance._background_work_allowed = lambda: True
+
+    class StopOnWait:
+        def wait(self, _timeout):
+            instance._stop.set()
+
+        def clear(self):
+            pass
+
+    instance._cpu_wakeup = StopOnWait()
+
+    def locked_queue():
+        raise sqlite3.OperationalError("database is locked")
+
+    instance._next_cpu_project = locked_queue
+    monkeypatch.setattr("local_ai_hub.preprocess.set_current_thread_priority", lambda _priority: None)
+
+    instance._cpu_loop()
+
+    assert instance._stats["yields"] == 1
+
+
+def test_gpu_worker_survives_locked_queue_database(scheduler):
+    instance, _ = scheduler
+    instance.cfg = {"startup_delay_seconds": 0, "poll_seconds": 0.2}
+    instance._stop = threading.Event()
+    instance._paused = threading.Event()
+    instance._background_work_allowed = lambda: True
+    instance.background_gpu = type("ReadyGpu", (), {"ready": lambda _self: True})()
+
+    class StopOnWait:
+        def __init__(self):
+            self.wait_count = 0
+
+        def wait(self, _timeout):
+            self.wait_count += 1
+            instance._stop.set()
+
+        def clear(self):
+            pass
+
+    instance._gpu_wakeup = StopOnWait()
+
+    def locked_queue():
+        raise sqlite3.OperationalError("database is locked")
+
+    instance._next_gpu_project = locked_queue
+
+    instance._gpu_loop()
+
+    assert instance._gpu_wakeup.wait_count == 1
+
+
 def test_stale_waiting_project_eventually_gets_slot(scheduler):
     instance, connect = scheduler
     instance.max_preprocessing_projects = 1

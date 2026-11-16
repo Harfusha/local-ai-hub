@@ -920,6 +920,47 @@ class EmbeddingModel:
                 return output
         reservation = self._claim_embedding_gpu() if texts and (cuda_candidate or active_gpu_route or planned_gpu_route) else None
         if reservation is False:
+            candidates = get_candidate_specs()
+            openvino_cfg = self.config.get("openvino") if isinstance(self.config, dict) else None
+            cpu_fallback_enabled = (
+                (self.backend == "auto" and str(self.device).strip().lower() == "auto")
+                or (self.backend == "openvino" and (
+                    not isinstance(openvino_cfg, dict) or openvino_cfg.get("cpu_fallback", True)
+                ))
+            )
+            cpu_fallback_index = (
+                next((index for index, candidate in enumerate(candidates)
+                      if not _uses_gpu_route(*candidate)), None)
+                if cpu_fallback_enabled
+                else None
+            )
+            if cpu_fallback_index is not None:
+                def compute_cpu_fallback():
+                    with self._encoder_lock, self._load_lock:
+                        if (self._model is None
+                                or _uses_gpu_route(self.active_backend, self.active_device)):
+                            if not self._load_candidate(cpu_fallback_index):
+                                return None
+                        if (self._model is None
+                                or _uses_gpu_route(self.active_backend, self.active_device)):
+                            return None
+                        return self._encode_uncached(texts, query=query, priority=priority)
+
+                cpu_result, _coalesced = run_flight(
+                    "cpu-fallback:" + self._encode_request_key(texts, query),
+                    compute_cpu_fallback,
+                )
+                if isinstance(cpu_result, dict):
+                    output = dict(cpu_result)
+                    if isinstance(output.get("embeddings"), list):
+                        output["embeddings"] = [
+                            list(vector) if isinstance(vector, (list, tuple)) else vector
+                            for vector in output["embeddings"]
+                        ]
+                    output.setdefault("embedding_backend", self.active_backend)
+                    output.setdefault("embedding_device", self.active_device)
+                    output.setdefault("fallback_reason", "GPU admission unavailable; used CPU fallback")
+                    return output
             return {"success": False, "error_code": "gpu_reserved", "error": "GPU admission is unavailable", "retryable": True}
         digest = reservation[0] if isinstance(reservation, tuple) else None
         self._execution_local.gpu_fence_digest = digest
