@@ -36,6 +36,65 @@ def test_hardware_inventory_is_deferred_for_all_transport_configs(
     assert (cfg["models"]["fast_code"] == "tuned:test") is (probe_hardware and auto_tune)
 
 
+def test_transport_config_applies_only_explicit_profile_feature_gates(tmp_path: Path, monkeypatch):
+    from local_ai_hub import hardware
+
+    calls = []
+
+    def detect(_profile):
+        raise AssertionError("transport config must not probe hardware")
+
+    def overrides(profile, detected):
+        calls.append((profile, detected))
+        return {
+            "features": {"local_semantic_analysis": True, "search_summaries": True},
+            "models": {"general": "must-not-apply"},
+        }
+
+    monkeypatch.setattr(hardware, "detect_hardware", detect)
+    monkeypatch.setattr(hardware, "profile_overrides", overrides)
+    path = tmp_path / "manual.toml"
+    path.write_text(
+        f'[server]\nstate_dir = "{(tmp_path / "state").as_posix()}"\n'
+        '[hardware]\nprofile = "high"\nauto_tune = true\n',
+        encoding="utf-8",
+    )
+
+    cfg = load_config(path, probe_hardware=False)
+
+    assert cfg["features"]["local_semantic_analysis"] is True
+    assert cfg["features"]["search_summaries"] is True
+    assert cfg["models"]["general"] != "must-not-apply"
+    assert calls == [("high", {"profile": "high", "inventory_deferred": True})]
+    from local_ai_hub.features import FeatureSet
+
+    features = FeatureSet.from_config(cfg)
+    assert {"reason", "review", "second_opinion"} <= set(features.supported_task_actions())
+    assert features.capability_status()["search_summaries"]["available"] is True
+
+
+def test_transport_config_does_not_guess_profile_features_for_auto(tmp_path: Path, monkeypatch):
+    from local_ai_hub import hardware
+
+    monkeypatch.setattr(hardware, "detect_hardware", lambda _profile: pytest.fail("unexpected hardware probe"))
+    monkeypatch.setattr(
+        hardware,
+        "profile_overrides",
+        lambda *_args: pytest.fail("auto profile must not guess profile feature gates"),
+    )
+    path = tmp_path / "auto.toml"
+    path.write_text(
+        f'[server]\nstate_dir = "{(tmp_path / "state").as_posix()}"\n'
+        '[hardware]\nprofile = "auto"\nauto_tune = true\n',
+        encoding="utf-8",
+    )
+
+    cfg = load_config(path, probe_hardware=False)
+
+    assert cfg["_hardware"]["profile"] == "auto"
+    assert "local_semantic_analysis" not in cfg["features"]
+
+
 def _config(tmp_path: Path, extra: str = "", server_bind: str | None = None):
     path = tmp_path / "config.toml"
     bind_line = f'bind = "{server_bind}"\n' if server_bind else ""

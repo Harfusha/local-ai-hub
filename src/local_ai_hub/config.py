@@ -554,6 +554,14 @@ def load_config(path: str | os.PathLike[str] | None = None, *, probe_hardware: b
             # device subprocesses. The shared server owns automatic tuning and
             # model selection; its default full probe/overlay is unchanged.
             detected = {"profile": str(hardware_cfg.get("profile", "auto")), "inventory_deferred": True}
+            profile = hardware_cfg.get("profile")
+            if bool(hardware_cfg.get("auto_tune", True)) and isinstance(profile, str):
+                from .hardware import PROFILE_OVERRIDES, profile_overrides
+
+                if profile in PROFILE_OVERRIDES:
+                    features = profile_overrides(profile, detected).get("features", {})
+                    if isinstance(features, dict):
+                        defaults = deep_merge(defaults, {"features": features})
         else:
             from .hardware import detect_hardware, profile_overrides
             detected = detect_hardware(str(hardware_cfg.get("profile", "auto")))
