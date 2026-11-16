@@ -19,7 +19,8 @@ param(
     [switch]$SkipPerformance,
     [switch]$SkipProfiling,
     [switch]$SkipTokenEconomy,
-    [switch]$SkipCompanionSkills
+    [switch]$SkipCompanionSkills,
+    [switch]$AdoptExistingHubBlocks
 )
 
 $ErrorActionPreference = 'Stop'
@@ -106,5 +107,6 @@ if ($SkipPerformance) { $argsList += '--skip-performance' }
 if ($SkipProfiling) { $argsList += '--skip-profiling' }
 if ($SkipTokenEconomy) { $argsList += '--skip-token-economy' }
 if ($SkipCompanionSkills) { $argsList += '--skip-companion-skills' }
+if ($AdoptExistingHubBlocks) { $argsList += '--adopt-existing-hub-blocks' }
 & $Python @argsList
 exit $LASTEXITCODE

@@ -6,6 +6,7 @@ import json
 import hashlib
 import os
 import re
+import stat
 import tempfile
 import uuid
 from pathlib import Path, PurePosixPath
@@ -17,6 +18,19 @@ SCHEMA_VERSION = 2
 
 def _canonical(path: Path) -> Path:
     return Path(os.path.abspath(os.fspath(path)))
+
+
+def _is_link_or_reparse(path: Path) -> bool:
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        return False
+    return stat.S_ISLNK(info.st_mode) or bool(getattr(info, "st_file_attributes", 0) & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400))
+
+
+def _has_link_component(path: Path) -> bool:
+    absolute = _canonical(path)
+    return any(_is_link_or_reparse(component) for component in (absolute, *absolute.parents))
 
 
 def _relative_paths(paths: list[str] | None) -> list[str]:
@@ -151,6 +165,123 @@ def write_install_manifest(
     }
     _atomic_json(manifest_path, manifest)
     return manifest_path
+
+
+def adopt_external_block(
+    install_dir: Path,
+    path: Path,
+    *,
+    owner_marker: dict[str, str],
+    expected_block: str,
+    consent: bool,
+    audit_reason: str,
+) -> bool:
+    """Adopt one reviewed Hub block while keeping its exact preimage for rollback."""
+    if type(consent) is not bool or not consent:
+        raise ValueError("explicit consent is required to adopt an external block")
+    if not isinstance(audit_reason, str) or not audit_reason.strip() or len(audit_reason) > 500:
+        raise ValueError("a bounded audit reason is required to adopt an external block")
+    if not isinstance(expected_block, str) or not expected_block:
+        raise ValueError("the reviewed external block is required")
+
+    root = _canonical(Path(install_dir))
+    prior = _read_valid_manifest(root)
+    if prior is None:
+        raise ValueError("ownership marker is missing")
+    target = Path(path)
+    if not target.is_absolute():
+        raise ValueError("external block path must be absolute")
+    target = _canonical(target)
+    try:
+        target.relative_to(root)
+    except ValueError:
+        pass
+    else:
+        raise ValueError("external block must be outside the install root")
+    if _has_link_component(target):
+        raise ValueError("external block path must not contain a link or reparse point")
+    try:
+        if not stat.S_ISREG(target.lstat().st_mode):
+            raise ValueError("external block target must be a regular file")
+        text = target.read_bytes().decode("utf-8")
+    except OSError as exc:
+        raise ValueError("external block target is unavailable") from exc
+    except UnicodeDecodeError as exc:
+        raise ValueError("external block target is not UTF-8") from exc
+
+    begin, end = owner_marker.get("begin"), owner_marker.get("end")
+    if not isinstance(begin, str) or not begin or not isinstance(end, str) or not end:
+        raise ValueError("external block owner markers are invalid")
+    if text.count(begin) != 1 or text.count(end) != 1 or text.index(begin) >= text.index(end):
+        raise ValueError("external block must contain exactly one ordered marker pair")
+    start = text.index(begin)
+    stop = text.index(end) + len(end)
+    block = text[start:stop]
+    if block != expected_block:
+        raise ValueError("external block changed since review")
+
+    key = (str(target), begin, end)
+    entries = list(prior["external_ownership"])
+    matching = [entry for entry in entries if entry["kind"] == "text_block"
+                and (entry["path"], entry["owner_marker"]["begin"], entry["owner_marker"]["end"]) == key]
+    if len(matching) > 1:
+        raise ValueError("duplicate external block ownership records")
+    if matching:
+        record = matching[0]
+        if record["last_hub_written_digest"] == _digest(block):
+            return False
+        raise ValueError(f"owned external block was edited: {target}")
+
+    rollback_dir = root / ".ownership" / "rollback"
+    if _has_link_component(rollback_dir):
+        raise ValueError("rollback directory must not contain a link or reparse point")
+    rollback_dir.mkdir(parents=True, exist_ok=True)
+    rollback_name = _digest(f"{target}\0{begin}\0{end}\0{block}") + ".txt"
+    rollback_path = rollback_dir / rollback_name
+    created_rollback = False
+    if _is_link_or_reparse(rollback_path):
+        raise ValueError("existing rollback block is invalid")
+    if rollback_path.exists():
+        if rollback_path.read_bytes().decode("utf-8") != block:
+            raise ValueError("existing rollback block is invalid")
+    else:
+        fd, temporary_name = tempfile.mkstemp(prefix="block.", suffix=".tmp", dir=rollback_dir)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8", newline="") as stream:
+                stream.write(block)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary_name, rollback_path)
+            created_rollback = True
+        except BaseException:
+            try:
+                os.unlink(temporary_name)
+            except OSError:
+                pass
+            raise
+
+    latest = target.read_bytes().decode("utf-8")
+    if latest.count(begin) != 1 or latest.count(end) != 1 or latest[latest.index(begin):latest.index(end) + len(end)] != block:
+        if created_rollback:
+            rollback_path.unlink(missing_ok=True)
+        raise ValueError("external block changed during adoption")
+    entries.append({
+        "path": str(target),
+        "kind": "text_block",
+        "owner_marker": {"begin": begin, "end": end},
+        "created_by_hub": False,
+        "preimage_digest": _digest(block),
+        "last_hub_written_digest": _digest(block),
+        "rollback_reference": rollback_path.relative_to(root).as_posix(),
+        "adoption_reason": audit_reason.strip(),
+    })
+    try:
+        write_install_manifest(root, prior["managed_paths"], entries)
+    except BaseException:
+        if created_rollback:
+            rollback_path.unlink(missing_ok=True)
+        raise
+    return True
 
 
 def record_external_block(
