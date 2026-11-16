@@ -24,6 +24,7 @@ def scheduler(tmp_path, monkeypatch):
     instance = ProjectPreprocessor.__new__(ProjectPreprocessor)
     instance._connect = connect
     instance._db_lock = threading.RLock()
+    instance._sqlite_write_retries = 6
     instance.max_preprocessing_projects = 2
     instance._watcher_active = True
     monkeypatch.setattr("local_ai_hub.preprocess.time.time", lambda: 10000.0)
@@ -127,6 +128,41 @@ def test_gpu_worker_survives_locked_queue_database(scheduler):
     instance._gpu_loop()
 
     assert instance._gpu_wakeup.wait_count == 1
+
+
+def test_gpu_worker_survives_write_actor_timeout(scheduler):
+    instance, _ = scheduler
+    instance.cfg = {"startup_delay_seconds": 0, "poll_seconds": 0.2}
+    instance._stop = threading.Event()
+    instance._paused = threading.Event()
+    instance._background_work_allowed = lambda: True
+    instance.background_gpu = type("ReadyGpu", (), {"ready": lambda _self: True})()
+
+    class StopAfterRetry:
+        def __init__(self):
+            self.wait_count = 0
+
+        def wait(self, _timeout):
+            self.wait_count += 1
+            if self.wait_count == 2:
+                instance._stop.set()
+
+        def clear(self):
+            pass
+
+    instance._gpu_wakeup = StopAfterRetry()
+    calls = []
+
+    def timeout_then_empty():
+        calls.append(True)
+        if len(calls) == 1:
+            raise TimeoutError()
+        return None
+
+    instance._next_gpu_project = timeout_then_empty
+    instance._gpu_loop()
+
+    assert len(calls) == 2
 
 
 def test_stale_waiting_project_eventually_gets_slot(scheduler):

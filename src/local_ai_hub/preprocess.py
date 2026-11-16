@@ -3136,7 +3136,7 @@ class ProjectPreprocessor:
             try:
                 row = self._next_gpu_project()
             except Exception as exc:
-                if not self._is_locked_error(exc):
+                if not self._is_locked_error(exc) and not isinstance(exc, TimeoutError):
                     raise
                 self._gpu_wakeup.wait(min(0.5, poll))
                 self._gpu_wakeup.clear()
