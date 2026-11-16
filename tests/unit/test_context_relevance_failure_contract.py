@@ -169,7 +169,7 @@ def test_adaptive_relevance_cools_down_after_queue_full(monkeypatch):
     assert len(calls) == 2
 
 
-def test_adaptive_relevance_does_not_cool_down_after_timeout(monkeypatch):
+def test_adaptive_relevance_cools_down_after_timeout(monkeypatch):
     from local_ai_hub import services as services_module
 
     now = [200.0]
@@ -206,8 +206,14 @@ def test_adaptive_relevance_does_not_cool_down_after_timeout(monkeypatch):
     args = (request, ({"evidence_id": "evidence-1", "path": "src/main.py"},), "rev-1", "mem-1")
 
     timed_out = service._adaptive_relevance(*args)
-    succeeded = service._adaptive_relevance(*args)
+    during_cooldown = service._adaptive_relevance(*args)
 
     assert timed_out["degraded_reason"] == "backend_timeout"
-    assert succeeded["success"] is True
+    assert during_cooldown["degraded_reason"] == "backend_timeout"
+    assert len(calls) == 1
+
+    now[0] += 31.0
+    after_cooldown = service._adaptive_relevance(*args)
+
+    assert after_cooldown["success"] is True
     assert len(calls) == 2
