@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+
 from contextlib import closing
 from pathlib import Path
 
@@ -107,14 +109,15 @@ def test_embedding_space_rebuild_read_error_preserves_previous_index(
         ).fetchall()
 
     second = RAGStore(config, services=SpaceEmbedder("space-b"))
-    original_open = Path.open
+    # Rebuild reads use the nofollow os.open path, not pathlib.Path.open.
+    original_open = os.open
 
-    def fail_indexed_file(path: Path, mode="r", *args, **kwargs):
-        if path == source and mode == "rb":
+    def fail_indexed_file(path, *args, **kwargs):
+        if isinstance(path, (str, os.PathLike)) and Path(path) == source:
             raise PermissionError("simulated read error during embedding-space rebuild")
-        return original_open(path, mode, *args, **kwargs)
+        return original_open(path, *args, **kwargs)
 
-    monkeypatch.setattr(Path, "open", fail_indexed_file)
+    monkeypatch.setattr("local_ai_hub.rag.os.open", fail_indexed_file)
     result = second.index(root=str(root), workspace=workspace)
 
     assert result["success"] is False

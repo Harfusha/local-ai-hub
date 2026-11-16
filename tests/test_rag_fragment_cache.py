@@ -658,14 +658,17 @@ def test_search_rechecks_generation_after_uncertain_source_read(tmp_path, monkey
     assert initial["results"][0]["text"].replace("\r\n", "\n") == "def old_value():\n    return 1\n"
 
     source.write_text("def new_value():\n    return 2\n", encoding="utf-8")
-    original_open = Path.open
+    # Simulate an uncertain bounded source read at the actual nofollow
+    # ingestion boundary. The old Path.open monkeypatch no longer intercepts it.
+    from local_ai_hub import rag as rag_module
+    original_read = rag_module._read_bounded_file
 
-    def grow_after_stat(candidate: Path, mode="r", *args, **kwargs):
-        if candidate.resolve() == source.resolve() and mode == "rb":
-            return io.BytesIO(b"x" * 33)
-        return original_open(candidate, mode, *args, **kwargs)
+    def unreadable_snapshot(candidate, max_bytes, *, root=None):
+        if candidate == source:
+            return None
+        return original_read(candidate, max_bytes, root=root)
 
-    monkeypatch.setattr(Path, "open", grow_after_stat)
+    monkeypatch.setattr(rag_module, "_read_bounded_file", unreadable_snapshot)
     original_lookup = store.search_flight.get_or_compute
     interleaved: dict[str, object] = {}
 

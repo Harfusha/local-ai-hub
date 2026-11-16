@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import io
 import os
 from contextlib import closing
 from pathlib import Path
@@ -74,14 +73,17 @@ def test_file_growth_preserves_snapshot_and_suppresses_results_until_retry(
     assert committed["results"][0]["text"].replace("\r\n", "\n") == "value = 'before'\n"
 
     path.write_text("value = 'changed'\n", encoding="utf-8")
-    original_open = Path.open
+    # The hardened source reader uses os.open(O_NOFOLLOW), not Path.open.
+    # Mutate the real file between initial fstat and fd open so its size
+    # exceeds the configured budget.
+    original_open = os.open
 
-    def grow_after_stat(candidate: Path, mode="r", *args, **kwargs):
-        if candidate.resolve() == path.resolve() and mode == "rb":
-            return io.BytesIO(b"x" * 33)
-        return original_open(candidate, mode, *args, **kwargs)
+    def grow_after_stat(candidate, *args, **kwargs):
+        if isinstance(candidate, (str, os.PathLike)) and Path(candidate) == path:
+            path.write_bytes(b"x" * 33)
+        return original_open(candidate, *args, **kwargs)
 
-    monkeypatch.setattr(Path, "open", grow_after_stat)
+    monkeypatch.setattr("local_ai_hub.rag.os.open", grow_after_stat)
     if entrypoint == "index":
         result = store.index(str(root), workspace=workspace)
     else:
@@ -93,7 +95,8 @@ def test_file_growth_preserves_snapshot_and_suppresses_results_until_retry(
     assert uncertain["results"] == []
     assert uncertain["fallback"] == "source_read_uncertain"
 
-    monkeypatch.setattr(Path, "open", original_open)
+    monkeypatch.setattr("local_ai_hub.rag.os.open", original_open)
+    path.write_text("value = 'changed'\n", encoding="utf-8")
     if entrypoint == "index":
         recovered = store.index(str(root), workspace=workspace)
     else:
@@ -119,14 +122,14 @@ def test_read_uncertainty_published_before_mixed_embed_failure(
     assert store.index(str(root), workspace=workspace)["success"]
     unreadable.write_text("private_new_marker = 2\n", encoding="utf-8")
     changed.write_text("changed_new_marker = 2\n", encoding="utf-8")
-    original_open = Path.open
+    original_open = os.open
 
-    def fail_selected_read(candidate: Path, mode="r", *args, **kwargs):
-        if candidate.resolve() == unreadable.resolve() and mode == "rb":
+    def fail_selected_read(candidate, *args, **kwargs):
+        if isinstance(candidate, (str, os.PathLike)) and Path(candidate) == unreadable:
             raise PermissionError("forced source read failure")
-        return original_open(candidate, mode, *args, **kwargs)
+        return original_open(candidate, *args, **kwargs)
 
-    monkeypatch.setattr(Path, "open", fail_selected_read)
+    monkeypatch.setattr("local_ai_hub.rag.os.open", fail_selected_read)
     original_embed = store.services.embed
 
     def fail_document_embedding(texts, **kwargs):
@@ -158,18 +161,18 @@ def test_full_index_retries_uncertain_path_when_metadata_matches_old_snapshot(
     assert store.index(str(root), workspace=workspace)["success"]
     old_stat = path.stat()
     path.write_text("value = 'after!'\n", encoding="utf-8")
-    original_open = Path.open
+    original_open = os.open
 
-    def fail_read(candidate: Path, mode="r", *args, **kwargs):
-        if candidate.resolve() == path.resolve() and mode == "rb":
+    def fail_read(candidate, *args, **kwargs):
+        if isinstance(candidate, (str, os.PathLike)) and Path(candidate) == path:
             raise PermissionError("forced source read failure")
-        return original_open(candidate, mode, *args, **kwargs)
+        return original_open(candidate, *args, **kwargs)
 
-    monkeypatch.setattr(Path, "open", fail_read)
+    monkeypatch.setattr("local_ai_hub.rag.os.open", fail_read)
     failed = store.index(str(root), workspace=workspace)
     assert failed["success"] is True
     os.utime(path, ns=(old_stat.st_atime_ns, old_stat.st_mtime_ns))
-    monkeypatch.setattr(Path, "open", original_open)
+    monkeypatch.setattr("local_ai_hub.rag.os.open", original_open)
 
     recovered = store.index(str(root), workspace=workspace)
 
@@ -244,18 +247,18 @@ def test_incremental_index_retries_uncertain_path_when_metadata_matches_old_snap
     assert store.index_step(str(root), workspace=workspace)["success"] is True
     old_stat = path.stat()
     path.write_text("value = 'after!'\n", encoding="utf-8")
-    original_open = Path.open
+    original_open = os.open
 
-    def fail_read(candidate: Path, mode="r", *args, **kwargs):
-        if candidate.resolve() == path.resolve() and mode == "rb":
+    def fail_read(candidate, *args, **kwargs):
+        if isinstance(candidate, (str, os.PathLike)) and Path(candidate) == path:
             raise PermissionError("forced source read failure")
-        return original_open(candidate, mode, *args, **kwargs)
+        return original_open(candidate, *args, **kwargs)
 
-    monkeypatch.setattr(Path, "open", fail_read)
+    monkeypatch.setattr("local_ai_hub.rag.os.open", fail_read)
     failed = store.index_step(str(root), workspace=workspace)
     assert failed["success"] is True
     os.utime(path, ns=(old_stat.st_atime_ns, old_stat.st_mtime_ns))
-    monkeypatch.setattr(Path, "open", original_open)
+    monkeypatch.setattr("local_ai_hub.rag.os.open", original_open)
 
     recovered = store.index_step(str(root), workspace=workspace)
 
@@ -279,14 +282,14 @@ def test_incremental_preemption_publishes_uncertainty_from_prior_read(
     initial = store.search("private_old_marker", use_reranker=False, workspace=workspace)
     assert any(row["path"] == "unreadable.py" for row in initial["results"])
     unreadable.write_text("private_new_marker = 2\n", encoding="utf-8")
-    original_open = Path.open
+    original_open = os.open
 
-    def fail_selected_read(candidate: Path, mode="r", *args, **kwargs):
-        if candidate.resolve() == unreadable.resolve() and mode == "rb":
+    def fail_selected_read(candidate, *args, **kwargs):
+        if isinstance(candidate, (str, os.PathLike)) and Path(candidate) == unreadable:
             raise PermissionError("forced source read failure")
-        return original_open(candidate, mode, *args, **kwargs)
+        return original_open(candidate, *args, **kwargs)
 
-    monkeypatch.setattr(Path, "open", fail_selected_read)
+    monkeypatch.setattr("local_ai_hub.rag.os.open", fail_selected_read)
     yield_checks = 0
 
     def yield_before_next_path():
