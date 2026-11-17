@@ -47,6 +47,22 @@ def test_hub_release_does_not_invalidate_rag_index_fingerprint(
     assert second.index_fingerprint == fingerprint
 
 
+def test_full_index_honors_cooperative_yield(tmp_path: Path):
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / "stable.py").write_text("stable project knowledge\n", encoding="utf-8")
+    store = RAGStore(_config(tmp_path / "state"), services=SpaceEmbedder("space-a"))
+
+    result = store.index(
+        root=str(root),
+        workspace=RAGStore.workspace_id(str(root)),
+        should_yield=lambda: True,
+    )
+
+    assert result["success"] is True
+    assert result["preempted"] is True
+
+
 def test_full_index_reembeds_unchanged_files_when_embedding_space_changes(tmp_path: Path):
     root = tmp_path / "repo"
     root.mkdir()

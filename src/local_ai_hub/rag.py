@@ -1897,7 +1897,13 @@ class RAGStore:
         }
         return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
 
-    def index(self, root: str, *, workspace: str | None = None) -> dict[str, Any]:
+    def index(
+        self,
+        root: str,
+        *,
+        workspace: str | None = None,
+        should_yield: Any | None = None,
+    ) -> dict[str, Any]:
         resolved_root = str(Path(root).resolve())
         resolved_workspace = workspace or self.workspace_id(resolved_root)
         flight_key = (resolved_root, resolved_workspace)
@@ -1937,7 +1943,9 @@ class RAGStore:
         }
         try:
             with self._get_workspace_lock(resolved_workspace):
-                result = self._index_locked(resolved_root, resolved_workspace)
+                result = self._index_locked(
+                    resolved_root, resolved_workspace, should_yield=should_yield,
+                )
         except Exception as exc:
             result = {
                 "success": False, "error": str(exc),
@@ -1952,6 +1960,7 @@ class RAGStore:
 
     def _index_locked(
         self, root: str, workspace: str | None = None, *,
+        should_yield: Any | None = None,
         _space_override: str | None = None, _identity_retry: bool = False,
     ) -> dict[str, Any]:
         try:
@@ -2257,6 +2266,7 @@ class RAGStore:
         if changed_indices:
             observed_embedding_space: str | None = None
             total_embedding_chunks = len(changed_indices)
+            completed_embeddings = 0
             for offset in range(0, len(changed_indices), _INDEX_EMBED_BATCH_SIZE):
                 batch_indices = changed_indices[offset:offset + _INDEX_EMBED_BATCH_SIZE]
                 report_progress(
@@ -2267,7 +2277,7 @@ class RAGStore:
                     self._publish_workspace_read_uncertainty(workspace, read_uncertain_paths)
                     return {
                         "success": True, "workspace": workspace, "preempted": True,
-                        "processed_paths": processed_paths, "embedded_chunks": embedded_chunks,
+                        "processed_paths": [], "embedded_chunks": completed_embeddings,
                         "reused_chunks": reused_chunks,
                     }
                 batch_texts = [str(changed_records[idx]["text"]) for idx in batch_indices]
@@ -2291,7 +2301,7 @@ class RAGStore:
                         return {"success": False, "error": "embedding identity changed during atomic index retry", "retryable": True}
                     if old_chunk_rows or reused_chunks:
                         return self._index_locked(
-                            str(root_path), workspace,
+                            str(root_path), workspace, should_yield=should_yield,
                             _space_override=batch_space, _identity_retry=True,
                         )
                     embedding_space = batch_space
@@ -2311,7 +2321,7 @@ class RAGStore:
                     self._publish_workspace_read_uncertainty(workspace, read_uncertain_paths)
                     return {
                         "success": True, "workspace": workspace, "preempted": True,
-                        "processed_paths": processed_paths, "embedded_chunks": embedded_chunks,
+                        "processed_paths": [], "embedded_chunks": completed_embeddings,
                         "reused_chunks": reused_chunks,
                     }
         else:
