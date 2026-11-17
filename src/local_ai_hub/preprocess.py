@@ -25,6 +25,7 @@ PREPROCESS_ANALYZER_VERSION = "6.0.0"
 FILE_CARD_PROMPT_VERSION = "file-card-v2"
 _PROJECT_TOUCH_WRITE_TIMEOUT_SECONDS = 0.5
 _LEXICAL_WRITE_BATCH_SIZE = 32
+_MISSING_REF_WRITE_BATCH_SIZE = 16
 from .cache import stable_hash
 from .project_config import (
     ProjectPathPolicy,
@@ -4188,31 +4189,9 @@ class ProjectPreprocessor:
             existence = {}
             for rel in missing:
                 existence[rel] = checked_relative_source(root, rel)
-            with self._db_lock, closing(self._connect()) as con:
-                tables = {r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
-                has_fts = "source_fts" in tables
-                has_index = "source_index" in tables
-                with write_transaction(con, max_duration_seconds=5.0, rollback_label="preprocessor missing refs"):
-                    for rel in missing:
-                        status = existence[rel]
-                        if status in ("missing", "escaped", "directory"):
-                            deleted = con.execute(
-                                "DELETE FROM file_refs WHERE root=? AND path=? AND content_hash=? AND needs_hash=0",
-                                (root, rel, pending_hashes[rel]),
-                            ).rowcount
-                            if deleted:
-                                if has_index:
-                                    con.execute("DELETE FROM source_index WHERE root=? AND path=?", (root, rel))
-                                if has_fts:
-                                    con.execute("DELETE FROM source_fts WHERE root=? AND path=?", (root, rel))
-                            else:
-                                con.execute(
-                                    "UPDATE file_refs SET needs_hash=1,rag_hash=NULL WHERE root=? AND path=? AND content_hash=? AND needs_hash=0",
-                                    (root, rel, pending_hashes[rel]),
-                                )
-                        else:
-                            # Uncertain or reappeared paths must be hashed again.
-                            con.execute("UPDATE file_refs SET needs_hash=1,rag_hash=NULL WHERE root=? AND path=?", (root, rel))
+            self._reconcile_missing_reference_rows(
+                root=root, missing=missing, existence=existence, pending_hashes=pending_hashes,
+            )
         if processed:
             now = time.time()
             with self._db_lock, closing(self._connect()) as con:
@@ -4233,6 +4212,39 @@ class ProjectPreprocessor:
                     else:
                         batch_successes[root] = successes
         return True
+
+    def _reconcile_missing_reference_rows(
+        self, *, root: str, missing: list[str], existence: dict[str, str],
+        pending_hashes: dict[str, str],
+    ) -> None:
+        # One missing-file batch can span hundreds of paths; bound each FTS cleanup transaction.
+        for offset in range(0, len(missing), _MISSING_REF_WRITE_BATCH_SIZE):
+            batch = missing[offset:offset + _MISSING_REF_WRITE_BATCH_SIZE]
+            with self._db_lock, closing(self._connect()) as con:
+                tables = {r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+                has_fts = "source_fts" in tables
+                has_index = "source_index" in tables
+                with write_transaction(con, max_duration_seconds=5.0, rollback_label="preprocessor missing refs"):
+                    for rel in batch:
+                        status = existence[rel]
+                        if status in ("missing", "escaped", "directory"):
+                            deleted = con.execute(
+                                "DELETE FROM file_refs WHERE root=? AND path=? AND content_hash=? AND needs_hash=0",
+                                (root, rel, pending_hashes[rel]),
+                            ).rowcount
+                            if deleted:
+                                if has_index:
+                                    con.execute("DELETE FROM source_index WHERE root=? AND path=?", (root, rel))
+                                if has_fts:
+                                    con.execute("DELETE FROM source_fts WHERE root=? AND path=?", (root, rel))
+                            else:
+                                con.execute(
+                                    "UPDATE file_refs SET needs_hash=1,rag_hash=NULL WHERE root=? AND path=? AND content_hash=? AND needs_hash=0",
+                                    (root, rel, pending_hashes[rel]),
+                                )
+                        else:
+                            # Uncertain or reappeared paths must be hashed again.
+                            con.execute("UPDATE file_refs SET needs_hash=1,rag_hash=NULL WHERE root=? AND path=?", (root, rel))
 
     def _find_lexical_pending(self, root: str, limit: int) -> list[sqlite3.Row]:
         with self._db_lock, closing(self._connect()) as con:
