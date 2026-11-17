@@ -77,3 +77,54 @@ def test_capture_context_source_adhoc_fallback(tmp_path):
     # which proves it passed task_id and task_scope check!
     res2 = app._capture_laya_context_source_from_context(request, {"success": True})
     assert res2 == {"status": "skipped", "reason": "retrieval_provenance_unavailable"}
+
+
+def test_laya_disabled_skips_automatic_capture_queues(tmp_path):
+    from local_ai_hub.app import LocalAIApp
+
+    app = LocalAIApp.__new__(LocalAIApp)
+    app.config = {
+        "laya": {
+            "enabled": False,
+            "runtime": {
+                "checkpoint_path": "fake/path",
+                "revision": "rev1",
+                "expected_sha256": {"file": "sha"},
+            },
+        }
+    }
+    app._record_laya_capture_observation = lambda *_args, **_kwargs: None
+
+    assert app.queue_laya_completion_observation(
+        {"task_id": "task-1", "session_id": "session-1", "outcome": "complete"},
+        str(tmp_path),
+    ) == {"status": "skipped", "reason": "laya_disabled"}
+    assert app.queue_laya_decision_observation(
+        {"action": "evaluate_decision", "task_id": "task-1", "decision": {}},
+        str(tmp_path),
+        {},
+    ) == {"status": "skipped", "reason": "laya_disabled"}
+
+
+def test_laya_disabled_skips_context_source_capture(tmp_path):
+    from local_ai_hub.app import LocalAIApp
+
+    app = LocalAIApp.__new__(LocalAIApp)
+    app.config = {"laya": {"enabled": False}}
+    request = SimpleNamespace(task_id="task-1", session_id="session-1", root=str(tmp_path))
+
+    assert app._capture_laya_context_source_from_context(
+        request, {"success": True}
+    ) == {"status": "skipped", "reason": "laya_disabled"}
+
+
+def test_laya_disabled_rejects_direct_shadow_inference(tmp_path):
+    from local_ai_hub.app import LocalAIApp
+
+    app = LocalAIApp.__new__(LocalAIApp)
+    app.config = {"laya": {"enabled": False}}
+
+    with pytest.raises(RuntimeError, match="Laya inference is disabled"):
+        app.evaluate_laya_context_source({}, root=str(tmp_path))
+    with pytest.raises(RuntimeError, match="Laya inference is disabled"):
+        app.evaluate_laya_decision({}, root=str(tmp_path))

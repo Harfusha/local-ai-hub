@@ -1353,6 +1353,30 @@ def test_hubctl_doctor_and_logs(monkeypatch, capsys):
     out2 = capsys.readouterr().out
     assert "test log message" in out2
 
+    class DisabledLogsClient:
+        def logs(self, lines=200):
+            return {
+                "success": False,
+                "status_code": 409,
+                "error_code": "detailed_diagnostics_disabled",
+                "error": "Enable detailed diagnostics in the dashboard to use this operator diagnostic.",
+            }
+
+    monkeypatch.setattr(hubctl, "client", lambda: DisabledLogsClient())
+    monkeypatch.setattr("sys.argv", ["hubctl.py", "logs", "--follow"])
+    ret3 = hubctl.main()
+    captured = capsys.readouterr()
+    assert ret3 == 1
+    assert "HTTP 409" in captured.err
+    assert "Enable detailed diagnostics" in captured.err
+
+    monkeypatch.setattr(hubctl, "status", lambda config=None: {"running": False})
+    monkeypatch.setattr(hubctl, "load_config", lambda config=None: {})
+    monkeypatch.setattr(hubctl, "_activity_mode_request", lambda config_path=None: {"success": True, "mode": "active"})
+    monkeypatch.setattr("sys.argv", ["hubctl.py", "status"])
+    assert hubctl.main() == 0
+    assert "Local AI Hub: Offline (stopped)" in capsys.readouterr().out
+
 
 def test_dashboard_agent_os_tab():
     from local_ai_hub.dashboard import DASHBOARD_HTML

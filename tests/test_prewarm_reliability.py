@@ -92,6 +92,20 @@ def test_prewarm_retries_while_gpu_is_temporarily_busy() -> None:
     assert _prewarm_should_retry(_BusyScheduler()) is True
 
 
+def test_prewarm_stops_retrying_while_capacity_is_shared() -> None:
+    class _SharedCapacityScheduler:
+        def status(self) -> dict[str, str]:
+            return {"gpu_admission_state": "available"}
+
+        def _capacity_sharing_active(self) -> bool:
+            return True
+
+    scheduler = _SharedCapacityScheduler()
+
+    assert _prewarm_admission_state(scheduler) == "capacity_sharing"
+    assert _prewarm_should_retry(scheduler) is False
+
+
 def test_prewarm_stops_when_scheduler_status_is_unavailable_or_unknown() -> None:
     class _UnavailableScheduler:
         def status(self) -> dict[str, str]:

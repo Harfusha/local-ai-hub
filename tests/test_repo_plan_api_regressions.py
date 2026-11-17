@@ -110,6 +110,23 @@ def test_explicit_root_never_uses_legacy_global_board(public_planner):
     assert briefing["plans"] == []
 
 
+def test_session_briefing_keeps_plan_inventory_when_board_has_invalid_plan(public_planner):
+    services, root = public_planner
+    workspace = RepoPlanWorkspace(root)
+    workspace.create_plan("plan_good", "Healthy plan")
+    workspace.edit_task("plan_good", "task_ready", title="Keep visible")
+    (workspace.plans_dir / "plan_bad.plan.json").write_text("{invalid", encoding="utf-8")
+
+    briefing = services.session_briefing(root=root, include=["board", "plans"])
+
+    assert briefing["success"] is True
+    assert briefing["partial"] is True
+    assert "board" not in briefing
+    assert "plan_bad" in briefing["warnings"][0]
+    assert any(plan.get("id") == "plan_good" for plan in briefing["plans"])
+    assert any(plan.get("invalid") is True for plan in briefing["plans"])
+
+
 def test_source_ready_is_not_delivered_done(public_planner):
     services, root = public_planner
     RepoPlanWorkspace(root).create_plan("plan_release", "Release", tasks={

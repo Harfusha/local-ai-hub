@@ -65,3 +65,90 @@ def test_gpu_reservation_actions_are_advertised_in_high_profile_coord_schema():
     description = mcp_server._desc_coord()
     assert all(action in description for action in actions)
     assert "owner-liveness preflight" in description
+
+
+def test_orphaned_laya_capacity_release_is_advertised_and_generation_fenced(monkeypatch):
+    seen = {}
+
+    def post(path, payload, **kwargs):
+        seen.update(path=path, payload=payload)
+        return {"success": True, "mutation_applied": True, "lease_id": "lease-1", "generation": "generation-1"}
+
+    monkeypatch.setattr(mcp_server.CLIENT, "post", post)
+    result = mcp_server.local_ai_coord(
+        action="gpu_capacity_lease_release",
+        lease_id="lease-1",
+        owner="laya-runtime:12345:deadbeef",
+        generation="generation-1",
+        consent=True,
+        audit_reason="operator approved exact orphaned lease",
+    )
+
+    assert result["success"] is True, result
+    assert seen["path"] == "/api/gpu-reservation"
+    assert seen["payload"] == {
+        "action": "release_laya_capacity_lease",
+        "lease_id": "lease-1",
+        "owner": "laya-runtime:12345:deadbeef",
+        "generation": "generation-1",
+        "consent": True,
+        "audit_reason": "operator approved exact orphaned lease",
+    }
+    assert validate_operation_output("local_ai_coord", "gpu_capacity_lease_release", result) is None
+    assert "gpu_capacity_lease_release" in get_args(mcp_server.CoordAction)
+    assert "gpu_capacity_lease_release" in mcp_server._desc_coord()
+
+
+def test_orphaned_scheduler_capacity_release_uses_exact_fenced_payload(monkeypatch):
+    seen = {}
+
+    def post(path, payload, **kwargs):
+        seen.update(path=path, payload=payload)
+        return {"success": True, "mutation_applied": True, "lease_id": "lease-2", "generation": "generation-2"}
+
+    monkeypatch.setattr(mcp_server.CLIENT, "post", post)
+    result = mcp_server.local_ai_coord(
+        action="gpu_scheduler_capacity_lease_release",
+        lease_id="lease-2",
+        owner="scheduler-job:7",
+        generation="generation-2",
+        consent=True,
+        audit_reason="operator approved exact stale scheduler lease",
+    )
+
+    assert result["success"] is True, result
+    assert seen["path"] == "/api/gpu-reservation"
+    assert seen["payload"] == {
+        "action": "release_scheduler_capacity_lease",
+        "lease_id": "lease-2",
+        "owner": "scheduler-job:7",
+        "generation": "generation-2",
+        "consent": True,
+        "audit_reason": "operator approved exact stale scheduler lease",
+    }
+    assert validate_operation_output("local_ai_coord", "gpu_scheduler_capacity_lease_release", result) is None
+    assert "gpu_scheduler_capacity_lease_release" in get_args(mcp_server.CoordAction)
+    assert "gpu_scheduler_capacity_lease_release" in mcp_server._desc_coord()
+
+
+def test_scheduler_capacity_release_rejects_without_explicit_consent(monkeypatch):
+    posted = []
+
+    def post(path, payload, **kwargs):
+        posted.append((path, payload))
+        return {"success": False, "operation_not_started": True}
+
+    monkeypatch.setattr(mcp_server.CLIENT, "post", post)
+
+    result = mcp_server.local_ai_coord(
+        action="gpu_scheduler_capacity_lease_release",
+        lease_id="lease-2",
+        owner="scheduler-job:7",
+        generation="generation-2",
+        consent=False,
+        audit_reason="operator did not approve release",
+    )
+
+    assert result["success"] is False
+    assert posted[0][0] == "/api/gpu-reservation"
+    assert posted[0][1]["consent"] is False

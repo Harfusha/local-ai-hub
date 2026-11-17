@@ -337,6 +337,10 @@ def test_capacity_snapshot_does_not_release_laya_leases_without_consent(tmp_path
 
     assert snapshot is not None
     assert snapshot["leases"] == [dead_laya, live_laya, unknown_laya, unrelated]
+    assert store._read_capacity_leases_unlocked() == {
+        "schema_version": 1,
+        "leases": [dead_laya, live_laya, unknown_laya, unrelated],
+    }
     assert not store.audit_path.exists()
 
 

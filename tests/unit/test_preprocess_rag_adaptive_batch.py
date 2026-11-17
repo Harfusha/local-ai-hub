@@ -1,7 +1,7 @@
 import hashlib
 import sqlite3
 import threading
-from contextlib import closing
+from contextlib import closing, contextmanager
 
 from local_ai_hub.preprocess import ProjectPreprocessor
 from local_ai_hub.rag import RAGStore
@@ -220,3 +220,60 @@ def test_real_rag_preemption_preserves_snapshot_and_reduces_batch(tmp_path, monk
     assert [tuple(row) for row in after] == [tuple(row) for row in before]
     with closing(connect()) as con:
         assert con.execute('SELECT rag_hash FROM file_refs').fetchone()[0] is None
+
+
+def test_missing_reference_cleanup_commits_bounded_transactions(tmp_path, monkeypatch):
+    from local_ai_hub import preprocess
+
+    root = str(tmp_path)
+    db = tmp_path / "index.sqlite"
+    missing = [f"gone_{i}.py" for i in range(33)]
+    pending_hashes = {path: f"hash-{i}" for i, path in enumerate(missing)}
+    existence = {path: "missing" for path in missing}
+    existence.update({"uncertain.py": "inside_regular_file", "changed.py": "missing"})
+    pending_hashes.update({"uncertain.py": "uncertain-hash", "changed.py": "old-hash"})
+
+    def connect():
+        con = sqlite3.connect(db)
+        con.row_factory = sqlite3.Row
+        return con
+
+    with closing(connect()) as con:
+        con.execute("CREATE TABLE file_refs(root TEXT, path TEXT, content_hash TEXT, needs_hash INTEGER, rag_hash TEXT)")
+        con.execute("CREATE TABLE source_index(root TEXT, path TEXT)")
+        con.execute("CREATE TABLE source_fts(root TEXT, path TEXT)")
+        con.executemany(
+            "INSERT INTO file_refs VALUES(?, ?, ?, 0, 'indexed')",
+            [(root, path, pending_hashes[path]) for path in missing + ["uncertain.py"]]
+            + [(root, "changed.py", "new-hash")],
+        )
+        con.executemany("INSERT INTO source_index VALUES(?, ?)", [(root, path) for path in missing + ["changed.py"]])
+        con.executemany("INSERT INTO source_fts VALUES(?, ?)", [(root, path) for path in missing + ["changed.py"]])
+        con.commit()
+
+    transaction_count = 0
+    original_write_transaction = preprocess.write_transaction
+
+    @contextmanager
+    def track_transactions(connection, **kwargs):
+        nonlocal transaction_count
+        transaction_count += 1
+        with original_write_transaction(connection, **kwargs):
+            yield connection
+
+    monkeypatch.setattr(preprocess, "write_transaction", track_transactions)
+    pre = ProjectPreprocessor.__new__(ProjectPreprocessor)
+    pre._db_lock, pre._connect = threading.RLock(), connect
+    pre._reconcile_missing_reference_rows(
+        root=root, missing=missing + ["uncertain.py", "changed.py"],
+        existence=existence, pending_hashes=pending_hashes,
+    )
+
+    batch_size = preprocess._MISSING_REF_WRITE_BATCH_SIZE
+    assert transaction_count >= 5
+    assert transaction_count == (len(existence) + batch_size - 1) // batch_size
+    with closing(connect()) as con:
+        assert [tuple(row) for row in con.execute("SELECT path FROM file_refs WHERE root=? AND needs_hash=0", (root,))] == [("changed.py",)]
+        assert [tuple(row) for row in con.execute("SELECT path FROM file_refs WHERE root=? AND needs_hash=1", (root,))] == [("uncertain.py",)]
+        assert [tuple(row) for row in con.execute("SELECT path FROM source_index WHERE root=?", (root,))] == [("changed.py",)]
+        assert [tuple(row) for row in con.execute("SELECT path FROM source_fts WHERE root=?", (root,))] == [("changed.py",)]
