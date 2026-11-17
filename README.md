@@ -223,7 +223,7 @@ To expose Serena as an independent MCP server as well as through the hub, set `c
 
 ## Agent behavior
 
-The main agent owns task boundaries, permissions, unresolved decisions and the final user answer. For a closed, bounded and independently verifiable repository task, prefer `local_ai_work(action="submit")`: the Hub may own planning, transactional edits, validation and integration inside that declared task until it returns a verified handoff. Use `response_profile="compact"` by default, request only the fields needed for the next decision, and fetch detailed artifacts lazily. Use `local_ai_task(action="delegate"|"explore"|"reason"|"review"|"second_opinion"|"compress")` for bounded semantic generation, exploration, reasoning, review, independent second opinions and compression; use deterministic/indexed tools for exact facts, symbols, diff and tests. Native Codex subagents are for explicit Codex-only work. Never duplicate the same scope across agents.
+The main agent owns task boundaries, permissions, unresolved decisions and the final user answer. Use `local_ai_work(action="submit")` only when the user explicitly requests closed delegation and the task/model qualification gates pass; the Hub may own planning, transactional edits, validation and integration inside that declared task until it returns a verified handoff. Use `response_profile="compact"` by default, request only the fields needed for the next decision, and fetch detailed artifacts lazily. Use `local_ai_task(action="delegate"|"explore"|"reason"|"review"|"second_opinion"|"compress")` for bounded semantic generation, exploration, reasoning, review, independent second opinions and compression; use deterministic/indexed tools for exact facts, symbols, diff and tests. Native Codex subagents are for explicit Codex-only work. Never duplicate the same scope across agents.
 
 Setup installs the `local-ai-orchestrator` skill/policy where the host supports it and MCP entries for Codex, Claude, Gemini, Cursor, Windsurf and VS Code/Copilot. Portable manifests are also emitted under `generated/`. The intended order is:
 
@@ -234,9 +234,9 @@ Setup installs the `local-ai-orchestrator` skill/policy where the host supports 
 5. host-native command tool for bounded tests, builds, and validation (with `local_ai_coord` verification receipts);
 6. exact `E…` evidence/artifact slices only when source text is required;
 7. `local_ai_coord` leases/memos for overlapping multi-agent work;
-8. for a closed end-to-end task, `local_ai_work(action="submit")` can replace the manual sequence above and return a compact verified handoff.
+8. only when the user explicitly requests closed delegation and qualification gates pass, `local_ai_work(action="submit")` can replace the manual sequence above and return a compact verified handoff.
 
-This is intentionally stronger than merely making tools available: installed policies and MCP descriptions enforce the same cheapest-first gate, prohibit preprocessing/status polling, and treat native broad repository exploration as fallback-only after one bounded hub retry.
+This is intentionally stronger than merely making tools available: installed policies and MCP descriptions enforce the same cheapest-first gate, prohibit preprocessing/status polling, and permit native broad repository exploration only after an explicit Hub result with `terminal=true` and `retryable=false`; a transport failure without those fields does not authorize fallback.
 
 ## Whole-task delegation and compact handoff
 

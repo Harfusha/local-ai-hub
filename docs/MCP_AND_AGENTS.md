@@ -6,7 +6,7 @@ For `local_ai_repo(action="structural_search", root=ABS_ROOT, query="fn:target")
 
 Development and Git integration follow the [simplified worktree process](WORKTREE_INTEGRATION.md): primary agent owns audits and integration, branches/worktrees are exceptional, small verified units return to `master` promptly, and leftover changes are classified before recoverable archival. No routine audit handoffs, ZIPs, owner packets, or custom fingerprint/hash cascades.
 
-Local AI Hub exposes seven compact MCP tools instead of mirroring every internal endpoint. Target runtime has one user-scoped Hub daemon and lightweight stdio proxies; a proxy must not instantiate `InProcessTransport`, `HubServices`, or another `LocalAIApp`. Historical T03/T04/T13 candidate notes do not establish current installed-runtime behavior. The daemon and service pools are shared across Codex, Claude Code, Gemini CLI, Cursor, Windsurf, VS Code/Copilot and generic MCP clients. Project-local MCP manifests use `target_root` as `cwd`; global manifests use `install_dir`. Every global repository, task, or memory request must set `root` to the caller's project root and preserve task context. Both MCP API and `HubClient` must pass root explicitly; never infer it from install cwd. The server uses configured credentials and route permissions, authorizes explicit roots, and rejects retired tenant headers/body/query fields by presence. Installed-runtime acceptance remains separate. Do not start a separate Hub daemon for each agent.
+Local AI Hub exposes seven compact MCP tools instead of mirroring every internal endpoint. Target runtime has one user-scoped Hub daemon and lightweight stdio proxies; a proxy must not instantiate `InProcessTransport`, `HubServices`, or another `LocalAIApp`. Historical T03/T04/T13 candidate notes do not establish current installed-runtime behavior. The daemon and service pools are shared across Codex, Claude Code, Gemini CLI, Cursor, Windsurf, VS Code/Copilot and generic MCP clients. Project-local MCP manifests use `target_root` as `cwd`; global manifests use `install_dir`. Every global repository, task, or memory request must set `root` to the caller's project root and preserve task context. Both MCP API and `HubClient` must pass root explicitly; never infer it from install cwd. Loopback HTTP/MCP requests need no Hub credential; configured `allowed_roots` confine repository access. The server rejects retired tenant headers/body/query fields by presence. Installed-runtime acceptance remains separate. Do not start a separate Hub daemon for each agent.
 
 ## Codex MCP configuration
 
@@ -46,7 +46,7 @@ When generation is needed, use `qwen2.5-coder:3b` for quick work, `qwen2.5-coder
 
 Use `E…` evidence or artifact slices for exact source, and bounded native reads such as `view_file` for a known path and required slice. Keep recursive search, broad globs and command validation behind Hub-first retrieval and the bounded fallback rules. Fresh Hub discovery and command results should not be repeated natively. `force=true` and `preprocess_refresh` are exceptional controls, not retry mechanisms.
 
-If Serena is unavailable, the hub degrades to built-in indexes. Treat response state as a protocol: cache/coalesced results should be reused; `in_progress=true` means another owner is doing identical work; HTTP 429/retryable 503 means back off and do independent work; degraded/stale evidence should trigger verification of only the affected path or evidence slice. A non-retryable failure permits one cheaper/native fallback. If the hub itself is unavailable, perform one bounded health/retry check and then use native tools; never loop on health, preprocessing, model startup or an optional backend, and never increase timeouts as a retry strategy.
+If Serena is unavailable, the hub degrades to built-in indexes. Treat response state as a protocol: cache/coalesced results should be reused; `in_progress=true` means another owner is doing identical work; HTTP 429/retryable 503 means back off and do independent work; degraded/stale evidence should trigger verification of only the affected path or evidence slice. Native fallback requires an explicit Hub result with `terminal=true` and `retryable=false`; a transport failure without those fields does not authorize fallback. If the hub itself appears unavailable, make one bounded health/retry check, then use native tools only when its result meets that gate. Never loop on health, preprocessing, model startup or an optional backend, and never increase timeouts as a retry strategy.
 
 ## Public operation contract notes
 
@@ -94,7 +94,7 @@ Root-fingerprint repo cache, request coalescing, optional Serena circuit cooldow
 
 The built-in client reuses HTTP/1.1 loopback connections per thread and coalesces simultaneous identical active requests. A coalesced response has `coalesced:true`; reuse it rather than creating another request. `in_progress:true` is not an operational failure: honor its retry hint or continue independent work. Git-only `review_diff`/`impact` calls on a non-Git root are terminal client results; switch to deterministic/code-index review rather than retrying Git.
 
-The client also rejects an empty code symbol before transport. Command `classify`/`discover` must precede unfamiliar commands; a policy or executable preflight rejection is terminal and should never be retried.
+The client also rejects an empty code symbol before transport. Command classification is internal to the broker, not a standalone MCP action. Policy or executable preflight rejection is terminal and must never be retried.
 
 For an honest deployment cohort, use `/api/metrics?scope=process` or `/api/telemetry/report?scope=process`. This excludes persisted pre-restart history and reports per-agent request count, failure rate, p95 and p99 without retaining prompts, source, or model output. The default `scope=window` remains the rolling-history view.
 
@@ -127,7 +127,7 @@ When `[agent_state].enabled` is active, the compact MCP surface projects durable
 - `context_compile`, `verify_receipt`, and `verify_completion` belong to `local_ai_coord`; `local_ai_repo` does not expose them.
 - `local_ai_task`: `candidate_create`, `candidate_promote`.
 - `local_ai_status`: `detail="brief"` for compact Hub and local-model readiness.
-- `ask` stores only explicitly submitted question text under the request-bound root and actual session; retrieve with the same scope and `question_id`. `answer` stores the operator response under the same root and session. Authentication uses configured credentials and route permissions. Do not put credentials in questions or answers.
+- `ask` stores only explicitly submitted question text under the request-bound root and actual session; retrieve with the same scope and `question_id`. `answer` stores the operator response under the same root and session. Loopback MCP requests need no Hub credential. Do not put credentials or secrets in questions or answers.
 - Privacy boundary: telemetry remains metadata-only; question and answer text is durable local Agent OS state, separate from telemetry.
 ## Shared workspace memo contract
 

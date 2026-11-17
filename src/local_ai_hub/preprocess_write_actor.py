@@ -33,10 +33,14 @@ class PreprocessWriteActor:
         *,
         max_batch_size: int = 64,
         timeout_seconds: float = 30.0,
+        connection_timeout_seconds: float | None = None,
     ) -> None:
         self.db_path = Path(db_path)
         self.max_batch_size = max(1, max_batch_size)
         self.timeout_seconds = timeout_seconds
+        self.connection_timeout_seconds = (
+            timeout_seconds if connection_timeout_seconds is None else connection_timeout_seconds
+        )
         self._queue: queue.Queue[Any] = queue.Queue()
         self._thread: threading.Thread | None = None
         self._running = False
@@ -83,7 +87,7 @@ class PreprocessWriteActor:
             # Fallback: execute synchronously directly on connection
             con = connect_sqlite(
                 self.db_path,
-                timeout_seconds=self.timeout_seconds,
+                timeout_seconds=self.connection_timeout_seconds,
                 row_factory=sqlite3.Row,
             )
             try:
@@ -95,14 +99,18 @@ class PreprocessWriteActor:
         fut: concurrent.futures.Future[Any] = concurrent.futures.Future()
         self._queue.put((operation, fut))
         wait_time = timeout if timeout is not None else self.timeout_seconds
-        return fut.result(timeout=wait_time)
+        try:
+            return fut.result(timeout=wait_time)
+        except concurrent.futures.TimeoutError:
+            fut.cancel()
+            raise
 
     def _worker(self) -> None:
         con: sqlite3.Connection | None = None
         try:
             con = connect_sqlite(
                 self.db_path,
-                timeout_seconds=self.timeout_seconds,
+                timeout_seconds=self.connection_timeout_seconds,
                 row_factory=sqlite3.Row,
             )
             try:

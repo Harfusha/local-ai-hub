@@ -80,12 +80,12 @@
         "Verified completion pass/reject captures a typed next-step shadow decision with bounded acceptance and validation context; waiver skips inference; raw command output is excluded.",
         "No synthetic inference, model installation, training, benchmark, advisory activation or data export."
       ],
-      "blocker": "Fresh live state: one pending task/session-scoped next_step candidate identifies the pinned local checkpoint, but runtime-output linkage is unverified. The Hub is online with nominal VRAM and no active Ollama model. This root remains waiting at max 7 project slots, 1497 card enrichments pending, 40 failed, scheduler_background_allowed=false; status has not advanced for 544.9 seconds.",
+      "blocker": "One authentic task-scoped completion_gap example is captured with candidate id laya_c34f2ebb3ccc426ab111064ec47847c6 and runtime_output_recorded=true. Terminal outcome linkage remains unverified. The current repository's card-enrichment backlog is 1,537 with 0 failures; root remains queued in RAG at 56.8% while 9 projects are processing.",
       "clarifications": [],
       "depends_on": [],
       "description": "Capture useful task- and evidence-scoped examples from all existing eligible shadow decision paths: context-source retrieval; automatic model route and context budget; adaptive pipeline delegation, next-step and redundant-stage decisions; task completion outcomes; and watchdog lifecycle. Add a next-step shadow decision after verified Agent OS completion validation, using bounded task acceptance context and typed passed/rejected result. Preserve the existing completion outcome event with task/session scope. Keep deterministic behavior authoritative, inference local and shadow-only, examples redacted, and source evidence verifiable. Exclude unrelated unscoped conversations, raw command output and fabricated identities.",
       "kind": "code",
-      "next_action": "Determine which seven projects occupy preprocessing slots and whether an existing safe priority/control can admit this root in active mode; then verify durable-phase card enrichment moves and candidate-to-runtime-output capture linkage. Keep Laya local, shadow-only; do not synthesize traffic or force-refresh.",
+      "next_action": "Verify the captured candidate and terminal outcome through an authorized root-scoped inventory path; then let the preprocessing queue run and confirm file-card counts increase before expanding to more categories.",
       "title": "Capture natural examples across Laya decision points",
       "work_phase": "implementation",
       "work_status": "in_progress"
@@ -98,7 +98,7 @@
         "Manifest counts included, skipped, rejected, ambiguous, and missing records without reconstructing absent data.",
         "Group-safe split and duplicate checks stay enforced."
       ],
-      "blocker": "Current authorized candidate inventory is count=0; no real operator labels or training export can be verified. Source suite passed 366 targeted tests; source validation is separate from real dataset evidence.",
+      "blocker": "One captured runtime candidate is pending (laya_c34f2ebb3ccc426ab111064ec47847c6); no human label or verified terminal outcome exists. The live Agent State summary still reports candidates_count=0, and no authorized candidate inventory path has yet confirmed the stored count. Training export remains not verified and unauthorized by current task criteria.",
       "clarifications": [],
       "depends_on": [
         {
@@ -108,7 +108,7 @@
       ],
       "description": "Maintain scoped candidate review and export from naturally collected Laya runtime outcomes. The list remains metadata-only; get exposes one candidate under the authorized repository root while hiding Laya output and existing human labels. Per-example consent receipts are not required. Training export accepts current verified local-operator labels with group-safe provenance; any model review remains separately attributed and cannot become a human-confirmed label. Keep ordinary ZIP and diagnostics metadata-only.",
       "kind": "code",
-      "next_action": "When naturally captured candidates exist, inspect local operator labels and perform one root-scoped group-safe export. Do not create sample rows; keep export NOT VERIFIED while no samples exist.",
+      "next_action": "Use only an authorized root-scoped candidate inventory/review interface to confirm the pending candidate. Keep export unrun until naturally collected examples have verified provenance and operator labels.",
       "title": "Extend existing reports and authorized ZIP",
       "work_phase": "verification",
       "work_status": "in_progress"
@@ -125,12 +125,12 @@
         "Verify checkpoint presence/hash and installed compatible provider before claiming runtime availability; configuration alone is insufficient.",
         "Do not install/download models or drivers, change CPU fallback, run synthetic inference, train, benchmark, or roll out."
       ],
-      "blocker": "User-approved Hub restart succeeded. GPU reservation status is free, but scheduler still reports external_reservation; Laya is configured_unverified and not resident. Exact dead-owner lease release failed because its reservation_generation points to an internal generation; no cleanup mutation occurred.",
+      "blocker": "A real local inference succeeded through torch.cuda on RTX 5070 Ti using the pinned checkpoint revision 1720e3e3357cfe1e281542e223f8273b0890ca34, with 5.25 s latency and candidate capture. The service later became unavailable; explicit service start restored Hub/Ollama. No Laya call has verified post-restart residency or the 600-second idle unload/reset behavior.",
       "clarifications": [],
       "depends_on": [],
       "description": "Hub Laya API/service remains available for the lifetime of the Hub process, independent of whether a Laya model is resident. Do not preload at Hub startup. On the first Laya request, lazily load the explicitly pinned local checkpoint; retain the provider session while work is in flight and until 600 seconds after the most recently completed Laya request, resetting the idle deadline after every completion. Another model identity or external GPU reservation alone must not reject Laya, prevent its load, or prevent idle close. Stability source audit confirms dGPU admission uses an atomic capacity lease against fresh measured free VRAM; a valid external reservation alone is not a rejection, while unknown telemetry, invalid/foreign fence, stale reservation generation, and insufficient capacity fail closed. Stability reports 34 focused capacity/co-admission tests passed, including legacy reservation, owned scheduler digest, and fail-closed cases. Never evict, preempt, unload, or reconfigure another model; preserve reservation owner identity, limits, hardware profile, and CPU fallback.",
       "kind": "code",
-      "next_action": "Reconcile the stale internal generation through an authorized, generation-fenced Hub operation after proving it is no longer active. Then verify provider/runtime status; never edit lease files or claim model load without live evidence.",
+      "next_action": "Keep lazy load; verify one subsequent real decision after the Hub restart only when justified by a natural task event, then verify runtime idle lifecycle without synthetic inference. Do not pull models or change GPU policy.",
       "title": "Udržet Laya službu trvale dostupnou s lazy load",
       "work_phase": "verification",
       "work_status": "in_progress"
@@ -145,7 +145,7 @@
         "Laya stays shadow-only until category-specific measured benefit and explicit approval; deterministic behavior remains authoritative.",
         "Lazy load occurs on first request and remains resident for 600 seconds after the latest completed request without evicting other models; runtime evidence stays separate from source validation."
       ],
-      "blocker": "Live Hub revision identity, natural runtime capture, authentic candidates, operator labels, and training export remain NOT VERIFIED (awaiting approved 17:00–17:30 passive operational window).",
+      "blocker": "One real completion_gap decision now ran through the pinned local Torch checkpoint on RTX 5070 Ti: suggestion=resolve_blocker, baseline=not_ready, shadow mode, candidate captured, runtime_output_recorded=true, status=pending. Runtime reports execution_verification=NOT_VERIFIED and quality_status=NOT_EVALUATED. No dedicated Laya HTTP decision route was verified; direct /api/agent-state/learning is denied for missing root-scoped access contract.",
       "clarifications": [
         {
           "adoption": "adopted",
@@ -181,7 +181,7 @@
       "depends_on": [],
       "description": "Single-owner Laya integration. Root-scoped local operator labels use the versioned rubric with separate provenance. Source implements local model-review submission through the root-authorized curate_dataset/laya_operation surface with typed decision/confidence/abstention, server-owned model/provider/revision/device provenance, no caller-supplied identity, and no label/status mutation. Blind candidate get excludes Laya output and earlier labels/reviews; explicit scoped model_review_history and runtime_output_history preserve separation. Read-only runtime_status distinguishes Hub service availability from model residency and keeps NOT_VERIFIED runtime evidence explicit. Model reviews never satisfy human-confirmed training export. No SSH reviewer keys/quorum or cloud fallback. Keep deterministic behavior authoritative until category-specific quality evidence and later approval.",
       "kind": "code",
-      "next_action": "During approved passive window (2026-11-14 17:00–17:30 Europe/Prague / 16:00–16:30 UTC), inspect live Hub revision identity and natural traffic. Keep NOT VERIFIED if no eligible traffic occurs; do not generate synthetic traffic, restart, or make GPU changes.",
+      "next_action": "Retain MCP curate_dataset/laya_operation as the verified local decision interface; add no remote Laya API. Reconcile root-scoped candidate visibility only if the existing HTTP contract supports it, then verify terminal outcome linkage and preserve shadow-only authority.",
       "title": "Rozšířit Laya: MCP/API, relevantní rozhodovací body a tréninková data",
       "work_phase": "verification",
       "work_status": "in_progress"

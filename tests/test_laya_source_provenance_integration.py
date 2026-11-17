@@ -400,6 +400,52 @@ def test_unsupported_laya_decision_category_has_no_server_baseline():
     assert app._derive_laya_decision_baseline(request, "task-1") is None
 
 
+def test_typed_laya_decision_rejects_missing_server_baseline_before_inference(tmp_path, monkeypatch):
+    app = LocalAIApp.__new__(LocalAIApp)
+    task = SimpleNamespace(task_id="task-1")
+    app._laya_inference_enabled = lambda: True
+    app.config = {
+        "laya": {
+            "runtime": {
+                "checkpoint_path": str(tmp_path / "checkpoint"),
+                "revision": "revision-1",
+                "expected_sha256": {"model.safetensors": "a" * 64},
+            }
+        },
+        "server": {"state_dir": str(tmp_path / "state")},
+    }
+    app.agent_tasks = SimpleNamespace()
+    app.evidence = object()
+    app.laya_candidates = SimpleNamespace(
+        _find_task=lambda *_args: task,
+        _session_for_task=lambda _task: "session-1",
+        _candidate_input=lambda value: value,
+        _validate_context_source_evidence=lambda *_args, **_kwargs: None,
+    )
+    app._derive_laya_decision_baseline = lambda *_args: None
+    app._get_laya_runtime_adapter = lambda *_args, **_kwargs: pytest.fail(
+        "Laya must not run when no deterministic baseline exists"
+    )
+    monkeypatch.setattr(
+        "local_ai_hub.project_config.resolve_project_context",
+        lambda *_args: SimpleNamespace(coordination_id="repo-1"),
+    )
+    operation = {
+        "action": "evaluate_decision",
+        "task_id": "task-1",
+        "decision": {
+            "category": "model_route",
+            "evidence_ids": ["E" + "a" * 20],
+            "options": ["fast", "smart"],
+            "state": {"request_kind": "code"},
+            "training_content": {},
+        },
+    }
+
+    with pytest.raises(ValueError, match="deterministic server baseline"):
+        app.evaluate_laya_decision(operation, root=str(tmp_path))
+
+
 def test_laya_decision_operation_rejects_caller_supplied_baseline():
     app = LocalAIApp.__new__(LocalAIApp)
     operation = {
@@ -493,7 +539,12 @@ def test_typed_laya_decision_reports_and_records_capture_status(monkeypatch, tmp
     )
     app.logger = SimpleNamespace(warning=lambda *_args, **_kwargs: None)
 
-    task = SimpleNamespace(task_id="task-1", context=SimpleNamespace(session_id="session-1"))
+    evidence_id = "E" + "a" * 20
+    task = SimpleNamespace(
+        task_id="task-1",
+        context=SimpleNamespace(session_id="session-1"),
+        checkpoint=SimpleNamespace(evidence_ids=(evidence_id,)),
+    )
 
     class CandidateStore:
         @staticmethod
@@ -524,7 +575,7 @@ def test_typed_laya_decision_reports_and_records_capture_status(monkeypatch, tmp
             }
 
     app.laya_candidates = CandidateStore()
-    app.agent_tasks = object()
+    app.agent_tasks = SimpleNamespace(validate_completion=lambda _task_id: None)
     app.evidence = object()
     app.laya_lifecycle = object()
     monkeypatch.setattr(
@@ -538,7 +589,7 @@ def test_typed_laya_decision_reports_and_records_capture_status(monkeypatch, tmp
             decision = SimpleNamespace(
                 success=True,
                 status=SimpleNamespace(value="success"),
-                suggestion="fast",
+                suggestion="missing_verification",
                 reason_codes=("EVIDENCE_SUFFICIENT",),
                 metadata=lambda: {"success": True},
             )
@@ -556,17 +607,22 @@ def test_typed_laya_decision_reports_and_records_capture_status(monkeypatch, tmp
             "action": "evaluate_decision",
             "task_id": "task-1",
             "decision": {
-                "category": "model_route",
-                "evidence_ids": ["E" + "a" * 20],
-                "options": ["fast", "smart"],
-                "state": {"task_class": "repository"},
+                "category": "completion_gap",
+                "evidence_ids": [evidence_id],
+                "options": ["missing_verification", "resolve_blocker"],
+                "state": {"complete": "false"},
                 "training_content": {},
             },
         },
         root=str(tmp_path),
     )
 
-    assert result["decision"]["suggestion"] == "fast"
+    assert result["decision"]["suggestion"] == "missing_verification"
+    assert result["baseline"] == {
+        "method": "agent_os_completion_gate",
+        "suggestion": "ready",
+        "evidence_id": evidence_id,
+    }
     assert result["capture_status"] == ("failed" if capture_fails else "captured")
     assert result["capture_error_type"] == ("OSError" if capture_fails else None)
     if not capture_fails:
@@ -580,3 +636,24 @@ def test_typed_laya_decision_reports_and_records_capture_status(monkeypatch, tmp
     if capture_fails:
         expected_event["error_type"] = "OSError"
     assert observations == [expected_event]
+
+
+def test_laya_decision_queue_does_not_duplicate_capture_observation(tmp_path):
+    app = LocalAIApp.__new__(LocalAIApp)
+    observations = []
+    app.telemetry = SimpleNamespace(record_stage=lambda **event: observations.append(event))
+    app.logger = SimpleNamespace(warning=lambda *_args, **_kwargs: None)
+
+    def evaluate_decision(*_args, **_kwargs):
+        app._record_laya_capture_observation("captured", "runtime_outcome")
+        return {"capture_status": "captured", "candidate": {"candidate_id": "candidate-1"}}
+
+    app.evaluate_laya_decision = evaluate_decision
+    app._laya_capture_lock = threading.Lock()
+    app._laya_capture_queue = [({"action": "evaluate_decision"}, str(tmp_path), {})]
+    app._laya_capture_draining = True
+    app._shutdown = threading.Event()
+
+    app._drain_laya_capture_queue()
+
+    assert [event["stage"] for event in observations] == ["captured"]

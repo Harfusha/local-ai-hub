@@ -422,9 +422,6 @@ class ProjectPreprocessor:
         # Prune the per-root code index only when source inventory or path policy
         # changes; reuse a revision-fenced allowlist across bounded parse batches.
         self._code_index_pruned_generations: set[tuple[Any, ...]] = set()
-        from .preprocess_write_actor import PreprocessWriteActor
-        self._write_actor = PreprocessWriteActor(self.db_path)
-        self._write_actor.start()
         self._deterministic_pruned_generations: set[tuple[str, int]] = set()
         self._missing_refs_checked_generations: set[tuple[str, int]] = set()
         self._code_index_allowed_cache_lock = threading.Lock()
@@ -438,6 +435,11 @@ class ProjectPreprocessor:
         self._step_locks: dict[str, threading.Lock] = {}
         self._sqlite_busy_seconds = max(0.25, _safe_float(self.cfg.get("sqlite_busy_timeout_seconds"), 0.5))
         self._sqlite_write_retries = max(1, _safe_int(self.cfg.get("sqlite_write_retries"), 6))
+        from .preprocess_write_actor import PreprocessWriteActor
+        self._write_actor = PreprocessWriteActor(
+            self.db_path, connection_timeout_seconds=self._sqlite_busy_seconds
+        )
+        self._write_actor.start()
         self._lookup_cache_lock = threading.Lock()
         self._lookup_cache: dict[str, tuple[float, str, dict[str, Any]]] = {}
         self._lookup_cache_ttl = max(1.0, _safe_float(self.cfg.get("lookup_l1_ttl_seconds"), 30.0))
@@ -975,14 +977,15 @@ class ProjectPreprocessor:
             """SELECT root,status FROM projects
                WHERE paused=0 AND phase<>?
                  AND (status='running' OR (status IN ('queued','waiting','error') AND retry_after<=?))
-               ORDER BY CASE WHEN status IN ('queued','waiting') AND last_requested_at>=? THEN 0 ELSE 1 END,
+               ORDER BY force_refresh DESC,
+                        CASE WHEN status IN ('queued','waiting') AND last_requested_at>=? THEN 0 ELSE 1 END,
                         CASE WHEN status IN ('queued','waiting') AND last_requested_at>=? THEN last_requested_at END DESC,
                         CASE WHEN updated_at<=? THEN 0 ELSE 1 END,
                         CASE WHEN updated_at<=? AND last_requested_at>=? THEN 0 ELSE 1 END,
                         CASE WHEN updated_at<=? AND last_requested_at>=? THEN last_requested_at END DESC,
                         CASE WHEN updated_at<=? THEN updated_at END ASC,
                         CASE WHEN root=? THEN 0 ELSE 1 END,
-                        force_refresh DESC,last_requested_at DESC,updated_at DESC""",
+                        last_requested_at DESC,updated_at DESC""",
             (self.PHASES[-1], now, fairness_cutoff, fairness_cutoff, fairness_cutoff, fairness_cutoff, fairness_cutoff,
              fairness_cutoff, fairness_cutoff, fairness_cutoff, preferred_root or ""),
         ).fetchall()
@@ -2756,11 +2759,12 @@ class ProjectPreprocessor:
              now - 60.0, now - 300.0),
         )
 
-    def _next_cpu_project(self) -> sqlite3.Row | None:
+    def _next_cpu_project(self, *, rebalance: bool = True) -> sqlite3.Row | None:
         now = time.time()
         order_sql, order_params = self._scheduler_order(now)
         watcher_active = bool(getattr(self, "_watcher_active", False))
-        self._write_retry(self._rebalance_processing_slots)
+        if rebalance:
+            self._write_retry(self._rebalance_processing_slots)
         with self._db_lock, closing(self._connect()) as con:
             rows = con.execute(
                 """SELECT * FROM projects
@@ -3067,7 +3071,7 @@ class ProjectPreprocessor:
                 self._cpu_wakeup.clear()
                 continue
             try:
-                row = self._next_cpu_project()
+                row = self._next_cpu_project(rebalance=worker_index == 0)
             except TimeoutError as exc:
                 logger.warning("CPU preprocessing project selection timed out (%s)", type(exc).__name__)
                 self._cpu_wakeup.wait(poll)
@@ -5185,16 +5189,29 @@ class ProjectPreprocessor:
         from .scheduler import QueueFullError
 
         state_dir = getattr(self, "state_dir", None) or self.config.get("server", {}).get("state_dir")
+        mode = None
         if state_dir is not None:
             try:
                 mode = load_operational_mode(state_dir)
             except Exception:
                 mode = None
-            rejection = (None if mode is not None and preprocessing_mode_ready(state_dir, mode)
-                         else operational_mode_gate_error(mode, "preprocess"))
-            if rejection is not None:
-                return rejection
-        if self._gpu_yield():
+        prep_cfg = self.config.get("preprocessing", {})
+        active_cpu_fallback = (
+            mode is not None
+            and not mode.degraded
+            and mode.mode == "active"
+            and isinstance(prep_cfg, dict)
+            and bool(prep_cfg.get("cpu_runs_during_foreground", False))
+            and bool(getattr(self.background_gpu, "cpu_fallback_enabled", False))
+        )
+        if (state_dir is not None and (mode is None or not preprocessing_mode_ready(state_dir, mode))
+                and not active_cpu_fallback):
+            return operational_mode_gate_error(mode, "preprocess")
+        if active_cpu_fallback:
+            yielded = self._stop.is_set() or self._paused.is_set() or not self._background_work_allowed()
+        else:
+            yielded = self._gpu_yield()
+        if yielded:
             return {"success": False, "preempted": True, "error": "foreground work pending"}
 
         # Local AI production path: a dedicated Ollama server owns the small background
@@ -5205,7 +5222,7 @@ class ProjectPreprocessor:
             worker_ready = bool(getattr(self.background_gpu, "ready", lambda: worker_enabled)())
         else:
             worker_enabled = worker_ready = False
-        if self.background_gpu is not None and (worker_enabled or worker_ready):
+        if self.background_gpu is not None and (worker_enabled or worker_ready or active_cpu_fallback):
             result = self.background_gpu.generate(
                 prompt=prompt, system=system, schema=schema, max_tokens=int(max_tokens), source=source,
                 preprocessing=True,

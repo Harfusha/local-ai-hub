@@ -406,8 +406,17 @@ def test_gpu_selector_respects_global_phase_order_and_files_precedes_modules(sch
     assert instance._next_gpu_project()["root"] == "files"
 
 
-@pytest.mark.parametrize("selector", ["_next_cpu_project", "_next_gpu_project"])
-def test_scheduler_selector_serializes_rebalance_with_writer_actor(scheduler, selector):
+@pytest.mark.parametrize(
+    ("selector", "kwargs", "blocks_on_rebalance"),
+    [
+        ("_next_cpu_project", {"rebalance": True}, True),
+        ("_next_cpu_project", {"rebalance": False}, False),
+        ("_next_gpu_project", {}, True),
+    ],
+)
+def test_scheduler_selector_serializes_rebalance_with_writer_actor(
+    scheduler, selector, kwargs, blocks_on_rebalance
+):
     instance, connect = scheduler
     now = instance._test_now[0]
     for index in range(5):
@@ -442,18 +451,22 @@ def test_scheduler_selector_serializes_rebalance_with_writer_actor(scheduler, se
 
         def select_project():
             selector_started.set()
-            return getattr(instance, selector)()
+            return getattr(instance, selector)(**kwargs)
 
         selected = selector_pool.submit(select_project)
         assert selector_started.wait(1.0)
         time.sleep(0.05)
-        if selected.done():
-            selected.result()
-        assert not selected.done()
+        if blocks_on_rebalance:
+            if selected.done():
+                selected.result()
+            assert not selected.done()
+        else:
+            assert selected.result(timeout=0.5)["root"].startswith("project-")
 
         release_actor.set()
         blocker.result(timeout=1.0)
-        selected.result(timeout=1.0)
+        if blocks_on_rebalance:
+            selected.result(timeout=1.0)
     finally:
         release_actor.set()
         actor.stop()

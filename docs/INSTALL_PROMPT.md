@@ -449,9 +449,9 @@ Reference global policy blocks deployed by 	ools/setup.py into global agent file
 > - **Tests, builds, lint, execution**: Use the agent host's native command tool for bounded checks in the target repository.
 > - **Repository & Code Search**: Call an action advertised by the current local_ai_repo MCP schema with the project root. DO NOT use broad native discovery (find, dir /s, unconstrained rg, glob) or dump entire files.
 > - **Agent OS Lifecycle & Project Memory**: Call `local_ai_coord(action="task_create"|"task_checkpoint"|"memory_record"|"memory_find"|"verify_completion", ...)`. Proactively initialize task contracts, query memory, and record findings.
-> - **Semantic Review & Second Opinion**: Call `local_ai_task(action="compress")` before finalizing non-trivial edits.
+> - **Semantic Review & Second Opinion**: If exposed, use `local_ai_task(action="review")` for evidence-grounded review or `action="second_opinion"` for independent critique; use `compress` only to condense evidence.
 > - **Antigravity wrapper**: Use `call_mcp_tool(ServerName="local-ai", ToolName="<tool>", Arguments={<same arguments>})` for the calls above.
-> - **Native fallback**: `terminal=true` alone is insufficient; outages require `retryable=false` too. A Hub-unknown command needs broker `native_fallback_allowed=true`; the native tool must authorize the fallback, bounded to the same root/scope. Hard stops: `native_fallback_allowed=false`, a dangerous command, mutation denial, required approval/override, cancellation, `outcome_unknown`. This permits fallback only, never Hub execution. Missing native authorization: stop and report blocker.
+> - **Native fallback**: After a Hub outage, use native fallback only when the Hub result has `terminal=true` and `retryable=false`; keep work bounded to the same authorized root/scope.
 
 Diagnostics require dashboard toggle, not caller control, including nested, async, artifact and SSE responses. Ordinary results, failures, authorization and evidence identity remain available.
 
@@ -495,7 +495,7 @@ Recommended Hub routes (apply the matching route by default):
 - Recipe — Semantic work: use exposed `local_ai_task` semantic actions after deterministic/indexed evidence.
 - Recipe — Agent OS Execution (Default for Non-Trivial Tasks): Initialize a task contract via `local_ai_coord(action="task_create")` with concrete acceptance criteria; query existing memory via `memory_find`; checkpoint milestones via `task_checkpoint`; persist reusable findings via `memory_record`; record failures via `negative_knowledge_record`; attach explicit verification receipts; and verify completion (`verify_completion`) before closure.
 - Recipe — Retrieve: use `local_ai_rag` only after deterministic/indexed paths are exhausted.
-- Apply the matching Hub route by default. Skip only when irrelevant, unavailable in the active schema/config, or fresh sufficient evidence already exists; after one terminal Hub failure, use one bounded native fallback and continue without retries.
+- Apply the matching Hub route by default. Skip only when irrelevant, unavailable in the active schema/config, or fresh sufficient evidence already exists; native fallback requires an explicit Hub result with `terminal=true` and `retryable=false`.
 
 Direct ownership is the default. Do not delegate audits, inventory, status checks or routine work; see the simplified workflow spec.
 
@@ -506,11 +506,11 @@ Direct ownership is the default. Do not delegate audits, inventory, status check
 - Keep write scopes disjoint. The primary agent reviews and integrates directly; no ZIPs, custom owner packets, or fingerprint/hash cascades.
 - Do not duplicate tasks or chats. Check the existing plan first and update its existing item.
 
-The main agent owns planning, implementation and integration. Use Local AI Hub for bounded retrieval and commands; on bounded Hub failure, use permitted direct fallback without retries.
+The main agent owns planning, implementation and integration. Use Local AI Hub for bounded retrieval and its exposed actions. After a Hub failure, native fallback requires an explicit result with `terminal=true` and `retryable=false`.
 
 READ-ONLY AUDIT CONTRACT:
 - Read-only excludes Git writes, `git worktree add` or removal, dependency installation, builds/imports, generated artifacts and other workspace side effects. Never label side-effecting work read-only; assign validation separately.
-- Before native discovery or validation retain Hub action, absolute root, status, cache/in_progress state and evidence IDs. Native discovery requires one bounded terminal Hub failure.
+- Before native discovery or validation retain Hub action, absolute root, status, cache/in_progress state and evidence IDs. Native discovery requires an explicit Hub result with `terminal=true` and `retryable=false`.
 - Authorized independent subagents remain permission- and scope-controlled; main agent integrates. Never delegate audit-only work.
 - Avoid parallel duplicate commands/scopes. Tool labels are not evidence; retain exact action, arguments, result and ownership in the audit record.
 
@@ -523,11 +523,11 @@ Adoption gate: Use bounded host-native validation commands after fresh repositor
 Adaptive retrieval path: when fresh evidence is insufficient for non-trivial repository work, call `local_ai_repo(action="context", mode="adaptive")`; it fuses bounded deterministic/indexed, structural, lexical and RAG evidence with agreement and diversity, degrading optional backends independently. Stop escalating when evidence is sufficient; reuse cached results and bounded evidence. Do not fan out duplicate native retrieval layers or translate the task into a long grep-term list. Reuse fresh evidence IDs, artifact slices, memos and cache hits;
  do not repeat the same hub action with the same root/query while repository state is unchanged.
 
-Treat result state as a protocol: `cache_hit`/`coalesced` means reuse the result; `in_progress=true` means another owner is doing identical work, so never duplicate it; `retryable`/429/503 means back off and do independent work; `degraded`/`stale` means verify only the affected path/slice; a non-retryable failure permits one cheaper/native fallback. Never turn a transient result into larger timeouts, force refreshes, or polling loops.
+Treat result state as a protocol: `cache_hit`/`coalesced` means reuse the result; `in_progress=true` means another owner is doing identical work, so never duplicate it; `retryable`/429/503 means back off and do independent work; `degraded`/`stale` means verify only the affected path/slice; only a terminal non-retryable failure (`terminal=true`, `retryable=false`) permits one cheaper/native fallback. A transport failure without those fields does not authorize fallback. Never turn a transient result into larger timeouts, force refreshes, or polling loops.
 
 Run bounded validation commands with the agent host native command tool.
  Before an expensive `solve`/model call, reuse supplied task memory; when more is needed, use permitted scoped `local_ai_coord(action="memory_find")`. Workspace `memo_*` actions are unavailable through restricted endpoints; on terminal 403 do not retry or bypass scope. For overlapping edits use `local_ai_coord` leases; record concise findings in permitted scoped Agent OS memory or the existing operator-approved coordination file.
- After edits, use indexed impact/review plus targeted cached validation; do not rerun broad discovery merely because files changed. `force` and `preprocess_refresh` are recovery/admin controls, never retry buttons. If an optional backend degrades, accept the hub's deterministic/index fallback. If the hub itself is unavailable, make one bounded health/retry attempt, then fall back to native tools. Never loop on health, status, preprocessing, model startup, a failing backend, or an identical command.
+ After edits, use indexed impact/review plus targeted cached validation; do not rerun broad discovery merely because files changed. `force` and `preprocess_refresh` are recovery/admin controls, never retry buttons. If an optional backend degrades, accept the hub's deterministic/index fallback. If the hub itself appears unavailable, make one bounded health/retry attempt; use native tools only when its result explicitly has `terminal=true` and `retryable=false`. A transport failure without those fields does not authorize fallback. Never loop on health, status, preprocessing, model startup, a failing backend, or an identical command.
 
 Selection guide: `local_ai_repo` for bounded repository facts and checks (including `security_audit`), `local_ai_task` for exposed bounded local actions (see tier-available actions above), `local_ai_work` for existing work status and recovery only, `local_ai_rag` only after cheaper indexed evidence, `local_ai_artifact` for exact slices, `local_ai_coord` for leases/memos and Agent OS task, memory, context, and verification workflows.
 
@@ -540,13 +540,13 @@ Local model policy: Follow the active hardware profile and user overrides; see `
 - Claim savings only with a current `baseline_evidence_id`; report signed `token_savings_delta_est`, including negative values; keep `protocol_tokens_est`, `schema_tokens_est`, and `local_compute_reused_tokens_est` separate.
 - Reject `max_response_tokens` below 128; never raise the request silently.
 - Large task responses: omit `max_response_tokens` unless a cap is needed.
-- For Hub outages, native fallback requires explicit `terminal=true` and `retryable=false`; for Hub-unknown commands, require `native_fallback_allowed=true` plus native-tool authorization.
+- For Hub outages, native fallback requires explicit `terminal=true` and `retryable=false`; a transport failure without those fields does not authorize fallback.
 - On `outcome_unknown` or `in_progress`, do independent work; never poll or repeat the identical operation.
 - Prefer `response_profile="minimal"`/`"compact"`; request only decision-grade fields.
 - Pass a stable `reuse_key` for repeated logical queries. Use `response_profile="delta"` when only changes are needed; unchanged calls report `unchanged=true`. Required task memory may remain inline.
 
 - The Hub keeps a bounded metadata-only context ledger; inspect it only with an explicit cache/status request, never by replaying the whole session.
-- Broad native shell reads are guarded by the optional host hook; use bounded limits or the Hub command/repository tools for discovery.
+- Broad native shell reads are guarded by the optional host hook; use bounded limits or Hub repository tools for discovery.
 - Commands return status, summary, changed paths, and failures; full stdout/stderr is retrievable only when `output_artifact_id` is returned.
 - Reuse fresh sufficient repository evidence; use bounded indexed/source lookup directly before native broad discovery.
 - Do not bypass the budget with native broad reads unless Hub has one bounded terminal failure.
@@ -563,7 +563,7 @@ Local model policy: Follow the active hardware profile and user overrides; see `
 - Preserve protected status, error, evidence, and context-identity fields; keep exact detail artifact-backed.
 - Claim savings only with a current `baseline_evidence_id`; report signed `token_savings_delta_est`, including negative values; keep `protocol_tokens_est`, `schema_tokens_est`, and `local_compute_reused_tokens_est` separate.
 - Reject `max_response_tokens` below 128; never raise the request silently.
-- For Hub outages, native fallback requires explicit `terminal=true` and `retryable=false`; for Hub-unknown commands, require `native_fallback_allowed=true` plus native-tool authorization.
+- For Hub outages, native fallback requires explicit `terminal=true` and `retryable=false`.
 - On `outcome_unknown` or `in_progress`, do independent work; never poll or repeat the identical operation.
 <!-- END TOKEN ECONOMY POLICY -->
 
@@ -606,7 +606,7 @@ Keep the generated MCP response contract enabled. Hub responses are aggregate-bo
 - Preserve protected status, error, evidence, context identity and lifecycle identity (operation/job/request IDs, accepted/completed/in_progress, delivery outcome); keep exact detail artifact-backed. Acceptance does not prove completion. A budget error does not authorize replay of a side effect.
 - Claim savings only with a current `baseline_evidence_id`; report signed `token_savings_delta_est`, including negative values; keep `protocol_tokens_est`, `schema_tokens_est`, and `local_compute_reused_tokens_est` separate.
 - If `max_response_tokens` is omitted or `None`, use the configured default. If supplied, require an integer (excluding booleans) of at least 128; reject invalid or smaller values without silently raising them.
-- For Hub outages, native fallback requires explicit `terminal=true` and `retryable=false`; for Hub-unknown commands, require `native_fallback_allowed=true` plus native-tool authorization.
+- For Hub outages, native fallback requires explicit `terminal=true` and `retryable=false`.
 - On `outcome_unknown` or `in_progress`, do independent work; never poll or repeat the identical operation.
 
 ### Async lifecycle and conversations
@@ -662,7 +662,7 @@ For durable work, create and checkpoint one Agent OS task contract before edits.
 
 Changed paths plus repository revision stale matching records. When optional memory is absent or excluded, fall through to fresh bounded repository evidence; never reuse stale memory as authoritative or label an incomplete task-context receipt successful. Keep use/non-use IDs in scoped context/evidence, not broad telemetry. `/api/adoption` stores low-cardinality aggregates, not memory bodies or per-record adoption receipts; never send prompts, source, model output, secrets, or raw/full project paths to telemetry.
 
-If Hub is unavailable, make one bounded health/retry attempt, then use one native fallback only with `terminal=true` and `retryable=false`. For a Hub-unknown command, fallback instead requires `native_fallback_allowed=true` and native-tool authorization. Never poll or repeat an identical operation.
+If Hub appears unavailable, make one bounded health/retry attempt; use native fallback only when its result explicitly has `terminal=true` and `retryable=false`. A transport failure without those fields does not authorize fallback. Never poll or repeat an identical operation.
 
 ### Memory adoption checkpoints
 

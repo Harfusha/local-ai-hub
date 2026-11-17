@@ -1377,7 +1377,11 @@ class LocalAIApp:
                     **({
                         "success": bool(prep_status.get("success", True)),
                         "enabled": bool(prep_status.get("enabled", True)),
-                        "max_preprocessing_projects": prep_status.get("max_preprocessing_projects", 1),
+                        "max_preprocessing_projects": prep_status.get(
+                            "max_preprocessing_projects",
+                            prep_stats.get("max_preprocessing_projects", 1)
+                            if isinstance(prep_stats, dict) else 1,
+                        ),
                     } if light and isinstance(prep_status, dict) else (prep_status if isinstance(prep_status, dict) else {})),
                     **({} if light else prep_stats),
                     "projects": projects,
@@ -3088,6 +3092,8 @@ class LocalAIApp:
             ):
                 raise ValueError("server-derived Laya baseline does not match the typed decision")
             baseline = supplied_baseline
+        elif baseline is None:
+            raise ValueError("Laya decision has no deterministic server baseline")
 
         adapter = self._get_laya_runtime_adapter(
             runtime_cfg,
@@ -3967,6 +3973,10 @@ class LocalAIApp:
                 else:
                     raise ValueError("unsupported queued Laya observation")
                 candidate = result.get("candidate") if isinstance(result, dict) else None
+                if request.get("action") == "evaluate_decision":
+                    if not (isinstance(candidate, dict) and candidate):
+                        self.logger.warning("Laya shadow outcome was not captured")
+                    continue
                 if isinstance(candidate, dict) and candidate:
                     self._record_laya_capture_observation("captured", "runtime_outcome")
                 else:
