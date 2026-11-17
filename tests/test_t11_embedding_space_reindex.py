@@ -98,6 +98,51 @@ def test_full_index_reembeds_unchanged_files_when_embedding_space_changes(tmp_pa
     assert second_embedder.calls == 1
 
 
+def test_incremental_reindex_keeps_target_until_all_paths_use_new_space(tmp_path: Path):
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / "first.py").write_text("first project knowledge\n", encoding="utf-8")
+    (root / "second.py").write_text("second project knowledge\n", encoding="utf-8")
+    config = _config(tmp_path / "state")
+    workspace = RAGStore.workspace_id(str(root))
+
+    original = RAGStore(config, services=SpaceEmbedder("space-a"))
+    indexed = original.index(root=str(root), workspace=workspace)
+    assert indexed["success"] is True, indexed
+
+    reindex = RAGStore(config, services=SpaceEmbedder("space-b"))
+    reindex._request_workspace_reindex(workspace, "space-b")
+    result = reindex.index_paths_step(str(root), workspace=workspace, paths=["first.py"])
+
+    assert result["success"] is True
+    with closing(reindex._connect()) as con:
+        assert reindex._stored_workspace_reindex_target(con, workspace) == "space-b"
+        assert reindex._stored_workspace_embedding_space(con, workspace) == "space-a"
+        spaces_by_path = {
+            str(path): str(space)
+            for path, space in con.execute(
+                "SELECT path,embedding_space FROM chunks WHERE workspace=? GROUP BY path",
+                (workspace,),
+            ).fetchall()
+        }
+    assert spaces_by_path == {"first.py": "space-b", "second.py": "space-a"}
+
+    stale_paths = reindex.paths_needing_reindex(str(root), workspace=workspace, limit=8)
+    assert stale_paths == ["second.py"]
+    result = reindex.index_paths_step(str(root), workspace=workspace, paths=stale_paths)
+    assert result["success"] is True
+    with closing(reindex._connect()) as con:
+        assert reindex._stored_workspace_reindex_target(con, workspace) is None
+        assert reindex._stored_workspace_embedding_space(con, workspace) == "space-b"
+        assert {
+            str(row[0])
+            for row in con.execute(
+                "SELECT DISTINCT embedding_space FROM chunks WHERE workspace=?",
+                (workspace,),
+            ).fetchall()
+        } == {"space-b"}
+
+
 def test_embedding_space_rebuild_read_error_preserves_previous_index(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):

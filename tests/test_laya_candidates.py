@@ -433,7 +433,7 @@ def test_runtime_outcome_records_deterministic_baseline_and_unobserved_downstrea
         "reason_codes": ["EVIDENCE_SUFFICIENT"],
     })
     runtime = SimpleNamespace(
-        runtime_version="fixture", model_id="laya", revision="rev", provider="mock",
+        runtime_version="2.11.0+cu128", model_id="laya", revision="rev", provider="mock",
         device="cpu", device_class="cpu", device_name="mock", parameter_device="cpu",
         execution_verification="NOT_VERIFIED", quality_status="NOT_EVALUATED",
         latency_ms=3.0, adapter_queue_wait_ms=1.25, inference_latency_ms=1.5,

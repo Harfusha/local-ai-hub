@@ -301,9 +301,7 @@ def test_consented_release_current_clears_only_its_capacity_leases(tmp_path):
     assert event["released_capacity_leases"] == 1
 
 
-def test_capacity_snapshot_reaps_only_confirmed_dead_laya_owners(tmp_path, monkeypatch):
-    from local_ai_hub import process_utils
-
+def test_capacity_snapshot_does_not_release_laya_leases_without_consent(tmp_path):
     store = ExternalGpuReservationStore(tmp_path / "external-gpu-reservation")
     dead_laya = {
         "lease_id": "dead-laya-lease",
@@ -335,15 +333,11 @@ def test_capacity_snapshot_reaps_only_confirmed_dead_laya_owners(tmp_path, monke
         "schema_version": 1,
         "leases": [dead_laya, live_laya, unknown_laya, unrelated],
     })
-    monkeypatch.setattr(process_utils, "process_is_alive", lambda pid: {424242: False, 424243: True}.get(pid))
-
     snapshot = store.capacity_snapshot()
 
     assert snapshot is not None
-    assert snapshot["leases"] == [live_laya, unknown_laya, unrelated]
-    event = json.loads(store.audit_path.read_text(encoding="utf-8").splitlines()[-1])
-    assert event["action"] == "dead_laya_capacity_lease_reaped"
-    assert event["generation"] == dead_laya["generation"]
+    assert snapshot["leases"] == [dead_laya, live_laya, unknown_laya, unrelated]
+    assert not store.audit_path.exists()
 
 
 def test_consented_release_current_clears_unknown_legacy_fence_and_audits(tmp_path):

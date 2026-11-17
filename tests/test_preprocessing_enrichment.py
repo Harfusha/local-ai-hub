@@ -16,6 +16,22 @@ from local_ai_hub.repo_tools import RepositoryTools
 from local_ai_hub.scheduler import QueueFullError
 
 
+def test_file_card_output_rejects_unbounded_model_fields():
+    card = {
+        "purpose": "p",
+        "symbols": [],
+        "dependencies": [],
+        "side_effects": [],
+        "risks": [],
+        "tests": [],
+        "keywords": [],
+    }
+    assert ProjectPreprocessor._valid_enriched_file_card(card)
+    assert not ProjectPreprocessor._valid_enriched_file_card({**card, "purpose": "p" * 241})
+    assert not ProjectPreprocessor._valid_enriched_file_card({**card, "symbols": ["x"] * 4})
+    assert not ProjectPreprocessor._valid_enriched_file_card({**card, "keywords": ["x" * 81]})
+
+
 class _Noop:
     def __getattr__(self, name):
         return lambda *args, **kwargs: None

@@ -68,6 +68,57 @@ def test_recently_requested_project_gets_admitted_slot(scheduler):
     assert states == {"inactive": "waiting", "active": "queued"}
 
 
+def test_reactivation_preserves_stale_priority_for_admission(scheduler):
+    instance, connect = scheduler
+    instance.max_preprocessing_projects = 1
+    add(connect, "stale-oldest", "queued", 9000, 9990)
+    add(connect, "stale", "queued", 9200, 0)
+    add(connect, "reactivated", "waiting", 9500, 0)
+
+    def write_retry(operation):
+        with closing(connect()) as con:
+            result = operation(con)
+            con.commit()
+            return result
+
+    instance._root = lambda root: root
+    instance._write_retry = write_retry
+    instance._wake_all = lambda: None
+    instance.status = lambda root=None: {"root": root}
+
+    instance.resume("reactivated")
+
+    with closing(connect()) as con:
+        updated_at = con.execute(
+            "SELECT updated_at FROM projects WHERE root='reactivated'"
+        ).fetchone()[0]
+    assert updated_at == 9500
+
+    assert instance._next_cpu_project()["root"] == "reactivated"
+
+
+def test_recent_resume_reclaims_queued_slot_ahead_of_unowned_stale_work(scheduler):
+    instance, connect = scheduler
+    instance.max_preprocessing_projects = 1
+    add(connect, "stale-waiting", "waiting", 9000, 9999)
+    add(connect, "reactivated", "waiting", 9999, 0)
+
+    def write_retry(operation):
+        with closing(connect()) as con:
+            result = operation(con)
+            con.commit()
+            return result
+
+    instance._root = lambda root: root
+    instance._write_retry = write_retry
+    instance._wake_all = lambda: None
+    instance.status = lambda root=None: {"root": root}
+
+    instance.resume("reactivated")
+
+    assert instance._next_cpu_project()["root"] == "reactivated"
+
+
 def test_cpu_worker_survives_locked_queue_database(scheduler, monkeypatch):
     instance, _ = scheduler
     instance.cfg = {"startup_delay_seconds": 0, "poll_seconds": 0.2}

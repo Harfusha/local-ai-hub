@@ -18,6 +18,7 @@ max_request_body_bytes = 16777216 # 16 MiB for JSON/API requests; bundle upload 
 # HTTP access is loopback-only and requires no API credential.
 
 [laya]
+enabled = true # Set false to disable shadow inference and automatic Laya capture.
 # Laya loads on request and unloads 600 seconds after the latest completed request.
 idle_unload_seconds = 600
 

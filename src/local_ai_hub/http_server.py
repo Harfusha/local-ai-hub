@@ -634,6 +634,23 @@ def _http_admin_action(method: str, path: str) -> str | None:
     return None
 
 
+def _ollama_runner_present(config: dict[str, Any]) -> bool:
+    ollama = config.get("ollama", {})
+    ollama_url = ollama.get("url", "http://localhost:11434") if isinstance(ollama, dict) else None
+    if not isinstance(ollama_url, str) or not ollama_url.strip():
+        raise ValueError("Ollama URL unavailable")
+    req = urllib.request.Request(f"{ollama_url.rstrip('/')}/api/ps")
+    with urllib.request.urlopen(req, timeout=2) as response:
+        body = response.read(262145)
+    if len(body) > 262144:
+        raise ValueError("Ollama runner response too large")
+    value = json.loads(body.decode("utf-8"))
+    models = value.get("models") if isinstance(value, dict) else None
+    if not isinstance(models, list):
+        raise ValueError("Ollama runner state unavailable")
+    return bool(models)
+
+
 def _apply_live_debug_trace_toggle(app: Any, settings: dict[str, Any]) -> bool:
     if set(settings) != {"debug_traces.enabled"}:
         return False
@@ -8246,11 +8263,16 @@ class Handler(BaseHTTPRequestHandler):
                 scheduler = getattr(APP, "scheduler", None)
                 if scheduler is None:
                     self._send(503, {"success": False, "error": "scheduler unavailable"}); return
+                operation = str(payload.get("action", ""))
                 res = scheduler.gpu_reservation_operation(
-                    action=str(payload.get("action", "")),
+                    action=operation,
                     generation=payload.get("generation", ""),
                     consent=payload.get("consent"),
                     audit_reason=payload.get("audit_reason", ""),
+                    lease_id=payload.get("lease_id", ""),
+                    owner=payload.get("owner", ""),
+                    ollama_runner_probe=(lambda: _ollama_runner_present(APP.config))
+                    if operation == "release_scheduler_capacity_lease" else None,
                 )
                 self._send(200, res); return
             if 'post_delegate_repo_1' in post_route_ids:

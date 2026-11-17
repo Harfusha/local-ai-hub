@@ -11,6 +11,26 @@ from local_ai_hub.agent_tasks import CompletionGateError
 from local_ai_hub.evidence import EvidenceStore
 from local_ai_hub.laya_decisions import DecisionCategory
 from local_ai_hub.tool_agent import ToolAwareLocalAgent
+from local_ai_hub.services import LocalAIServices
+
+
+def test_laya_shadow_observation_skips_missing_task_and_session():
+    service = LocalAIServices.__new__(LocalAIServices)
+    queued = []
+    service.laya_decision_observer = lambda operation, root, baseline: queued.append(operation) or {"status": "queued"}
+
+    captured = service._queue_laya_shadow_observation(
+        {"evidence_ids": ["ev-1"]},
+        root="C:/repo",
+        category="model_route",
+        options=("fast", "smart"),
+        state={"request_kind": "code"},
+        training_content={},
+        baseline={"method": "model_router_classify", "suggestion": "fast", "evidence_id": "ev-1"},
+    )
+
+    assert captured is False
+    assert queued == []
 
 
 def test_laya_runtime_adapter_is_cached_once_across_concurrent_requests(monkeypatch):
@@ -451,3 +471,112 @@ def test_repo_search_and_evidence_get_bind_routes_in_real_evidence_store(tmp_pat
     assert evidence.validate_source_provenance(
         [evidence_ids[0]], ["artifact"], root=str(tmp_path)
     ) is False
+
+
+@pytest.mark.parametrize("capture_fails", [True, False])
+def test_typed_laya_decision_reports_and_records_capture_status(monkeypatch, tmp_path, capture_fails):
+    app = LocalAIApp.__new__(LocalAIApp)
+    observations = []
+    app.config = {
+        "server": {"state_dir": str(tmp_path)},
+        "laya": {
+            "runtime": {
+                "checkpoint_path": str(tmp_path),
+                "revision": "revision-1",
+                "expected_sha256": {"model.safetensors": "a" * 64},
+            }
+        },
+    }
+    app.telemetry = SimpleNamespace(
+        record_laya_decision=lambda *_args, **_kwargs: True,
+        record_stage=lambda **event: observations.append(event),
+    )
+    app.logger = SimpleNamespace(warning=lambda *_args, **_kwargs: None)
+
+    task = SimpleNamespace(task_id="task-1", context=SimpleNamespace(session_id="session-1"))
+
+    class CandidateStore:
+        @staticmethod
+        def _find_task(*_args):
+            return task
+
+        @staticmethod
+        def _session_for_task(_task):
+            return "session-1"
+
+        @staticmethod
+        def _candidate_input(candidate):
+            return candidate
+
+        @staticmethod
+        def _validate_context_source_evidence(*_args, **_kwargs):
+            return None
+
+        @staticmethod
+        def capture_runtime_outcome(*_args, **_kwargs):
+            if capture_fails:
+                raise OSError("candidate store unavailable")
+            return {
+                "candidate_id": "laya-1",
+                "duplicate": False,
+                "status": "pending",
+                "runtime_output_recorded": True,
+            }
+
+    app.laya_candidates = CandidateStore()
+    app.agent_tasks = object()
+    app.evidence = object()
+    app.laya_lifecycle = object()
+    monkeypatch.setattr(
+        "local_ai_hub.project_config.resolve_project_context",
+        lambda *_args, **_kwargs: SimpleNamespace(coordination_id="repo-1"),
+    )
+
+    class Adapter:
+        @staticmethod
+        def evaluate_decision(request, decision_input, **kwargs):
+            decision = SimpleNamespace(
+                success=True,
+                status=SimpleNamespace(value="success"),
+                suggestion="fast",
+                reason_codes=("EVIDENCE_SUFFICIENT",),
+                metadata=lambda: {"success": True},
+            )
+            runtime = SimpleNamespace(provider="torch", revision="revision-1")
+            outcome = SimpleNamespace(decision=decision, runtime=runtime)
+            try:
+                kwargs["outcome_recorder"](request, decision_input, outcome)
+            except Exception:
+                return SimpleNamespace(decision=decision, runtime=runtime, capture_status="failed")
+            return SimpleNamespace(decision=decision, runtime=runtime, capture_status="captured")
+
+    app._get_laya_runtime_adapter = lambda *_args, **_kwargs: Adapter()
+    result = app.evaluate_laya_decision(
+        {
+            "action": "evaluate_decision",
+            "task_id": "task-1",
+            "decision": {
+                "category": "model_route",
+                "evidence_ids": ["E" + "a" * 20],
+                "options": ["fast", "smart"],
+                "state": {"task_class": "repository"},
+                "training_content": {},
+            },
+        },
+        root=str(tmp_path),
+    )
+
+    assert result["decision"]["suggestion"] == "fast"
+    assert result["capture_status"] == ("failed" if capture_fails else "captured")
+    assert result["capture_error_type"] == ("OSError" if capture_fails else None)
+    if not capture_fails:
+        assert result["candidate"]["candidate_id"] == "laya-1"
+    expected_event = {
+        "action": "laya_capture",
+        "stage": "failed" if capture_fails else "captured",
+        "bypass_reason": "capture_exception" if capture_fails else "runtime_outcome",
+        "success": not capture_fails,
+    }
+    if capture_fails:
+        expected_event["error_type"] = "OSError"
+    assert observations == [expected_event]

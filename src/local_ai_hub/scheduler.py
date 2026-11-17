@@ -298,6 +298,7 @@ class AffinityScheduler:
         self._switching = False
         self._idle_owned_model: str | None = None
         self._last_model_activity = time.monotonic()
+        self._started_at = time.time()
         self._idle_unload_state = "not_requested"
         self._idle_maintenance_callbacks: list[Callable[[], Any]] = []
         self._model_blocked_until: dict[str, float] = {}
@@ -2562,7 +2563,8 @@ class AffinityScheduler:
 
     def gpu_reservation_operation(
         self, *, action: str, generation: str = "", consent: bool | None = None,
-        audit_reason: str = "",
+        audit_reason: str = "", lease_id: str = "", owner: str = "",
+        ollama_runner_probe: Callable[[], bool] | None = None,
     ) -> dict[str, Any]:
         """Read or release the reservation using this scheduler's live state store."""
         store = self._external_gpu_store
@@ -2609,6 +2611,66 @@ class AffinityScheduler:
                 result["error"] = "no valid current GPU reservation could be released"
             else:
                 self.status()  # observe the operator marker and clear stale in-memory admission
+            return result
+        if action == "release_laya_capacity_lease":
+            if (type(consent) is not bool or not consent
+                    or not isinstance(lease_id, str) or not lease_id
+                    or not isinstance(owner, str) or not owner
+                    or not isinstance(generation, str) or not generation
+                    or not isinstance(audit_reason, str) or not audit_reason.strip()):
+                return {"success": False, "operation_not_started": True,
+                        "error": "orphaned Laya capacity release requires exact lease identity, consent=true, and audit_reason"}
+            try:
+                released = store.release_orphaned_laya_capacity_lease(
+                    lease_id, owner, generation, consent=consent, audit_reason=audit_reason,
+                )
+            except OSError:
+                released = False
+            result = {
+                "success": released, "mutation_applied": released,
+                "lease_id": lease_id, "generation": generation,
+            }
+            if not released:
+                result["error"] = "lease is missing, changed, reservation-bound, or owner process is not confirmed gone"
+            return result
+        if action == "release_scheduler_capacity_lease":
+            parts = owner.split(":") if isinstance(owner, str) else []
+            if (type(consent) is not bool or not consent
+                    or not isinstance(lease_id, str) or not lease_id
+                    or not isinstance(owner, str) or len(owner) > 256
+                    or len(parts) != 2 or parts[0] != "scheduler-job"
+                    or not parts[1].isdigit() or (len(parts[1]) > 1 and parts[1].startswith("0"))
+                    or not isinstance(generation, str) or not generation
+                    or not isinstance(audit_reason, str) or not audit_reason.strip()
+                    or not callable(ollama_runner_probe)):
+                return {"success": False, "operation_not_started": True,
+                        "error": "scheduler lease release requires exact identity, consent, audit_reason and an Ollama probe"}
+            job_id = int(parts[1])
+            with self._cond:
+                if (any(getattr(job, "id", None) == job_id for job in self._pending)
+                        or job_id in self._inflight_jobs):
+                    return {"success": False, "operation_not_started": True,
+                            "error": "matching scheduler job is still present"}
+                try:
+                    runner_present = ollama_runner_probe()
+                except Exception:
+                    runner_present = None
+                if type(runner_present) is not bool or runner_present:
+                    return {"success": False, "operation_not_started": True,
+                            "error": "Ollama runner state is active or unavailable"}
+                try:
+                    released = store.release_orphaned_scheduler_capacity_lease(
+                        lease_id, owner, generation, created_before=self._started_at,
+                        consent=consent, audit_reason=audit_reason,
+                    )
+                except OSError:
+                    released = False
+            result = {
+                "success": released, "mutation_applied": released,
+                "lease_id": lease_id, "generation": generation,
+            }
+            if not released:
+                result["error"] = "lease is missing, changed, created during this Hub run, or reservation-bound"
             return result
         if action != "release":
             return {"success": False, "operation_not_started": True,

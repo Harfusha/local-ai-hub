@@ -931,7 +931,7 @@ def generate_global_policy(cfg: dict[str, Any]) -> str:
             + ". Use only live MCP action enums; runtime authorization and quality gates apply."
         )
     prioritization_bullets.append(
-        "> - **Git operations**: Follow only the live MCP schema. `git_status` and `git_diff` inspect; `synthesize_commit` drafts but never commits/pushes. Hub priority alone creates no Git approval gate; honor explicit project gates and stop when unavailable. Dashboard diagnostics grant no tools."
+        "> - **Git operations**: The active MCP connection and its advertised schema determine which Hub actions are available; instructions do not create tools. When exposed, `git_status` and `git_diff` inspect state; `synthesize_commit` drafts a message. These actions do not run `git commit` or `git push`. Hub prioritization alone does not require a Hub approval or receipt for Git; apply a Hub-only gate only when explicit project instructions require an exposed action. If that required action is unavailable, report the mismatch and stop the mutation. Dashboard diagnostics affect diagnostic detail only; they do not expose or enable tools."
     )
     prioritization_bullets.append(
         "> - **Tests, builds, lint, execution**: Use the agent host's native command tool for bounded checks in the target repository."
@@ -959,7 +959,7 @@ def generate_global_policy(cfg: dict[str, Any]) -> str:
         '> - **Antigravity wrapper**: Use `call_mcp_tool(ServerName="local-ai", ToolName="<tool>", Arguments={<same arguments>})` for the calls above.'
     )
     prioritization_bullets.append(
-        "> - **Native fallback**: Require `terminal=true` AND `retryable=false`. Hub-unknown commands also require broker `native_fallback_allowed=true` and native authorization for the same root/scope. Stop on denial, danger, missing approval, cancellation or `outcome_unknown`. Fallback never confers Hub permission."
+        "> - **Native fallback**: `terminal=true` alone is insufficient; outages require `retryable=false` too. A Hub-unknown command needs broker `native_fallback_allowed=true`; the native tool must authorize the fallback, bounded to the same root/scope. Hard stops: `native_fallback_allowed=false`, a dangerous command, mutation denial, required approval/override, cancellation, `outcome_unknown`. This permits fallback only, never Hub execution. Missing native authorization: stop and report blocker."
     )
     prioritization_directive = (
         "> [!IMPORTANT]\n"
@@ -998,10 +998,7 @@ def generate_global_policy(cfg: dict[str, Any]) -> str:
         " retain exact action, arguments, result and ownership in the audit record.\n"
         + ("\nBackground preprocessing may inspect and index project files, but project-derived `validation_commands` execute repository code. Keep `preprocessing.idle_diagnostics_enabled=false` by default; set it to `true` only with explicit operator approval for those commands. On Windows, `.cmd` and `.bat` validation executables are rejected; do not route them through a shell or interpreter.\n" if fs.preprocessing else "")
         + f"{repo_task_first}\n"
-        "Adaptive retrieval: with insufficient fresh evidence for non-trivial work, call `local_ai_repo(action=\"context\", mode=\"adaptive\")`; it fuses bounded deterministic, structural, lexical and RAG evidence and degrades optional backends independently."
-        " Stop when evidence suffices; reuse cached results. Do not repeat native retrieval or invent long grep lists."
-        ""
-        " Reuse fresh evidence IDs, artifact slices, memos and cache hits;\n"
+        "Adaptive retrieval path: when fresh evidence is insufficient for non-trivial repository work, call `local_ai_repo(action=\"context\", mode=\"adaptive\")`; it fuses bounded deterministic/indexed, structural, lexical and RAG evidence with agreement and diversity, degrading optional backends independently. Stop escalating when evidence is sufficient; reuse cached results and bounded evidence. Do not fan out duplicate native retrieval layers or translate the task into a long grep-term list. Reuse fresh evidence IDs, artifact slices, memos and cache hits;\n"
         " do not repeat the same hub action with the same root/query while repository state is unchanged.\n\n"
         "Treat result state as a protocol: `cache_hit`/`coalesced` means reuse the result;"
         " `in_progress=true` means another owner is doing identical work, so never duplicate it;"
@@ -1112,10 +1109,12 @@ def generate_token_economy_policy(cfg: dict[str, Any] | None = None) -> str:
         "- Compress repo snapshots with `repomix --compress`/`files-to-prompt -c`; use `tokcount` for exact tokens.\n"
         "- Run tests/builds with the native command tool; use `trim-run` only with bundled `tokcount`/`repo-map`, read-only `rg`/`fd`/`grep-ast`, or stdin pipelines. Use `jq` for JSON.\n"
         "- Surgical edits: Prefer targeted block replacements over rewriting entire files.\n"
-        + "- Keep `max_response_tokens` >=128; preserve status/error/evidence/context identity and artifact exact detail within budget.\n"
-        + "- Report savings only against current `baseline_evidence_id`, with signed delta and separate protocol/schema/reuse estimates.\n"
-        + "- Native fallback needs `terminal=true`, `retryable=false`; unknown commands also need `native_fallback_allowed=true` and host authorization.\n"
-        + "- For `outcome_unknown`/`in_progress`, do independent work; never poll or retry the same operation.\n"
+        + "- `response_budget.returned_tokens` measures the final serialized response envelope in `estimated_tokens` and stays at or below the requested budget.\n"
+        + "- Preserve protected status, error, evidence, and context-identity fields; keep exact detail artifact-backed.\n"
+        + "- Claim savings only with a current `baseline_evidence_id`; report signed `token_savings_delta_est`, including negative values; keep `protocol_tokens_est`, `schema_tokens_est`, and `local_compute_reused_tokens_est` separate.\n"
+        + "- Reject `max_response_tokens` below 128; never raise the request silently.\n"
+        + "- For Hub outages, native fallback requires explicit `terminal=true` and `retryable=false`; for Hub-unknown commands, require `native_fallback_allowed=true` plus native-tool authorization.\n"
+        + "- On `outcome_unknown` or `in_progress`, do independent work; never poll or repeat the identical operation.\n"
         + local_model_line
         + "<!-- END TOKEN ECONOMY POLICY -->"
     )

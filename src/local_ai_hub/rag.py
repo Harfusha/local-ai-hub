@@ -971,6 +971,31 @@ class RAGStore:
                 found.update(str(row[0]) for row in rows)
         return found
 
+    def paths_needing_reindex(
+        self, root: str, *, workspace: str, limit: int = 128,
+    ) -> list[str]:
+        """Return this project's indexed paths whose vectors use a stale embedding space."""
+        if type(workspace) is not str or not workspace:
+            raise ValueError("RAG workspace must be a non-empty string")
+        if type(limit) is not int or limit < 1:
+            raise ValueError("RAG reindex limit must be a positive integer")
+        if not self._embedding_space_is_resolved():
+            return []
+        embedding_space = self._embedding_space_id()
+        project_root = str(Path(root).resolve())
+        with closing(self._connect()) as con:
+            rows = con.execute(
+                """SELECT DISTINCT c.path FROM chunks c
+                   JOIN project_file_owners o
+                     ON o.workspace=c.workspace AND o.path=c.path
+                   WHERE c.workspace=? AND o.root=?
+                     AND c.embedding IS NOT NULL AND length(c.embedding)>0
+                     AND COALESCE(c.embedding_space,'')<>?
+                   ORDER BY c.path LIMIT ?""",
+                (workspace, project_root, embedding_space, limit),
+            ).fetchall()
+        return [str(row[0]) for row in rows]
+
     def indexed_chunk_paths(self, *, workspace: str, paths: list[str]) -> set[str]:
         """Return requested paths with persisted semantic chunks."""
         if type(workspace) is not str or not workspace:
@@ -3069,16 +3094,22 @@ class RAGStore:
                         started_at=publish_started, stage="update_project_file_owners",
                         budget_seconds=publish_budget_seconds,
                     )
-                    if embedding_space:
+                    stale_vectors = con.execute(
+                        """SELECT 1 FROM chunks WHERE workspace=?
+                           AND embedding IS NOT NULL AND length(embedding)>0
+                           AND COALESCE(embedding_space,'')<>? LIMIT 1""",
+                        (workspace, embedding_space),
+                    ).fetchone() if embedding_space else None
+                    if embedding_space and stale_vectors is None:
                         self._store_workspace_embedding_space(con, workspace, embedding_space)
                     if reindex_target:
                         target_key = self._workspace_reindex_target_key(workspace)
-                        if reindex_target == embedding_space:
+                        if reindex_target == embedding_space and stale_vectors is None:
                             con.execute(
                                 "DELETE FROM rag_meta WHERE key=? AND value=?",
                                 (target_key, reindex_target),
                             )
-                        else:
+                        elif embedding_space and reindex_target != embedding_space:
                             con.execute(
                                 "UPDATE rag_meta SET value=? WHERE key=? AND value=?",
                                 (embedding_space, target_key, reindex_target),

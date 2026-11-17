@@ -31,6 +31,7 @@ def prep(tmp_path):
     worker._set_project = Mock()
     worker._record_progress = Mock()
     worker.lookup = Mock(return_value={})
+    worker.rag.paths_needing_reindex.return_value = []
     database = tmp_path / "preprocess.sqlite3"
 
     def connect():
@@ -172,6 +173,28 @@ def test_indexing_passes_cached_content_and_cleans_missing_paths(prep, tmp_path,
             prep.rag.remove_paths.assert_called_once_with(workspace="repo-workspace", paths=["module.py"])
             assert con.execute("SELECT COUNT(*) FROM file_refs").fetchone()[0] == 0
             assert con.execute("SELECT COUNT(*) FROM source_index").fetchone()[0] == 0
+
+
+def test_embedding_space_reindex_selects_already_synced_paths(prep, tmp_path):
+    root = str(tmp_path)
+    add_pending(prep, root, "module.py")
+    with closing(prep._connect()) as con:
+        con.execute("UPDATE file_refs SET rag_hash=content_hash WHERE root=?", (root,))
+        con.commit()
+    prep.rag.paths_needing_reindex.return_value = ["module.py"]
+    prep.rag.index_paths_step.return_value = {
+        "success": True, "processed_paths": ["module.py"],
+    }
+
+    assert prep._step_rag({"root": root, "workspace": "repo-workspace"})
+
+    prep.rag.paths_needing_reindex.assert_called_once_with(
+        root, workspace="repo-workspace", limit=128,
+    )
+    prep.rag.index_paths_step.assert_called_once_with(
+        root, workspace="repo-workspace", paths=["module.py"],
+        should_yield=prep._yield, content_overrides={"module.py": "cached text"},
+    )
 
 
 @pytest.mark.parametrize("workspace", ["repo-workspace", None])

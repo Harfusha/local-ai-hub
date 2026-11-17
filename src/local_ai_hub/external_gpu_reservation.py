@@ -417,6 +417,152 @@ class ExternalGpuReservationStore:
             remaining = [item for item in leases if item not in matched]
             return self._write_capacity_leases({"schema_version": 1, "leases": remaining})
 
+    def release_orphaned_laya_capacity_lease(
+        self, lease_id: str, owner: str, generation: str, *, consent: bool, audit_reason: str,
+    ) -> bool:
+        if (type(consent) is not bool or not consent
+                or not isinstance(lease_id, str) or not lease_id
+                or not isinstance(owner, str) or not owner.strip() or len(owner) > 256
+                or not isinstance(generation, str) or not generation
+                or not isinstance(audit_reason, str) or not audit_reason.strip() or len(audit_reason) > 1000
+                or not self._laya_owner_process_is_gone(owner)):
+            return False
+        with self._locked():
+            capacity = self._read_capacity_leases_unlocked()
+            if (capacity is None or not self._laya_owner_process_is_gone(owner)
+                    or self.path.is_symlink() or self.metadata_path.is_symlink()):
+                return False
+            reservation = self._read_unlocked()
+            if reservation is not None:
+                active_generation = reservation["generation"]
+            else:
+                internal_digest = self._read_internal_digest_unlocked()
+                if internal_digest is not None:
+                    active_generation = f"internal:{internal_digest}"
+                elif (self.path.exists() or self.path.is_symlink()
+                        or self.metadata_path.exists() or self.metadata_path.is_symlink()):
+                    return False
+                else:
+                    active_generation = None
+            matched = [item for item in capacity["leases"] if (
+                item["lease_id"] == lease_id
+                and item["owner"] == owner
+                and item["generation"] == generation
+            )]
+            if (len(matched) != 1
+                    or (matched[0]["reservation_generation"] is not None
+                        and matched[0]["reservation_generation"] == active_generation)):
+                return False
+            lease = matched[0]
+            if not self._laya_owner_process_is_gone(owner):
+                return False
+            remaining = [item for item in capacity["leases"] if item is not lease]
+            if not self._write_capacity_leases({"schema_version": 1, "leases": remaining}):
+                return False
+            try:
+                self._append_audit({
+                    "action": "consented_capacity_lease_release_dead_laya_owner",
+                    "lease_id": lease_id,
+                    "owner": owner,
+                    "generation": generation,
+                    "reservation_generation": lease["reservation_generation"],
+                    "active_reservation_generation": active_generation,
+                    "requested_bytes": lease["requested_bytes"],
+                    "reason": audit_reason.strip(),
+                    "released_at": self._clock(),
+                })
+            except OSError:
+                self._write_capacity_leases(capacity)
+                return False
+            return True
+
+    def release_orphaned_scheduler_capacity_lease(
+        self, lease_id: str, owner: str, generation: str, *, created_before: float,
+        consent: bool, audit_reason: str,
+    ) -> bool:
+        parts = owner.split(":") if isinstance(owner, str) else []
+        if (type(consent) is not bool or not consent
+                or not isinstance(lease_id, str) or not lease_id
+                or not isinstance(owner, str) or len(owner) > 256
+                or len(parts) != 2 or parts[0] != "scheduler-job"
+                or not parts[1].isdigit() or (len(parts[1]) > 1 and parts[1].startswith("0"))
+                or not isinstance(generation, str) or not generation
+                or isinstance(created_before, bool) or not isinstance(created_before, (int, float))
+                or not math.isfinite(created_before)
+                or not isinstance(audit_reason, str) or not audit_reason.strip() or len(audit_reason) > 1000):
+            return False
+        with self._locked():
+            capacity = self._read_capacity_leases_unlocked()
+            if (capacity is None or self.path.is_symlink() or self.metadata_path.is_symlink()):
+                return False
+            reservation = self._read_unlocked()
+            if reservation is not None:
+                active_generation = reservation["generation"]
+            else:
+                internal_digest = self._read_internal_digest_unlocked()
+                if internal_digest is not None:
+                    active_generation = f"internal:{internal_digest}"
+                elif (self.path.exists() or self.path.is_symlink()
+                        or self.metadata_path.exists() or self.metadata_path.is_symlink()):
+                    return False
+                else:
+                    active_generation = None
+            matched = [item for item in capacity["leases"] if (
+                item["lease_id"] == lease_id
+                and item["owner"] == owner
+                and item["generation"] == generation
+            )]
+            if len(matched) != 1:
+                return False
+            lease = matched[0]
+            created_at = lease.get("created_at")
+            if (isinstance(created_at, bool) or not isinstance(created_at, (int, float))
+                    or not math.isfinite(created_at) or created_at >= created_before
+                    or (lease["reservation_generation"] is not None
+                        and lease["reservation_generation"] == active_generation)):
+                return False
+            remaining = [item for item in capacity["leases"] if item is not lease]
+            if not self._write_capacity_leases({"schema_version": 1, "leases": remaining}):
+                return False
+            try:
+                self._append_audit({
+                    "action": "consented_scheduler_capacity_lease_release_no_runner",
+                    "lease_id": lease_id,
+                    "owner": owner,
+                    "generation": generation,
+                    "reservation_generation": lease["reservation_generation"],
+                    "active_reservation_generation": active_generation,
+                    "requested_bytes": lease["requested_bytes"],
+                    "created_at": created_at,
+                    "created_before": created_before,
+                    "reason": audit_reason.strip(),
+                    "released_at": self._clock(),
+                })
+            except OSError:
+                self._write_capacity_leases(capacity)
+                return False
+            return True
+
+    @staticmethod
+    def _laya_owner_process_is_gone(owner: Any) -> bool:
+        if not isinstance(owner, str):
+            return False
+        parts = owner.split(":")
+        if len(parts) != 3 or parts[0] != "laya-runtime" or not parts[2]:
+            return False
+        try:
+            pid = int(parts[1])
+        except (TypeError, ValueError):
+            return False
+        if pid <= 0:
+            return False
+        try:
+            from .process_utils import process_is_alive
+
+            return process_is_alive(pid) is False
+        except Exception:
+            return False
+
     def has_capacity_lease(self) -> bool:
         """Fail closed for malformed ledgers and report active residency claims."""
         with self._locked():
@@ -430,12 +576,6 @@ class ExternalGpuReservationStore:
         if expected_internal_digest is not None:
             _validate_digest(expected_internal_digest)
         with self._locked():
-            leases = self._read_capacity_leases_unlocked()
-            if leases is None:
-                return None
-            leases = self._reap_dead_laya_capacity_leases_unlocked(leases)
-            if leases is None:
-                return None
             reservation = self._read_unlocked()
             if (reservation is not None and reservation["expires_at"] <= self._clock()
                     and not self._has_capacity_lease_for_generation_unlocked(reservation["generation"])):
@@ -453,6 +593,9 @@ class ExternalGpuReservationStore:
                     self.path.exists() or self.path.is_symlink()
                     or self.metadata_path.exists() or self.metadata_path.is_symlink()):
                 return None
+            leases = self._read_capacity_leases_unlocked()
+            if leases is None:
+                return None
             reservation_generation = (
                 reservation.get("generation") if reservation is not None
                 else f"internal:{internal_fence_digest}" if internal_fence_digest is not None
@@ -467,47 +610,6 @@ class ExternalGpuReservationStore:
             if internal_fence_digest is not None:
                 snapshot["internal_fence_digest"] = internal_fence_digest
             return snapshot
-
-    def _reap_dead_laya_capacity_leases_unlocked(self, capacity: dict[str, Any]) -> dict[str, Any] | None:
-        """Drop only Laya leases whose recorded owner process is confirmed dead."""
-        from .process_utils import process_is_alive
-
-        remaining = []
-        reaped = []
-        for lease in capacity["leases"]:
-            owner = lease["owner"].split(":", 2)
-            if len(owner) == 3 and owner[0] == "laya-runtime" and owner[1].isdecimal() and owner[2]:
-                try:
-                    pid = int(owner[1])
-                except ValueError:
-                    pid = 0
-                if pid > 0:
-                    try:
-                        # shortcut: live or unverifiable PIDs stay reserved; persist process start identity before reclaiming reused PIDs.
-                        if process_is_alive(pid) is False:
-                            reaped.append(lease)
-                            continue
-                    except Exception:
-                        pass
-            remaining.append(lease)
-        if not reaped:
-            return capacity
-
-        updated = {"schema_version": 1, "leases": remaining}
-        if not self._write_capacity_leases(updated):
-            return None
-        try:
-            for lease in reaped:
-                self._append_audit({
-                    "action": "dead_laya_capacity_lease_reaped",
-                    "owner": lease["owner"],
-                    "generation": lease["generation"],
-                    "reason": "recorded owner process is confirmed dead",
-                    "released_at": self._clock(),
-                })
-        except OSError:
-            return None
-        return updated
 
     def _read_internal_digest_unlocked(self) -> str | None:
         if self.path.is_symlink() or self.metadata_path.exists() or self.metadata_path.is_symlink():

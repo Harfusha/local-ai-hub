@@ -410,7 +410,17 @@ def _prewarm_admission_state(scheduler: Any) -> str:
     if not isinstance(status, dict):
         return "status_unavailable"
     state = status.get("gpu_admission_state")
-    return state if isinstance(state, str) and state else "unknown"
+    if not isinstance(state, str) or not state:
+        return "unknown"
+    if state == "available":
+        capacity_sharing_active = getattr(scheduler, "_capacity_sharing_active", None)
+        if callable(capacity_sharing_active):
+            try:
+                if capacity_sharing_active():
+                    return "capacity_sharing"
+            except Exception:
+                return "status_unavailable"
+    return state
 
 
 def _prewarm_should_retry(scheduler: Any) -> bool:
@@ -740,13 +750,20 @@ class LocalAIApp:
                         self.logger.warning("prewarm attempt failed: %s", type(exc).__name__)
                     admission_state = _prewarm_admission_state(self.scheduler)
                     if admission_state not in _PREWARM_RETRYABLE_GPU_STATES:
-                        self.logger.warning(
-                            "prewarm stopped: gpu_admission_state=%s", admission_state,
-                        )
-                        self.telemetry.record_system(
-                            "prewarm_stopped_gpu_admission_unavailable",
-                            model=str(model), gpu_admission_state=admission_state,
-                        )
+                        if admission_state == "capacity_sharing":
+                            self.logger.info("prewarm skipped: GPU capacity is shared")
+                            self.telemetry.record_system(
+                                "prewarm_skipped_shared_capacity", model=str(model),
+                                gpu_admission_state="available",
+                            )
+                        else:
+                            self.logger.warning(
+                                "prewarm stopped: gpu_admission_state=%s", admission_state,
+                            )
+                            self.telemetry.record_system(
+                                "prewarm_stopped_gpu_admission_unavailable",
+                                model=str(model), gpu_admission_state=admission_state,
+                            )
                         return
                     self._shutdown.wait(min(15.0, 1.5 + attempts * 0.5))
             self._prewarm_thread = threading.Thread(target=warm, name="local-ai-prewarm", daemon=True)
@@ -800,10 +817,10 @@ class LocalAIApp:
 
     def _observe_laya_watchdog_lifecycle(self) -> None:
         """Observe active task lifecycle states as shadow watchdog decisions."""
+        if not self._laya_inference_enabled():
+            return
         config = getattr(self, "config", {})
         laya_cfg = config.get("laya", {}) if isinstance(config, Mapping) else {}
-        if not laya_cfg.get("enabled", True):
-            return
         runtime_cfg = laya_cfg.get("runtime", {}) if isinstance(laya_cfg, Mapping) else {}
         if not runtime_cfg.get("checkpoint_path"):
             return
@@ -2854,6 +2871,8 @@ class LocalAIApp:
         baseline: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Run one typed shadow decision and capture its actual runtime outcome."""
+        if not self._laya_inference_enabled():
+            raise RuntimeError("Laya inference is disabled")
         if type(operation) is not dict or set(operation) != {
             "action", "task_id", "session_id", "evidence",
         }:
@@ -2975,6 +2994,8 @@ class LocalAIApp:
         _server_baseline: Mapping[str, str] | None = None,
     ) -> dict[str, Any]:
         """Run a caller-requested typed shadow decision without changing Hub behavior."""
+        if not self._laya_inference_enabled():
+            raise RuntimeError("Laya inference is disabled")
         if type(operation) is not dict or set(operation) != {"action", "task_id", "decision"}:
             raise ValueError("Laya decision fields invalid")
         if operation["action"] != "evaluate_decision":
@@ -3078,15 +3099,25 @@ class LocalAIApp:
         captured: dict[str, Any] = {}
 
         def record_outcome(actual_request: Any, actual_input: Any, outcome: Any) -> None:
-            captured.update(self.laya_candidates.capture_runtime_outcome(
-                actual_request,
-                actual_input,
-                outcome,
-                root=canonical_root,
-                task_store=self.agent_tasks,
-                evidence_store=self.evidence,
-                baseline=baseline,
-            ))
+            try:
+                captured.update(self.laya_candidates.capture_runtime_outcome(
+                    actual_request,
+                    actual_input,
+                    outcome,
+                    root=canonical_root,
+                    task_store=self.agent_tasks,
+                    evidence_store=self.evidence,
+                    baseline=baseline,
+                ))
+            except Exception as exc:
+                captured["capture_status"] = "failed"
+                captured["capture_error_type"] = type(exc).__name__
+                self._record_laya_capture_observation(
+                    "failed", "capture_exception", error_type=type(exc).__name__
+                )
+                raise
+            captured["capture_status"] = "captured"
+            self._record_laya_capture_observation("captured", "runtime_outcome")
 
         outcome = adapter.evaluate_decision(
             request,
@@ -3096,6 +3127,11 @@ class LocalAIApp:
         )
         decision = outcome.decision
         self._record_laya_runtime_decision(request, decision)
+        capture_status = captured.get("capture_status")
+        if capture_status is None:
+            capture_status = "failed"
+            reason = "runtime_error" if outcome.runtime is None else "outcome_not_captured"
+            self._record_laya_capture_observation("failed", reason)
         return {
             "success": decision.success,
             "decision": {
@@ -3107,7 +3143,10 @@ class LocalAIApp:
                 "reason_codes": list(decision.reason_codes),
                 "redacted_training_fields": list(decision_input.redacted_fields),
             },
+            "baseline": baseline,
             "runtime": vars(outcome.runtime) if outcome.runtime is not None else None,
+            "capture_status": capture_status,
+            "capture_error_type": captured.get("capture_error_type"),
             "candidate": {key: captured[key] for key in ("candidate_id", "duplicate", "status", "runtime_output_recorded") if key in captured},
         }
 
@@ -3174,7 +3213,7 @@ class LocalAIApp:
         """Persist typed capture lifecycle metadata without request content."""
         statuses = {"skipped", "queued", "captured", "failed"}
         reasons = {
-            "context_unavailable", "task_identity_unavailable",
+            "laya_disabled", "context_unavailable", "task_identity_unavailable",
             "task_scope_unavailable", "session_identity_mismatch",
             "retrieval_provenance_unavailable", "backend_states_unavailable",
             "fewer_than_two_verified_sources", "no_unresolved_evidence_gap",
@@ -3182,7 +3221,7 @@ class LocalAIApp:
             "capture_queue_unavailable", "runtime_error", "outcome_not_captured",
             "runtime_outcome", "queued", "unspecified", "capture_exception",
             "checkpoint_unavailable", "decision_scope_unavailable",
-            "decision_evidence_unavailable", "decision_invalid",
+            "decision_evidence_unavailable", "decision_context_unavailable", "decision_invalid",
             "completion_outcome", "completion_outcome_unavailable",
             "completion_no_candidate", "completion_scope_unavailable",
         }
@@ -3206,8 +3245,16 @@ class LocalAIApp:
             self.logger.warning("Laya capture telemetry failed: %s", type(exc).__name__)
             return False
 
+    def _laya_inference_enabled(self) -> bool:
+        config = getattr(self, "config", {})
+        laya_cfg = config.get("laya", {}) if isinstance(config, Mapping) else {}
+        return not (isinstance(laya_cfg, Mapping) and laya_cfg.get("enabled", True) is False)
+
     def queue_laya_completion_observation(self, operation: Any, root: str) -> dict[str, str]:
         """Persist a typed completion outcome asynchronously without affecting the gate."""
+        if not self._laya_inference_enabled():
+            self._record_laya_capture_observation("skipped", "laya_disabled")
+            return {"status": "skipped", "reason": "laya_disabled"}
         if (
             type(operation) is not dict
             or set(operation) != {"task_id", "session_id", "outcome"}
@@ -3284,8 +3331,66 @@ class LocalAIApp:
             future.add_done_callback(observe_dispatch)
         if operation["outcome"].get("status") == "rejected":
             self._queue_laya_completion_gap_observation(operation, root)
+        self._queue_laya_completion_next_step_observation(operation, root)
         self._record_laya_capture_observation("queued", "completion_outcome")
         return {"status": "queued", "reason": "completion_outcome"}
+
+    def _queue_laya_completion_next_step_observation(
+        self, operation: Mapping[str, Any], root: str
+    ) -> dict[str, str]:
+        """Capture bounded next-step context from a genuine completion validation."""
+        try:
+            from .laya_decisions import DecisionCategory, allowed_decision_options
+
+            status = operation["outcome"].get("status")
+            mutation_generation = operation["outcome"].get("mutation_generation")
+            if status not in {"passed", "rejected"} or type(mutation_generation) is not int or mutation_generation < 0:
+                return {"status": "skipped", "reason": "completion_scope_unavailable"}
+            canonical_root = str(Path(root).resolve(strict=True))
+            task = self.laya_candidates._find_task(self.agent_tasks, canonical_root, operation["task_id"])
+            if self.laya_candidates._session_for_task(task) != operation["session_id"]:
+                return {"status": "skipped", "reason": "completion_scope_unavailable"}
+            checkpoint = getattr(task, "checkpoint", None)
+            evidence_id = next(
+                (item for item in getattr(checkpoint, "evidence_ids", ()) if isinstance(item, str) and item.strip()),
+                None,
+            )
+            criteria = getattr(getattr(task, "contract", None), "acceptance_criteria", ())
+            if evidence_id is None or not isinstance(criteria, (list, tuple)) or not criteria:
+                self._record_laya_capture_observation("skipped", "decision_evidence_unavailable")
+                return {"status": "skipped", "reason": "decision_evidence_unavailable"}
+            task_input = "\n".join(item for item in criteria if isinstance(item, str) and item.strip())
+            task_input = task_input.encode("utf-8", errors="replace")[:4096].decode("utf-8", errors="ignore").strip()
+            if not task_input:
+                self._record_laya_capture_observation("skipped", "decision_context_unavailable")
+                return {"status": "skipped", "reason": "decision_context_unavailable"}
+            decision_operation = {
+                "action": "evaluate_decision",
+                "task_id": operation["task_id"],
+                "decision": {
+                    "category": DecisionCategory.NEXT_STEP.value,
+                    "evidence_ids": [evidence_id],
+                    "options": sorted(allowed_decision_options(DecisionCategory.NEXT_STEP)),
+                    "state": {
+                        "completion_status": status,
+                        "reason_code": f"completion_validation_{status}",
+                        "mutation_generation": str(mutation_generation),
+                    },
+                    "training_content": {"task_input": task_input},
+                },
+            }
+            return self.queue_laya_decision_observation(
+                decision_operation,
+                canonical_root,
+                {
+                    "method": "pipeline_step_progress",
+                    "suggestion": "ask_human" if status == "passed" else "run_test",
+                    "evidence_id": evidence_id,
+                },
+            )
+        except Exception:
+            self._record_laya_capture_observation("skipped", "completion_scope_unavailable")
+            return {"status": "skipped", "reason": "completion_scope_unavailable"}
 
     def _queue_laya_completion_gap_observation(
         self, operation: Mapping[str, Any], root: str
@@ -3350,6 +3455,8 @@ class LocalAIApp:
             self._record_laya_capture_observation("skipped", reason)
             return {"status": "skipped", "reason": reason}
 
+        if not self._laya_inference_enabled():
+            return skipped("laya_disabled")
         if type(operation) is not dict or set(operation) != {"action", "task_id", "decision"}:
             return skipped("decision_invalid")
         if operation.get("action") != "evaluate_decision" or not isinstance(root, str) or not root.strip():
@@ -3519,6 +3626,8 @@ class LocalAIApp:
         result: Any,
     ) -> dict[str, Any]:
         """Collect one real, incomplete context decision in shadow mode only."""
+        if not self._laya_inference_enabled():
+            return {"status": "skipped", "reason": "laya_disabled"}
         if not isinstance(result, dict) or result.get("success") is not True:
             return {"status": "skipped", "reason": "context_unavailable"}
         task_id = str(getattr(request, "task_id", "") or "").strip()

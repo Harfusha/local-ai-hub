@@ -38,6 +38,7 @@ _install_ownership_module = importlib.util.module_from_spec(_install_ownership_s
 _install_ownership_spec.loader.exec_module(_install_ownership_module)
 write_install_manifest = _install_ownership_module.write_install_manifest
 record_external_block = _install_ownership_module.record_external_block
+adopt_external_block = _install_ownership_module.adopt_external_block
 assert_external_block_writable = _install_ownership_module.assert_external_block_writable
 record_external_json_key = _install_ownership_module.record_external_json_key
 assert_external_json_key_writable = _install_ownership_module.assert_external_json_key_writable
@@ -47,6 +48,25 @@ record_external_file = _install_ownership_module.record_external_file
 assert_external_file_writable = _install_ownership_module.assert_external_file_writable
 forget_external_record = _install_ownership_module.forget_external_record
 _ACTIVE_INSTALL_ROOT: Path | None = None
+_ADOPT_UNOWNED_HUB_BLOCKS = False
+
+
+def _assert_or_adopt_external_block(path: Path, owner_marker: dict[str, str], current_block: str) -> None:
+    if _ACTIVE_INSTALL_ROOT is None:
+        return
+    try:
+        assert_external_block_writable(
+            _ACTIVE_INSTALL_ROOT, path, owner_marker=owner_marker, current_block=current_block
+        )
+    except ValueError as exc:
+        if not _ADOPT_UNOWNED_HUB_BLOCKS or "external block has no ownership record" not in str(exc):
+            raise
+        reason = "Operator requested installation of current Local AI Hub agent instructions and MCP settings."
+        if adopt_external_block(
+            _ACTIVE_INSTALL_ROOT, path, owner_marker=owner_marker, expected_block=current_block,
+            consent=True, audit_reason=reason,
+        ):
+            log(f"Adopted existing Local AI Hub block with rollback snapshot: {path}")
 
 _update_transaction_spec = importlib.util.spec_from_file_location(
     "_local_ai_hub_update_transaction", Path(__file__).with_name("update_transaction.py")
@@ -476,8 +496,8 @@ If any required skill or the Hub is unavailable, report the precise limitation a
     updated = policy + separator + unmanaged
     if updated == text or (preimage is not None and preimage.replace("\r\n", "\n") == policy):
         return
-    if preimage is not None and _ACTIVE_INSTALL_ROOT is not None:
-        assert_external_block_writable(_ACTIVE_INSTALL_ROOT, path, owner_marker=marker, current_block=preimage)
+    if preimage is not None:
+        _assert_or_adopt_external_block(path, marker, preimage)
     backup(path, backup_enabled)
     path.write_bytes(updated.encode("utf-8"))
     if _ACTIVE_INSTALL_ROOT is not None:
@@ -1002,8 +1022,8 @@ def codex_mcp_merge(path: Path, servers: dict[str, dict[str, Any]], backup_enabl
     managed = managed_matches[0] if managed_matches else None
     preimage = managed.group(0) if managed else None
     owner_marker = {"begin": MARKER_BEGIN, "end": MARKER_END}
-    if preimage is not None and _ACTIVE_INSTALL_ROOT is not None:
-        assert_external_block_writable(_ACTIVE_INSTALL_ROOT, path, owner_marker=owner_marker, current_block=preimage)
+    if preimage is not None:
+        _assert_or_adopt_external_block(path, owner_marker, preimage)
     backup(path, backup_enabled)
     existing_servers: dict[str, Any] = {}
     if managed:
@@ -1083,8 +1103,8 @@ def _merge_owned_text_block(path: Path, block: str, begin: str, end: str, backup
         raise RuntimeError(f"multiple Local AI Hub blocks found in {path}")
     preimage = matches[0].group(0) if matches else None
     marker = {"begin": begin, "end": end}
-    if preimage is not None and _ACTIVE_INSTALL_ROOT is not None:
-        assert_external_block_writable(_ACTIVE_INSTALL_ROOT, path, owner_marker=marker, current_block=preimage)
+    if preimage is not None:
+        _assert_or_adopt_external_block(path, marker, preimage)
     updated = pattern.sub(lambda _match: block, text) if preimage is not None else (
         text + ("" if not text or text.endswith("\n") else "\n") + "\n" + block + "\n"
     )
@@ -1823,6 +1843,7 @@ def select_config_source(explicit: Path | None) -> tuple[Path, dict[str, Any], P
     return source, cfg, install_dir
 
 def main() -> int:
+    global _ADOPT_UNOWNED_HUB_BLOCKS
     if sys.version_info < (3, 11):
         raise SystemExit("Python 3.11+ is required. Use install.ps1/install.sh to bootstrap a supported Python automatically.")
     parser = argparse.ArgumentParser(description="Install Local AI Hub")
@@ -1840,6 +1861,7 @@ def main() -> int:
     parser.add_argument("--skip-ollama-install", action="store_true")
     parser.add_argument("--skip-token-economy", action="store_true", default=None, help="Do not install token economy packages or probe external CLI tools")
     parser.add_argument("--skip-companion-skills", action="store_true", default=None, help="Do not install companion skills or pinned Superpowers for Gemini/Antigravity")
+    parser.add_argument("--adopt-existing-hub-blocks", action="store_true", help="Adopt only current marked Hub blocks after saving rollback copies")
     setup_mode = parser.add_mutually_exclusive_group()
     setup_mode.add_argument("--interactive", dest="interactive", action="store_true", default=None, help="Show the installer wizard even when setup is scripted")
     setup_mode.add_argument("--non-interactive", action="store_true", help="Never prompt; use explicit flags, saved choices, and safe defaults")
@@ -1857,6 +1879,7 @@ def main() -> int:
     parser.add_argument("--superpowers-entrypoint", type=Path, help="Absolute Gemini CLI JavaScript entrypoint for a native Node launcher.")
     parser.add_argument("--superpowers-consent", action="store_true", help="Explicitly acknowledge third-party Gemini extension installation risks.")
     args = parser.parse_args()
+    _ADOPT_UNOWNED_HUB_BLOCKS = args.adopt_existing_hub_blocks
 
     if args.host_project_root is not None or args.host_adapter is not None:
         if args.host_project_root is None or args.host_adapter is None:

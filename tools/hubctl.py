@@ -606,6 +606,13 @@ def main() -> int:
         c = client()
         res = c.logs(lines=args.limit or 200)
         lines = res.get("lines", [])
+        if res.get("success") is False:
+            status_code = res.get("status_code")
+            status_suffix = f" (HTTP {status_code})" if status_code else ""
+            error = res.get("error")
+            detail = error if isinstance(error, str) and error else "request failed"
+            print(f"Local AI Hub logs unavailable{status_suffix}: {detail}", file=sys.stderr)
+            return 1
         for line in lines:
             print(line)
         if not args.follow:
