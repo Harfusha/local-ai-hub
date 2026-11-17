@@ -6069,6 +6069,7 @@ class LocalAIServices:
     def session_briefing(self, include: list[str] | None = None, root: str = "") -> dict[str, Any]:
         if root != "":
             from .agent_tasks import _task_scope_root
+            from .repo_plan.schema_validation import RepoPlanValidationError
 
             ws = self._plan_workspace(root, "session_briefing", {"include": include or []})
             selected = set(include or ["board", "plans", "active_tasks"])
@@ -6077,16 +6078,21 @@ class LocalAIServices:
             if "plans" in selected:
                 result["plans"] = ws.list_plans()
             if "board" in selected or "plan_board" in selected:
-                board = ws.get_board_view()
-                counts = {name: len(items) for name, items in board["columns"].items()}
-                counts["total"] = sum(counts.values())
-                recent = [item for items in board["columns"].values() for item in items][:5]
-                summary = {"success": True, "counts": counts, "by_status": counts,
-                           "total_items": counts["total"], "source": "repo_plan",
-                           "root": str(ws.repo_root)}
-                result["board_summary"] = counts
-                result["board"] = {"summary": summary, "recent_items": recent}
-                result["plan_board"] = board["columns"]
+                try:
+                    board = ws.get_board_view()
+                except RepoPlanValidationError as exc:
+                    result["partial"] = True
+                    result.setdefault("warnings", []).append(f"Plan board unavailable: {exc}")
+                else:
+                    counts = {name: len(items) for name, items in board["columns"].items()}
+                    counts["total"] = sum(counts.values())
+                    recent = [item for items in board["columns"].values() for item in items][:5]
+                    summary = {"success": True, "counts": counts, "by_status": counts,
+                               "total_items": counts["total"], "source": "repo_plan",
+                               "root": str(ws.repo_root)}
+                    result["board_summary"] = counts
+                    result["board"] = {"summary": summary, "recent_items": recent}
+                    result["plan_board"] = board["columns"]
             task_store = getattr(self, "task_store", None)
             if "active_tasks" in selected and task_store is not None:
                 active_items = []
