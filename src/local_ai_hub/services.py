@@ -890,8 +890,10 @@ class LocalAIServices:
         evidence_ids = args.get("evidence_ids") if isinstance(args, Mapping) else None
         if not (isinstance(task_id, str) and task_id.strip()):
             session_id = args.get("session_id") if isinstance(args, Mapping) else None
-            clean_session = str(session_id).strip() if session_id else ""
-            task_id = f"adhoc_{clean_session or 'default'}"
+            clean_session = session_id.strip() if isinstance(session_id, str) else ""
+            if not clean_session:
+                return False
+            task_id = f"adhoc_{clean_session}"
         if (type(evidence_ids) not in (list, tuple) or not evidence_ids) and isinstance(args, Mapping):
             single_evidence = args.get("evidence_id")
             if isinstance(single_evidence, str) and single_evidence.strip():

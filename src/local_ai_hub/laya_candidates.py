@@ -537,7 +537,12 @@ class LayaCandidateStore:
         if type(language) is not str or not _LANG.fullmatch(language):
             raise ValueError("candidate language invalid")
         preprocessing = _strict_object(row["preprocessing"], {"name", "version"}, "preprocessing")
-        if any(type(preprocessing[k]) is not str or not _IDENT.fullmatch(preprocessing[k]) for k in preprocessing):
+        if (
+            type(preprocessing["name"]) is not str
+            or not _IDENT.fullmatch(preprocessing["name"])
+            or type(preprocessing["version"]) is not str
+            or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:+-]{0,127}\Z", preprocessing["version"])
+        ):
             raise ValueError("preprocessing identity invalid")
         evidence_ids = row["evidence_ids"]
         source_record_ids = row.get("source_record_ids")
@@ -1260,7 +1265,7 @@ class LayaCandidateStore:
             state = {key: value for key, value in evidence_mapping.items() if key != "evidence_ids"}
         else:
             state = evidence.model_state()
-        runtime_version = _identity(str(getattr(runtime, "runtime_version", "")), "runtime_version")
+        runtime_version = str(getattr(runtime, "runtime_version", ""))
         candidate = {
             "decision_schema_version": "laya-decision-v1",
             "category": request.category.value,

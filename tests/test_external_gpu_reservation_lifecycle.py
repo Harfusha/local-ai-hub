@@ -301,9 +301,7 @@ def test_consented_release_current_clears_only_its_capacity_leases(tmp_path):
     assert event["released_capacity_leases"] == 1
 
 
-def test_capacity_snapshot_does_not_reap_dead_laya_owner_without_operator_action(tmp_path, monkeypatch):
-    from local_ai_hub import process_utils
-
+def test_capacity_snapshot_does_not_release_laya_leases_without_consent(tmp_path):
     store = ExternalGpuReservationStore(tmp_path / "external-gpu-reservation")
     dead_laya = {
         "lease_id": "dead-laya-lease",
@@ -335,8 +333,6 @@ def test_capacity_snapshot_does_not_reap_dead_laya_owner_without_operator_action
         "schema_version": 1,
         "leases": [dead_laya, live_laya, unknown_laya, unrelated],
     })
-    monkeypatch.setattr(process_utils, "process_is_alive", lambda pid: {424242: False, 424243: True}.get(pid))
-
     snapshot = store.capacity_snapshot()
 
     assert snapshot is not None

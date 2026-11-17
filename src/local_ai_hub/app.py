@@ -3099,15 +3099,25 @@ class LocalAIApp:
         captured: dict[str, Any] = {}
 
         def record_outcome(actual_request: Any, actual_input: Any, outcome: Any) -> None:
-            captured.update(self.laya_candidates.capture_runtime_outcome(
-                actual_request,
-                actual_input,
-                outcome,
-                root=canonical_root,
-                task_store=self.agent_tasks,
-                evidence_store=self.evidence,
-                baseline=baseline,
-            ))
+            try:
+                captured.update(self.laya_candidates.capture_runtime_outcome(
+                    actual_request,
+                    actual_input,
+                    outcome,
+                    root=canonical_root,
+                    task_store=self.agent_tasks,
+                    evidence_store=self.evidence,
+                    baseline=baseline,
+                ))
+            except Exception as exc:
+                captured["capture_status"] = "failed"
+                captured["capture_error_type"] = type(exc).__name__
+                self._record_laya_capture_observation(
+                    "failed", "capture_exception", error_type=type(exc).__name__
+                )
+                raise
+            captured["capture_status"] = "captured"
+            self._record_laya_capture_observation("captured", "runtime_outcome")
 
         outcome = adapter.evaluate_decision(
             request,
@@ -3117,6 +3127,11 @@ class LocalAIApp:
         )
         decision = outcome.decision
         self._record_laya_runtime_decision(request, decision)
+        capture_status = captured.get("capture_status")
+        if capture_status is None:
+            capture_status = "failed"
+            reason = "runtime_error" if outcome.runtime is None else "outcome_not_captured"
+            self._record_laya_capture_observation("failed", reason)
         return {
             "success": decision.success,
             "decision": {
@@ -3130,6 +3145,8 @@ class LocalAIApp:
             },
             "baseline": baseline,
             "runtime": vars(outcome.runtime) if outcome.runtime is not None else None,
+            "capture_status": capture_status,
+            "capture_error_type": captured.get("capture_error_type"),
             "candidate": {key: captured[key] for key in ("candidate_id", "duplicate", "status", "runtime_output_recorded") if key in captured},
         }
 

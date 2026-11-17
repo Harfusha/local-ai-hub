@@ -177,13 +177,13 @@ def _ensure_file_refs_revision_tracking(con: sqlite3.Connection) -> None:
 CARD_SCHEMA = {
     "type": "object",
     "properties": {
-        "purpose": {"type": "string"},
-        "symbols": {"type": "array", "items": {"type": "string"}},
-        "dependencies": {"type": "array", "items": {"type": "string"}},
-        "side_effects": {"type": "array", "items": {"type": "string"}},
-        "risks": {"type": "array", "items": {"type": "string"}},
-        "tests": {"type": "array", "items": {"type": "string"}},
-        "keywords": {"type": "array", "items": {"type": "string"}},
+        "purpose": {"type": "string", "maxLength": 240},
+        "symbols": {"type": "array", "maxItems": 3, "items": {"type": "string", "maxLength": 240}},
+        "dependencies": {"type": "array", "maxItems": 3, "items": {"type": "string", "maxLength": 240}},
+        "side_effects": {"type": "array", "maxItems": 3, "items": {"type": "string", "maxLength": 240}},
+        "risks": {"type": "array", "maxItems": 3, "items": {"type": "string", "maxLength": 240}},
+        "tests": {"type": "array", "maxItems": 3, "items": {"type": "string", "maxLength": 240}},
+        "keywords": {"type": "array", "maxItems": 3, "items": {"type": "string", "maxLength": 80}},
     },
     "required": ["purpose", "symbols", "dependencies", "side_effects", "risks", "tests", "keywords"],
 }
@@ -945,9 +945,21 @@ class ProjectPreprocessor:
     @staticmethod
     def _valid_enriched_file_card(data: Any) -> bool:
         fields = ("symbols", "dependencies", "side_effects", "risks", "tests", "keywords")
-        return (isinstance(data, dict) and isinstance(data.get("purpose"), str) and bool(data["purpose"].strip())
-                and all(isinstance(data.get(key), list) and all(isinstance(item, str) for item in data[key])
-                        for key in fields))
+        return (
+            isinstance(data, dict)
+            and isinstance(data.get("purpose"), str)
+            and 0 < len(data["purpose"].strip()) <= 240
+            and all(
+                isinstance(data.get(key), list)
+                and len(data[key]) <= 3
+                and all(
+                    isinstance(item, str)
+                    and len(item) <= (80 if key == "keywords" else 240)
+                    for item in data[key]
+                )
+                for key in fields
+            )
+        )
 
     def _scheduler_background_allowed(self) -> bool:
         if self._exclusive_mode_active():
@@ -963,13 +975,16 @@ class ProjectPreprocessor:
             """SELECT root,status FROM projects
                WHERE paused=0 AND phase<>?
                  AND (status='running' OR (status IN ('queued','waiting','error') AND retry_after<=?))
-               ORDER BY CASE WHEN updated_at<=? THEN 0 ELSE 1 END,
+               ORDER BY CASE WHEN status IN ('queued','waiting') AND last_requested_at>=? THEN 0 ELSE 1 END,
+                        CASE WHEN status IN ('queued','waiting') AND last_requested_at>=? THEN last_requested_at END DESC,
+                        CASE WHEN updated_at<=? THEN 0 ELSE 1 END,
                         CASE WHEN updated_at<=? AND last_requested_at>=? THEN 0 ELSE 1 END,
+                        CASE WHEN updated_at<=? AND last_requested_at>=? THEN last_requested_at END DESC,
                         CASE WHEN updated_at<=? THEN updated_at END ASC,
                         CASE WHEN root=? THEN 0 ELSE 1 END,
                         force_refresh DESC,last_requested_at DESC,updated_at DESC""",
-            (self.PHASES[-1], now, fairness_cutoff, fairness_cutoff, fairness_cutoff,
-             fairness_cutoff, preferred_root or ""),
+            (self.PHASES[-1], now, fairness_cutoff, fairness_cutoff, fairness_cutoff, fairness_cutoff, fairness_cutoff,
+             fairness_cutoff, fairness_cutoff, fairness_cutoff, preferred_root or ""),
         ).fetchall()
         guard = getattr(self, "_step_locks_guard", None)
         with guard if guard is not None else nullcontext():
@@ -1815,7 +1830,7 @@ class ProjectPreprocessor:
             return self.status()
         resolved = self._root(root)
         def _resume_tx(con: sqlite3.Connection) -> None:
-            con.execute("UPDATE projects SET paused=0,status='queued',retry_after=0,next_check_at=?,updated_at=?,last_requested_at=? WHERE root=?", (time.time(),time.time(),time.time(),resolved))
+            con.execute("UPDATE projects SET paused=0,status='queued',retry_after=0,next_check_at=?,last_requested_at=? WHERE root=?", (time.time(),time.time(),resolved))
             self._rebalance_processing_slots(con, preferred_root=resolved)
         self._write_retry(_resume_tx)
         self._wake_all(); return self.status(resolved)
@@ -2716,7 +2731,11 @@ class ProjectPreprocessor:
     def _scheduler_order(now: float) -> tuple[str, tuple[float, ...]]:
         """Share bounded age, activity, and phase ordering across workers."""
         return (
-            """CASE WHEN updated_at<=? THEN 0 ELSE 1 END,
+            """CASE WHEN status='queued' AND last_requested_at>=? THEN 0 ELSE 1 END,
+               CASE WHEN status='queued' AND last_requested_at>=? THEN last_requested_at END DESC,
+               CASE WHEN updated_at<=? THEN 0 ELSE 1 END,
+               CASE WHEN updated_at<=? AND last_requested_at>=? THEN 0 ELSE 1 END,
+               CASE WHEN updated_at<=? AND last_requested_at>=? THEN last_requested_at END DESC,
                CASE WHEN last_requested_at>=? THEN 0 ELSE 1 END,
                CASE phase
                    WHEN 'inventory' THEN 0 WHEN 'hash' THEN 1
@@ -2732,7 +2751,9 @@ class ProjectPreprocessor:
                updated_at-CASE WHEN last_requested_at>=? THEN 60 ELSE 0 END ASC,
                CASE status WHEN 'queued' THEN 0 WHEN 'running' THEN 1 ELSE 2 END,
                root ASC""",
-            (now - 300.0, now - 86_400.0, now - 60.0, now - 300.0),
+            (now - 300.0, now - 300.0, now - 300.0, now - 300.0,
+             now - 300.0, now - 300.0, now - 300.0, now - 86_400.0,
+             now - 60.0, now - 300.0),
         )
 
     def _next_cpu_project(self) -> sqlite3.Row | None:
@@ -3926,11 +3947,33 @@ class ProjectPreprocessor:
                 ).fetchall()
                 seen = {str(item["path"]) for item in preferred}
                 pending = (list(preferred) + [item for item in pending if str(item["path"]) not in seen])[:limit]
-            if not pending:
-                force = bool(row.get("force_refresh"))
-                # Older test/migrating databases may not yet contain the
-                # inventory revision table. Fall back to a full audit rather
-                # than crashing or assuming a completed RAG inventory.
+        reindex_selector = getattr(self.rag, "paths_needing_reindex", None)
+        if callable(reindex_selector):
+            reindex_paths = reindex_selector(root, workspace=workspace, limit=128)
+            if reindex_paths is None:
+                reindex_paths = []
+            if (not isinstance(reindex_paths, list)
+                    or any(type(path) is not str or not path for path in reindex_paths)):
+                raise RuntimeError("RAG stale-embedding path check returned an invalid result")
+            already_pending = {str(item["path"]) for item in pending}
+            reindex_paths = [path for path in reindex_paths if path not in already_pending][:limit]
+            if reindex_paths:
+                placeholders = ",".join("?" for _ in reindex_paths)
+                with self._db_lock, closing(self._connect()) as con:
+                    rows = con.execute(
+                        f"SELECT path,content_hash FROM file_refs WHERE root=? AND needs_hash=0 "
+                        f"AND content_hash<>'' AND path IN ({placeholders})",
+                        (root, *reindex_paths),
+                    ).fetchall()
+                rows_by_path = {str(item["path"]): item for item in rows}
+                reindex_pending = [rows_by_path[path] for path in reindex_paths if path in rows_by_path]
+                pending = (reindex_pending + list(pending))[:limit]
+        if not pending:
+            force = bool(row.get("force_refresh"))
+            # Older test/migrating databases may not yet contain the
+            # inventory revision table. Fall back to a full audit rather
+            # than crashing or assuming a completed RAG inventory.
+            with self._db_lock, closing(self._connect()) as con:
                 has_revision_table = con.execute(
                     "SELECT 1 FROM sqlite_master WHERE type='table' AND name='file_refs_revision'"
                 ).fetchone() is not None
@@ -3941,9 +3984,6 @@ class ProjectPreprocessor:
                 curr_rev = int(rev_row[0]) if rev_row is not None else 0
                 count_row = con.execute("SELECT count(*) FROM file_refs WHERE root=?", (root,)).fetchone()
                 curr_count = int(count_row[0]) if count_row is not None else 0
-                # Include real semantic-index state in the idle identity.
-                # file_refs revision alone cannot notice an externally reset
-                # RAG DB or a lost chunk table during the audit cadence.
                 rag_snapshot: tuple[int, int, int, int] | None = None
                 stats_provider = getattr(self.rag, "workspace_stats", None)
                 if callable(stats_provider):
@@ -3958,8 +3998,6 @@ class ProjectPreprocessor:
                                 int(counts.get("index_generation", 0)),
                             )
                     except (OSError, ValueError, TypeError, sqlite3.Error):
-                        # A broken/unavailable semantic index must not be treated
-                        # as an unchanged, fully audited index.
                         rag_snapshot = None
                 inventory_digest = (curr_rev, curr_count, rag_snapshot)
                 cadence = float(self.cfg.get("rag_idle_audit_cadence_seconds", 300.0))
