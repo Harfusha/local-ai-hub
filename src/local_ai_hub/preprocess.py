@@ -25,7 +25,7 @@ PREPROCESS_ANALYZER_VERSION = "6.0.0"
 FILE_CARD_PROMPT_VERSION = "file-card-v2"
 _PROJECT_TOUCH_WRITE_TIMEOUT_SECONDS = 0.5
 _LEXICAL_WRITE_BATCH_SIZE = 32
-_MISSING_REF_WRITE_BATCH_SIZE = 16
+_MISSING_REF_WRITE_BATCH_SIZE = 8
 from .cache import stable_hash
 from .project_config import (
     ProjectPathPolicy,

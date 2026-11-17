@@ -270,6 +270,7 @@ def test_missing_reference_cleanup_commits_bounded_transactions(tmp_path, monkey
     )
 
     batch_size = preprocess._MISSING_REF_WRITE_BATCH_SIZE
+    assert transaction_count >= 5
     assert transaction_count == (len(existence) + batch_size - 1) // batch_size
     with closing(connect()) as con:
         assert [tuple(row) for row in con.execute("SELECT path FROM file_refs WHERE root=? AND needs_hash=0", (root,))] == [("changed.py",)]
