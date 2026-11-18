@@ -8795,6 +8795,16 @@ class LocalAIServices:
             parsed_files = det_diff.get("files") if isinstance(det_diff, dict) else None
             if isinstance(parsed_files, list) and all(isinstance(path, str) and path for path in parsed_files):
                 diff["changed_files"] = parsed_files
+            if not isinstance(parsed_files, list) or not parsed_files:
+                return {
+                    "success": False,
+                    "error": "Supplied diff has no parseable file entries; send a unified diff.",
+                    "terminal": True,
+                    "retryable": False,
+                    "invalid_diff": True,
+                    "changed_files": [],
+                    "review_scope_complete": False,
+                }
         instructions = str(args.get("instructions", "Review this git diff for actionable defects, regressions, security/concurrency issues and missing tests. Cite changed files/hunks."))
         det_hint = ""
         if det_diff:
