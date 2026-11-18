@@ -176,8 +176,7 @@ def test_single_source_of_truth_propagation(repo_env):
     compiler = ContextCompiler(state_store, task_store=task_store)
     ctx_req = ContextRequest(
         task_id=actual_tid,
-        root=str(root),
-        token_budget=4000,
+        root=str(root), token_budget=4000,
     )
     compiled = compiler.compile(ctx_req)
     assert compiled is not None
@@ -217,8 +216,7 @@ def test_contract_reconciliation_single_source_of_truth(repo_env):
         GoalContract(goal="Build storage", acceptance_criteria=("Supports save and read",)),
         ScopeContext(repository_id=str(root)),
         actor="agent",
-        repo_root=str(root),
-        task_id="agent_task_200",
+        repo_root=str(root), task_id="agent_task_200",
     )
     binding = binding_mgr.bind_task(
         task_id=task.task_id,

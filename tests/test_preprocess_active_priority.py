@@ -46,6 +46,25 @@ def test_recent_repository_wins_next_step(scheduler):
     assert instance._next_gpu_project()["root"] == "active"
 
 
+def test_cpu_and_gpu_selection_rebalance_at_state_priority(scheduler):
+    instance, connect = scheduler
+    add(connect, "active", "running", 9999, 9999)
+    priorities = []
+
+    def write_retry(operation, *, actor_priority=1, **_kwargs):
+        priorities.append(actor_priority)
+        with closing(connect()) as con:
+            result = operation(con)
+            con.commit()
+            return result
+
+    instance._write_retry = write_retry
+
+    assert instance._next_cpu_project()["root"] == "active"
+    assert instance._next_gpu_project()["root"] == "active"
+    assert priorities == [0, 0]
+
+
 def test_waiting_project_outside_admitted_slots_cannot_run_on_gpu(scheduler):
     instance, connect = scheduler
     instance.max_preprocessing_projects = 1
@@ -75,7 +94,7 @@ def test_reactivation_preserves_stale_priority_for_admission(scheduler):
     add(connect, "stale", "queued", 9200, 0)
     add(connect, "reactivated", "waiting", 9500, 0)
 
-    def write_retry(operation):
+    def write_retry(operation, **_kwargs):
         with closing(connect()) as con:
             result = operation(con)
             con.commit()
@@ -103,7 +122,7 @@ def test_recent_resume_reclaims_queued_slot_ahead_of_unowned_stale_work(schedule
     add(connect, "stale-waiting", "waiting", 9000, 9999)
     add(connect, "reactivated", "waiting", 9999, 0)
 
-    def write_retry(operation):
+    def write_retry(operation, **_kwargs):
         with closing(connect()) as con:
             result = operation(con)
             con.commit()
@@ -139,7 +158,7 @@ def test_cpu_worker_survives_locked_queue_database(scheduler, monkeypatch):
 
     instance._cpu_wakeup = StopOnWait()
 
-    def locked_queue():
+    def locked_queue(**_kwargs):
         raise sqlite3.OperationalError("database is locked")
 
     instance._next_cpu_project = locked_queue
@@ -171,7 +190,7 @@ def test_gpu_worker_survives_locked_queue_database(scheduler):
 
     instance._gpu_wakeup = StopOnWait()
 
-    def locked_queue():
+    def locked_queue(**_kwargs):
         raise sqlite3.OperationalError("database is locked")
 
     instance._next_gpu_project = locked_queue

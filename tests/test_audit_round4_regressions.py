@@ -370,8 +370,7 @@ def test_t4_10_check_drift_reuses_computed_candidates(tmp_path: Path, monkeypatc
 
     guard = AgentConsistencyGuard()
     request = ConsistencyRequest(
-        root=str(tmp_path),
-        task_id="t1",
+        root=str(tmp_path), task_id="t1",
         query="edit users",
         changed_paths=("src/users.py",),
     )

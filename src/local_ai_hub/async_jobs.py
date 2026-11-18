@@ -1837,6 +1837,8 @@ class AsyncJobManager:
             return self._expired_job_response(
                 job_id, state, str(row["error"] or ""), str(row["result_json"] or ""),
             )
+        if state == "cancelled":
+            return {"success": True, "job_id": job_id, "state": state, "cancel_requested": True, "terminal": True, "retryable": False}
         if row["state"] != "done":
             result = {"success": False, "job_id": job_id, "state": state, "error": str(row["error"] or "async job is not complete"), "outcome_unknown": state == "outcome_unknown", "in_progress": state in {"queued", "running"}, "terminal": state in self.TERMINAL_STATES, "retryable": state in {"queued", "running"}}
             if state == "outcome_unknown":

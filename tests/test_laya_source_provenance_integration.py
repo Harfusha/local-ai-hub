@@ -644,8 +644,9 @@ def test_laya_decision_queue_does_not_duplicate_capture_observation(tmp_path):
     app.telemetry = SimpleNamespace(record_stage=lambda **event: observations.append(event))
     app.logger = SimpleNamespace(warning=lambda *_args, **_kwargs: None)
 
-    def evaluate_decision(*_args, **_kwargs):
-        app._record_laya_capture_observation("captured", "runtime_outcome")
+    def evaluate_decision(*_args, _record_capture_observation=True, **_kwargs):
+        if _record_capture_observation:
+            app._record_laya_capture_observation("captured", "runtime_outcome")
         return {"capture_status": "captured", "candidate": {"candidate_id": "candidate-1"}}
 
     app.evaluate_laya_decision = evaluate_decision
@@ -657,3 +658,27 @@ def test_laya_decision_queue_does_not_duplicate_capture_observation(tmp_path):
     app._drain_laya_capture_queue()
 
     assert [event["stage"] for event in observations] == ["captured"]
+
+
+def test_laya_decision_queue_records_missing_capture_once(tmp_path):
+    app = LocalAIApp.__new__(LocalAIApp)
+    observations = []
+    app.telemetry = SimpleNamespace(record_stage=lambda **event: observations.append(event))
+    app.logger = SimpleNamespace(warning=lambda *_args, **_kwargs: None)
+    app.evaluate_laya_decision = lambda *_args, **_kwargs: {
+        "capture_status": "failed",
+        "candidate": {},
+    }
+    app._laya_capture_lock = threading.Lock()
+    app._laya_capture_queue = [({"action": "evaluate_decision"}, str(tmp_path), {})]
+    app._laya_capture_draining = True
+    app._shutdown = threading.Event()
+
+    app._drain_laya_capture_queue()
+
+    assert observations == [{
+        "action": "laya_capture",
+        "stage": "failed",
+        "bypass_reason": "outcome_not_captured",
+        "success": False,
+    }]

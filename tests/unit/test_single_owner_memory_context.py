@@ -47,7 +47,7 @@ def test_context_sql_preserves_all_declared_namespaces(tmp_path):
 
 
 def test_repository_context_has_no_physical_root_identity_fallback(tmp_path):
-    request = ContextRequest(task_id="task-one", root=str(tmp_path), coordination_id="repository-one")
+    request = ContextRequest(task_id="task-one", root=str(tmp_path), root=str(tmp_path), coordination_id="repository-one")
     correct = SimpleNamespace(scope=AgentScope.REPOSITORY, provenance={"repository_id": "repository-one"})
     wrong = SimpleNamespace(scope=AgentScope.REPOSITORY, provenance={"repository_id": "other", "root": str(tmp_path)})
     missing = SimpleNamespace(scope=AgentScope.REPOSITORY, provenance={"root": str(tmp_path)})

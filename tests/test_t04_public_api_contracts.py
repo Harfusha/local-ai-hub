@@ -331,6 +331,7 @@ def test_semantic_diff_action_uses_public_call_graph_diff_route(monkeypatch, tmp
     result = mcp_server.local_ai_repo(
         action="semantic_diff",
         root=str(root),
+        root=str(root),
         diff="diff --git a/a.cs b/a.cs",
     )
 

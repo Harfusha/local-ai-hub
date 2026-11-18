@@ -887,13 +887,17 @@ class LocalAIServices:
         """Queue one typed shadow decision only when real task and evidence scope exists."""
         observer = getattr(self, "laya_decision_observer", None)
         task_id = args.get("task_id") if isinstance(args, Mapping) else None
+        if not (isinstance(task_id, str) and task_id.strip()) and isinstance(args, Mapping):
+            session_id = args.get("session_id")
+            if isinstance(session_id, str) and session_id.strip():
+                from .laya_candidates import _IDENT
+
+                if _IDENT.fullmatch(session_id):
+                    task_id = f"adhoc_{session_id}"
         evidence_ids = args.get("evidence_ids") if isinstance(args, Mapping) else None
         if not (isinstance(task_id, str) and task_id.strip()):
-            session_id = args.get("session_id") if isinstance(args, Mapping) else None
-            clean_session = session_id.strip() if isinstance(session_id, str) else ""
-            if not clean_session:
-                return False
-            task_id = f"adhoc_{clean_session}"
+            return False
+        task_id = task_id.strip()
         if (type(evidence_ids) not in (list, tuple) or not evidence_ids) and isinstance(args, Mapping):
             single_evidence = args.get("evidence_id")
             if isinstance(single_evidence, str) and single_evidence.strip():
@@ -1287,7 +1291,7 @@ class LocalAIServices:
             return []
         models = self.config.get("models", {})
         mapping = {
-            models.get("heavy_code"): [models.get("fast_code"), models.get("general")],
+            models.get("heavy_code"): [models.get("reasoning"), models.get("fast_code"), models.get("general")],
             models.get("reasoning"): [models.get("heavy_code"), models.get("fast_code")],
             models.get("fast_code"): [models.get("general")],
             models.get("general"): [models.get("fast_code")],
@@ -2510,7 +2514,7 @@ class LocalAIServices:
             return {"success": False, "error": "instructions must be a string"}
         payload = {key: value for key, value in args.items() if key not in {"code", "instructions"}}
         payload["task_type"] = "review"
-        payload["task"] = instructions + "\nFor each finding, cite the file path, post-image line number, and the exact full source line as citation.quote."
+        payload["task"] = instructions + "\nFor each finding, cite a supplied file path and a verifiable post-image line. Include citation.quote only when the supplied material contains the exact full source line; otherwise state the evidence limitation without inventing a location."
         payload["context"] = code
         payload["operation"] = str(args.get("operation", "review"))
         payload.setdefault("max_tokens", 4096)
@@ -8419,7 +8423,7 @@ class LocalAIServices:
             if generator_model:
                 decision_state["generator_model"] = generator_model
             self._queue_laya_shadow_observation(
-                {"task_id": args.get("task_id"), "evidence_ids": packed_evidence_ids},
+                {"task_id": args.get("task_id"), "session_id": args.get("session_id"), "evidence_ids": packed_evidence_ids},
                 root=root,
                 category="context_budget",
                 options=["compact", "standard", "expanded"],
@@ -8639,7 +8643,7 @@ class LocalAIServices:
         if generator_model:
             state["generator_model"] = generator_model
         self._queue_laya_shadow_observation(
-            {"task_id": args.get("task_id"), "evidence_ids": evidence_ids},
+            {"task_id": args.get("task_id"), "session_id": args.get("session_id"), "evidence_ids": evidence_ids},
             root=str(args.get("root") or ""),
             category="model_route",
             options=[option for option in ("fast", "smart", "generic") if option in route_options],
@@ -9314,6 +9318,7 @@ class LocalAIServices:
         suffix = str(args.get("suffix", ""))
         max_tokens = min(256, max(8, int(args.get("max_tokens", 80))))
         model = str(self.config.get("models", {}).get("fast_code", "qwen2.5-coder:3b"))
+        request_timeout = max(6.0, min(30.0, max_tokens / 4))
 
         # Standard Qwen FIM prompt template
         prompt = f"<|fim_prefix|>{prefix[-3000:]}<|fim_suffix|>{suffix[:1500]}<|fim_middle|>"
@@ -9321,6 +9326,7 @@ class LocalAIServices:
             "model": model,
             "prompt": prompt,
             "raw": True,
+            "stream": False,
             "options": {
                 "num_predict": max_tokens,
                 "temperature": 0.0,
@@ -9334,9 +9340,9 @@ class LocalAIServices:
                 if trace_observer is not None:
                     trace_observer.model_request(payload)
                 if cancel_event is not None:
-                    result = self.runtime.request_interruptible("/api/generate", payload, should_stop=cancel_event.is_set, timeout=6.0)
+                    result = self.runtime.request_interruptible("/api/generate", payload, should_stop=cancel_event.is_set, timeout=request_timeout)
                 else:
-                    result = self.runtime.request("/api/generate", payload, timeout=6.0)
+                    result = self.runtime.request("/api/generate", payload, timeout=request_timeout)
                 if trace_observer is not None and isinstance(result, dict):
                     output = result.get("response")
                     if isinstance(output, str):

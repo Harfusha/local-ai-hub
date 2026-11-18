@@ -111,10 +111,10 @@ def test_memory_cascade_delete_and_compact_linking(tmp_path: Path):
         key="key2",
         value="val2",
     ))
-    store.record_relation(rec1.record_id, "relates_to", rec2.record_id)
+    store.record_relation(rec1.record_id, "relates_to", rec2.record_id, root=str(tmp_path))
 
     # Check relation exists
-    relations = store.find_relations(source_entity=rec1.record_id)
+    relations = store.find_relations(source_entity=rec1.record_id, root=str(tmp_path))
     assert len(relations) >= 1
 
     # Delete rec1 -> relation must be cleaned
@@ -124,7 +124,7 @@ def test_memory_cascade_delete_and_compact_linking(tmp_path: Path):
         scope_id="session-cascade",
     )
     assert deleted is True
-    relations_after = store.find_relations(source_entity=rec1.record_id)
+    relations_after = store.find_relations(source_entity=rec1.record_id, root=str(tmp_path))
     assert len(relations_after) == 0
 
 

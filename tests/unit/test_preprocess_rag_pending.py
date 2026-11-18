@@ -30,6 +30,7 @@ def test_rag_pending_batch_does_not_enumerate_entire_inventory(tmp_path):
     pre._connect = connect
     pre._yield = lambda: False
     pre.cfg = {"rag_files_per_step": 1}
+    pre.rag = type("EmptyRag", (), {"paths_needing_reindex": lambda *_args, **_kwargs: []})()
     pre.deterministic = StopAfterSelection()
 
     with pytest.raises(RuntimeError, match="selected pending file"):
@@ -337,3 +338,41 @@ def test_rag_idle_detects_lost_chunk_inventory_inside_audit_cadence(tmp_path):
     assert rag.prune_calls == 1  # Missing index triggers rag_hash invalidation instead of false DONE.
     with closing(sqlite3.connect(db)) as con:
         assert con.execute("SELECT rag_hash FROM file_refs").fetchone()[0] is None
+
+
+def test_rag_marks_policy_excluded_paths_complete_to_avoid_retry_loop(tmp_path):
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / "excluded.py").write_text("excluded", encoding="utf-8")
+    db = tmp_path / "index.sqlite"
+    with closing(sqlite3.connect(db)) as con:
+        con.execute(
+            "CREATE TABLE file_refs(root TEXT, path TEXT, content_hash TEXT, needs_hash INTEGER, "
+            "rag_hash TEXT, last_accessed_at REAL, size INTEGER, updated_at REAL)"
+        )
+        con.execute("CREATE TABLE source_index(root TEXT, path TEXT, content_hash TEXT, text TEXT)")
+        con.execute(
+            "INSERT INTO file_refs VALUES(?, 'excluded.py', 'hash', 0, NULL, 0, 8, 0)",
+            (str(root),),
+        )
+        con.commit()
+
+    def connect():
+        con = sqlite3.connect(db)
+        con.row_factory = sqlite3.Row
+        return con
+
+    class Rag:
+        def index_paths_step(self, _root, *, workspace, paths, **_kwargs):
+            return {"success": True, "processed_paths": [], "policy_deleted_paths": paths}
+
+    pre = ProjectPreprocessor.__new__(ProjectPreprocessor)
+    pre._db_lock, pre._stats_lock = threading.RLock(), threading.RLock()
+    pre._stats = {"rag_steps": 0}
+    pre._connect, pre._yield = connect, lambda: False
+    pre._record_progress = lambda *_args: None
+    pre.cfg, pre.deterministic, pre.rag = {"rag_files_per_step": 1}, None, Rag()
+
+    assert pre._step_rag({"root": str(root), "workspace": "fixture"})
+    with closing(connect()) as con:
+        assert con.execute("SELECT rag_hash FROM file_refs").fetchone()[0] == "hash"

@@ -64,8 +64,7 @@ def test_delete_preserves_primary_fts_error_when_rollback_also_fails(
                 record.record_id,
                 scope=AgentScope.REPOSITORY,
                 scope_id=str(root),
-                root=str(root),
-                repository_id=str(root),
+                root=str(root), repository_id=str(root),
             )
 
     rollback_warnings = [

@@ -313,9 +313,11 @@ Reproduce with `python tools/surface_inventory.py --check --task-id task_eefe699
 | MCP action local_ai_coord | claim | confirmed | src/local_ai_hub/generator.py | op-d75292991551 |
 | MCP action local_ai_coord | context_compile | confirmed | src/local_ai_hub/generator.py | op-145b6332056b |
 | MCP action local_ai_coord | curate_dataset | confirmed | src/local_ai_hub/generator.py | op-26aa09a9ccbf |
+| MCP action local_ai_coord | gpu_capacity_lease_release | confirmed | src/local_ai_hub/generator.py | op-9cf2b40ff94a |
 | MCP action local_ai_coord | gpu_reservation_release | confirmed | src/local_ai_hub/generator.py | op-1fdbae158826 |
 | MCP action local_ai_coord | gpu_reservation_release_authorized | confirmed | src/local_ai_hub/generator.py | op-cf900fe6919d |
 | MCP action local_ai_coord | gpu_reservation_status | confirmed | src/local_ai_hub/generator.py | op-d5a8988b2135 |
+| MCP action local_ai_coord | gpu_scheduler_capacity_lease_release | confirmed | src/local_ai_hub/generator.py | op-5c57e519b527 |
 | MCP action local_ai_coord | incident_decision | confirmed | src/local_ai_hub/generator.py | op-0d8149da9907 |
 | MCP action local_ai_coord | leases | confirmed | src/local_ai_hub/generator.py | op-10fac56595f4 |
 | MCP action local_ai_coord | memory_delete | confirmed | src/local_ai_hub/generator.py | op-ffe070fa4b4c |

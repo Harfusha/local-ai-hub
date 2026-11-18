@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import concurrent.futures
 import logging
+from itertools import count
 from pathlib import Path
 import queue
 import sqlite3
@@ -41,7 +42,8 @@ class PreprocessWriteActor:
         self.connection_timeout_seconds = (
             timeout_seconds if connection_timeout_seconds is None else connection_timeout_seconds
         )
-        self._queue: queue.Queue[Any] = queue.Queue()
+        self._queue: queue.PriorityQueue[tuple[int, int, Any]] = queue.PriorityQueue()
+        self._sequence = count()
         self._thread: threading.Thread | None = None
         self._running = False
         self._lock = threading.Lock()
@@ -63,7 +65,7 @@ class PreprocessWriteActor:
             if not self._running:
                 return
             self._running = False
-            self._queue.put(_SENTINEL)
+            self._queue.put((2, next(self._sequence), _SENTINEL))
             thread = self._thread
 
         if thread and thread.is_alive():
@@ -81,8 +83,11 @@ class PreprocessWriteActor:
         operation: Callable[[sqlite3.Connection], Any],
         *,
         timeout: float | None = None,
+        priority: int = 1,
     ) -> Any:
         """Submit a write operation to the actor and return its result."""
+        if type(priority) is not int or priority not in {0, 1}:
+            raise ValueError("write actor priority must be 0 (project state) or 1 (background)")
         if not self.is_alive or self.is_current_thread():
             # Fallback: execute synchronously directly on connection
             con = connect_sqlite(
@@ -97,7 +102,7 @@ class PreprocessWriteActor:
                 con.close()
 
         fut: concurrent.futures.Future[Any] = concurrent.futures.Future()
-        self._queue.put((operation, fut))
+        self._queue.put((priority, next(self._sequence), (operation, fut)))
         wait_time = timeout if timeout is not None else self.timeout_seconds
         try:
             return fut.result(timeout=wait_time)
@@ -124,18 +129,19 @@ class PreprocessWriteActor:
 
             while True:
                 item = self._queue.get()
-                if item is _SENTINEL:
+                if item[2] is _SENTINEL:
                     self._queue.task_done()
                     break
 
-                batch = [item]
+                batch = [item[2]]
                 while len(batch) < self.max_batch_size:
                     try:
                         next_item = self._queue.get_nowait()
-                        if next_item is _SENTINEL:
-                            self._queue.put(_SENTINEL)
+                        if next_item[2] is _SENTINEL:
+                            self._queue.task_done()
+                            self._queue.put(next_item)
                             break
-                        batch.append(next_item)
+                        batch.append(next_item[2])
                     except queue.Empty:
                         break
 

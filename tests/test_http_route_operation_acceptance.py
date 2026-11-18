@@ -53,8 +53,7 @@ def running_http_hub(tmp_path):
             session_id="session:http-route-acceptance",
         ),
         task_id="task-31",
-        repo_root=str(tmp_path),
-    )
+        repo_root=str(tmp_path), )
     previous_app = http_server.APP
     http_server.APP = app
     server = http_server.LocalAIHTTPServer(("127.0.0.1", 0), http_server.Handler)
@@ -804,8 +803,7 @@ def test_http_post_agent_state_tasks_captures_laya_candidate_without_echoing_sta
     assert denied_body["error_code"] == "detailed_diagnostics_disabled"
     assert app.laya_candidates.handle(
         {"action": "list", "task_id": "task-31"},
-        root=str(tmp_path),
-        task_store=app.agent_tasks,
+        root=str(tmp_path), task_store=app.agent_tasks,
     )["count"] == 0
 
     toggle_request = urllib_request.Request(
@@ -835,8 +833,7 @@ def test_http_post_agent_state_tasks_captures_laya_candidate_without_echoing_sta
     assert candidate_state not in json.dumps(body)
     assert app.laya_candidates.handle(
         {"action": "list", "task_id": "task-31"},
-        root=str(tmp_path),
-        task_store=app.agent_tasks,
+        root=str(tmp_path), task_store=app.agent_tasks,
     )["count"] == 0
 
 

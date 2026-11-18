@@ -35,9 +35,14 @@ def candidate_env(tmp_path, monkeypatch):
     state_store = AgentStateStore(state / "agent_state.sqlite", enabled=True)
     task = SimpleNamespace(
         task_id="task-1",
+        is_stale=False,
         context=SimpleNamespace(session_id="session-1"),
     )
-    task_store = SimpleNamespace(list_tasks=lambda **_kwargs: [task], state_store=state_store)
+    task_store = SimpleNamespace(
+        get=lambda task_id: task if task_id == task.task_id else None,
+        list_tasks=lambda **_kwargs: [task],
+        state_store=state_store,
+    )
     monkeypatch.setattr(candidates_module, "_task_matches_scope", lambda *_args: True)
     return repo, state, task_store, LayaCandidateStore(state)
 
@@ -1465,7 +1470,8 @@ def test_candidate_list_rejects_invalid_page_limits_and_cursors(candidate_env):
 def test_candidate_list_cursor_cannot_cross_task_filter(candidate_env):
     repo, _state, task_store, store = candidate_env
     first_task = task_store.list_tasks()[0]
-    second_task = SimpleNamespace(task_id="task-2", context=SimpleNamespace(session_id="session-2"))
+    second_task = SimpleNamespace(task_id="task-2", is_stale=False, context=SimpleNamespace(session_id="session-2"))
+    task_store.get = lambda task_id: {"task-1": first_task, "task-2": second_task}.get(task_id)
     task_store.list_tasks = lambda **_kwargs: [first_task, second_task]
 
     first = store.handle(_capture(), root=str(repo), task_store=task_store)
@@ -1485,7 +1491,8 @@ def test_candidate_list_cursor_cannot_cross_task_filter(candidate_env):
 def test_identical_candidate_content_is_distinct_across_task_sessions(candidate_env):
     repo, _state, task_store, store = candidate_env
     first_task = task_store.list_tasks()[0]
-    second_task = SimpleNamespace(task_id="task-2", context=SimpleNamespace(session_id="session-2"))
+    second_task = SimpleNamespace(task_id="task-2", is_stale=False, context=SimpleNamespace(session_id="session-2"))
+    task_store.get = lambda task_id: {"task-1": first_task, "task-2": second_task}.get(task_id)
     task_store.list_tasks = lambda **_kwargs: [first_task, second_task]
 
     first = store.handle(_capture(), root=str(repo), task_store=task_store)
@@ -1556,8 +1563,9 @@ def test_group_and_near_duplicate_safe_splits_keep_test_labels_out_of_train_expo
     repo, _state, _single_task_store, store = candidate_env
     task_specs = [(f"task-{i:03}", f"session-{i:03}") for i in range(100)]
     task_specs.append(("task-100", "session-000"))
-    tasks = [SimpleNamespace(task_id=task, context=SimpleNamespace(session_id=session)) for task, session in task_specs]
+    tasks = [SimpleNamespace(task_id=task, is_stale=False, context=SimpleNamespace(session_id=session)) for task, session in task_specs]
     task_store = SimpleNamespace(
+        get=lambda task_id: next((task for task in tasks if task.task_id == task_id), None),
         list_tasks=lambda **_kwargs: tasks,
         state_store=_single_task_store.state_store,
     )

@@ -118,8 +118,7 @@ def test_audit_failure_rolls_back_budget_and_cache(budget_case, monkeypatch):
 def test_missing_task_does_not_create_budget(budget_case):
     policy, _, root = budget_case
     with pytest.raises(KeyError):
-        policy.increase_task_budget("missing", actor="owner", repo_root=str(root),
-                                    reason="existing only", limits={"max_tokens": 200},
+        policy.increase_task_budget("missing", actor="owner", repo_root=str(root), reason="existing only", limits={"max_tokens": 200},
                                     authorization_actor="local")
     assert not policy.has_budget("missing")
 
@@ -364,8 +363,7 @@ def test_mcp_budget_roundtrip_retains_audit_and_counters(monkeypatch, tmp_path):
         return expected
 
     monkeypatch.setattr(mcp_server.CLIENT._client, "post", post)
-    result = mcp_server.local_ai_coord(action="task_budget_increase", root=str(tmp_path),
-                                      task_id="existing", reason="finish",
+    result = mcp_server.local_ai_coord(action="task_budget_increase", root=str(tmp_path), task_id="existing", reason="finish",
                                       budget={"max_compute_seconds": 20}, max_response_tokens=3200)
     assert result["success"] is True
     for key in ("before", "budget", "audit_event_id"):

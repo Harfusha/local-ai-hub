@@ -218,8 +218,7 @@ def test_mcp_actions_dispatch_and_compact(monkeypatch, tmp_path, mcp_diagnostics
 
     c_res2 = mcp_mod.local_ai_coord(
         action="memory_record",
-        root=str(tmp_path),
-        scope="repository",
+        root=str(tmp_path), scope="repository",
         key="k",
         value="v",
         ttl_seconds=3600,
@@ -237,8 +236,7 @@ def test_mcp_actions_dispatch_and_compact(monkeypatch, tmp_path, mcp_diagnostics
 
     c_res2_default = mcp_mod.local_ai_coord(
         action="memory_record",
-        root=str(tmp_path),
-        scope="repository",
+        root=str(tmp_path), scope="repository",
         key="no-expiry-by-default",
         value="v",
     )
@@ -257,8 +255,7 @@ def test_mcp_actions_dispatch_and_compact(monkeypatch, tmp_path, mcp_diagnostics
         scope="task",
         scope_id="task-1",
         task_id="task-1",
-        root=str(tmp_path),
-        clone_id="clone-1",
+        root=str(tmp_path), clone_id="clone-1",
         worktree_id="worktree-1",
         branch="branch-1",
     )
@@ -282,16 +279,14 @@ def test_mcp_actions_dispatch_and_compact(monkeypatch, tmp_path, mcp_diagnostics
     assert "repository_id" not in memory_get_payload
 
     c_res3 = mcp_mod.local_ai_coord(
-        action="incident_decision", root=str(tmp_path),
-        fingerprint={"error_class": "e", "operation_class": "test", "signature_hash": "fixture"},
+        action="incident_decision", root=str(tmp_path), fingerprint={"error_class": "e", "operation_class": "test", "signature_hash": "fixture"},
     )
     assert c_res3["success"] is True
 
     c_res4 = mcp_mod.local_ai_coord(
         action="context_compile",
         task_id="t1",
-        root=str(tmp_path),
-        clone_id="clone-1",
+        root=str(tmp_path), clone_id="clone-1",
         worktree_id="worktree-1",
         branch="branch-1",
         repository_id="repository-1",
@@ -320,8 +315,7 @@ def test_mcp_actions_dispatch_and_compact(monkeypatch, tmp_path, mcp_diagnostics
     r_res1 = mcp_mod.local_ai_coord(
         action="context_compile",
         task_id="t2",
-        root=str(tmp_path),
-        clone_id="clone-2",
+        root=str(tmp_path), clone_id="clone-2",
         worktree_id="worktree-2",
         branch="branch-2",
         repository_id="repository-2",
@@ -349,8 +343,7 @@ def test_mcp_actions_dispatch_and_compact(monkeypatch, tmp_path, mcp_diagnostics
 
     r_res2 = mcp_mod.local_ai_coord(
         action="verify_receipt",
-        root=str(tmp_path),
-        receipt={"task_id": "t1", "criterion": "c1", "passed": False},
+        root=str(tmp_path), receipt={"task_id": "t1", "criterion": "c1", "passed": False},
     )
     assert r_res2["success"] is True, r_res2.get("error")
     assert any(c[0] == "POST" and c[1] == "/api/agent-state/verification" for c in calls)
@@ -437,8 +430,7 @@ def test_mcp_context_compile_keeps_task_context_contract_when_budgeting(monkeypa
     result = mcp_mod.local_ai_coord(
         action="context_compile",
         task_id="task-1",
-        root=str(tmp_path),
-        max_response_tokens=3200,
+        root=str(tmp_path), max_response_tokens=3200,
         response_profile="compact",
     )
 
@@ -524,7 +516,7 @@ def test_http_memory_get_is_scope_and_root_isolated(tmp_path: Path, monkeypatch)
             ),
             task_id=task_id,
             repo_root=str(root),
-        )
+    )
         assert created.context.repository_id == (repo_one_id if root == repo_one else repo_two_id)
         assert created.context.session_id == session_id
         assert app.agent_tasks.get(task_id) is not None

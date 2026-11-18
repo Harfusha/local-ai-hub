@@ -652,7 +652,7 @@ def test_mcp_bounded_error_preserves_pagination_metadata() -> None:
         "status_code": 413,
         "terminal": True,
         "retryable": False,
-        "error": "The requested search page exceeds the configured MCP response budget; reduce limit.",
+        "error": "No complete search result fits the requested response budget; omit max_response_tokens or use a larger cap.",
         "root": "C:/repo",
         "offset": 40,
         "limit": 24,
@@ -669,5 +669,6 @@ def test_mcp_bounded_error_preserves_pagination_metadata() -> None:
     assert payload["has_more"] is True
     assert payload["offset"] == 40
     assert payload["limit"] == 24
+    assert "omit max_response_tokens" in payload["error"]
     assert structured["total_matches"] == 1818
     assert structured["has_more"] is True

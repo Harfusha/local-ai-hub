@@ -438,7 +438,8 @@ _ACTION_SCOPED_FIELDS = {
         "budget": frozenset({"task_budget_increase"}),
         "stream_id": frozenset({"task_sync"}),
         "events": frozenset({"task_sync"}),
-        "limit": frozenset({"task_sync", "pubsub_poll", "negative_knowledge_find", "board_item_list", "plan_list", "memory_find"}),
+        "limit": frozenset({"task_sync", "task_list", "pubsub_poll", "negative_knowledge_find", "board_item_list", "plan_list", "memory_find"}),
+        "offset": frozenset({"task_list"}),
         "after_seq": frozenset({"task_sync", "pubsub_poll"}),
         "receipt": frozenset({"verify_receipt"}),
         "operator_waiver": frozenset({"task_complete"}),
@@ -1471,6 +1472,8 @@ def operation_input_schema(tool: str, action: str, features: Any = None) -> dict
         schema["properties"]["max_tokens"] = {
             "type": "integer", "minimum": 0, "maximum": 100000, "default": 4000,
         }
+    if tool == "local_ai_coord" and action == "task_list":
+        schema["properties"]["limit"]["default"] = 20
     if tool == "local_ai_repo" and action == "reachability_dead_code":
         schema["properties"]["limit"] = {
             "type": "integer", "minimum": 1, "maximum": 200, "default": 100,
@@ -1578,6 +1581,10 @@ def operation_tool_input_schema(tool: str, features: Any = None) -> dict[str, An
         if tool == "local_ai_repo" and action == "reachability_dead_code":
             then.setdefault("properties", {})["limit"] = {
                 "type": "integer", "minimum": 1, "maximum": 200, "default": 100,
+            }
+        if tool == "local_ai_coord" and action == "task_list":
+            then.setdefault("properties", {})["limit"] = {
+                "type": "integer", "minimum": 1, "maximum": MAX_PAGE_SIZE, "default": 20,
             }
         if disallowed:
             then["not"] = {"anyOf": [{"required": [field]} for field in sorted(disallowed)]}
@@ -2100,6 +2107,9 @@ def _cached_operation_parameters_schema(
         }
     if tool == "local_ai_coord":
         properties["max_tokens"].update(minimum=0, maximum=100000)
+        properties["offset"] = {
+            "type": "integer", "minimum": 0, "maximum": MAX_PAGE_WINDOW - 1, "default": 0,
+        }
         properties["scope"]["enum"] = ["", "global", "repository", "clone", "worktree", "branch", "task", "session"]
         properties["scope"]["description"] = (
             "Canonical agent scope. Empty is only an absent filter where that action permits it."
@@ -2512,6 +2522,13 @@ def validate_operation_arguments(
     if tool == "local_ai_repo" and action in {"search", "code_index", "callers", "callees", "implementations"}:
         bounds_error = pagination_bounds_error(
             arguments.get("limit", properties.get("limit", {}).get("default", 24)),
+            arguments.get("offset", properties.get("offset", {}).get("default", 0)),
+        )
+        if bounds_error:
+            return bounds_error
+    if tool == "local_ai_coord" and action == "task_list":
+        bounds_error = pagination_bounds_error(
+            arguments.get("limit", properties.get("limit", {}).get("default", 100)),
             arguments.get("offset", properties.get("offset", {}).get("default", 0)),
         )
         if bounds_error:

@@ -43,6 +43,6 @@ def test_incomplete_source_pair_is_rejected_before_dispatch(tmp_path, monkeypatc
     monkeypatch.setattr(mcp_server.FEATURES, 'repo', True)
     monkeypatch.setattr(mcp_server.FEATURES, 'agent_os', True)
     monkeypatch.setattr(mcp_server, 'CLIENT', SimpleNamespace(post=lambda *a, **kw: calls.append(a)))
-    result = mcp_server.local_ai_repo(action='semantic_diff', root=str(tmp_path), old_code='value = 1')
+    result = mcp_server.local_ai_repo(action='semantic_diff', root=str(tmp_path), root=str(tmp_path), old_code='value = 1')
     assert result['success'] is False
     assert calls == []

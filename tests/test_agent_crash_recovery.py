@@ -801,8 +801,7 @@ def test_committed_compaction_group_survives_restart_before_publish(tmp_path, mo
         scope=AgentScope.TASK,
         scope_id="task-restart-compact",
         task_id="task-restart-compact",
-        root=str(tmp_path),
-        repository_id="repository-crash",
+        root=str(tmp_path), repository_id="repository-crash",
         status=MemoryStatus.SUPERSEDED,
     )
     assert len(active) == 1 and active[0].key.startswith("compacted_fact_")
@@ -895,17 +894,20 @@ def test_committed_memory_relation_survives_restart_before_publish(tmp_path, mon
 
     monkeypatch.setattr(state_store, "_publish", _interrupt_before_publish)
     with pytest.raises(SystemExit, match="after commit"):
-        memory.record_relation("entity-a", "depends_on", "entity-b")
+        memory.record_relation("entity-a", "depends_on", "entity-b", root=str(tmp_path))
 
     restarted_store = AgentStateStore(db_path)
     restarted_memory = MemoryStore(restarted_store)
-    relations = restarted_memory.find_relations(source_entity="entity-a")
+    relations = restarted_memory.find_relations(source_entity="entity-a", root=str(tmp_path))
     assert len(relations) == 1
     assert relations[0]["relation"] == "depends_on"
     assert relations[0]["target_entity"] == "entity-b"
     assert [
         event.kind
-        for event in restarted_store.events("relation:entity-a:entity-b")
+        for event in restarted_store.events(
+            f"relation:{len(str(tmp_path).replace(chr(92), '/').casefold())}:"
+            f"{str(tmp_path).replace(chr(92), '/').casefold()}8:entity-a8:entity-b"
+        )
     ] == ["relation.recorded"]
 
 
@@ -1011,8 +1013,7 @@ def test_committed_memory_quarantine_survives_restart_before_publish(tmp_path, m
     quarantined = restarted_memory.get(
         record.record_id,
         task_id="task-restart-quarantine",
-        root=str(tmp_path),
-        repository_id="repository-crash",
+        root=str(tmp_path), repository_id="repository-crash",
     )
     assert quarantined is not None and quarantined.status is MemoryStatus.QUARANTINED
     events = restarted_store.events(

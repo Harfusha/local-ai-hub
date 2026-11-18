@@ -67,7 +67,7 @@ def test_unconfirmed_consistency_guard_memory_is_management_only(tmp_path) -> No
         store._save_record(record)
 
     context_records = store.find_for_context(
-        root=str(root),  coordination_id=coordination_id, limit=20
+        root=str(root), coordination_id=coordination_id, limit=20
     )
     context_ids = {record.record_id for record in context_records}
     assert legacy_automatic.record_id not in context_ids
@@ -77,7 +77,7 @@ def test_unconfirmed_consistency_guard_memory_is_management_only(tmp_path) -> No
     # Eligibility filtering must happen before LIMIT, even when the excluded
     # automatic record is the newest row.
     bounded_context = store.find_for_context(
-        root=str(root),  coordination_id=coordination_id, limit=1
+        root=str(root), coordination_id=coordination_id, limit=1
     )
     assert [record.record_id for record in bounded_context] == [manual_active.record_id]
 
@@ -86,14 +86,12 @@ def test_unconfirmed_consistency_guard_memory_is_management_only(tmp_path) -> No
     assert store.get(
         legacy_automatic.record_id,
         scope=AgentScope.REPOSITORY,
-        root=str(root),
-        repository_id=coordination_id,
+        root=str(root), repository_id=coordination_id,
     ) == records[0]
     assert store.find(
         scope=AgentScope.REPOSITORY,
         record_id=legacy_automatic.record_id,
-        root=str(root),
-        repository_id=coordination_id,
+        root=str(root), repository_id=coordination_id,
 
         semantic=False,
     ) == [records[0]]

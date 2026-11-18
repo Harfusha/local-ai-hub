@@ -64,7 +64,7 @@ T19_RUNTIME_PARITY_CONTRACT = """Use the installed `tools/list` input/output sch
 
 For durable work, create and checkpoint one Agent OS task contract before edits. On restart, resume the existing task with the same `task_id`. Record memory with scope-appropriate provenance; repository-scoped memory requires provenance tied to the trusted project root.
 
-If Hub is unavailable, make one bounded health/retry attempt. Use native fallback only when an explicit Hub result has `terminal=true` and `retryable=false`; a transport failure without those fields does not authorize fallback. Never poll or repeat an identical operation."""
+If the live MCP schema has no action for the requested operation, skip Hub and use the authorized native tool directly. After calling an advertised Hub action, native fallback requires an explicit result with `terminal=true` and `retryable=false`. A transport failure without those fields does not authorize fallback. Never poll or repeat an identical operation."""
 
 from local_ai_hub.features import FeatureSet
 from local_ai_hub.operation_contracts import (
@@ -226,7 +226,8 @@ def context_economy_contract(cfg: dict[str, Any] | None = None) -> str:
 - Claim savings only with a current `baseline_evidence_id`; report signed `token_savings_delta_est`, including negative values; keep `protocol_tokens_est`, `schema_tokens_est`, and `local_compute_reused_tokens_est` separate.
 - Reject `max_response_tokens` below 128; never raise the request silently.
 - Large task responses: omit `max_response_tokens` unless a cap is needed.
-- For Hub outages, native fallback requires explicit `terminal=true` and `retryable=false`.
+- For a response-budget rejection, reduce the requested envelope or fetch a smaller artifact page/slice; do not replay the same oversized request.
+- If the live MCP schema has no action for an operation, skip Hub and use the authorized native tool directly; no Hub failure or `native_fallback_allowed` signal is needed. After calling an advertised Hub action, native fallback requires explicit `terminal=true` and `retryable=false`.
 - On `outcome_unknown` or `in_progress`, do independent work; never poll or repeat the identical operation.
 - Prefer `response_profile=\"minimal\"`/`\"compact\"`; request only decision-grade fields.
 - Pass a stable `reuse_key` for repeated logical queries. Use `response_profile="delta"` when only changes are needed; unchanged calls report `unchanged=true`. Required task memory may remain inline.
@@ -558,7 +559,7 @@ Direct ownership is the default. Do not delegate audits, inventory, status check
 ## READ-ONLY AUDIT CONTRACT
 
 - Read-only means no Git writes, `git worktree add` or removal, dependency installation, builds/imports, generated artifacts, or other workspace side effects; split validation into a separately owned, explicitly side-effecting task.
-- Before native discovery or validation, retain preceding Hub result with action, absolute root, status, cache/in_progress state, and evidence IDs. For Hub outages, native fallback requires explicit `terminal=true` and `retryable=false`.
+- Before native discovery or validation, retain the preceding Hub result with action, absolute root, status, cache/in_progress state, and evidence IDs. If the live schema has no action for an operation, use the authorized native tool directly; after calling an advertised Hub action, native fallback requires explicit `terminal=true` and `retryable=false`.
 {audit_fallback}
 - Codex controls subagent permissions per task. Native Codex subagents may write only when Codex explicitly enables it, and write work stays in the assigned workspace/worktree. Codex remains integrator.
 - Do not run parallel duplicate commands or scopes. Tool labels are not evidence; preserve exact action, arguments, result, and ownership in the audit record.
@@ -569,7 +570,7 @@ For every non-trivial repository task, use Local AI Hub before broad repository 
 
 {repo_gate_section}
 
-For broader discovery, reuse fresh Hub evidence before native `find`, `rg`, `grep`, recursive glob/tree, or opening more than two files. Exact file and symbol lookups may use their bounded indexed/source routes directly. Native fallback after a Hub failure requires an explicit `terminal=true` and `retryable=false` result. For `outcome_unknown` or `in_progress`, do independent work without polling or repeating the same operation.
+For broader discovery, reuse fresh Hub evidence before native `find`, `rg`, `grep`, recursive glob/tree, or opening more than two files. Exact file and symbol lookups may use their bounded indexed/source routes directly. If the live schema has no action for an operation, use the authorized native tool directly; after calling an advertised Hub action, native fallback requires an explicit `terminal=true` and `retryable=false` result. For `outcome_unknown` or `in_progress`, do independent work without polling or repeating the same operation.
 
 Stop escalating when evidence is sufficient; reuse cached results and bounded evidence instead of widening the search.
 
@@ -589,7 +590,7 @@ Stop escalating when evidence is sufficient; reuse cached results and bounded ev
 - `in_progress=true`: do not duplicate the work.
 - `retryable`/429/503: back off and do independent work.
 - `degraded`/`stale`: verify only the affected slice.
-- For Hub outages, native fallback requires explicit `terminal=true` and `retryable=false`. For `outcome_unknown` or `in_progress`, do independent work without polling or repeating the same operation.
+- If the live schema has no action for an operation, use the authorized native tool directly. After calling an advertised Hub action, native fallback requires explicit `terminal=true` and `retryable=false`. For `outcome_unknown` or `in_progress`, do independent work without polling or repeating the same operation.
 
 Do not fan out overlapping retrieval layers. Stop escalating when evidence is sufficient. Local AI Hub handles its own bounded work; Codex handles native-subagent design and integration.
 {subagents_section}{agent_os_section}
@@ -931,10 +932,19 @@ def generate_global_policy(cfg: dict[str, Any]) -> str:
             + ". Use only live MCP action enums; runtime authorization and quality gates apply."
         )
     prioritization_bullets.append(
-        "> - **Git operations**: The active MCP connection and its advertised schema determine which Hub actions are available; instructions do not create tools. When exposed, `git_status` and `git_diff` inspect state; `synthesize_commit` drafts a message. These actions do not run `git commit` or `git push`. Hub prioritization alone does not require a Hub approval or receipt for Git; apply a Hub-only gate only when explicit project instructions require an exposed action. If that required action is unavailable, report the mismatch and stop the mutation. Dashboard diagnostics affect diagnostic detail only; they do not expose or enable tools."
+        "> - **Git operations**: The active MCP connection and its advertised schema determine which Hub actions are available; instructions do not create tools. When exposed, `git_status` and `git_diff` inspect state; `synthesize_commit` drafts a message. These actions do not run `git commit` or `git push`. Hub prioritization alone does not require a Hub approval or receipt for Git; apply a Hub-only gate only when explicit project instructions require an exposed action. If that required action is unavailable, stop only the gated mutation. Dashboard diagnostics affect diagnostic detail only; they do not expose or enable tools."
+    )
+    prioritization_bullets.append(
+        "> - **Unsupported Hub operations**: If the live MCP schema has no action for the requested operation, do not call Hub or wait for an error; use the authorized native tool directly (for example, `git worktree list`). Hub failure fallback rules apply only after calling an advertised Hub action."
+    )
+    prioritization_bullets.append(
+        "> - **Plan response budgets**: For a large plan, call `plan_board_view` with `plan_id` and put the exact plan task ID in `query`; use that card's `plan_file_revision`. Avoid full-plan responses. On budget rejection, narrow the query or fetch an exact artifact slice; do not replay the oversized request or raise its cap silently."
     )
     prioritization_bullets.append(
         "> - **Tests, builds, lint, execution**: Use the agent host's native command tool for bounded checks in the target repository."
+    )
+    prioritization_bullets.append(
+        "> - **Retry and retrieval discipline**: Stop escalating when evidence is sufficient; reuse fresh cached results and bounded evidence. For `in_progress=true` or `outcome_unknown`, do independent work and never poll or repeat the identical operation. Do not fan out duplicate retrieval layers. For an advertised Hub action that fails, fallback requires explicit `terminal=true` and `retryable=false`."
     )
     if fs.repo:
         prioritization_bullets.append(
@@ -946,8 +956,13 @@ def generate_global_policy(cfg: dict[str, Any]) -> str:
         )
     if fs.tasks and fs.has_any_model():
         task_action_list = list(_available_semantic_task_actions(fs))
-        review_action = next((action for action in ("review", "second_opinion") if action in task_action_list), None)
-        if review_action:
+        review_actions = {"review", "second_opinion"} & set(task_action_list)
+        if review_actions == {"review", "second_opinion"}:
+            prioritization_bullets.append(
+                "> - **Semantic Review & Second Opinion**: If exposed, use `local_ai_task(action=\"review\")` for evidence-grounded review or `action=\"second_opinion\"` for independent critique; use `compress` only to condense evidence."
+            )
+        elif review_actions:
+            review_action = next(iter(review_actions))
             review_label = "Semantic Review" if review_action == "review" else "Second Opinion"
             prioritization_bullets.append(
                 f"> - **{review_label}**: Call `local_ai_task(action=\"{review_action}\")` before finalizing non-trivial edits."
@@ -956,13 +971,13 @@ def generate_global_policy(cfg: dict[str, Any]) -> str:
         '> - **Antigravity wrapper**: Use `call_mcp_tool(ServerName="local-ai", ToolName="<tool>", Arguments={<same arguments>})` for the calls above.'
     )
     prioritization_bullets.append(
-        "> - **Native fallback**: After a Hub outage, use native fallback only when the Hub result has `terminal=true` and `retryable=false`; keep work bounded to the same authorized root/scope."
+        "> - **Native fallback**: If the live MCP schema has no action for the operation, use the authorized native tool directly. After calling an advertised Hub action, native fallback requires `terminal=true` and `retryable=false`; keep it bounded to the same root/scope."
     )
     prioritization_directive = (
         "> [!IMPORTANT]\n"
         "> ## AUTOMATIC LOCAL AI HUB PRIORITIZATION IN ANTIGRAVITY\n"
         "> ## MANDATORY LOCAL AI HUB PRIORITIZATION IN CODEX\n"
-        "> Agents (Gemini in Antigravity, Codex, Claude) MUST AUTOMATICALLY prioritize `local-ai` MCP tools over native tools (`run_command`, native shell, broad `view_file`):\n"
+        "> Agents (Gemini in Antigravity, Codex, Claude) MUST prioritize `local-ai` MCP tools when the live schema supports the requested operation; when no matching action exists, use the authorized native tool directly:\n"
         + "\n".join(prioritization_bullets)
     )
 
@@ -982,8 +997,7 @@ def generate_global_policy(cfg: dict[str, Any]) -> str:
         "- Native `multi_agent_v1__spawn_agent` is used only for useful independent bounded work or an explicit request. Codex controls each subagent's scope, `allow_write`, workspace/worktree, timeout, cancellation, sandbox, and integration.\n"
         "- Keep write scopes disjoint. The primary agent reviews and integrates directly; no ZIPs, custom owner packets, or fingerprint/hash cascades.\n"
         "- Do not duplicate tasks or chats. Check the existing plan first and update its existing item.\n\n"
-        "The main agent owns planning, implementation and integration."
-        " Use Local AI Hub for bounded retrieval and its exposed actions. After a Hub failure, native fallback requires an explicit result with `terminal=true` and `retryable=false`.\n\n"
+        "The main agent owns planning, implementation and integration.\n\n"
         + "READ-ONLY AUDIT CONTRACT:\n"
         "- Read-only excludes Git writes, `git worktree add` or removal, dependency installation, builds/imports,"
         " generated artifacts and other workspace side effects. Never label side-effecting work read-only;"
@@ -995,20 +1009,14 @@ def generate_global_policy(cfg: dict[str, Any]) -> str:
         " retain exact action, arguments, result and ownership in the audit record.\n"
         + ("\nBackground preprocessing may inspect and index project files, but project-derived `validation_commands` execute repository code. Keep `preprocessing.idle_diagnostics_enabled=false` by default; set it to `true` only with explicit operator approval for those commands. On Windows, `.cmd` and `.bat` validation executables are rejected; do not route them through a shell or interpreter.\n" if fs.preprocessing else "")
         + f"{repo_task_first}\n"
-        "Adaptive retrieval path: when fresh evidence is insufficient for non-trivial repository work, call `local_ai_repo(action=\"context\", mode=\"adaptive\")`; it fuses bounded deterministic/indexed, structural, lexical and RAG evidence with agreement and diversity, degrading optional backends independently. Stop escalating when evidence is sufficient; reuse cached results and bounded evidence. Do not fan out duplicate native retrieval layers or translate the task into a long grep-term list. Reuse fresh evidence IDs, artifact slices, memos and cache hits;\n"
-        " do not repeat the same hub action with the same root/query while repository state is unchanged.\n\n"
-        "Treat result state as a protocol: `cache_hit`/`coalesced` means reuse the result;"
-        " `in_progress=true` means another owner is doing identical work, so never duplicate it;"
-        " `retryable`/429/503 means back off and do independent work;"
-        " `degraded`/`stale` means verify only the affected path/slice;"
-        " only a terminal non-retryable failure (`terminal=true`, `retryable=false`) permits one cheaper/native fallback."
-        " Never turn a transient result into larger timeouts, force refreshes, or polling loops.\n"
+        "Adaptive retrieval: when evidence is insufficient for non-trivial repository work, call `local_ai_repo(action=\"context\", mode=\"adaptive\")`. It fuses bounded indexed, structural, lexical and RAG evidence; optional backends fail independently. Reuse evidence IDs, artifact slices and memos; stop when sufficient and avoid duplicate retrieval or unchanged root/query repeats.\n\n"
+        "Result protocol: reuse `cache_hit`/`coalesced`; never duplicate `in_progress`; back off on `retryable`/429/503; verify only the affected slice for `degraded`/`stale`. After Hub failure, native fallback requires `terminal=true` and `retryable=false`. Never enlarge timeouts, force-refresh, or poll transient results.\n"
         f"{cmd_route_hint}{coord_memo_hint}\n"
         " After edits, use indexed impact/review plus targeted cached validation;"
         " do not rerun broad discovery merely because files changed."
         " `force` and `preprocess_refresh` are recovery/admin controls, never retry buttons."
         " If an optional backend degrades, accept the hub's deterministic/index fallback."
-        " If the hub itself is unavailable, make one bounded health/retry attempt; use native tools only when its result explicitly has `terminal=true` and `retryable=false`. A transport failure without those fields does not authorize fallback."
+        " If the Hub is unavailable, make one bounded health/retry attempt; transport failures without terminal, non-retryable status do not authorize fallback."
         " Never loop on health, status, preprocessing, model startup, a failing backend, or an identical command.\n\n"
         + ("Batch repository replacement: use `local_ai_repo(action=\"batch_replace\", edits=[...], dry_run=true)` for preview. "
            "`staged` is not batch dry-run and is never forwarded. Each edit must exact-match once. "
@@ -1067,7 +1075,7 @@ and scoped indexed search. Use `tokcount` to measure actual token use and
 - Preserve protected status, error, evidence, and context-identity fields; keep exact detail artifact-backed.
 - Claim savings only with a current `baseline_evidence_id`; report signed `token_savings_delta_est`, including negative values; keep `protocol_tokens_est`, `schema_tokens_est`, and `local_compute_reused_tokens_est` separate.
 - Reject `max_response_tokens` below 128; never raise the request silently.
-- For Hub outages, native fallback requires explicit `terminal=true` and `retryable=false`.
+- If the live MCP schema has no action for an operation, skip Hub and use the authorized native tool directly; no Hub failure or `native_fallback_allowed` signal is needed. After calling an advertised Hub action, native fallback requires explicit `terminal=true` and `retryable=false`.
 - On `outcome_unknown` or `in_progress`, do independent work; never poll or repeat the identical operation.
 
 ## Integration with Local AI Hub
@@ -1110,7 +1118,8 @@ def generate_token_economy_policy(cfg: dict[str, Any] | None = None) -> str:
         + "- Preserve protected status, error, evidence, and context-identity fields; keep exact detail artifact-backed.\n"
         + "- Claim savings only with a current `baseline_evidence_id`; report signed `token_savings_delta_est`, including negative values; keep `protocol_tokens_est`, `schema_tokens_est`, and `local_compute_reused_tokens_est` separate.\n"
         + "- Reject `max_response_tokens` below 128; never raise the request silently.\n"
-        + "- For Hub outages, native fallback requires explicit `terminal=true` and `retryable=false`.\n"
+        + "- For a response-budget rejection, reduce the requested envelope or fetch a smaller artifact page/slice; do not replay the same oversized request.\n"
+        + "- If the live MCP schema has no action for an operation, skip Hub and use the authorized native tool directly; no Hub failure or `native_fallback_allowed` signal is needed. After calling an advertised Hub action, native fallback requires explicit `terminal=true` and `retryable=false`.\n"
         + "- On `outcome_unknown` or `in_progress`, do independent work; never poll or repeat the identical operation.\n"
         + local_model_line
         + "<!-- END TOKEN ECONOMY POLICY -->"
@@ -1251,8 +1260,10 @@ def generate_antigravity_instructions(cfg: dict[str, Any] | None = None) -> str:
     lines = [
         "# Local AI Hub MCP Instructions for Antigravity & Gemini",
         "",
-        "Prioritize local-ai tools over native commands and raw file reading:",
+        "Use local-ai tools for operations supported by the live MCP schema; use native tools when no matching Hub action exists:",
         "- **Run commands, tests, lint, builds**: Use the agent host native command tool for bounded checks in the target repository.",
+        "- **Unsupported operation**: If the live MCP schema has no action for the requested operation, skip Hub and use the authorized native tool directly (for example, `git worktree list`). Do not call Hub or wait for a Hub failure signal.",
+        "- **Advertised action failure**: After calling a Hub action exposed by the live schema, use native fallback only when the result has `terminal=true` and `retryable=false`.",
     ]
     if repo_actions:
         lines.append(f"- **Search code & repository facts**: Call an advertised local_ai_repo action ({'|'.join(repo_actions)}) with the project root. Avoid unconstrained directory dumping.")

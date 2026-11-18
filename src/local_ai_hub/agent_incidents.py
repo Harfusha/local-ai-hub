@@ -1391,18 +1391,27 @@ class IncidentStore:
                         """
                         CREATE VIRTUAL TABLE temp.agent_incidents_query_fts USING fts5(
                             operation_class, error_class, redacted_message,
-                            root_cause, verified_fix, affected_paths
+                            root_cause, verified_fix, affected_paths, suggested_fix
                         )
                         """
+                    )
+                    con.create_function(
+                        "incident_suggested_fix",
+                        3,
+                        lambda message, operation, error: _extract_root_cause_and_fix(
+                            message or "", operation or "", error == "TimeoutError"
+                        )[1],
+                        deterministic=True,
                     )
                     con.execute(
                         """
                         INSERT INTO temp.agent_incidents_query_fts (
                             rowid, operation_class, error_class, redacted_message,
-                            root_cause, verified_fix, affected_paths
+                            root_cause, verified_fix, affected_paths, suggested_fix
                         )
                         SELECT rowid, operation_class, error_class, redacted_message,
-                               root_cause, verified_fix, affected_paths
+                               root_cause, verified_fix, affected_paths,
+                               incident_suggested_fix(redacted_message, operation_class, error_class)
                         FROM (
                             SELECT rowid, operation_class, error_class, signature_hash,
                                    redacted_message, root_cause, verified_fix, affected_paths,
@@ -1453,7 +1462,7 @@ class IncidentStore:
                     WHERE agent_incidents_query_fts MATCH ?
                       AND ranked.ignored = 0 AND ranked.row_num = 1
                       AND (ranked.expires_at IS NULL OR ranked.expires_at > ?)
-                    ORDER BY bm25(agent_incidents_query_fts, 1.0, 2.0, 1.0, 4.0, 4.0, 2.0),
+                    ORDER BY bm25(agent_incidents_query_fts, 1.0, 2.0, 1.0, 4.0, 4.0, 2.0, 4.0),
                              ranked.updated_at DESC, ranked.incident_id DESC
                     LIMIT ?
                     """,
@@ -1465,38 +1474,6 @@ class IncidentStore:
                     ),
                 )
                 rows = list(cur.fetchall())
-                # Some useful negative guidance is derived from error classes
-                # rather than stored verbatim in the incident text (for
-                # example, database-lock errors recommend backoff). FTS cannot
-                # match that derived text, so include a bounded recent window
-                # for the Python-side suggestion matcher as well.
-                if not rows:
-                    # Some useful negative guidance is derived from error
-                    # classes rather than stored verbatim in incident text.
-                    # Only scan the bounded recent window when FTS has no
-                    # direct matches; otherwise preserve FTS relevance order.
-                    rows = list(con.execute(
-                        """
-                        WITH ranked AS (
-                            SELECT incident_id, operation_class, error_class, signature_hash, redacted_message,
-                                   state_revision, root_cause, verified_fix, confidence,
-                                   SUM(attempts) OVER (PARTITION BY operation_class, error_class, signature_hash) AS attempts,
-                                   updated_at, affected_paths, ignored, expires_at, repository_key, resolved,
-                                   ROW_NUMBER() OVER (
-                                       PARTITION BY operation_class, error_class, signature_hash, repository_key
-                                       ORDER BY updated_at DESC, incident_id DESC
-                                   ) AS row_num
-                            FROM agent_incidents WHERE repository_key = ?
-                        )
-                        SELECT incident_id, operation_class, error_class, redacted_message, state_revision,
-                               root_cause, verified_fix, confidence, attempts, updated_at, affected_paths,
-                               repository_key, resolved
-                        FROM ranked
-                        WHERE ignored = 0 AND row_num = 1 AND (expires_at IS NULL OR expires_at > ?)
-                        ORDER BY updated_at DESC LIMIT ?
-                        """,
-                        (*scope_params, time.time(), candidate_limit),
-                    ).fetchall())
             else:
                 cur = con.execute(
                     """

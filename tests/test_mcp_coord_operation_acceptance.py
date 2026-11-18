@@ -275,23 +275,36 @@ def test_local_ai_coord_task_transition_forwards_target_state_and_reason(monkeyp
     assert result["summary"] == "task t-transition-1 moved to verifying"
 
 
-def test_local_ai_coord_task_list_forwards_status_and_stale_filter(monkeypatch, tmp_path):
+def test_local_ai_coord_task_list_forwards_pagination_and_filters(monkeypatch, tmp_path):
     root = str(tmp_path.resolve())
     backend = CoordBackend({"success": True, "summary": "one active task", "tasks": [{"task_id": "t-list-1"}]})
     monkeypatch.setattr(mcp_server.FEATURES, "coord", True)
     monkeypatch.setattr(mcp_server, "CLIENT", backend)
 
     result = mcp_server.local_ai_coord(
-        action="task_list", status="active", root=root, include_stale=True
+        action="task_list", status="active", root=root, include_stale=True,
+        limit=25, offset=50, query="pagination", owner="agent-1",
     )
 
     assert backend.calls == [{
         "action": "task_list", "task_id": "", "contract": None,
-        "checkpoint": None, "status": "active", "reason": "", "root": root, "query": "",
+        "checkpoint": None, "status": "active", "reason": "", "root": root,
         "include_stale": True,
+        "query": "pagination", "limit": 25, "offset": 50, "owner": "agent-1",
     }]
     assert result["success"] is True
     assert result["summary"] == "one active task"
+
+
+def test_local_ai_coord_task_list_uses_bounded_default_page(monkeypatch, tmp_path):
+    root = str(tmp_path.resolve())
+    backend = CoordBackend({"success": True, "tasks": []})
+    monkeypatch.setattr(mcp_server.FEATURES, "coord", True)
+    monkeypatch.setattr(mcp_server, "CLIENT", backend)
+
+    mcp_server.local_ai_coord(action="task_list", root=root)
+
+    assert backend.calls[0]["limit"] == 20
 
 
 def test_local_ai_coord_task_complete_forwards_reason_and_identity(monkeypatch, tmp_path):

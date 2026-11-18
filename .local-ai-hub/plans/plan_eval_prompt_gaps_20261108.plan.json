@@ -23,7 +23,7 @@
       "depends_on": [],
       "description": "CASE132 prompt action contracts are corrected and the latest isolated GPT-6 Luna Low run completed the required 14 calls in order. Focused prompt guard passes. Protocol is verified from host markers; endpoint payloads, content and Windows LF transport remain NOT_VERIFIED. Continue full six-round audit and practical eval reconciliation; preserve Laya/Stability ownership and do not run broad checks on the dirty shared checkout.",
       "kind": "documentation",
-      "next_action": "Record the latest CASE132 transcript and precise limits; keep its disposable fixture untouched after host rejected recursive cleanup. Continue the existing R1-R5/R6 status reconciliation, complete safe assigned fixes in isolated scope, and defer broad checks until the shared snapshot stabilizes.",
+      "next_action": "Fresh host-native contract validation on dirty checkout, HEAD b439f75690e581ff75ea32894d5fed450374712d: `python -m pytest --no-cache -q tests/test_case132_prompt_contract.py tests/test_case135_prompt_contract.py tests/test_case136_prompt_contract.py` passed 3 tests in 1.53s. This verifies only source prompt contracts. It is not isolated GPT-6 Luna run evidence, live MCP payloads, Windows LF transport, or CASE131/135 semantic acceptance. Keep disposable CASE132 fixture untouched after host rejected cleanup. Continue R1-R6 evidence reconciliation and safe assigned fixes; do not run broad checks on the dirty shared checkout.",
       "order": 1,
       "title": "Audit and stress-test prompt catalog",
       "work_phase": "verification",

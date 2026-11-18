@@ -25,12 +25,12 @@ def test_retired_question_argument_rejects_before_database_access(method, argume
 def test_question_database_has_no_tenant_and_task_binding_is_preserved(tmp_path):
     db_path = tmp_path / "state.sqlite3"
     store = TaskStore(AgentStateStore(db_path))
-    pending = store.ask_question(root=str(tmp_path), session_id="chat-one", task_id="task-one", question="Proceed?")
+    pending = store.ask_question(root=str(tmp_path), root=str(tmp_path), session_id="chat-one", task_id="task-one", question="Proceed?")
     question_id = pending["question_id"]
-    assert store.ask_question(root=str(tmp_path), session_id="chat-one", task_id="other-task", question_id=question_id) is None
-    assert store.ask_question(root=str(tmp_path), session_id="chat-two", question_id=question_id) is None
-    assert store.answer_question(root=str(tmp_path), task_id="other-task", question_id=question_id, answer="Yes") is None
-    answered = store.answer_question(root=str(tmp_path), task_id="task-one", question_id=question_id, answer="Yes")
+    assert store.ask_question(root=str(tmp_path), root=str(tmp_path), session_id="chat-one", task_id="other-task", question_id=question_id) is None
+    assert store.ask_question(root=str(tmp_path), root=str(tmp_path), session_id="chat-two", question_id=question_id) is None
+    assert store.answer_question(root=str(tmp_path), root=str(tmp_path), task_id="other-task", question_id=question_id, answer="Yes") is None
+    answered = store.answer_question(root=str(tmp_path), root=str(tmp_path), task_id="task-one", question_id=question_id, answer="Yes")
     assert answered["session_id"] == "chat-one"
     assert answered["task_id"] == "task-one"
     with closing(sqlite3.connect(db_path)) as con:
@@ -43,10 +43,10 @@ def test_question_database_has_no_tenant_and_task_binding_is_preserved(tmp_path)
 
 def test_answer_budget_failure_keeps_original_question(tmp_path):
     store = TaskStore(AgentStateStore(tmp_path / "state.sqlite3"))
-    pending = store.ask_question(root=str(tmp_path), session_id="chat-one", question="Proceed?")
+    pending = store.ask_question(root=str(tmp_path), root=str(tmp_path), session_id="chat-one", question="Proceed?")
     with pytest.raises(CheckpointResponseBudgetError):
-        store.answer_question(root=str(tmp_path), question_id=pending["question_id"], answer="Yes", response_budget_tokens=1)
-    after = store.ask_question(root=str(tmp_path), session_id="chat-one", question_id=pending["question_id"])
+        store.answer_question(root=str(tmp_path), root=str(tmp_path), question_id=pending["question_id"], answer="Yes", response_budget_tokens=1)
+    after = store.ask_question(root=str(tmp_path), root=str(tmp_path), session_id="chat-one", question_id=pending["question_id"])
     assert after == pending
 
 
@@ -59,8 +59,8 @@ def test_question_root_requires_existing_absolute_directory(tmp_path):
 def test_retired_question_schema_rejects_without_rewriting_saved_answer(tmp_path):
     db_path = tmp_path / "state.sqlite3"
     store = TaskStore(AgentStateStore(db_path))
-    pending = store.ask_question(root=str(tmp_path), session_id="chat-one", question="Proceed?")
-    store.answer_question(root=str(tmp_path), question_id=pending["question_id"], answer="Preserve this answer")
+    pending = store.ask_question(root=str(tmp_path), root=str(tmp_path), session_id="chat-one", question="Proceed?")
+    store.answer_question(root=str(tmp_path), root=str(tmp_path), question_id=pending["question_id"], answer="Preserve this answer")
     with closing(sqlite3.connect(db_path)) as con:
         con.execute("ALTER TABLE agent_questions ADD COLUMN tenant TEXT NOT NULL DEFAULT 'former-owner'")
         con.commit()

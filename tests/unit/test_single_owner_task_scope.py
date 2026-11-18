@@ -31,6 +31,7 @@ def test_create_pins_root_without_transport_identity(tmp_path):
     task = store.create(
         GoalContract(goal="Preserve root scope"), ScopeContext(repository_id="logical-repository", session_id="chat-one"),
         task_id="task-one", repo_root=str(tmp_path),
+    root=str(tmp_path),
     )
     assert task.checkpoint.state_data["_agent_task_scope"] == {"version": 2, "repo_root": str(tmp_path.resolve())}
     assert _task_scope_root(task) == str(tmp_path.resolve())

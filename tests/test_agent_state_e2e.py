@@ -286,8 +286,7 @@ def test_e2e_negative_knowledge_retry_decision(tmp_path: Path):
         error="Syntax error: expected semicolon",
         exit_code=1,
         state_revision="rev-initial",
-        repository_root=str(tmp_path),
-    )
+        repository_root=str(tmp_path), )
     # Record failed outcome via capture
     inc = app.agent_incidents.capture(outcome)
     assert inc is not None
@@ -341,7 +340,7 @@ def test_local_app_wires_scoped_memory_adoption_on_create_and_resume(tmp_path: P
             ScopeContext(repository_id=repository_id, branch="main", task_id="app-memory-task"),
             task_id="app-memory-task",
             repo_root=str(root),
-        )
+    )
         initial_ids = {
             item["id"] for item in task.checkpoint.state_data["memory_context"]["items"]
         }
@@ -401,7 +400,7 @@ def test_local_app_wires_scoped_memory_adoption_on_create_and_resume(tmp_path: P
             ScopeContext(repository_id=repository_id, branch="main", task_id="app-memory-follow-up"),
             task_id="app-memory-follow-up",
             repo_root=str(root),
-        )
+    )
         follow_up_ids = {
             item["id"] for item in follow_up.checkpoint.state_data["memory_context"]["items"]
         }

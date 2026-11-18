@@ -160,7 +160,7 @@ def test_repository_benchmark_measures_real_hot_files_against_cold_queue(tmp_pat
     t03_artifacts.mkdir(parents=True)
     (t03_artifacts / "output.txt").write_text("rare_demand validation output", encoding="utf-8")
 
-    result = run(files=4, batch_size=2, root=str(root), query="rare_demand")
+    result = run(files=4, batch_size=2, root=str(root), root=str(root), query="rare_demand")
 
     assert result["scope"] == "repository queue selection and deterministic context_pack_paths, no model inference"
     assert result["sampled_files"] == 3
@@ -202,7 +202,7 @@ def test_repository_benchmark_treats_invalid_context_pack_as_unverified(tmp_path
     (root / "a.py").write_text("rare_demand", encoding="utf-8")
     (root / "b.py").write_text("ordinary", encoding="utf-8")
 
-    result = run(files=2, batch_size=2, root=str(root), query="rare_demand")
+    result = run(files=2, batch_size=2, root=str(root), root=str(root), query="rare_demand")
 
     assert result["useful_context_verified"] is False
     assert result["useful_context_work_saved"] is None
@@ -387,7 +387,7 @@ def test_repository_benchmark_uses_scoped_learned_query_without_emitting_it(tmp_
     learner.record(str(other_root), "other repository query")
 
     query = _read_learned_query(state_dir / "learning.sqlite3", str(root))
-    result = run(files=2, batch_size=2, root=str(root), query=query, query_source="learned")
+    result = run(files=2, batch_size=2, root=str(root), root=str(root), query=query, query_source="learned")
 
     assert result["query_source"] == "learned"
     assert result["query_length"] == len(query)

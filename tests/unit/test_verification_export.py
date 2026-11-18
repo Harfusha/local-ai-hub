@@ -120,6 +120,7 @@ def test_local_ai_coord_verify_export_mcp(monkeypatch, tmp_path):
         task_id="task_400",
         format="markdown",
         root=str(tmp_path),
+    root=str(tmp_path),
     )
     assert res["success"] is True
     assert len(fake_client.calls) == 1

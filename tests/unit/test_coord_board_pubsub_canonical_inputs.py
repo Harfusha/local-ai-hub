@@ -37,7 +37,7 @@ def test_blackboard_update_preserves_falsey_content(monkeypatch, tmp_path, conte
     monkeypatch.setattr(mcp_server, "CLIENT", client)
 
     result = mcp_server.local_ai_coord(
-        action="blackboard_update", root=str(tmp_path), board_id="board-a",
+        action="blackboard_update", root=str(tmp_path), root=str(tmp_path), board_id="board-a",
         section="review", content=content, expected_version=0,
     )
 
@@ -54,7 +54,7 @@ def test_pubsub_publish_preserves_falsey_message(monkeypatch, tmp_path, message)
     monkeypatch.setattr(mcp_server, "CLIENT", client)
 
     result = mcp_server.local_ai_coord(
-        action="pubsub_publish", root=str(tmp_path), topic="events",
+        action="pubsub_publish", root=str(tmp_path), root=str(tmp_path), topic="events",
         message=message, publisher="agent-x",
     )
 
@@ -71,7 +71,7 @@ def test_pubsub_poll_forwards_sequence_limit_and_timestamp(monkeypatch, tmp_path
     monkeypatch.setattr(mcp_server, "CLIENT", client)
 
     result = mcp_server.local_ai_coord(
-        action="pubsub_poll", root=str(tmp_path), topic="events",
+        action="pubsub_poll", root=str(tmp_path), root=str(tmp_path), topic="events",
         after_seq=0, limit=17, after_ts=12.5,
     )
 
@@ -88,10 +88,10 @@ def test_board_and_pubsub_aliases_are_rejected_before_backend(monkeypatch, tmp_p
     monkeypatch.setattr(mcp_server, "CLIENT", client)
 
     board_result = mcp_server.local_ai_coord(
-        action="blackboard_update", root=str(tmp_path), content="canonical", value="legacy",
+        action="blackboard_update", root=str(tmp_path), root=str(tmp_path), content="canonical", value="legacy",
     )
     pubsub_result = mcp_server.local_ai_coord(
-        action="pubsub_publish", root=str(tmp_path), message="canonical", key="legacy-topic",
+        action="pubsub_publish", root=str(tmp_path), root=str(tmp_path), message="canonical", key="legacy-topic",
     )
 
     assert board_result["success"] is False

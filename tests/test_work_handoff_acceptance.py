@@ -89,9 +89,9 @@ def test_path_leases_allow_disjoint_scopes_and_reject_overlap(tmp_path: Path) ->
     first: dict[str, object] = {}
     disjoint: dict[str, object] = {}
     try:
-        first = leases.claim_batch(owner="writer-a", root=str(root), paths=["src/a.py"])
-        disjoint = leases.claim_batch(owner="writer-b", root=str(root), paths=["src/b.py"])
-        overlapping = leases.claim_batch(owner="writer-b", root=str(root), paths=["src/a.py"])
+        first = leases.claim_batch(owner="writer-a", root=str(root), root=str(root), paths=["src/a.py"])
+        disjoint = leases.claim_batch(owner="writer-b", root=str(root), root=str(root), paths=["src/b.py"])
+        overlapping = leases.claim_batch(owner="writer-b", root=str(root), root=str(root), paths=["src/a.py"])
 
         assert first["success"] is True
         assert disjoint["success"] is True
@@ -111,7 +111,7 @@ def test_edit_lease_conflict_leaves_workspace_and_journal_unchanged(tmp_path: Pa
     held: dict[str, object] = {}
     patch = "--- a/owned.txt\n+++ b/owned.txt\n@@ -1 +1 @@\n-old\n+new\n"
     try:
-        held = leases.claim_batch(owner="other-writer", root=str(root), paths=["owned.txt"])
+        held = leases.claim_batch(owner="other-writer", root=str(root), root=str(root), paths=["owned.txt"])
         assert held["success"] is True
         orchestrator.leases = leases
         with pytest.raises(RuntimeError, match="edit lease unavailable"):

@@ -132,7 +132,7 @@ def test_document_ingest_rejects_workspace_bound_to_another_root_before_writes(t
     )
 
     result = store.ingest_document(
-        root=str(root), workspace=workspace, content="must not be indexed"
+        root=str(root), root=str(root), workspace=workspace, content="must not be indexed"
     )
 
     assert result["success"] is False
@@ -153,7 +153,7 @@ def test_diagram_ingest_rejects_paths_outside_authorized_root(tmp_path):
     store, db_path = _store(tmp_path)
 
     result = store.ingest_diagram(
-        root=str(root), workspace=workspace, image_path=str(external_image)
+        root=str(root), root=str(root), workspace=workspace, image_path=str(external_image)
     )
 
     assert result["success"] is False

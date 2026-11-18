@@ -9,7 +9,7 @@ from local_ai_hub.services import LocalAIServices
 
 def test_adhoc_task_find_and_session_resolution(tmp_path):
     store = LayaCandidateStore(tmp_path)
-    fake_task_store = SimpleNamespace(list_tasks=lambda limit=5000: [])
+    fake_task_store = SimpleNamespace(get=lambda task_id: None)
 
     # Non-adhoc missing task still raises ValueError
     with pytest.raises(ValueError, match="outside the authorized repository scope"):
@@ -19,6 +19,36 @@ def test_adhoc_task_find_and_session_resolution(tmp_path):
     adhoc_task = store._find_task(fake_task_store, str(tmp_path), "adhoc_sess-123")
     assert adhoc_task.task_id == "adhoc_sess-123"
     assert store._session_for_task(adhoc_task) == "sess-123"
+
+
+def test_task_find_uses_indexed_lookup_and_verifies_repository_scope(tmp_path):
+    store = LayaCandidateStore(tmp_path)
+    task = SimpleNamespace(
+        task_id="task-1",
+        is_stale=False,
+        checkpoint=SimpleNamespace(state_data={
+            "_agent_task_scope": {"version": 2, "repo_root": str(tmp_path)},
+        }),
+    )
+    lookups = []
+
+    def get(task_id):
+        lookups.append(task_id)
+        return task
+
+    task_store = SimpleNamespace(get=get, list_tasks=lambda **_: pytest.fail("must not scan task list"))
+
+    assert store._find_task(task_store, str(tmp_path), "task-1") is task
+    assert lookups == ["task-1"]
+
+    other_root = tmp_path / "other"
+    other_root.mkdir()
+    with pytest.raises(ValueError, match="outside the authorized repository scope"):
+        store._find_task(task_store, str(other_root), "task-1")
+
+    task.is_stale = True
+    with pytest.raises(ValueError, match="outside the authorized repository scope"):
+        store._find_task(task_store, str(tmp_path), "task-1")
 
 
 def test_queue_shadow_observation_supports_adhoc_session_fallback():
@@ -65,7 +95,7 @@ def test_capture_context_source_adhoc_fallback(tmp_path):
             }
         }
     }
-    app.agent_tasks = SimpleNamespace(list_tasks=lambda limit=5000: [])
+    app.agent_tasks = SimpleNamespace(get=lambda task_id: None)
     app.laya_candidates = LayaCandidateStore(tmp_path)
 
     request = SimpleNamespace(task_id="adhoc_sess-xyz", session_id="sess-xyz", root=str(tmp_path))

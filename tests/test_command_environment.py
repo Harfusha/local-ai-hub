@@ -49,8 +49,7 @@ def test_project_command_environment_key_validation(key: object, valid: bool) ->
 def test_project_environment_resolves_valid_host_references(tmp_path):
     context = SimpleNamespace(
         config_digest="config-sha",
-        root=str(tmp_path),
-        settings=SimpleNamespace(env_references={"APP_MODE": "HOST_MODE"}),
+        root=str(tmp_path), settings=SimpleNamespace(env_references={"APP_MODE": "HOST_MODE"}),
     )
 
     result = resolve_project_environment(
@@ -67,8 +66,7 @@ def test_project_environment_resolves_valid_host_references(tmp_path):
 def test_project_environment_rejects_unsafe_target_key(tmp_path):
     context = SimpleNamespace(
         config_digest="config-sha",
-        root=str(tmp_path),
-        settings=SimpleNamespace(env_references={"GIT_CONFIG_COUNT": "HOST_VALUE"}),
+        root=str(tmp_path), settings=SimpleNamespace(env_references={"GIT_CONFIG_COUNT": "HOST_VALUE"}),
     )
 
     result = resolve_project_environment(

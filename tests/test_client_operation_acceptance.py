@@ -45,8 +45,7 @@ def test_client_create_task_targets_agent_state_tasks(tmp_path, monkeypatch, fak
         acceptance_criteria=["route and payload match"],
         task_id="task-17",
         scope="task",
-        root=str(tmp_path),
-    )
+        root=str(tmp_path), )
 
     assert result == reply
     assert fake_http_transport["captured"] == [
@@ -184,8 +183,7 @@ def test_client_incident_decision_targets_agent_state_incidents(
 
     result = client.coord(
         "incident_decision",
-        root=str(tmp_path),
-        fingerprint={"error_class": "AssertionError", "operation_class": "test", "signature_hash": "case-17"},
+        root=str(tmp_path), fingerprint={"error_class": "AssertionError", "operation_class": "test", "signature_hash": "case-17"},
         state_revision="rev-17",
     )
 

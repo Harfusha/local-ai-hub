@@ -534,11 +534,12 @@ class ProjectPreprocessor:
         *,
         actor_timeout: float | None = None,
         best_effort: bool = False,
+        actor_priority: int = 1,
     ) -> Any:
         actor = getattr(self, "_write_actor", None)
         if actor is not None and actor.is_alive and not actor.is_current_thread():
             try:
-                return actor.submit(operation, timeout=actor_timeout)
+                return actor.submit(operation, timeout=actor_timeout, priority=actor_priority)
             except Exception as actor_exc:
                 if best_effort or not is_busy_error(actor_exc):
                     raise
@@ -1794,7 +1795,7 @@ class ProjectPreprocessor:
                     (now, str(source or "agent")[:32], resolved),
                 )
             self._rebalance_processing_slots(con, preferred_root=resolved)
-        self._write_retry(_register_tx)
+        self._write_retry(_register_tx, actor_priority=0)
         if is_worktree or parent_root:
             p_root = parent_root or (self._related_worktrees(resolved)[0] if self._related_worktrees(resolved) else None)
             if p_root and p_root != resolved:
@@ -1813,11 +1814,14 @@ class ProjectPreprocessor:
             except OSError: pass
             def _pause_all(con: sqlite3.Connection) -> None:
                 con.execute("UPDATE projects SET paused=1, status=CASE WHEN status='running' THEN 'paused' ELSE status END, updated_at=?", (time.time(),))
-            self._write_retry(_pause_all)
+            self._write_retry(_pause_all, actor_priority=0)
             self._wake_all()
             return self.status()
         resolved = self._root(root)
-        self._write_retry(lambda con: con.execute("UPDATE projects SET paused=1,status='paused',updated_at=? WHERE root=?", (time.time(), resolved)))
+        self._write_retry(
+            lambda con: con.execute("UPDATE projects SET paused=1,status='paused',updated_at=? WHERE root=?", (time.time(), resolved)),
+            actor_priority=0,
+        )
         self._wake_all(); return self.status(resolved)
 
     def resume(self, root: str | None = None) -> dict[str, Any]:
@@ -1828,14 +1832,14 @@ class ProjectPreprocessor:
             def _resume_all(con: sqlite3.Connection) -> None:
                 con.execute("UPDATE projects SET paused=0, status=CASE WHEN status='paused' THEN 'queued' ELSE status END, retry_after=0, next_check_at=?, updated_at=?", (time.time(), time.time()))
                 self._rebalance_processing_slots(con)
-            self._write_retry(_resume_all)
+            self._write_retry(_resume_all, actor_priority=0)
             self._wake_all()
             return self.status()
         resolved = self._root(root)
         def _resume_tx(con: sqlite3.Connection) -> None:
             con.execute("UPDATE projects SET paused=0,status='queued',retry_after=0,next_check_at=?,last_requested_at=? WHERE root=?", (time.time(),time.time(),resolved))
             self._rebalance_processing_slots(con, preferred_root=resolved)
-        self._write_retry(_resume_tx)
+        self._write_retry(_resume_tx, actor_priority=0)
         self._wake_all(); return self.status(resolved)
 
     def start_exclusive(self) -> dict[str, Any]:
@@ -2353,6 +2357,7 @@ class ProjectPreprocessor:
             deterministic_counts = index_file_counts(self.deterministic, "Deterministic-index")
 
             projects: list[dict[str, Any]] = []
+            bg_allowed = self._scheduler_background_allowed()
             for row in rows:
                 git_common_dir, is_worktree = _project_git_identity(str(row["root"]))
                 status_str = str(row["status"] or "queued")
@@ -2396,6 +2401,10 @@ class ProjectPreprocessor:
                 )
                 rag_chunks = (
                     max(0, int(rag_workspace.get("chunks", 0)))
+                    if isinstance(rag_workspace, dict) else None
+                )
+                rag_read_uncertain_files = (
+                    max(0, int(rag_workspace.get("read_uncertain_files", 0)))
                     if isinstance(rag_workspace, dict) else None
                 )
 
@@ -2487,7 +2496,7 @@ class ProjectPreprocessor:
                         unit = "cards/s"
                         remaining = max(0, total_files - effective_file_cards)
                     elif phase_str == "rag":
-                        unit = "chunks/s"
+                        unit = "files/s"
                         remaining = max(0, total_files - rag_files)
                     elif phase_str in ("hash", "code_index", "deterministic", "lexical"):
                         unit = "files/s"
@@ -2527,7 +2536,9 @@ class ProjectPreprocessor:
                     status_str == "running" and phase_str == "files" and pending_stub_cards
                     and (self.background_gpu is None or not self.background_gpu.ready())
                 )
-                is_waiting_row = is_slot_waiting or is_model_waiting
+                is_scheduler_waiting = status_str == "running" and phase_str == "rag" and not bg_allowed
+                is_queue_waiting = status_str == "queued" and not is_paused_row
+                is_waiting_row = is_slot_waiting or is_model_waiting or is_scheduler_waiting or is_queue_waiting
 
                 waiting_reason = ""
                 if is_paused_row:
@@ -2545,11 +2556,13 @@ class ProjectPreprocessor:
                     )
                 elif is_model_waiting:
                     waiting_reason = "Waiting for preprocessing model or resources"
+                elif is_scheduler_waiting:
+                    waiting_reason = "Waiting for scheduler background capacity"
                 elif status_str == "running":
                     waiting_reason = f"Processing phase: {phase_str}"
                 elif status_str == "queued":
-                    if not self._scheduler_background_allowed():
-                        waiting_reason = "Yielding to foreground agent requests"
+                    if not bg_allowed:
+                        waiting_reason = "Waiting for scheduler background capacity"
                     else:
                         waiting_reason = "Queued for worker execution"
 
@@ -2567,6 +2580,11 @@ class ProjectPreprocessor:
                     active_detail = (
                         f"{waiting_reason}: {effective_file_cards}/{total_files} files "
                         f"({phase_pct}%) · {pending_stub_cards} awaiting enrichment"
+                    )
+                elif is_scheduler_waiting:
+                    active_detail = (
+                        f"{waiting_reason}: RAG-synced files {rag_files}/{total_files} "
+                        f"({phase_pct}%)"
                     )
                 elif status_str == "error":
                     active_detail = f"Error: {last_err_short}" if last_err_short else "Error during processing"
@@ -2586,7 +2604,7 @@ class ProjectPreprocessor:
                 elif phase_str == "lexical":
                     active_detail = f"FTS5 full-text indexing: {source_count}/{total_files} files ({phase_pct}%)"
                 elif phase_str == "rag":
-                    active_detail = f"Vector code embeddings: {rag_files}/{total_files} files ({phase_pct}%)"
+                    active_detail = f"RAG-synced files: {rag_files}/{total_files} files ({phase_pct}%)"
                 elif phase_str == "files":
                     active_detail = f"Generating semantic cards: {effective_file_cards}/{total_files} files ({phase_pct}%)"
                     if pending_stub_cards:
@@ -2624,6 +2642,7 @@ class ProjectPreprocessor:
                     "files": total_files, "file_cards": file_cards, "hashed_files": hashed_files, "rag_files": rag_files,
                     "rag_indexed_files": rag_indexed_files,
                     "rag_chunked_files": rag_chunked_files, "rag_chunks": rag_chunks,
+                    "rag_read_uncertain_files": rag_read_uncertain_files,
                     "lexical_files": source_count,
                     "deterministic_files": det_count if status_str != "complete" else None,
                     "module_cards": module_count, "project_cards": project_card_count,
@@ -2637,7 +2656,6 @@ class ProjectPreprocessor:
                     },
                     "stats": project_stats, "external_indexes": external_indexes,
                 })
-        bg_allowed = self._scheduler_background_allowed()
         global_diagnostic = ""
         if not self.enabled:
             global_diagnostic = "Preprocessing is disabled in config (preprocessing.enabled = false)."
@@ -2651,7 +2669,7 @@ class ProjectPreprocessor:
         elif all(p["status"] == "complete" for p in projects):
             global_diagnostic = f"All {len(projects)} registered project(s) are 100% indexed and up to date."
         elif not bg_allowed:
-            global_diagnostic = "Background processing is yielding to active foreground requests."
+            global_diagnostic = "Background processing is waiting for scheduler capacity."
         else:
             global_diagnostic = "Background preprocessing is actively running."
 
@@ -2672,7 +2690,7 @@ class ProjectPreprocessor:
         "stats_json", "paused", "last_requested_at", "registration_source",
     })
 
-    def _set_project(self, root: str, **values: Any) -> None:
+    def _set_project(self, root: str, *, actor_priority: int = 1, **values: Any) -> None:
         if not values:
             return
         root = self._root(root)
@@ -2688,7 +2706,10 @@ class ProjectPreprocessor:
             raise ValueError(f"_set_project: invalid column(s): {bad}")
         columns = ",".join(f"{key}=?" for key in values)
         params = [*values.values(), root]
-        self._write_retry(lambda con: con.execute(f"UPDATE projects SET {columns} WHERE root=?", params))
+        self._write_retry(
+            lambda con: con.execute(f"UPDATE projects SET {columns} WHERE root=?", params),
+            actor_priority=actor_priority,
+        )
         if complete_transition and not dirty_before_complete and self._dirty_paths_pending(root):
             # Close the race where an event arrives after the first in-memory
             # check but before the completion update reaches SQLite.
@@ -2764,7 +2785,7 @@ class ProjectPreprocessor:
         order_sql, order_params = self._scheduler_order(now)
         watcher_active = bool(getattr(self, "_watcher_active", False))
         if rebalance:
-            self._write_retry(self._rebalance_processing_slots)
+            self._write_retry(self._rebalance_processing_slots, actor_priority=0)
         with self._db_lock, closing(self._connect()) as con:
             rows = con.execute(
                 """SELECT * FROM projects
@@ -2952,7 +2973,7 @@ class ProjectPreprocessor:
     def _next_gpu_project(self) -> sqlite3.Row | None:
         now = time.time()
         order_sql, order_params = self._scheduler_order(now)
-        self._write_retry(self._rebalance_processing_slots)
+        self._write_retry(self._rebalance_processing_slots, actor_priority=0)
         with self._db_lock, closing(self._connect()) as con:
             # GPU-bound phases: files, modules, project, hot_queries
             rows = con.execute(
@@ -3120,6 +3141,7 @@ class ProjectPreprocessor:
                         status="waiting",
                         last_error=str(exc)[:1000],
                         retry_after=time.time() + delay,
+                        actor_priority=0,
                     )
                 except Exception as record_exc:
                     logger.error("Could not record deferred preprocessing state (%s)", type(record_exc).__name__)
@@ -3140,7 +3162,14 @@ class ProjectPreprocessor:
                             logger.warning("Preprocessing error counter reset (%s)", type(stats_exc).__name__)
                     errors = prev + 1
                     backoff = min(float(self.cfg.get("max_error_backoff_seconds", 300)), 2 ** min(errors, 8))
-                    self._set_project(root, status="error", last_error=str(exc)[:1000], retry_after=time.time() + backoff, stats_json=json_dumps({"consecutive_errors": errors}))
+                    self._set_project(
+                        root,
+                        status="error",
+                        last_error=str(exc)[:1000],
+                        retry_after=time.time() + backoff,
+                        stats_json=json_dumps({"consecutive_errors": errors}),
+                        actor_priority=0,
+                    )
                 except Exception as record_exc:
                     logger.error("Could not record preprocessing failure state (%s)", type(record_exc).__name__)
                 finally:
@@ -4212,6 +4241,13 @@ class ProjectPreprocessor:
                 raise _RetryablePreprocessingError(message, retry_after)
             raise RuntimeError(message)
         processed = set(str(x) for x in result.get("processed_paths", []))
+        policy_deleted_paths = result.get("policy_deleted_paths", [])
+        if (
+            not isinstance(policy_deleted_paths, list)
+            or any(type(path) is not str or path not in pending_hashes for path in policy_deleted_paths)
+        ):
+            raise RuntimeError("RAG policy-deleted path result returned an invalid result")
+        processed.update(policy_deleted_paths)
         # A watcher event can leave a deleted file_ref behind after the file has
         # disappeared. RAG intentionally ignores missing paths, so without this
         # cleanup the same pending path is selected forever and the phase spins.
@@ -4368,49 +4404,58 @@ class ProjectPreprocessor:
 
         now = time.time()
         indexed_count = 0
+        def _write_lexical_batch(batch):
+            try:
+                with self._db_lock, closing(self._connect()) as con:
+                    with write_transaction(con, max_duration_seconds=5.0, rollback_label="preprocessor lexical index"):
+                        placeholders = ",".join("?" for _ in batch)
+                        current = {str(item["path"]): (str(item["content_hash"]), int(item["needs_hash"]))
+                                   for item in con.execute(
+                                       f"SELECT path,content_hash,needs_hash FROM file_refs WHERE root=? AND path IN ({placeholders})",
+                                       (root, *(item[0] for item in batch)),
+                                   )}
+                        # Recheck each bounded batch because the watcher may have
+                        # changed file identity while the CPU pool read its bytes.
+                        accepted = []
+                        for rel, expected_hash, file_hash, text in batch:
+                            if current.get(rel) != (expected_hash, 0):
+                                continue
+                            if file_hash != expected_hash:
+                                if hasattr(self, "ingest_cache") and self.ingest_cache is not None:
+                                    self.ingest_cache.invalidate(rel, root=root)
+                                inv = getattr(self.repo_tools, "invalidate_snapshot", None)
+                                if callable(inv):
+                                    inv((base / rel).resolve(strict=False))
+                                con.execute("UPDATE file_refs SET needs_hash=1 WHERE root=? AND path=? AND content_hash=? AND needs_hash=0",
+                                            (root, rel, expected_hash))
+                                continue
+                            accepted.append((rel, expected_hash, text))
+                        if accepted:
+                            accepted_paths = [rel for rel, _, _ in accepted]
+                            accepted_placeholders = ",".join("?" for _ in accepted_paths)
+                            con.executemany(
+                                "INSERT OR REPLACE INTO source_index(root,path,content_hash,text,updated_at) VALUES(?,?,?,?,?)",
+                                [(root, rel, chash, text, now) for rel, chash, text in accepted],
+                            )
+                            con.execute(
+                                f"DELETE FROM source_fts WHERE root=? AND path IN ({accepted_placeholders})",
+                                (root, *accepted_paths),
+                            )
+                            # Include paths so filename and module searches narrow candidates.
+                            con.executemany(
+                                "INSERT INTO source_fts(root,path,content) VALUES(?,?,?)",
+                                [(root, rel, rel + "\n" + text) for rel, _, text in accepted],
+                            )
+                return len(accepted)
+            except TimeoutError as exc:
+                if not str(exc).startswith("SQLite write transaction exceeded its duration budget ") or len(batch) < 2:
+                    raise
+                midpoint = len(batch) // 2
+                return _write_lexical_batch(batch[:midpoint]) + _write_lexical_batch(batch[midpoint:])
+
         for offset in range(0, len(lex_results), _LEXICAL_WRITE_BATCH_SIZE):
             batch = lex_results[offset:offset + _LEXICAL_WRITE_BATCH_SIZE]
-            with self._db_lock, closing(self._connect()) as con:
-                with write_transaction(con, max_duration_seconds=5.0, rollback_label="preprocessor lexical index"):
-                    placeholders = ",".join("?" for _ in batch)
-                    current = {str(item["path"]): (str(item["content_hash"]), int(item["needs_hash"]))
-                               for item in con.execute(
-                                   f"SELECT path,content_hash,needs_hash FROM file_refs WHERE root=? AND path IN ({placeholders})",
-                                   (root, *(item[0] for item in batch)),
-                               )}
-                    # Recheck each bounded batch because the watcher may have
-                    # changed file identity while the CPU pool read its bytes.
-                    accepted = []
-                    for rel, expected_hash, file_hash, text in batch:
-                        if current.get(rel) != (expected_hash, 0):
-                            continue
-                        if file_hash != expected_hash:
-                            if hasattr(self, "ingest_cache") and self.ingest_cache is not None:
-                                self.ingest_cache.invalidate(rel, root=root)
-                            inv = getattr(self.repo_tools, "invalidate_snapshot", None)
-                            if callable(inv):
-                                inv((base / rel).resolve(strict=False))
-                            con.execute("UPDATE file_refs SET needs_hash=1 WHERE root=? AND path=? AND content_hash=? AND needs_hash=0",
-                                        (root, rel, expected_hash))
-                            continue
-                        accepted.append((rel, expected_hash, text))
-                    if accepted:
-                        accepted_paths = [rel for rel, _, _ in accepted]
-                        accepted_placeholders = ",".join("?" for _ in accepted_paths)
-                        con.executemany(
-                            "INSERT OR REPLACE INTO source_index(root,path,content_hash,text,updated_at) VALUES(?,?,?,?,?)",
-                            [(root, rel, chash, text, now) for rel, chash, text in accepted],
-                        )
-                        con.execute(
-                            f"DELETE FROM source_fts WHERE root=? AND path IN ({accepted_placeholders})",
-                            (root, *accepted_paths),
-                        )
-                        # Include paths so filename and module searches narrow candidates.
-                        con.executemany(
-                            "INSERT INTO source_fts(root,path,content) VALUES(?,?,?)",
-                            [(root, rel, rel + "\n" + text) for rel, _, text in accepted],
-                        )
-                        indexed_count += len(accepted)
+            indexed_count += _write_lexical_batch(batch)
         with self._stats_lock:
             self._stats["lexical_files"] = self._stats.get("lexical_files", 0) + indexed_count
         self._record_progress(root, indexed_count)
@@ -5204,8 +5249,15 @@ class ProjectPreprocessor:
             and bool(prep_cfg.get("cpu_runs_during_foreground", False))
             and bool(getattr(self.background_gpu, "cpu_fallback_enabled", False))
         )
-        if (state_dir is not None and (mode is None or not preprocessing_mode_ready(state_dir, mode))
-                and not active_cpu_fallback):
+        if (
+            state_dir is not None
+            and (
+                mode is None
+                or mode.degraded
+                or (mode.mode != "active" and not preprocessing_mode_ready(state_dir, mode))
+            )
+            and not active_cpu_fallback
+        ):
             return operational_mode_gate_error(mode, "preprocess")
         if active_cpu_fallback:
             yielded = self._stop.is_set() or self._paused.is_set() or not self._background_work_allowed()

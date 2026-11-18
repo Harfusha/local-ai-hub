@@ -1643,6 +1643,8 @@ def test_async_job_actions_are_rejected_when_async_jobs_are_disabled(monkeypatch
     assert result == {
         "success": False,
         "unsupported": True,
+        "terminal": True,
+        "retryable": False,
         "error": "Async job lifecycle is disabled (async_jobs.enabled=false)",
     }
     assert calls == []

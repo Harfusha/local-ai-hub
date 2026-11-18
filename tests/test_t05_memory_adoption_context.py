@@ -44,6 +44,7 @@ def test_task_memory_snapshot_preserves_freshness_provenance_and_evidence(tmp_pa
             ScopeContext(repository_id=repository_memory_id(root, state), task_id="memory-task"),
             task_id="memory-task",
             repo_root=str(root),
+        root=str(root),
         )
     finally:
         trace_context.reset_context(token)
@@ -81,6 +82,7 @@ def test_task_memory_fallback_is_bounded_and_does_not_echo_error_or_secret(tmp_p
             ScopeContext(repository_id=repository_memory_id(root, state), task_id="fallback-task"),
             task_id="fallback-task",
             repo_root=str(root),
+        root=str(root),
         )
     finally:
         trace_context.reset_context(token)
@@ -122,6 +124,7 @@ def test_task_resume_recompiles_context_after_memory_becomes_stale(tmp_path: Pat
             ScopeContext(repository_id=repository_memory_id(root, state), task_id="stale-task"),
             task_id="stale-task",
             repo_root=str(root),
+        root=str(root),
         )
         assert [item["id"] for item in task.checkpoint.state_data["memory_context"]["items"]] == [record.record_id]
         memory._save_record(replace(record, status=MemoryStatus.STALE))
@@ -197,12 +200,14 @@ def test_task_creation_shares_repository_memory_across_worktrees_and_isolates_id
             ScopeContext(repository_id=repository_memory_id(root, state), clone_id="clone-a", worktree_id="worktree-a", task_id="task-a"),
             task_id="task-a",
             repo_root=str(root),
+        root=str(root),
         )
         task_b = tasks.create(
             GoalContract(goal="inspect worktree b"),
             ScopeContext(repository_id=repository_memory_id(root, state), clone_id="clone-b", worktree_id="worktree-b", task_id="task-b"),
             task_id="task-b",
             repo_root=str(root),
+        root=str(root),
         )
     finally:
         trace_context.reset_context(token)

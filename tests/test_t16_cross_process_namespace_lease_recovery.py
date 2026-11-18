@@ -43,7 +43,7 @@ if not coordination_id:
 scopes = ScopeLeaseStore(state)
 if mode in {"claim", "busy", "independent", "reclaim"}:
     owner = {"claim": "owner-a", "busy": "owner-b", "independent": "owner-c", "reclaim": "owner-b"}[mode]
-    claim = scopes.claim(owner=owner, root=str(root), paths=["src/owned.txt"], ttl_seconds=90, coordination_id=coordination_id)
+    claim = scopes.claim(owner=owner, root=str(root), root=str(root), paths=["src/owned.txt"], ttl_seconds=90, coordination_id=coordination_id)
     if mode == "busy":
         print(json.dumps({"coordination_id": coordination_id, "claim": claim}))
         raise SystemExit(0)

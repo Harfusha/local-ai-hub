@@ -32,6 +32,7 @@ def test_restored_background_gate_precedes_gpu_access(tmp_path):
     set_operational_mode(tmp_path, "gaming")
     processor = ProjectPreprocessor.__new__(ProjectPreprocessor)
     processor.state_dir = tmp_path
+    processor.config = {"server": {"state_dir": str(tmp_path)}}
     processor._gpu_yield = lambda: pytest.fail("GPU accessed while paused")
     result = processor._run_background_generate("model", "prompt", "system", {}, 64, "preprocess:test")
     assert result["success"] is False

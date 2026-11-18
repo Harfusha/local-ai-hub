@@ -2996,6 +2996,7 @@ class LocalAIApp:
         *,
         root: str,
         _server_baseline: Mapping[str, str] | None = None,
+        _record_capture_observation: bool = True,
     ) -> dict[str, Any]:
         """Run a caller-requested typed shadow decision without changing Hub behavior."""
         if not self._laya_inference_enabled():
@@ -3118,12 +3119,14 @@ class LocalAIApp:
             except Exception as exc:
                 captured["capture_status"] = "failed"
                 captured["capture_error_type"] = type(exc).__name__
-                self._record_laya_capture_observation(
-                    "failed", "capture_exception", error_type=type(exc).__name__
-                )
+                if _record_capture_observation:
+                    self._record_laya_capture_observation(
+                        "failed", "capture_exception", error_type=type(exc).__name__
+                    )
                 raise
             captured["capture_status"] = "captured"
-            self._record_laya_capture_observation("captured", "runtime_outcome")
+            if _record_capture_observation:
+                self._record_laya_capture_observation("captured", "runtime_outcome")
 
         outcome = adapter.evaluate_decision(
             request,
@@ -3137,7 +3140,8 @@ class LocalAIApp:
         if capture_status is None:
             capture_status = "failed"
             reason = "runtime_error" if outcome.runtime is None else "outcome_not_captured"
-            self._record_laya_capture_observation("failed", reason)
+            if _record_capture_observation:
+                self._record_laya_capture_observation("failed", reason)
         return {
             "success": decision.success,
             "decision": {
@@ -3228,6 +3232,7 @@ class LocalAIApp:
             "runtime_outcome", "queued", "unspecified", "capture_exception",
             "checkpoint_unavailable", "decision_scope_unavailable",
             "decision_evidence_unavailable", "decision_context_unavailable", "decision_invalid",
+            "decision_outcome",
             "completion_outcome", "completion_outcome_unavailable",
             "completion_no_candidate", "completion_scope_unavailable",
         }
@@ -3242,7 +3247,7 @@ class LocalAIApp:
             "bypass_reason": safe_reason,
             "success": safe_status != "failed",
         }
-        if safe_status == "failed" and error_type:
+        if error_type:
             event["error_type"] = error_type
         try:
             recorder(**event)
@@ -3618,12 +3623,15 @@ class LocalAIApp:
             raise
         status = observation.get("status") if isinstance(observation, dict) else "failed"
         reason = observation.get("reason") if isinstance(observation, dict) else "outcome_not_captured"
+        error_type = observation.get("error_type") if isinstance(observation, dict) else None
         if status == "queued":
             reason = "queued"
         elif not isinstance(reason, str):
             reason = "unspecified"
         if status != "queued":
-            self._record_laya_capture_observation(status, reason)
+            self._record_laya_capture_observation(
+                status, reason, error_type=error_type if isinstance(error_type, str) else ""
+            )
         return observation
 
     def _capture_laya_context_source_from_context(
@@ -3659,8 +3667,11 @@ class LocalAIApp:
             request_session = str(getattr(request, "session_id", "") or "").strip()
             if request_session and request_session != session_id:
                 return {"status": "skipped", "reason": "session_identity_mismatch"}
-        except (OSError, RuntimeError, ValueError):
-            return {"status": "skipped", "reason": "task_scope_unavailable"}
+        except (OSError, RuntimeError, ValueError) as exc:
+            return {
+                "status": "skipped", "reason": "task_scope_unavailable",
+                "error_type": type(exc).__name__,
+            }
 
         retrieval = result.get("retrieval")
         evidence_rows = result.get("evidence")
@@ -3957,6 +3968,7 @@ class LocalAIApp:
                 elif isinstance(request, dict) and request.get("action") == "evaluate_decision":
                     result = self.evaluate_laya_decision(
                         request, root=root, _server_baseline=baseline,
+                        _record_capture_observation=False,
                     )
                 elif isinstance(request, dict) and request.get("action") == "record_completion_outcome":
                     operation = request.get("operation")
@@ -3974,7 +3986,10 @@ class LocalAIApp:
                     raise ValueError("unsupported queued Laya observation")
                 candidate = result.get("candidate") if isinstance(result, dict) else None
                 if request.get("action") == "evaluate_decision":
-                    if not (isinstance(candidate, dict) and candidate):
+                    if isinstance(candidate, dict) and candidate:
+                        self._record_laya_capture_observation("captured", "decision_outcome")
+                    else:
+                        self._record_laya_capture_observation("failed", "outcome_not_captured")
                         self.logger.warning("Laya shadow outcome was not captured")
                     continue
                 if isinstance(candidate, dict) and candidate:

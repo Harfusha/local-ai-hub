@@ -1014,18 +1014,18 @@ def test_16_env_compatibility(tmp_path: Path):
 def test_17_agent_memory_entity_relations(tmp_path: Path):
     state_store = AgentStateStore(tmp_path / "agent_state.sqlite3")
     store = MemoryStore(state_store)
-    rec = store.record_relation("auth_module", "depends_on", "crypto_lib", weight=0.95)
+    rec = store.record_relation("auth_module", "depends_on", "crypto_lib", weight=0.95, root=str(tmp_path))
     assert rec["success"] is True
     assert rec["source_entity"] == "auth_module"
     assert rec["relation"] == "depends_on"
     assert rec["target_entity"] == "crypto_lib"
 
-    found = store.find_relations("auth_module")
+    found = store.find_relations("auth_module", root=str(tmp_path))
     assert len(found) == 1
     assert found[0]["target_entity"] == "crypto_lib"
 
-    store.record_relation("crypto_lib", "uses", "openssl", weight=0.8)
-    trav = store.traverse_graph("auth_module", max_depth=2)
+    store.record_relation("crypto_lib", "uses", "openssl", weight=0.8, root=str(tmp_path))
+    trav = store.traverse_graph("auth_module", max_depth=2, root=str(tmp_path))
     assert trav["success"] is True
     assert "auth_module" in trav["nodes"]
     assert "crypto_lib" in trav["nodes"]

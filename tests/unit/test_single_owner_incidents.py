@@ -13,7 +13,7 @@ def _capture(store, root, agent="agent-a"):
     return store.capture(ToolOutcome(
         tool_name="command", command="python check.py", exit_code=1,
         error="SyntaxError: invalid syntax in module.py", state_revision="revision-one",
-        repository_root=str(root), metadata={"agent": agent, "root_cause": "invalid syntax"},
+        repository_root=str(root), root=str(root), metadata={"agent": agent, "root_cause": "invalid syntax"},
     ))
 
 

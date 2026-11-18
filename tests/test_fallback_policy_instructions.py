@@ -14,6 +14,11 @@ OBSOLETE_FALLBACK_POLICY = (
     "permitted ONLY when Local AI Hub is unavailable",
     "a policy denial must never be retried through native shell",
 )
+HOST_COMMAND_POLICY = (
+    "If active MCP schema exposes no action",
+    "skip Hub and run one bounded host command directly",
+    "This needs no Hub failure result",
+)
 
 
 def test_native_fallback_policy_distinguishes_unknown_commands_and_is_synced() -> None:
@@ -26,3 +31,7 @@ def test_native_fallback_policy_distinguishes_unknown_commands_and_is_synced() -
             assert required_text in contents, f"{relative_path} is missing: {required_text}"
         for obsolete_text in OBSOLETE_FALLBACK_POLICY:
             assert obsolete_text not in contents, f"{relative_path} retains: {obsolete_text}"
+
+    project_policy = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
+    for required_text in HOST_COMMAND_POLICY:
+        assert required_text in project_policy, f"AGENTS.md is missing: {required_text}"

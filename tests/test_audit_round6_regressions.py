@@ -475,8 +475,7 @@ def test_t6_09_automation_open_close_does_not_hold_broker_lock(tmp_path: Path):
         backend_factory=factory,
     )
     open_res = broker.execute(
-        root=str(tmp_path),
-        task_id="t1",
+        root=str(tmp_path), task_id="t1",
         request={"op": "open", "mode": "isolated", "url": "http://localhost:8000/"},
     )
     assert open_res["success"] is True
@@ -490,16 +489,14 @@ def test_t6_09_automation_open_close_does_not_hold_broker_lock(tmp_path: Path):
     assert expired_id not in broker.sessions
 
     close_res = broker.execute(
-        root=str(tmp_path),
-        task_id="t1",
+        root=str(tmp_path), task_id="t1",
         request={"op": "open", "mode": "isolated", "url": "http://localhost:8000/"},
     )
     assert close_res["success"] is True
     assert broker_lock_during_factory is True
 
     closed_res = broker.execute(
-        root=str(tmp_path),
-        task_id="t1",
+        root=str(tmp_path), task_id="t1",
         request={"op": "close", "session_id": close_res["automation"]["session_id"], "session_key": close_res["automation"]["session_key"]},
     )
     assert closed_res["success"] is True
@@ -582,6 +579,15 @@ def test_t6_10_find_negative_knowledge_fts_ranks_old_rows_with_sql_limit(
         root_cause="rarecalibrationword from another repository",
         updated_at=2000.0,
     )
+    _insert_t6_10_incident(
+        store,
+        incident_id="sqlite-busy",
+        root=root,
+        signature="sqlite-busy",
+        message="database is locked",
+        root_cause="SQLite write contention",
+        updated_at=3000.0,
+    )
 
     observed_queries: list[tuple[str, tuple[object, ...]]] = []
     real_connect = incident_module.connect_sqlite
@@ -594,6 +600,9 @@ def test_t6_10_find_negative_knowledge_fts_ranks_old_rows_with_sql_limit(
             if "WITH ranked AS (" in sql:
                 observed_queries.append((sql, tuple(params)))
             return self.connection.execute(sql, params)
+
+        def create_function(self, *args: object, **kwargs: object) -> None:
+            self.connection.create_function(*args, **kwargs)
 
         def close(self) -> None:
             self.connection.close()
@@ -616,6 +625,12 @@ def test_t6_10_find_negative_knowledge_fts_ranks_old_rows_with_sql_limit(
     assert "BM25(" in sql.upper()
     assert "LIMIT ?" in sql.upper()
     assert params[-1] == 200
+
+    observed_queries.clear()
+    results = store.find_negative_knowledge(root=root, query="backoff", limit=5)
+    assert [item["incident_id"] for item in results] == ["sqlite-busy"]
+    assert len(observed_queries) == 1
+    assert "MATCH" in observed_queries[0][0].upper()
 
 
 def test_t6_10_query_local_fts_tracks_update_delete_without_persistent_schema(tmp_path: Path):
@@ -718,7 +733,7 @@ def test_t6_12_background_gpu_model_not_in_details_rejects_session(tmp_path: Pat
 # ==============================================================================
 # T6-13: Task Search Index Backfill Skips Unchanged Documents
 # ==============================================================================
-def test_t6_13_task_search_backfill_fast_path(tmp_path: Path):
+def test_t6_13_task_search_backfill_fast_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     """C13: _backfill_task_search_index skips trigram parsing when document matches."""
     db_path = tmp_path / "tasks.db"
     con = sqlite3.connect(db_path)
@@ -738,7 +753,12 @@ def test_t6_13_task_search_backfill_fast_path(tmp_path: Path):
         doc_count = con.execute("SELECT COUNT(*) FROM agent_task_search_documents").fetchone()[0]
         assert doc_count == 1
 
-        # Second backfill hits fast path without rewriting or throwing
+        # An unchanged document must skip parsing its JSON fields and rebuilding trigrams.
+        def unexpected_reparse(*_args: Any, **_kwargs: Any) -> Any:
+            pytest.fail("unchanged task search document was reparsed")
+
+        monkeypatch.setattr(TaskStore, "_searchable_task_fields", unexpected_reparse)
+        monkeypatch.setattr(TaskStore, "_search_grams", unexpected_reparse)
         TaskStore._backfill_task_search_index(con)
     finally:
         con.close()

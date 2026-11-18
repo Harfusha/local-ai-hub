@@ -1379,7 +1379,7 @@ def test_relation_event_failure_rolls_back_relation_projection(tmp_path):
         )
 
     with pytest.raises(sqlite3.IntegrityError, match="relation event fault"):
-        memory.record_relation("source", "relates_to", "target")
+        memory.record_relation("source", "relates_to", "target", root=str(tmp_path))
 
     with closing(sqlite3.connect(db_path)) as con:
         assert con.execute("SELECT COUNT(*) FROM agent_entity_relations").fetchone()[0] == 0

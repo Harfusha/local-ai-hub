@@ -196,6 +196,7 @@ def owned_verification_context(tmp_path: Path, root: Path, artifacts: FakeArtifa
         task_id=task_id,
         actor="work-order-owner",
         repo_root=str(root),
+    root=str(root),
     )
     tasks.transition(task_id, TaskStatus.ACTIVE, reason="start bounded work",
                      actor="work-order-owner", idempotency_key="start-bounded-work")

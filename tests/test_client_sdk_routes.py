@@ -512,8 +512,7 @@ def test_sdk_coord_pubsub_poll_maps_payload_to_production_handler(
     before = len(http_post_paths)
     result = client.coord(
         "pubsub_poll",
-        root=str(tmp_path),
-        topic="release",
+        root=str(tmp_path), topic="release",
         after_ts=123.5,
         limit=3,
     )
@@ -557,8 +556,7 @@ def test_sdk_coord_pubsub_poll_none_timestamp_keeps_sequence_cursor(
     before = len(http_post_paths)
     result = client.coord(
         "pubsub_poll",
-        root=str(tmp_path),
-        topic="release",
+        root=str(tmp_path), topic="release",
         after_ts=None,
         after_seq=7,
         limit=2,

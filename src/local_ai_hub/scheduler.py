@@ -132,6 +132,7 @@ class Job:
     deadline: float | None = None
     fairness_wait_ms: float = 0.0
     fairness_checked_at: float | None = None
+    capacity_retry_at: float = 0.0
     model_switch_receipt: dict[str, Any] | None = None
     gpu_capacity_lease: dict[str, Any] | None = None
 
@@ -1341,27 +1342,37 @@ class AffinityScheduler:
     def _claim_job_capacity(self, job: Job) -> bool:
         store = getattr(self, "_external_gpu_store", None)
         if store is None or not self._capacity_sharing_active():
+            job.capacity_retry_at = 0.0
             return True
+        now = time.monotonic()
+        if job.capacity_retry_at > now:
+            return False
         if job.gpu_capacity_lease is not None:
             return True
         admission = self._admission(background=job.background, model=job.model)
         if (admission.get("state") not in {"accepted", "degraded"}
                 or admission.get("vram_admission") != "admitted"):
             job.admission = admission
+            if admission.get("retryable") is True:
+                job.capacity_retry_at = now + 1.0
             return False
         required = admission.get("vram_incremental_required_bytes")
         if not isinstance(required, int) or isinstance(required, bool):
+            job.capacity_retry_at = now + 1.0
             return False
         job.admission = admission
         if required == 0:
+            job.capacity_retry_at = 0.0
             return True
         total = admission.get("vram_budget_bytes")
         available = admission.get("vram_available_bytes")
         if not isinstance(total, int) or not isinstance(available, int):
+            job.capacity_retry_at = now + 1.0
             return False
         internal = self._owned_internal_gpu_digest()
         snapshot = store.capacity_snapshot(expected_internal_digest=internal) if internal else store.capacity_snapshot()
         if snapshot is None:
+            job.capacity_retry_at = now + 1.0
             return False
         reservation = snapshot["reservation"]
         try:
@@ -1376,10 +1387,13 @@ class AffinityScheduler:
                 expected_internal_digest=internal,
             )
         except (OSError, ValueError):
+            job.capacity_retry_at = now + 1.0
             return False
         if lease is None:
+            job.capacity_retry_at = now + 1.0
             return False
         job.gpu_capacity_lease = lease
+        job.capacity_retry_at = 0.0
         return True
 
     def _claim_internal_gpu(self) -> bool:
@@ -1775,12 +1789,20 @@ class AffinityScheduler:
         """True when background work should yield before starting another micro-step."""
         with self._cond:
             foreground_inflight = self._inflight - self._inflight_background
-            return bool(self._external_gpu_reserved() or self._capacity_sharing_active() or foreground_inflight > 0 or any(not j.background for j in self._pending) or self._switching)
+            foreground_ready = any(
+                not j.background and j.capacity_retry_at <= time.monotonic()
+                for j in self._pending
+            )
+            return bool(self._external_gpu_reserved() or self._capacity_sharing_active() or foreground_inflight > 0 or foreground_ready or self._switching)
 
     def background_allowed(self, *, require_switch_idle: bool = False) -> bool:
         with self._cond:
             now = time.monotonic()
-            if self._external_gpu_reserved() or self._capacity_sharing_active() or self._inflight - self._inflight_background > 0 or any(not j.background for j in self._pending):
+            foreground_ready = any(
+                not j.background and j.capacity_retry_at <= now
+                for j in self._pending
+            )
+            if self._external_gpu_reserved() or self._capacity_sharing_active() or self._inflight - self._inflight_background > 0 or foreground_ready:
                 return False
             grace = self.background_switch_grace if require_switch_idle else self.background_idle_grace
             return now - self._last_foreground_activity >= grace
@@ -1794,10 +1816,12 @@ class AffinityScheduler:
             self._stats["background_yields"] += 1
 
     def _foreground_pending_jobs(self) -> list[Job]:
-        return [j for j in self._pending if not j.background]
+        now = time.monotonic()
+        return [j for j in self._pending if not j.background and j.capacity_retry_at <= now]
 
     def _background_pending_jobs(self) -> list[Job]:
-        return [j for j in self._pending if j.background]
+        now = time.monotonic()
+        return [j for j in self._pending if j.background and j.capacity_retry_at <= now]
 
     def _eligible_jobs(self, now: float) -> list[Job]:
         foreground = self._foreground_pending_jobs()

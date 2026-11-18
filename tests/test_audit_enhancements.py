@@ -56,17 +56,18 @@ def test_agent_memory_auto_linking(tmp_path):
         key="auth_strategy",
         value="Use JWT tokens in src/auth/service.py and refresh tokens in src/auth/refresh.py",
         confidence=0.9,
+        provenance={"root": str(tmp_path)},
     )
     saved = mem_store.record(rec)
     assert saved.record_id == rec.record_id
 
-    rels = mem_store.find_relations(source_entity=rec.record_id)
+    rels = mem_store.find_relations(source_entity=rec.record_id, root=str(tmp_path))
     assert len(rels) >= 2
     rel_types = {r["relation"] for r in rels}
     assert "defines" in rel_types
     assert "scoped_in" in rel_types
 
-    target_rels = mem_store.find_relations(source_entity="auth_strategy")
+    target_rels = mem_store.find_relations(source_entity="auth_strategy", root=str(tmp_path))
     target_entities = {r["target_entity"] for r in target_rels}
     assert any("service.py" in t for t in target_entities)
 

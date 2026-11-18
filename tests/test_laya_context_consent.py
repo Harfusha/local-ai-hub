@@ -196,8 +196,7 @@ def test_evaluate_context_source_keeps_memory_ids_out_of_model_input(tmp_path, m
                 "training_content": {"task_input": "Find missing evidence."},
             },
         },
-        root=str(tmp_path),
-    )
+        root=str(tmp_path), )
 
     assert result["success"] is True
     assert observed["candidate"]["source_record_ids"] == [None, None, "mem-task"]

@@ -31,7 +31,7 @@ def test_gpu_loop_survives_scheduler_selection_timeout() -> None:
     preprocessor._background_work_allowed = lambda: True
     calls = 0
 
-    def next_project():
+    def next_project(**_kwargs):
         nonlocal calls
         calls += 1
         if calls == 1:
@@ -74,7 +74,7 @@ def test_cpu_loop_survives_scheduler_selection_timeout(monkeypatch) -> None:
     preprocessor._run_idle_database_maintenance = lambda: None
     calls = 0
 
-    def next_project():
+    def next_project(**_kwargs):
         nonlocal calls
         calls += 1
         if calls == 1:

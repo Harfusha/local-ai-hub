@@ -14,8 +14,7 @@ def _get_task_memory(store, record_id, *, task_id, root):
         record_id,
         scope=AgentScope.TASK,
         scope_id=task_id,
-        root=str(root),
-        task_id=task_id,
+        root=str(root), task_id=task_id,
     )
 
 

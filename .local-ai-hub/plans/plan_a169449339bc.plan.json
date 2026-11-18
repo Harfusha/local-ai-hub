@@ -16,14 +16,14 @@
         "Model weights and unrelated project source are excluded.",
         "Focused export tests pass and diff has no whitespace errors."
       ],
-      "blocker": "Agent OS task still has no bound session; plan_reconcile_steering could not bind it. Plan task was updated through plan_task_edit.",
+      "blocker": "Focused export tests pass; source SHA-256 36b53cec1ad370c7e664770b5482d42efecd95ac373ff0ad4826dff0f487c332 was reviewed manually. A local semantic review returned terminal outcome_unknown (request req_830a31a6a624) and was not retried; a separate review attempt could not fit the oversized dirty diff. Referenced Agent OS task returned terminal 404 and this plan has no authentic session_id. Large ZIP64 boundary is now verified end-to-end; live download/restore acceptance remains unrun.",
       "clarifications": [],
       "depends_on": [],
       "description": "Implement installation-wide support ZIP: Local AI Hub source, redacted effective configuration, all retained Hub operational databases/logs/traces across projects; large ZIP64 stream with configurable caps and download password.",
       "kind": "code",
-      "next_action": "Complete independent semantic review and verify Agent OS task state.",
+      "next_action": "Keep task open. Need qualified independent semantic review and authentic session identity before bind/close, plus live download/restore acceptance. Do not retry unknown semantic request or treat ZIP64 smoke as runtime acceptance.",
       "title": "Expand encrypted diagnostics export into full support ZIP",
-      "work_status": "completed"
+      "work_status": "in_progress"
     }
   },
   "title": "Encrypted Local AI Hub diagnostic export"

@@ -2384,8 +2384,7 @@ def test_successful_short_command_creates_auditable_verification_evidence(tmp_pa
         ScopeContext(task_id="task-proof"),
         task_id="task-proof",
         actor=owner,
-        repo_root=str(tmp_path),
-        repository_revision=revision,
+        repo_root=str(tmp_path), repository_revision=revision,
     )
     artifacts = ArtifactStore(tmp_path / "artifacts")
     verification = VerificationStore(state, task_store=tasks, artifact_store=artifacts)

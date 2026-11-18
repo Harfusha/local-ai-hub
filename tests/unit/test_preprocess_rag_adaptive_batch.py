@@ -183,7 +183,7 @@ def test_real_rag_preemption_preserves_snapshot_and_reduces_batch(tmp_path, monk
     chunks = ['original chunk']
     monkeypatch.setattr(rag, '_chunks', lambda _text, path='': list(chunks))
     workspace = 'preemption-test'
-    assert rag.index_paths_step(root=str(root), workspace=workspace, paths=['module.py'])['success']
+    assert rag.index_paths_step(root=str(root), root=str(root), workspace=workspace, paths=['module.py'])['success']
     with closing(rag._connect()) as con:
         before = con.execute('SELECT chunk_no, text FROM chunks WHERE workspace=? ORDER BY chunk_no', (workspace,)).fetchall()
 

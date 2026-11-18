@@ -34,8 +34,7 @@ def test_deleted_memory_record_replay_is_tombstoned_after_reopen(tmp_path):
         saved.record_id,
         scope=AgentScope.REPOSITORY,
         scope_id=str(root),
-        root=str(root),
-        repository_id=str(root),
+        root=str(root), repository_id=str(root),
     )
     with closing(connect_sqlite(db_path)) as con:
         payloads = [
@@ -71,12 +70,10 @@ def test_deleted_memory_record_replay_is_tombstoned_after_reopen(tmp_path):
     assert reopened.get(
         saved.record_id,
         scope=AgentScope.REPOSITORY,
-        root=str(root),
-        repository_id=str(root),
+        root=str(root), repository_id=str(root),
     ) is None
     assert reopened.find(
         scope=AgentScope.REPOSITORY,
-        root=str(root),
-        repository_id=str(root),
+        root=str(root), repository_id=str(root),
         semantic=False,
     ) == []

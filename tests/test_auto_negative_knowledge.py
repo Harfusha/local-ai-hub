@@ -22,8 +22,7 @@ def test_auto_mint_negative_knowledge_missing_module(store: IncidentStore, tmp_p
         error="ModuleNotFoundError: No module named 'fastapi'",
         exit_code=1,
         state_revision="rev-1",
-        repository_root=str(root),
-    )
+        repository_root=str(root), )
     incident = store.capture(outcome)
     assert incident is not None
     assert "fastapi" in (incident.root_cause or "")
@@ -44,8 +43,7 @@ def test_auto_mint_negative_knowledge_sqlite_lock(store: IncidentStore, tmp_path
         error="sqlite3.OperationalError: database is locked",
         exit_code=1,
         state_revision="rev-2",
-        repository_root=str(root),
-    )
+        repository_root=str(root), )
     incident = store.capture(outcome)
     assert incident is not None
     assert "lock" in (incident.root_cause or "").lower()
@@ -66,8 +64,7 @@ def test_find_negative_knowledge_by_query(store: IncidentStore, tmp_path: Path):
         error="ModuleNotFoundError: No module named 'requests'",
         exit_code=1,
         state_revision="rev-3",
-        repository_root=str(root),
-    ))
+        repository_root=str(root), ))
     results = store.find_negative_knowledge("requests", root=str(root))
     assert len(results) >= 1
     assert "requests" in results[0]["root_cause"]

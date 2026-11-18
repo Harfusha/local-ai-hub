@@ -25,5 +25,5 @@ def test_memory_apis_reject_retired_tenant_keyword_before_storage(call, tmp_path
         elif call == "get":
             store.get("record-1", scope=AgentScope.REPOSITORY, tenant="")
         else:
-            with store.task_retrieval_scope("goal", root=str(tmp_path), task_id="task-1", tenant=7):
+            with store.task_retrieval_scope("goal", root=str(tmp_path), root=str(tmp_path), task_id="task-1", tenant=7):
                 pass

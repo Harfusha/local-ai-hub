@@ -3225,10 +3225,9 @@ class RepositoryTools:
         search_phase_timings_ms["candidate_scan_ms"] = round(
             (time.perf_counter() - candidate_scan_started) * 1000.0, 1,
         )
-        # A timeout/error from both bounded accelerators must not trigger an
-        # unbounded O(repository) Python scan. A valid accelerated zero result is
-        # still final; Python remains the fallback only when no accelerator exists.
-        if not accelerated and accelerator_failed:
+        # A timeout/error must not trigger an unbounded O(repository) Python scan.
+        # Validated project candidates keep fallback bounded; accelerated zero stays final.
+        if not accelerated and accelerator_failed and not project_candidates:
             return {
                 "success": False,
                 "root": str(base),

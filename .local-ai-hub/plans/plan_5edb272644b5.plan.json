@@ -80,12 +80,12 @@
         "Verified completion pass/reject captures a typed next-step shadow decision with bounded acceptance and validation context; waiver skips inference; raw command output is excluded.",
         "No synthetic inference, model installation, training, benchmark, advisory activation or data export."
       ],
-      "blocker": "One authentic task-scoped completion_gap example is captured with candidate id laya_c34f2ebb3ccc426ab111064ec47847c6 and runtime_output_recorded=true. Terminal outcome linkage remains unverified. The current repository's card-enrichment backlog is 1,537 with 0 failures; root remains queued in RAG at 56.8% while 9 projects are processing.",
+      "blocker": "Root-scoped candidate listing confirms 5 pending Laya candidates. Candidate laya_c34f2ebb3ccc426ab111064ec47847c6 has one successful shadow runtime output (baseline not_ready, Laya resolve_blocker), plus at least 34 linked completion_outcome rejections (completion_gate_rejected); runtime history continues. No accepted completion outcome observed. Laya runtime is configured_unverified, not resident; execution_verification=NOT_VERIFIED and quality_status=NOT_EVALUATED. Preprocessing remains in RAG at 56.8% with 1,537 pending file-card stubs and 0 failed enrichments. Existing reliability plan requires preserving all capacity leases.",
       "clarifications": [],
       "depends_on": [],
       "description": "Capture useful task- and evidence-scoped examples from all existing eligible shadow decision paths: context-source retrieval; automatic model route and context budget; adaptive pipeline delegation, next-step and redundant-stage decisions; task completion outcomes; and watchdog lifecycle. Add a next-step shadow decision after verified Agent OS completion validation, using bounded task acceptance context and typed passed/rejected result. Preserve the existing completion outcome event with task/session scope. Keep deterministic behavior authoritative, inference local and shadow-only, examples redacted, and source evidence verifiable. Exclude unrelated unscoped conversations, raw command output and fabricated identities.",
       "kind": "code",
-      "next_action": "Verify the captured candidate and terminal outcome through an authorized root-scoped inventory path; then let the preprocessing queue run and confirm file-card counts increase before expanding to more categories.",
+      "next_action": "Keep Laya shadow-only and avoid synthetic inference/training. Preserve capacity leases and do not replay outcome_unknown requests. After the blocked capacity/mode transition is safely resolved under current steering, verify natural completion outcome linkage and preprocessing card-enrichment progress.",
       "title": "Capture natural examples across Laya decision points",
       "work_phase": "implementation",
       "work_status": "in_progress"

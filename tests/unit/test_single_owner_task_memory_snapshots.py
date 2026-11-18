@@ -236,7 +236,7 @@ def test_resume_refreshes_memory_before_agent_audit_then_keeps_gate(tmp_path):
 @pytest.mark.parametrize("value", [None, "", False, "former-owner"])
 def test_consistency_request_rejects_retired_identity(tmp_path, value):
     with pytest.raises(TypeError, match="tenant"):
-        ConsistencyRequest(root=str(tmp_path), tenant=value)
+        ConsistencyRequest(root=str(tmp_path), root=str(tmp_path), tenant=value)
     with pytest.raises(ValueError, match="retired"):
         ConsistencyRequest.from_dict({"root": str(tmp_path), "tenant": value})
 
@@ -246,5 +246,5 @@ def test_guard_does_not_publish_retired_metadata_using_root_fallback(tmp_path):
     guard = AgentConsistencyGuard(
         SimpleNamespace(config={}), memory_store=SimpleNamespace(record=lambda *args, **kwargs: stored.append(args)),
     )
-    guard._record_memory("fact", {"root": str(tmp_path), "tenant": None}, root=str(tmp_path), stable_key="fact", value="value")
+    guard._record_memory("fact", {"root": str(tmp_path), "tenant": None}, root=str(tmp_path), root=str(tmp_path), stable_key="fact", value="value")
     assert stored == []

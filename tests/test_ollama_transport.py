@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import threading
 from contextlib import contextmanager, nullcontext
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -47,7 +48,9 @@ def test_prepare_model_checks_admission_after_unload_before_target_load() -> Non
     runtime.llama_cpp = LlamaCpp()
     runtime.model_policy = Policy()
     runtime.ensure_running = lambda: True
-    runtime.loaded_model_details = lambda **_kwargs: [{"name": "resident-model", "context_length": 4096}]
+    runtime.loaded_model_details = lambda **_kwargs: ([
+        {"name": "target-model", "context_length": 4096, "size_bytes": 100, "vram_bytes": 100, "cpu_bytes": 0}
+    ] if "load:/api/generate" in events else [{"name": "resident-model", "context_length": 4096}])
     runtime.unload_model = lambda model, **_kwargs: events.append(f"unload:{model}") or True
     runtime._is_embedding_model = lambda _model: False
     runtime.request = lambda endpoint, _payload, **_kwargs: events.append(f"load:{endpoint}") or {"done": True}
@@ -99,6 +102,52 @@ def test_prepare_model_stops_before_load_when_post_unload_admission_rejects() ->
         runtime.prepare_model("target-model", unload_others=True, post_unload_admission=reject)
 
     assert events == ["unload:resident-model", "admit"]
+
+
+def test_prepare_model_unloads_resident_runner_with_cpu_offload() -> None:
+    runtime = _runtime()
+    runtime.config["llama_cpp"] = {"fallback_to_ollama": True}
+    runtime.llama_cpp = type("LlamaCpp", (), {"supports_model": lambda _self, _model: False, "ensure_model": lambda _self, _model, **_kwargs: False})()
+    runtime.model_policy = type("Policy", (), {"profile": lambda _self, _model: type("Profile", (), {"num_ctx": 4096})()})()
+    runtime.ensure_running = lambda: True
+    runtime.loaded_model_details = lambda **_kwargs: [{
+        "name": "target-model", "context_length": 2048, "size_bytes": 10, "vram_bytes": 9, "cpu_bytes": 1,
+    }]
+    events: list[str] = []
+    runtime.unload_model = lambda model, **_kwargs: events.append(f"unload:{model}") or True
+    runtime.request = lambda *_args, **_kwargs: pytest.fail("CPU-offloaded runner must not be reused")
+    runtime._meta_cache = {}
+    runtime._meta_cache_at = {}
+
+    with pytest.raises(RuntimeError, match="ollama_cpu_offload_forbidden"):
+        runtime.prepare_model("target-model", unload_others=True)
+
+    assert events == ["unload:target-model"]
+
+
+def test_prepare_model_checks_gpu_placement_after_zero_token_warmup() -> None:
+    runtime = _runtime()
+    runtime.config["llama_cpp"] = {"fallback_to_ollama": True}
+    runtime.config["ollama"]["keep_alive"] = "24h"
+    runtime.llama_cpp = type("LlamaCpp", (), {"supports_model": lambda _self, _model: False, "ensure_model": lambda _self, _model, **_kwargs: False})()
+    runtime.model_policy = type("Policy", (), {"profile": lambda _self, _model: type("Profile", (), {"num_ctx": 4096})()})()
+    runtime.ensure_running = lambda: True
+    runtime._is_embedding_model = lambda _model: False
+    requests: list[dict[str, object]] = []
+    runtime.request = lambda _endpoint, payload, **_kwargs: requests.append(payload) or {"done": True}
+    runtime.loaded_model_details = lambda **_kwargs: ([{
+        "name": "target-model", "context_length": 4096, "size_bytes": 10, "vram_bytes": 9, "cpu_bytes": 1,
+    }] if requests else [])
+    events: list[str] = []
+    runtime.unload_model = lambda model, **_kwargs: events.append(f"unload:{model}") or True
+    runtime._meta_cache = {}
+    runtime._meta_cache_at = {}
+
+    with pytest.raises(RuntimeError, match="ollama_cpu_offload_forbidden"):
+        runtime.prepare_model("target-model", unload_others=True, post_unload_admission=lambda: {"state": "admitted"})
+
+    assert requests[0]["options"] == {"num_ctx": 4096, "num_predict": 0}
+    assert events == ["unload:target-model"]
 
 
 class _RecordingBody(BytesIO):
@@ -268,6 +317,27 @@ def test_non_stream_request_can_retry_without_exposing_partial_chunks(monkeypatc
     result = _runtime(attempts=2).request("/api/generate", {"model": "test"}, timeout=2)
 
     assert attempts == 2
+    assert result["response"] == "complete"
+
+
+def test_request_preserves_explicit_non_stream_mode(monkeypatch: pytest.MonkeyPatch):
+    request_body: dict[str, object] = {}
+
+    class Response:
+        def __iter__(self):
+            return iter([b'{"response":"complete","done":true}\n'])
+
+    @contextmanager
+    def open_response(request, *_args, **_kwargs):
+        request_body.update(json.loads(request.data.decode("utf-8")))
+        yield Response()
+
+    monkeypatch.setattr(ollama_module, "_open_interruptible_response", open_response)
+    monkeypatch.setattr(ollama_module, "_cancel_response_on_stop", lambda *_args, **_kwargs: nullcontext())
+
+    result = _runtime().request("/api/generate", {"model": "test", "stream": False}, timeout=2)
+
+    assert request_body["stream"] is False
     assert result["response"] == "complete"
 
 

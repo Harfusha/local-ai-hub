@@ -27,12 +27,12 @@
         "Default changes only after repeated measured evaluation with no English regression and acceptable resource use.",
         "Acceptance suite covers implemented findings and documents unrun runtime/platform evidence."
       ],
-      "blocker": "BLOCKED_MODEL_ABSENT: Full Ollama inventory has no embedding model (nomic-embed-text/bge-m3 absent); external model pull requires explicit operator consent; bilingual retrieval gold set blocked on missing model.",
+      "blocker": "BLOCKED_BILINGUAL_MODEL_ABSENT: Default English model BAAI/bge-small-en-v1.5 exists in HF cache and passes local CPU inference, but Ollama has no embedding model and HF cache lacks BAAI/bge-m3, nomic-ai/nomic-embed-text-v1.5, and intfloat/multilingual-e5-base. No bilingual model pull was authorized.",
       "clarifications": [],
       "depends_on": [],
       "description": "Add bilingual source-anchored retrieval evaluation without downloads; qualify supported defaults from evidence and add targeted acceptance coverage.",
       "kind": "code",
-      "next_action": "Acceptance passed (23 passed, 1 Windows symlink skip). All 68 candidate test regressions resolved. Release checks OK (compileall, release_check, selftest 6/6). External gates remain documented (live Chrome, Linux WSL, model pull).",
+      "next_action": "2026-11-21 current host check: `ollama list` has no embedding model; exact HF cache check found BAAI/bge-small-en-v1.5 and bge-reranker-v2-m3 only among checked models; bge-m3, Nomic v1.5 and multilingual-e5-base absent. Fresh offline-only `EmbeddingModel.encode` with BAAI/bge-small-en-v1.5, sentence-transformers CPU, allow_hf_downloads=false produced two valid 384-dimensional vectors; no model downloaded, temp state discarded, model released. This resolves the stale claim that no embedding model exists, but English-only model does not satisfy bilingual qualification. Keep task blocked until an approved multilingual model is already available or user authorizes a pull; then run bilingual gold set with explicit model identity and verify no English regression.",
       "title": "HUB-046, 048 Embedding qualification and second-round acceptance",
       "work_phase": "verification",
       "work_status": "blocked"

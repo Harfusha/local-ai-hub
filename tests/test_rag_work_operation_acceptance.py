@@ -98,7 +98,7 @@ def test_mcp_rag_search_clamps_top_k_and_uses_root_workspace_default(monkeypatch
     backend = _Backend(response)
     _enable_rag(monkeypatch, backend)
 
-    result = mcp_server.local_ai_rag(action="search", root=str(tmp_path), query="release gate", top_k=99)
+    result = mcp_server.local_ai_rag(action="search", root=str(tmp_path), root=str(tmp_path), query="release gate", top_k=99)
 
     assert backend.calls == [
         (
@@ -131,7 +131,7 @@ def test_mcp_rag_docset_index_uses_query_as_name_and_returns_index_receipt(
     backend = _Backend(response)
     _enable_rag(monkeypatch, backend)
 
-    result = mcp_server.local_ai_rag(action="docset_index", root=str(tmp_path), query="release-notes")
+    result = mcp_server.local_ai_rag(action="docset_index", root=str(tmp_path), root=str(tmp_path), query="release-notes")
 
     assert backend.calls == [
         ("POST", "/api/rag/docset/index", {"name": "release-notes", "root": str(tmp_path)}, {"timeout": 77.0})
@@ -243,6 +243,7 @@ def test_mcp_work_submit_forwards_closed_task_contract(monkeypatch: Any, tmp_pat
 
     result = mcp_server.local_ai_work(
         action="submit",
+        root=str(tmp_path),
         root=str(tmp_path),
         task="Implement release receipt handling",
         acceptance_criteria=["Receipt verifies", "Failure remains terminal"],

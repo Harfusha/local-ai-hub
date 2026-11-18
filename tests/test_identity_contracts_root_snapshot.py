@@ -326,8 +326,8 @@ def test_memory_delete_requires_matching_scope_identity(tmp_path):
         ),
         actor="user",
     )
-    store.record_relation(record.record_id, "relates_to", related.record_id)
-    relations_before_denied_delete = store.find_relations(source_entity=record.record_id)
+    store.record_relation(record.record_id, "relates_to", related.record_id, root=str(worktree))
+    relations_before_denied_delete = store.find_relations(source_entity=record.record_id, root=str(worktree))
     assert any(relation["relation"] == "relates_to" for relation in relations_before_denied_delete)
 
     assert store.delete(record.record_id) is False
@@ -343,7 +343,7 @@ def test_memory_delete_requires_matching_scope_identity(tmp_path):
         root=str(worktree),
         worktree_id="worktree-delete",
     ).value == "remove exact record"
-    assert store.find_relations(source_entity=record.record_id) == relations_before_denied_delete
+    assert store.find_relations(source_entity=record.record_id, root=str(worktree)) == relations_before_denied_delete
 
     assert store.delete(
         record.record_id,
@@ -359,7 +359,7 @@ def test_memory_delete_requires_matching_scope_identity(tmp_path):
         root=str(worktree),
         worktree_id="worktree-delete",
     ) is None
-    assert store.find_relations(source_entity=record.record_id) == []
+    assert store.find_relations(source_entity=record.record_id, root=str(worktree)) == []
 
     legacy = store.record(
         MemoryRecord.create(

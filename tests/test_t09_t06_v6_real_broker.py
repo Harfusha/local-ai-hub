@@ -97,6 +97,7 @@ def test_v6_real_broker_project_receipt_and_generic_replay_rejection(
             app.agent_verification,
             task_id,
             root=repo,
+            root=repo,
             state_dir=state_dir,
             current_revision=positive["repository_revision"],
         )
@@ -121,6 +122,7 @@ def test_v6_real_broker_project_receipt_and_generic_replay_rejection(
                 app.agent_tasks,
                 app.agent_verification,
                 rejected_task_id,
+                root=repo,
                 root=repo,
                 state_dir=state_dir,
                 current_revision=generic["repository_revision"],

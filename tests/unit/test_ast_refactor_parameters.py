@@ -50,7 +50,7 @@ def test_explicit_empty_refactor_name_is_not_replaced_by_legacy_alias(tmp_path, 
     calls = []
     monkeypatch.setattr(mcp_server, 'CLIENT', SimpleNamespace(post=lambda *a, **kw: calls.append(a)))
     result = mcp_server.local_ai_repo(
-        action='ast_refactor', root=str(tmp_path), path='module.py',
+        action='ast_refactor', root=str(tmp_path), root=str(tmp_path), path='module.py',
         old_symbol='', new_symbol='after',
     )
     assert result['success'] is False

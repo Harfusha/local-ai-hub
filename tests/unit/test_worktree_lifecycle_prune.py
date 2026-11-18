@@ -93,7 +93,7 @@ def test_remove_git_worktree_prunes_stale_metadata(tmp_path):
     (Path(wt_path) / "untracked.txt").write_text("untracked")
 
     # Remove worktree
-    del_res = remove_git_worktree(wt_path, repo_root=repo, worktree_id=wt_id, force=True)
+    del_res = remove_git_worktree(wt_path, repo_root=repo, root=repo, worktree_id=wt_id, force=True)
     assert del_res.get("success") is True
     assert not Path(wt_path).exists()
 

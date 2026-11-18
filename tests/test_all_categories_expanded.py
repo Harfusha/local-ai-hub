@@ -276,8 +276,7 @@ def test_rag_ingest_diagram(tmp_path: Path):
         _MockReranker(),
     )
     res = rag.ingest_diagram(
-        root=str(tmp_path),
-        workspace="test_ws",
+        root=str(tmp_path), workspace="test_ws",
         image_path=str(svg_file),
         caption="System Arch Overview",
     )

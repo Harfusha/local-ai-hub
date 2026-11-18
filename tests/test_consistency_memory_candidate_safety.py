@@ -34,7 +34,7 @@ def _safety_fixture(tmp_path: Path):
         root=str(root), task_id="task-memory-safety",  query="reuse service"
     )
     context_request = ContextRequest(
-        task_id="task-memory-safety", root=str(root),  token_budget=1200, coordination_id=coordination_id
+        task_id="task-memory-safety", root=str(root), token_budget=1200, coordination_id=coordination_id
     )
     return root, memory, guard, compiler, consistency_request, context_request
 

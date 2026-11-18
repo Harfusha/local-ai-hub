@@ -97,6 +97,27 @@ def test_raised_tool_exception_reports_same_failed_call_identity(monkeypatch, tm
     assert reported[0]["event_id"] == direct[0]["event_id"]
 
 
+def test_unsupported_tool_result_is_terminal_for_native_fallback(monkeypatch, tmp_path):
+    monkeypatch.setattr(mcp_server, "configured_state_dir", lambda *args, **kwargs: tmp_path)
+    monkeypatch.setattr(mcp_server, "load_operational_mode", lambda path: object())
+    monkeypatch.setattr(mcp_server, "_classify_mcp_operation", lambda *args: ("task", False))
+    monkeypatch.setattr(mcp_server, "operational_mode_gate_error", lambda *args, **kwargs: None)
+    monkeypatch.setattr(mcp_server, "detailed_diagnostics_enabled", lambda cfg: True)
+    monkeypatch.setattr(mcp_server, "_agent_output", lambda value, *args: value)
+    monkeypatch.setattr(mcp_server, "validate_operation_output", lambda *args: None)
+    monkeypatch.setattr(mcp_server, "_record_adoption", lambda *args, **kwargs: None)
+    monkeypatch.setattr(mcp_server, "_record_tool_accounting", lambda **kwargs: None)
+
+    @mcp_server._instrumented_tool()
+    def local_ai_task(action):
+        return {"success": False, "unsupported": True, "error": "unsupported action"}
+
+    result = local_ai_task("review")
+
+    assert result["terminal"] is True
+    assert result["retryable"] is False
+
+
 def test_successful_tool_preserves_identity_until_deferred_wire_accounting(monkeypatch, tmp_path):
     direct = []
     monkeypatch.setattr(mcp_server, "_record_adoption", lambda *args, **kwargs: direct.append(kwargs))

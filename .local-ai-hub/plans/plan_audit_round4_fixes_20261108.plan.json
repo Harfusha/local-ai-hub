@@ -56,15 +56,15 @@
         "advance() nikdy nesmí nastavit PROMOTED.",
         "PROMOTED vzniká pouze po validaci autoritativního approval receipt, svázaného s kandidátem a schválenou akcí; approver text sám nestačí."
       ],
-      "blocker": "The local state-machine portion is focused-verified at source SHA 3ee91a1273e6de15b0518460652e700af9b4eac434d7c4eb2e8c0f9a61eb34a1; `python -m pytest -q tests/test_agent_learning.py -k advance --tb=short` passed 9 tests (17 deselected). Promotion remains fail-closed: no authoritative candidate/action-bound approval receipt issuer is established, and app.py is Laya-owned with no writer handoff. Thus acceptance requiring actual receipt verification and app-path behavior remains OPEN; no integration or runtime claim.",
+      "blocker": "LearningStore state-machine tests pass, but application-level approval integration is not present in the inspected current callsite: src/local_ai_hub/app.py constructs LearningStore(self.agent_state) without approval_verifier. app.py is pre-existing dirty/Laya-owned. Do not modify until the owner provides a stable edit window and an authoritative candidate/action-bound approval issuer is confirmed.",
       "clarifications": [],
       "depends_on": [],
-      "description": "Implementovat validační funkci pro všechny přechody CandidateStatus. advance() odmítnout přímý přechod do PROMOTED. Stav PROMOTED smí vzniknout pouze přes schválenou promotion transakci s autoritativním approval receipt. Priority: critical.",
+      "description": "A06 verified against current master HEAD b439f75690e581ff75ea32894d5fed450374712d: explicit CandidateStatus transition map; validate_candidate_transition rejects direct PROMOTED; advance calls validator; promote requires APPROVED and verifier-accepted approval receipt. Fresh focused suite: python -m pytest -q --tb=short tests/test_agent_learning.py tests/unit/test_agent_learning_edge_cases.py tests/unit/test_agent_learning_hardening_wave21.py — 55 passed.",
       "kind": "code",
-      "next_action": "Keep promotion fail-closed. Obtain explicit app.py writer handoff and evidence of the authoritative candidate/action-bound receipt issuer. Then wire only that verifier and run focused valid/invalid app-path receipt tests; otherwise leave integration open.",
+      "next_action": "Fresh 2026-11-18 focused suite: python -m pytest -q --tb=short tests/test_agent_learning.py tests/unit/test_agent_learning_edge_cases.py tests/unit/test_agent_learning_hardening_wave21.py — 55 passed. agent_learning.py SHA-256 91379abc5d6bfd14e96c303409093756459a740392f53096d6ff828e3c315fb0 confirms direct PROMOTED rejection and verifier-required promotion. app.py SHA-256 6dcace6d21ee4784dd130417c9b34cfc7bfe3a5128f828294cb0b0ee2f0c7eb3 confirms current constructor omits verifier. State-machine source gate verified; app/issuer acceptance blocked until safe Laya-owned integration window.",
       "title": "A06 — LearningStore: vynucené stavové přechody",
-      "work_phase": "integration",
-      "work_status": "in_progress"
+      "work_phase": "verification",
+      "work_status": "blocked"
     },
     "task_t06_learning_atomicity": {
       "acceptance_criteria": [
@@ -116,26 +116,27 @@
         "check_drift receives and reuses already-computed candidates instead of searching again.",
         "When git diff is unavailable or fails, return analysis_status='unavailable' or 'partial' with the failure represented; do not imply complete analysis."
       ],
-      "blocker": "Current `src/local_ai_hub/services.py` has shared Stability-owned working-tree changes. The recorded 93-pass focused run predates this current mutable snapshot; do not run overlapping validation or treat it as current acceptance. Wait for Stability to provide a stable revision/window or scoped validation handoff.",
+      "blocker": null,
       "clarifications": [],
       "depends_on": [],
       "description": "Předávat vypočtené candidates do check_drift() jako vstup místo opakovaného vyhledávání. Vracet analysis_status=unavailable|partial při neúspěchu diffu. Priority: medium.",
       "kind": "code",
-      "next_action": "After Stability provides a stable revision/window or scoped validation handoff, verify current hashes for agent_consistency.py, services.py and relevant tests, then run the focused A10/A11 validation. Preserve historical 93 passed as prior evidence only.",
+      "next_action": "Verified on master HEAD b439f75690e581ff75ea32894d5fed450374712d. agent_consistency.py SHA-256 e30ff0529d6b79fd8d3261a95074be7abcaa6c1c952d9d906cf95400d23a4976: check_drift accepts precomputed reuse_candidates and calls find_reuse_candidates only when omitted. Current services.py SHA-256 054f22539cd2b65978f64c558b5808ff74551b677f197affa9a537d54d363c4a computes diff_analysis_status once, passes same candidates, and returns analysis_status. Fresh focused suite: python -m pytest tests/test_agent_consistency.py tests/unit/test_agent_consistency_edge_cases.py tests/unit/test_agent_consistency_hardening_wave21.py -q — 77 passed in 76.81s; added direct missing/partial status regression and ran it fresh — 1 passed. Current services.py is pre-existing dirty worktree content; no production edits made.",
       "title": "A10+A11 — ConsistencyGuard: recyklace reuse candidates a analysis_status",
       "work_phase": "verification",
-      "work_status": "in_progress"
+      "work_status": "done"
     },
     "task_t10_fencing_contention": {
       "acceptance_criteria": [],
-      "blocker": "Latest Stability thread reports GPU reservation `unknown` requiring manual intervention and Hub gpu_admission_state `outcome_unknown` (thread 01a1c762-d599-75c2-ae34-344aae056aa0, status marker exec-1f92f113-d273-4caa-aea1-a13d6343912c). Earlier Stability available/free and this task's inference_active/nominal reports conflict. The async job is outcome_unknown with result/replay unavailable (req_12180fdb89df, req_452699f02fa0). No safe benchmark window or explicit A12 writer handoff. No source edit or benchmark run.",
+      "blocker": null,
       "clarifications": [],
       "depends_on": [],
       "description": "Zvážit oddělené fencing DB podle projektové identity. Zachovat konflikt mezi worktrees stejného repozitáře. Benchmark: 2 nezávislé projekty, pomalý patch + opakovaný renewal, měřit p50/p95/p99 latency a SQLITE_BUSY. Priority: high.",
       "kind": "code",
-      "next_action": "Wait for Stability's operator-approved reconciliation of reservation/outcome and explicit stable revision/window; agree one writer. Then assess per-project fencing DB while retaining same-repository worktree conflicts and run the two-independent-project slow-patch/repeated-renewal benchmark with p50/p95/p99 and SQLITE_BUSY.",
+      "next_action": "A12 benchmark complete in isolated TemporaryDirectory: two independent project roots, slow commit_guard held 300 ms, 5 rounds x 40 renewals per setup. Shared DB p50/p95/p99 25.09/43.53/328.60 ms; separate DB per project 25.47/43.71/48.96 ms; 0 SQLITE_BUSY/operation errors across 200 renewals each. Existing `python -m pytest tests/test_work_fencing.py -q`: 14 passed, 1 skipped (Windows symlink privilege unavailable). Measured p99 supports per-project DB isolation as a candidate; no production routing change was made. Same-repository worktree behavior remains governed by canonical project coordination ID and requires verification with any future integration change.",
       "title": "A12 — Work fencing: izolace SQLite per projekt",
-      "work_status": "in_progress"
+      "work_phase": "verification",
+      "work_status": "done"
     },
     "task_t11_snapshot_optimization": {
       "acceptance_criteria": [
@@ -147,7 +148,7 @@
       "depends_on": [],
       "description": "Profilovat create_private_transaction_snapshot_with_manifest na NTFS. Zvážit reflink/inkrementální manifest/omezený scope. Zachovat dirty overlay a pre/post image compare. Uživatel musí mít možnost přepnout na plný snapshot. Priority: medium.",
       "kind": "code",
-      "next_action": "Fresh validation on shared HEAD e4b528d86dd3c1e913224feda9ccf667f8a5b488 after porting the audit-owned patch to previously clean files: `python -m pytest -q tests/test_command_transaction_snapshot.py tests/unit/test_transaction_snapshot_cycle_guard.py` — 33 passed in 28.24s; scoped diff check clean. Source SHA-256 00b94e2e75e4b5405b4df1ed5e456f6aa46efd36f6ad256094c867cd19f71893; test SHA-256 6dfc199fde04470cd2b223980b78cfe2f6492f310dbaaffb47a74e682d17ef85. The final source traversal counts are 2 by default and 3 with `full_verification=True`. Fresh NTFS microbenchmark on a committed synthetic fixture (500 files × 32 KiB, 50 directories, 550 manifest entries; two warm-ups, three alternating pairs) compared the candidate's two source traversals to a legacy wrapper adding the removed pre-copy source manifest. Candidate timings 1.361/1.541/1.426s (median 1.426s); legacy 1.736/1.963/1.703s (median 1.736s), about 17.9% lower median. Controlled synthetic workload; not a production-project throughput guarantee. Full suite remains deferred.",
+      "next_action": "Fresh current master HEAD b439f75690e581ff75ea32894d5fed450374712d validation: `python -m pytest --no-cache -q tests/test_command_transaction_snapshot.py tests/unit/test_transaction_snapshot_cycle_guard.py` — 36 passed in 42.37s. Existing NTFS synthetic benchmark remains bounded evidence only (500 × 32 KiB fixture); no production-project throughput claim.",
       "title": "A13 — Transaction snapshot: snížení I/O průchodů",
       "work_status": "done"
     },

@@ -118,8 +118,7 @@ def test_passing_task_test_command_records_verification_receipt(tmp_path: Path):
         GoalContract(goal="Pass tests", acceptance_criteria=["Tests must pass"]),
         ScopeContext(repository_id="receipt-test-coordination", task_id="task-test-1"),
         task_id="task-test-1",
-        repo_root=str(tmp_path),
-        repository_revision=revision,
+        repo_root=str(tmp_path), repository_revision=revision,
     )
 
     class _RepoState:

@@ -75,7 +75,7 @@ def test_record_finding_and_metadata_preserve_single_string_paths_and_evidence(t
         memory_store=FakeMemoryStore(),
         repository_tools=SimpleNamespace(config={"server": {"state_dir": str(tmp_path / "state")}}),
     )
-    req = guard._request_from_metadata(None, root=str(tmp_path), changed_paths="src/app.py")
+    req = guard._request_from_metadata(None, root=str(tmp_path), root=str(tmp_path), changed_paths="src/app.py")
     assert req is not None
     assert req.changed_paths == ("src/app.py",)
     req = replace(req, session_id="chat-test")
@@ -107,6 +107,7 @@ def test_record_metric_overflow_bool_and_reset() -> None:
 
 def test_consistency_dataclasses_inspection_helpers(tmp_path: Path) -> None:
     req = ConsistencyRequest(
+        root=str(tmp_path),
         root=str(tmp_path),
         changed_paths=("src/a.py",),
         override_reason="needed for migration",
@@ -149,3 +150,11 @@ def test_consistency_dataclasses_inspection_helpers(tmp_path: Path) -> None:
     assert pack.has_reuse_candidates() is True
     assert pack.has_warnings() is True
     assert pack.warning_count() == 2
+
+
+def test_diff_analysis_status_distinguishes_unavailable_from_partial() -> None:
+    assert AgentConsistencyGuard.diff_analysis_status(None) == "unavailable"
+    assert AgentConsistencyGuard.diff_analysis_status({"success": False, "error": "diff failed"}) == "unavailable"
+    assert AgentConsistencyGuard.diff_analysis_status(
+        {"success": False, "diff": "partial", "truncated": True},
+    ) == "partial"

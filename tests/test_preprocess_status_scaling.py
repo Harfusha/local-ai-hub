@@ -138,6 +138,35 @@ def _status_preprocessor(tmp_path: Path, project_count: int = 70) -> tuple[Proje
     return pre, roots, roots[1:]
 
 
+def test_queued_project_reports_waiting_when_scheduler_denies_background(tmp_path: Path) -> None:
+    pre, roots, _ = _status_preprocessor(tmp_path, project_count=2)
+    with closing(pre._connect()) as con:
+        con.execute("UPDATE projects SET status='queued',phase='rag' WHERE root=?", (roots[1],))
+        con.commit()
+    pre.scheduler.background_allowed = lambda: False
+
+    result = pre.status(root=roots[1])
+
+    project = result["projects"][0]
+    assert project["waiting"] is True
+    assert project["waiting_reason"] == "Waiting for scheduler background capacity"
+
+
+def test_running_rag_project_reports_scheduler_wait(tmp_path: Path) -> None:
+    pre, roots, _ = _status_preprocessor(tmp_path, project_count=2)
+    with closing(pre._connect()) as con:
+        con.execute("UPDATE projects SET status='running',phase='rag' WHERE root=?", (roots[1],))
+        con.commit()
+    pre.scheduler.background_allowed = lambda: False
+
+    result = pre.status(root=roots[1])
+
+    project = result["projects"][0]
+    assert project["waiting"] is True
+    assert project["waiting_reason"] == "Waiting for scheduler background capacity"
+    assert project["active_detail"].startswith("Waiting for scheduler background capacity:")
+
+
 def test_status_batches_registered_project_counts_and_reuses_index_connections(tmp_path: Path) -> None:
     pre, roots, incomplete_roots = _status_preprocessor(tmp_path)
     sql_trace: list[str] = []
@@ -209,6 +238,7 @@ def test_rag_workspace_stats_limits_counts_to_requested_workspaces(tmp_path: Pat
     with closing(sqlite3.connect(db_path)) as con:
         con.execute("CREATE TABLE files(workspace TEXT, path TEXT)")
         con.execute("CREATE TABLE chunks(workspace TEXT, path TEXT)")
+        con.execute("CREATE TABLE rag_meta(key TEXT PRIMARY KEY, value TEXT)")
         con.executemany(
             "INSERT INTO files(workspace, path) VALUES(?, ?)",
             [("wanted", "a.py"), ("wanted", "b.py"), ("wanted", "empty.py"), ("unrelated", "other.py")],
@@ -228,7 +258,8 @@ def test_rag_workspace_stats_limits_counts_to_requested_workspaces(tmp_path: Pat
     rag._connect = lambda: sqlite3.connect(db_path)
 
     assert rag.workspace_stats(["wanted", "missing"]) == {
-        "wanted": {"chunks": 3, "files": 3, "chunked_files": 2},
+        "wanted": {"chunks": 3, "files": 3, "chunked_files": 2, "index_generation": 0},
+        "missing": {"index_generation": 0},
     }
 
 

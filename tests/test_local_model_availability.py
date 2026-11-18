@@ -482,8 +482,14 @@ def test_generate_fallback_does_not_downgrade_model_tier() -> None:
             return True
 
         def request_stream(self, _endpoint, payload, _on_chunk, **_kwargs):
-            requested_models.append(str(payload.get("model", "")))
-            return {"error": "Ollama unavailable"}
+            model = str(payload.get("model", ""))
+            requested_models.append(model)
+            if model == "heavy":
+                return {
+                    "_lah_repetition_loop_detected": True,
+                    "error": "model output repetition loop detected",
+                }
+            return {"response": "No actionable defects found."}
 
     class _InlineScheduler:
         def submit(self, _model, *, source, execute, **_kwargs):
@@ -503,8 +509,10 @@ def test_generate_fallback_does_not_downgrade_model_tier() -> None:
         priority=5,
     )
 
-    assert result["success"] is False
-    assert requested_models == ["heavy"]
+    assert result["success"] is True
+    assert result["fallback_used"] is True
+    assert result["model"] == "reasoning"
+    assert requested_models == ["heavy", "reasoning"]
 
 
 def _scheduler_harness(*, max_queue: int = 4) -> AffinityScheduler:

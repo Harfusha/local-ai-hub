@@ -522,6 +522,25 @@ def test_incremental_rag_never_embeds_an_in_root_symlink(tmp_path):
     assert backend.calls == 0
 
 
+def test_incremental_rag_reports_paths_excluded_by_project_policy(tmp_path):
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / "excluded.py").write_text("excluded by extension policy\n", encoding="utf-8")
+    store = RAGStore(
+        {"server": {"state_dir": str(tmp_path / "state")},
+         "models": {"embedding": "test-embedding", "embedding_dimension": 3},
+         "rag": {"extensions": [".md"], "dedup_near_duplicates": False}},
+        services=_EmbeddingStub(),
+    )
+    ws = store.workspace_id(str(root))
+
+    result = store.index_paths_step(str(root), workspace=ws, paths=["excluded.py"])
+
+    assert result["success"] is True
+    assert result["processed_paths"] == []
+    assert result["policy_deleted_paths"] == ["excluded.py"]
+
+
 
 def test_sqlite_timeout_after_delete_preserves_previous_rag_snapshot(tmp_path, monkeypatch):
     root = tmp_path / "repo"

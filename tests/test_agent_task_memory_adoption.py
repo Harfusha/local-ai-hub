@@ -365,7 +365,7 @@ def test_task_memory_consumer_filters_foreign_root_from_leaky_store_results(
             context,
             task_id=task_id,
             repo_root=str(root),
-        )
+    )
         tasks.transition(
             task_id, TaskStatus.ACTIVE, reason="start", actor="test", idempotency_key="agent-start"
         )
@@ -376,8 +376,7 @@ def test_task_memory_consumer_filters_foreign_root_from_leaky_store_results(
         compiled = compiler.compile(
             ContextRequest(
                 task_id=task_id,
-                root=str(root),
-                repository_id=repository_id(memory, root),
+                root=str(root), repository_id=repository_id(memory, root),
                 coordination_id=repository_id(memory, root),
             )
         )
@@ -482,7 +481,7 @@ def test_resume_refreshes_memory_and_checkpoint_keeps_audit_bundle(tmp_path: Pat
             ScopeContext(branch="main", task_id="resume-local"),
             task_id="resume-memory",
             repo_root=str(root),
-        )
+    )
         assert [item["id"] for item in task.checkpoint.state_data["memory_context"]["items"]] == [initial.record_id]
         tasks.transition(task.task_id, TaskStatus.ACTIVE, reason="start", actor="test", idempotency_key="start")
         tasks.transition(task.task_id, TaskStatus.BLOCKED, reason="wait", actor="test", idempotency_key="block")
@@ -540,7 +539,7 @@ def test_lookup_bundle_respects_item_and_token_caps(tmp_path: Path):
         task = tasks.create(
             GoalContract(goal="bounded facts"), task_context(root), task_id="memory-bounded",
             repo_root=str(root),
-        )
+    )
     finally:
         trace_context.reset_context(token)
     bundle = task.checkpoint.state_data["memory_context"]
@@ -609,7 +608,7 @@ def test_stale_and_expired_memory_are_skipped_with_bounded_warnings(tmp_path: Pa
         task = tasks.create(
             GoalContract(goal="skip stale context"), task_context(root), task_id="memory-stale",
             repo_root=str(root),
-        )
+    )
     finally:
         trace_context.reset_context(token)
     bundle = task.checkpoint.state_data["memory_context"]
@@ -685,7 +684,7 @@ def test_volatile_memory_requires_checkpoint_source_check_and_bundle_survives_ch
         task = tasks.create(
             GoalContract(goal="Audit volatile fact"), task_context(root), task_id="memory-audit",
             repo_root=str(root),
-        )
+    )
     finally:
         trace_context.reset_context(token)
 
@@ -765,7 +764,7 @@ def test_transition_checkpoint_cannot_replace_server_memory_or_reuse_old_audit(
             task_context(root),
             task_id=task_id,
             repo_root=str(root),
-        )
+    )
         authoritative = task.checkpoint.state_data["memory_context"]
         tasks.transition(
             task_id,
@@ -902,7 +901,7 @@ def test_shared_task_update_preserves_and_rejects_memory_context_changes(tmp_pat
             task_context(root),
             task_id=task_id,
             repo_root=str(root),
-        )
+    )
         authoritative = current.checkpoint.state_data["memory_context"]
         before_events = tasks.state_store.events(f"task:{task_id}")
         forged = dict(authoritative)
@@ -1042,8 +1041,7 @@ def test_context_keeps_repository_owner_global_and_session_scopes_distinct(tmp_p
     def visible(session_id: str) -> set[str]:
         compiled = compiler.compile(ContextRequest(
             task_id="scope-context-task",
-            root=str(root),
-            session_id=session_id,
+            root=str(root), session_id=session_id,
             token_budget=1200,
             coordination_id=repository_id(memory, root),
         ))
@@ -1084,7 +1082,7 @@ def test_create_and_resume_lookup_scoped_memory_without_unscoped_get(
             task_context(root),
             task_id="scoped-memory-create-resume",
             repo_root=str(root),
-        )
+    )
     finally:
         trace_context.reset_context(trace_token)
 

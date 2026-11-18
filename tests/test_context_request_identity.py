@@ -61,8 +61,7 @@ def test_context_identity_uses_effective_preload_settings_when_digest_is_not_sup
 def test_request_digest_keeps_project_and_preload_settings_sensitive(tmp_path) -> None:
     request = ContextRequest(
         task_id="task-1",
-        root=str(tmp_path),
-        preload_profile="work",
+        root=str(tmp_path), preload_profile="work",
         settings_digest="a" * 32,
     )
     compiler_a = ContextCompiler(
@@ -167,8 +166,7 @@ def test_scope_changes_return_full_seeded_context_instead_of_unrelated_delta(tmp
     request = ContextRequest(
         task_id="task-1",
         token_budget=512,
-        root=str(root),
-        session_id="session-a",
+        root=str(root), session_id="session-a",
         focus=("cache identity",),
         preload_profile="default",
     )

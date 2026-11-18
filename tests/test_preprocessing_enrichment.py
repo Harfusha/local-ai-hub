@@ -455,7 +455,11 @@ def test_disabled_background_gpu_generation_uses_foreground_scheduler(tmp_path, 
     try:
         prep._gpu_yield = lambda: False
         import local_ai_hub.operational_mode as operational_mode
-        monkeypatch.setattr(operational_mode, "load_operational_mode", lambda _state_dir: SimpleNamespace())
+        monkeypatch.setattr(
+            operational_mode,
+            "load_operational_mode",
+            lambda _state_dir: SimpleNamespace(mode="active", degraded=False),
+        )
         monkeypatch.setattr(operational_mode, "preprocessing_mode_ready", lambda *_args: True)
         monkeypatch.setattr(operational_mode, "operational_mode_gate_error", lambda *_args: None)
         result = prep._run_background_generate("configured-model", "prompt", "system", {"type": "object"}, 32, "preprocess:file-card")

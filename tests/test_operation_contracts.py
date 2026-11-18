@@ -58,6 +58,26 @@ def test_reachability_dead_code_exposes_bounded_result_limit():
     assert "limit" not in operation_input_schema("local_ai_repo", "read_file")["properties"]
 
 
+def test_coord_task_list_exposes_and_scopes_pagination():
+    schema = operation_input_schema("local_ai_coord", "task_list")
+    assert {"limit", "offset"} <= set(schema["properties"])
+    assert schema["properties"]["limit"]["default"] == 20
+    tool_schema = operation_tool_input_schema("local_ai_coord")
+    task_list_rule = next(
+        rule["then"] for rule in tool_schema["then"]["allOf"]
+        if rule["if"].get("properties", {}).get("action", {}).get("const") == "task_list"
+    )
+    assert task_list_rule["properties"]["limit"]["default"] == 20
+    assert validate_operation_arguments(
+        "local_ai_coord", "task_list",
+        {"action": "task_list", "root": "C:/fixture", "limit": 25, "offset": 50},
+    ) is None
+    assert validate_operation_arguments(
+        "local_ai_coord", "task_get",
+        {"action": "task_get", "root": "C:/fixture", "limit": 25},
+    ) is not None
+
+
 @pytest.mark.parametrize("profile", ["compact", "standard"])
 def test_internal_guide_documents_preserve_empty_required_fields(profile, monkeypatch):
     from local_ai_hub.agent_diagnostics import project_agent_response
@@ -185,6 +205,7 @@ def test_hub_client_forwards_explicit_memory_record_identity(tmp_path):
     result = HubClient.coord(
         client,
         "memory_record",
+        root=str(tmp_path),
         root=str(tmp_path),
         scope="repository",
         key="falsey-value-is-explicit",
@@ -740,12 +761,13 @@ def test_local_ai_repo_path_hints_normalize_and_reject_root_escape(monkeypatch, 
 
     monkeypatch.setattr(mcp_server, "_local_ai_repo_impl", consumer)
     monkeypatch.setattr(mcp_server.FEATURES, "repo", True)
-    result = mcp_server.local_ai_repo("search", root=str(tmp_path), path_hints=[hint])
+    result = mcp_server.local_ai_repo("search", root=str(tmp_path), root=str(tmp_path), path_hints=[hint])
     assert result["success"] is True
     assert captured == [[{**hint, "path": "src"}]]
 
     rejected = mcp_server.local_ai_repo(
         "search",
+        root=str(tmp_path),
         root=str(tmp_path),
         path_hints=[{"path": "../escape", "purpose": "repository_search", "scope": "repo_search"}],
     )

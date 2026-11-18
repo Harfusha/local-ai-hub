@@ -138,8 +138,7 @@ def test_mcp_curate_dataset_forwards_nested_laya_operation(monkeypatch, tmp_path
 
     result = mcp_server.local_ai_coord(
         action="curate_dataset",
-        root=str(tmp_path),
-        laya_operation=operation,
+        root=str(tmp_path), laya_operation=operation,
     )
 
     assert result["success"] is True, result
@@ -160,8 +159,7 @@ def test_mcp_curate_dataset_forwards_nested_laya_operation(monkeypatch, tmp_path
     }
     review_result = mcp_server.local_ai_coord(
         action="curate_dataset",
-        root=str(tmp_path),
-        laya_operation=review_operation,
+        root=str(tmp_path), laya_operation=review_operation,
     )
     assert review_result["success"] is True
     task_calls = [call for call in calls if call[0] == "/api/agent-state/tasks"]
@@ -173,8 +171,7 @@ def test_mcp_curate_dataset_forwards_nested_laya_operation(monkeypatch, tmp_path
     }
     history_result = mcp_server.local_ai_coord(
         action="curate_dataset",
-        root=str(tmp_path),
-        laya_operation=history_operation,
+        root=str(tmp_path), laya_operation=history_operation,
     )
     assert history_result["success"] is True
     task_calls = [call for call in calls if call[0] == "/api/agent-state/tasks"]
@@ -188,8 +185,7 @@ def test_mcp_curate_dataset_forwards_nested_laya_operation(monkeypatch, tmp_path
     }
     page_result = mcp_server.local_ai_coord(
         action="curate_dataset",
-        root=str(tmp_path),
-        laya_operation=page_operation,
+        root=str(tmp_path), laya_operation=page_operation,
     )
     assert page_result["success"] is True
     task_calls = [call for call in calls if call[0] == "/api/agent-state/tasks"]
@@ -267,8 +263,7 @@ def test_mcp_curate_dataset_forwards_scoped_candidate_get(monkeypatch, tmp_path)
 
     result = mcp_server.local_ai_coord(
         action="curate_dataset",
-        root=str(tmp_path),
-        laya_operation=operation,
+        root=str(tmp_path), laya_operation=operation,
     )
 
     assert result["success"] is True, result
@@ -425,8 +420,7 @@ def test_mcp_curate_dataset_forwards_runtime_status(monkeypatch, tmp_path):
     operation = {"action": "runtime_status"}
     result = mcp_server.local_ai_coord(
         action="curate_dataset",
-        root=str(tmp_path),
-        laya_operation=operation,
+        root=str(tmp_path), laya_operation=operation,
     )
 
     assert result["success"] is True

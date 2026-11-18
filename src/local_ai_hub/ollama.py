@@ -778,7 +778,7 @@ class OllamaRuntime:
                 return {"success": False, "error": "Ollama fallback context is not verified; prepare the model again",
                         "error_code": "model_preparation_required", "operation_not_started": True, "_lah_provider": "ollama"}
         clean = dict(_normalise_keep_alive(payload) or {})
-        clean["stream"] = True
+        clean["stream"] = payload.get("stream") is not False
         body = json_dumps(clean).encode("utf-8")
         headers = {"Content-Type": "application/json"}
         attempts = 1 if single_attempt else max(1, int(self.config.get("ollama", {}).get("request_attempts", 2)))
@@ -2357,6 +2357,24 @@ class OllamaRuntime:
                     raise ModelPreparationNotStarted("model preparation deadline expired")
                 raise TimeoutError("model preparation deadline expired")
 
+        def require_full_gpu_residency(row: dict[str, Any] | None) -> None:
+            try:
+                size = int(row["size_bytes"]) if row is not None else 0
+                vram = int(row["vram_bytes"]) if row is not None else 0
+                cpu = int(row["cpu_bytes"]) if row is not None else -1
+            except (KeyError, TypeError, ValueError):
+                size, vram, cpu = 0, 0, -1
+            if size > 0 and vram >= size and cpu == 0:
+                return
+            unloaded = self.unload_model(model, should_stop=stopped, deadline=prepare_deadline)
+            reason = "ollama_cpu_offload_forbidden" if cpu > 0 else "ollama_gpu_residency_unverified"
+            raise ModelPreparationAdmissionRejected({
+                "state": "rejected",
+                "reason": reason,
+                "cpu_bytes": cpu if cpu >= 0 else None,
+                "unload_confirmed": unloaded,
+            })
+
         check_active()
         llama_options = self.config.get("llama_cpp", {})
         mixed_target = (isinstance(llama_options, dict) and llama_options.get("managed_with_ollama") is True
@@ -2501,6 +2519,7 @@ class OllamaRuntime:
         check_active()
 
         profile = self.model_policy.profile(model)
+        self._invalidate_loaded_cache()
         details = self.loaded_model_details(should_stop=stopped, deadline=prepare_deadline)
         check_active()
         evicted: list[str] = []
@@ -2514,8 +2533,10 @@ class OllamaRuntime:
                     evicted.append(name)
                 check_active()
 
-        if current is not None and int(current.get("context_length", 0) or 0) >= profile.num_ctx:
-            return evicted
+        if current is not None:
+            require_full_gpu_residency(current)
+            if int(current.get("context_length", 0) or 0) >= profile.num_ctx:
+                return evicted
 
         # A runner loaded with a smaller context cannot be safely reused for a larger
         # request. Explicitly unload it so Ollama recreates the runner with num_ctx.
@@ -2559,7 +2580,7 @@ class OllamaRuntime:
                 "prompt": "",
                 "stream": False,
                 "keep_alive": keep_alive,
-                "options": {"num_ctx": profile.num_ctx},
+                "options": {"num_ctx": profile.num_ctx, "num_predict": 0},
             }
             result = self.request(
                 "/api/generate", payload,
@@ -2584,6 +2605,9 @@ class OllamaRuntime:
                     raise OllamaModelNotFoundError(error)
             raise RuntimeError(error)
         self._invalidate_loaded_cache()
+        details = self.loaded_model_details(should_stop=stopped, deadline=prepare_deadline)
+        check_active()
+        require_full_gpu_residency(next((row for row in details if str(row.get("name", "")) == model), None))
         return evicted
 
     def supports_post_unload_admission(self, model: str) -> bool:

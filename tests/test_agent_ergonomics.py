@@ -535,6 +535,28 @@ def test_task_compress_and_review_flexibility():
         assert payload_rev["code"] == "def buggy(): return 1/0"
 
 
+def test_search_falls_back_when_optional_features_are_unavailable(tmp_path):
+    from types import SimpleNamespace
+    from unittest.mock import patch
+    from local_ai_hub import mcp_server
+
+    with (
+        patch.object(mcp_server, "FEATURES", SimpleNamespace(repo=True, search_summaries=False, enriched_search=False, supported_repo_actions=lambda: {"search"})),
+        patch.object(mcp_server, "CLIENT") as client,
+    ):
+        client.post.return_value = {"success": True, "results": [{"path": "src/a.py"}]}
+        result = mcp_server._local_ai_repo_impl(
+            action="search", query="needle",
+            include_code=True, summarize_results=True,
+        )
+
+    assert result["success"] is True
+    assert result["degraded"] is True
+    assert result["fallback_used"] is True
+    assert client.post.call_args.args[0] == "/api/search"
+    assert client.post.call_args.args[1]["enrich"] is False
+
+
 def test_repo_find_files_and_glob(tmp_path):
     """Phase 3 Point 6: Verify find_files and glob pattern matching."""
     from local_ai_hub.repo_tools import RepositoryTools

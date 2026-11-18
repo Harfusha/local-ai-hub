@@ -116,7 +116,7 @@ def test_mcp_adapter_routes_comparison_and_preserves_result(tmp_path, monkeypatc
     monkeypatch.setattr(mcp_server, 'CLIENT', SimpleNamespace(post=post))
     monkeypatch.setattr(mcp_server, '_record_tool_accounting', lambda **_: None)
     result = mcp_server.local_ai_task(
-        action='vision', root=str(tmp_path), baseline_screenshot_artifact_id='before',
+        action='vision', root=str(tmp_path), root=str(tmp_path), baseline_screenshot_artifact_id='before',
         screenshot_artifact_id='after',
     )
     assert calls, result
@@ -129,7 +129,7 @@ def test_mcp_adapter_routes_comparison_and_preserves_result(tmp_path, monkeypatc
     set_operational_mode(tmp_path / 'state', 'gaming')
     calls.clear()
     blocked = mcp_server.local_ai_task(
-        action='vision', root=str(tmp_path), baseline_screenshot_artifact_id='before',
+        action='vision', root=str(tmp_path), root=str(tmp_path), baseline_screenshot_artifact_id='before',
         screenshot_artifact_id='after',
     )
     assert blocked['error_code'] == 'operational_mode_blocked'

@@ -438,6 +438,25 @@ def test_backend_fallback_is_reported_as_degraded():
     assert result["device"] == "cpu"
 
 
+def test_auto_sentence_transformers_cuda_route_is_not_reported_as_fallback():
+    model = _embedding_model(_Cache(), provider="auto", model_name="BAAI/bge-small-en-v1.5")
+    model.device = "cuda"
+    model.active_backend = "sentence-transformers"
+    model.active_device = "cuda"
+    model._active_cache_identity = "sentence-transformers:cuda:BAAI/bge-small-en-v1.5"
+    model._encode_st_batch = lambda texts, **_kwargs: (
+        [[float(len(text)), 1.0] for text in texts], "sentence-transformers",
+    )
+
+    result = model.encode(["CUDA route"])
+
+    assert result["success"] is True
+    assert result["backend"] == "sentence-transformers"
+    assert result["device"] == "cuda"
+    assert result["degraded"] is False
+    assert result["fallback"] is None
+
+
 def test_backend_fallback_reports_embedding_space_of_backend_that_encoded_vectors():
     cache = _Cache()
     model = _embedding_model(cache, provider="ollama")

@@ -1,5 +1,10 @@
 # Generic Agent Installation & Integration Prompt for Local AI Hub
 
+## Operation routing and retries
+
+Use only actions exposed by the live MCP schema. If no Hub action covers the requested operation, skip Hub and use the authorized native tool directly; no Hub call, error, or `native_fallback_allowed` signal is needed. Example: use native `git worktree list` when worktree inventory is requested. After calling an advertised Hub action, use native fallback only when its result explicitly has `terminal=true` and `retryable=false`. For `in_progress=true` or `outcome_unknown`, do independent work; do not poll or repeat the same operation. For a response-budget rejection, reduce the requested envelope or fetch a smaller artifact page/slice; do not replay the same oversized request. For large plans, query `plan_board_view` with the exact `task_id`, use the card's `plan_file_revision`, and fetch exact plan-file slices only when needed; avoid full-plan responses. In `task_checkpoint`, reserve `state_data.memory_audit` for `{"used_ids":[...]}` or `{"not_used_reason":"..."}`; put project findings and task state under other keys.
+
+
 ## Structural search cursor contract
 
 For `local_ai_repo(action="structural_search", root=ABS_ROOT, query="fn:target")`, preserve `next_offset` and `next_match_offset` together when `has_more=true`. Send them back as `file_offset` and `match_offset` on the next call; `file_offset` accepts 0–100000 for large repositories. The existing `offset` parameter is still accepted within its general search limit, but never send nonzero `offset` together with `file_offset`. `max_tokens` maps to bounded `max_results` (1–1000); match and file offsets must be nonnegative integers. For exact `path` scans, only `match_offset` advances within that file. These cursors are **not snapshot-stable** if repository contents or file order change between requests; recheck revision/source evidence before trusting cross-page completeness.
@@ -170,7 +175,7 @@ Normal setup checks Superpowers when Codex or Gemini CLI is on PATH and agent co
 
 **Laya service:** The Hub-hosted Laya service stays available for the Hub process lifetime. Eligible ordinary context requests run bounded shadow capture; first eligible inference lazily loads the configured pinned checkpoint and retains it until 600 seconds after the latest completed Laya request. Use the existing `local_ai_coord(action=\"curate_dataset\")` MCP action or root-authorized `POST /api/agent-state/tasks` with `action=\"curate_dataset\"` and nested `laya_operation` for typed decisions, `runtime_status`, local review and candidate lifecycle. `runtime_status` is read-only and does not load a model. Keep deterministic behavior authoritative and all proposals shadow-only. Capture needs no per-example consent or receipt. Labels are local operator confirmations; local-model reviews stay separately attributed. No SSH reviewer keys, quorum, cloud fallback, model downloads, training, benchmark or rollout without separate authorization.
 
-**Command fallback safety:** `terminal=true` alone is insufficient. A Hub-unknown command may use native fallback only when the broker returns `native_fallback_allowed=true`; the native tool must authorize the fallback under its own controls, and the command must stay bounded to the same root and scope. `native_fallback_allowed=false`, a dangerous command, a known mutation-policy denial, required approval/override, cancellation, or `outcome_unknown` is a hard stop. The flag permits fallback, not Hub execution. If native authorization cannot be established, stop and report the blocker.
+**Command fallback safety:** If the live MCP schema has no Hub action for the requested operation, skip Hub and use the authorized native tool directly; no broker flag is needed. If an advertised Hub command broker is called and reports an unknown command, `terminal=true` alone is insufficient: native fallback requires `native_fallback_allowed=true`, and the native tool must authorize the fallback for the exact command, bounded to the same root and scope. `native_fallback_allowed=false`, a dangerous command, a known mutation-policy denial, required approval/override, cancellation, or `outcome_unknown` is a hard stop. The flag permits fallback, not Hub execution. If native authorization cannot be established, stop and report the blocker.
 
 **Audit acceptance contract (2026-10-20):** Review responses remain advisory and carry `review_consistency`; prose or unsupported verdict/citation structure stays explicitly unverified. CUDA NLP factories and inference use an owned model process with bounded waits and confirmed cleanup; cleanup failure retains owner state for retry. Do not infer GPU/model quality from fake-model process tests. Release tooling uses `tools/release-build-requirements.txt`, runtime resolution uses `tools/release-runtime-constraints.txt`, and release inventory rejects dependencies outside that exact baseline. Preserve the resolver report, hash lock, scoped CycloneDX SBOM and current fail-closed advisory assessment. Full-suite partitions require the same source fingerprint and collection hash, completed manifests, disjoint selected identities and exact union coverage; partial partitions never prove completion.
 
@@ -443,15 +448,17 @@ Reference global policy blocks deployed by 	ools/setup.py into global agent file
 > [!IMPORTANT]
 > ## AUTOMATIC LOCAL AI HUB PRIORITIZATION IN ANTIGRAVITY
 > ## MANDATORY LOCAL AI HUB PRIORITIZATION IN CODEX
-> Agents (Gemini in Antigravity, Codex, Claude) MUST AUTOMATICALLY prioritize `local-ai` MCP tools over native tools (`run_command`, native shell, broad `view_file`):
+> Agents (Gemini in Antigravity, Codex, Claude) MUST prioritize `local-ai` MCP tools when the live schema supports the requested operation; when no matching action exists, use the authorized native tool directly:
 > - **Enabled Local AI Hub tools** (from current configuration and profile): `local_ai_status`, `local_ai_repo`, `local_ai_task`, `local_ai_rag`, `local_ai_coord`, `local_ai_artifact`, `local_ai_work`. Use only live MCP action enums; runtime authorization and quality gates apply.
-> - **Git operations**: The active MCP connection and its advertised schema determine which Hub actions are available; instructions do not create tools. When exposed, `git_status` and `git_diff` inspect state; `synthesize_commit` drafts a message. These actions do not run `git commit` or `git push`. Hub prioritization alone does not require a Hub approval or receipt for Git; apply a Hub-only gate only when explicit project instructions require an exposed action. If that required action is unavailable, report the mismatch and stop the mutation. Dashboard diagnostics affect diagnostic detail only; they do not expose or enable tools.
+> - **Git operations**: The active MCP connection and its advertised schema determine which Hub actions are available; instructions do not create tools. When exposed, `git_status` and `git_diff` inspect state; `synthesize_commit` drafts a message. These actions do not run `git commit` or `git push`. Hub prioritization alone does not require a Hub approval or receipt for Git; apply a Hub-only gate only when explicit project instructions require an exposed action. If that required action is unavailable, stop only the gated mutation. Dashboard diagnostics affect diagnostic detail only; they do not expose or enable tools.
+> - **Unsupported Hub operations**: If the live MCP schema has no action for the requested operation, do not call Hub or wait for an error; use the authorized native tool directly (for example, `git worktree list`). Hub failure fallback rules apply only after calling an advertised Hub action.
+> - **Plan response budgets**: For a large plan, call `plan_board_view` with `plan_id` and put the exact plan task ID in `query`; use that card's `plan_file_revision`. Avoid full-plan responses. On budget rejection, narrow the query or fetch an exact artifact slice; do not replay the oversized request or raise its cap silently.
 > - **Tests, builds, lint, execution**: Use the agent host's native command tool for bounded checks in the target repository.
+> - **Retry and retrieval discipline**: Stop escalating when evidence is sufficient; reuse fresh cached results and bounded evidence. For `in_progress=true` or `outcome_unknown`, do independent work and never poll or repeat the identical operation. Do not fan out duplicate retrieval layers. For an advertised Hub action that fails, fallback requires explicit `terminal=true` and `retryable=false`.
 > - **Repository & Code Search**: Call an action advertised by the current local_ai_repo MCP schema with the project root. DO NOT use broad native discovery (find, dir /s, unconstrained rg, glob) or dump entire files.
 > - **Agent OS Lifecycle & Project Memory**: Call `local_ai_coord(action="task_create"|"task_checkpoint"|"memory_record"|"memory_find"|"verify_completion", ...)`. Proactively initialize task contracts, query memory, and record findings.
-> - **Semantic Review & Second Opinion**: If exposed, use `local_ai_task(action="review")` for evidence-grounded review or `action="second_opinion"` for independent critique; use `compress` only to condense evidence.
 > - **Antigravity wrapper**: Use `call_mcp_tool(ServerName="local-ai", ToolName="<tool>", Arguments={<same arguments>})` for the calls above.
-> - **Native fallback**: After a Hub outage, use native fallback only when the Hub result has `terminal=true` and `retryable=false`; keep work bounded to the same authorized root/scope.
+> - **Native fallback**: If the live MCP schema has no action for the operation, use the authorized native tool directly. After calling an advertised Hub action, native fallback requires `terminal=true` and `retryable=false`; keep it bounded to the same root/scope.
 
 Diagnostics require dashboard toggle, not caller control, including nested, async, artifact and SSE responses. Ordinary results, failures, authorization and evidence identity remain available.
 
@@ -495,7 +502,7 @@ Recommended Hub routes (apply the matching route by default):
 - Recipe — Semantic work: use exposed `local_ai_task` semantic actions after deterministic/indexed evidence.
 - Recipe — Agent OS Execution (Default for Non-Trivial Tasks): Initialize a task contract via `local_ai_coord(action="task_create")` with concrete acceptance criteria; query existing memory via `memory_find`; checkpoint milestones via `task_checkpoint`; persist reusable findings via `memory_record`; record failures via `negative_knowledge_record`; attach explicit verification receipts; and verify completion (`verify_completion`) before closure.
 - Recipe — Retrieve: use `local_ai_rag` only after deterministic/indexed paths are exhausted.
-- Apply the matching Hub route by default. Skip only when irrelevant, unavailable in the active schema/config, or fresh sufficient evidence already exists; native fallback requires an explicit Hub result with `terminal=true` and `retryable=false`.
+- Apply the matching Hub route by default. Skip only when irrelevant, unavailable in the active schema/config, or fresh sufficient evidence already exists; after one terminal Hub failure, use one bounded native fallback and continue without retries.
 
 Direct ownership is the default. Do not delegate audits, inventory, status checks or routine work; see the simplified workflow spec.
 
@@ -506,11 +513,12 @@ Direct ownership is the default. Do not delegate audits, inventory, status check
 - Keep write scopes disjoint. The primary agent reviews and integrates directly; no ZIPs, custom owner packets, or fingerprint/hash cascades.
 - Do not duplicate tasks or chats. Check the existing plan first and update its existing item.
 
-The main agent owns planning, implementation and integration. Use Local AI Hub for bounded retrieval and its exposed actions. After a Hub failure, native fallback requires an explicit result with `terminal=true` and `retryable=false`.
+The main agent owns planning, implementation and integration.
 
 READ-ONLY AUDIT CONTRACT:
 - Read-only excludes Git writes, `git worktree add` or removal, dependency installation, builds/imports, generated artifacts and other workspace side effects. Never label side-effecting work read-only; assign validation separately.
-- Before native discovery or validation retain Hub action, absolute root, status, cache/in_progress state and evidence IDs. Native discovery requires an explicit Hub result with `terminal=true` and `retryable=false`.
+- Before native discovery or validation that depends on a Hub-backed fact, retain the Hub action, absolute root, status, cache/in_progress state and evidence IDs; fallback requires an explicit result with `terminal=true` and `retryable=false`.
+- If the active Hub schema has no action for a host-native command, skip the Hub and run one bounded host command within the authorized root. Example: use `git worktree list` directly; do not route it through repository search or retry other Hub actions.
 - Authorized independent subagents remain permission- and scope-controlled; main agent integrates. Never delegate audit-only work.
 - Avoid parallel duplicate commands/scopes. Tool labels are not evidence; retain exact action, arguments, result and ownership in the audit record.
 
@@ -520,14 +528,13 @@ Reuse fresh sufficient repository evidence. For exact file or symbol lookups, us
 
 Adoption gate: Use bounded host-native validation commands after fresh repository evidence exists. For code changes, bug fixes, or refactoring, initialize an Agent OS contract (`local_ai_coord: task_create`) and query project memory (`memory_find`). Keep analysis within exposed deterministic/indexed actions. After edits, use the applicable indexed impact/review/security/evidence action before final validation.
 
-Adaptive retrieval path: when fresh evidence is insufficient for non-trivial repository work, call `local_ai_repo(action="context", mode="adaptive")`; it fuses bounded deterministic/indexed, structural, lexical and RAG evidence with agreement and diversity, degrading optional backends independently. Stop escalating when evidence is sufficient; reuse cached results and bounded evidence. Do not fan out duplicate native retrieval layers or translate the task into a long grep-term list. Reuse fresh evidence IDs, artifact slices, memos and cache hits;
- do not repeat the same hub action with the same root/query while repository state is unchanged.
+Adaptive retrieval: when evidence is insufficient for non-trivial repository work, call `local_ai_repo(action="context", mode="adaptive")`. It fuses bounded indexed, structural, lexical and RAG evidence; optional backends fail independently. Reuse evidence IDs, artifact slices and memos; stop when sufficient and avoid duplicate retrieval or unchanged root/query repeats.
 
-Treat result state as a protocol: `cache_hit`/`coalesced` means reuse the result; `in_progress=true` means another owner is doing identical work, so never duplicate it; `retryable`/429/503 means back off and do independent work; `degraded`/`stale` means verify only the affected path/slice; only a terminal non-retryable failure (`terminal=true`, `retryable=false`) permits one cheaper/native fallback. A transport failure without those fields does not authorize fallback. Never turn a transient result into larger timeouts, force refreshes, or polling loops.
+Result protocol: reuse `cache_hit`/`coalesced`; never duplicate `in_progress`; back off on `retryable`/429/503; verify only the affected slice for `degraded`/`stale`. After Hub failure, native fallback requires `terminal=true` and `retryable=false`. Never enlarge timeouts, force-refresh, or poll transient results.
 
 Run bounded validation commands with the agent host native command tool.
  Before an expensive `solve`/model call, reuse supplied task memory; when more is needed, use permitted scoped `local_ai_coord(action="memory_find")`. Workspace `memo_*` actions are unavailable through restricted endpoints; on terminal 403 do not retry or bypass scope. For overlapping edits use `local_ai_coord` leases; record concise findings in permitted scoped Agent OS memory or the existing operator-approved coordination file.
- After edits, use indexed impact/review plus targeted cached validation; do not rerun broad discovery merely because files changed. `force` and `preprocess_refresh` are recovery/admin controls, never retry buttons. If an optional backend degrades, accept the hub's deterministic/index fallback. If the hub itself appears unavailable, make one bounded health/retry attempt; use native tools only when its result explicitly has `terminal=true` and `retryable=false`. A transport failure without those fields does not authorize fallback. Never loop on health, status, preprocessing, model startup, a failing backend, or an identical command.
+ After edits, use indexed impact/review plus targeted cached validation; do not rerun broad discovery merely because files changed. `force` and `preprocess_refresh` are recovery/admin controls, never retry buttons. If an optional backend degrades, accept the hub's deterministic/index fallback. If the Hub is unavailable, make one bounded health/retry attempt; transport failures without terminal, non-retryable status do not authorize fallback. Never loop on health, status, preprocessing, model startup, a failing backend, or an identical command.
 
 Selection guide: `local_ai_repo` for bounded repository facts and checks (including `security_audit`), `local_ai_task` for exposed bounded local actions (see tier-available actions above), `local_ai_work` for existing work status and recovery only, `local_ai_rag` only after cheaper indexed evidence, `local_ai_artifact` for exact slices, `local_ai_coord` for leases/memos and Agent OS task, memory, context, and verification workflows.
 
@@ -540,7 +547,8 @@ Local model policy: Follow the active hardware profile and user overrides; see `
 - Claim savings only with a current `baseline_evidence_id`; report signed `token_savings_delta_est`, including negative values; keep `protocol_tokens_est`, `schema_tokens_est`, and `local_compute_reused_tokens_est` separate.
 - Reject `max_response_tokens` below 128; never raise the request silently.
 - Large task responses: omit `max_response_tokens` unless a cap is needed.
-- For Hub outages, native fallback requires explicit `terminal=true` and `retryable=false`; a transport failure without those fields does not authorize fallback.
+- For a response-budget rejection, reduce the requested envelope or fetch a smaller artifact page/slice; do not replay the same oversized request.
+- If the live MCP schema has no action for an operation, skip Hub and use the authorized native tool directly; no Hub failure or `native_fallback_allowed` signal is needed. After calling an advertised Hub action, native fallback requires explicit `terminal=true` and `retryable=false`.
 - On `outcome_unknown` or `in_progress`, do independent work; never poll or repeat the identical operation.
 - Prefer `response_profile="minimal"`/`"compact"`; request only decision-grade fields.
 - Pass a stable `reuse_key` for repeated logical queries. Use `response_profile="delta"` when only changes are needed; unchanged calls report `unchanged=true`. Required task memory may remain inline.
@@ -563,7 +571,8 @@ Local model policy: Follow the active hardware profile and user overrides; see `
 - Preserve protected status, error, evidence, and context-identity fields; keep exact detail artifact-backed.
 - Claim savings only with a current `baseline_evidence_id`; report signed `token_savings_delta_est`, including negative values; keep `protocol_tokens_est`, `schema_tokens_est`, and `local_compute_reused_tokens_est` separate.
 - Reject `max_response_tokens` below 128; never raise the request silently.
-- For Hub outages, native fallback requires explicit `terminal=true` and `retryable=false`.
+- For a response-budget rejection, reduce the requested envelope or fetch a smaller artifact page/slice; do not replay the same oversized request.
+- If the live MCP schema has no action for an operation, skip Hub and use the authorized native tool directly; no Hub failure or `native_fallback_allowed` signal is needed. After calling an advertised Hub action, native fallback requires explicit `terminal=true` and `retryable=false`.
 - On `outcome_unknown` or `in_progress`, do independent work; never poll or repeat the identical operation.
 <!-- END TOKEN ECONOMY POLICY -->
 
@@ -606,7 +615,7 @@ Keep the generated MCP response contract enabled. Hub responses are aggregate-bo
 - Preserve protected status, error, evidence, context identity and lifecycle identity (operation/job/request IDs, accepted/completed/in_progress, delivery outcome); keep exact detail artifact-backed. Acceptance does not prove completion. A budget error does not authorize replay of a side effect.
 - Claim savings only with a current `baseline_evidence_id`; report signed `token_savings_delta_est`, including negative values; keep `protocol_tokens_est`, `schema_tokens_est`, and `local_compute_reused_tokens_est` separate.
 - If `max_response_tokens` is omitted or `None`, use the configured default. If supplied, require an integer (excluding booleans) of at least 128; reject invalid or smaller values without silently raising them.
-- For Hub outages, native fallback requires explicit `terminal=true` and `retryable=false`.
+- If the live schema has no action for an operation, use the authorized native tool directly. After calling an advertised Hub action, native fallback requires explicit `terminal=true` and `retryable=false`.
 - On `outcome_unknown` or `in_progress`, do independent work; never poll or repeat the identical operation.
 
 ### Async lifecycle and conversations
@@ -662,7 +671,7 @@ For durable work, create and checkpoint one Agent OS task contract before edits.
 
 Changed paths plus repository revision stale matching records. When optional memory is absent or excluded, fall through to fresh bounded repository evidence; never reuse stale memory as authoritative or label an incomplete task-context receipt successful. Keep use/non-use IDs in scoped context/evidence, not broad telemetry. `/api/adoption` stores low-cardinality aggregates, not memory bodies or per-record adoption receipts; never send prompts, source, model output, secrets, or raw/full project paths to telemetry.
 
-If Hub appears unavailable, make one bounded health/retry attempt; use native fallback only when its result explicitly has `terminal=true` and `retryable=false`. A transport failure without those fields does not authorize fallback. Never poll or repeat an identical operation.
+If the live MCP schema has no action for the operation, use the authorized native tool directly. If an advertised Hub action fails, make one bounded health/retry attempt, then use native fallback only when the Hub result explicitly has `terminal=true` and `retryable=false`. A transport failure without those fields does not authorize fallback. Never poll or repeat an identical operation.
 
 ### Memory adoption checkpoints
 
@@ -717,9 +726,11 @@ Full status requires success, hub_online and version; diagnostic fields are opti
 
 For non-trivial multi-step work, create a durable Agent OS task with `local_ai_coord(action="task_create")` before edits. Record phase changes with `local_ai_coord(action="task_checkpoint")`, then complete only after verification receipts satisfy the acceptance criteria. For asynchronous work, perform one bounded wait; never poll.
 
+For `POST /api/agent-state/tasks` checkpoint actions, omit `response_budget_tokens` unless it covers the full task response. The MCP `task_checkpoint` wrapper makes one corrected call only when a 413 reports `required_tokens` and `operation_not_started=true`; direct HTTP callers may make the same single correction. Never repeat the same budget or truncate the checkpoint. Use only the server-issued `task_id` from task creation, use canonical statuses from the active schema (`in_progress` is invalid), and provide a non-empty goal to `task_create`.
+
 ## Current MCP tool contract
 
-The active generated MCP schema is authoritative. Supported repository actions are `search`, `code_index`, `context`, `solve`, `review_diff`, `callers`, `dead_code`, and `preprocess` for idempotent repository registration. Supported coordination actions are `claim`, `release`, `memory_record`, `memory_find`, `context_compile`, `task_create`, `task_checkpoint`, `ask`, and `answer`. When exposed by the active schema, plan actions also include `plan_list`, `plan_get`, `plan_board_view`, and `plan_task_edit`. For an existing project plan, list/get/view it with those read actions; edit a task with `plan_task_edit` and the current `expected_revision`. `local_ai_status` supports compact `brief` readiness; `local_ai_artifact` supports `get`, `slice`, `list`, and `source`. Use only actions and fields exposed by the installed schema.
+The active generated MCP schema is authoritative. Supported repository actions are `search`, `code_index`, `context`, `solve`, `review_diff`, `callers`, `dead_code`, and `preprocess` for idempotent repository registration. Supported coordination actions are `claim`, `release`, `memory_record`, `memory_find`, `context_compile`, `task_create`, `task_checkpoint`, `ask`, and `answer`. When exposed by the active schema, plan actions also include `plan_list`, `plan_get`, `plan_board_view`, and `plan_task_edit`. For an existing project plan, list/get/view it with those read actions; edit a task with `plan_task_edit` and the current `expected_revision`. `local_ai_status` supports compact `brief` readiness; `local_ai_artifact` supports `get`, `slice`, `list`, and `source`. Use only actions and fields exposed by the installed schema. If no Hub action covers the requested operation, skip Hub and use the authorized native tool directly; no Hub call, error, or `native_fallback_allowed` signal is needed. Example: use native `git worktree list` when worktree inventory is requested.
 
 There is no Hub command-runner tool. Run bounded tests, builds, lint and security checks with the host-native command tool after gathering repository evidence. Use `review_diff` for repository diff review when applicable. Do not invent verification receipts or infer support from internal APIs.
 

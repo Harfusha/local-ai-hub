@@ -1679,7 +1679,7 @@ def _compact(
         if any(compacted.get(key) != raw_value.get(key) for key in SOURCE_SLICE_FIELDS):
             compacted = {
                 "success": False, "status_code": 413, "terminal": True, "retryable": False,
-                "error": "Exact source slice exceeds response budget; reduce the range or max_chars",
+                "error": "Exact source slice exceeds response budget; increase max_response_tokens or reduce the range/max_chars",
             }
     if (
         task_kind == "code_index"
@@ -2462,6 +2462,15 @@ def _instrumented_tool():
                         clean = candidate
                         handoff_added = True
             clean = _agent_output(clean, fn.__name__, arguments)
+            if (
+                isinstance(clean, dict)
+                and clean.get("unsupported") is True
+                and clean.get("blocked") is not True
+                and clean.get("status_code") not in {401, 403}
+            ):
+                clean = dict(clean)
+                clean.setdefault("terminal", True)
+                clean.setdefault("retryable", False)
             selector = "detail" if fn.__name__ == "local_ai_status" else "action"
             parameter = signature.parameters.get(selector)
             contract_action = arguments.get(selector, parameter.default if parameter is not None else "")
@@ -2627,6 +2636,51 @@ def _compact_endpoint_stats(value: Any) -> dict[str, Any]:
     }
 
 
+def _compact_scheduler_status(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict) or not any(
+        key in value for key in ("background_allowed", "gpu_admission_state", "queued", "foreground_queued")
+    ):
+        return {"available": False, "error": "scheduler_status_unavailable"}
+    result: dict[str, Any] = {"available": True}
+    for key in ("background_allowed", "switching"):
+        if type(value.get(key)) is bool:
+            result[key] = value[key]
+    for key in (
+        "active_parallel_limit", "global_parallel_limit", "inflight",
+        "inflight_background", "foreground_inflight", "queued",
+        "background_queued", "foreground_queued", "last_foreground_activity_ms",
+    ):
+        item = value.get(key)
+        if type(item) is int and item >= 0:
+            result[key] = item
+    admission = value.get("gpu_admission_state")
+    result["gpu_admission_state"] = (
+        admission if isinstance(admission, str) and admission in {
+            "available", "external_reservation", "background_lease",
+            "preparing_model", "inference_active", "outcome_unknown",
+        } else "unknown"
+    )
+    blockers = []
+    if result["gpu_admission_state"] == "external_reservation":
+        blockers.append("external_reservation")
+    if result["gpu_admission_state"] == "background_lease":
+        blockers.append("background_lease")
+    if result["gpu_admission_state"] == "preparing_model":
+        blockers.append("preparing_model")
+    if result["gpu_admission_state"] == "outcome_unknown":
+        blockers.append("gpu_outcome_unknown")
+    if result.get("switching") is True:
+        blockers.append("model_switch")
+    if result.get("foreground_inflight", 0) > 0:
+        blockers.append("foreground_inflight")
+    if result.get("foreground_queued", 0) > 0:
+        blockers.append("foreground_queued")
+    result["visible_background_blockers"] = blockers
+    if result.get("background_allowed") is False and not blockers:
+        result["background_block_reason_incomplete"] = True
+    return result
+
+
 def _effective_mcp_capabilities(
     backend: dict[str, Any], adapter: dict[str, Any],
 ) -> dict[str, Any]:
@@ -2729,6 +2783,8 @@ def local_ai_status(
         except Exception:
             raw_endpoint_stats = None
         result["endpoint_stats"] = _compact_endpoint_stats(raw_endpoint_stats)
+    if isinstance(extra_fields, list) and "scheduler" in extra_fields:
+        result["scheduler"] = _compact_scheduler_status(scheduler)
     return _preserve_contract_state(status, result)
 
 
@@ -4000,17 +4056,14 @@ def _local_ai_repo_impl(
         elif type(search_mode) is not str or search_mode not in {"lexical", "rag", "hybrid"}:
             return {"success": False, "error": "search_mode must be lexical, rag, or hybrid",
                     "status_code": 400, "terminal": True, "retryable": False}
+        unavailable_features: list[str] = []
         if summarize_results and not getattr(FEATURES, "search_summaries", False):
-            return {"success": False, "unsupported": True, "feature": "search_summaries",
-                    "error": "AI search summaries require the balanced, high or max profile"}
+            summarize_results = False
+            unavailable_features.append("search_summaries")
         enrich = bool(include_code)
         if enrich and not FEATURES.enriched_search:
-            return {
-                "success": False,
-                "unsupported": True,
-                "feature": "enriched_search",
-                "error": "enriched search is disabled (features.enriched_search=false)",
-            }
+            enrich = False
+            unavailable_features.append("enriched_search")
         extra = list(extra_fields or [])
         if enrich:
             extra.extend(["text", "raw"])
@@ -4036,6 +4089,8 @@ def _local_ai_repo_impl(
             "search_mode": search_mode,
         }
         search_result = CLIENT.post("/api/search", search_payload, timeout=float(min(120, _timeout("quick"))), path_hints=normalized_hints or None)
+        if unavailable_features and isinstance(search_result, dict) and search_result.get("success") is True:
+            search_result = {**search_result, "degraded": True, "fallback_used": True}
         projected = _compact(search_result, "search", extra_fields=extra if extra else None)
         if not summarize_results or not isinstance(search_result, dict) or not search_result.get("success", False):
             return projected
@@ -5221,6 +5276,7 @@ def local_ai_coord(
     stream_id: str | None = None,
     events: list[dict[str, Any]] | None = None,
     limit: int | None = None,
+    offset: int | None = None,
     content: Any = None,
     author: str = "agent",
     remote_sections: dict[str, Any] | None = None,
@@ -5972,6 +6028,9 @@ def local_ai_coord(
                 task_kwargs["response_budget_tokens"] = requested
         if action == "task_list":
             task_kwargs["query"] = query
+            task_kwargs["limit"] = limit if limit is not None else 20
+            if offset is not None:
+                task_kwargs["offset"] = offset
             if status:
                 task_kwargs["status"] = status
             if owner:
@@ -6011,6 +6070,17 @@ def local_ai_coord(
         task_result = CLIENT.coord(
             **task_kwargs,
         )
+        if (action == "task_checkpoint" and budget_enabled
+                and isinstance(task_result, dict)
+                and task_result.get("success") is False
+                and task_result.get("status_code") == 413
+                and task_result.get("operation_not_started") is True
+                and task_result.get("error") == "checkpoint_response_budget_too_small"):
+            response_budget = task_result.get("response_budget")
+            required_tokens = response_budget.get("required_tokens") if isinstance(response_budget, dict) else None
+            if type(required_tokens) is int and required_tokens > requested:
+                task_kwargs["response_budget_tokens"] = required_tokens
+                task_result = CLIENT.coord(**task_kwargs)
         task_projection = _compact(task_result, "task_memory")
         if (action == "task_list" and isinstance(task_result, dict)
                 and task_result.get("success") is True and task_result.get("tasks") == []
@@ -6604,7 +6674,11 @@ if hasattr(mcp, "_tool_manager") and hasattr(mcp, "_mcp_server") and mcp_types i
             fitted = emit(candidate)
             if fitted is not None:
                 return fitted
-        rejection = {"success": False, "error": "budget_too_small", "terminal": True, "retryable": False}
+        rejection = {
+            "success": False, "error": "budget_too_small", "terminal": True, "retryable": False,
+        }
+        if requested >= 512:
+            rejection["next_action"] = "request_larger_response_budget"
         for key in (
             "request_id", "outcome_unknown", "request_not_sent",
             "mutation_applied", "operation_not_started",
@@ -7030,7 +7104,7 @@ if hasattr(mcp, "_tool_manager") and hasattr(mcp, "_mcp_server") and mcp_types i
                     failure = {
                         "success": False, "status_code": 413, "terminal": True,
                         "retryable": False,
-                        "error": "The requested search page exceeds the configured MCP response budget; reduce limit.",
+                        "error": "No complete search result fits the requested response budget; omit max_response_tokens or use a larger cap.",
                         "root": value.get("root"),
                         "offset": value.get("offset", 0),
                         "limit": value.get("limit", 24),
@@ -7108,7 +7182,7 @@ if hasattr(mcp, "_tool_manager") and hasattr(mcp, "_mcp_server") and mcp_types i
                 if isinstance(candidate, dict) and candidate.get("success") is True and any(candidate.get(key) != value.get(key) for key in SOURCE_SLICE_FIELDS):
                     candidate = {
                         "success": False, "status_code": 413, "terminal": True, "retryable": False,
-                        "error": "Exact source slice exceeds response budget; reduce the range or max_chars",
+                        "error": "Exact source slice exceeds response budget; increase max_response_tokens or reduce the range/max_chars",
                     }
             if isinstance(candidate, dict):
                 previous_meta = candidate.get("response_budget")

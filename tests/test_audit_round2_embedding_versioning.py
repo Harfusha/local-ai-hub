@@ -4,6 +4,7 @@ import sqlite3
 from contextlib import closing
 from pathlib import Path
 from unittest.mock import MagicMock
+import pytest
 
 
 from local_ai_hub.agent_memory import MemoryKind, MemoryRecord, MemoryStore
@@ -108,3 +109,91 @@ def test_n19_semantic_generation_cache_embedding_space_isolation(tmp_path: Path)
     # Different embedding space must NOT hit entries from space-a
     res_b, score_b = cache_b.get("test-scope", "How do I configure WAL?")
     assert res_b is None, "Semantic cache must not return hit across different embedding spaces"
+
+
+@pytest.mark.parametrize("stored_space", ["", "space-a"])
+def test_n09_unidentified_or_incompatible_embedding_is_not_compared(tmp_path: Path, stored_space: str):
+    state_store = AgentStateStore(tmp_path / "agent_state.sqlite3")
+    memory_store = MemoryStore(state_store)
+    rec = memory_store.record(
+        MemoryRecord.create(
+            kind=MemoryKind.FACT,
+            key="config.arch",
+            value="sqlite-wal",
+            scope=AgentScope.GLOBAL,
+            scope_id="global",
+            source="user",
+            provenance={"root": str(tmp_path)},
+        )
+    )
+    memory_store.set_embedding(
+        rec.record_id,
+        [1.0, 0.0, 0.0, 0.0],
+        model_name="model-a" if stored_space else "",
+        embedding_space_id=stored_space,
+    )
+    services = MagicMock()
+    services.embed = lambda texts: {
+        "success": True,
+        "embeddings": [[1.0, 0.0, 0.0, 0.0]],
+        "model": "model-b",
+        "embedding_space_id": "space-b",
+    }
+
+    found = memory_store.find(query="quantum orchard", services=services, include_all_scopes=True)
+
+    assert rec.record_id not in {item.record_id for item in found}
+
+
+def test_n10_semantic_search_scans_past_newest_5000_embeddings(tmp_path: Path):
+    state_store = AgentStateStore(tmp_path / "agent_state.sqlite3")
+    memory_store = MemoryStore(state_store)
+    memory_store._init_table()
+
+    records = [
+        MemoryRecord.create(
+            kind=MemoryKind.FACT,
+            key=f"memory-{index}",
+            value="older target" if index == 0 else f"unrelated-{index}",
+            scope=AgentScope.GLOBAL,
+            scope_id="global",
+            source="user",
+            provenance={"root": str(tmp_path)},
+        )
+        for index in range(5001)
+    ]
+    with closing(sqlite3.connect(state_store.db_path)) as con, con:
+        for record in records:
+            memory_store._save_record_row(con, record)
+        con.executemany(
+            """INSERT INTO agent_memory_embeddings
+               (record_id, embedding, created_at, embedding_space_id, model_name, dimension)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (
+                (
+                    record.record_id,
+                    "[1.0, 2.0, 3.0, 4.0]" if index == 0 else "[0.0, 0.0, 1.0, 0.0]",
+                    float(index),
+                    "space-a",
+                    "model-a",
+                    4,
+                )
+                for index, record in enumerate(records)
+            ),
+        )
+
+    services = MagicMock()
+    services.embed = lambda texts: {
+        "success": True,
+        "embeddings": [[1.0, 2.0, 3.0, 4.0]],
+        "model": "model-a",
+        "embedding_space_id": "space-a",
+    }
+    found = memory_store.find(
+        query="no exact lexical match",
+        services=services,
+        include_all_scopes=True,
+        limit=50,
+    )
+
+    assert records[0].record_id in {item.record_id for item in found}

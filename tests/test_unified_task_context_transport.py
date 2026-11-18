@@ -31,6 +31,7 @@ def test_context_endpoint_composes_agent_and_repository_context(tmp_path: Path, 
         task_id="task-1",
         actor="agent",
         repo_root=str(tmp_path),
+    root=str(tmp_path),
     )
     previous = http_server.APP
     seen = {}

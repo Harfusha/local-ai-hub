@@ -77,6 +77,24 @@ def test_report_marks_bounded_detail_incomplete_when_lists_are_truncated(tmp_pat
     assert len(report["decision_grade"]["bypass"]) <= 24
 
 
+def test_decision_grade_bypass_includes_safe_error_type(tmp_path):
+    store = TelemetryStore(tmp_path / "telemetry", enabled=True, flush_interval_seconds=0.01)
+    try:
+        store.record_stage(
+            action="laya_capture",
+            stage="skipped",
+            bypass_reason="task_scope_unavailable",
+            error_type="ValueError",
+            success=True,
+        )
+        store.flush(1)
+        report = store.report(1)
+    finally:
+        store.close()
+
+    assert {"reason": "task_scope_unavailable", "error_type": "ValueError", "events": 1} in report["decision_grade"]["bypass"]
+
+
 def test_telemetry_metadata_redacts_absolute_paths_and_payload_like_fields(tmp_path):
     store = TelemetryStore(tmp_path / "telemetry", enabled=True, flush_interval_seconds=0.01)
     private_posix = "/" + "Users/" + "fixture/private/source.py"

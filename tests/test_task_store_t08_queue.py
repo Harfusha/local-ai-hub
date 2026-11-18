@@ -33,7 +33,7 @@ def test_worktree_ttl_clamp_preserves_owned_metadata(tasks, tmp_path, monkeypatc
 
     def prepare_owned(root, *, branch_name, task_id, owner, created_at, ttl_seconds, expires_at):
         return process_utils.PreparedGitWorktree(
-            repo_root=str(root), base_commit_ref="HEAD", base_commit_sha="a" * 40,
+            repo_root=str(root), root=str(root), base_commit_ref="HEAD", base_commit_sha="a" * 40,
             branch=branch_name, worktree_path=str(tmp_path / "owned-worktree"),
             lease_id="owned-lease", worktree_id="owned-id", task_id=task_id,
             owner=owner, created_at=created_at, ttl_seconds=ttl_seconds,
@@ -51,6 +51,7 @@ def test_worktree_ttl_clamp_preserves_owned_metadata(tasks, tmp_path, monkeypatc
     task = tasks.create(
         GoalContract(goal="bounded owned worktree"), ScopeContext(repository_id=str(tmp_path)),
         task_id="ttl-task", actor="owner", auto_worktree=True, repo_root=str(tmp_path),
+        root=str(tmp_path),
         worktree_ttl_seconds=requested,
     )
     assert len(calls) == 1
@@ -224,7 +225,7 @@ def test_mutation_generation_preserves_server_owned_scope_and_memory(tasks, tmp_
         created = tasks.create(
             GoalContract(goal="owned generation"), ScopeContext(repository_id=coordination_id, task_id=task_id),
             task_id=task_id,
-            repo_root=str(tmp_path), actor="owner", repository_revision="rev-1",
+            repo_root=str(tmp_path), root=str(tmp_path), actor="owner", repository_revision="rev-1",
         )
     finally:
         trace_context.reset_context(token)

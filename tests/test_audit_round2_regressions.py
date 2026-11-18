@@ -204,13 +204,13 @@ def test_t2_02_graph_traversal_closed_subgraph(tmp_path: Path):
     mem_store = MemoryStore(state_store=state_store)
 
     # A -> B -> C -> D, with a cycle back to A.
-    mem_store.record_relation("A", "calls", "B", weight=1.0)
-    mem_store.record_relation("B", "calls", "C", weight=1.0)
-    mem_store.record_relation("C", "calls", "D", weight=1.0)
-    mem_store.record_relation("D", "calls", "A", weight=1.0)
+    mem_store.record_relation("A", "calls", "B", weight=1.0, root=str(tmp_path))
+    mem_store.record_relation("B", "calls", "C", weight=1.0, root=str(tmp_path))
+    mem_store.record_relation("C", "calls", "D", weight=1.0, root=str(tmp_path))
+    mem_store.record_relation("D", "calls", "A", weight=1.0, root=str(tmp_path))
 
     # Limit to max 2 nodes from A (A and B)
-    traversal = mem_store.traverse_graph("A", max_depth=3, max_nodes=2)
+    traversal = mem_store.traverse_graph("A", max_depth=3, max_nodes=2, root=str(tmp_path))
     node_names = set(traversal["nodes"])
     assert len(node_names) <= 2
     assert "A" in node_names
@@ -359,11 +359,11 @@ def test_t2_11_find_relations_source_and_target_filter(tmp_path: Path):
     state_store._ensure_schema()
     mem_store = MemoryStore(state_store=state_store)
 
-    mem_store.record_relation("A", "calls", "B")
-    mem_store.record_relation("A", "calls", "C")
-    mem_store.record_relation("D", "calls", "B")
+    mem_store.record_relation("A", "calls", "B", root=str(tmp_path))
+    mem_store.record_relation("A", "calls", "C", root=str(tmp_path))
+    mem_store.record_relation("D", "calls", "B", root=str(tmp_path))
 
-    res = mem_store.find_relations(source_entity="A", target_entity="B")
+    res = mem_store.find_relations(source_entity="A", target_entity="B", root=str(tmp_path))
     assert len(res) == 1
     assert res[0]["source_entity"] == "A"
     assert res[0]["target_entity"] == "B"

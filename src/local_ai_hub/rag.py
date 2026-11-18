@@ -3159,6 +3159,7 @@ class RAGStore:
             "embedding_space_resolved": embedding_space_resolved,
             "processed_paths": processed_paths, "embedded_chunks": embedded_chunks,
             "reused_chunks": reused_chunks,
+            "policy_deleted_paths": sorted(policy_deleted),
             "read_uncertain_paths": sorted(read_uncertain_paths),
             "reindex_required": chunker_reindex_required,
         }
@@ -4342,6 +4343,9 @@ class RAGStore:
                     counts.setdefault(workspace, {})["index_generation"] = self._workspace_index_generation(
                         con, workspace
                     )
+                    uncertain_paths = self._workspace_read_uncertain_paths(con, workspace)
+                    if uncertain_paths:
+                        counts[workspace]["read_uncertain_files"] = len(uncertain_paths)
         return counts
 
     def docset_index(self, name: str, *, root: str) -> dict[str, Any]:

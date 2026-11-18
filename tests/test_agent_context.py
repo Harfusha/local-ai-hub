@@ -223,8 +223,7 @@ def test_repository_memory_context_excludes_different_repository_root(tmp_path: 
 
     result = compiler.compile(ContextRequest(
         task_id="task-1",
-        root=str(root),
-        coordination_id="repo-a",
+        root=str(root), coordination_id="repo-a",
     ))
 
     context = "\n".join(element.content for element in result.elements)
@@ -530,8 +529,7 @@ def test_context_compile_caps_normalized_changed_paths_with_diagnostic(tmp_path:
 
     context = compiler.compile(ContextRequest(
         task_id="task-1",
-        root=str(tmp_path),
-        changed_paths=changed_paths,
+        root=str(tmp_path), changed_paths=changed_paths,
         include_diagnostics=True,
         token_budget=300,
     ))
@@ -594,8 +592,7 @@ def test_stale_memory_remains_visible_as_diagnostic(tmp_path: Path):
 
     context = ContextCompiler(state_store=state_store, memory_store=memory_store).compile(
         ContextRequest(
-            task_id="task-1", root=str(tmp_path),
-            coordination_id="repo-a",
+            task_id="task-1", root=str(tmp_path), coordination_id="repo-a",
             token_budget=120, include_diagnostics=True,
         )
     )
@@ -683,8 +680,7 @@ def test_memory_diagnostics_schema_mismatch_is_not_hidden(tmp_path: Path):
     with pytest.raises(DurableSchemaMismatchError):
         compiler.compile(ContextRequest(
             task_id="task-1",
-            root=str(tmp_path),
-            token_budget=120,
+            root=str(tmp_path), token_budget=120,
             include_diagnostics=True,
         ))
 
@@ -784,8 +780,7 @@ def test_unsupported_memory_scopes_require_matching_request_identity(tmp_path: P
     matched = ContextCompiler(state_store=state_store, memory_store=memory_store).compile(
         ContextRequest(
             task_id="task-1",
-            root=str(tmp_path),
-            token_budget=200,
+            root=str(tmp_path), token_budget=200,
             clone_id="clone-a",
             worktree_id="worktree-a",
             branch="branch-a",

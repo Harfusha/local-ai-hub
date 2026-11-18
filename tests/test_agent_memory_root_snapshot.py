@@ -232,7 +232,7 @@ def test_memory_correction_lineage_and_delete_survive_reopen(store: MemoryStore,
         idempotency_key="corrected-record",
     )
     store._save_record(previous.with_superseded_by(corrected.record_id))
-    store.record_relation(previous.record_id, "superseded_by", corrected.record_id)
+    store.record_relation(previous.record_id, "superseded_by", corrected.record_id, root=repo)
 
     reopened = MemoryStore(AgentStateStore(store.state_store.db_path))
     restored_previous = reopened.get(previous.record_id, include_expired=True, **_repository_identity(previous))
@@ -253,7 +253,7 @@ def test_memory_correction_lineage_and_delete_survive_reopen(store: MemoryStore,
     assert serialized["expires_at"] == 4102444800.0
     assert serialized["provenance"]["repository_revision"] == "rev-new"
     assert reopened.find_for_context(root=repo, coordination_id="repo-id") == [restored_corrected]
-    assert reopened.find_relations(entity=previous.record_id, relation="superseded_by")
+    assert reopened.find_relations(entity=previous.record_id, relation="superseded_by", root=repo)
 
     assert reopened.delete(
         corrected.record_id,
@@ -262,7 +262,7 @@ def test_memory_correction_lineage_and_delete_survive_reopen(store: MemoryStore,
         repository_id="repo-id",
     )
     assert reopened.get(corrected.record_id, include_expired=True) is None
-    assert reopened.find_relations(entity=previous.record_id, relation="superseded_by") == []
+    assert reopened.find_relations(entity=previous.record_id, relation="superseded_by", root=repo) == []
     with closing(connect_sqlite(reopened.state_store.db_path)) as con:
         event_count = con.execute(
             "SELECT COUNT(*) FROM agent_events WHERE idempotency_key = ?",

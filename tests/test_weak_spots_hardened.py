@@ -48,7 +48,7 @@ def test_rag_bm25_fts_fallback_when_embedding_fails(tmp_path: Path):
     (root / "other.py").write_text("def placeholder(): pass\n", encoding="utf-8")
 
     workspace = store.workspace_id(str(root))
-    res = store.index_step(root=str(root), workspace=workspace, max_files=10)
+    res = store.index_step(root=str(root), root=str(root), workspace=workspace, max_files=10)
     assert res["success"] is True
 
     # Now make embeddings fail completely

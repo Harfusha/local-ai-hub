@@ -78,8 +78,7 @@ def test_swarm_orchestrator_lifecycle(tmp_path: Path):
     dispatch_res = swarm.dispatch(
         goal="Implement robust logger",
         target_paths=["src/logger.py"],
-        root=str(tmp_path),
-        author="lead_agent",
+        root=str(tmp_path), author="lead_agent",
     )
     assert dispatch_res["success"] is True
     swarm_id = dispatch_res["swarm_id"]

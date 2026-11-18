@@ -16,6 +16,7 @@ Reuse fresh repository evidence before adaptive retrieval or native broad discov
 - `local_ai_repo`: bounded evidence (`search`, `code_index`, `context`, `solve`, `review_diff`, `callers`, `dead_code`, `preprocess`).
 - Source details: exact artifact slices. Adaptive context only when indexed evidence insufficient.
 - Check active MCP schema before calling tools.
+- If the schema has no action for a requested operation, skip Hub and use the authorized native tool directly (for example, `git worktree list`); no Hub error is needed. Apply terminal/retryable fallback gates only after calling an advertised Hub action.
 
 ## Reason and act
 
@@ -36,7 +37,9 @@ Reuse fresh repository evidence before adaptive retrieval or native broad discov
 - Preserve protected status, error, evidence, and context-identity fields; keep exact detail artifact-backed.
 - Claim savings only with a current `baseline_evidence_id`; report signed `token_savings_delta_est`, including negative values; keep `protocol_tokens_est`, `schema_tokens_est`, and `local_compute_reused_tokens_est` separate.
 - Reject `max_response_tokens` below 128; never raise the request silently.
-- For Hub outages, native fallback requires explicit `terminal=true` and `retryable=false`.
+- For a response-budget rejection, reduce the requested envelope or fetch a smaller artifact page/slice; do not replay the same oversized request.
+- For large plans, query `plan_board_view` with the exact `task_id`, use the card's `plan_file_revision`, and fetch exact plan-file slices only when needed; avoid full-plan responses.
+- If the live MCP schema has no action for an operation, skip Hub and use the authorized native tool directly; no Hub failure or `native_fallback_allowed` signal is needed. After calling an advertised Hub action, native fallback requires explicit `terminal=true` and `retryable=false`.
 - On `outcome_unknown` or `in_progress`, do independent work; never poll or repeat the identical operation.
 - Prefer `response_profile="minimal"`/`"compact"`; request only decision-grade fields.
 - Pass a stable `reuse_key` for repeated logical queries. Use `response_profile="delta"` when only changes are needed; unchanged calls report `unchanged=true`. Required task memory may remain inline.

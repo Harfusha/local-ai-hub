@@ -1940,6 +1940,28 @@
         ]
       }
     },
+    "MCP local_ai_coord.gpu_capacity_lease_release": {
+      "decision": "protocol_boundary",
+      "role": "operator",
+      "reason": "Explicitly consented release of an exact unreserved Laya capacity lease after its owner process is confirmed absent; preserves the audited operator cleanup path.",
+      "response_policy": "Preserve exact lease identity and release outcome; never report success without the action result and its audit record.",
+      "source_contract": {
+        "source": "src/local_ai_hub/operation_contracts.py",
+        "selector": "action",
+        "output_schema_fields": [
+          "cancel_reason",
+          "cancel_requested",
+          "cancelled",
+          "degraded",
+          "error",
+          "evidence_ids",
+          "retryable",
+          "stale",
+          "success",
+          "terminal"
+        ]
+      }
+    },
     "MCP local_ai_coord.gpu_reservation_release": {
       "decision": "retain",
       "role": "agent",
@@ -1989,6 +2011,28 @@
       "role": "agent",
       "reason": "Scoped GPU reservation status supports safe resource coordination without exposing reservation credentials.",
       "response_policy": "Preserve reservation presence, state, expiry and manual-intervention requirement; never expose the reservation digest or raw token.",
+      "source_contract": {
+        "source": "src/local_ai_hub/operation_contracts.py",
+        "selector": "action",
+        "output_schema_fields": [
+          "cancel_reason",
+          "cancel_requested",
+          "cancelled",
+          "degraded",
+          "error",
+          "evidence_ids",
+          "retryable",
+          "stale",
+          "success",
+          "terminal"
+        ]
+      }
+    },
+    "MCP local_ai_coord.gpu_scheduler_capacity_lease_release": {
+      "decision": "protocol_boundary",
+      "role": "operator",
+      "reason": "Explicitly consented cleanup of a prior scheduler lease only after the matching job is absent and Ollama confirms no loaded runner; active or ambiguous leases fail closed.",
+      "response_policy": "Preserve scheduler lease identity, generation and explicit refusal/error state; never imply release from a request alone.",
       "source_contract": {
         "source": "src/local_ai_hub/operation_contracts.py",
         "selector": "action",

@@ -134,3 +134,40 @@ def test_search_reads_candidate_files_concurrently_and_keeps_results(
         key: value for key, value in expected.items() if key != timing_key
     }
     assert max_active >= 2
+
+
+def test_search_uses_bounded_project_candidates_when_accelerator_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    candidate = tmp_path / "target.py"
+    candidate.write_text("needle here\n", encoding="utf-8")
+    tools = RepositoryTools({"rag": {"extensions": [".py"]}})
+    monkeypatch.setattr(
+        tools, "_iter_project_search_files", lambda *_args, **_kwargs: [candidate],
+    )
+    monkeypatch.setattr(tools, "_ripgrep_candidates", lambda *_args, **_kwargs: (None, True))
+
+    result = tools.search(
+        str(tmp_path), "needle", project_settings=object(), git_inventory=[],
+    )
+
+    assert result["success"] is True
+    assert result["engine"] == "python"
+    assert [hit["path"] for hit in result["results"]] == ["target.py"]
+    assert result["truncated"] is False
+
+
+def test_search_remains_retryable_when_accelerator_fails_without_candidates(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tools = RepositoryTools({"rag": {"extensions": [".py"]}})
+    monkeypatch.setattr(tools, "_iter_project_search_files", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(tools, "_ripgrep_candidates", lambda *_args, **_kwargs: (None, True))
+
+    result = tools.search(
+        str(tmp_path), "needle", project_settings=object(), git_inventory=[],
+    )
+
+    assert result["success"] is False
+    assert result["engine"] == "bounded-accelerator-failure"
+    assert result["retryable"] is True

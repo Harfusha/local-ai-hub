@@ -113,8 +113,7 @@ def test_mcp_adaptive_context_pack_crosses_http_with_bounded_provenance(
     try:
         result = mcp_server.local_ai_repo(
             action="context",
-            root=str(tmp_path),
-            query="inspect route",
+            root=str(tmp_path), query="inspect route",
             task_id="context-pack-budget-e2e",
             mode="adaptive",
             guarded=True,

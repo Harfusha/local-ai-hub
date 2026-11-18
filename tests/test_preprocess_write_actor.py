@@ -4,6 +4,7 @@ import concurrent.futures
 from pathlib import Path
 import sqlite3
 import threading
+import time
 import pytest
 
 from local_ai_hub import preprocess_write_actor
@@ -155,4 +156,46 @@ def test_preprocess_write_actor_future_waits_for_commit(tmp_path: Path, monkeypa
             assert result.result(timeout=2) == 1
             assert captured_futures[0].done()
     finally:
+        actor.stop()
+
+
+def test_preprocess_write_actor_prioritizes_project_state_writes(tmp_path: Path) -> None:
+    actor = PreprocessWriteActor(tmp_path / "priority.sqlite3", max_batch_size=1)
+    actor.start()
+    started = threading.Event()
+    release = threading.Event()
+    order: list[str] = []
+
+    try:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
+            first = executor.submit(
+                actor.submit,
+                lambda _con: (started.set(), release.wait(timeout=2))[1],
+            )
+            assert started.wait(timeout=2)
+
+            background = executor.submit(actor.submit, lambda _con: order.append("background"))
+            deadline = time.monotonic() + 2
+            while actor._queue.qsize() < 1 and time.monotonic() < deadline:
+                time.sleep(0.001)
+            assert actor._queue.qsize() == 1
+
+            project_state = executor.submit(
+                actor.submit,
+                lambda _con: order.append("project_state"),
+                priority=0,
+            )
+            deadline = time.monotonic() + 2
+            while actor._queue.qsize() < 2 and time.monotonic() < deadline:
+                time.sleep(0.001)
+            assert actor._queue.qsize() == 2
+
+            release.set()
+            first.result(timeout=2)
+            project_state.result(timeout=2)
+            background.result(timeout=2)
+
+        assert order == ["project_state", "background"]
+    finally:
+        release.set()
         actor.stop()

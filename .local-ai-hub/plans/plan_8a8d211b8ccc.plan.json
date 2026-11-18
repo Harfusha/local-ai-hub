@@ -16,7 +16,7 @@
       "depends_on": [],
       "description": "Fix unused _external_gpu_reserved() call in AffinityScheduler.status(). Ensure pyflakes clean.",
       "kind": "code",
-      "next_action": "",
+      "next_action": "Rechecked on current master HEAD b439f75690e581ff75ea32894d5fed450374712d. `_external_gpu_reserved()` is defined and called inside AffinityScheduler.status() to refresh/reconcile external reservation state; it is not an unresolved symbol. `python -m pyflakes src/local_ai_hub/scheduler.py` exited 0. Focused reservation/status recovery tests passed 2: tests/test_scheduler_status_external_reservation.py and tests/test_scheduler_unknown_gpu_reaps_expired_external_reservation.py. scheduler.py SHA-256 80fa05c5030b77e530b6d553e8305ce86c23a0507affc3a593a9b1a9858021fb.",
       "order": 1,
       "title": "HUB-001 P0: CI pyflakes fail in scheduler",
       "work_status": "done"
@@ -47,7 +47,7 @@
       "depends_on": [],
       "description": "SinglePassIngestCache key includes (root, rel_path, content_hash). Hash phase and lexical mismatch invalidate cache. No-watcher cross-root e2e verification.",
       "kind": "code",
-      "next_action": "",
+      "next_action": "Fresh current master HEAD b439f75690e581ff75ea32894d5fed450374712d: `python -m pytest -q tests/test_preprocess_inventory_cache_identity.py --tb=short` — 6 passed. Coverage includes cache identity surviving git-map changes, lexical convergence, hash retry on concurrent file mutation, no-watcher edit invalidation, same relative path scoped by root, and restarted two-root index readback. Test SHA-256 927382c0a90566e5550b248bc3fa3face3fb4ff0d652d38fa58c3f2ae64d98c3.",
       "order": 5,
       "title": "HUB-005 P1: Preprocess cache identity / invalidation",
       "work_status": "done"
@@ -64,7 +64,7 @@
       "depends_on": [],
       "description": "Bounded worker pool, durable SQLite queue backpressure, priority + starvation aging selection, crash restart durability.",
       "kind": "code",
-      "next_action": "",
+      "next_action": "Fresh current master HEAD b439f75690e581ff75ea32894d5fed450374712d: `python -m pytest -q tests/unit/test_hub_006_bounded_workers_admission.py --tb=short` — 4 passed (29.38s). Direct cases cover 100 parallel jobs with strict worker bounds, queue-limit backpressure, priority/starvation aging, and durable restart without task loss. Test SHA-256 99e11a167ff693d39127cd9b6720933fab975276ce6401f29be5a138dc4b0846.",
       "order": 6,
       "title": "HUB-006 P1: Bounded workers / admission",
       "work_status": "done"
@@ -83,7 +83,7 @@
       "depends_on": [],
       "description": "Atomic state lifecycle and crash recovery in work_orchestrator.py, agent_tasks.py, resilience.py, and agent_semaphores.py. Verified with 5 injected failure points, crash restart durability, and safe fencing recovery.",
       "kind": "code",
-      "next_action": "",
+      "next_action": "Fresh current master HEAD b439f75690e581ff75ea32894d5fed450374712d: `python -m pytest -q tests/unit/test_hub_007_atomic_lifecycle_crash_recovery.py --tb=short` — 7 passed in 4.54s. Covers five injected lifecycle failure points, unfinalized barrier recovery, stale fence, unknown state fail-closed, and semaphore crash/expiry recovery. Test SHA-256 ed6064b8a38662fdcb5a536be6fe39e1add6c70e7899693cbcc7789f9dadbbf2.",
       "order": 7,
       "title": "HUB-007 P1: Atomic state lifecycle / crash recovery",
       "work_status": "done"
@@ -96,15 +96,16 @@
         "Graceful fallback without OOM loop verified on critical VRAM pressure",
         "No automatic model pulls on missing model verified"
       ],
-      "blocker": null,
+      "blocker": "Fresh read-only Hub status shows version 6.1.0 online, no active model, nominal VRAM and GPU admission available; reservation status is free. Actual model unload cannot be observed because there is no loaded model, and the approved plan forbids triggering an unload/restart without a safe runtime authorization. Mocked lifecycle tests do not establish hardware/backend unload.",
       "clarifications": [],
       "depends_on": [],
       "description": "GPU/CPU/NPU inference admission, external reservation coordination, actual model unload observation separately, and graceful VRAM fallback without OOM loop in scheduler.py, vram_balancer.py, and laya_lifecycle.py.",
       "kind": "code",
-      "next_action": "",
+      "next_action": "2026-11-18 fresh focused suite `python -m pytest tests/unit/test_hub_008_gpu_cpu_npu_admission_and_unload.py -q`: 5 passed in 1.51s. Budgeted sharing and external reservation integration: `python -m pytest tests/test_mixed_scheduler_integration.py tests/test_external_gpu_reservation_lifecycle.py -q` — 76 passed in 36.42s. Cases include measured-free-capacity co-admission, capacity lease semantics, shared internal/external fencing, reservation lifecycle and cleanup. Hub status: active_model=null, VRAM nominal, gpu_admission_state=available; reservation status free. Keep offline/source evidence distinct from actual runtime unload. To close HUB-008, get an authorized natural unload observation with exact loaded Hub revision and observe the backend model absent after unload.",
       "order": 8,
       "title": "HUB-008 P1: GPU/CPU/NPU inference admission & unload",
-      "work_status": "done"
+      "work_phase": "verification",
+      "work_status": "in_progress"
     },
     "task_hub_009": {
       "acceptance_criteria": [
@@ -120,7 +121,7 @@
       "depends_on": [],
       "description": "Evidence and verification integrity in agent_verification.py, evidence.py, artifacts.py, and agent_tasks.py. Rejects stale, wrong scope, deleted artifact, tampered hash, and incomplete verification; validates strong receipt schema bound to source revision.",
       "kind": "code",
-      "next_action": "",
+      "next_action": "Fresh current master HEAD b439f75690e581ff75ea32894d5fed450374712d: `python -m pytest -q tests/unit/test_hub_009_evidence_verification_integrity.py --tb=short` — 6 passed. Directly covers stale, wrong-scope/owner, deleted/missing artifact, tampered hash/revision, incomplete criteria rejection and strong source-revision/artifact-bound receipt schema. Test SHA-256 6cec568c03cbbdd99c0160f17f46bbc7a3a9477dd6537e3e6d4a7320e59d0f81.",
       "order": 9,
       "title": "HUB-009 P1: Evidence/verification integrity",
       "work_status": "done"
@@ -138,7 +139,7 @@
       "depends_on": [],
       "description": "Local security and debug data protection in http_server.py, debug_traces.py, and command_policy.py. Verified loopback-only binding, cross-origin/Host protection, traversal and TOCTOU resistance, atomic purge, and credential/path redacting export.",
       "kind": "code",
-      "next_action": "",
+      "next_action": "Fresh current master HEAD b439f75690e581ff75ea32894d5fed450374712d: Hub 010 boundary suite passed 5 (loopback default, origin/Host, traversal, purge, redacted export); `tests/test_debug_traces.py` plus `tests/test_security_boundaries.py` passed 68; `tests/test_http_root_path_toctou.py` passed 1. This covers path TOCTOU separately; no live host or browser run. Current trace source separately checked and trace inspector tests passed 10.",
       "order": 10,
       "title": "HUB-010 P1: Local security and debug data protection",
       "work_status": "done"
@@ -156,7 +157,7 @@
       "depends_on": [],
       "description": "API schema and operation registry in operation_contracts.py, http_route_registry.py, mcp_server.py, and docs/API_REGISTRY.md. All 7 tools, subactions, and HTTP routes documented with invariants, state transitions, and verified parity tests without breaking changes.",
       "kind": "code",
-      "next_action": "",
+      "next_action": "Fresh current master HEAD b439f75690e581ff75ea32894d5fed450374712d: the API registry, operation contracts, HTTP route acceptance and canonical route suites passed 432 tests (`--no-cache`). `python tools/surface_inventory.py --write-doc --task-id task_eefe699c115e` regenerated docs/API_COVERAGE.md and docs/API_COVERAGE.json (706 rows); subsequent `--check --task-id task_eefe699c115e` passed with no drift. `git diff --check` passed. Evidence is source/docs/test coverage, not runtime health.",
       "order": 11,
       "title": "HUB-011 P1: API schema and operation registry",
       "work_status": "done"

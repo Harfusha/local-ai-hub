@@ -116,6 +116,7 @@ def test_scheduler_skips_project_already_owned_by_another_worker(tmp_path):
     processor = object.__new__(ProjectPreprocessor)
     processor._connect = connect
     processor._db_lock = threading.RLock()
+    processor._sqlite_write_retries = 1
     processor._step_locks_guard = threading.Lock()
     processor._step_locks = {}
     processor.max_preprocessing_projects = 2
@@ -325,7 +326,7 @@ def test_extra_project_workers_only_run_in_preprocessing_mode(tmp_path):
     pending = [{"root": "a"}, {"root": "b"}]
     lock = threading.Lock()
     first, second, release = threading.Event(), threading.Event(), threading.Event()
-    def next_project():
+    def next_project(**_kwargs):
         with lock:
             return pending.pop(0) if pending else None
     def step(row, **_kwargs):

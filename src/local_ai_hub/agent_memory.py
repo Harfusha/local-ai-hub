@@ -3,6 +3,7 @@ from __future__ import annotations
 from .json_utils import dumps as json_dumps
 
 import hashlib
+import heapq
 import json
 import logging
 import math
@@ -77,6 +78,16 @@ def _memory_event_stream_id(scope: AgentScope, scope_id: str | None, key: str) -
 
 def _normalise_scope_root(value: str) -> str:
     return os.path.normcase(os.path.abspath(os.path.normpath(str(value).replace("\\", "/")))).replace("\\", "/")
+
+
+def _canonical_relation_root(root: str) -> str:
+    if not isinstance(root, str) or not root or root != root.strip() or "\x00" in root or not os.path.isabs(root):
+        raise ValueError("relation root must be a canonical absolute path")
+    return _normalise_scope_root(root)
+
+
+def _relation_event_stream_id(root: str, source: str, target: str) -> str:
+    return "relation:" + "".join(f"{len(part)}:{part}" for part in (root, source, target))
 
 
 def _memory_deletion_event(con: Any, *, record_id: str) -> AgentEvent | None:
@@ -154,6 +165,7 @@ _CONTEXT_ROOT_SQL = (
     "canonical_scope_root(json_extract("
     "CASE WHEN json_valid(provenance) THEN provenance ELSE '{}' END, '$.root'))"
 )
+_RELATION_ROOT_SQL = "json_extract(CASE WHEN json_valid(metadata) THEN metadata ELSE '{}' END, '$.root')"
 _MEMORY_PRIVATE_FIELD_PARTS = {"content", "output", "prompt", "raw", "source", "text", "transcript"}
 _MEMORY_SECRET_FIELD_PARTS = {"authorization", "credential", "password", "secret", "token"}
 _MEMORY_SECRET_FIELD_NAMES = {
@@ -932,7 +944,12 @@ class MemoryStore:
         try:
             scope = getattr(record.scope, "value", record.scope)
             provenance = record.provenance if isinstance(record.provenance, Mapping) else {}
+            root = provenance.get("root")
+            if not isinstance(root, str):
+                return
+            root = _canonical_relation_root(root)
             relation_metadata: dict[str, Any] = {
+                "root": root,
                 "scope": scope if isinstance(scope, str) else "",
                 "scope_id": record.scope_id,
             }
@@ -950,6 +967,7 @@ class MemoryStore:
                     source=source,
                     relation=relation,
                     target=target,
+                    root=root,
                     weight=weight,
                     metadata=relation_metadata,
                     actor=actor,
@@ -1877,50 +1895,68 @@ class MemoryStore:
                         emb_sql = (
                             "SELECT record_id, embedding, embedding_space_id, model_name, dimension "
                             "FROM agent_memory_embeddings "
-                            f"WHERE record_id IN ({base_id_sql}) "
-                            "ORDER BY created_at DESC LIMIT 5000"
+                            f"WHERE record_id IN ({base_id_sql})"
                         )
                         cur_emb = con.execute(emb_sql, tuple(base_params))
-                        rows = cur_emb.fetchall()
-                        valid_rows = []
-                        for r in rows:
-                            r_id, r_emb, r_space, _, r_dim = r[0], r[1], str(r[2] or "").strip(), str(r[3] or "").strip(), int(r[4] or 0)
-                            if r_dim and r_dim != q_dim:
-                                continue
-                            if q_space and r_space and q_space != r_space:
-                                continue
-                            valid_rows.append((r_id, r_emb))
-                        if valid_rows:
-                            if _NUMPY_AVAILABLE and len(valid_rows) > 4:
-                                rec_ids = [r[0] for r in valid_rows]
-                                rec_vecs = [json.loads(r[1]) for r in valid_rows]
-                                mat = np.array(rec_vecs, dtype=np.float32)
-                                q = np.array(q_vec, dtype=np.float32)
-                                q_norm = float(np.linalg.norm(q))
-                                if q_norm > 0:
-                                    dots = mat @ q
-                                    norms = np.linalg.norm(mat, axis=1) * q_norm
-                                    norms[norms == 0] = 1.0
-                                    sims = dots / norms
-                                    for r_id, sim in zip(rec_ids, sims):
+                        exact_ids = {record.record_id for record in exact_records}
+                        vector_heap: list[tuple[float, str]] = []
+                        vector_limit = _bounded_memory_limit(limit, self.max_query_limit)
+                        while rows := cur_emb.fetchmany(512):
+                            valid_rows = []
+                            for r in rows:
+                                r_id, r_emb, r_space, r_model, r_dim = (
+                                    r[0], r[1], str(r[2] or "").strip(), str(r[3] or "").strip(), int(r[4] or 0)
+                                )
+                                r_space = r_space or r_model
+                                if not q_space or not r_space or r_dim != q_dim or q_space != r_space:
+                                    continue
+                                valid_rows.append((r_id, r_emb))
+                            if valid_rows:
+                                if _NUMPY_AVAILABLE and len(valid_rows) > 4:
+                                    rec_ids = [r[0] for r in valid_rows]
+                                    rec_vecs = [json.loads(r[1]) for r in valid_rows]
+                                    mat = np.array(rec_vecs, dtype=np.float32)
+                                    q = np.array(q_vec, dtype=np.float32)
+                                    q_norm = float(np.linalg.norm(q))
+                                    if q_norm > 0:
+                                        dots = mat @ q
+                                        norms = np.linalg.norm(mat, axis=1) * q_norm
+                                        norms[norms == 0] = 1.0
+                                        sims = dots / norms
+                                        for r_id, sim in zip(rec_ids, sims):
+                                            if sim >= min_score:
+                                                score = float(sim)
+                                                if r_id in fts_scores or r_id in exact_ids:
+                                                    vec_scores[r_id] = score
+                                                elif len(vector_heap) < vector_limit:
+                                                    heapq.heappush(vector_heap, (score, r_id))
+                                                elif (score, r_id) > vector_heap[0]:
+                                                    heapq.heapreplace(vector_heap, (score, r_id))
+                                else:
+                                    for r_id, emb_json in valid_rows:
+                                        rec_vec = json.loads(emb_json)
+                                        sim = self._cosine_similarity(q_vec, rec_vec)
                                         if sim >= min_score:
-                                            vec_scores[r_id] = float(sim)
-                            else:
-                                for r_id, emb_json in valid_rows:
-                                    rec_vec = json.loads(emb_json)
-                                    sim = self._cosine_similarity(q_vec, rec_vec)
-                                    if sim >= min_score:
-                                        vec_scores[r_id] = sim
+                                            if r_id in fts_scores or r_id in exact_ids:
+                                                vec_scores[r_id] = sim
+                                            elif len(vector_heap) < vector_limit:
+                                                heapq.heappush(vector_heap, (sim, r_id))
+                                            elif (sim, r_id) > vector_heap[0]:
+                                                heapq.heapreplace(vector_heap, (sim, r_id))
+                        vec_scores.update({r_id: score for score, r_id in vector_heap})
                 except Exception:
                     pass
 
             cand_ids = set(fts_scores.keys()) | set(vec_scores.keys())
             cand_records: list[MemoryRecord] = []
             if cand_ids:
-                placeholders = ",".join("?" for _ in cand_ids)
-                fetch_sql = base_sql + f" AND record_id IN ({placeholders})"
-                fetch_rows = con.execute(fetch_sql, tuple(base_params) + tuple(cand_ids)).fetchall()
-                cand_records.extend(self._decode_memory_rows(fetch_rows))
+                candidate_ids = list(cand_ids)
+                for start in range(0, len(candidate_ids), 500):
+                    batch_ids = candidate_ids[start : start + 500]
+                    placeholders = ",".join("?" for _ in batch_ids)
+                    fetch_sql = base_sql + f" AND record_id IN ({placeholders})"
+                    fetch_rows = con.execute(fetch_sql, tuple(base_params) + tuple(batch_ids)).fetchall()
+                    cand_records.extend(self._decode_memory_rows(fetch_rows))
 
             cand_sql = base_sql + " ORDER BY updated_at DESC LIMIT 100"
             cand_rows = con.execute(cand_sql, tuple(base_params)).fetchall()
@@ -2618,9 +2654,11 @@ class MemoryStore:
                 for source in grp_records
             ]
             try:
+                relation_root = _canonical_relation_root(digest_record.provenance.get("root"))
                 relation_specs.extend(self._auto_link_specs(digest_record))
-            except Exception:
-                pass
+            except (AttributeError, TypeError, ValueError):
+                relation_specs = []
+                relation_root = ""
             relation_rows = [
                 (
                     f"rel_{uuid.uuid4().hex[:12]}",
@@ -2628,6 +2666,7 @@ class MemoryStore:
                     relation,
                     target,
                     weight,
+                    json_dumps({"root": relation_root}, ensure_ascii=False),
                 )
                 for source, relation, target, weight in relation_specs
             ]
@@ -2666,8 +2705,7 @@ class MemoryStore:
                             published.append(appended.event)
                         self._save_record_row(con, record)
 
-                    for relation_index, (relation_id, source_id, relation, target_id, weight) in enumerate(relation_rows):
-                        relation_meta = "{}"
+                    for relation_index, (relation_id, source_id, relation, target_id, weight, relation_meta) in enumerate(relation_rows):
                         con.execute(
                             """
                             INSERT INTO agent_entity_relations (
@@ -2679,7 +2717,7 @@ class MemoryStore:
                              relation_meta, now, now),
                         )
                         relation_event = AgentEvent.create(
-                            stream_id=f"relation:{source_id}:{target_id}",
+                            stream_id=_relation_event_stream_id(relation_root, source_id, target_id),
                             kind="relation.recorded",
                             payload={
                                 "relation_id": relation_id,
@@ -2687,6 +2725,7 @@ class MemoryStore:
                                 "relation": relation,
                                 "target": target_id,
                                 "weight": weight,
+                                "metadata": {"root": relation_root},
                             },
                             idempotency_key=f"compact-relation:{digest_record.record_id}:{relation_index}",
                             actor=actor,
@@ -2736,18 +2775,24 @@ class MemoryStore:
         relation: str,
         target: str,
         *,
+        root: str,
         weight: float = 1.0,
         metadata: dict[str, Any] | None = None,
         actor: str = "agent",
     ) -> dict[str, Any]:
+        canonical_root = _canonical_relation_root(root)
+        relation_metadata = dict(metadata or {})
+        if "root" in relation_metadata and relation_metadata["root"] != canonical_root:
+            raise ValueError("relation metadata root must match root")
+        relation_metadata["root"] = canonical_root
         self._init_table()
         rel_id = f"rel_{uuid.uuid4().hex[:12]}"
         now = time.time()
-        meta_json = json_dumps(metadata or {}, ensure_ascii=False)
+        meta_json = json_dumps(relation_metadata, ensure_ascii=False)
         event = AgentEvent.create(
-            stream_id=f"relation:{source}:{target}",
+            stream_id=_relation_event_stream_id(canonical_root, source.strip(), target.strip()),
             kind="relation.recorded",
-            payload={"relation_id": rel_id, "source": source, "relation": relation, "target": target, "weight": weight},
+            payload={"relation_id": rel_id, "source": source, "relation": relation, "target": target, "weight": weight, "metadata": relation_metadata},
             actor=actor,
         )
 
@@ -2790,24 +2835,27 @@ class MemoryStore:
             "relation": relation,
             "target_entity": target,
             "weight": weight,
+            "metadata": relation_metadata,
         }
 
     def find_relations(
         self,
         entity: str = "",
         *,
+        root: str,
         source_entity: str | None = None,
         target_entity: str | None = None,
         direction: str = "both",
         relation: str | None = None,
         limit: int = 50,
     ) -> list[dict[str, Any]]:
+        canonical_root = _canonical_relation_root(root)
         self._init_table()
         def _fetch():
             con = connect_sqlite(self.state_store.db_path)
             try:
-                params: list[Any] = []
-                where_clauses: list[str] = []
+                params: list[Any] = [canonical_root]
+                where_clauses: list[str] = [f"{_RELATION_ROOT_SQL} = ?"]
                 if source_entity and target_entity:
                     where_clauses.append("source_entity = ? AND target_entity = ?")
                     params.extend([source_entity.strip(), target_entity.strip()])
@@ -2857,9 +2905,11 @@ class MemoryStore:
         self,
         start_entity: str,
         *,
+        root: str,
         max_depth: int = 2,
         max_nodes: int = 50,
     ) -> dict[str, Any]:
+        canonical_root = _canonical_relation_root(root)
         self._init_table()
         start = start_entity.strip()
         if not start:
@@ -2888,12 +2938,12 @@ class MemoryStore:
                     if depth >= limit_depth:
                         continue
                     cur = con.execute(
-                        """
+                        f"""
                         SELECT CASE WHEN source_entity = ? THEN target_entity ELSE source_entity END
                         FROM agent_entity_relations
-                        WHERE source_entity = ? OR target_entity = ?
+                        WHERE {_RELATION_ROOT_SQL} = ? AND (source_entity = ? OR target_entity = ?)
                         """,
-                        (curr, curr, curr),
+                        (curr, canonical_root, curr, curr),
                     )
                     for (neighbor,) in cur.fetchall():
                         neighbor_str = str(neighbor or "").strip()
@@ -2924,10 +2974,11 @@ class MemoryStore:
                 edge_sql = f"""
                 SELECT DISTINCT relation_id, source_entity, relation, target_entity, weight, metadata, updated_at
                 FROM agent_entity_relations
-                WHERE source_entity IN ({placeholders}) AND target_entity IN ({placeholders})
+                WHERE {_RELATION_ROOT_SQL} = ?
+                  AND source_entity IN ({placeholders}) AND target_entity IN ({placeholders})
                 ORDER BY weight DESC, updated_at DESC
                 """
-                cur_edges = con.execute(edge_sql, tuple(node_list) + tuple(node_list))
+                cur_edges = con.execute(edge_sql, (canonical_root,) + tuple(node_list) + tuple(node_list))
                 collected_edges = []
                 seen_edges = set()
                 for row in cur_edges.fetchall():

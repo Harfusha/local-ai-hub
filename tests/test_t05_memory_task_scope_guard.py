@@ -52,7 +52,7 @@ def test_task_lookup_requires_physical_root(task_memory):
     assert store.find(**request, semantic=False) == []
     for record in records.values():
         assert store.get(record.record_id, **request) is None
-    found = store.find(**request, root=str(root), semantic=False)
+    found = store.find(**request, root=str(root), root=str(root), semantic=False)
     assert [record.record_id for record in found] == [records["valid"].record_id]
     assert store.get(records["valid"].record_id, **request, root=str(root)) == records["valid"]
 
@@ -61,19 +61,19 @@ def test_task_lookup_preserves_task_and_repository_boundaries(task_memory):
     store, root, other_root, records, root_id = task_memory
     assert store.find(
         scope=AgentScope.TASK, scope_id="shared-task", task_id="shared-task",
-        root=str(root), repository_id=root_id, semantic=False,
+        root=str(root), root=str(root), repository_id=root_id, semantic=False,
     ) == [records["valid"]]
     assert store.find(
         scope=AgentScope.TASK, scope_id="other-task", task_id="other-task",
-        root=str(root), semantic=False,
+        root=str(root), root=str(root), semantic=False,
     ) == [records["other_task"]]
     assert store.get(
         records["other_project"].record_id, scope=AgentScope.TASK,
-        scope_id="shared-task", task_id="shared-task", root=str(root), repository_id=root_id,
+        scope_id="shared-task", task_id="shared-task", root=str(root), root=str(root), repository_id=root_id,
     ) is None
     assert store.find(
         scope=AgentScope.TASK, scope_id="shared-task", task_id="shared-task",
-        root=str(root), repository_id=repository_memory_id(other_root, store.state_store), semantic=False,
+        root=str(root), root=str(root), repository_id=repository_memory_id(other_root, store.state_store), semantic=False,
     ) == []
     assert store.find_for_context(
         root=str(other_root), task_id="shared-task",
@@ -85,7 +85,7 @@ def test_task_context_requires_root_and_matches_task(task_memory):
     store, root, _other_root, records, _root_id = task_memory
     assert store.find_for_context(root="", task_id="shared-task") == []
     assert store.find_for_context(
-        root=str(root), task_id="shared-task",
+        root=str(root), root=str(root), task_id="shared-task",
         coordination_id=repository_memory_id(root, store.state_store),
     ) == [records["valid"]]
 
@@ -95,7 +95,7 @@ def test_task_matcher_requires_matching_root_and_actual_task_identity(task_memor
     provenance = {"root": str(root), "task_id": "shared-task"}
     assert _memory_matches_request_scope(
         scope=AgentScope.TASK, scope_id="shared-task", task_id="shared-task",
-        root=str(root), provenance=provenance,
+        root=str(root), root=str(root), provenance=provenance,
     )
     assert not _memory_matches_request_scope(
         scope=AgentScope.TASK, scope_id="shared-task", task_id="shared-task",
@@ -103,22 +103,22 @@ def test_task_matcher_requires_matching_root_and_actual_task_identity(task_memor
     )
     assert not _memory_matches_request_scope(
         scope=AgentScope.TASK, scope_id="other-task", task_id="shared-task",
-        root=str(root), provenance=provenance,
+        root=str(root), root=str(root), provenance=provenance,
     )
     assert not _memory_matches_request_scope(
         scope=AgentScope.TASK, scope_id="shared-task", task_id="shared-task",
-        root=str(root), provenance={"task_id": "shared-task"},
+        root=str(root), root=str(root), provenance={"task_id": "shared-task"},
     )
 
 
 def test_retired_tenant_selectors_and_provenance_reject(task_memory):
     store, root, _other_root, _records, _root_id = task_memory
     with pytest.raises(TypeError):
-        store.find(root=str(root), task_id="shared-task", tenant="retired", semantic=False)
+        store.find(root=str(root), root=str(root), task_id="shared-task", tenant="retired", semantic=False)
     with pytest.raises(ValueError, match="retired memory identity field"):
         _memory_matches_request_scope(
             scope=AgentScope.TASK, scope_id="shared-task", task_id="shared-task",
-            root=str(root), provenance={"root": str(root), "tenant": None},
+            root=str(root), root=str(root), provenance={"root": str(root), "tenant": None},
         )
 
 

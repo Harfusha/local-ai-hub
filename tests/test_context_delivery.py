@@ -132,6 +132,38 @@ def test_guarded_context_routes_task_and_phase_through_single_guard():
     assert result["context_pack"]["contract"]["goal"] == "find route"
 
 
+class _ProductionDriftGuard(_Guard):
+    def check_drift(self, request, contract, changed_paths, diff, *, reuse_candidates=None):
+        self.calls.append(("drift", request))
+        return AgentConsistencyGuard.check_drift(
+            self, request, contract, changed_paths, diff,
+            reuse_candidates=reuse_candidates,
+        )
+
+
+def test_adaptive_context_reuses_candidates_for_drift_check():
+    guard = _ProductionDriftGuard()
+    services = _guarded_services(guard)
+
+    services.adaptive_context_pack(_request(), mode="adaptive")
+
+    assert [call[0] for call in guard.calls].count("reuse") == 1
+
+
+def test_adaptive_context_reports_unavailable_diff_analysis():
+    guard = _ProductionDriftGuard()
+    services = _guarded_services(guard)
+    services.repo_tools.git_diff = lambda *args, **kwargs: {
+        "success": False,
+        "paths_complete": False,
+        "error": "diff_unavailable",
+    }
+
+    result = services.adaptive_context_pack(_request(), mode="adaptive")
+
+    assert result["analysis_status"] == "unavailable"
+
+
 def test_guarded_context_uses_configured_preload_profile(tmp_path):
     preload = tmp_path / "review-notes.md"
     preload.write_text("configured review preload", encoding="utf-8")

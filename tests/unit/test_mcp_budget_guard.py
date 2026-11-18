@@ -26,6 +26,7 @@ def test_task_memory_wire_preserves_checkpoint_or_rejects_budget() -> None:
     )
     assert limited["success"] is False
     assert limited["error"] == "budget_too_small"
+    assert limited["next_action"] == "request_larger_response_budget"
 
 
 def test_task_memory_wire_reports_omissions_without_exposing_fencing_token() -> None:

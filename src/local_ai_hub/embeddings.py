@@ -1366,8 +1366,10 @@ class EmbeddingModel:
                 and execution_snapshot.get("identity") == response_cache_identity
                 else str(self.active_device or self.device)
             )
-        if self.backend in {"auto", "ollama"}:
+        if self.backend == "ollama":
             backend_fallback = used_backend != "ollama"
+        elif self.backend == "auto":
+            backend_fallback = str(result_device).lower() == "cpu"
         else:
             backend_fallback = (
                 used_backend != self.backend

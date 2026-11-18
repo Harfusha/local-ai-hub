@@ -2238,9 +2238,9 @@ class TelemetryStore:
             (cutoff, limit + 1),
         ).fetchall()
         bypass_rows = con.execute(
-            """SELECT bypass_reason,COUNT(*) FROM events
+            """SELECT bypass_reason,error_type,COUNT(*) FROM events
                WHERE created_at>=? AND bypass_reason<>''
-               GROUP BY bypass_reason ORDER BY COUNT(*) DESC,bypass_reason LIMIT ?""",
+               GROUP BY bypass_reason,error_type ORDER BY COUNT(*) DESC,bypass_reason,error_type LIMIT ?""",
             (cutoff, limit + 1),
         ).fetchall()
         queue_rows = con.execute(
@@ -2281,7 +2281,7 @@ class TelemetryStore:
             }
             for row in cache_rows[:limit]
         ]
-        bypass = [{"reason": str(row[0]), "events": int(row[1])} for row in bypass_rows[:limit]]
+        bypass = [{"reason": str(row[0]), **({"error_type": str(row[1])} if row[1] else {}), "events": int(row[2])} for row in bypass_rows[:limit]]
         return {
             "counts": {
                 "events": total, "cache_hits": cache_hits, "bypasses": bypass_total,
@@ -3012,6 +3012,14 @@ class TelemetryStore:
                    GROUP BY stage ORDER BY stage LIMIT 10""",
                 (cutoff,),
             ).fetchall()
+            laya_capture_reasons = con.execute(
+                """SELECT stage,COALESCE(NULLIF(bypass_reason,''),'unspecified'),COALESCE(error_type,''),COUNT(*),
+                          COALESCE(SUM(CASE WHEN success=0 THEN 1 ELSE 0 END),0)
+                   FROM events WHERE created_at>=? AND event_type='stage' AND action='laya_capture'
+                   GROUP BY stage,COALESCE(NULLIF(bypass_reason,''),'unspecified'),COALESCE(error_type,'')
+                   ORDER BY COUNT(*) DESC,stage,bypass_reason,error_type LIMIT 32""",
+                (cutoff,),
+            ).fetchall()
             routes = con.execute(
                 """SELECT route,task_type,complexity,COUNT(*),COALESCE(AVG(duration_ms),0),COALESCE(SUM(CASE WHEN success=0 THEN 1 ELSE 0 END),0)
                    FROM events WHERE created_at>=? AND event_type='http' AND route<>''
@@ -3182,6 +3190,10 @@ class TelemetryStore:
             "laya_capture_stages": [
                 {"stage": r[0], "calls": int(r[1]), "failures": int(r[2])}
                 for r in laya_capture_stages
+            ],
+            "laya_capture_reasons": [
+                {"stage": r[0], "reason": r[1], "error_type": r[2], "calls": int(r[3]), "failures": int(r[4])}
+                for r in laya_capture_reasons
             ],
             "execution_routes": [
                 {"route": r[0], "task_type": r[1], "complexity": r[2], "calls": int(r[3]), "avg_ms": round(float(r[4]), 1), "failures": int(r[5])}

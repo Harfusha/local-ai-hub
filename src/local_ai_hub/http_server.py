@@ -7078,6 +7078,9 @@ class Handler(BaseHTTPRequestHandler):
                     except (KeyError, ValueError) as exc:
                         self._send(400, {"success": False, "error": str(exc), "terminal": True, "retryable": False}); return
                 if action == "complete":
+                    completion_started_at = time.monotonic()
+                    current_revision = ""
+                    root = ""
                     try:
                         task_id = str(payload.get("task_id", ""))
                         task_state = APP.agent_tasks.get(task_id)
@@ -7134,6 +7137,42 @@ class Handler(BaseHTTPRequestHandler):
                             self._send(409, revision_stop); return
                         from .verification_rules import complete_task_with_project_rules
 
+                        def queue_completion_observation(completed_task: Any, status: str) -> None:
+                            task_context = getattr(completed_task, "context", None)
+                            session_id = str(getattr(task_context, "session_id", "") or "").strip()
+                            checkpoint = getattr(completed_task, "checkpoint", None)
+                            state_data = getattr(checkpoint, "state_data", {})
+                            generation = state_data.get("mutation_generation", 0) if isinstance(state_data, dict) else None
+                            if (
+                                not session_id
+                                or type(generation) is not int
+                                or generation < 0
+                                or not current_revision
+                                or not root
+                            ):
+                                return
+                            reason_code = {
+                                "passed": "completion_gate_passed",
+                                "rejected": "completion_gate_rejected",
+                                "waived": "operator_waiver",
+                            }[status]
+                            try:
+                                APP.queue_laya_completion_observation({
+                                    "task_id": task_id,
+                                    "session_id": session_id,
+                                    "outcome": {
+                                        "status": status,
+                                        "reason_code": reason_code,
+                                        "duration_ms": max(0.0, (time.monotonic() - completion_started_at) * 1000.0),
+                                        "repository_revision": current_revision,
+                                        "mutation_generation": generation,
+                                    },
+                                }, root=root)
+                            except Exception as exc:
+                                logger = getattr(APP, "logger", None)
+                                if logger is not None:
+                                    logger.warning("Laya completion shadow capture failed: %s", type(exc).__name__)
+
                         task = complete_task_with_project_rules(
                             APP.agent_tasks,
                             verification_store,
@@ -7149,6 +7188,9 @@ class Handler(BaseHTTPRequestHandler):
                             **({"expected_criteria": payload["expected_criteria"]} if "expected_criteria" in payload else {}),
                             **({"expected_binding": payload["expected_binding"]} if "expected_binding" in payload else {}),
                         )
+                        queue_completion_observation(
+                            task, "waived" if "operator_waiver" in payload else "passed"
+                        )
                         self._send(200, {"success": True, "task": task.to_dict()}); return
                     except CheckpointResponseBudgetError as exc:
                         self._send(413, {
@@ -7158,7 +7200,11 @@ class Handler(BaseHTTPRequestHandler):
                                                 "required_tokens": exc.required_tokens,
                                                 "unit": "estimated_tokens"},
                         }); return
-                    except (KeyError, ValueError, CompletionGateError) as exc:
+                    except CompletionGateError as exc:
+                        if type(exc) is CompletionGateError and current_revision and root:
+                            queue_completion_observation(task_state, "rejected")
+                        self._send(400, {"success": False, "error": str(exc), "terminal": True, "retryable": False}); return
+                    except (KeyError, ValueError) as exc:
                         self._send(400, {"success": False, "error": str(exc), "terminal": True, "retryable": False}); return
                 if action == "fail":
                     try:

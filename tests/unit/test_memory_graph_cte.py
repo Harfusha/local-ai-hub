@@ -16,10 +16,10 @@ def test_traverse_graph_bounds_selects_by_node_limit(tmp_path: Path) -> None:
     # Create a small graph:
     # A -> B -> C -> D
     # A -> E
-    store.record_relation("A", "connects", "B", weight=1.0)
-    store.record_relation("B", "connects", "C", weight=0.9)
-    store.record_relation("C", "connects", "D", weight=0.8)
-    store.record_relation("A", "connects", "E", weight=0.5)
+    store.record_relation("A", "connects", "B", weight=1.0, root=str(tmp_path))
+    store.record_relation("B", "connects", "C", weight=0.9, root=str(tmp_path))
+    store.record_relation("C", "connects", "D", weight=0.8, root=str(tmp_path))
+    store.record_relation("A", "connects", "E", weight=0.5, root=str(tmp_path))
 
     # Count SELECT queries executed during traverse_graph; every expanded node
     # must be covered by the explicit max_nodes bound.
@@ -34,7 +34,7 @@ def test_traverse_graph_bounds_selects_by_node_limit(tmp_path: Path) -> None:
     import local_ai_hub.agent_memory as am_mod
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(am_mod, "connect_sqlite", traced_connect)
-        res = store.traverse_graph("A", max_depth=2, max_nodes=10)
+        res = store.traverse_graph("A", max_depth=2, max_nodes=10, root=str(tmp_path))
 
     assert res["success"] is True
     assert "A" in res["nodes"]
@@ -52,17 +52,17 @@ def test_traverse_graph_bounded_limits_and_cycles(tmp_path: Path) -> None:
     store._init_table()
 
     # Create cycle: X -> Y -> Z -> X
-    store.record_relation("X", "points_to", "Y", weight=1.0)
-    store.record_relation("Y", "points_to", "Z", weight=1.0)
-    store.record_relation("Z", "points_to", "X", weight=1.0)
+    store.record_relation("X", "points_to", "Y", weight=1.0, root=str(tmp_path))
+    store.record_relation("Y", "points_to", "Z", weight=1.0, root=str(tmp_path))
+    store.record_relation("Z", "points_to", "X", weight=1.0, root=str(tmp_path))
 
-    res = store.traverse_graph("X", max_depth=3, max_nodes=50)
+    res = store.traverse_graph("X", max_depth=3, max_nodes=50, root=str(tmp_path))
     assert res["success"] is True
     assert set(res["nodes"]) == {"X", "Y", "Z"}
     assert len(res["edges"]) >= 3
 
     # Test max_nodes limit = 2
-    res_bounded = store.traverse_graph("X", max_depth=3, max_nodes=2)
+    res_bounded = store.traverse_graph("X", max_depth=3, max_nodes=2, root=str(tmp_path))
     assert len(res_bounded["nodes"]) == 2
 
 
@@ -71,11 +71,11 @@ def test_traverse_graph_edges_stay_within_returned_node_limit(tmp_path: Path) ->
     store = MemoryStore(state)
     store._init_table()
 
-    store.record_relation("A", "connects", "B", weight=1.0)
-    store.record_relation("A", "connects", "C", weight=0.9)
-    store.record_relation("B", "connects", "D", weight=0.8)
+    store.record_relation("A", "connects", "B", weight=1.0, root=str(tmp_path))
+    store.record_relation("A", "connects", "C", weight=0.9, root=str(tmp_path))
+    store.record_relation("B", "connects", "D", weight=0.8, root=str(tmp_path))
 
-    result = store.traverse_graph("A", max_depth=2, max_nodes=2)
+    result = store.traverse_graph("A", max_depth=2, max_nodes=2, root=str(tmp_path))
 
     nodes = set(result["nodes"])
     assert result["truncated"] is True

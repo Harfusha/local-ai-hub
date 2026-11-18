@@ -61,7 +61,7 @@
       "depends_on": [],
       "description": "Rozšířit connect_sqlite v sqlite_support.py o read_only, uri, wal a aplikovat na všech 32 přímých volání v src.",
       "kind": "code",
-      "next_action": "Dokončeno na aktuálním pracovním stromě. Implementace již splňuje rozsah: connect_sqlite má read_only/uri/wal a přímé připojení je pouze v centrální továrně. Ověření: rg nad src/local_ai_hub našlo jen sqlite_support.py:152; tests/test_sqlite_support.py: 5 passed. Zdrojové soubory nebyly měněny. Globální Hub AST index byl limitován 400 soubory, proto byl pro inventář src použit bounded rg fallback.",
+      "next_action": "Verified on current master HEAD b439f75690e581ff75ea32894d5fed450374712d: `connect_sqlite` exposes `read_only`, `uri`, and `wal`, read-only connections set query_only, and focused `python -m pytest -q tests/test_sqlite_support.py --tb=short` passed 10 tests in 1.42s (current file SHA dc48ab7a080b647d3bd7bdbfcbff6f80595fe20ff59bbea3565975a80c9b3321). Earlier bounded inventory found only the centralized sqlite3.connect in sqlite_support.py. No source change made.",
       "title": "Sjednotit SQLite připojení přes továrnu",
       "work_status": "completed"
     },
@@ -77,20 +77,20 @@
       "depends_on": [],
       "description": "Zavést pytest marker slow v pyproject.toml a označit pomalé testy.",
       "kind": "code",
-      "next_action": "Částečně splněno: `pyproject.toml` už pod `[tool.pytest.ini_options]` registruje `slow` i `integration`; soubor je čistý. Globální Hub AST dotaz nenašel `pytest.mark.slow`, ale byl označen truncated/file_limit/read_error, takže úplnost není prokázaná. Zbývá změřit dobu testů nebo doložit náročnost, označit jen čisté neagentní testy a ověřit rychlý i plný příkaz. Laya a několik dalších testů jsou dirty u aktivních agentů; nedotýkat se jich.",
+      "next_action": "Current source already registers `slow`/`fast` markers in pyproject.toml and dynamically excludes slow cases under `-m fast`; explicit daemon/acceptance/resource paths receive `slow`. Verification on current HEAD b439f75690e581ff75ea32894d5fed450374712d: `python -m pytest -q tests/test_daemon_lifecycle_hardening.py --tb=short` (unfiltered selected-file mode) and the same file with `-m slow` each yielded 68 passed, 4 skipped; `python -m pytest -q tests/test_test_environment_isolation.py -m fast --tb=short` yielded 1 passed. The four skips are Windows/Linux/POSIX-specific process cases and remain platform-blocked, not passing. The 17,500+ full suite was not run.",
       "title": "Pomalé testy a rychlá testovací sada",
-      "work_status": "planned"
+      "work_status": "completed"
     },
     "task_verify": {
       "acceptance_criteria": [],
-      "blocker": null,
+      "blocker": "Focused SQLite, dashboard, diagnostics and marker suites are verified; earlier compileall/release_check/selftest completed on this working source. The required final critical/CI/platform/package gates are not clean/current: the critical cohort had three transient failures (each passed on isolated rerun), and no full suite or final-SHA release receipts exist. Keep release acceptance open.",
       "clarifications": [],
       "depends_on": [],
       "description": "Validace, compileall, selftest a testy.",
       "kind": "code",
-      "next_action": "",
+      "next_action": "After implementation and shared-source ownership settle, run bounded targeted validation plus fresh release_check, compileall and selftest at the final source state; retain critical cohort flakiness and platform gates distinctly.",
       "title": "Finální verifikace a testy",
-      "work_status": "planned"
+      "work_status": "in_progress"
     }
   },
   "title": "SQLite továrna a optimalizace"

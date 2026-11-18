@@ -95,7 +95,7 @@ def test_mcp_coord_completion_keeps_actionable_proof_with_detail_off(monkeypatch
     monkeypatch.setattr(mcp_server.CLIENT, "post", lambda *args, **kwargs: {
         "success": False, "error": "verification incomplete", "completion": completion,
         "debug": "internal observation"})
-    result = mcp_server.local_ai_coord(action="verify_completion", root=str(tmp_path), task_id="task-1")
+    result = mcp_server.local_ai_coord(action="verify_completion", root=str(tmp_path), root=str(tmp_path), task_id="task-1")
     assert result["success"] is False
     assert result["completion"] == completion
     assert "debug" not in result
