@@ -901,13 +901,13 @@ def generate_global_policy(cfg: dict[str, Any]) -> str:
         review_action_text = "|".join(sorted(review_actions))
         task_review_hint = f' Actively use `local_ai_task(action="{review_action_text}")` for validation before finalizing.' if review_actions else ""
         repo_task_first = (
-            "\nReuse fresh sufficient repository evidence. For exact file or symbol lookups, use bounded indexed/source lookup directly; do not preprocess or compile adaptive context first."
+            "\nReuse fresh repository evidence. Use bounded indexed/source lookup for exact facts; use adaptive context once for substantial work lacking fresh evidence."
             + _repo_context_note(list(repo_actions))
-            + (' On first work in each stable root, inspect `.local-ai.toml` and any applicable `.local-ai.worktree.toml`; add only evidence-backed project exclusions, uncommon text/binary extensions, pinned documentation, and entry points, preserving existing values and relying on Hub defaults when sufficient. Then call `local_ai_repo(action="preprocess", root=ABS_ROOT)` once for idempotent registration; never force-refresh an existing registration or poll asynchronous preprocessing.' if fs.preprocessing else "")
+            + (' On first work in a stable root, inspect `.local-ai.toml` and `.local-ai.worktree.toml`; add only evidence-backed exclusions, uncommon extensions, pinned docs, and entry points. Preserve values and defaults. Call `preprocess` once to register; never force-refresh or poll.' if fs.preprocessing else "")
             + "\n"
             f"\nAdoption gate:{cmd_gate}{agent_os_gate}"
             + (' For implementation, diagnosis, refactoring or complex review, call `local_ai_repo(action="solve")` after evidence and before native edits.' if "solve" in fs.supported_repo_actions() else " Keep analysis within exposed deterministic/indexed actions.")
-            + f"{task_review_hint} After edits, use the applicable indexed impact/review/security/evidence action before final validation.\n"
+            + f"{task_review_hint} After edits, use indexed impact/review/security/evidence before targeted validation.\n"
         )
 
     cmd_route_hint = "\nRun bounded validation commands with the agent host native command tool.\n"
@@ -932,19 +932,19 @@ def generate_global_policy(cfg: dict[str, Any]) -> str:
             + ". Use only live MCP action enums; runtime authorization and quality gates apply."
         )
     prioritization_bullets.append(
-        "> - **Git operations**: The active MCP connection and its advertised schema determine which Hub actions are available; instructions do not create tools. When exposed, `git_status` and `git_diff` inspect state; `synthesize_commit` drafts a message. These actions do not run `git commit` or `git push`. Hub prioritization alone does not require a Hub approval or receipt for Git; apply a Hub-only gate only when explicit project instructions require an exposed action. If that required action is unavailable, stop only the gated mutation. Dashboard diagnostics affect diagnostic detail only; they do not expose or enable tools."
+        "> - **Git operations**: The live MCP schema determines available Hub actions. `git_status`/`git_diff` inspect; `synthesize_commit` drafts only. None commits or pushes. Hub prioritization adds no Git approval/receipt gate; follow only explicit project gates naming exposed actions, and stop only the gated mutation if unavailable. Dashboard diagnostics change detail only."
     )
     prioritization_bullets.append(
-        "> - **Unsupported Hub operations**: If the live MCP schema has no action for the requested operation, do not call Hub or wait for an error; use the authorized native tool directly (for example, `git worktree list`). Hub failure fallback rules apply only after calling an advertised Hub action."
+        "> - **Unsupported Hub operations**: If the live schema has no action, use the authorized native tool directly without calling Hub. Fallback rules apply only after an advertised Hub action fails terminally and non-retryably."
     )
     prioritization_bullets.append(
-        "> - **Plan response budgets**: For a large plan, call `plan_board_view` with `plan_id` and put the exact plan task ID in `query`; use that card's `plan_file_revision`. Avoid full-plan responses. On budget rejection, narrow the query or fetch an exact artifact slice; do not replay the oversized request or raise its cap silently."
+        "> - **Plan budgets**: For a large plan, use `plan_board_view` with `plan_id` and the exact task ID in `query`; retain `plan_file_revision`. On budget rejection, narrow the query or fetch a smaller artifact slice; never replay the oversized request or raise its cap."
     )
     prioritization_bullets.append(
         "> - **Tests, builds, lint, execution**: Use the agent host's native command tool for bounded checks in the target repository."
     )
     prioritization_bullets.append(
-        "> - **Retry and retrieval discipline**: Stop escalating when evidence is sufficient; reuse fresh cached results and bounded evidence. For `in_progress=true` or `outcome_unknown`, do independent work and never poll or repeat the identical operation. Do not fan out duplicate retrieval layers. For an advertised Hub action that fails, fallback requires explicit `terminal=true` and `retryable=false`."
+        "> - **Retries and retrieval**: Reuse fresh evidence and stop when sufficient. For `in_progress`/`outcome_unknown`, do independent work; never poll, repeat, or duplicate retrieval. After an advertised Hub action, fallback requires `terminal=true` and `retryable=false`."
     )
     if fs.repo:
         prioritization_bullets.append(
@@ -1012,12 +1012,11 @@ def generate_global_policy(cfg: dict[str, Any]) -> str:
         "Adaptive retrieval: when evidence is insufficient for non-trivial repository work, call `local_ai_repo(action=\"context\", mode=\"adaptive\")`. It fuses bounded indexed, structural, lexical and RAG evidence; optional backends fail independently. Reuse evidence IDs, artifact slices and memos; stop when sufficient and avoid duplicate retrieval or unchanged root/query repeats.\n\n"
         "Result protocol: reuse `cache_hit`/`coalesced`; never duplicate `in_progress`; back off on `retryable`/429/503; verify only the affected slice for `degraded`/`stale`. After Hub failure, native fallback requires `terminal=true` and `retryable=false`. Never enlarge timeouts, force-refresh, or poll transient results.\n"
         f"{cmd_route_hint}{coord_memo_hint}\n"
-        " After edits, use indexed impact/review plus targeted cached validation;"
-        " do not rerun broad discovery merely because files changed."
-        " `force` and `preprocess_refresh` are recovery/admin controls, never retry buttons."
-        " If an optional backend degrades, accept the hub's deterministic/index fallback."
-        " If the Hub is unavailable, make one bounded health/retry attempt; transport failures without terminal, non-retryable status do not authorize fallback."
-        " Never loop on health, status, preprocessing, model startup, a failing backend, or an identical command.\n\n"
+        " After edits, use indexed impact/review and targeted cached validation; skip broad rediscovery."
+        " `force`/`preprocess_refresh` are recovery controls, never retries."
+        " Accept deterministic/index fallback if an optional backend degrades."
+        " If Hub is unavailable, make one bounded health attempt; fallback requires terminal, non-retryable failure."
+        " Never loop on health, status, preprocessing, model startup, backends, or commands.\n\n"
         + ("Batch repository replacement: use `local_ai_repo(action=\"batch_replace\", edits=[...], dry_run=true)` for preview. "
            "`staged` is not batch dry-run and is never forwarded. Each edit must exact-match once. "
            "Non-overlapping dirty Git hunks may be preserved; overlapping edits require an active path lease claimed with the actual execution owner, then pass its exact `owner` and returned `lease_id`. "

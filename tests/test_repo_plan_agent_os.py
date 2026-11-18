@@ -222,7 +222,6 @@ def test_authentic_native_receipts(test_environment):
         context,
         actor="test_agent",
         repo_root=str(tmp_path),
-    root=str(tmp_path),
     )
     task_id = task_state.task_id
 

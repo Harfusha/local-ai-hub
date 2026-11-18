@@ -1200,8 +1200,8 @@ def merge_windsurf_global_policy(path: Path, install_dir: Path, backup_enabled: 
         return f"Multiple Local AI Hub Windsurf blocks found; existing rule file was preserved: {path}"
     preimage = matches[0].group(0) if matches else None
     marker = {"begin": begin, "end": end}
-    if preimage is not None and _ACTIVE_INSTALL_ROOT is not None:
-        assert_external_block_writable(_ACTIVE_INSTALL_ROOT, path, owner_marker=marker, current_block=preimage)
+    if preimage is not None:
+        _assert_or_adopt_external_block(path, marker, preimage)
     updated = pattern.sub(lambda _match: policy, text) if preimage is not None else (
         text + ("" if not text or text.endswith("\n") else "\n") + "\n" + policy + "\n"
     )
@@ -1764,10 +1764,18 @@ def _configure_agents_impl(
             if ensure_cursor_rule_frontmatter(cursor_rule, backup_enabled):
                 merge_global_policy(cursor_rule, backup_enabled, cfg=cfg)
                 merge_token_economy_policy(cursor_rule, backup_enabled, cfg=cfg)
+            elif _ADOPT_UNOWNED_HUB_BLOCKS:
+                # Preserve user-owned frontmatter, but refresh explicitly adopted Hub blocks.
+                merge_global_policy(cursor_rule, backup_enabled, cfg=cfg)
+                merge_token_economy_policy(cursor_rule, backup_enabled, cfg=cfg)
+                manual_actions.append(
+                    f"Cursor rule frontmatter ownership is unclear and was preserved; "
+                    f"Hub instruction blocks were refreshed: {cursor_rule}"
+                )
             else:
                 manual_actions.append(
-                    f"Cursor rule {cursor_rule} already exists without Local AI Hub markers; "
-                    "it was preserved. Move it or merge the Hub instructions manually."
+                    f"Cursor rule frontmatter ownership is unclear and was preserved: {cursor_rule}. "
+                    "Adopt its marked Hub blocks or merge the instructions manually."
                 )
         if _agent_component_enabled(agent_components, "cursor", "mcp"):
             json_mcp_merge(Path.home() / ".cursor" / "mcp.json", build_mcp_entries(install_dir, hub_python, serena, "cursor", cfg), backup_enabled)
