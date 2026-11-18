@@ -541,6 +541,37 @@ def test_incremental_rag_reports_paths_excluded_by_project_policy(tmp_path):
     assert result["policy_deleted_paths"] == ["excluded.py"]
 
 
+def test_incremental_rag_resolves_project_root_policy_once_per_batch(tmp_path, monkeypatch):
+    from local_ai_hub import project_config
+
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / "one.md").write_text("first searchable document\n", encoding="utf-8")
+    (root / "two.md").write_text("second searchable document\n", encoding="utf-8")
+    store = RAGStore(
+        {"server": {"state_dir": str(tmp_path / "state")},
+         "models": {"embedding": "test-embedding", "embedding_dimension": 3},
+         "rag": {"dedup_near_duplicates": False}},
+        services=_EmbeddingStub(),
+    )
+    original_policy = project_config.ProjectPathPolicy
+    constructed = 0
+
+    def count_policy_construction(*args, **kwargs):
+        nonlocal constructed
+        constructed += 1
+        return original_policy(*args, **kwargs)
+
+    monkeypatch.setattr(project_config, "ProjectPathPolicy", count_policy_construction)
+    result = store.index_paths_step(
+        str(root), workspace=store.workspace_id(str(root)), paths=["one.md", "two.md"],
+    )
+
+    assert result["success"] is True
+    assert set(result["processed_paths"]) == {"one.md", "two.md"}
+    assert constructed == 1
+
+
 
 def test_sqlite_timeout_after_delete_preserves_previous_rag_snapshot(tmp_path, monkeypatch):
     root = tmp_path / "repo"

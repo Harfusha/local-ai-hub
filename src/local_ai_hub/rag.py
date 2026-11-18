@@ -1050,6 +1050,7 @@ class RAGStore:
         *,
         phase: str,
         size_bytes: int,
+        path_policy: Any | None = None,
     ) -> tuple[bool, str | None]:
         if project_context is None:
             return True, None
@@ -1058,14 +1059,22 @@ class RAGStore:
             return True, None
         settings = project_context.settings
         kind = api.custom_extension_kind(Path(path).name, settings)
-        allowed = api.path_is_allowed(
-            root,
-            path,
-            settings,
-            phase=phase,
-            binary=kind == "binary",
-            size_bytes=size_bytes,
-        )
+        if path_policy is None:
+            allowed = api.path_is_allowed(
+                root,
+                path,
+                settings,
+                phase=phase,
+                binary=kind == "binary",
+                size_bytes=size_bytes,
+            )
+        else:
+            allowed = path_policy.allows(
+                path,
+                phase=phase,
+                binary=kind == "binary",
+                size_bytes=size_bytes,
+            )
         return bool(allowed), kind
 
     def _iter_files(
@@ -2658,6 +2667,12 @@ class RAGStore:
                 "reason": "project phase disabled", "processed_paths": [],
                 "embedded_chunks": 0, "reused_chunks": 0,
             }
+        path_policy = None
+        if project_context is not None:
+            api = self.project_config_api()
+            policy_factory = getattr(api, "ProjectPathPolicy", None)
+            if callable(policy_factory):
+                path_policy = policy_factory(root_path, project_context.settings)
         embedding_space = _space_override or self._embedding_space_id()
         processed_paths: list[str] = []
         embedded_chunks = 0
@@ -2804,6 +2819,7 @@ class RAGStore:
                         continue
                     allowed, kind = self._project_path_decision(
                         root_path, path, project_context, phase="rag", size_bytes=int(stat.st_size),
+                        path_policy=path_policy,
                     )
                     if not allowed or kind == "binary":
                         policy_deleted.add(rel)
