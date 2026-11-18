@@ -90,7 +90,7 @@ def test_context_pack_after_task_resume_keeps_memory_scoped_fresh_and_bounded(tm
             path_refs=("src/keep.py",),
         ))
         assert app.agent_memory.mark_stale_for_revision(str(root), "revision-1", ["src/changed.py"]) == 1
-        assert app.agent_memory.get(stale.record_id, root=str(root), root=str(root), repository_id=coordination_id).status is MemoryStatus.STALE
+        assert app.agent_memory.get(stale.record_id, root=str(root), repository_id=coordination_id).status is MemoryStatus.STALE
 
         app.services.adaptive_context_pack = lambda *_args, **_kwargs: {
             "success": True,

@@ -46,7 +46,7 @@ def test_client_uses_tokenless_loopback_http_transport(tmp_path, monkeypatch) ->
             clients.append(client)
             assert client.post("/api/memory/get", {"key": "item"}) == {"authorized": True}
         memory_reads = [row for row in observed if row[0] == "/api/memory/get"]
-        assert len(memory_reads) == 2
+        assert len(memory_reads) == 2, observed
         assert all(token == authorization == "" and allowed is True
                    for _path, token, authorization, allowed in observed)
     finally:

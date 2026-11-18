@@ -326,7 +326,7 @@ def test_rag_embedder_queue_exception_handling(tmp_path: Path) -> None:
 
     config = {
         "server": {"state_dir": str(tmp_path / "state")},
-        "rag": {"scope": "shared", "extensions": [".py"]},
+        "rag": {"extensions": [".py"]},
     }
     store = RAGStore(config=config, services=services, reranker=MagicMock())
     root = tmp_path / "proj"

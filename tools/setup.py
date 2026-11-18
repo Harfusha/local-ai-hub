@@ -311,6 +311,24 @@ def install_requirements(python: Path, requirement: Path, *, optional: bool = Fa
         raise
 
 
+def _add_runtime_site_packages(python: Path) -> None:
+    """Expose managed runtime dependencies to setup-time host integration hooks.
+
+    The installer runs under the system Python, while project helpers such as
+    repo_plan.host_hooks are installed in the managed environment. Both use the
+    same Python version, so adding that environment's site-packages for this
+    deferred import avoids requiring those dependencies globally.
+    """
+    venv_root = python.parent.parent
+    if os.name == "nt":
+        site_packages = venv_root / "Lib" / "site-packages"
+    else:
+        site_packages = venv_root / "lib" / f"python{sys.version_info.major}.{sys.version_info.minor}" / "site-packages"
+    resolved = str(site_packages)
+    if site_packages.is_dir() and resolved not in sys.path:
+        sys.path.insert(0, resolved)
+
+
 def copy_install_tree(
     install_dir: Path, config_source: Path, *,
     before_commit: Callable[[], tuple[bool, str]] | None = None,
@@ -2229,9 +2247,18 @@ def main() -> int:
     laya_runtime_selected = bool(setup_choices.get("laya_runtime", False))
     laya_runtime_ok: bool | None = None
     if laya_runtime_selected:
+        laya_python = ensure_venv(install_dir / "tool-envs" / "laya")
         laya_runtime_ok = install_requirements(
-            hub_python, install_dir / "requirements-laya-runtime.txt", optional=True
+            laya_python, install_dir / "requirements-laya-runtime.txt", optional=True
         )
+        if laya_runtime_ok:
+            cleanup = run(
+                [str(hub_python), "-m", "pip", "uninstall", "-y", "laya", "vegaml"],
+                check=False, timeout=300, capture=True,
+            )
+            if cleanup is None or cleanup.returncode != 0:
+                laya_runtime_ok = False
+                log("WARNING: could not remove isolated Laya packages from the shared Hub environment.")
 
     optional_runtime_extras: dict[str, dict[str, Any]] = {}
     for choice, requirement in (
@@ -2251,6 +2278,7 @@ def main() -> int:
 
     selected_agents = cfg.get("agents", {})
     if not args.skip_agent_config and bool(setup_cfg.get("install_agent_configs", True)) and include_companion:
+        _add_runtime_site_packages(hub_python)
         if selected_agents.get("codex", True):
             codex = shutil.which("codex")
             if codex:

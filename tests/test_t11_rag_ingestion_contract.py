@@ -192,7 +192,7 @@ def test_document_ingest_embeds_title_metadata_and_content(tmp_path):
             }
 
     store.services = _RecordingServices()
-    result = store.ingest_document(root=str(tmp_path), root=str(tmp_path), title="Credential Rotation Plan", metadata={"owner": "identity-team", "revision": 7}, workspace="specs", content="The system rotates service credentials weekly.")
+    result = store.ingest_document(root=str(tmp_path), title="Credential Rotation Plan", metadata={"owner": "identity-team", "revision": 7}, workspace="specs", content="The system rotates service credentials weekly.")
 
     assert result["success"] is True
     embedded_text = "\n".join(embedded_texts)
@@ -205,7 +205,7 @@ def test_document_ingest_embeds_title_metadata_and_content(tmp_path):
 def test_document_ingest_indexes_title_and_metadata(tmp_path):
     store = _store(tmp_path)
 
-    result = store.ingest_document(root=str(tmp_path), root=str(tmp_path), title="Credential Rotation Plan", metadata={"owner": "identity-team", "revision": 7}, workspace="specs", content="The system rotates service credentials weekly.")
+    result = store.ingest_document(root=str(tmp_path), title="Credential Rotation Plan", metadata={"owner": "identity-team", "revision": 7}, workspace="specs", content="The system rotates service credentials weekly.")
 
     assert result["success"] is True
     assert result["embedded"] is False
@@ -226,7 +226,7 @@ def test_document_ingest_reports_embedded_only_when_all_chunks_have_vectors(tmp_
             return {"success": True, "embeddings": [[0.1, 0.2]]}
 
     store.services = _OneVectorServices()
-    result = store.ingest_document(root=str(tmp_path), root=str(tmp_path), title="Long document", workspace="specs", content="x" * 1200)
+    result = store.ingest_document(root=str(tmp_path), title="Long document", workspace="specs", content="x" * 1200)
 
     assert result["success"] is True
     assert result["chunks_ingested"] > 1
@@ -253,7 +253,7 @@ def test_document_ingest_reports_real_embedding_success(tmp_path):
             return {"success": True, "embeddings": [[0.1, 0.2] for _ in texts]}
 
     store.services = _VectorServices()
-    result = store.ingest_document(root=str(tmp_path), root=str(tmp_path), title="Embedded", workspace="specs", content="A fully embedded document.")
+    result = store.ingest_document(root=str(tmp_path), title="Embedded", workspace="specs", content="A fully embedded document.")
 
     assert result["success"] is True
     assert result["embedded"] is True
@@ -266,8 +266,8 @@ def test_document_ingest_replay_replaces_one_stable_document_snapshot(tmp_path):
     store = _store(tmp_path)
     content = "repeatable section " * 90
 
-    first = store.ingest_document(root=str(tmp_path), root=str(tmp_path), title="Replay Safe", workspace="specs", content=content)
-    second = store.ingest_document(root=str(tmp_path), root=str(tmp_path), title="Replay Safe", workspace="specs", content=content)
+    first = store.ingest_document(root=str(tmp_path), title="Replay Safe", workspace="specs", content=content)
+    second = store.ingest_document(root=str(tmp_path), title="Replay Safe", workspace="specs", content=content)
 
     assert first["success"] is True
     assert second["success"] is True
@@ -322,7 +322,7 @@ def test_document_ingest_retries_publish_busy_without_reembedding(tmp_path, monk
     connect = store._connect
     monkeypatch.setattr(store, "_connect", lambda: _FlakyConnection(connect()))
 
-    result = store.ingest_document(root=str(tmp_path), root=str(tmp_path), title="Busy", workspace="specs", content="retryable publication")
+    result = store.ingest_document(root=str(tmp_path), title="Busy", workspace="specs", content="retryable publication")
 
     assert result["success"] is True
     # One transaction binds the empty workspace to its physical root before
@@ -334,7 +334,7 @@ def test_document_ingest_retries_publish_busy_without_reembedding(tmp_path, monk
 def test_document_ingest_disk_full_keeps_previous_snapshot(tmp_path, monkeypatch):
     store = _store(tmp_path)
     title = "Atomic Document"
-    assert store.ingest_document(root=str(tmp_path), root=str(tmp_path), title=title, workspace="specs", content="old content")["success"] is True
+    assert store.ingest_document(root=str(tmp_path), title=title, workspace="specs", content="old content")["success"] is True
 
     class _DiskFullConnection:
         def __init__(self, connection):
@@ -357,7 +357,7 @@ def test_document_ingest_disk_full_keeps_previous_snapshot(tmp_path, monkeypatch
     connect = store._connect
     monkeypatch.setattr(store, "_connect", lambda: _DiskFullConnection(connect()))
 
-    result = store.ingest_document(root=str(tmp_path), root=str(tmp_path), title=title, workspace="specs", content="new content")
+    result = store.ingest_document(root=str(tmp_path), title=title, workspace="specs", content="new content")
     monkeypatch.setattr(store, "_connect", connect)
 
     assert result["success"] is False
@@ -385,12 +385,12 @@ def test_incremental_index_fts_write_failure_keeps_previous_snapshot(
 
     store.services = _VectorServices()
     workspace = "atomic-index-workspace"
-    assert store.index_paths_step(root=str(root), root=str(root), workspace=workspace, paths=["module.py"])["success"] is True
+    assert store.index_paths_step(root=str(root), workspace=workspace, paths=["module.py"])["success"] is True
     previous = _rag_snapshot(store, workspace)
 
     path.write_text("after = 'new snapshot'\n", encoding="utf-8")
     injected = _inject_sqlite_write_failure(store, monkeypatch, failed_statement)
-    result = store.index_paths_step(root=str(root), root=str(root), workspace=workspace, paths=["module.py"])
+    result = store.index_paths_step(root=str(root), workspace=workspace, paths=["module.py"])
 
     assert result["success"] is False
     assert result["retryable"] is False
@@ -417,7 +417,7 @@ def test_incremental_index_updates_only_changed_project_file_owners(tmp_path, mo
 
     store.services = _VectorServices()
     workspace = "owner-row-incremental-workspace"
-    assert store.index(root=str(root), root=str(root), workspace=workspace)["success"] is True
+    assert store.index(root=str(root), workspace=workspace)["success"] is True
 
     first.write_text("first = 3\n", encoding="utf-8")
     owner_statements = []
@@ -439,7 +439,7 @@ def test_incremental_index_updates_only_changed_project_file_owners(tmp_path, mo
             return getattr(self._connection, name)
 
     monkeypatch.setattr(store, "_connect", lambda: _ObservedConnection(connect()))
-    result = store.index(root=str(root), root=str(root), workspace=workspace)
+    result = store.index(root=str(root), workspace=workspace)
 
     assert result["success"] is True
     owner_deletes = [
@@ -483,12 +483,12 @@ def test_full_index_fts_write_failure_keeps_previous_snapshot(
 
     store.services = _VectorServices()
     workspace = "atomic-full-index-workspace"
-    assert store.index(root=str(root), root=str(root), workspace=workspace)["success"] is True
+    assert store.index(root=str(root), workspace=workspace)["success"] is True
     previous = _rag_snapshot(store, workspace)
 
     path.write_text("after = 'new snapshot'\n", encoding="utf-8")
     injected = _inject_sqlite_write_failure(store, monkeypatch, failed_statement)
-    result = store.index(root=str(root), root=str(root), workspace=workspace)
+    result = store.index(root=str(root), workspace=workspace)
 
     assert result["success"] is False
     assert result["retryable"] is False
@@ -502,11 +502,11 @@ def test_document_ingest_fts_write_failure_keeps_previous_snapshot(
 ):
     store = _store(tmp_path)
     title = "Atomic FTS Document"
-    assert store.ingest_document(root=str(tmp_path), root=str(tmp_path), title=title, workspace="specs", content="before snapshot")["success"] is True
+    assert store.ingest_document(root=str(tmp_path), title=title, workspace="specs", content="before snapshot")["success"] is True
     previous = _rag_snapshot(store, "specs")
 
     injected = _inject_sqlite_write_failure(store, monkeypatch, failed_statement)
-    result = store.ingest_document(root=str(tmp_path), root=str(tmp_path), title=title, workspace="specs", content="after snapshot")
+    result = store.ingest_document(root=str(tmp_path), title=title, workspace="specs", content="after snapshot")
 
     assert result["success"] is False
     assert result["retryable"] is False
@@ -540,16 +540,16 @@ def test_exhausted_publish_busy_retries_preserve_snapshot_and_report_retryable(
         services = _VectorServices()
         store.services = services
         workspace = "busy-index-workspace"
-        assert store.index_paths_step(root=str(root), root=str(root), workspace=workspace, paths=["module.py"])["success"] is True
+        assert store.index_paths_step(root=str(root), workspace=workspace, paths=["module.py"])["success"] is True
         previous = _rag_snapshot(store, workspace)
         path.write_text("after = 'new snapshot'\n", encoding="utf-8")
-        invoke = lambda: store.index_paths_step(root=str(root), root=str(root), workspace=workspace, paths=["module.py"])
+        invoke = lambda: store.index_paths_step(root=str(root), workspace=workspace, paths=["module.py"])
         expected_error = "publish_failed"
     else:
         title = "Busy Document"
-        assert store.ingest_document(root=str(tmp_path), root=str(tmp_path), title=title, workspace="specs", content="before snapshot")["success"] is True
+        assert store.ingest_document(root=str(tmp_path), title=title, workspace="specs", content="before snapshot")["success"] is True
         previous = _rag_snapshot(store, "specs")
-        invoke = lambda: store.ingest_document(root=str(tmp_path), root=str(tmp_path), title=title, workspace="specs", content="after snapshot")
+        invoke = lambda: store.ingest_document(root=str(tmp_path), title=title, workspace="specs", content="after snapshot")
         expected_error = "ingest_publish_failed"
 
     injected = _inject_sqlite_write_failure(
@@ -594,7 +594,7 @@ def test_index_paths_step_recovers_missing_embedding_space_from_existing_chunks(
     services = _VectorServices()
     store.services = services
     workspace = "legacy-incremental-workspace"
-    assert store.index_paths_step(root=str(root), root=str(root), workspace=workspace, paths=["module.py"])["success"] is True
+    assert store.index_paths_step(root=str(root), workspace=workspace, paths=["module.py"])["success"] is True
     space_key = store._workspace_embedding_space_key(workspace)
     with closing(store._connect()) as con:
         con.execute("DELETE FROM rag_meta WHERE key=?", (space_key,))
@@ -605,7 +605,7 @@ def test_index_paths_step_recovers_missing_embedding_space_from_existing_chunks(
             raise AssertionError("legacy embedding should be reused")
 
     store.services = _UnexpectedEmbed()
-    result = store.index_paths_step(root=str(root), root=str(root), workspace=workspace, paths=["module.py"])
+    result = store.index_paths_step(root=str(root), workspace=workspace, paths=["module.py"])
 
     assert result["success"] is True
     assert result["embedding_space_id"] == "legacy-inferred-test-space"
@@ -632,14 +632,14 @@ def test_index_paths_step_persists_inferred_space_without_paths_to_publish(tmp_p
 
     store.services = _VectorServices()
     workspace = "legacy-noop-workspace"
-    assert store.index_paths_step(root=str(root), root=str(root), workspace=workspace, paths=["module.py"])["success"] is True
+    assert store.index_paths_step(root=str(root), workspace=workspace, paths=["module.py"])["success"] is True
     space_key = store._workspace_embedding_space_key(workspace)
     with closing(store._connect()) as con:
         con.execute("DELETE FROM rag_meta WHERE key=?", (space_key,))
         con.commit()
         generation_before = store._workspace_index_generation(con, workspace)
 
-    result = store.index_paths_step(root=str(root), root=str(root), workspace=workspace, paths=[])
+    result = store.index_paths_step(root=str(root), workspace=workspace, paths=[])
 
     assert result["success"] is True
     assert result["processed_paths"] == []
@@ -666,7 +666,7 @@ def test_index_paths_step_requests_rebuild_for_mixed_legacy_embedding_spaces(tmp
 
     store.services = _VectorServices()
     workspace = "legacy-mixed-workspace"
-    assert store.index_paths_step(root=str(root), root=str(root), workspace=workspace, paths=["module.py"])["success"] is True
+    assert store.index_paths_step(root=str(root), workspace=workspace, paths=["module.py"])["success"] is True
     space_key = store._workspace_embedding_space_key(workspace)
     with closing(store._connect()) as con:
         con.execute(
@@ -678,7 +678,7 @@ def test_index_paths_step_requests_rebuild_for_mixed_legacy_embedding_spaces(tmp
         con.commit()
     previous = _rag_snapshot(store, workspace)
 
-    result = store.index_paths_step(root=str(root), root=str(root), workspace=workspace, paths=[])
+    result = store.index_paths_step(root=str(root), workspace=workspace, paths=[])
 
     assert result["success"] is False
     assert result["error"] == "embedding_space_rebuild_required"
@@ -718,7 +718,7 @@ def test_document_ingest_bounds_batches_and_preserves_long_document_order(tmp_pa
     services = _RecordingServices()
     store.services = services
 
-    result = store.ingest_document(root=str(tmp_path), root=str(tmp_path), title=title, workspace="specs", content=content)
+    result = store.ingest_document(root=str(tmp_path), title=title, workspace="specs", content=content)
 
     assert result["success"] is True
     assert result["embedded"] is True
@@ -765,7 +765,7 @@ def test_document_ingest_keeps_text_and_degrades_remainder_after_later_batch_fai
     services = _FailSecondBatchServices()
     store.services = services
 
-    result = store.ingest_document(root=str(tmp_path), root=str(tmp_path), title=title, workspace="specs", content=content)
+    result = store.ingest_document(root=str(tmp_path), title=title, workspace="specs", content=content)
 
     assert result["success"] is True
     assert result["embedded_chunks"] == 64
@@ -819,7 +819,7 @@ def test_document_ingest_rejects_overlong_later_batch_without_misassociation(tmp
     services = _OverlongSecondBatchServices()
     store.services = services
 
-    result = store.ingest_document(root=str(tmp_path), root=str(tmp_path), title=title, workspace="specs", content=content)
+    result = store.ingest_document(root=str(tmp_path), title=title, workspace="specs", content=content)
 
     assert result["success"] is True
     assert result["embedded_chunks"] == 64
@@ -851,8 +851,8 @@ def test_heuristic_rerank_scores_and_orders_every_candidate(tmp_path):
 
     store.services = _FixedServices()
     workspace = "heuristic-rerank"
-    store.ingest_document(root=str(tmp_path), root=str(tmp_path), title="Credential Rotation Plan", workspace=workspace, content="Rotate authentication credentials weekly.")
-    store.ingest_document(root=str(tmp_path), root=str(tmp_path), title="Cafeteria Menu", workspace=workspace, content="Soup and tea are served at lunch.")
+    store.ingest_document(root=str(tmp_path), title="Credential Rotation Plan", workspace=workspace, content="Rotate authentication credentials weekly.")
+    store.ingest_document(root=str(tmp_path), title="Cafeteria Menu", workspace=workspace, content="Soup and tea are served at lunch.")
 
     result = store.search("credential rotation", top_k=2, use_reranker=True, workspace=workspace)
 
@@ -878,7 +878,7 @@ def test_raster_diagram_reports_metadata_only_and_indexes_caption_metadata(tmp_p
     image = tmp_path / "network.png"
     image.write_bytes(b"not decoded by metadata-only ingestion")
 
-    result = store.ingest_diagram(root=str(tmp_path), root=str(tmp_path), caption="Private edge routing", metadata={"owner": "platform", "revision": 4}, workspace="diagrams", image_path=str(image))
+    result = store.ingest_diagram(root=str(tmp_path), caption="Private edge routing", metadata={"owner": "platform", "revision": 4}, workspace="diagrams", image_path=str(image))
 
     assert result["success"] is True
     assert result["diagram_content_mode"] == "metadata_only"
@@ -893,7 +893,7 @@ def test_svg_diagram_reports_extracted_text_provenance(tmp_path):
     image = tmp_path / "flow.svg"
     image.write_text("<svg><text>Queue Drain</text></svg>", encoding="utf-8")
 
-    result = store.ingest_diagram(root=str(tmp_path), root=str(tmp_path), caption="Drain workflow", workspace="diagrams", image_path=str(image))
+    result = store.ingest_diagram(root=str(tmp_path), caption="Drain workflow", workspace="diagrams", image_path=str(image))
 
     assert result["diagram_content_mode"] == "svg_text_nodes"
     assert result["vision_or_ocr_used"] is False
@@ -926,7 +926,6 @@ def test_mcp_rag_ingest_accepts_explicit_document_and_diagram_fields(monkeypatch
     mcp_server.local_ai_rag(
         action="ingest_document",
         root=str(tmp_path),
-        root=str(tmp_path),
         workspace="specs",
         content="Explicit content",
         title="Explicit title",
@@ -934,7 +933,6 @@ def test_mcp_rag_ingest_accepts_explicit_document_and_diagram_fields(monkeypatch
     )
     mcp_server.local_ai_rag(
         action="ingest_diagram",
-        root=str(tmp_path),
         root=str(tmp_path),
         workspace="diagrams",
         image_path=str(tmp_path / "diagram.png"),
@@ -1015,14 +1013,12 @@ def test_t11_live_ollama_rag_ingest_and_reranker_truthfulness(tmp_path):
 
         app.services.embed = capture_embed
         target = app.rag.ingest_document(root=str(tmp_path),
-            root=str(tmp_path),
             workspace=workspace,
             content="Rotate API authentication secrets every seven days.",
             title="Credential Rotation Plan",
             metadata={"owner": "identity-team"},
         )
         app.rag.ingest_document(root=str(tmp_path),
-            root=str(tmp_path),
             workspace=workspace,
             content="The cafeteria serves soup and tea during lunch.",
             title="Cafeteria Menu",
@@ -1157,7 +1153,7 @@ def test_offline_missing_reranker_weights_degrade_without_false_reranked_claim(t
     (root / "auth.py").write_text(
         "def authenticate_token(token):\n    return token\n", encoding="utf-8"
     )
-    assert store.index_step(root=str(root), root=str(root), max_files=8)["success"] is True
+    assert store.index_step(root=str(root), max_files=8)["success"] is True
 
     result = store.search("authenticate token", use_reranker=True, workspace=store.workspace_id(str(root)))
 
@@ -1200,11 +1196,11 @@ def test_index_embedding_calls_are_bounded_for_large_single_file(tmp_path, monke
     store.services = services
     workspace = "bounded-index-workspace"
     if entrypoint == "index":
-        result = store.index(root=str(root), root=str(root), workspace=workspace)
+        result = store.index(root=str(root), workspace=workspace)
     elif entrypoint == "index_paths_step":
-        result = store.index_paths_step(root=str(root), root=str(root), workspace=workspace, paths=["large.py"])
+        result = store.index_paths_step(root=str(root), workspace=workspace, paths=["large.py"])
     else:
-        result = store.index_step(root=str(root), root=str(root), max_files=1, workspace=workspace)
+        result = store.index_step(root=str(root), max_files=1, workspace=workspace)
 
     assert result["success"] is True
     assert [len(batch) for batch in services.calls] == [64, 1]
@@ -1246,7 +1242,7 @@ def test_preemption_after_embed_batch_preserves_published_snapshot(tmp_path, mon
     monkeypatch.setattr(store, "_chunks", lambda _text, path="": list(chunks))
     workspace = "preemption-workspace"
 
-    initial = store.index_paths_step(root=str(root), root=str(root), workspace=workspace, paths=["module.py"])
+    initial = store.index_paths_step(root=str(root), workspace=workspace, paths=["module.py"])
     assert initial["success"] is True
     previous = _rag_snapshot(store, workspace)
 
@@ -1256,7 +1252,7 @@ def test_preemption_after_embed_batch_preserves_published_snapshot(tmp_path, mon
     def should_yield():
         return len(services.calls) >= 2
 
-    result = store.index_paths_step(root=str(root), root=str(root), should_yield=should_yield, workspace=workspace, paths=["module.py"])
+    result = store.index_paths_step(root=str(root), should_yield=should_yield, workspace=workspace, paths=["module.py"])
 
     assert result["success"] is True
     assert result["preempted"] is True
@@ -1328,7 +1324,6 @@ def test_mcp_rag_ingest_forwards_explicit_fields_only(monkeypatch, tmp_path):
     mcp_server.local_ai_rag(
         action="ingest_document",
         root=str(tmp_path),
-        root=str(tmp_path),
         workspace="specs",
         content="Explicit document content.",
         title="Explicit title",
@@ -1337,7 +1332,6 @@ def test_mcp_rag_ingest_forwards_explicit_fields_only(monkeypatch, tmp_path):
     )
     mcp_server.local_ai_rag(
         action="ingest_diagram",
-        root=str(tmp_path),
         root=str(tmp_path),
         workspace="default",
         image_path="diagram.svg",
@@ -1383,7 +1377,7 @@ def test_diagram_ingest_rejects_svg_over_configured_file_limit(tmp_path, monkeyp
     calls = []
     monkeypatch.setattr(store, "ingest_document", lambda **kwargs: calls.append(kwargs))
 
-    result = store.ingest_diagram(root=str(tmp_path), root=str(tmp_path), workspace="diagrams", image_path=str(image))
+    result = store.ingest_diagram(root=str(tmp_path), workspace="diagrams", image_path=str(image))
 
     assert result["success"] is False
     assert calls == []
@@ -1407,7 +1401,7 @@ def test_diagram_ingest_bounds_svg_read_when_file_grows_after_stat(tmp_path, mon
     calls = []
     monkeypatch.setattr(store, "ingest_document", lambda **kwargs: calls.append(kwargs))
 
-    result = store.ingest_diagram(root=str(tmp_path), root=str(tmp_path), workspace="diagrams", image_path=str(image))
+    result = store.ingest_diagram(root=str(tmp_path), workspace="diagrams", image_path=str(image))
 
     assert result["success"] is False
     assert calls == []
@@ -1422,9 +1416,9 @@ def test_diagram_ingest_uses_path_identity_for_same_stem_files(tmp_path):
     first.write_text("<svg><text>first</text></svg>", encoding="utf-8")
     second.write_text("<svg><text>second</text></svg>", encoding="utf-8")
 
-    assert store.ingest_diagram(root=str(tmp_path), root=str(tmp_path), workspace="diagrams", image_path=str(first))["success"] is True
-    assert store.ingest_diagram(root=str(tmp_path), root=str(tmp_path), workspace="diagrams", image_path=str(second))["success"] is True
-    assert store.ingest_diagram(root=str(tmp_path), root=str(tmp_path), workspace="diagrams", image_path=str(first))["success"] is True
+    assert store.ingest_diagram(root=str(tmp_path), workspace="diagrams", image_path=str(first))["success"] is True
+    assert store.ingest_diagram(root=str(tmp_path), workspace="diagrams", image_path=str(second))["success"] is True
+    assert store.ingest_diagram(root=str(tmp_path), workspace="diagrams", image_path=str(first))["success"] is True
 
     with closing(store._connect()) as con:
         paths = con.execute(
@@ -1444,7 +1438,7 @@ def test_diagram_ingest_reports_document_publish_failure(tmp_path, monkeypatch):
         lambda **kwargs: {"success": False, "error": "publish failed"},
     )
 
-    result = store.ingest_diagram(root=str(tmp_path), root=str(tmp_path), workspace="diagrams", image_path=str(image))
+    result = store.ingest_diagram(root=str(tmp_path), workspace="diagrams", image_path=str(image))
 
     assert result["success"] is False
     assert result["diagram_indexed"] is False
@@ -1454,7 +1448,7 @@ def test_document_ingest_rejects_content_over_configured_file_limit(tmp_path):
     store = _store(tmp_path)
     store.config["rag"]["max_file_bytes"] = 12
 
-    result = store.ingest_document(root=str(tmp_path), root=str(tmp_path), title="oversized", workspace="specs", content="x" * 13)
+    result = store.ingest_document(root=str(tmp_path), title="oversized", workspace="specs", content="x" * 13)
 
     assert result["success"] is False
     with closing(store._connect()) as con:
@@ -1477,7 +1471,7 @@ def test_document_ingest_rejects_indexed_fields_over_configured_file_limit(tmp_p
     store = _store(tmp_path)
     store.config["rag"]["max_file_bytes"] = 64
 
-    result = store.ingest_document(root=str(tmp_path), root=str(tmp_path), **fields, workspace="specs", content="ok")
+    result = store.ingest_document(root=str(tmp_path), **fields, workspace="specs", content="ok")
 
     assert result["success"] is False
     assert result["error"] == "indexed document exceeds configured file size limit"

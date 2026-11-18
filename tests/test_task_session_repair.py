@@ -42,9 +42,9 @@ def test_session_repair_broker_requires_write_authority(tmp_path: Path):
     broker = object.__new__(CommandBroker)
     broker.task_store = store
     with pytest.raises(PermissionError):
-        broker.repair_task_session(task.task_id, root=str(tmp_path), root=str(tmp_path), session_id="session-1", reason="repair missing session", authorization_actor="api_token", authorization_permissions=frozenset({"read"}))
+        broker.repair_task_session(task.task_id, root=str(tmp_path), session_id="session-1", reason="repair missing session", authorization_actor="api_token", authorization_permissions=frozenset({"read"}))
     assert store.get(task.task_id).context.session_id == ""
-    repaired = broker.repair_task_session(task.task_id, root=str(tmp_path), root=str(tmp_path), session_id="session-1", reason="repair missing session", authorization_actor="local", authorization_permissions=frozenset())
+    repaired = broker.repair_task_session(task.task_id, root=str(tmp_path), session_id="session-1", reason="repair missing session", authorization_actor="local", authorization_permissions=frozenset())
     assert repaired.context.session_id == "session-1"
 
 
@@ -90,7 +90,7 @@ def test_mcp_forwards_session_repair(monkeypatch, tmp_path: Path):
     from local_ai_hub import mcp_server
     calls = []
     monkeypatch.setattr(mcp_server.CLIENT, "coord", lambda **kwargs: calls.append(kwargs) or {"success": True})
-    mcp_server.local_ai_coord(action="task_repair_session", root=str(tmp_path), root=str(tmp_path), task_id="task-1", session_id="session-1", reason="repair")
+    mcp_server.local_ai_coord(action="task_repair_session", root=str(tmp_path), task_id="task-1", session_id="session-1", reason="repair")
     assert calls[0]["action"] == "task_repair_session"
     assert calls[0]["session_id"] == "session-1"
     assert calls[0]["reason"] == "repair"

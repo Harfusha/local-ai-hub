@@ -97,7 +97,7 @@ def test_public_http_conversation_stream_cancel_and_deadline(tmp_path, monkeypat
 
             cancel = threading.Event()
             authorized_events = client.stream_events(
-                stream_id=stream_id, root=str(root), root=str(root), timeout=0, cancel_event=cancel
+                stream_id=stream_id, root=str(root), timeout=0, cancel_event=cancel
             )
             cleanup.callback(authorized_events.close)
             try:
@@ -133,7 +133,6 @@ def test_public_http_conversation_stream_cancel_and_deadline(tmp_path, monkeypat
             client.max_request_timeout = 0.2
             deadline_events = client.stream_events(
                 stream_id=f"task:{deadline_task_id}",
-                root=str(root),
                 root=str(root),
                 kind="update",
                 timeout=0,

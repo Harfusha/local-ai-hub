@@ -904,7 +904,7 @@ def test_repo_pipeline_composite_action(tmp_path: Path, monkeypatch):
         {"action": "affected_tests", "path": "src/foo.py"},
         {"action": "security_audit"},
     ]
-    res = mcp_mod._local_ai_repo_impl(action="pipeline", root=str(tmp_path), root=str(tmp_path), steps=steps)
+    res = mcp_mod._local_ai_repo_impl(action="pipeline", root=str(tmp_path), steps=steps)
     assert res["success"] is True
     assert res["pipeline"] is True
     assert res["steps_total"] == 2

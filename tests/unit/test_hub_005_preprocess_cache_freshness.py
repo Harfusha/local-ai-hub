@@ -111,7 +111,7 @@ def test_get_or_ingest_with_expected_hash_invalidates_stale_cache(tmp_path: Path
     ingested2 = cache.get_or_ingest(tmp_path, "target.py", tools, expected_hash=h2)
     assert ingested2.content_hash == h2
     assert ingested2.text == "val = 2"
-    assert cache.get("target.py", root=str(tmp_path), root=str(tmp_path), content_hash=h1) is None
+    assert cache.get("target.py", root=str(tmp_path), content_hash=h1) is None
 
 
 def test_e2e_two_projects_shared_preprocessor_no_watcher_invalidation(tmp_path: Path):

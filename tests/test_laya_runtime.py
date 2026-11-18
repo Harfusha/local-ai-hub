@@ -640,6 +640,25 @@ def test_preloaded_router_cleanup_failure_stops_device_fallback(tmp_path, monkey
     assert len(routers) == 1
 
 
+def test_isolated_worker_unconfirmed_termination_remains_a_failure(monkeypatch):
+    runtime_module = importlib.import_module("local_ai_hub.laya_runtime")
+
+    class RunningProcess:
+        pid = 1234
+
+        def poll(self):
+            return None
+
+    session = runtime_module._LayaWorkerSession.__new__(runtime_module._LayaWorkerSession)
+    session._process = RunningProcess()
+    session._closed = False
+    monkeypatch.setattr(runtime_module, "terminate_tree", lambda *_args, **_kwargs: False)
+
+    assert session._terminate() is False
+    assert session._closed is True
+    assert session.close() is False
+
+
 class FakeCapacityManager:
     def __init__(self, *, admitted=True, release_result=True, events=None):
         self.admitted = admitted

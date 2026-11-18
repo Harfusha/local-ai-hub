@@ -19,10 +19,10 @@ def test_fenced_mutation_blocks_completion_and_checkpoint_tampering(tmp_path):
     fences = FencingLeaseStore(tmp_path / "fences.sqlite3")
     attempt = fences.claim_attempt(str(root), "work-1", "worker", ttl_seconds=60)
     lease = fences.acquire(str(root), "writer", ["a.txt"], ttl_seconds=60, attempt=attempt)
-    guarded = tasks._begin_fenced_work_mutation(task.task_id, root=str(root), root=str(root), owner="owner",
+    guarded = tasks._begin_fenced_work_mutation(task.task_id, root=str(root), owner="owner",
                                                  fencing_store=fences, lease=lease, attempt=attempt, paths=["a.txt"])
     assert guarded.checkpoint.state_data["mutation_generation"] == 1
-    next_patch = tasks._begin_fenced_work_mutation(task.task_id, root=str(root), root=str(root), owner="owner",
+    next_patch = tasks._begin_fenced_work_mutation(task.task_id, root=str(root), owner="owner",
                                                    fencing_store=fences, lease=lease, attempt=attempt, paths=["a.txt"])
     assert next_patch.checkpoint.state_data["mutation_generation"] == 2
     with pytest.raises(CompletionGateError):
@@ -58,7 +58,7 @@ def test_expired_fence_never_creates_barrier(tmp_path):
     lease = fences.acquire(str(root), "writer", ["a.txt"], ttl_seconds=60, attempt=attempt)
     fences.release(lease)
     with pytest.raises(LeaseLostError):
-        tasks._begin_fenced_work_mutation(task.task_id, root=str(root), root=str(root), owner="owner",
+        tasks._begin_fenced_work_mutation(task.task_id, root=str(root), owner="owner",
                                           fencing_store=fences, lease=lease, attempt=attempt, paths=["a.txt"])
     assert "_pending_fenced_work" not in tasks.get(task.task_id).checkpoint.state_data
 
@@ -74,7 +74,7 @@ def test_finalization_keeps_barrier_until_fenced_action_succeeds(tmp_path, rollb
     fences = FencingLeaseStore(tmp_path / "fences.sqlite3")
     attempt = fences.claim_attempt(str(root), "work-1", "worker", ttl_seconds=60)
     lease = fences.acquire(str(root), "writer", ["a.txt"], ttl_seconds=60, attempt=attempt)
-    args = dict(root=str(root), root=str(root), owner="owner", fencing_store=fences, lease=lease, attempt=attempt, paths=["a.txt"])
+    args = dict(root=str(root), owner="owner", fencing_store=fences, lease=lease, attempt=attempt, paths=["a.txt"])
     tasks._begin_fenced_work_mutation(task.task_id, **args)
     def fails():
         assert "_pending_fenced_work" in tasks.get(task.task_id).checkpoint.state_data
@@ -100,7 +100,7 @@ def test_recovery_adopts_only_same_work_and_rejects_old_fence(tmp_path):
     fences = FencingLeaseStore(tmp_path / "fences.sqlite3")
     old = fences.claim_attempt(str(root), "work-1", "old-worker", ttl_seconds=60)
     old_lease = fences.acquire(str(root), "old-writer", ["a.txt"], ttl_seconds=60, attempt=old)
-    base = dict(root=str(root), root=str(root), owner="owner", fencing_store=fences, paths=["a.txt"])
+    base = dict(root=str(root), owner="owner", fencing_store=fences, paths=["a.txt"])
     tasks._begin_fenced_work_mutation(task.task_id, lease=old_lease, attempt=old, **base)
     fences.release(old_lease)
     fences.release_attempt(old)
@@ -146,7 +146,7 @@ def test_fenced_barrier_and_concurrent_transition_cannot_overwrite_each_other(tm
 
     def begin():
         try:
-            return tasks._begin_fenced_work_mutation(task.task_id, root=str(root), root=str(root), owner="owner",
+            return tasks._begin_fenced_work_mutation(task.task_id, root=str(root), owner="owner",
                 fencing_store=fences, lease=lease, attempt=attempt, paths=["a.txt"])
         except ConcurrentTaskUpdateError as exc:
             return exc

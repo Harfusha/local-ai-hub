@@ -6,6 +6,7 @@ import stat
 import io
 import ipaddress
 import json
+import os
 import re
 import sqlite3
 import threading
@@ -2689,11 +2690,14 @@ class LocalAIApp:
                 devices = discover_torch_devices()
                 if runtime_cfg.get("allow_cpu", False) is not True:
                     devices = tuple(device for device in devices if device.device_class != "cpu")
+                laya_env = Path(__file__).resolve().parents[2] / "tool-envs" / "laya"
+                laya_python = laya_env / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
                 adapter = LayaRuntimeAdapter(
                     checkpoint_path=checkpoint_path,
                     revision=revision,
                     expected_sha256=expected_sha256,
                     device_candidates=devices,
+                    runtime_python=laya_python,
                     capacity_manager=self.scheduler,
                     evaluation_mode=True,
                 )

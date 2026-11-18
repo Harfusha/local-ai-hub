@@ -61,7 +61,7 @@ def test_current_cross_project_actions_reach_the_matching_fake_http_routes(monke
 
     monkeypatch.setattr(mcp_server, "CLIENT", FakeClient())
     for action in _CURRENT_ACTIONS:
-        mcp_server.local_ai_repo(action=action, root=str(tmp_path), root=str(tmp_path), query="Symbol")
+        mcp_server.local_ai_repo(action=action, root=str(tmp_path), query="Symbol")
 
     assert [path for path, _payload in calls] == [
         "/api/cross_project_graph",

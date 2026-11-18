@@ -23,7 +23,7 @@ If an explicitly requested update finds an existing marked Local AI Hub block wi
 
 Run `install.ps1` or `./install.sh` in a terminal for the interactive update wizard. It remembers the last profile and component choices. Use `--non-interactive` for automation. Omit `--profile` to let setup detect hardware. The wizard selects supported agent integrations and optional runtimes; local NLP and OpenVINO dependencies are installed only when the configured backends or detected hardware need them. Ollama downloads cover configured code, reasoning, general, enabled vision, subagent, and Ollama embedding models; managed llama.cpp downloads its pinned default GGUF when selected. Sentence Transformers and OpenVINO preloads follow the configured Hugging Face download policy. Custom GGUF, external providers, and Laya checkpoints need their documented/manual steps. Review `setup-report.json` in the install directory for ready, skipped, unavailable, and failed components, then follow [INSTALLER_RECOVERY.md](INSTALLER_RECOVERY.md) for recovery instructions and the copyable manual prompt. On bootstrap failure, the platform wrapper links to that guide. Use `--full-reinstall` only when requested; confirm the exact configured state path. Full reinstall removes Hub state, model cache, `.venv`, and managed `tool-envs`, while preserving config and agent settings. The wrapper resolves the current clean source revision when `--expected-revision` is omitted.
 
-Runtime extras include Tree-sitter AST support, performance packages, profiling tools and optional Laya runtime dependencies. One-run skip flags include `--skip-companion-skills`, `--skip-ast-index`, `--skip-performance`, `--skip-profiling` and `--skip-laya-runtime`; these override saved choices without changing them. `--skip-companion-skills` also skips Caveman, Ponytail and pinned Superpowers for Gemini/Antigravity. Development test tools remain outside the Hub service environment.
+Runtime extras include Tree-sitter AST support, performance packages, profiling tools and optional Laya runtime dependencies. Selected Laya packages install in isolated `tool-envs/laya` so Laya and OpenVINO can coexist; do not install `laya` or `vegaml` into the Hub `.venv`. One-run skip flags include `--skip-companion-skills`, `--skip-ast-index`, `--skip-performance`, `--skip-profiling` and `--skip-laya-runtime`; these override saved choices without changing them. `--skip-companion-skills` also skips Caveman, Ponytail and pinned Superpowers for Gemini/Antigravity. Development test tools remain outside the Hub service environment.
 
 Selected Cursor, Windsurf and VS Code/Copilot clients receive native global instructions and skills; see [INSTALLER_RECOVERY.md](INSTALLER_RECOVERY.md) for their file locations and manual fallback.
 
@@ -351,7 +351,7 @@ Use only the exact 40-character verified commit SHA issued by the T20 release ow
 
 Run only after Phase 1 confirms the exact verified commit and a clean checkout. Pass the same SHA to the platform installer; a missing, dirty, or mismatched revision is a hard stop. Keep the existing per-user service identity and shared HTTP Hub singleton; do not register another service for a chat, agent, repository, or worktree.
 
-After setup, from the verified installation root install the complete declared non-Intel extra set into the active environment: `python -m pip install --upgrade ".[ast-index,local-nlp,token-economy,performance,profiling,dev]"`. This includes NLP and development/profiling dependencies and may require substantial disk/time. Keep `intel-accelerators` opt-in for an explicitly requested Intel host; CodeGraphContext is independent and is not a Hub dependency. Then fully stop the existing service, confirm it is stopped, start the same service, and verify `python tools/hubctl.py status` plus `python tools/doctor.py`. Preserve configuration and durable state; never create a second service or reset databases for an ordinary update.
+After setup, from the verified installation root install the complete declared non-Intel extra set into the active environment: `python -m pip install --upgrade ".[ast-index,local-nlp,token-economy,performance,profiling,dev]"`. This includes NLP and development/profiling dependencies and may require substantial disk/time. Keep `intel-accelerators` opt-in for an explicitly requested Intel host; CodeGraphContext is independent and is not a Hub dependency. The installer places selected Laya packages in isolated `tool-envs/laya`; keep `laya` and `vegaml` out of the Hub environment so the Laya and OpenVINO stacks coexist. Then fully stop the existing service, confirm it is stopped, start the same service, and verify `python tools/hubctl.py status` plus `python tools/doctor.py`. Preserve configuration and durable state; never create a second service or reset databases for an ordinary update.
 
 On Windows, prefer Task Scheduler identity `LocalAIHubSupervisor`; if registration is denied, verify the per-user Run-key fallback (`windows-user-startup`). A detached Hub alone does not prove reboot-persistent service registration.
 
@@ -660,8 +660,7 @@ The main agent owns planning, implementation and integration.
 
 READ-ONLY AUDIT CONTRACT:
 - Read-only excludes Git writes, `git worktree add` or removal, dependency installation, builds/imports, generated artifacts and other workspace side effects. Never label side-effecting work read-only; assign validation separately.
-- Before native discovery or validation that depends on a Hub-backed fact, retain the Hub action, absolute root, status, cache/in_progress state and evidence IDs; fallback requires an explicit result with `terminal=true` and `retryable=false`.
-- If the active Hub schema has no action for a host-native command, skip the Hub and run one bounded host command within the authorized root. Example: use `git worktree list` directly; do not route it through repository search or retry other Hub actions.
+- Before native discovery or validation retain Hub action, absolute root, status, cache/in_progress state and evidence IDs. Native discovery requires an explicit Hub result with `terminal=true` and `retryable=false`.
 - Authorized independent subagents remain permission- and scope-controlled; main agent integrates. Never delegate audit-only work.
 - Avoid parallel duplicate commands/scopes. Tool labels are not evidence; retain exact action, arguments, result and ownership in the audit record.
 
@@ -691,7 +690,7 @@ Local model policy: Follow the active hardware profile and user overrides; see `
 - Reject `max_response_tokens` below 128; never raise the request silently.
 - Large task responses: omit `max_response_tokens` unless a cap is needed.
 - For a response-budget rejection, reduce the requested envelope or fetch a smaller artifact page/slice; do not replay the same oversized request.
-- If the live MCP schema has no action for an operation, skip Hub and use the authorized native tool directly; no Hub failure or `native_fallback_allowed` signal is needed. After calling an advertised Hub action, native fallback requires explicit `terminal=true` and `retryable=false`.
+- If the live MCP schema has no action for an operation, use the authorized native tool directly without calling Hub. Hub-unknown commands require broker `native_fallback_allowed=true` and native-tool authorization. After an advertised Hub action, native fallback requires explicit `terminal=true` and `retryable=false`.
 - On `outcome_unknown` or `in_progress`, do independent work; never poll or repeat the identical operation.
 - Prefer `response_profile="minimal"`/`"compact"`; request only decision-grade fields.
 - Pass a stable `reuse_key` for repeated logical queries. Use `response_profile="delta"` when only changes are needed; unchanged calls report `unchanged=true`. Required task memory may remain inline.
@@ -715,7 +714,7 @@ Local model policy: Follow the active hardware profile and user overrides; see `
 - Claim savings only with a current `baseline_evidence_id`; report signed `token_savings_delta_est`, including negative values; keep `protocol_tokens_est`, `schema_tokens_est`, and `local_compute_reused_tokens_est` separate.
 - Reject `max_response_tokens` below 128; never raise the request silently.
 - For a response-budget rejection, reduce the requested envelope or fetch a smaller artifact page/slice; do not replay the same oversized request.
-- If the live MCP schema has no action for an operation, skip Hub and use the authorized native tool directly; no Hub failure or `native_fallback_allowed` signal is needed. After calling an advertised Hub action, native fallback requires explicit `terminal=true` and `retryable=false`.
+- If the live MCP schema has no action for an operation, use the authorized native tool directly without calling Hub. Hub-unknown commands require broker `native_fallback_allowed=true` and native-tool authorization. After an advertised Hub action, native fallback requires explicit `terminal=true` and `retryable=false`.
 - On `outcome_unknown` or `in_progress`, do independent work; never poll or repeat the identical operation.
 <!-- END TOKEN ECONOMY POLICY -->
 

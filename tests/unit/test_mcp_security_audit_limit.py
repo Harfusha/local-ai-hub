@@ -19,7 +19,7 @@ def test_security_audit_limit_is_exposed_and_validated_by_schema():
 def test_security_audit_rejects_invalid_limit_before_http(tmp_path, monkeypatch, value):
     calls = []
     monkeypatch.setattr(mcp_server.CLIENT, 'post', lambda *args, **kwargs: calls.append(args))
-    result = mcp_server._local_ai_repo_impl(action='security_audit', root=str(tmp_path), root=str(tmp_path), limit=value)
+    result = mcp_server._local_ai_repo_impl(action='security_audit', root=str(tmp_path), limit=value)
     assert result['success'] is False, result
     assert not calls
 
@@ -33,7 +33,7 @@ def test_security_audit_forwards_explicit_limit_and_preserves_default(tmp_path, 
                 'inventory_incomplete_examples': {'oversized_file': ['large.py']},
                 'inventory_examples_truncated': False}
     monkeypatch.setattr(mcp_server.CLIENT, 'post', post)
-    first = mcp_server._local_ai_repo_impl(action='security_audit', root=str(tmp_path), root=str(tmp_path), limit=3)
+    first = mcp_server._local_ai_repo_impl(action='security_audit', root=str(tmp_path), limit=3)
     second = mcp_server._local_ai_repo_impl(action='security_audit', root=str(tmp_path))
     assert first['success'] and second['success']
     assert first['scan_complete'] is False and first['is_clean'] is False
@@ -47,5 +47,5 @@ def test_security_audit_accepts_largest_supported_limit(tmp_path, monkeypatch):
     monkeypatch.setattr(mcp_server.CLIENT, 'post', lambda path, payload, **kwargs: (
         calls.append(payload) or {'success': True, 'scan_complete': False, 'is_clean': False, 'findings': []}
     ))
-    result = mcp_server._local_ai_repo_impl(action='security_audit', root=str(tmp_path), root=str(tmp_path), limit=MAX_PAGE_SIZE)
+    result = mcp_server._local_ai_repo_impl(action='security_audit', root=str(tmp_path), limit=MAX_PAGE_SIZE)
     assert result['success'] is True and calls[0]['limit'] == MAX_PAGE_SIZE

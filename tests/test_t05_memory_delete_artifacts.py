@@ -47,7 +47,6 @@ def test_scoped_delete_purges_fts_and_embedding_artifacts(tmp_path):
         scope=AgentScope.REPOSITORY,
         scope_id=str(root),
         root=str(root),
-        root=str(root),
         repository_id=str(root),
     )
     reopened = MemoryStore(AgentStateStore(store.state_store.db_path))
@@ -55,7 +54,6 @@ def test_scoped_delete_purges_fts_and_embedding_artifacts(tmp_path):
         record.record_id,
         scope=AgentScope.REPOSITORY,
         scope_id=str(root),
-        root=str(root),
         root=str(root),
         repository_id=str(root),
 
@@ -98,7 +96,6 @@ def test_replaying_record_after_delete_does_not_restore_memory_or_fts(tmp_path):
         scope=AgentScope.REPOSITORY,
         scope_id=str(root),
         root=str(root),
-        root=str(root),
         repository_id=str(root),
     )
 
@@ -107,7 +104,6 @@ def test_replaying_record_after_delete_does_not_restore_memory_or_fts(tmp_path):
     assert store.get(
         record.record_id,
         scope=AgentScope.REPOSITORY,
-        root=str(root),
         root=str(root),
         repository_id=str(root),
 
@@ -200,7 +196,6 @@ def test_delete_cleanup_failure_rolls_back_memory_and_search_state(tmp_path, mon
                 scope=AgentScope.REPOSITORY,
                 scope_id=str(root),
                 root=str(root),
-                root=str(root),
                 repository_id=str(root),
                 tenant="retired",
             )
@@ -211,7 +206,6 @@ def test_delete_cleanup_failure_rolls_back_memory_and_search_state(tmp_path, mon
                 scope=AgentScope.REPOSITORY,
                 scope_id=str(root),
                 root=str(root),
-                root=str(root),
                 repository_id=str(root),
             )
 
@@ -220,7 +214,6 @@ def test_delete_cleanup_failure_rolls_back_memory_and_search_state(tmp_path, mon
         record.record_id,
         scope=AgentScope.REPOSITORY,
         scope_id=str(root),
-        root=str(root),
         root=str(root),
         repository_id=str(root),
     ) == record

@@ -150,12 +150,16 @@ def test_response_budget_and_fallback_contracts_match_all_agent_instructions(gen
         "Reject `max_response_tokens` below 128; never raise the request silently.",
     )
     fallback_contract = (
-        "For Hub outages, native fallback requires explicit `terminal=true` and `retryable=false`; for Hub-unknown commands, require `native_fallback_allowed=true` plus native-tool authorization.",
+        "For a response-budget rejection, reduce the requested envelope or fetch a smaller artifact page/slice; do not replay the same oversized request.",
+        "If the live MCP schema has no action for an operation, use the authorized native tool directly without calling Hub. Hub-unknown commands require broker `native_fallback_allowed=true` and native-tool authorization. After an advertised Hub action, native fallback requires explicit `terminal=true` and `retryable=false`.",
         "On `outcome_unknown` or `in_progress`, do independent work; never poll or repeat the identical operation.",
     )
 
     for contract in (*budget_contract, *fallback_contract):
-        assert all(contract in text for text in instructions), contract
+        assert all(contract in text for text in instructions), (
+            contract,
+            [index for index, text in enumerate(instructions) if contract not in text],
+        )
 
 
 def test_token_economizer_skill_md(tmp_path: Path):

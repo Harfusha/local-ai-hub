@@ -55,7 +55,6 @@ def test_full_index_honors_cooperative_yield(tmp_path: Path):
 
     result = store.index(
         root=str(root),
-        root=str(root),
         workspace=RAGStore.workspace_id(str(root)),
         should_yield=lambda: True,
     )
@@ -73,12 +72,12 @@ def test_full_index_reembeds_unchanged_files_when_embedding_space_changes(tmp_pa
 
     first_embedder = SpaceEmbedder("space-a")
     first = RAGStore(config, services=first_embedder)
-    assert first.index(root=str(root), root=str(root), workspace=workspace)["success"] is True
+    assert first.index(root=str(root), workspace=workspace)["success"] is True
     assert first_embedder.calls == 1
 
     second_embedder = SpaceEmbedder("space-b")
     second = RAGStore(config, services=second_embedder)
-    result = second.index(root=str(root), root=str(root), workspace=workspace)
+    result = second.index(root=str(root), workspace=workspace)
 
     assert result["success"] is True
     assert result["changed_files"] == 1
@@ -93,7 +92,7 @@ def test_full_index_reembeds_unchanged_files_when_embedding_space_changes(tmp_pa
         }
     assert spaces == {"space-b"}
 
-    repeated = second.index(root=str(root), root=str(root), workspace=workspace)
+    repeated = second.index(root=str(root), workspace=workspace)
     assert repeated["success"] is True
     assert repeated["changed_files"] == 0
     assert second_embedder.calls == 1
@@ -108,7 +107,7 @@ def test_incremental_reindex_keeps_target_until_all_paths_use_new_space(tmp_path
     workspace = RAGStore.workspace_id(str(root))
 
     original = RAGStore(config, services=SpaceEmbedder("space-a"))
-    indexed = original.index(root=str(root), root=str(root), workspace=workspace)
+    indexed = original.index(root=str(root), workspace=workspace)
     assert indexed["success"] is True, indexed
 
     reindex = RAGStore(config, services=SpaceEmbedder("space-b"))
@@ -154,7 +153,7 @@ def test_embedding_space_rebuild_read_error_preserves_previous_index(
     config = _config(tmp_path / "state")
     workspace = RAGStore.workspace_id(str(root))
     first = RAGStore(config, services=SpaceEmbedder("space-a"))
-    assert first.index(root=str(root), root=str(root), workspace=workspace)["success"] is True
+    assert first.index(root=str(root), workspace=workspace)["success"] is True
     with closing(first._connect()) as con:
         old_rows = con.execute(
             "SELECT path,chunk_no,content_hash,embedding,embedding_space "
@@ -180,7 +179,7 @@ def test_embedding_space_rebuild_read_error_preserves_previous_index(
         return original_open(path, *args, **kwargs)
 
     monkeypatch.setattr("local_ai_hub.rag.os.open", fail_indexed_file)
-    result = second.index(root=str(root), root=str(root), workspace=workspace)
+    result = second.index(root=str(root), workspace=workspace)
 
     assert result["success"] is False
     assert result["retryable"] is True
@@ -213,7 +212,7 @@ def test_embedding_space_rebuild_root_access_error_is_retryable_and_preserves_in
     config = _config(tmp_path / "state")
     workspace = RAGStore.workspace_id(str(root))
     first = RAGStore(config, services=SpaceEmbedder("space-a"))
-    assert first.index(root=str(root), root=str(root), workspace=workspace)["success"] is True
+    assert first.index(root=str(root), workspace=workspace)["success"] is True
     with closing(first._connect()) as con:
         old_rows = con.execute(
             "SELECT path,chunk_no,content_hash,embedding,embedding_space "
@@ -238,7 +237,7 @@ def test_embedding_space_rebuild_root_access_error_is_retryable_and_preserves_in
         return original_access(path, *args, **kwargs)
 
     monkeypatch.setattr(Path, access_method, deny_root_access)
-    result = second.index(root=str(root), root=str(root), workspace=workspace)
+    result = second.index(root=str(root), workspace=workspace)
 
     assert result["success"] is False
     assert result["retryable"] is True
@@ -271,7 +270,7 @@ def test_embedding_space_rebuild_stat_error_preserves_previous_index(
     config = _config(tmp_path / "state")
     workspace = RAGStore.workspace_id(str(root))
     first = RAGStore(config, services=SpaceEmbedder("space-a"))
-    assert first.index(root=str(root), root=str(root), workspace=workspace)["success"] is True
+    assert first.index(root=str(root), workspace=workspace)["success"] is True
     with closing(first._connect()) as con:
         old_rows = con.execute(
             "SELECT path,chunk_no,content_hash,embedding,embedding_space "
@@ -299,7 +298,7 @@ def test_embedding_space_rebuild_stat_error_preserves_previous_index(
         return original_stat(path, *args, **kwargs)
 
     monkeypatch.setattr(Path, "stat", fail_indexed_file_stat)
-    result = second.index(root=str(root), root=str(root), workspace=workspace)
+    result = second.index(root=str(root), workspace=workspace)
 
     assert result["success"] is False
     assert result["retryable"] is True
@@ -334,7 +333,7 @@ def test_embedding_space_rebuild_direntry_stat_error_preserves_previous_index(
     config = _config(tmp_path / "state")
     workspace = RAGStore.workspace_id(str(root))
     first = RAGStore(config, services=SpaceEmbedder("space-a"))
-    assert first.index(root=str(root), root=str(root), workspace=workspace)["success"] is True
+    assert first.index(root=str(root), workspace=workspace)["success"] is True
     with closing(first._connect()) as con:
         old_rows = con.execute(
             "SELECT path,chunk_no,content_hash,embedding,embedding_space "
@@ -377,7 +376,7 @@ def test_embedding_space_rebuild_direntry_stat_error_preserves_previous_index(
         return entries
 
     monkeypatch.setattr(rag_module.os, "scandir", failing_scandir)
-    result = second.index(root=str(root), root=str(root), workspace=workspace)
+    result = second.index(root=str(root), workspace=workspace)
 
     assert stat_failed is True
     assert result["success"] is False
@@ -414,7 +413,7 @@ def test_embedding_space_rebuild_scandir_error_preserves_previous_index(
     config = _config(tmp_path / "state")
     workspace = RAGStore.workspace_id(str(root))
     first = RAGStore(config, services=SpaceEmbedder("space-a"))
-    assert first.index(root=str(root), root=str(root), workspace=workspace)["success"] is True
+    assert first.index(root=str(root), workspace=workspace)["success"] is True
     with closing(first._connect()) as con:
         old_rows = con.execute(
             "SELECT path,chunk_no,content_hash,embedding,embedding_space "
@@ -442,7 +441,7 @@ def test_embedding_space_rebuild_scandir_error_preserves_previous_index(
         return original_scandir(path)
 
     monkeypatch.setattr(rag_module.os, "scandir", failing_scandir)
-    result = second.index(root=str(root), root=str(root), workspace=workspace)
+    result = second.index(root=str(root), workspace=workspace)
 
     assert scan_failed is True
     assert result["success"] is False
@@ -479,7 +478,7 @@ def test_embedding_space_rebuild_direntry_probe_error_preserves_previous_index(
     config = _config(tmp_path / "state")
     workspace = RAGStore.workspace_id(str(root))
     first = RAGStore(config, services=SpaceEmbedder("space-a"))
-    assert first.index(root=str(root), root=str(root), workspace=workspace)["success"] is True
+    assert first.index(root=str(root), workspace=workspace)["success"] is True
     with closing(first._connect()) as con:
         old_rows = con.execute(
             "SELECT path,chunk_no,content_hash,embedding,embedding_space "
@@ -529,7 +528,7 @@ def test_embedding_space_rebuild_direntry_probe_error_preserves_previous_index(
         return entries
 
     monkeypatch.setattr(rag_module.os, "scandir", wrapped_scandir)
-    result = second.index(root=str(root), root=str(root), workspace=workspace)
+    result = second.index(root=str(root), workspace=workspace)
 
     assert probe_failed is True
     assert result["success"] is False
@@ -562,12 +561,12 @@ def test_embedding_space_rebuild_prunes_newly_excluded_file_and_fts(tmp_path: Pa
     config = _config(tmp_path / "state")
     workspace = RAGStore.workspace_id(str(root))
     first = RAGStore(config, services=SpaceEmbedder("space-a"))
-    assert first.index(root=str(root), root=str(root), workspace=workspace)["success"] is True
+    assert first.index(root=str(root), workspace=workspace)["success"] is True
 
     excluded_config = _config(tmp_path / "state")
     excluded_config["rag"]["ignore_dirs"] = ["excluded"]
     second = RAGStore(excluded_config, services=SpaceEmbedder("space-b"))
-    result = second.index(root=str(root), root=str(root), workspace=workspace)
+    result = second.index(root=str(root), workspace=workspace)
 
     assert result["success"] is True
     assert result["deleted_files"] == 1
@@ -588,11 +587,11 @@ def test_embedding_space_rebuild_prunes_genuinely_deleted_file_and_fts(tmp_path:
     config = _config(tmp_path / "state")
     workspace = RAGStore.workspace_id(str(root))
     first = RAGStore(config, services=SpaceEmbedder("space-a"))
-    assert first.index(root=str(root), root=str(root), workspace=workspace)["success"] is True
+    assert first.index(root=str(root), workspace=workspace)["success"] is True
     source.unlink()
 
     second = RAGStore(config, services=SpaceEmbedder("space-b"))
-    result = second.index(root=str(root), root=str(root), workspace=workspace)
+    result = second.index(root=str(root), workspace=workspace)
 
     assert result["success"] is True
     assert result["deleted_files"] == 1
@@ -627,7 +626,7 @@ def test_embedding_fingerprint_change_requires_offline_rebuild_and_preserves_row
     first_config["models"]["embedding_digest"] = "sha256:first"
     embedder = ConfigIdentityEmbedder()
     first = RAGStore(first_config, services=embedder)
-    assert first.index(root=str(root), root=str(root), workspace=workspace)["success"] is True
+    assert first.index(root=str(root), workspace=workspace)["success"] is True
     with closing(first._connect()) as con:
         before_rows = con.execute(
             "SELECT path,content_hash,text,embedding,embedding_space FROM chunks WHERE workspace=?",
@@ -658,7 +657,7 @@ def test_legacy_embedding_space_recovery_does_not_select_embedding_blobs(
     workspace = RAGStore.workspace_id(str(root))
     embedder = SpaceEmbedder("space-a")
     store = RAGStore(_config(tmp_path / "state"), services=embedder)
-    assert store.index(root=str(root), root=str(root), workspace=workspace)["success"] is True
+    assert store.index(root=str(root), workspace=workspace)["success"] is True
 
     with closing(store._connect()) as con:
         con.execute(
@@ -703,7 +702,7 @@ def test_legacy_vectors_without_space_still_require_rebuild_and_preserve_rows(
     (root / "stable.py").write_text("stable project knowledge\n", encoding="utf-8")
     workspace = RAGStore.workspace_id(str(root))
     store = RAGStore(_config(tmp_path / "state"), services=SpaceEmbedder("space-a"))
-    assert store.index(root=str(root), root=str(root), workspace=workspace)["success"] is True
+    assert store.index(root=str(root), workspace=workspace)["success"] is True
 
     with closing(store._connect()) as con:
         con.execute(

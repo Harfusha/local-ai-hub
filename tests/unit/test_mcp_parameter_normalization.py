@@ -61,7 +61,7 @@ def test_repo_accepts_canonical_root_and_query_keywords(monkeypatch, tmp_path):
 
     monkeypatch.setattr(mcp_server, "_local_ai_repo_impl", capture)
 
-    mcp_server.local_ai_repo(action="search", root=str(tmp_path), root=str(tmp_path), query="needle")
+    mcp_server.local_ai_repo(action="search", root=str(tmp_path), query="needle")
 
     assert captured == {"action": "search", "root": str(tmp_path), "query": "needle"}
 
@@ -78,7 +78,7 @@ def test_repo_accepts_canonical_diagnose_query(monkeypatch, tmp_path):
     monkeypatch.setattr(mcp_server, "CLIENT", DummyClient())
 
     mcp_server.local_ai_repo(
-        action="diagnose", root=str(tmp_path), root=str(tmp_path), query="inspect this diff",
+        action="diagnose", root=str(tmp_path), query="inspect this diff",
     )
 
     assert captured["url"] == "/api/repo/diagnose"
@@ -98,7 +98,6 @@ def test_repo_forwards_canonical_changed_paths_and_phase(monkeypatch, tmp_path):
 
     result = mcp_server.local_ai_repo(
         action="context",
-        root=str(tmp_path),
         root=str(tmp_path),
         task_id="task_context_normalization",
         query="find changes",

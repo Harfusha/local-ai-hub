@@ -227,7 +227,7 @@ def context_economy_contract(cfg: dict[str, Any] | None = None) -> str:
 - Reject `max_response_tokens` below 128; never raise the request silently.
 - Large task responses: omit `max_response_tokens` unless a cap is needed.
 - For a response-budget rejection, reduce the requested envelope or fetch a smaller artifact page/slice; do not replay the same oversized request.
-- If the live MCP schema has no action for an operation, skip Hub and use the authorized native tool directly; no Hub failure or `native_fallback_allowed` signal is needed. After calling an advertised Hub action, native fallback requires explicit `terminal=true` and `retryable=false`.
+- If the live MCP schema has no action for an operation, use the authorized native tool directly without calling Hub. Hub-unknown commands require broker `native_fallback_allowed=true` and native-tool authorization. After an advertised Hub action, native fallback requires explicit `terminal=true` and `retryable=false`.
 - On `outcome_unknown` or `in_progress`, do independent work; never poll or repeat the identical operation.
 - Prefer `response_profile=\"minimal\"`/`\"compact\"`; request only decision-grade fields.
 - Pass a stable `reuse_key` for repeated logical queries. Use `response_profile="delta"` when only changes are needed; unchanged calls report `unchanged=true`. Required task memory may remain inline.
@@ -559,7 +559,7 @@ Direct ownership is the default. Do not delegate audits, inventory, status check
 ## READ-ONLY AUDIT CONTRACT
 
 - Read-only means no Git writes, `git worktree add` or removal, dependency installation, builds/imports, generated artifacts, or other workspace side effects; split validation into a separately owned, explicitly side-effecting task.
-- Before native discovery or validation, retain the preceding Hub result with action, absolute root, status, cache/in_progress state, and evidence IDs. If the live schema has no action for an operation, use the authorized native tool directly; after calling an advertised Hub action, native fallback requires explicit `terminal=true` and `retryable=false`.
+- Before native discovery or validation, retain the preceding Hub result with action, absolute root, status, cache/in_progress state, and evidence IDs. If the live schema has no action for an operation, use the authorized native tool directly without calling Hub. Hub-unknown commands require broker `native_fallback_allowed=true` and native-tool authorization. After an advertised Hub action, native fallback requires explicit `terminal=true` and `retryable=false`.
 {audit_fallback}
 - Codex controls subagent permissions per task. Native Codex subagents may write only when Codex explicitly enables it, and write work stays in the assigned workspace/worktree. Codex remains integrator.
 - Do not run parallel duplicate commands or scopes. Tool labels are not evidence; preserve exact action, arguments, result, and ownership in the audit record.
@@ -570,7 +570,7 @@ For every non-trivial repository task, use Local AI Hub before broad repository 
 
 {repo_gate_section}
 
-For broader discovery, reuse fresh Hub evidence before native `find`, `rg`, `grep`, recursive glob/tree, or opening more than two files. Exact file and symbol lookups may use their bounded indexed/source routes directly. If the live schema has no action for an operation, use the authorized native tool directly; after calling an advertised Hub action, native fallback requires an explicit `terminal=true` and `retryable=false` result. For `outcome_unknown` or `in_progress`, do independent work without polling or repeating the same operation.
+For broader discovery, reuse fresh Hub evidence before native `find`, `rg`, `grep`, recursive glob/tree, or opening more than two files. Exact file and symbol lookups may use their bounded indexed/source routes directly. If the live schema has no action for an operation, use the authorized native tool directly without calling Hub. Hub-unknown commands require broker `native_fallback_allowed=true` and native-tool authorization. After calling an advertised Hub action, native fallback requires an explicit `terminal=true` and `retryable=false` result. For `outcome_unknown` or `in_progress`, do independent work without polling or repeating the same operation.
 
 Stop escalating when evidence is sufficient; reuse cached results and bounded evidence instead of widening the search.
 
@@ -590,7 +590,7 @@ Stop escalating when evidence is sufficient; reuse cached results and bounded ev
 - `in_progress=true`: do not duplicate the work.
 - `retryable`/429/503: back off and do independent work.
 - `degraded`/`stale`: verify only the affected slice.
-- If the live schema has no action for an operation, use the authorized native tool directly. After calling an advertised Hub action, native fallback requires explicit `terminal=true` and `retryable=false`. For `outcome_unknown` or `in_progress`, do independent work without polling or repeating the same operation.
+- If the live schema has no action for an operation, use the authorized native tool directly without calling Hub. Hub-unknown commands require broker `native_fallback_allowed=true` and native-tool authorization. After calling an advertised Hub action, native fallback requires explicit `terminal=true` and `retryable=false`. For `outcome_unknown` or `in_progress`, do independent work without polling or repeating the same operation.
 
 Do not fan out overlapping retrieval layers. Stop escalating when evidence is sufficient. Local AI Hub handles its own bounded work; Codex handles native-subagent design and integration.
 {subagents_section}{agent_os_section}
@@ -1075,7 +1075,8 @@ and scoped indexed search. Use `tokcount` to measure actual token use and
 - Preserve protected status, error, evidence, and context-identity fields; keep exact detail artifact-backed.
 - Claim savings only with a current `baseline_evidence_id`; report signed `token_savings_delta_est`, including negative values; keep `protocol_tokens_est`, `schema_tokens_est`, and `local_compute_reused_tokens_est` separate.
 - Reject `max_response_tokens` below 128; never raise the request silently.
-- If the live MCP schema has no action for an operation, skip Hub and use the authorized native tool directly; no Hub failure or `native_fallback_allowed` signal is needed. After calling an advertised Hub action, native fallback requires explicit `terminal=true` and `retryable=false`.
+- For a response-budget rejection, reduce the requested envelope or fetch a smaller artifact page/slice; do not replay the same oversized request.
+- If the live MCP schema has no action for an operation, use the authorized native tool directly without calling Hub. Hub-unknown commands require broker `native_fallback_allowed=true` and native-tool authorization. After an advertised Hub action, native fallback requires explicit `terminal=true` and `retryable=false`.
 - On `outcome_unknown` or `in_progress`, do independent work; never poll or repeat the identical operation.
 
 ## Integration with Local AI Hub
@@ -1119,7 +1120,7 @@ def generate_token_economy_policy(cfg: dict[str, Any] | None = None) -> str:
         + "- Claim savings only with a current `baseline_evidence_id`; report signed `token_savings_delta_est`, including negative values; keep `protocol_tokens_est`, `schema_tokens_est`, and `local_compute_reused_tokens_est` separate.\n"
         + "- Reject `max_response_tokens` below 128; never raise the request silently.\n"
         + "- For a response-budget rejection, reduce the requested envelope or fetch a smaller artifact page/slice; do not replay the same oversized request.\n"
-        + "- If the live MCP schema has no action for an operation, skip Hub and use the authorized native tool directly; no Hub failure or `native_fallback_allowed` signal is needed. After calling an advertised Hub action, native fallback requires explicit `terminal=true` and `retryable=false`.\n"
+        + "- If the live MCP schema has no action for an operation, use the authorized native tool directly without calling Hub. Hub-unknown commands require broker `native_fallback_allowed=true` and native-tool authorization. After an advertised Hub action, native fallback requires explicit `terminal=true` and `retryable=false`.\n"
         + "- On `outcome_unknown` or `in_progress`, do independent work; never poll or repeat the identical operation.\n"
         + local_model_line
         + "<!-- END TOKEN ECONOMY POLICY -->"

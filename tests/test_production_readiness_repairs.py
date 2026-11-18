@@ -23,7 +23,7 @@ def test_memory_http_contract_can_round_trip_repository_identity(tmp_path: Path)
         provenance={"root": str(root), "repository_id": "repo-1"},
     )
     saved = store.record(record)
-    loaded = store.get(saved.record_id, root=str(root), root=str(root), repository_id="repo-1")
+    loaded = store.get(saved.record_id, root=str(root), repository_id="repo-1")
     assert loaded is not None
     assert loaded.value == "kept"
 
@@ -44,7 +44,6 @@ def test_memory_record_find_delete_and_restart_round_trip(tmp_path: Path) -> Non
         scope_id="repo-restart",
         key="restart-fact",
         root=str(tmp_path),
-        root=str(tmp_path),
         repository_id="repo-restart",
 
         semantic=False,
@@ -56,7 +55,6 @@ def test_memory_record_find_delete_and_restart_round_trip(tmp_path: Path) -> Non
         scope=AgentScope.REPOSITORY,
         scope_id="repo-restart",
         root=str(tmp_path),
-        root=str(tmp_path),
         repository_id="repo-restart",
     )
     assert loaded is not None and loaded.value == "persisted"
@@ -64,7 +62,6 @@ def test_memory_record_find_delete_and_restart_round_trip(tmp_path: Path) -> Non
         saved.record_id,
         scope=AgentScope.REPOSITORY,
         scope_id="repo-restart",
-        root=str(tmp_path),
         root=str(tmp_path),
         repository_id="repo-restart",
     ) is True

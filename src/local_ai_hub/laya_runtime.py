@@ -18,12 +18,16 @@ import inspect
 import json
 import math
 import os
+import queue
 import re
+import subprocess
 import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
+
+from .process_utils import popen_managed, terminate_tree
 
 from .laya_decisions import (
     ContextSourceEvidence,
@@ -86,6 +90,164 @@ class _LayaRouterSession:
         self._router.unload(self._model_name)
         loaded = self._router.loaded
         return self._model_name not in loaded
+
+
+class _LayaWorkerSession:
+    """Keep Laya's incompatible ML stack in a dedicated managed Python process."""
+
+    def __init__(
+        self,
+        *,
+        python: Path,
+        worker: Path,
+        checkpoint_path: Path,
+        revision: str,
+        expected_sha256: Mapping[str, str],
+        device: str,
+        startup_timeout: float = 300.0,
+    ) -> None:
+        if not python.is_absolute() or not python.is_file():
+            raise LayaRuntimeUnavailable("isolated Laya Python environment is not installed")
+        if not worker.is_absolute() or not worker.is_file():
+            raise LayaRuntimeUnavailable("isolated Laya worker is missing")
+        self._process = popen_managed(
+            [str(python), str(worker)],
+            job_name="Local AI Hub Laya runtime",
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            bufsize=1,
+        )
+        self._responses: queue.Queue[str | None] = queue.Queue(maxsize=8)
+        self._stderr_tail: list[str] = []
+        self._write_lock = threading.Lock()
+        self._closed = False
+        threading.Thread(target=self._read_stdout, daemon=True, name="laya-worker-stdout").start()
+        threading.Thread(target=self._read_stderr, daemon=True, name="laya-worker-stderr").start()
+        try:
+            response = self._request({
+                "action": "load",
+                "checkpoint_path": str(checkpoint_path),
+                "revision": revision,
+                "expected_sha256": dict(expected_sha256),
+                "device": device,
+            }, timeout=startup_timeout)
+        except Exception as exc:
+            if not self._terminate():
+                raise _LayaCleanupUnconfirmed(
+                    "isolated Laya worker cleanup after startup failure was unconfirmed"
+                ) from exc
+            raise
+        if response.get("success") is not True or response.get("loaded") is not True:
+            error = LayaRuntimeUnavailable(
+                str(response.get("error", "isolated Laya model load failed"))[:512]
+            )
+            if not self._terminate():
+                raise _LayaCleanupUnconfirmed(
+                    "isolated Laya worker cleanup after model load failure was unconfirmed"
+                ) from error
+            raise LayaRuntimeUnavailable(str(response.get("error", "isolated Laya model load failed"))[:512])
+        actual_device = response.get("device")
+        if not isinstance(actual_device, str) or not actual_device:
+            if not self._terminate():
+                raise _LayaCleanupUnconfirmed(
+                    "isolated Laya worker cleanup after invalid device report was unconfirmed"
+                )
+            raise LayaRuntimeUnavailable("isolated Laya worker did not report device placement")
+        self.device = actual_device
+        self.runtime_version = str(response.get("version", "unreported"))[:160]
+
+    def _read_stdout(self) -> None:
+        stream = self._process.stdout
+        if stream is None:
+            return
+        try:
+            for line in stream:
+                try:
+                    self._responses.put(line, timeout=2.0)
+                except queue.Full:
+                    try:
+                        self._responses.put_nowait(None)
+                    except queue.Full:
+                        pass
+                    return
+        finally:
+            try:
+                self._responses.put_nowait(None)
+            except queue.Full:
+                pass
+
+    def _read_stderr(self) -> None:
+        stream = self._process.stderr
+        if stream is None:
+            return
+        for line in stream:
+            self._stderr_tail.append(line[-1024:])
+            if len(self._stderr_tail) > 12:
+                del self._stderr_tail[:-12]
+
+    def _request(self, payload: Mapping[str, Any], *, timeout: float) -> dict[str, Any]:
+        raw = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+        if len(raw.encode("utf-8")) > 64 * 1024:
+            raise ValueError("isolated Laya request exceeds the size limit")
+        with self._write_lock:
+            if self._closed or self._process.poll() is not None or self._process.stdin is None:
+                raise LayaRuntimeUnavailable("isolated Laya worker is not running")
+            self._process.stdin.write(raw + "\n")
+            self._process.stdin.flush()
+        try:
+            line = self._responses.get(timeout=timeout)
+        except queue.Empty as exc:
+            self._terminate()
+            raise TimeoutError("isolated Laya worker response timed out") from exc
+        if line is None:
+            stderr = "".join(self._stderr_tail)[-2048:]
+            raise LayaRuntimeUnavailable("isolated Laya worker exited" + (f": {stderr.strip()}" if stderr else ""))
+        try:
+            response = json.loads(line)
+        except json.JSONDecodeError as exc:
+            raise LayaRuntimeUnavailable("isolated Laya worker returned invalid JSON") from exc
+        if type(response) is not dict:
+            raise LayaRuntimeUnavailable("isolated Laya worker returned an invalid response")
+        return response
+
+    def predict(self, state: Any, questions: Any) -> Any:
+        response = self._request(
+            {"action": "predict", "state": state, "questions": questions},
+            timeout=300.0,
+        )
+        if response.get("success") is not True or type(response.get("result")) is not dict:
+            raise LayaRuntimeUnavailable(str(response.get("error", "isolated Laya inference failed"))[:512])
+        return response["result"]
+
+    def close(self) -> bool:
+        if self._closed:
+            return self._process.poll() is not None
+        try:
+            response = self._request({"action": "close"}, timeout=15.0)
+            if response.get("success") is not True or response.get("closed") is not True:
+                return self._terminate()
+            self._process.wait(timeout=10.0)
+            self._closed = True
+            return self._process.returncode == 0
+        except (OSError, RuntimeError, TimeoutError, subprocess.TimeoutExpired):
+            return self._terminate()
+
+    def _terminate(self) -> bool:
+        if self._process.poll() is not None:
+            self._closed = True
+            return True
+        self._closed = True
+        try:
+            terminated = terminate_tree(
+                self._process.pid, grace_seconds=2.0, process_handle=self._process
+            )
+        except Exception:
+            return False
+        return terminated is True or self._process.poll() is not None
 
 
 def select_laya_device(
@@ -245,6 +407,7 @@ class LayaRuntimeAdapter:
         device_candidates: Sequence[DeviceCandidate],
         evaluation_mode: bool = False,
         loader: Callable[..., Any] | None = None,
+        runtime_python: str | Path | None = None,
         capacity_manager: Any | None = None,
         capacity_request_bytes: int | None = None,
         clock: Callable[[], float] = time.perf_counter,
@@ -277,6 +440,9 @@ class LayaRuntimeAdapter:
             raise ValueError("evaluation_mode must be a boolean")
         self.evaluation_mode = evaluation_mode
         self._loader = loader
+        self._runtime_python = Path(runtime_python) if runtime_python is not None else None
+        if self._runtime_python is not None and not self._runtime_python.is_absolute():
+            raise ValueError("isolated Laya Python path must be absolute")
         if capacity_manager is not None and not callable(
             getattr(capacity_manager, "acquire_gpu_capacity_lease", None)
         ):
@@ -330,7 +496,7 @@ class LayaRuntimeAdapter:
         loader = self._loader
         laya_module = None
         runtime_version = "injected"
-        if loader is None:
+        if loader is None and self._runtime_python is None:
             laya_module = importlib.import_module("laya")
             try:
                 runtime_version = importlib.metadata.version("laya")
@@ -373,9 +539,22 @@ class LayaRuntimeAdapter:
                     ):
                         raise _LayaCleanupUnconfirmed("GPU capacity lease identity is invalid")
                 if loader is None:
-                    model, agent = self._load_router_session(laya_module, path, selected)
-                    actual_device = self._parameter_device(agent)
-                    del agent
+                    if self._runtime_python is not None:
+                        worker_path = Path(__file__).resolve().parents[2] / "tools" / "laya_runtime_worker.py"
+                        model = _LayaWorkerSession(
+                            python=self._runtime_python,
+                            worker=worker_path,
+                            checkpoint_path=path,
+                            revision=self.revision,
+                            expected_sha256=self.expected_sha256,
+                            device=selected.device,
+                        )
+                        actual_device = model.device
+                        runtime_version = model.runtime_version
+                    else:
+                        model, agent = self._load_router_session(laya_module, path, selected)
+                        actual_device = self._parameter_device(agent)
+                        del agent
                 else:
                     model = loader(
                         str(path), device=selected.device,

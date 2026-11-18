@@ -274,7 +274,7 @@ def test_document_ingest_does_not_report_zero_vector_as_embedded(tmp_path):
             return {"success": True, "embeddings": [[0.0, 0.0] for _ in texts]}
 
     store.services = _ZeroVectorServices()
-    result = store.ingest_document(root=str(tmp_path), root=str(tmp_path), title="Zero vector", workspace="zero-vector-workspace", content="A searchable document.")
+    result = store.ingest_document(root=str(tmp_path), title="Zero vector", workspace="zero-vector-workspace", content="A searchable document.")
 
     assert result["success"] is True
     assert result["embedded"] is False

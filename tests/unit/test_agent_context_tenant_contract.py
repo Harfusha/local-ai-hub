@@ -14,7 +14,7 @@ def _record(*, scope=AgentScope.REPOSITORY, scope_id="", provenance=None):
 
 
 def test_memory_context_uses_repository_coordination_and_exact_root(tmp_path):
-    request = ContextRequest(task_id="task-a", root=str(tmp_path), root=str(tmp_path), coordination_id="repo-id")
+    request = ContextRequest(task_id="task-a", root=str(tmp_path), coordination_id="repo-id")
     assert _memory_record_matches_context(
         _record(provenance={"repository_id": "repo-id"}), request
     )
@@ -27,7 +27,7 @@ def test_memory_context_uses_repository_coordination_and_exact_root(tmp_path):
 
 
 def test_memory_context_keeps_global_scope_and_real_session_distinct(tmp_path):
-    request = ContextRequest(root=str(tmp_path), root=str(tmp_path), task_id="task-1", session_id="session-1")
+    request = ContextRequest(root=str(tmp_path), task_id="task-1", session_id="session-1")
     assert _memory_record_matches_context(_record(scope=AgentScope.GLOBAL), request)
     assert _memory_record_matches_context(
         _record(scope=AgentScope.SESSION, scope_id="session-1", provenance={"root": str(tmp_path)}), request
@@ -66,6 +66,6 @@ def test_context_preload_does_not_require_or_substitute_session_owner(tmp_path):
         config={"context": {"preloads": {"memory_kinds": ["fact"], "max_memory": 2}}},
     )
     elements = compiler._load_preloads(
-        ContextRequest(root=str(tmp_path), root=str(tmp_path), task_id="task-1", session_id="chat-1"), [],
+        ContextRequest(root=str(tmp_path), task_id="task-1", session_id="chat-1"), [],
     )
     assert any(element.source_kind == "preload_memory" for _, element in elements)

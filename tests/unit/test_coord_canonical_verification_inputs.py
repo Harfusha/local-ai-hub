@@ -92,7 +92,7 @@ def test_context_compile_uses_canonical_default_budget(monkeypatch, tmp_path):
     client = _FakeClient()
     monkeypatch.setattr(mcp_server, "CLIENT", client)
 
-    _implementation()(action="context_compile", root=str(tmp_path), root=str(tmp_path), task_id="task-1")
+    _implementation()(action="context_compile", root=str(tmp_path), task_id="task-1")
 
     assert client.calls[0][2]["token_budget"] == 4000
     assert client.calls[0][2]["since_hash"] == ""
@@ -104,7 +104,7 @@ def test_verification_receipt_preserves_explicit_false(monkeypatch, tmp_path):
     monkeypatch.setattr(mcp_server, "CLIENT", client)
     receipt = {"task_id": "task-1", "criterion": "unit", "passed": False}
 
-    _implementation()(action="verify_receipt", root=str(tmp_path), root=str(tmp_path), receipt=receipt)
+    _implementation()(action="verify_receipt", root=str(tmp_path), receipt=receipt)
 
     assert client.calls == [(
         "post", "/api/agent-state/verification",
@@ -148,7 +148,6 @@ def test_zombie_reap_forwards_response_budget_to_http_mutation(monkeypatch, tmp_
 
     _implementation()(
         action="task_zombie_reap",
-        root=str(tmp_path),
         root=str(tmp_path),
         task_id="task-1",
         max_response_tokens=256,

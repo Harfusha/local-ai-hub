@@ -147,7 +147,7 @@ def test_mcp_generate_types_rejects_diff_without_posting(monkeypatch: pytest.Mon
     monkeypatch.setattr(mcp_server.CLIENT, "post", lambda *args, **kwargs: pytest.fail("unexpected API post"))
 
     result = mcp_server._local_ai_repo_impl(
-        "generate_types", root=str(tmp_path), root=str(tmp_path), path="sample.py", diff="request a write"
+        "generate_types", root=str(tmp_path), path="sample.py", diff="request a write"
     )
 
     assert result["success"] is False
@@ -171,7 +171,7 @@ def test_mcp_generate_types_posts_canonical_read_only_payload(monkeypatch: pytes
     monkeypatch.setattr(mcp_server.CLIENT, "post", capture_post)
 
     result = mcp_server._local_ai_repo_impl(
-        "generate_types", root=str(tmp_path), root=str(tmp_path), path="sample.py"
+        "generate_types", root=str(tmp_path), path="sample.py"
     )
 
     assert result["success"] is True

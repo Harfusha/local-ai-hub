@@ -128,7 +128,6 @@ def test_mcp_does_not_invent_mutation_outcome_without_storage_evidence(tmp_path,
     monkeypatch.setattr(mcp_server.FEATURES, "coord", True)
     monkeypatch.setattr(mcp_server, "CLIENT", Backend())
     result = mcp_server.local_ai_coord(action="plan_task_edit", root=str(tmp_path),
-                                      root=str(tmp_path),
                                       plan_id="plan_replay", task_id="task_a", task_data={"title": "A"})
     assert "mutation_applied" not in result
 

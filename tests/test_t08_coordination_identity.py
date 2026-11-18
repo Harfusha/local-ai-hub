@@ -272,7 +272,6 @@ def test_repository_write_binds_server_identity_and_rejects_retired_provenance(t
     provenance = _bind_repository_memory_provenance(
         {"root": "C:/forged", "repository_id": "client-id"},
         root=str(tmp_path),
-        root=str(tmp_path),
         project_context=TrustedProjectContext(),
     )
     assert provenance == {
@@ -281,7 +280,7 @@ def test_repository_write_binds_server_identity_and_rejects_retired_provenance(t
     }
     with pytest.raises(ValueError, match="retired memory provenance field"):
         _bind_repository_memory_provenance(
-            {"tenant": "retired"}, root=str(tmp_path), root=str(tmp_path), project_context=TrustedProjectContext()
+            {"tenant": "retired"}, root=str(tmp_path), project_context=TrustedProjectContext()
         )
 
 

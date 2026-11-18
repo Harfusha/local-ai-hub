@@ -56,11 +56,11 @@ def test_rag_ingest_uses_rag_policy_not_preprocess_exclusions(tmp_path: Path, en
     workspace = store.workspace_id(str(root))
 
     if entrypoint == "index":
-        result = store.index(root=str(root), root=str(root), workspace=workspace)
+        result = store.index(root=str(root), workspace=workspace)
     elif entrypoint == "index_step":
-        result = store.index_step(root=str(root), root=str(root), max_files=10, workspace=workspace)
+        result = store.index_step(root=str(root), max_files=10, workspace=workspace)
     else:
-        result = store.index_paths_step(root=str(root), root=str(root), workspace=workspace, paths=["preprocess-only.py", "general.py", "included.py"])
+        result = store.index_paths_step(root=str(root), workspace=workspace, paths=["preprocess-only.py", "general.py", "included.py"])
 
     assert result["success"] is True
     assert _stored_paths(store, workspace) == {"preprocess-only.py", "included.py"}
@@ -74,7 +74,7 @@ def test_rag_reindex_removes_file_newly_excluded_by_project_policy(tmp_path: Pat
     store = RAGStore(config, services=RecordingEmbedder())
     workspace = store.workspace_id(str(root))
 
-    first = store.index(root=str(root), root=str(root), workspace=workspace)
+    first = store.index(root=str(root), workspace=workspace)
     assert first["success"] is True
     assert "backups/private.py" in _stored_paths(store, workspace)
 
@@ -83,7 +83,7 @@ def test_rag_reindex_removes_file_newly_excluded_by_project_policy(tmp_path: Pat
         'force_include_paths = ["general.py"]\n',
         encoding="utf-8",
     )
-    second = store.index(root=str(root), root=str(root), workspace=workspace)
+    second = store.index(root=str(root), workspace=workspace)
 
     assert second["success"] is True
     assert "backups/private.py" not in _stored_paths(store, workspace)
@@ -96,11 +96,11 @@ def test_rag_skip_phase_is_respected_by_each_ingest_entrypoint(tmp_path: Path, e
     workspace = store.workspace_id(str(root))
 
     if entrypoint == "index":
-        result = store.index(root=str(root), root=str(root), workspace=workspace)
+        result = store.index(root=str(root), workspace=workspace)
     elif entrypoint == "index_step":
-        result = store.index_step(root=str(root), root=str(root), max_files=10, workspace=workspace)
+        result = store.index_step(root=str(root), max_files=10, workspace=workspace)
     else:
-        result = store.index_paths_step(root=str(root), root=str(root), workspace=workspace, paths=["included.py"])
+        result = store.index_paths_step(root=str(root), workspace=workspace, paths=["included.py"])
 
     assert result["success"] is True
     assert result.get("skipped") is True
@@ -121,11 +121,11 @@ def test_rag_index_paths_respects_hard_ignored_directory_with_force_include(tmp_
     }
     store = RAGStore(config, services=RecordingEmbedder())
     workspace = store.workspace_id(str(root))
-    assert store.index_paths_step(root=str(root), root=str(root), workspace=workspace, paths=["generated/keep.py"])["success"] is True
+    assert store.index_paths_step(root=str(root), workspace=workspace, paths=["generated/keep.py"])["success"] is True
     assert _stored_paths(store, workspace) == {"generated/keep.py"}
 
     rag_config["ignore_dirs"] = ["generated"]
-    result = store.index_paths_step(root=str(root), root=str(root), workspace=workspace, paths=["generated/keep.py"])
+    result = store.index_paths_step(root=str(root), workspace=workspace, paths=["generated/keep.py"])
 
     assert result["success"] is True
     assert _stored_paths(store, workspace) == set()
@@ -154,11 +154,11 @@ def test_rag_ingestion_applies_custom_extension_and_project_size_policy(
     workspace = store.workspace_id(str(root))
 
     if entrypoint == "index":
-        result = store.index(root=str(root), root=str(root), workspace=workspace)
+        result = store.index(root=str(root), workspace=workspace)
     elif entrypoint == "index_step":
-        result = store.index_step(root=str(root), root=str(root), max_files=10, workspace=workspace)
+        result = store.index_step(root=str(root), max_files=10, workspace=workspace)
     else:
-        result = store.index_paths_step(root=str(root), root=str(root), workspace=workspace, paths=["view.tmpl", "asset.blob", "large.tmpl", "included.py"])
+        result = store.index_paths_step(root=str(root), workspace=workspace, paths=["view.tmpl", "asset.blob", "large.tmpl", "included.py"])
 
     assert result["success"] is True
     assert _stored_paths(store, workspace) == {"view.tmpl", "included.py"}

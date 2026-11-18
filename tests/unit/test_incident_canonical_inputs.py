@@ -108,22 +108,18 @@ def test_mcp_incident_actions_send_canonical_scoped_payloads(monkeypatch, tmp_pa
 
     implementation(
         action="negative_knowledge_record", root=str(tmp_path),
-        root=str(tmp_path),
         record={"operation_class": "command", "message": "failed", "exit_code": 1},
     )
     implementation(
         action="negative_knowledge_find", root=str(tmp_path),
-        root=str(tmp_path),
         query="timeout", limit=25,
     )
     implementation(
         action="negative_knowledge_find", root=str(tmp_path),
-        root=str(tmp_path),
         query="default limit",
     )
     implementation(
         action="incident_decision", root=str(tmp_path),
-        root=str(tmp_path),
         fingerprint=FINGERPRINT, state_revision="rev-7",
     )
 
@@ -165,7 +161,6 @@ def test_mcp_incident_decision_rejects_ignored_outcome_alias(monkeypatch, tmp_pa
 
     result = _implementation()(
         action="incident_decision", root=str(tmp_path),
-        root=str(tmp_path),
         fingerprint=FINGERPRINT, state_revision="rev-7",
         tool_outcome={"error": "ignored legacy field"},
     )
@@ -181,12 +176,10 @@ def test_mcp_negative_knowledge_rejects_legacy_fields(monkeypatch, tmp_path):
 
     record_result = _implementation()(
         action="negative_knowledge_record", root=str(tmp_path),
-        root=str(tmp_path),
         record={"operation_class": "command", "message": "failed"}, reason="legacy",
     )
     find_result = _implementation()(
         action="negative_knowledge_find", root=str(tmp_path),
-        root=str(tmp_path),
         query="timeout", limit=10, key="legacy",
     )
 

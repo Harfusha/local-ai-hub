@@ -117,6 +117,6 @@ def test_mcp_solve_tool_returns_pipeline_evidence(tmp_path, monkeypatch):
     monkeypatch.setattr(mcp_server.FEATURES, "hardware_profile", "high")
     monkeypatch.setattr(mcp_server.FEATURES, "local_semantic_analysis", True)
     response = mcp_server.local_ai_repo(
-        action="solve", root=str(tmp_path), root=str(tmp_path), task="find symbol", max_response_tokens=1600,
+        action="solve", root=str(tmp_path), task="find symbol", max_response_tokens=1600,
     )
     assert response["tool_evidence"]["explorer"]["counts"] == counts

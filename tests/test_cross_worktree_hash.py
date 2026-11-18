@@ -157,19 +157,24 @@ def test_file_card_cache_hits_share_one_database_connection(tmp_path: Path):
             con.commit()
 
         pre._find_next_files = lambda *_args: items
-        original_connect = pre._connect
-        connection_count = 0
+        original_submit = pre._write_actor.submit
+        connection_ids: list[int] = []
 
-        def counted_connect():
-            nonlocal connection_count
-            connection_count += 1
-            return original_connect()
+        def counted_submit(operation, *, timeout=None):
+            def counted_operation(con):
+                connection_ids.append(id(con))
+                return operation(con)
 
-        pre._connect = counted_connect
-        assert pre._step_file_card({"root": str(root), "force_refresh": 0}) is True
-        pre._connect = original_connect
+            return original_submit(counted_operation, timeout=timeout)
 
-        assert connection_count == 1
+        pre._write_actor.submit = counted_submit
+        try:
+            assert pre._step_file_card({"root": str(root), "force_refresh": 0}) is True
+        finally:
+            pre._write_actor.submit = original_submit
+
+        assert len(connection_ids) == 1
+        assert len(set(connection_ids)) == 1
         with closing(pre._connect()) as con:
             cards = con.execute(
                 "SELECT path,card_key FROM file_refs WHERE root=? ORDER BY path",

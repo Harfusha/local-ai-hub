@@ -71,7 +71,7 @@ def _services(tmp_path, monkeypatch, store, namespace="repository-current"):
     service = object.__new__(LocalAIServices)
     service.config = config
     service.consistency_guard = guard
-    request = ConsistencyRequest(root=str(root), root=str(root), task_id="task-current", phase="implementation")
+    request = ConsistencyRequest(root=str(root), task_id="task-current", phase="implementation")
     return service, request
 
 

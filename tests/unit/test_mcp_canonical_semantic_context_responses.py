@@ -16,7 +16,7 @@ def canonical_context():
 
 def load_context(monkeypatch, tmp_path, response):
     monkeypatch.setattr(mcp_server, "CLIENT", SimpleNamespace(post=lambda *a, **k: response))
-    return mcp_server._load_task_context(task_id="task-1", root=str(tmp_path), root=str(tmp_path), context="input")
+    return mcp_server._load_task_context(task_id="task-1", root=str(tmp_path), context="input")
 
 
 @pytest.mark.parametrize("response", [

@@ -1044,9 +1044,9 @@
     },
     "GET /api/repair-priorities": {
       "decision": "retain",
-      "role": "dashboard_aggregate",
-      "reason": "Read-only operator repair triage derived from scoped health, projected telemetry and endpoint summaries. Suggested actions are advisory, not executed automatically.",
-      "response_policy": "Preserve ranked advisory priorities, health status and aggregated evidence; raw errors, prompts, traces and internal runtime snapshots remain subject to diagnostic projection.",
+      "role": "operator",
+      "reason": "Consolidated runtime and telemetry repair suggestions for operator review; detailed evidence follows the diagnostics gate.",
+      "response_policy": "Preserve success and degraded state, dependency status, aggregate telemetry, priorities, quality evidence, and time window. Detailed diagnostics remain gated; do not expose raw traces.",
       "source_contract": {
         "source": "src/local_ai_hub/http_server.py",
         "handler": "do_GET",

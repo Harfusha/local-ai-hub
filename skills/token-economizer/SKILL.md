@@ -43,7 +43,8 @@ and scoped indexed search. Use `tokcount` to measure actual token use and
 - Preserve protected status, error, evidence, and context-identity fields; keep exact detail artifact-backed.
 - Claim savings only with a current `baseline_evidence_id`; report signed `token_savings_delta_est`, including negative values; keep `protocol_tokens_est`, `schema_tokens_est`, and `local_compute_reused_tokens_est` separate.
 - Reject `max_response_tokens` below 128; never raise the request silently.
-- For Hub outages, native fallback requires explicit `terminal=true` and `retryable=false`.
+- For a response-budget rejection, reduce the requested envelope or fetch a smaller artifact page/slice; do not replay the same oversized request.
+- If the live MCP schema has no action for an operation, use the authorized native tool directly without calling Hub. Hub-unknown commands require broker `native_fallback_allowed=true` and native-tool authorization. After an advertised Hub action, native fallback requires explicit `terminal=true` and `retryable=false`.
 - On `outcome_unknown` or `in_progress`, do independent work; never poll or repeat the identical operation.
 
 ## Integration with Local AI Hub

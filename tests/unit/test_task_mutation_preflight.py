@@ -1047,7 +1047,7 @@ def test_question_mutations_preflight_response_before_persistence(tmp_path, monk
     )
     if action == "answer":
         question = store.ask_question(
-            root=str(tmp_path), root=str(tmp_path), session_id="session-budget",
+            root=str(tmp_path), session_id="session-budget",
             question="Need an answer?", actor="agent",
         )
     monkeypatch.setattr(agent_tasks_module, "mcp_wire_tokens", lambda payload, **kwargs: 129)
@@ -1055,25 +1055,24 @@ def test_question_mutations_preflight_response_before_persistence(tmp_path, monk
     with pytest.raises(CheckpointResponseBudgetError):
         if action == "ask":
             store.ask_question(
-                root=str(tmp_path), root=str(tmp_path), session_id="session-budget",
+                root=str(tmp_path), session_id="session-budget",
                 question="Need an answer?", actor="agent", response_budget_tokens=128,
             )
         else:
             store.answer_question(
                 question_id=question["question_id"], root=str(tmp_path),
-                root=str(tmp_path),
                 answer="Here is the answer.", actor="operator", response_budget_tokens=128,
             )
 
     if action == "ask":
         assert write_calls == []
         assert store.ask_question(
-            root=str(tmp_path), root=str(tmp_path), session_id="session-budget",
+            root=str(tmp_path), session_id="session-budget",
             question_id="q_missing_after_preflight",
         ) is None
     else:
         current = store.ask_question(
-            root=str(tmp_path), root=str(tmp_path), session_id="session-budget",
+            root=str(tmp_path), session_id="session-budget",
             question_id=question["question_id"],
         )
         assert current["status"] == "pending"
@@ -1087,13 +1086,12 @@ def test_question_mutations_reject_noncanonical_budgets(tmp_path, action, budget
     with pytest.raises(ValueError, match="positive integer"):
         if action == "ask":
             store.ask_question(
-                root=str(tmp_path), root=str(tmp_path), session_id="session-invalid-budget",
+                root=str(tmp_path), session_id="session-invalid-budget",
                 question="Question?", response_budget_tokens=budget,
             )
         else:
             store.answer_question(
                 question_id="question-invalid-budget", root=str(tmp_path),
-                root=str(tmp_path),
                 answer="Answer.", response_budget_tokens=budget,
             )
 

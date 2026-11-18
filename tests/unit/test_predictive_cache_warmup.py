@@ -50,7 +50,7 @@ def test_task_prediction_uses_existing_adaptive_request_identity(tmp_path, monke
         "local_ai_hub.operational_mode.load_operational_mode",
         lambda _root: SimpleNamespace(mode="active", degraded=False),
     )
-    assert service.schedule_task_context_warmup(task, root=str(tmp_path), root=str(tmp_path), changed_paths=["src/a.py"])
+    assert service.schedule_task_context_warmup(task, root=str(tmp_path), changed_paths=["src/a.py"])
     predictions[0][1]()
     request, options = packs[0]
     assert request.root == str(tmp_path.resolve())

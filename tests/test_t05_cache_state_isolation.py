@@ -152,7 +152,6 @@ def test_scoped_memory_delete_preserves_all_relations_until_authorized(tmp_path)
         scope=AgentScope.WORKTREE,
         scope_id="another-worktree",
         root=str(root),
-        root=str(root),
         worktree_id="another-worktree",
     ) is False
     assert memories.delete(
@@ -171,7 +170,6 @@ def test_scoped_memory_delete_preserves_all_relations_until_authorized(tmp_path)
         scope=AgentScope.WORKTREE,
         scope_id="t05-worktree",
         root=str(root),
-        root=str(root),
         worktree_id="t05-worktree",
     ).value == "keep until owner deletes"
     assert memories.find_relations(source_entity=record.record_id, root=str(root)) == original_relations
@@ -181,14 +179,12 @@ def test_scoped_memory_delete_preserves_all_relations_until_authorized(tmp_path)
         scope=AgentScope.WORKTREE,
         scope_id="t05-worktree",
         root=str(root),
-        root=str(root),
         worktree_id="t05-worktree",
     ) is True
     assert memories.get(
         record.record_id,
         scope=AgentScope.WORKTREE,
         scope_id="t05-worktree",
-        root=str(root),
         root=str(root),
         worktree_id="t05-worktree",
     ) is None

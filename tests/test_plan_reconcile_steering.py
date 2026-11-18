@@ -95,7 +95,7 @@ def setup_bound_task(test_environment):
 def test_reconcile_steering_persists_spec_plan_and_task(test_environment):
     root, storage, task_store, plan_path, plan_rev, spec = setup_bound_task(test_environment)
     result = agent_bridge.reconcile_task_steering(
-        task_store, root=str(root), root=str(root), task_id="task_001", steering_id="steering_001",
+        task_store, root=str(root), task_id="task_001", steering_id="steering_001",
         spec_rel_path="docs/feature.md", spec_content="updated\n",
         acceptance_criteria=["Core module passes unit tests", "Updated requirement"],
         expected_revision=plan_rev,
@@ -110,7 +110,7 @@ def test_reconcile_steering_persists_spec_plan_and_task(test_environment):
 
 def test_pending_steering_growth_after_stat_has_bounded_read(test_environment, monkeypatch):
     root, storage, task_store, plan_path, plan_rev, spec = setup_bound_task(test_environment)
-    arguments = dict(root=str(root), root=str(root), task_id="task_001", steering_id="steering_001",
+    arguments = dict(root=str(root), task_id="task_001", steering_id="steering_001",
                      spec_rel_path="docs/feature.md", spec_content="updated\n",
                      acceptance_criteria=["Core module passes unit tests", "Updated requirement"],
                      expected_revision=plan_rev,
@@ -207,7 +207,7 @@ def test_existing_pending_blocks_new_steering_before_plan_or_spec_changes(test_e
     task_before = task_store.get("task_001")
     with pytest.raises(RepoPlanConflictError, match="pending reconciliation"):
         agent_bridge.reconcile_task_steering(
-            task_store, root=str(root), root=str(root), task_id="task_001", steering_id="new",
+            task_store, root=str(root), task_id="task_001", steering_id="new",
             spec_rel_path="docs/feature.md", spec_content="changed\n",
             acceptance_criteria=["New requirement"], expected_revision=plan_rev,
             expected_spec_revision=hashlib.sha256(spec_before).hexdigest())
@@ -222,7 +222,7 @@ def test_oversized_recovery_payload_is_rejected_before_plan_or_spec_changes(test
     criteria = [f"{index}:" + "\U0001f431" * 4000 for index in range(50)]
     with pytest.raises(ValueError, match="size limit"):
         agent_bridge.reconcile_task_steering(
-            task_store, root=str(root), root=str(root), task_id="task_001", steering_id="oversized",
+            task_store, root=str(root), task_id="task_001", steering_id="oversized",
             spec_rel_path="docs/feature.md", spec_content="changed\n",
             acceptance_criteria=criteria, expected_revision=plan_rev,
             expected_spec_revision=hashlib.sha256(spec_before).hexdigest())
@@ -234,7 +234,7 @@ def test_oversized_recovery_payload_is_rejected_before_plan_or_spec_changes(test
 def test_steering_intent_is_durable_before_writes_and_recovers(test_environment, monkeypatch, crash_point):
     from local_ai_hub.repo_plan.storage import RepoPlanStorage
     root, storage, task_store, plan_path, plan_rev, spec = setup_bound_task(test_environment)
-    arguments = dict(root=str(root), root=str(root), task_id="task_001", steering_id="intent-test",
+    arguments = dict(root=str(root), task_id="task_001", steering_id="intent-test",
                      spec_rel_path="docs/feature.md", spec_content="updated\n",
                      acceptance_criteria=["Updated requirement"], expected_revision=plan_rev,
                      expected_spec_revision=hashlib.sha256(spec.read_bytes()).hexdigest())
@@ -316,7 +316,7 @@ def test_service_reconcile_routes_to_real_persistence(test_environment):
             return RepoPlanWorkspace(actual_root)
 
     result = LocalAIServices.plan_reconcile_steering(
-        Service(), root=str(root), root=str(root), task_id="task_001", steering_id="steering_001",
+        Service(), root=str(root), task_id="task_001", steering_id="steering_001",
         spec_rel_path="docs/feature.md", spec_content="updated\n",
         acceptance_criteria=["Updated requirement"], expected_revision=plan_rev,
         expected_spec_revision=hashlib.sha256(spec.read_bytes()).hexdigest(),
@@ -355,7 +355,7 @@ allowed_roots = ["{root.as_posix()}"]
     server = http_server.LocalAIHTTPServer(("127.0.0.1", 0), http_server.Handler)
     worker = threading.Thread(target=server.serve_forever, daemon=True)
     worker.start()
-    arguments = dict(root=str(root), root=str(root), task_id="task_001", steering_id="steering_http",
+    arguments = dict(root=str(root), task_id="task_001", steering_id="steering_http",
         spec_rel_path="docs/feature.md", spec_content="updated\n",
         acceptance_criteria=["HTTP requirement"], expected_revision=plan_rev,
         expected_spec_revision=hashlib.sha256(spec.read_bytes()).hexdigest(),
@@ -398,7 +398,7 @@ def test_stale_spec_revision_leaves_plan_task_and_spec_unchanged(test_environmen
     before = task_store.get("task_001")
     with pytest.raises(RepoPlanConflictError):
         agent_bridge.reconcile_task_steering(
-            task_store, root=str(root), root=str(root), task_id="task_001", steering_id="steering_001",
+            task_store, root=str(root), task_id="task_001", steering_id="steering_001",
             spec_rel_path="docs/feature.md", spec_content="updated\n",
             acceptance_criteria=["Updated requirement"], expected_revision=plan_rev,
             expected_spec_revision="0" * 64,
@@ -410,7 +410,7 @@ def test_stale_spec_revision_leaves_plan_task_and_spec_unchanged(test_environmen
 
 def test_same_steering_replay_does_not_revise_twice(test_environment):
     root, storage, task_store, plan_path, plan_rev, spec = setup_bound_task(test_environment)
-    arguments = dict(root=str(root), root=str(root), task_id="task_001", steering_id="steering_001",
+    arguments = dict(root=str(root), task_id="task_001", steering_id="steering_001",
         spec_rel_path="docs/feature.md", spec_content="updated\n",
         acceptance_criteria=["Updated requirement"], expected_revision=plan_rev,
         expected_spec_revision=hashlib.sha256(spec.read_bytes()).hexdigest())
@@ -425,7 +425,7 @@ def test_same_steering_replay_does_not_revise_twice(test_environment):
 
 def test_steering_id_reuse_with_different_payload_is_rejected(test_environment):
     root, storage, task_store, plan_path, plan_rev, spec = setup_bound_task(test_environment)
-    arguments = dict(root=str(root), root=str(root), task_id="task_001", steering_id="steering_001",
+    arguments = dict(root=str(root), task_id="task_001", steering_id="steering_001",
         spec_rel_path="docs/feature.md", spec_content="updated\n",
         acceptance_criteria=["Updated requirement"], expected_revision=plan_rev,
         expected_spec_revision=hashlib.sha256(spec.read_bytes()).hexdigest())
@@ -442,7 +442,7 @@ def test_steering_id_reuse_with_different_payload_is_rejected(test_environment):
 @pytest.mark.parametrize("changed_field", ["summary", "adoption", "spec_refs"])
 def test_replay_rejects_changed_persisted_clarification(test_environment, changed_field):
     root, storage, task_store, plan_path, plan_rev, spec = setup_bound_task(test_environment)
-    arguments = dict(root=str(root), root=str(root), task_id="task_001", steering_id="steering_001",
+    arguments = dict(root=str(root), task_id="task_001", steering_id="steering_001",
         spec_rel_path="docs/feature.md", spec_content="updated\n",
         acceptance_criteria=["Updated requirement"], expected_revision=plan_rev,
         expected_spec_revision=hashlib.sha256(spec.read_bytes()).hexdigest())
@@ -459,7 +459,7 @@ def test_stale_plan_revision_rejected_without_mutation(test_environment):
     root, storage, task_store, plan_path, plan_rev, spec = setup_bound_task(test_environment)
     with pytest.raises(RepoPlanConflictError):
         agent_bridge.reconcile_task_steering(
-            task_store, root=str(root), root=str(root), task_id="task_001", steering_id="steering_001",
+            task_store, root=str(root), task_id="task_001", steering_id="steering_001",
             spec_rel_path="docs/feature.md", spec_content="updated\n",
             acceptance_criteria=["Updated requirement"], expected_revision="0" * 64,
             expected_spec_revision=hashlib.sha256(spec.read_bytes()).hexdigest(),
@@ -473,7 +473,7 @@ def test_invalid_revision_is_rejected_without_mutation(test_environment, invalid
     root, storage, task_store, plan_path, plan_rev, spec = setup_bound_task(test_environment)
     with pytest.raises(ValueError, match="expected_revision"):
         agent_bridge.reconcile_task_steering(
-            task_store, root=str(root), root=str(root), task_id="task_001", steering_id="steering_001",
+            task_store, root=str(root), task_id="task_001", steering_id="steering_001",
             spec_rel_path="docs/feature.md", spec_content="updated\n",
             acceptance_criteria=["Updated requirement"], expected_revision=invalid,
             expected_spec_revision=hashlib.sha256(spec.read_bytes()).hexdigest(),
@@ -501,7 +501,7 @@ def test_invalid_task_identity_rejected(test_environment):
     root, storage, task_store, plan_path, plan_rev, spec = setup_bound_task(test_environment)
     with pytest.raises(ValueError, match="task_id"):
         agent_bridge.reconcile_task_steering(
-            task_store, root=str(root), root=str(root), task_id="task_001\x00", steering_id="steering_001",
+            task_store, root=str(root), task_id="task_001\x00", steering_id="steering_001",
             spec_rel_path="docs/feature.md", spec_content="updated\n",
             acceptance_criteria=["Updated requirement"], expected_revision=plan_rev,
             expected_spec_revision=hashlib.sha256(spec.read_bytes()).hexdigest(),
@@ -517,7 +517,7 @@ def test_linked_spec_parent_rejected_before_mutation(test_environment, monkeypat
     monkeypatch.setattr(Path, "is_symlink", lambda path: path == spec.parent or original(path))
     with pytest.raises(ValueError, match="link"):
         agent_bridge.reconcile_task_steering(
-            task_store, root=str(root), root=str(root), task_id="task_001", steering_id="steering_001",
+            task_store, root=str(root), task_id="task_001", steering_id="steering_001",
             spec_rel_path="docs/feature.md", spec_content="updated\n",
             acceptance_criteria=["Updated requirement"], expected_revision=plan_rev,
             expected_spec_revision=hashlib.sha256(spec.read_bytes()).hexdigest(),
@@ -543,7 +543,7 @@ def test_contract_revision_passes_caller_spec_revision_to_atomic_store(test_envi
 
 def test_retry_recovers_persisted_partial_reconciliation(test_environment, monkeypatch):
     root, storage, task_store, plan_path, plan_rev, spec = setup_bound_task(test_environment)
-    arguments = dict(root=str(root), root=str(root), task_id="task_001", steering_id="steering_001",
+    arguments = dict(root=str(root), task_id="task_001", steering_id="steering_001",
         spec_rel_path="docs/feature.md", spec_content="updated\n",
         acceptance_criteria=["Updated requirement"], expected_revision=plan_rev,
         expected_spec_revision=hashlib.sha256(spec.read_bytes()).hexdigest())
@@ -574,7 +574,7 @@ def test_retry_recovers_persisted_partial_reconciliation(test_environment, monke
 
 def test_recovery_does_not_revise_contract_after_concurrent_plan_change(test_environment, monkeypatch):
     root, storage, task_store, plan_path, plan_rev, spec = setup_bound_task(test_environment)
-    arguments = dict(root=str(root), root=str(root), task_id="task_001", steering_id="steering_001",
+    arguments = dict(root=str(root), task_id="task_001", steering_id="steering_001",
         spec_rel_path="docs/feature.md", spec_content="updated\n",
         acceptance_criteria=["Updated requirement"], expected_revision=plan_rev,
         expected_spec_revision=hashlib.sha256(spec.read_bytes()).hexdigest())
@@ -606,7 +606,7 @@ def test_recovery_serializes_plan_writes_until_contract_revision(test_environmen
     from threading import Event
 
     root, storage, task_store, plan_path, plan_rev, spec = setup_bound_task(test_environment)
-    arguments = dict(root=str(root), root=str(root), task_id="task_001", steering_id="steering_001",
+    arguments = dict(root=str(root), task_id="task_001", steering_id="steering_001",
         spec_rel_path="docs/feature.md", spec_content="updated\n",
         acceptance_criteria=["Updated requirement"], expected_revision=plan_rev,
         expected_spec_revision=hashlib.sha256(spec.read_bytes()).hexdigest())
@@ -645,7 +645,7 @@ def test_recovery_with_pending_checkpoint_projection(test_environment, monkeypat
     plan["tasks"]["task_core"]["next_action"] = "A newer plan action"
     storage.save_plan_file(plan_path, plan, expected_revision=revision, owner="test_agent")
     _, plan_rev = storage.read_plan_file(plan_path)
-    arguments = dict(root=str(root), root=str(root), task_id="task_001", steering_id="steering_001",
+    arguments = dict(root=str(root), task_id="task_001", steering_id="steering_001",
         spec_rel_path="docs/feature.md", spec_content="updated\n",
         acceptance_criteria=["Updated requirement"], expected_revision=plan_rev,
         expected_spec_revision=hashlib.sha256(spec.read_bytes()).hexdigest())
@@ -665,7 +665,7 @@ def test_recovery_retries_binding_after_checkpoint_projection(test_environment, 
     plan["tasks"]["task_core"]["next_action"] = "A newer plan action"
     storage.save_plan_file(plan_path, plan, expected_revision=revision, owner="test_agent")
     _, plan_rev = storage.read_plan_file(plan_path)
-    arguments = dict(root=str(root), root=str(root), task_id="task_001", steering_id="steering_001",
+    arguments = dict(root=str(root), task_id="task_001", steering_id="steering_001",
         spec_rel_path="docs/feature.md", spec_content="updated\n",
         acceptance_criteria=["Updated requirement"], expected_revision=plan_rev,
         expected_spec_revision=hashlib.sha256(spec.read_bytes()).hexdigest())
@@ -692,7 +692,7 @@ def test_recovery_retries_after_projection_record_write_failure(test_environment
     plan["tasks"]["task_core"]["next_action"] = "A newer plan action"
     storage.save_plan_file(plan_path, plan, expected_revision=revision, owner="test_agent")
     _, plan_rev = storage.read_plan_file(plan_path)
-    arguments = dict(root=str(root), root=str(root), task_id="task_001", steering_id="steering_001",
+    arguments = dict(root=str(root), task_id="task_001", steering_id="steering_001",
         spec_rel_path="docs/feature.md", spec_content="updated\n",
         acceptance_criteria=["Updated requirement"], expected_revision=plan_rev,
         expected_spec_revision=hashlib.sha256(spec.read_bytes()).hexdigest())
@@ -739,7 +739,7 @@ def test_recovery_retries_after_projection_record_write_failure(test_environment
 
 def test_retry_recovers_when_binding_write_fails(test_environment, monkeypatch):
     root, storage, task_store, plan_path, plan_rev, spec = setup_bound_task(test_environment)
-    arguments = dict(root=str(root), root=str(root), task_id="task_001", steering_id="steering_001",
+    arguments = dict(root=str(root), task_id="task_001", steering_id="steering_001",
         spec_rel_path="docs/feature.md", spec_content="updated\n",
         acceptance_criteria=["Updated requirement"], expected_revision=plan_rev,
         expected_spec_revision=hashlib.sha256(spec.read_bytes()).hexdigest())
@@ -766,7 +766,7 @@ def test_retry_rejects_tampered_pending_record_without_revising_task(test_enviro
     import json
 
     root, storage, task_store, plan_path, plan_rev, spec = setup_bound_task(test_environment)
-    arguments = dict(root=str(root), root=str(root), task_id="task_001", steering_id="steering_001",
+    arguments = dict(root=str(root), task_id="task_001", steering_id="steering_001",
         spec_rel_path="docs/feature.md", spec_content="updated\n",
         acceptance_criteria=["Updated requirement"], expected_revision=plan_rev,
         expected_spec_revision=hashlib.sha256(spec.read_bytes()).hexdigest())
@@ -789,7 +789,7 @@ def test_same_criteria_does_not_fake_recovery_when_pending_record_is_missing(tes
     root, storage, task_store, plan_path, plan_rev, spec = setup_bound_task(test_environment)
     original_spec = spec.read_bytes()
     criteria = list(task_store.get("task_001").contract.acceptance_criteria)
-    arguments = dict(root=str(root), root=str(root), task_id="task_001", steering_id="steering_001",
+    arguments = dict(root=str(root), task_id="task_001", steering_id="steering_001",
         spec_rel_path="docs/feature.md", spec_content="updated\n",
         acceptance_criteria=criteria, expected_revision=plan_rev,
         expected_spec_revision=hashlib.sha256(spec.read_bytes()).hexdigest())
@@ -808,7 +808,7 @@ def test_retry_finishes_pending_record_after_binding_was_already_saved(test_envi
     from pathlib import Path
 
     root, _, task_store, _, plan_rev, spec = setup_bound_task(test_environment)
-    arguments = dict(root=str(root), root=str(root), task_id="task_001", steering_id="steering_001",
+    arguments = dict(root=str(root), task_id="task_001", steering_id="steering_001",
         spec_rel_path="docs/feature.md", spec_content="updated\n",
         acceptance_criteria=["Updated requirement"], expected_revision=plan_rev,
         expected_spec_revision=hashlib.sha256(spec.read_bytes()).hexdigest())
