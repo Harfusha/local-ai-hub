@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import tempfile
 import os
 import stat
 import subprocess
@@ -12,26 +11,25 @@ import pytest
 from local_ai_hub.rag import RAGStore
 
 
-def test_safe_open_diagram_regular_file() -> None:
-    with tempfile.TemporaryDirectory() as tmpdir:
-        svg_path = Path(tmpdir) / "test.svg"
-        svg_path.write_text("<svg><text>hello</text></svg>", encoding="utf-8")
+def test_safe_open_diagram_regular_file(tmp_path: Path) -> None:
+    root = tmp_path.resolve(strict=True)
+    svg_path = root / "test.svg"
+    svg_path.write_text("<svg><text>hello</text></svg>", encoding="utf-8")
 
-        fd, st = RAGStore._safe_open_diagram(Path(tmpdir), svg_path)
-        try:
-            assert st.st_size > 0
-        finally:
-            import os
-            os.close(fd)
+    fd, st = RAGStore._safe_open_diagram(root, svg_path)
+    try:
+        assert st.st_size > 0
+    finally:
+        os.close(fd)
 
 
-def test_safe_open_diagram_rejects_directory() -> None:
-    with tempfile.TemporaryDirectory() as tmpdir:
-        dir_path = Path(tmpdir) / "sub"
-        dir_path.mkdir()
+def test_safe_open_diagram_rejects_directory(tmp_path: Path) -> None:
+    root = tmp_path.resolve(strict=True)
+    dir_path = root / "sub"
+    dir_path.mkdir()
 
-        with pytest.raises(Exception):
-            RAGStore._safe_open_diagram(Path(tmpdir), dir_path)
+    with pytest.raises(Exception):
+        RAGStore._safe_open_diagram(root, dir_path)
 
 
 def test_invalid_diagram_descriptor_is_closed_once(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

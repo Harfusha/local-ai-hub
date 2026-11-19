@@ -453,18 +453,18 @@ def test_rag_bounded_read_rejects_symlink_file_and_parent(tmp_path):
     root = tmp_path / "repo"
     root.mkdir()
     actual = root / "actual.md"
-    actual.write_text("ordinary source\n", encoding="utf-8")
+    actual.write_bytes(b"ordinary source\n")
+    assert rag_module._read_bounded_file(actual, 128, root=root) == b"ordinary source\n"
     alias = root / "alias.md"
     nested = root / "nested"
     nested.mkdir()
-    (nested / "doc.md").write_text("nested source\n", encoding="utf-8")
+    (nested / "doc.md").write_bytes(b"nested source\n")
     directory_alias = root / "alias-directory"
     try:
         alias.symlink_to(actual)
         directory_alias.symlink_to(nested, target_is_directory=True)
     except (OSError, NotImplementedError):
         pytest.skip("symlinks unavailable")
-    assert rag_module._read_bounded_file(actual, 128, root=root) == b"ordinary source\n"
     assert rag_module._read_bounded_file(alias, 128, root=root) is None
     assert rag_module._read_bounded_file(directory_alias / "doc.md", 128, root=root) is None
 
