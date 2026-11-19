@@ -21,7 +21,7 @@ from local_ai_hub.agent_verification import (
     VerificationReceipt,
     VerificationStore,
 )
-from local_ai_hub.file_locks import exclusive_file_update
+from local_ai_hub.file_locks import exclusive_file_update, replace_with_windows_retry
 
 from .models import (
     ClarificationAdoption,
@@ -30,8 +30,7 @@ from .models import (
 )
 from .schema_validation import RepoPlanConflictError, RepoPlanNotFoundError, validate_repo_path
 from .storage import (RepoPlanStorage, _atomic_write_posix, _open_posix_plan_directory,
-                      _pin_windows_write_directories, _replace_with_windows_retry,
-                      compute_file_sha256, get_git_context)
+                      _pin_windows_write_directories, compute_file_sha256, get_git_context)
 
 logger = logging.getLogger(__name__)
 MAX_PENDING_RECONCILIATION_BYTES = 4 * 1024 * 1024
@@ -256,7 +255,7 @@ class TaskBindingManager:
                     stream.write(raw)
                     stream.flush()
                     os.fsync(stream.fileno())
-                _replace_with_windows_retry(temp_path, self._binding_file)
+                replace_with_windows_retry(temp_path, self._binding_file)
                 self._bindings = current
             finally:
                 try:

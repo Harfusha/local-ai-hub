@@ -21,7 +21,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
-from ..file_locks import exclusive_file_update
+from ..file_locks import exclusive_file_update, replace_with_windows_retry
 from ..process_utils import clean_git_env, hidden_run_kwargs
 
 from .schema_validation import (
@@ -66,20 +66,6 @@ def _open_posix_plan_directory(root: Path, parent: Path, *, create: bool = True,
     finally:
         for descriptor in reversed(descriptors):
             os.close(descriptor)
-
-
-def _replace_with_windows_retry(source: Path, target: Path) -> None:
-    if os.name != "nt":
-        os.replace(source, target)
-        return
-    for attempt in range(8):
-        try:
-            os.replace(source, target)
-            return
-        except OSError as exc:
-            if attempt == 7:
-                raise OSError(f"Failed to atomically write {target}: {exc}") from exc
-            time.sleep(0.02 * (2**attempt))
 
 
 def _atomic_write_posix(
@@ -537,7 +523,7 @@ class RepoPlanStorage:
                 f.flush()
                 os.fsync(f.fileno())
 
-            _replace_with_windows_retry(temp_path, target_path)
+            replace_with_windows_retry(temp_path, target_path)
         finally:
             if temp_created and temp_path.exists():
                 try:
