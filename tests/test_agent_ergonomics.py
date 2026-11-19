@@ -546,7 +546,7 @@ def test_search_falls_back_when_optional_features_are_unavailable(tmp_path):
     ):
         client.post.return_value = {"success": True, "results": [{"path": "src/a.py"}]}
         result = mcp_server._local_ai_repo_impl(
-            action="search", query="needle",
+            action="search", root=str(tmp_path), query="needle",
             include_code=True, summarize_results=True,
         )
 

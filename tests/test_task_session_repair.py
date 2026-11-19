@@ -16,15 +16,15 @@ def test_session_repair_preserves_task_and_refuses_rebinding(tmp_path: Path):
     store = TaskStore(AgentStateStore(str(tmp_path / "state.db")))
     original = store.create(GoalContract(goal="repair"), ScopeContext(repository_id="repo"), repo_root=str(tmp_path))
     with pytest.raises(ValueError, match="owner"):
-        store.repair_missing_session(original.task_id, session_id="session-1", repo_root=str(tmp_path), root=str(tmp_path), actor="other")
+        store.repair_missing_session(original.task_id, session_id="session-1", repo_root=str(tmp_path), actor="other")
     with pytest.raises(ValueError, match="root"):
         store.repair_missing_session(original.task_id, session_id="session-1", repo_root=str(tmp_path / "other"), actor="agent")
     with pytest.raises(ValueError, match="session_id"):
-        store.repair_missing_session(original.task_id, session_id="bad\x00id", repo_root=str(tmp_path), root=str(tmp_path), actor="agent")
+        store.repair_missing_session(original.task_id, session_id="bad\x00id", repo_root=str(tmp_path), actor="agent")
     with pytest.raises(Exception, match="budget"):
-        store.repair_missing_session(original.task_id, session_id="session-1", repo_root=str(tmp_path), root=str(tmp_path), actor="agent", response_budget_tokens=1)
+        store.repair_missing_session(original.task_id, session_id="session-1", repo_root=str(tmp_path), actor="agent", response_budget_tokens=1)
     assert store.get(original.task_id).context.session_id == ""
-    repaired = store.repair_missing_session(original.task_id, session_id="session-1", repo_root=str(tmp_path), root=str(tmp_path), actor="agent")
+    repaired = store.repair_missing_session(original.task_id, session_id="session-1", repo_root=str(tmp_path), actor="agent")
     assert repaired.task_id == original.task_id
     assert repaired.context.session_id == "session-1"
     assert repaired.contract == original.contract
@@ -33,7 +33,7 @@ def test_session_repair_preserves_task_and_refuses_rebinding(tmp_path: Path):
     events = store.state_store.events(f"task:{original.task_id}")
     assert [(event.kind, event.payload.get("session_id")) for event in events if event.kind == "task.session_repaired"] == [("task.session_repaired", "session-1")]
     with pytest.raises(ValueError):
-        store.repair_missing_session(original.task_id, session_id="session-2", repo_root=str(tmp_path), root=str(tmp_path), actor="agent")
+        store.repair_missing_session(original.task_id, session_id="session-2", repo_root=str(tmp_path), actor="agent")
 
 
 def test_session_repair_broker_requires_write_authority(tmp_path: Path):
@@ -53,7 +53,7 @@ def test_session_repair_rejects_failed_tasks(tmp_path: Path):
     task = store.create(GoalContract(goal="repair"), ScopeContext(repository_id="repo"), repo_root=str(tmp_path))
     store.fail(task.task_id, actor="agent", reason="failed")
     with pytest.raises(ValueError, match="status"):
-        store.repair_missing_session(task.task_id, session_id="session-1", repo_root=str(tmp_path), root=str(tmp_path), actor="agent")
+        store.repair_missing_session(task.task_id, session_id="session-1", repo_root=str(tmp_path), actor="agent")
 
 
 def test_competing_repairs_commit_at_most_one_session(tmp_path: Path, monkeypatch):
@@ -70,7 +70,7 @@ def test_competing_repairs_commit_at_most_one_session(tmp_path: Path, monkeypatc
 
     def repair(session):
         try:
-            return store.repair_missing_session(task.task_id, session_id=session, repo_root=str(tmp_path), root=str(tmp_path), actor="agent")
+            return store.repair_missing_session(task.task_id, session_id=session, repo_root=str(tmp_path), actor="agent")
         except Exception as exc:
             return exc
 

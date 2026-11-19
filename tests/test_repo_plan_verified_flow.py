@@ -107,7 +107,7 @@ def environment(tmp_path: Path):
     task = tasks.create(
         GoalContract(goal="Verify real work", acceptance_criteria=["tests pass"]),
         context=ScopeContext(repository_id=str(root), session_id="session_a"),
-        actor="agent_a", repo_root=str(root), root=str(root), task_id="execution_a",
+        actor="agent_a", repo_root=str(root), task_id="execution_a",
     )
     storage = RepoPlanStorage(root)
     rel = ".local-ai-hub/plans/plan_work.plan.json"
@@ -142,7 +142,7 @@ def test_plan_binding_reports_missing_persisted_session(environment):
     task = tasks.create(
         GoalContract(goal="Bind a plan", acceptance_criteria=["session is persisted"]),
         context=ScopeContext(repository_id=str(root), session_id=""),
-        actor="agent_a", repo_root=str(root), root=str(root), task_id="execution_without_session",
+        actor="agent_a", repo_root=str(root), task_id="execution_without_session",
     )
 
     assert task.context.session_id == ""
@@ -319,7 +319,7 @@ def test_binding_sync_failure_is_explicit_and_rebinding_recovers(environment, mo
     ws.edit_task("plan_work", "task_other", title="Other", acceptance_criteria=["tests pass"])
     tasks.create(GoalContract(goal="Other", acceptance_criteria=["tests pass"]),
                  context=ScopeContext(repository_id=str(root), session_id="session_b"),
-                 actor="agent_b", repo_root=str(root), root=str(root), task_id="execution_b")
+                 actor="agent_b", repo_root=str(root), task_id="execution_b")
     real_sync = agent_bridge.sync_checkpoint_to_plan
 
     def fail(**_kwargs):
@@ -553,7 +553,7 @@ def test_terminal_history_does_not_hide_an_active_plan_binding(environment):
         tasks.create(
             GoalContract(goal="Verify real work", acceptance_criteria=["tests pass"]),
             context=ScopeContext(repository_id=str(root), session_id=f"session_{name}"),
-            actor=f"agent_{name}", repo_root=str(root), root=str(root), task_id=f"execution_{name}",
+            actor=f"agent_{name}", repo_root=str(root), task_id=f"execution_{name}",
         )
     revision = RepoPlanWorkspace(root).get_plan("plan_work")["file_revision"]
     result = agent_bridge.bind_plan_execution(
@@ -573,7 +573,7 @@ def test_unknown_prior_binding_requires_reconciliation(environment, monkeypatch)
     tasks.create(
         GoalContract(goal="Verify real work", acceptance_criteria=["tests pass"]),
         context=ScopeContext(repository_id=str(root), session_id="session_b"),
-        actor="agent_b", repo_root=str(root), root=str(root), task_id="execution_b",
+        actor="agent_b", repo_root=str(root), task_id="execution_b",
     )
     original_get = tasks.get
     monkeypatch.setattr(tasks, "get", lambda task_id: None if task_id == "execution_a" else original_get(task_id))
@@ -590,7 +590,7 @@ def test_failed_attempt_remains_reserved_because_it_can_resume(environment):
     tasks.create(
         GoalContract(goal="Verify real work", acceptance_criteria=["tests pass"]),
         context=ScopeContext(repository_id=str(root), session_id="session_b"),
-        actor="agent_b", repo_root=str(root), root=str(root), task_id="execution_b",
+        actor="agent_b", repo_root=str(root), task_id="execution_b",
     )
     revision = RepoPlanWorkspace(root).get_plan("plan_work")["file_revision"]
     with pytest.raises(ValueError, match="failed execution binding"):
@@ -622,7 +622,7 @@ def test_concurrent_plan_bindings_only_allow_one_active_execution(environment):
         tasks.create(
             GoalContract(goal="Verify real work", acceptance_criteria=["tests pass"]),
             context=ScopeContext(repository_id=str(root), session_id=f"session_{name}"),
-            actor=f"agent_{name}", repo_root=str(root), root=str(root), task_id=f"execution_{name}",
+            actor=f"agent_{name}", repo_root=str(root), task_id=f"execution_{name}",
         )
     revision = RepoPlanWorkspace(root).get_plan("plan_work")["file_revision"]
     barrier = Barrier(2)
@@ -654,7 +654,7 @@ def test_separate_processes_cannot_bind_two_active_attempts(environment):
         tasks.create(
             GoalContract(goal="Verify real work", acceptance_criteria=["tests pass"]),
             context=ScopeContext(repository_id=str(root), session_id=f"session_{name}"),
-            actor=f"agent_{name}", repo_root=str(root), root=str(root), task_id=f"execution_{name}",
+            actor=f"agent_{name}", repo_root=str(root), task_id=f"execution_{name}",
         )
     revision = RepoPlanWorkspace(root).get_plan("plan_work")["file_revision"]
     context = multiprocessing.get_context("spawn")

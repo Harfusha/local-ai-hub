@@ -81,7 +81,6 @@ def setup_bound_task(test_environment):
         ]),
         ScopeContext(repository_id=str(root), session_id="session_test"),
         task_id="task_001", actor="test_agent", repo_root=str(root),
-    root=str(root),
     )
     manager.bind_task("task_001", "plan_workflow", "task_core", plan_path,
                       session_id="session_test", task_store=task_store)
@@ -177,7 +176,7 @@ def test_pending_read_rejects_fifo_without_waiting_for_writer(tmp_path):
 
 def test_pending_record_does_not_replace_unresolved_distinct_content(test_environment):
     root, storage, _, _, _, _, _ = test_environment
-    binding = agent_bridge.TaskBinding(task_id="task_001", repo_root=str(root), root=str(root), plan_id="plan_a",
+    binding = agent_bridge.TaskBinding(task_id="task_001", repo_root=str(root), plan_id="plan_a",
                                        plan_task_id="task_a", plan_rel_path=".local-ai-hub/plans/plan_a.plan.json")
     original = {"task_id": "task_001", "reason": "first clarification"}
     path = agent_bridge._persist_pending_contract_reconciliation(storage, binding, original)
@@ -191,7 +190,7 @@ def test_pending_record_does_not_replace_unresolved_distinct_content(test_enviro
 
 def test_oversized_pending_record_is_not_persisted(test_environment):
     root, storage, _, _, _, _, _ = test_environment
-    binding = agent_bridge.TaskBinding(task_id="task_oversized", repo_root=str(root), root=str(root), plan_id="plan_a",
+    binding = agent_bridge.TaskBinding(task_id="task_oversized", repo_root=str(root), plan_id="plan_a",
                                        plan_task_id="task_a", plan_rel_path=".local-ai-hub/plans/plan_a.plan.json")
     with pytest.raises(ValueError, match="size limit"):
         agent_bridge._persist_pending_contract_reconciliation(storage, binding, {"text": "x" * agent_bridge.MAX_PENDING_RECONCILIATION_BYTES})
@@ -701,25 +700,40 @@ def test_recovery_retries_after_projection_record_write_failure(test_environment
     with pytest.raises(RuntimeError, match="pending"):
         agent_bridge.reconcile_task_steering(task_store, **arguments)
     monkeypatch.setattr(task_store, "revise_contract", original_revise)
-    # Pending records use pinned parent descriptors and atomic writes, so
-    # mocking the process-wide os.replace disrupts SQLite and unrelated
-    # project state. Inject at the scoped atomic-write boundary instead.
+    # Inject at the pending-record write boundary. POSIX has a scoped helper;
+    # Windows uses os.replace, so filter that shared function by destination.
     original_atomic_write = agent_bridge._atomic_write_posix
+    original_replace = agent_bridge.os.replace
     pending_writes = 0
 
-    def fail_pending_atomic_write(root_arg, destination, payload, **kwargs):
+    def fail_first_pending_write(destination):
         nonlocal pending_writes
         if "pending-contract-reconciliation" in str(destination):
             pending_writes += 1
-            if pending_writes == 1:
-                raise OSError("injected retry record failure")
+            return pending_writes == 1
+        return False
+
+    def fail_pending_atomic_write(root_arg, destination, payload, **kwargs):
+        if fail_first_pending_write(destination):
+            raise OSError("injected retry record failure")
         return original_atomic_write(root_arg, destination, payload, **kwargs)
 
-    monkeypatch.setattr(agent_bridge, "_atomic_write_posix", fail_pending_atomic_write)
+    def fail_pending_replace(source, destination):
+        if fail_first_pending_write(destination):
+            raise OSError("injected retry record failure")
+        return original_replace(source, destination)
+
+    if os.name == "nt":
+        monkeypatch.setattr(agent_bridge.os, "replace", fail_pending_replace)
+    else:
+        monkeypatch.setattr(agent_bridge, "_atomic_write_posix", fail_pending_atomic_write)
     with pytest.raises(OSError, match="injected retry record failure"):
         agent_bridge.reconcile_task_steering(task_store, **arguments)
     assert task_store.get("task_001").checkpoint.state_data["contract_revision"] == 2
-    monkeypatch.setattr(agent_bridge, "_atomic_write_posix", original_atomic_write)
+    if os.name == "nt":
+        monkeypatch.setattr(agent_bridge.os, "replace", original_replace)
+    else:
+        monkeypatch.setattr(agent_bridge, "_atomic_write_posix", original_atomic_write)
     if alter_plan:
         plan, current = storage.read_plan_file(plan_path)
         plan["tasks"]["task_core"]["next_action"] = "Unrelated later change"
