@@ -42,7 +42,7 @@ jobs:
         run: |
           set -euo pipefail
           tag=$(python tools/prepare_release.py "$BUMP")
-          git add -- pyproject.toml src/local_ai_hub/__init__.py RELEASE.json README.md CHANGELOG.md
+          git add -- pyproject.toml src/local_ai_hub/__init__.py RELEASE.json README.md CHANGELOG.md .github/ISSUE_TEMPLATE/bug_report.yml
           git -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' commit -m "chore(release): $tag"
           python tools/release_check.py --strict-tree --expected-version "${tag#v}"
           if [[ "$DRAFT_RELEASE" == true ]]; then

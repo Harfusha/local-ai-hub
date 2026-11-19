@@ -468,7 +468,7 @@ def test_bundle_restore_uses_bounded_write_transactions(tmp_path: Path, monkeypa
         app.close()
 
 
-def test_staging_journal_replays_and_orphan_payload_fails_closed(tmp_path: Path):
+def test_staging_journal_replays_and_orphan_payload_fails_closed(tmp_path: Path, monkeypatch):
     source_root = tmp_path / "source-repo"
     source_root.mkdir()
     bundle = _source_bundle(tmp_path, source_root)
@@ -501,8 +501,18 @@ def test_staging_journal_replays_and_orphan_payload_fails_closed(tmp_path: Path)
         recovered_app.close()
 
     (journal_dir / "orphan.bundle").write_bytes(b"untracked staged payload")
+    closed = []
+    close = LocalAIApp.close
+
+    def close_failed_start(app, **kwargs):
+        close(app, **kwargs)
+        closed.append(app)
+
+    monkeypatch.setattr(LocalAIApp, "close", close_failed_start)
     with pytest.raises(RuntimeError, match="untracked staged bundle payload"):
         LocalAIApp(str(config_path))
+    assert len(closed) == 1
+    assert not closed[0].scheduler._dispatcher.is_alive()
 
 
 def test_staging_journal_without_payload_fails_startup_closed(tmp_path: Path):

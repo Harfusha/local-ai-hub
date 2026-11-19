@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import tomllib
 from pathlib import Path
@@ -16,7 +17,8 @@ def test_release_metadata_and_documentation_are_current():
     project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     assert __version__ == project["project"]["version"]
     release = json.loads((ROOT / "RELEASE.json").read_text(encoding="utf-8"))
-    assert release["version"] == __version__ and release["status"] == "release-candidate"
+    assert release["version"] == __version__
+    assert release["status"] == ("production-ready" if os.environ.get("GITHUB_REF_TYPE") == "tag" else "release-candidate")
     assert f'placeholder: "{__version__}"' in (ROOT / ".github" / "ISSUE_TEMPLATE" / "bug_report.yml").read_text(encoding="utf-8")
     required = {
         "ARCHITECTURE.md", "INSTALLATION.md", "CONFIGURATION.md", "MCP_AND_AGENTS.md",

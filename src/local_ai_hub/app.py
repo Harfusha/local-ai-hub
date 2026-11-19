@@ -695,7 +695,11 @@ class LocalAIApp:
         self.preprocessor = ProjectPreprocessor(self.config, self.services, self.rag, self.scheduler, self.runtime, self.repo_tools, self.code_index, self.learner, self.deterministic, telemetry=self.telemetry, background_gpu=self.background_gpu, external_tools=self.external_tools)
         self.services.set_preprocessor(self.preprocessor)
         self.code_index.set_reindex_callback(self.preprocessor.notify_path_changed)
-        self._recover_pending_bundle_imports()
+        try:
+            self._recover_pending_bundle_imports()
+        except Exception:
+            self.close()
+            raise
         self.token_router = LosslessTokenRouter(self.config, self.services)
         self.services.set_token_router(self.token_router)
         self.tool_agent = ToolAwareLocalAgent(self.config, self.services, self.preprocessor, self.rag, self.code_index, self.evidence, self.deterministic, external_tools=self.external_tools)

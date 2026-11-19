@@ -172,13 +172,14 @@ def test_windows_exited_process_handle_is_not_reported_alive(monkeypatch: pytest
             return 1
 
     exited = Kernel32(0)
-    monkeypatch.setattr(process_utils.os, "name", "nt")
-    monkeypatch.setattr(ctypes, "windll", SimpleNamespace(kernel32=exited), raising=False)
+    monkeypatch.setattr(process_utils, "os", SimpleNamespace(**{**vars(os), "name": "nt"}))
+    fake_ctypes = SimpleNamespace(**{**vars(ctypes), "windll": SimpleNamespace(kernel32=exited)})
+    monkeypatch.setattr(process_utils, "ctypes", fake_ctypes)
     assert process_utils.pid_alive(1234) is False
     assert exited.closed == 1
 
     running = Kernel32(0x00000102)
-    monkeypatch.setattr(ctypes, "windll", SimpleNamespace(kernel32=running), raising=False)
+    fake_ctypes.windll.kernel32 = running
     assert process_utils.pid_alive(1234) is True
     assert running.closed == 1
 
