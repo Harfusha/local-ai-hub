@@ -56,7 +56,12 @@ def prepare_release(root: Path, bump: str, tags: list[str], release_date: date) 
 
     readme = root / "README.md"
     changelog = root / "CHANGELOG.md"
+    issue_template = root / ".github/ISSUE_TEMPLATE/bug_report.yml"
     readme_text = readme.read_text(encoding="utf-8")
+    issue_text = issue_template.read_text(encoding="utf-8")
+    current_placeholder = f'placeholder: "{current}"'
+    if issue_text.count(current_placeholder) != 1:
+        raise ValueError("Bug report template has no unique current Hub version placeholder")
     heading, separator, history = changelog.read_text(encoding="utf-8").partition("\n\n")
     if not separator or not heading.startswith("# "):
         raise ValueError("CHANGELOG.md is missing its document heading")
@@ -78,6 +83,7 @@ def prepare_release(root: Path, bump: str, tags: list[str], release_date: date) 
     manifest.write_text(json.dumps(release, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     readme.write_text(readme_text, encoding="utf-8")
     changelog.write_text(f"{heading}\n\n{entry}\n\n{notes}\n\n{history}", encoding="utf-8")
+    issue_template.write_text(issue_text.replace(current_placeholder, f'placeholder: "{version}"'), encoding="utf-8")
     return tag
 
 

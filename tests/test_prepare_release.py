@@ -22,6 +22,9 @@ def make_source(root):
         "Local AI Hub **6.1.0** is a local tool.\n", encoding="utf-8",
     )
     (root / "CHANGELOG.md").write_text("# Changelog\n\n## 6.1.0 — 2026-11-15\n\n- Prior changes.\n", encoding="utf-8")
+    issue_template = root / ".github/ISSUE_TEMPLATE/bug_report.yml"
+    issue_template.parent.mkdir(parents=True)
+    issue_template.write_text('name: Bug report\nplaceholder: "6.1.0"\n', encoding="utf-8")
     return package / "__init__.py"
 
 
@@ -41,6 +44,7 @@ def test_prepare_release_uses_highest_version_and_aligns_metadata(tmp_path, bump
     assert "release candidate" not in readme
     assert f"## {expected} — 2026-11-19" in changelog
     assert "## 6.1.0 — 2026-11-15\n\n- Prior changes." in changelog
+    assert f'placeholder: "{expected}"' in (tmp_path / ".github/ISSUE_TEMPLATE/bug_report.yml").read_text(encoding="utf-8")
 
 
 def test_prepare_release_rejects_inconsistent_metadata_without_writes(tmp_path):
