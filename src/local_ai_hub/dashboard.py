@@ -4745,71 +4745,6 @@ async function fetchDashboardJson(path,options={}){
 }
 async function post(path,payload,requestOptions={}){const r=await apiFetch(path,{...requestOptions,method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});return await r.json()}
 
-let updateSnapshot=null, reviewedUpdate=null, updateSending=false, updatePolling=false, nextUpdatePoll=0;
-function renderUpdateWizard(){
-  const data=updateSnapshot||{}, check=data.check||{}, report=data.report||{};
-  const candidate=check.status==='update_available', busy=data.busy||updateSending;
-  const confirming=Boolean(reviewedUpdate&&candidate&&reviewedUpdate.revision===check.revision&&reviewedUpdate.target_version===check.target_version);
-  $('updateWizardOpen').textContent=busy?'Updating Hub…':candidate?'Update '+check.target_version+' available':'Updates';
-  $('updateWizardStatus').textContent=busy?'Update is in progress. Hub may disconnect while it restarts.':
-    data.eligible===false?'Updates require a managed Hub installation outside a Git checkout.':
-    candidate?'Installed '+check.version_before+' · Available '+check.target_version:
-    check.status==='up_to_date'?'Hub '+check.version_before+' is up to date.':
-    check.error||'Checking for a stable release…';
-  const reportText=report.status==='installed'?'Update to '+report.target_version+' completed.':
-    report.status==='failed'?'Last update failed. '+(report.error||report.message||'See the update report.'):'';
-  $('updateWizardReport').textContent=reportText;
-  $('updateWizardReport').hidden=!reportText||busy;
-  $('updateWizardCheck').disabled=busy||data.eligible===false||check.status==='checking';
-  $('updateWizardReview').hidden=!candidate||busy||confirming;
-  $('updateWizardConfirm').hidden=!confirming||busy;
-  $('updateWizardInstall').hidden=!confirming||busy;
-  $('updateWizardInstall').disabled=!confirming||busy||!$('updateRestartConfirmed').checked;
-}
-async function refreshUpdateWizard(force=false){
-  if(updatePolling)return;
-  updatePolling=true;
-  try{
-    updateSnapshot=force?await post('/api/updates',{action:'check'}):
-      await fetchDashboardJson('/api/updates',{cache:'no-store',timeoutMs:5000});
-    renderUpdateWizard();
-  }catch{
-    if(updateSnapshot?.busy)$('updateWizardStatus').textContent='Waiting for Hub to restart…';
-    else if($('updateWizard').open)$('updateWizardStatus').textContent='Update status is temporarily unavailable.';
-  }finally{updatePolling=false;nextUpdatePoll=Date.now()+60000}
-}
-$('updateWizardOpen').onclick=()=>{
-  reviewedUpdate=null;$('updateRestartConfirmed').checked=false;
-  $('updateWizard').showModal();renderUpdateWizard();refreshUpdateWizard();
-};
-$('updateWizardReview').onclick=()=>{
-  reviewedUpdate=updateSnapshot?.check;$('updateRestartConfirmed').checked=false;renderUpdateWizard();
-  $('updateRestartConfirmed').focus();
-};
-$('updateRestartConfirmed').onchange=renderUpdateWizard;
-$('updateWizardCheck').onclick=()=>{reviewedUpdate=null;refreshUpdateWizard(true)};
-$('updateWizardInstall').onclick=async()=>{
-  if(updateSending||!reviewedUpdate||!$('updateRestartConfirmed').checked)return;
-  updateSending=true;renderUpdateWizard();
-  let error='';
-  try{
-    const result=await post('/api/updates',{
-      action:'install',version:reviewedUpdate.target_version,revision:reviewedUpdate.revision,confirm_restart:true,
-    });
-    if(result?.success!==true)error=result?.error||'Update could not be queued.';
-    else{updateSnapshot={...updateSnapshot,busy:true};reviewedUpdate=null}
-  }catch{
-    updateSnapshot={...updateSnapshot,busy:true};reviewedUpdate=null;
-  }finally{
-    updateSending=false;renderUpdateWizard();
-    if(error)$('updateWizardStatus').textContent=error;
-  }
-};
-refreshUpdateWizard();
-setInterval(()=>{
-  if(document.visibilityState!=='hidden'&&($('updateWizard').open||updateSnapshot?.busy||updateSnapshot?.check?.status==='checking'||Date.now()>=nextUpdatePoll))refreshUpdateWizard();
-},2000);
-
 const ACTIVITY_MODES=['active','gaming','maintenance','preprocessing'];
 let activityModeStatusPolls=0;
 let activityModeTransitionNotice=null;
@@ -7480,6 +7415,71 @@ let initTab = 'overview';
 try{initTab = location.hash.replace('#','') || localStorage.getItem('activeTab') || 'overview';}catch{initTab = location.hash.replace('#','') || 'overview';}
 switchTab(initTab);
 loadCoordinationView();
+let updateSnapshot=null, reviewedUpdate=null, updateSending=false, updatePolling=false, nextUpdatePoll=0;
+function renderUpdateWizard(){
+  const data=updateSnapshot||{}, check=data.check||{}, report=data.report||{};
+  const candidate=check.status==='update_available', busy=data.busy||updateSending;
+  const confirming=Boolean(reviewedUpdate&&candidate&&reviewedUpdate.revision===check.revision&&reviewedUpdate.target_version===check.target_version);
+  $('updateWizardOpen').textContent=busy?'Updating Hub…':candidate?'Update '+check.target_version+' available':'Updates';
+  $('updateWizardStatus').textContent=busy?'Update is in progress. Hub may disconnect while it restarts.':
+    data.eligible===false?'Updates require a managed Hub installation outside a Git checkout.':
+    candidate?'Installed '+check.version_before+' · Available '+check.target_version:
+    check.status==='up_to_date'?'Hub '+check.version_before+' is up to date.':
+    check.error||'Checking for a stable release…';
+  const reportText=report.status==='installed'?'Update to '+report.target_version+' completed.':
+    report.status==='failed'?'Last update failed. '+(report.error||report.message||'See the update report.'):'';
+  $('updateWizardReport').textContent=reportText;
+  $('updateWizardReport').hidden=!reportText||busy;
+  $('updateWizardCheck').disabled=busy||data.eligible===false||check.status==='checking';
+  $('updateWizardReview').hidden=!candidate||busy||confirming;
+  $('updateWizardConfirm').hidden=!confirming||busy;
+  $('updateWizardInstall').hidden=!confirming||busy;
+  $('updateWizardInstall').disabled=!confirming||busy||!$('updateRestartConfirmed').checked;
+}
+async function refreshUpdateWizard(force=false){
+  if(updatePolling)return;
+  updatePolling=true;
+  try{
+    updateSnapshot=force?await post('/api/updates',{action:'check'}):
+      await fetchDashboardJson('/api/updates',{cache:'no-store',timeoutMs:5000});
+    renderUpdateWizard();
+  }catch{
+    if(updateSnapshot?.busy)$('updateWizardStatus').textContent='Waiting for Hub to restart…';
+    else if($('updateWizard').open)$('updateWizardStatus').textContent='Update status is temporarily unavailable.';
+  }finally{updatePolling=false;nextUpdatePoll=Date.now()+60000}
+}
+$('updateWizardOpen').onclick=()=>{
+  reviewedUpdate=null;$('updateRestartConfirmed').checked=false;
+  $('updateWizard').showModal();renderUpdateWizard();refreshUpdateWizard();
+};
+$('updateWizardReview').onclick=()=>{
+  reviewedUpdate=updateSnapshot?.check;$('updateRestartConfirmed').checked=false;renderUpdateWizard();
+  $('updateRestartConfirmed').focus();
+};
+$('updateRestartConfirmed').onchange=renderUpdateWizard;
+$('updateWizardCheck').onclick=()=>{reviewedUpdate=null;refreshUpdateWizard(true)};
+$('updateWizardInstall').onclick=async()=>{
+  if(updateSending||!reviewedUpdate||!$('updateRestartConfirmed').checked)return;
+  updateSending=true;renderUpdateWizard();
+  let error='';
+  try{
+    const result=await post('/api/updates',{
+      action:'install',version:reviewedUpdate.target_version,revision:reviewedUpdate.revision,confirm_restart:true,
+    });
+    if(result?.success!==true)error=result?.error||'Update could not be queued.';
+    else{updateSnapshot={...updateSnapshot,busy:true};reviewedUpdate=null}
+  }catch{
+    updateSnapshot={...updateSnapshot,busy:true};reviewedUpdate=null;
+  }finally{
+    updateSending=false;renderUpdateWizard();
+    if(error)$('updateWizardStatus').textContent=error;
+  }
+};
+refreshUpdateWizard();
+setInterval(()=>{
+  if(document.visibilityState!=='hidden'&&($('updateWizard').open||updateSnapshot?.busy||updateSnapshot?.check?.status==='checking'||Date.now()>=nextUpdatePoll))refreshUpdateWizard();
+},2000);
+
 </script></body></html>"""
 
 from local_ai_hub.dashboard_contracts import RESIDENT_INVENTORY_JS, WORKSPACE_INVENTORY_JS, memory_kind_options, memory_scope_options

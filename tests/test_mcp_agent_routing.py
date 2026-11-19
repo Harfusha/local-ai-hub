@@ -236,14 +236,25 @@ def test_status_reports_endpoint_stats_unavailable_without_raw_error(monkeypatch
     assert "database path" not in repr(result)
 
 
-def test_search_ai_summary_is_rejected_below_balanced(monkeypatch) -> None:
+def test_search_skips_unavailable_ai_summary(monkeypatch) -> None:
     monkeypatch.setattr(local_ai_mcp.FEATURES, "search_summaries", False)
+    paths = []
+
+    def post(path, payload, **kwargs):
+        paths.append(path)
+        if path == "/api/search":
+            return {"success": True, "results": [{"path": "src/a.py"}]}
+        assert path == "/api/telemetry/tool-accounting"
+        return {"success": True}
+
+    monkeypatch.setattr(local_ai_mcp.CLIENT, "post", post)
 
     result = local_ai_mcp.local_ai_repo(action="search", root=str(ROOT), query="needle", summarize_results=True)
 
-    assert result["success"] is False
-    assert result["unsupported"] is True
-    assert result["feature"] == "search_summaries"
+    assert result["success"] is True
+    assert result["degraded"] is True
+    assert result["fallback_used"] is True
+    assert paths.count("/api/search") == 1
 
 
 def test_search_ai_summary_preserves_deterministic_results_and_sources(monkeypatch) -> None:

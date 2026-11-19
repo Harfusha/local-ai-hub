@@ -4056,19 +4056,14 @@ def _local_ai_repo_impl(
         elif type(search_mode) is not str or search_mode not in {"lexical", "rag", "hybrid"}:
             return {"success": False, "error": "search_mode must be lexical, rag, or hybrid",
                     "status_code": 400, "terminal": True, "retryable": False}
+        unavailable_features: list[str] = []
         if summarize_results and not getattr(FEATURES, "search_summaries", False):
-            return {
-                "success": False, "unsupported": True, "feature": "search_summaries",
-                "error": "AI search summaries are disabled for the active profile",
-                "terminal": True, "retryable": False,
-            }
+            summarize_results = False
+            unavailable_features.append("search_summaries")
         enrich = bool(include_code)
         if enrich and not FEATURES.enriched_search:
-            return {
-                "success": False, "unsupported": True, "feature": "enriched_search",
-                "error": "enriched search is disabled (features.enriched_search=false)",
-                "terminal": True, "retryable": False,
-            }
+            enrich = False
+            unavailable_features.append("enriched_search")
         extra = list(extra_fields or [])
         if enrich:
             extra.extend(["text", "raw"])
@@ -4094,6 +4089,8 @@ def _local_ai_repo_impl(
             "search_mode": search_mode,
         }
         search_result = CLIENT.post("/api/search", search_payload, timeout=float(min(120, _timeout("quick"))), path_hints=normalized_hints or None)
+        if unavailable_features and isinstance(search_result, dict) and search_result.get("success") is True:
+            search_result = {**search_result, "degraded": True, "fallback_used": True}
         projected = _compact(search_result, "search", extra_fields=extra if extra else None)
         if not summarize_results or not isinstance(search_result, dict) or not search_result.get("success", False):
             return projected
