@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from urllib.error import URLError
+from local_ai_hub import client as client_module
 
 
 def test_mcp_main_enters_stdio_without_eager_hub_autostart(monkeypatch) -> None:
@@ -17,7 +17,6 @@ def test_mcp_main_enters_stdio_without_eager_hub_autostart(monkeypatch) -> None:
     mcp_server.main()
 
     assert calls == ["stdio"]
-from local_ai_hub import client as client_module
 
 
 def test_mcp_client_keeps_hub_owned_auto_start_enabled() -> None:
@@ -53,8 +52,8 @@ def test_mcp_client_bounds_auto_start_after_daemon_connection_refusal(monkeypatc
     assert result == {"success": True, "hub_online": True}
     assert len(opened) == 2
     assert len(startup_budgets) == 1
-    assert 0 < startup_budgets[0] <= 0.8
-    assert opened[1] <= 0.8
+    assert 0 < startup_budgets[0] <= 0.8 + 1e-9
+    assert opened[1] <= 0.8 + 1e-9
 
 
 def test_mcp_client_bounds_daemon_off_start_failure_without_second_request(monkeypatch) -> None:
@@ -84,9 +83,9 @@ def test_mcp_client_bounds_daemon_off_start_failure_without_second_request(monke
     assert result["outcome_unknown"] is False
     assert "retried" not in result
     assert len(opened) == 1
-    assert opened[0] <= 0.35
+    assert opened[0] <= 0.35 + 1e-9
     assert len(startup_budgets) == 1
-    assert 0 < startup_budgets[0] <= 0.35
+    assert 0 < startup_budgets[0] <= 0.35 + 1e-9
 
 
 def test_daemon_off_concurrent_mcp_clients_share_cold_start(tmp_path, monkeypatch) -> None:
@@ -150,9 +149,9 @@ def test_daemon_off_concurrent_mcp_clients_share_cold_start(tmp_path, monkeypatc
     assert len(launched) == 1
     assert launched[0][0][1].endswith("service.py")
     assert launched[0][0][-1] == "start"
-    assert launched[0][1]["timeout"] <= 0.6
+    assert launched[0][1]["timeout"] <= 0.6 + 1e-9
     assert startup_health_budgets
-    assert all(0 <= budget <= 0.6 for budget in startup_health_budgets)
+    assert all(0 <= budget <= 0.6 + 1e-9 for budget in startup_health_budgets)
 
 
 def test_daemon_off_start_timeout_is_bounded_and_retains_cooldown_lock(tmp_path, monkeypatch) -> None:
@@ -180,5 +179,5 @@ def test_daemon_off_start_timeout_is_bounded_and_retains_cooldown_lock(tmp_path,
     monkeypatch.setattr(client_module.subprocess, "run", timeout_start)
     assert client.ensure_server(timeout=0.06) is False
     assert len(launch_timeouts) == 1
-    assert 0 < launch_timeouts[0] <= 0.06
+    assert 0 < launch_timeouts[0] <= 0.06 + 1e-9
     assert (state_dir / "hub.start.lock").exists()

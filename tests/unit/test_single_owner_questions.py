@@ -8,7 +8,7 @@ import pytest
 from local_ai_hub.agent_events import AgentStateStore
 from local_ai_hub.agent_tasks import CheckpointResponseBudgetError, TaskStore
 from local_ai_hub.sqlite_support import DurableSchemaMismatchError
-from local_ai_hub import agent_tasks, http_server, sqlite_support
+from local_ai_hub import agent_tasks, http_server
 
 
 @pytest.mark.parametrize("method,arguments", [
@@ -82,7 +82,7 @@ def test_http_question_scope_has_no_owner_selector(tmp_path):
 
 @pytest.mark.parametrize("operation", ["ask", "answer"])
 def test_question_writes_roll_back_when_shared_transaction_budget_expires(
-    tmp_path, monkeypatch, operation
+    tmp_path, monkeypatch, expired_sqlite_transaction, operation
 ):
     store = TaskStore(AgentStateStore(tmp_path / "state.sqlite3"))
     root = str(tmp_path)
@@ -92,12 +92,7 @@ def test_question_writes_roll_back_when_shared_transaction_budget_expires(
             root=root, session_id="session-a", question="Proceed?"
         )
 
-    def _expired_transaction(con, **kwargs):
-        return sqlite_support.write_transaction(
-            con, max_duration_seconds=1e-12, **kwargs
-        )
-
-    monkeypatch.setattr(agent_tasks, "write_transaction", _expired_transaction, raising=False)
+    monkeypatch.setattr(agent_tasks, "write_transaction", expired_sqlite_transaction, raising=False)
     with pytest.raises(TimeoutError, match="duration budget"):
         if operation == "ask":
             store.ask_question(root=root, session_id="session-a", question="Proceed?")
