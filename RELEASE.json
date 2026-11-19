@@ -1,7 +1,7 @@
 {
   "name": "local-ai-hub",
-  "version": "6.1.0",
-  "release_date": "2026-11-15",
-  "status": "release-candidate",
-  "focus": "Release v6.1.0: Restore canonical pinned Superpowers archive content and align the release metadata with the v6.1 source tag."
+  "version": "6.1.1",
+  "release_date": "2026-11-19",
+  "status": "production-ready",
+  "focus": "Release v6.1.1"
 }
