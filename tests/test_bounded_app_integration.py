@@ -439,17 +439,23 @@ def test_bounded_i2_patch_runs_in_real_browser(tmp_path, monkeypatch):
     thread.start()
 
     def browser_result(profile):
-        result = subprocess.run([browser, "--headless=new", "--disable-gpu", "--no-first-run",
-            "--no-default-browser-check", "--disable-background-networking", "--no-proxy-server",
-            "--user-data-dir=" + str(tmp_path / profile), "--virtual-time-budget=3000", "--dump-dom",
-            f"http://127.0.0.1:{server.server_address[1]}/probe"], capture_output=True,
-            text=True, timeout=30, **hidden_run_kwargs())
+        sandbox_unavailable = "Chromium sandbox/zygote is unavailable on this CI runner; browser E2E acceptance remains unverified"
+        try:
+            result = subprocess.run([browser, "--headless=new", "--disable-gpu", "--no-first-run",
+                "--no-default-browser-check", "--disable-background-networking", "--no-proxy-server",
+                "--user-data-dir=" + str(tmp_path / profile), "--virtual-time-budget=3000", "--dump-dom",
+                f"http://127.0.0.1:{server.server_address[1]}/probe"], capture_output=True,
+                text=True, timeout=30, **hidden_run_kwargs())
+        except subprocess.TimeoutExpired as exc:
+            if profile == "baseline-browser" and b"No usable sandbox!" in (exc.stderr or b""):
+                pytest.skip(sandbox_unavailable)
+            raise
         if (
             profile == "baseline-browser"
             and result.returncode in (-6, 134)
             and "ZygoteHostImpl::Init" in result.stderr
         ):
-            pytest.skip("Chromium sandbox/zygote is unavailable on this CI runner; browser E2E acceptance remains unverified")
+            pytest.skip(sandbox_unavailable)
         assert result.returncode == 0, result.stderr[-1000:]
         return result.stdout
 
