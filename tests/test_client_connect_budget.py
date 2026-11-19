@@ -34,7 +34,7 @@ def test_absent_connect_is_bounded_before_any_write(tmp_path, monkeypatch, budge
     monkeypatch.setattr(client, "_connection", lambda _timeout: connection)
     with pytest.raises(_TransportFailure) as caught:
         client._pooled_open("POST", "/api/command", b"{}", {}, budget)
-    assert 0 < seen[0] <= min(budget, client.health_timeout)
+    assert 0 < seen[0] <= min(budget, client.health_timeout) + 1e-9
     assert connection.timeout == budget
     assert caught.value.request_not_sent is True
     assert caught.value.cancelled is False

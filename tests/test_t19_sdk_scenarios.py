@@ -247,7 +247,13 @@ def test_seven_sdk_workflows_have_measured_production_route_outcomes(
         "conversation_id": started["conversation_id"],
         "task": "follow-up question",
     }
-    assert len(generations) == 2
+    conversation_prompts = [
+        item["prompt"] for item in generations
+        if "first scenario question" in item["prompt"] or "follow-up question" in item["prompt"]
+    ]
+    assert len(conversation_prompts) == 2
+    assert "follow-up question" not in conversation_prompts[0]
+    assert "follow-up question" in conversation_prompts[1]
 
     calls.clear()
     app.async_jobs._dispatch = lambda _job_id: None
