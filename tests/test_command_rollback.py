@@ -4,8 +4,10 @@ import hashlib
 import json
 import multiprocessing
 import os
+import shlex
 import sqlite3
 import subprocess
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 import pytest
@@ -2359,8 +2361,9 @@ def test_snapshot_git_operations_use_configured_timeout(tmp_path: Path, monkeypa
 
 
 def test_successful_short_command_creates_auditable_verification_evidence(tmp_path: Path) -> None:
+    argv = [sys.executable, "-m", "pytest", "-q"]
     (tmp_path / ".local-ai.toml").write_text(
-        '[commands.tests]\nargv = ["python", "-m", "pytest", "-q"]\n',
+        f"[commands.tests]\nargv = {json.dumps(argv)}\n",
         encoding="utf-8",
     )
     (tmp_path / "test_command_evidence.py").write_text(
@@ -2422,7 +2425,8 @@ def test_successful_short_command_creates_auditable_verification_evidence(tmp_pa
     proof = json.loads(artifact["text"])
     assert proof["exit_code"] == 0
     assert "command" not in proof
-    assert proof["command_sha256"] == hashlib.sha256(b"python -m pytest -q").hexdigest()
+    command = subprocess.list2cmdline(argv) if os.name == "nt" else shlex.join(argv)
+    assert proof["command_sha256"] == hashlib.sha256(command.encode("utf-8")).hexdigest()
     assert any(item["artifact_id"] == receipt_data["evidence_id"] for item in artifacts.list(limit=20))
     exported = verification.export_receipts("task-proof", format="json")
     assert exported["success"] is True
