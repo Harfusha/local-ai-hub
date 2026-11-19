@@ -1,4 +1,6 @@
 import json
+from types import SimpleNamespace
+
 import pytest
 
 from local_ai_hub.automation import TargetPolicy
@@ -57,7 +59,9 @@ def test_browser_selector_cannot_enter_an_unowned_frame(tmp_path, selector):
         backend.close()
 
 
-def test_desktop_requires_matching_window_executable_and_blocks_browser(tmp_path):
+def test_desktop_requires_matching_window_executable_and_blocks_browser(tmp_path, monkeypatch):
+    clock = SimpleNamespace(monotonic=lambda: 255.9999)
+    monkeypatch.setattr('local_ai_hub.automation_adapters.time', clock)
     exe = tmp_path / "app.exe"
     exe.touch()
     config = {"winapp_executable": str(exe), "allowed_applications": {"editor": str(exe)}}
