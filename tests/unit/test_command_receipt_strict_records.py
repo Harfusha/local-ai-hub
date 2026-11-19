@@ -34,7 +34,7 @@ def test_receipt_requires_json_artifact_provider(tmp_path):
     broker._record_command_verification(
         result, task_id="task-a", criterion="tests", command="python -m pytest",
         command_id="b" * 32, command_digest="c" * 64,
-        repository_revision="d" * 64, repository_root=str(tmp_path), root=str(tmp_path), duration_ms=1,
+        repository_revision="d" * 64, repository_root=str(tmp_path), duration_ms=1,
     )
 
     assert writes == []

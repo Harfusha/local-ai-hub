@@ -5,6 +5,7 @@ from types import SimpleNamespace
 import pytest
 
 from local_ai_hub import semantic_quality
+from local_ai_hub.deterministic import DeterministicEngine
 from local_ai_hub.services import (
     enclosing_symbol_at_line,
     _split_review_diff,
@@ -102,7 +103,7 @@ def test_review_failure_details_preserves_safe_scheduler_state_only():
 def test_chunked_review_failure_exposes_scheduler_rejection(monkeypatch):
     service = LocalAIServices.__new__(LocalAIServices)
     service.config = {"token_saving": {"max_local_input_tokens": 4096}}
-    service.deterministic = None
+    service.deterministic = object.__new__(DeterministicEngine)
     service.incident_store = None
     service.vram_balancer = None
     service.router = SimpleNamespace(classify=lambda *args: {"model": "fast", "complexity": "fast"})
@@ -124,7 +125,7 @@ def test_chunked_review_failure_exposes_scheduler_rejection(monkeypatch):
         lambda diff_text, max_tokens: ["segment one", "segment two"],
     )
 
-    result = service.review_diff({"diff": "diff --git a/a.py b/a.py\n+pass\n"})
+    result = service.review_diff({"diff": "--- a/a.py\n+++ b/a.py\n@@ -0,0 +1 @@\n+pass\n"})
 
     assert result["success"] is False
     assert result["error_code"] == "gpu_outcome_unknown"

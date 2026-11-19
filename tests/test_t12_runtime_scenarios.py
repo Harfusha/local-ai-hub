@@ -117,35 +117,19 @@ def test_t12_prepare_model_honors_stop_before_model_load() -> None:
     assert exc_info.value.operation_not_started is True
 
 
-def test_t12_prepare_model_forwards_deadline_and_stop_to_embedding_load() -> None:
-    runtime = object.__new__(OllamaRuntime)
-    runtime.config = {
-        "llama_cpp": {"fallback_to_ollama": True, "model_load_timeout_seconds": 5},
-        "ollama": {"keep_alive": "24h"},
-    }
-    runtime.timeout = 10.0
+def test_t12_prepare_model_forwards_deadline_and_stop_to_embedding_load(tmp_path) -> None:
+    runtime = OllamaRuntime({
+        "server": {"ollama_url": "http://127.0.0.1:11434", "state_dir": str(tmp_path), "request_timeout_seconds": 10},
+        "llama_cpp": {"mode": "off", "model_load_timeout_seconds": 5},
+        "ollama": {"enabled": True, "keep_alive": "24h"},
+        "models": {"embedding": "reranker-model"},
+    })
     runtime.ensure_running = lambda: True
-    runtime.loaded_model_details = lambda **_kwargs: []
-    runtime._is_embedding_model = lambda _model: True
-    runtime._invalidate_loaded_cache = lambda: None
     calls: list[dict[str, Any]] = []
-
-    class LlamaRuntime:
-        def supports_model(self, _model: str) -> bool:
-            return False
-
-        def ensure_model(self, _model: str, **_kwargs: Any) -> bool:
-            return False
-
-    class Profile:
-        num_ctx = 512
-
-    class Policy:
-        def profile(self, _model: str) -> Profile:
-            return Profile()
-
-    runtime.llama_cpp = LlamaRuntime()
-    runtime.model_policy = Policy()
+    runtime.loaded_model_details = lambda **_kwargs: (
+        [{"name": "reranker-model", "size_bytes": 100, "vram_bytes": 100, "cpu_bytes": 0}]
+        if calls else []
+    )
 
     def request(endpoint: str, payload: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
         calls.append({"endpoint": endpoint, "payload": payload, **kwargs})

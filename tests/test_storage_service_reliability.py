@@ -221,7 +221,6 @@ def test_task_store_lock_and_retry(tmp_path: Path):
             contract=GoalContract(goal="test goal", acceptance_criteria=("crit1",)),
             context=ScopeContext(repository_id="repo1"),
             repo_root=str(tmp_path),
-        root=str(tmp_path),
         )
     finally:
         trace_context.reset_context(context_token)

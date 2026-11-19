@@ -400,7 +400,7 @@ def test_project_completion_requeues_pending_watcher_paths():
     pre._dirty_lock = threading.Lock()
     pre._dirty_paths = {"repo": {"overflow.py"}}
     con = _Connection()
-    pre._write_retry = lambda operation: operation(con)
+    pre._write_retry = lambda operation, **_kwargs: operation(con)
 
     pre._set_project("repo", status="complete", phase="complete", next_check_at=time.time() + 1800)
 

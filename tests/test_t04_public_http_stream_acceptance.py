@@ -61,7 +61,6 @@ def test_public_http_conversation_stream_cancel_and_deadline(tmp_path, monkeypat
             task_id=task_id,
             actor="agent",
             repo_root=str(root),
-        root=str(root),
         )
         deadline_task_id = "t04-public-deadline"
         app.agent_tasks.create(
@@ -70,7 +69,6 @@ def test_public_http_conversation_stream_cancel_and_deadline(tmp_path, monkeypat
             task_id=deadline_task_id,
             actor="agent",
             repo_root=str(root),
-        root=str(root),
         )
         stream_id = f"task:{task_id}"
         appended = app.agent_state.append(

@@ -548,6 +548,10 @@ Direct ownership is the default. Do not delegate audits, inventory, status check
 - Keep write scopes disjoint. The primary agent reviews and integrates directly; no ZIPs, custom owner packets, or fingerprint/hash cascades.
 - Do not duplicate tasks or chats. Check the existing plan first and update its existing item.
 
+## Single-owner and repository scope contract
+
+{SINGLE_OWNER_CONTRACT}
+
 ## Ownership and tiering
 
     The main agent owns task boundaries, permissions, unresolved decisions and the final user answer. {work_owner_note}
@@ -865,8 +869,7 @@ def generate_global_policy(cfg: dict[str, Any]) -> str:
     task_delegation = ""
     if fs.tasks and fs.has_any_model():
         task_delegation = (
-            "\n- Semantic delegation is on-demand under the active schema and quality gates; tier-available semantic actions only. Cloud planning is never blocked by mandatory local handoffs; deterministic/indexed "
-            "evidence governs facts, symbols, diffs and tests. Check model availability."
+            "\n- Use tier-available semantic actions only. " + _semantic_handoff_contract(fs)
         )
     if fs.work_orchestrator:
         if "submit" in fs.supported_work_actions():
@@ -901,9 +904,9 @@ def generate_global_policy(cfg: dict[str, Any]) -> str:
         review_action_text = "|".join(sorted(review_actions))
         task_review_hint = f' Actively use `local_ai_task(action="{review_action_text}")` for validation before finalizing.' if review_actions else ""
         repo_task_first = (
-            "\nReuse fresh repository evidence. Use bounded indexed/source lookup for exact facts; use adaptive context once for substantial work lacking fresh evidence."
+            "\nReuse fresh sufficient repository evidence. For exact file or symbol lookups, use bounded indexed/source lookup directly; do not preprocess or compile adaptive context first."
             + _repo_context_note(list(repo_actions))
-            + (' On first work in a stable root, inspect `.local-ai.toml` and `.local-ai.worktree.toml`; add only evidence-backed exclusions, uncommon extensions, pinned docs, and entry points. Preserve values and defaults. Call `preprocess` once to register; never force-refresh or poll.' if fs.preprocessing else "")
+            + (' On first work in a stable root, inspect `.local-ai.toml` and `.local-ai.worktree.toml`; add only evidence-backed exclusions, uncommon extensions, pinned documentation, and entry points. Preserve values and defaults. Call `preprocess` once to register; never force-refresh or poll.' if fs.preprocessing else "")
             + "\n"
             f"\nAdoption gate:{cmd_gate}{agent_os_gate}"
             + (' For implementation, diagnosis, refactoring or complex review, call `local_ai_repo(action="solve")` after evidence and before native edits.' if "solve" in fs.supported_repo_actions() else " Keep analysis within exposed deterministic/indexed actions.")
@@ -988,7 +991,7 @@ def generate_global_policy(cfg: dict[str, Any]) -> str:
         'Only on the user\'s explicit task instruction, `task_complete` accepts `operator_waiver={"consent":true,"reason":"..."}`. It records unverified completion, not passing receipts; ownership, repository scope, mutation fences and safety checks remain. Retain the instruction; never invent consent.\n\n'
         "Keep Agent OS tasks/counters. Explicit approval: `task_budget_increase` uses write-authorized broker, absolute root, audit reason; canonical loopback needs no token or special owner/admin token. Failed-task increases preserve status/owner; resume separate. Never edit task storage. `curate_dataset` needs absolute root.\n\n"
         "Explicit approval: `task_repair_session` repairs only unbound tasks via write-authorized broker; require absolute root, task/session IDs and audit reason; bind same task/session to plan.\n\n"
-        f"{SINGLE_OWNER_CONTRACT}\n\n"
+        "Load the always-loaded `local-ai-orchestrator` skill and follow its **Single-owner and repository scope contract**.\n\n"
         f"Trigger map:\n{trigger_lines}\n\n"
         f"Recommended Hub routes (apply the matching route by default):\n{recipe_lines}\n\n"
         "Direct ownership is the default. Do not delegate audits, inventory, status checks or routine work; see the simplified workflow spec.\n"
@@ -1003,19 +1006,19 @@ def generate_global_policy(cfg: dict[str, Any]) -> str:
         " generated artifacts and other workspace side effects. Never label side-effecting work read-only;"
         " assign validation separately.\n"
         "- Before native discovery or validation retain Hub action, absolute root, status,"
-        " cache/in_progress state and evidence IDs. Native discovery requires an explicit Hub result with `terminal=true` and `retryable=false`.\n"
+        " cache/in_progress state and evidence IDs when a Hub action was called. Fallback after an advertised action requires an explicit result with `terminal=true` and `retryable=false`.\n"
         + "- Authorized independent subagents remain permission- and scope-controlled; main agent integrates. Never delegate audit-only work.\n"
         "- Avoid parallel duplicate commands/scopes. Tool labels are not evidence;"
         " retain exact action, arguments, result and ownership in the audit record.\n"
         + ("\nBackground preprocessing may inspect and index project files, but project-derived `validation_commands` execute repository code. Keep `preprocessing.idle_diagnostics_enabled=false` by default; set it to `true` only with explicit operator approval for those commands. On Windows, `.cmd` and `.bat` validation executables are rejected; do not route them through a shell or interpreter.\n" if fs.preprocessing else "")
         + f"{repo_task_first}\n"
         "Adaptive retrieval: when evidence is insufficient for non-trivial repository work, call `local_ai_repo(action=\"context\", mode=\"adaptive\")`. It fuses bounded indexed, structural, lexical and RAG evidence; optional backends fail independently. Reuse evidence IDs, artifact slices and memos; stop when sufficient and avoid duplicate retrieval or unchanged root/query repeats.\n\n"
-        "Result protocol: reuse `cache_hit`/`coalesced`; never duplicate `in_progress`; back off on `retryable`/429/503; verify only the affected slice for `degraded`/`stale`. After Hub failure, native fallback requires `terminal=true` and `retryable=false`. Never enlarge timeouts, force-refresh, or poll transient results.\n"
+        "Result protocol: reuse `cache_hit`/`coalesced`; never duplicate `in_progress=true`; back off on `retryable`/429/503; verify only the affected slice for `degraded`/`stale`. Stop escalating when evidence is sufficient. Do not fan out overlapping retrieval. Never enlarge timeouts, force-refresh, or poll transient results.\n"
         f"{cmd_route_hint}{coord_memo_hint}\n"
         " After edits, use indexed impact/review and targeted cached validation; skip broad rediscovery."
         " `force`/`preprocess_refresh` are recovery controls, never retries."
         " Accept deterministic/index fallback if an optional backend degrades."
-        " If Hub is unavailable, make one bounded health attempt; fallback requires terminal, non-retryable failure."
+        " A health check cannot authorize fallback after an advertised action."
         " Never loop on health, status, preprocessing, model startup, backends, or commands.\n\n"
         + ("Batch repository replacement: use `local_ai_repo(action=\"batch_replace\", edits=[...], dry_run=true)` for preview. "
            "`staged` is not batch dry-run and is never forwarded. Each edit must exact-match once. "

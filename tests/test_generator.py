@@ -18,6 +18,7 @@ if str(TOOLS) not in sys.path:
     sys.path.insert(0, str(TOOLS))
 
 from local_ai_hub.generator import (
+    SINGLE_OWNER_CONTRACT,
     generate_token_economy_policy,
     generate_skill_markdown,
     generate_skill_references,
@@ -188,6 +189,10 @@ class TestSkillReferences:
 
 
 class TestGlobalPolicyGeneration:
+    def test_global_policy_references_single_owner_contract_in_installed_skill(self):
+        assert "Single-owner and repository scope contract" in generate_global_policy({})
+        assert SINGLE_OWNER_CONTRACT in generate_skill_markdown({})
+
     def test_policy_markers_and_content(self):
         policy = generate_global_policy({"ollama": {"enabled": True}})
         assert "<!-- BEGIN LOCAL AI HUB TOOL POLICY -->" in policy
@@ -457,13 +462,15 @@ class TestWriteAllGenerated:
         assert (tmp_path / "generated" / "schemas" / "local_ai_repo.json").exists()
 
 
-def test_high_profile_generated_policy_fits_antigravity_rule_cap(tmp_path: Path):
+@pytest.mark.parametrize("profile", [None, "high", "max"], ids=["default", "high", "max"])
+def test_high_profile_generated_policy_fits_antigravity_rule_cap(tmp_path: Path, profile: str | None):
     from local_ai_hub.config import deep_merge
     from local_ai_hub.hardware import profile_overrides
 
     config = tomllib.loads((ROOT / "src" / "local_ai_hub" / "defaults.toml").read_text(encoding="utf-8"))
-    config = deep_merge(config, profile_overrides("high"))
-    config.setdefault("hardware", {})["profile"] = "high"
+    if profile:
+        config = deep_merge(config, profile_overrides(profile))
+        config.setdefault("hardware", {})["profile"] = profile
 
     write_all_generated(config, tmp_path)
 

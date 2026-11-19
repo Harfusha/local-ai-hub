@@ -10,6 +10,7 @@ import uvicorn
 from mcp.server.fastmcp import FastMCP
 from starlette.testclient import TestClient
 
+from local_ai_hub.deterministic import DeterministicEngine
 from local_ai_hub.mcp_http import create_app
 
 
@@ -263,7 +264,7 @@ def test_review_diff_propagates_cancellation_to_its_generation():
     event = threading.Event()
     service = LocalAIServices.__new__(LocalAIServices)
     service.config = {}
-    service.deterministic = None
+    service.deterministic = object.__new__(DeterministicEngine)
     service.router = SimpleNamespace(classify=lambda *args: {"model": "m", "complexity": "fast"})
     service._resident_optimize = lambda route, *args: route
     service.model_policy = SimpleNamespace(tier_for=lambda model: "fast",
@@ -698,7 +699,7 @@ def test_real_delegate_operation_stops_on_hub_disconnect(monkeypatch, operation)
     service = LocalAIServices.__new__(LocalAIServices)
     route = {"task_type": "general", "complexity": "light", "model": "test-model"}
     service.config = {}
-    service.deterministic = None
+    service.deterministic = object.__new__(DeterministicEngine) if operation == "review_diff" else None
     service.code_index = None
     service.router = SimpleNamespace(classify=lambda *_args: dict(route),
                                      apply_model_override=lambda value, _model: value)

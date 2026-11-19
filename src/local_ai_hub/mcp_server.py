@@ -4056,14 +4056,19 @@ def _local_ai_repo_impl(
         elif type(search_mode) is not str or search_mode not in {"lexical", "rag", "hybrid"}:
             return {"success": False, "error": "search_mode must be lexical, rag, or hybrid",
                     "status_code": 400, "terminal": True, "retryable": False}
-        unavailable_features: list[str] = []
         if summarize_results and not getattr(FEATURES, "search_summaries", False):
-            summarize_results = False
-            unavailable_features.append("search_summaries")
+            return {
+                "success": False, "unsupported": True, "feature": "search_summaries",
+                "error": "AI search summaries are disabled for the active profile",
+                "terminal": True, "retryable": False,
+            }
         enrich = bool(include_code)
         if enrich and not FEATURES.enriched_search:
-            enrich = False
-            unavailable_features.append("enriched_search")
+            return {
+                "success": False, "unsupported": True, "feature": "enriched_search",
+                "error": "enriched search is disabled (features.enriched_search=false)",
+                "terminal": True, "retryable": False,
+            }
         extra = list(extra_fields or [])
         if enrich:
             extra.extend(["text", "raw"])
@@ -4089,8 +4094,6 @@ def _local_ai_repo_impl(
             "search_mode": search_mode,
         }
         search_result = CLIENT.post("/api/search", search_payload, timeout=float(min(120, _timeout("quick"))), path_hints=normalized_hints or None)
-        if unavailable_features and isinstance(search_result, dict) and search_result.get("success") is True:
-            search_result = {**search_result, "degraded": True, "fallback_used": True}
         projected = _compact(search_result, "search", extra_fields=extra if extra else None)
         if not summarize_results or not isinstance(search_result, dict) or not search_result.get("success", False):
             return projected
@@ -6067,20 +6070,7 @@ def local_ai_coord(
             return _compact(CLIENT.coord(
                 action="task_claim", task_id=task_id, owner=owner, root=root,
             ), "task_memory")
-        task_result = CLIENT.coord(
-            **task_kwargs,
-        )
-        if (action == "task_checkpoint" and budget_enabled
-                and isinstance(task_result, dict)
-                and task_result.get("success") is False
-                and task_result.get("status_code") == 413
-                and task_result.get("operation_not_started") is True
-                and task_result.get("error") == "checkpoint_response_budget_too_small"):
-            response_budget = task_result.get("response_budget")
-            required_tokens = response_budget.get("required_tokens") if isinstance(response_budget, dict) else None
-            if type(required_tokens) is int and required_tokens > requested:
-                task_kwargs["response_budget_tokens"] = required_tokens
-                task_result = CLIENT.coord(**task_kwargs)
+        task_result = CLIENT.coord(**task_kwargs)
         task_projection = _compact(task_result, "task_memory")
         if (action == "task_list" and isinstance(task_result, dict)
                 and task_result.get("success") is True and task_result.get("tasks") == []

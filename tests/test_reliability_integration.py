@@ -604,10 +604,12 @@ def test_prepare_model_reloads_small_context_and_evicts_others(tmp_path: Path, m
     cfg["model_execution"] = {"fast": {"context_tokens": 8192, "large_context_tokens": 8192, "max_context_tokens": 8192}}
     runtime = OllamaRuntime(cfg)
     monkeypatch.setattr(runtime, "ensure_running", lambda: True)
-    monkeypatch.setattr(runtime, "loaded_model_details", lambda **_kwargs: [
-        {"name": "fast", "context_length": 4096},
-        {"name": "other", "context_length": 4096},
-    ])
+    residency = {"size_bytes": 1024, "vram_bytes": 1024, "cpu_bytes": 0}
+    details = iter((
+        [{"name": "fast", "context_length": 4096, **residency}, {"name": "other"}],
+        [{"name": "fast", "context_length": 8192, **residency}],
+    ))
+    monkeypatch.setattr(runtime, "loaded_model_details", lambda **_kwargs: next(details))
     unloaded: list[str] = []
     monkeypatch.setattr(runtime, "unload_model", lambda model, **_kwargs: (unloaded.append(model) or True))
     payloads: list[dict] = []
@@ -626,8 +628,11 @@ def test_embedding_model_residency_uses_embed_api(tmp_path: Path, monkeypatch: p
     cfg["models"] = {"embedding": "qwen3-embedding:0.6b"}
     runtime = OllamaRuntime(cfg)
     monkeypatch.setattr(runtime, "ensure_running", lambda: True)
-    monkeypatch.setattr(runtime, "loaded_model_details", lambda **_kwargs: [])
     requests: list[tuple[str, dict]] = []
+    monkeypatch.setattr(runtime, "loaded_model_details", lambda **_kwargs: (
+        [{"name": "qwen3-embedding:0.6b", "size_bytes": 1024, "vram_bytes": 1024, "cpu_bytes": 0}]
+        if requests else []
+    ))
 
     def request(endpoint: str, payload: dict, timeout=None, **_kwargs):
         requests.append((endpoint, payload))
@@ -736,12 +741,12 @@ def test_agent_policy_is_consistent_and_has_stop_reuse_protocol(tmp_path: Path):
     skill = generate_skill_markdown({})
     assert setup.GLOBAL_POLICY_BEGIN in agents
     assert setup.GLOBAL_POLICY_END in agents
-    for phrase in ("Stop escalating", "in_progress=true", "Do not fan out", "one bounded health/retry attempt"):
-        assert phrase in agents
-    for phrase in ("Stop escalating", "in_progress=true", "Do not fan out", "one bounded health/retry attempt"):
-        assert phrase in policy
-    assert "Stop escalating" in skill
-    assert "retryable`/429/503" in skill
+    for content in (agents, policy, skill):
+        assert "Stop escalating" in content
+        assert "in_progress=true" in content
+        assert "Do not fan out" in content
+        assert "`terminal=true` and `retryable=false`" in content
+        assert "retryable`/429/503" in content
 
 
 def test_agent_policy_has_actionable_adoption_triggers_and_recipes():

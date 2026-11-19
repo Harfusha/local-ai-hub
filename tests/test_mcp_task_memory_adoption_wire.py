@@ -389,11 +389,12 @@ def test_registered_mcp_checkpoint_budget_preflight_is_atomic_at_128_tokens(tmp_
     assert "request_not_sent" not in payload
     assert payload["request_id"] == calls[-1]["request_id"]
     assert payload["response_budget"]["returned_tokens"] == json_tokens(
-        result.model_dump(mode="json", by_alias=True, exclude_none=True))
+        result.model_dump(mode="json", by_alias=True, exclude_none=True)) <= 128
     task = tasks.get(TASK_ID)
     assert "memory_audit" not in task.checkpoint.state_data
     assert tasks.state_store.event_page(f"task:{TASK_ID}")["last_seq"] == 1
-    assert calls[-1]["body"]["response_budget_tokens"] == 128
+    assert [call["body"]["response_budget_tokens"] for call in calls
+            if call["body"].get("action") == "checkpoint"] == [128]
 
 
 @pytest.mark.parametrize("detailed_diagnostics", [False, True], ids=["detail-off", "detail-on"])

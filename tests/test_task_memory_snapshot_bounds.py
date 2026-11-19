@@ -352,14 +352,14 @@ def test_real_create_and_resume_keep_older_goal_fact_ahead_of_general_convention
     repository_id = project_config.resolve_project_context(root, tmp_path).coordination_id
     assert repository_id
     wanted = memory.record(MemoryRecord.create(
-        kind=MemoryKind.FACT, scope=AgentScope.REPOSITORY, scope_id=str(root),
+        kind=MemoryKind.FACT, scope=AgentScope.REPOSITORY, scope_id=repository_id,
         key="renderer theme cache invalidation", value="Renderer theme cache invalidation uses the theme revision",
         status=MemoryStatus.CONFIRMED, confidence=1.0, source="user",
         provenance={"root": str(root), "repository_id": repository_id},
     ), actor="user")
     for index in range(25):
         memory.record(MemoryRecord.create(
-            kind=MemoryKind.CONVENTION, scope=AgentScope.REPOSITORY, scope_id=str(root),
+            kind=MemoryKind.CONVENTION, scope=AgentScope.REPOSITORY, scope_id=repository_id,
             key=f"rule{index}", value="Keep files immutable", status=MemoryStatus.CONFIRMED,
             confidence=1.0, source="user", provenance={"root": str(root), "repository_id": repository_id},
         ), actor="user")
@@ -376,9 +376,8 @@ def test_real_create_and_resume_keep_older_goal_fact_ahead_of_general_convention
     try:
         task = tasks.create(
             GoalContract(goal="Fix renderer theme cache invalidation"),
-            ScopeContext(repository_id=str(root), task_id="ranked-snapshot"),
+            ScopeContext(repository_id=repository_id, task_id="ranked-snapshot"),
             task_id="ranked-snapshot", repo_root=str(root),
-        root=str(root),
         )
         assert wanted.record_id in compiled_ids[-1]
         created_snapshot = task.checkpoint.state_data["memory_context"]

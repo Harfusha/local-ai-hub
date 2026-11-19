@@ -317,7 +317,6 @@ def test_mcp_task_completion_enforces_project_verification_rules(
         ScopeContext(task_id="task-mcp", repository_id=coordination_id, session_id=session_id),
         task_id="task-mcp",
         repo_root=str(root),
-    root=str(root),
     )
 
     class Recovery:
@@ -480,7 +479,6 @@ def test_completion_handler_uses_persisted_receipts_and_completes_task(tmp_path:
         ScopeContext(task_id="task-live", repository_id=coordination_id, session_id="session-live"),
         task_id="task-live",
         repo_root=str(root),
-    root=str(root),
     )
 
     source_evidence = artifact_store.put_json(

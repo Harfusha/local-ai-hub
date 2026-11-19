@@ -817,7 +817,7 @@ def test_behavioral_links_only_reference_inventoried_operations():
     assert "MCP action local_ai_task::not_a_real_action" not in links
     task_list_selector = (
         "tests/test_mcp_coord_operation_acceptance.py::"
-        "test_local_ai_coord_task_list_forwards_status_and_stale_filter"
+        "test_local_ai_coord_task_list_forwards_pagination_and_filters"
     )
     assert task_list_selector in links["MCP action local_ai_coord::task_list"]
     # The retired command tool must not become a live operation or schema gap.

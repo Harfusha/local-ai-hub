@@ -178,7 +178,12 @@ def test_oversized_file_card_uses_single_writer(tmp_path, monkeypatch):
         monkeypatch.setattr(prep, "_find_next_files", lambda _root, _limit: [])
         write_calls = []
         write_retry = prep._write_retry
-        monkeypatch.setattr(prep, "_write_retry", lambda callback: (write_calls.append(callback), write_retry(callback))[1])
+
+        def record_write(callback, **kwargs):
+            write_calls.append(callback)
+            return write_retry(callback, **kwargs)
+
+        monkeypatch.setattr(prep, "_write_retry", record_write)
         row = dict(prep._project_row(str(root)))
         row["phase"] = "files"
         assert prep._step_file_card(row) is True

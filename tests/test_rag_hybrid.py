@@ -187,10 +187,11 @@ def test_graphrag_search_excludes_relations_from_other_repositories(tmp_path):
     }
 
 
-def test_memory_auto_links_persist_scope_provenance():
+def test_memory_auto_links_persist_scope_provenance(tmp_path):
     from types import SimpleNamespace
 
     linked = []
+    root = Path(os.path.normcase(str(tmp_path.resolve()))).as_posix()
     store = object.__new__(MemoryStore)
     store.record_relation = lambda **kwargs: linked.append(kwargs)
     record = SimpleNamespace(
@@ -199,13 +200,14 @@ def test_memory_auto_links_persist_scope_provenance():
         value="local memory value",
         scope="repository",
         scope_id="repo-A",
-        provenance={"repository_id": "repo-A"},
+        provenance={"repository_id": "repo-A", "root": root},
         confidence=1.0,
     )
 
     MemoryStore._auto_link_record(store, record)
 
     assert linked
+    assert all(item["root"] == item["metadata"]["root"] == root for item in linked)
     assert all(item["metadata"]["scope"] == "repository" for item in linked)
     assert all(
         item["metadata"]["provenance"]["repository_id"] == "repo-A"

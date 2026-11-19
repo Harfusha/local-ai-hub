@@ -164,7 +164,6 @@ def test_contract_revision_reconciliation(test_environment):
         ),
         ScopeContext(repository_id=str(tmp_path)),
         task_id="task_001", actor="test_agent", repo_root=str(tmp_path),
-    root=str(tmp_path),
     )
     binding = binding_manager.bind_task("task_001", "plan_workflow", "task_core", rel_path)
 
