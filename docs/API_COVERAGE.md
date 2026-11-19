@@ -80,6 +80,7 @@ Reproduce with `python tools/surface_inventory.py --check --task-id task_eefe699
 | HTTP GET | /api/telemetry/report | confirmed | src/local_ai_hub/http_server.py | op-ff27e5f93735 |
 | HTTP GET | /api/telemetry/timeline | confirmed | src/local_ai_hub/http_server.py | op-d7ed59a7d1a4 |
 | HTTP GET | /api/test_matrix | conditional | src/local_ai_hub/http_server.py | op-7e21dfa39869 |
+| HTTP GET | /api/updates | confirmed | src/local_ai_hub/http_server.py | op-8550411fe905 |
 | HTTP GET | /dashboard | conditional | src/local_ai_hub/http_server.py | op-f5f8517aa982 |
 | HTTP GET | /dashboard/legacy | conditional | src/local_ai_hub/http_server.py | op-571e2e1bff71 |
 | HTTP GET | /favicon.ico | confirmed | src/local_ai_hub/http_server.py | op-85e915b2262e |
@@ -290,6 +291,7 @@ Reproduce with `python tools/surface_inventory.py --check --task-id task_eefe699
 | HTTP POST | /api/telemetry/timeline | confirmed | src/local_ai_hub/http_server.py | op-e7c38a4c7425 |
 | HTTP POST | /api/telemetry/tool-accounting | confirmed | src/local_ai_hub/http_server.py | op-04438ec90d60 |
 | HTTP POST | /api/test_matrix | confirmed | src/local_ai_hub/http_server.py | op-1321702d7984 |
+| HTTP POST | /api/updates | confirmed | src/local_ai_hub/http_server.py | op-f05f0b3792b9 |
 | HTTP POST | /api/vision | confirmed | src/local_ai_hub/http_server.py | op-8a27267bb6c5 |
 | HTTP POST | /api/vision/review | confirmed | src/local_ai_hub/http_server.py | op-e81bbd33a8df |
 | HTTP POST | /api/work-orders | confirmed | src/local_ai_hub/http_server.py | op-44a15019a847 |

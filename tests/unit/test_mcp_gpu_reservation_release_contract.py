@@ -150,5 +150,6 @@ def test_scheduler_capacity_release_rejects_without_explicit_consent(monkeypatch
     )
 
     assert result["success"] is False
-    assert posted[0][0] == "/api/gpu-reservation"
-    assert posted[0][1]["consent"] is False
+    releases = [payload for path, payload in posted if path == "/api/gpu-reservation"]
+    assert len(releases) == 1
+    assert releases[0]["consent"] is False
