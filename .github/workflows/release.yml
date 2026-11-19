@@ -2,6 +2,10 @@ name: Release
 
 on:
   workflow_call:
+    inputs:
+      draft_release:
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -19,8 +23,21 @@ jobs:
           python-version: "3.14"
 
       - name: Verify tag and clean release checkout
+        id: release_version
         shell: bash
-        run: python tools/release_check.py --strict-tree --expected-version "${GITHUB_REF_NAME#v}"
+        env:
+          DRAFT_RELEASE: ${{ inputs.draft_release }}
+        run: |
+          set -euo pipefail
+          tag="$GITHUB_REF_NAME"
+          if [[ "$DRAFT_RELEASE" == true ]]; then
+            [[ "$tag" =~ ^v([0-9]+\.[0-9]+\.[0-9]+)-qa\.[0-9]+$ ]]
+          else
+            [[ "$tag" =~ ^v([0-9]+\.[0-9]+\.[0-9]+)$ ]]
+          fi
+          version="${BASH_REMATCH[1]}"
+          python tools/release_check.py --strict-tree --expected-version "$version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
 
       - name: Install build tooling
         run: |
@@ -32,7 +49,9 @@ jobs:
 
       - name: Recheck strict release tree
         shell: bash
-        run: python tools/release_check.py --strict-tree --expected-version "${GITHUB_REF_NAME#v}"
+        env:
+          EXPECTED_VERSION: ${{ steps.release_version.outputs.version }}
+        run: python tools/release_check.py --strict-tree --expected-version "$EXPECTED_VERSION"
 
       - name: Build wheel and sdist
         run: python -m build --no-isolation
@@ -41,13 +60,14 @@ jobs:
         timeout-minutes: 2
         working-directory: ${{ runner.temp }}
         shell: bash
+        env:
+          EXPECTED_VERSION: ${{ steps.release_version.outputs.version }}
         run: |
           python -m venv "$RUNNER_TEMP/local-ai-hub-wheel-smoke"
           "$RUNNER_TEMP/local-ai-hub-wheel-smoke/bin/python" -m pip install --require-hashes --upgrade -r "$GITHUB_WORKSPACE/tools/release-pip-requirements.txt"
           "$RUNNER_TEMP/local-ai-hub-wheel-smoke/bin/python" -m pip install -c "$GITHUB_WORKSPACE/tools/release-runtime-constraints.txt" --report "$RUNNER_TEMP/wheel-resolution.json" "$GITHUB_WORKSPACE"/dist/local_ai_hub-*.whl
           "$RUNNER_TEMP/local-ai-hub-wheel-smoke/bin/python" -m pip check
           "$RUNNER_TEMP/local-ai-hub-wheel-smoke/bin/python" -I -c "import mcp, watchdog"
-          EXPECTED_VERSION="${GITHUB_REF_NAME#v}"
           ACTUAL_VERSION=$("$RUNNER_TEMP/local-ai-hub-wheel-smoke/bin/local-ai-hub" --version)
           test "$ACTUAL_VERSION" = "Local AI Hub $EXPECTED_VERSION"
           "$RUNNER_TEMP/local-ai-hub-wheel-smoke/bin/python" -I "$GITHUB_WORKSPACE/tools/wheel_smoke.py" > "$RUNNER_TEMP/wheel-mcp-smoke.json"
@@ -97,3 +117,5 @@ jobs:
         with:
           files: dist/*
           generate_release_notes: true
+          draft: ${{ inputs.draft_release }}
+          prerelease: ${{ inputs.draft_release }}

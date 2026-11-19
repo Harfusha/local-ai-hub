@@ -15,6 +15,10 @@ on:
         description: Run the full suite in every supported OS/Python combination
         type: boolean
         default: false
+      draft_release:
+        description: Keep the verification release as a draft
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -27,6 +31,7 @@ concurrency:
 
 env:
   NO_TEST_CACHE: "1"
+  HUB_CI_DRAFT_RELEASE: ${{ inputs.draft_release || false }}
 
 jobs:
   lint:
@@ -481,8 +486,10 @@ jobs:
 
   release:
     name: Publish verified release
-    if: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
+    if: ${{ (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && startsWith(github.ref, 'refs/tags/v') && (!contains(github.ref_name, '-qa.') || inputs.draft_release) }}
     needs: [package]
     permissions:
       contents: write
     uses: ./.github/workflows/release.yml
+    with:
+      draft_release: ${{ inputs.draft_release || false }}

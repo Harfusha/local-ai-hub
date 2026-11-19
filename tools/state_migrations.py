@@ -23,6 +23,8 @@ _REPARSE_POINT = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
 
 
 class StateMigration:
+    """Callbacks must close state handles before returning so Windows can swap the staged directory."""
+
     def __init__(
         self,
         source_version: int,
@@ -196,6 +198,7 @@ def run_state_migrations(
     *,
     migrations: tuple[StateMigration, ...] = MIGRATIONS,
     target_version: int = CURRENT_STATE_VERSION,
+    backup_current: bool = False,
 ) -> dict[str, object]:
     root = Path(state_dir)
     plan = inspect_state_migration_path(root, migrations=migrations, target_version=target_version)
@@ -204,7 +207,8 @@ def run_state_migrations(
         return {**result, "backups": []}
     current = int(plan["version"])
     if plan["status"] == "current":
-        return {"status": "current", "version": current, "backups": []}
+        backups = [str(_make_backup(root, current))] if backup_current else []
+        return {"status": "current", "version": current, "backups": backups}
     by_source: dict[int, StateMigration] = {}
     for migration in migrations:
         by_source[migration.source_version] = migration
@@ -216,3 +220,26 @@ def run_state_migrations(
         "backups": [str(backup)],
         "warnings": cleanup_warnings,
     }
+
+
+def restore_state_backup(state_dir: Path, backup: Path) -> Path | None:
+    """Restore a copy of the verified backup, retaining failed candidate state."""
+    _reject_link_components(state_dir)
+    _reject_link_components(backup)
+    _reject_links(backup)
+    with tempfile.TemporaryDirectory(prefix=f".{state_dir.name}.restore-", dir=state_dir.parent) as temporary:
+        restored = Path(temporary) / "state"
+        shutil.copytree(backup, restored, symlinks=False)
+        if _tree_digest(backup) != _tree_digest(restored):
+            raise OSError(f"state restore staging failed verification: {backup}")
+        failed = None
+        if state_dir.exists():
+            failed = state_dir.with_name(f".{state_dir.name}.failed-update-{time.time_ns()}")
+            os.replace(state_dir, failed)
+        try:
+            os.replace(restored, state_dir)
+        except OSError:
+            if failed is not None:
+                os.replace(failed, state_dir)
+            raise
+    return failed

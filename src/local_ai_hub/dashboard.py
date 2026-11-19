@@ -439,6 +439,10 @@ button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-vis
 @media(max-width:1000px){.project-table tbody tr.click{grid-template-columns:1fr 1fr;grid-template-areas:'identity activity' 'progress indexes' 'actions actions'}}@media(max-width:600px){.prep-summary{grid-template-columns:repeat(2,minmax(0,1fr));padding:14px}.prep-list-wrap{padding:0 14px 14px}.project-table tbody tr.click{grid-template-columns:1fr;grid-template-areas:'identity' 'activity' 'progress' 'indexes' 'actions';padding:15px}.prep-note{padding:0 14px 12px}}
 @media(prefers-reduced-motion:reduce){*,*::before,*::after{scroll-behavior:auto!important;transition:none!important;animation:none!important}}
 
+#updateWizard{width:min(520px,94vw);color:var(--fg);margin:auto}
+#updateWizard:not([open]){display:none}
+#updateWizard::backdrop{background:rgba(0,0,0,.75)}
+#updateWizard [hidden]{display:none}
 </style></head><body>
 <div class="top">
   <div class="toolbar">
@@ -449,6 +453,7 @@ button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-vis
     <span id="conn" class="pill warn-t"><span class="pulse-dot"></span>connecting</span>
     <span id="activityModeBadge" class="pill warn-t" data-mode="unknown">Mode: Unknown</span>
     <span id="versionBadge" class="pill warn-t">Running code … · Installed package …</span>
+    <button class="btn" id="updateWizardOpen" aria-haspopup="dialog" aria-live="polite">Updates</button>
     <span id="updated" class="tiny"></span>
     <label class="tiny">Metrics period <select id="sloScope"><option value="process" selected>Since restart</option><option value="window">Last 30 days</option></select></label>
     <span id="featSummary" class="pill tiny"></span>
@@ -954,6 +959,22 @@ button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-vis
   <header class="page-heading" data-section="11 / Activity"><h1 tabindex="-1" id="page-title-events">Activity</h1><p>Follow the latest activity as it happens.</p></header><section class="section"><h2>Live activity <span class="tiny">Recent events · pausing this view keeps the Hub running</span></h2><div class="project-toolbar"><select id="eventSeverity" aria-label="Event severity"><option value="">All severities</option><option value="failure">Failures</option><option value="warning">Warnings</option><option value="success">Successful</option><option value="info">Informational / result unreported</option></select><input id="eventSource" type="search" placeholder="Event source, agent, action…" aria-label="Event source"><span class="tiny" id="eventSummary">No events received.</span></div><div class="event-header"><span>Time</span><span>Agent</span><span>Type</span><span>Action / Stage</span><span class="hide-sm">Model</span><span>Duration</span><span>Status</span></div><div id="eventList" class="events"></div></section></div>
 
 <div id="modalBg" class="modal-bg" role="dialog" aria-modal="true" aria-labelledby="modalTitle"><div class="modal"><div class="modal-head"><strong id="modalTitle">Details</strong><span id="modalLive" class="tiny" style="margin-left:10px"></span><button class="btn spacer" id="modalClose">Close</button></div><div id="modalBody"></div></div></div>
+<dialog id="updateWizard" class="modal" aria-labelledby="updateWizardTitle">
+  <div class="modal-head"><strong id="updateWizardTitle">Hub updates</strong><form method="dialog" class="spacer"><button class="btn">Close</button></form></div>
+  <div class="modal-body-wrap">
+    <p id="updateWizardStatus" role="status">Checking for a stable release…</p>
+    <p id="updateWizardReport" role="status" hidden></p>
+    <div id="updateWizardConfirm" hidden>
+      <p>Hub and its agent connections will pause during installation and any required data migrations. The wizard will show the result when Hub returns.</p>
+      <label><input type="checkbox" id="updateRestartConfirmed"> I’m ready to restart Hub</label>
+    </div>
+    <div class="modal-actions-bar">
+      <button class="btn" id="updateWizardCheck">Check again</button>
+      <button class="btn" id="updateWizardReview" hidden>Review update</button>
+      <button class="btn" id="updateWizardInstall" hidden disabled>Install and restart</button>
+    </div>
+  </div>
+</dialog>
 <div id="visionReviewModal" class="modal-bg" role="dialog" aria-modal="true" aria-label="Frontend vision review"><div class="modal vision-review-modal"><div class="modal-head"><strong id="visionReviewTitle">Frontend vision review</strong><span class="tiny" id="visionReviewStatus" aria-live="polite"></span><button class="btn spacer" id="visionReviewClose">Close</button></div><div id="visionReviewBody" class="modal-body-wrap"><div class="modal-card"><div class="modal-card-head"><span>Review input</span><span class="tiny">PNG/JPEG or current-tab evidence</span></div><div class="modal-card-body"><label class="modal-form"><span>Screenshot</span><input id="visionScreenshot" aria-label="Screenshot for frontend review" type="file" accept="image/png,image/jpeg,image/webp"></label><label class="modal-form"><span>Prompt</span><textarea id="visionPrompt" aria-label="Frontend review instructions" rows="4" maxlength="20000" placeholder="What should the visual critic inspect?"></textarea></label><div class="modal-actions-bar"><button class="btn" id="visionCaptureCurrentTab" type="button">Capture current tab</button><span id="visionCaptureState" class="trace-capture-state not-captured" data-capture-state="not_captured">Capture state · Not captured</span></div><div id="visionCaptureError" class="diag-banner bad" role="alert" style="display:none"></div><input id="visionFindingId" type="hidden"><p id="diagramVisionReviewNotice" class="tiny muted" role="status" style="display:none"></p><button class="btn ok" id="visionReviewSubmit" type="button">Run vision review</button></div></div><div id="visionReviewResult" aria-live="polite"></div></div></div></div>
 
 <script>
@@ -4723,6 +4744,71 @@ async function fetchDashboardJson(path,options={}){
   return data;
 }
 async function post(path,payload,requestOptions={}){const r=await apiFetch(path,{...requestOptions,method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});return await r.json()}
+
+let updateSnapshot=null, reviewedUpdate=null, updateSending=false, updatePolling=false, nextUpdatePoll=0;
+function renderUpdateWizard(){
+  const data=updateSnapshot||{}, check=data.check||{}, report=data.report||{};
+  const candidate=check.status==='update_available', busy=data.busy||updateSending;
+  const confirming=Boolean(reviewedUpdate&&candidate&&reviewedUpdate.revision===check.revision&&reviewedUpdate.target_version===check.target_version);
+  $('updateWizardOpen').textContent=busy?'Updating Hub…':candidate?'Update '+check.target_version+' available':'Updates';
+  $('updateWizardStatus').textContent=busy?'Update is in progress. Hub may disconnect while it restarts.':
+    data.eligible===false?'Updates require a managed Hub installation outside a Git checkout.':
+    candidate?'Installed '+check.version_before+' · Available '+check.target_version:
+    check.status==='up_to_date'?'Hub '+check.version_before+' is up to date.':
+    check.error||'Checking for a stable release…';
+  const reportText=report.status==='installed'?'Update to '+report.target_version+' completed.':
+    report.status==='failed'?'Last update failed. '+(report.error||report.message||'See the update report.'):'';
+  $('updateWizardReport').textContent=reportText;
+  $('updateWizardReport').hidden=!reportText||busy;
+  $('updateWizardCheck').disabled=busy||data.eligible===false||check.status==='checking';
+  $('updateWizardReview').hidden=!candidate||busy||confirming;
+  $('updateWizardConfirm').hidden=!confirming||busy;
+  $('updateWizardInstall').hidden=!confirming||busy;
+  $('updateWizardInstall').disabled=!confirming||busy||!$('updateRestartConfirmed').checked;
+}
+async function refreshUpdateWizard(force=false){
+  if(updatePolling)return;
+  updatePolling=true;
+  try{
+    updateSnapshot=force?await post('/api/updates',{action:'check'}):
+      await fetchDashboardJson('/api/updates',{cache:'no-store',timeoutMs:5000});
+    renderUpdateWizard();
+  }catch{
+    if(updateSnapshot?.busy)$('updateWizardStatus').textContent='Waiting for Hub to restart…';
+    else if($('updateWizard').open)$('updateWizardStatus').textContent='Update status is temporarily unavailable.';
+  }finally{updatePolling=false;nextUpdatePoll=Date.now()+60000}
+}
+$('updateWizardOpen').onclick=()=>{
+  reviewedUpdate=null;$('updateRestartConfirmed').checked=false;
+  $('updateWizard').showModal();renderUpdateWizard();refreshUpdateWizard();
+};
+$('updateWizardReview').onclick=()=>{
+  reviewedUpdate=updateSnapshot?.check;$('updateRestartConfirmed').checked=false;renderUpdateWizard();
+  $('updateRestartConfirmed').focus();
+};
+$('updateRestartConfirmed').onchange=renderUpdateWizard;
+$('updateWizardCheck').onclick=()=>{reviewedUpdate=null;refreshUpdateWizard(true)};
+$('updateWizardInstall').onclick=async()=>{
+  if(updateSending||!reviewedUpdate||!$('updateRestartConfirmed').checked)return;
+  updateSending=true;renderUpdateWizard();
+  let error='';
+  try{
+    const result=await post('/api/updates',{
+      action:'install',version:reviewedUpdate.target_version,revision:reviewedUpdate.revision,confirm_restart:true,
+    });
+    if(result?.success!==true)error=result?.error||'Update could not be queued.';
+    else{updateSnapshot={...updateSnapshot,busy:true};reviewedUpdate=null}
+  }catch{
+    updateSnapshot={...updateSnapshot,busy:true};reviewedUpdate=null;
+  }finally{
+    updateSending=false;renderUpdateWizard();
+    if(error)$('updateWizardStatus').textContent=error;
+  }
+};
+refreshUpdateWizard();
+setInterval(()=>{
+  if(document.visibilityState!=='hidden'&&($('updateWizard').open||updateSnapshot?.busy||updateSnapshot?.check?.status==='checking'||Date.now()>=nextUpdatePoll))refreshUpdateWizard();
+},2000);
 
 const ACTIVITY_MODES=['active','gaming','maintenance','preprocessing'];
 let activityModeStatusPolls=0;

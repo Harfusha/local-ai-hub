@@ -77,6 +77,7 @@ _update_transaction_module = importlib.util.module_from_spec(_update_transaction
 _update_transaction_spec.loader.exec_module(_update_transaction_module)
 replace_install_payload = _update_transaction_module.replace_install_payload
 stop_existing_runtime = _update_transaction_module.stop_existing_runtime
+installation_update_lock = _update_transaction_module.installation_update_lock
 _setup_wizard_spec = importlib.util.spec_from_file_location("_local_ai_hub_setup_wizard", Path(__file__).with_name("setup_wizard.py"))
 if _setup_wizard_spec is None or _setup_wizard_spec.loader is None:
     raise ImportError("could not load sibling setup_wizard.py")
@@ -334,15 +335,8 @@ def copy_install_tree(
     before_commit: Callable[[], tuple[bool, str]] | None = None,
     after_swap: Callable[[], tuple[bool, str]] | None = None,
 ) -> bool:
-    file_names = (
-        "requirements-core.txt", "requirements-token-economy.txt", "requirements-local-nlp.txt", "requirements-openvino.txt",
-        "requirements-laya-runtime.txt", "requirements-ast-index.txt", "requirements-performance.txt", "requirements-profiling.txt",
-        "defaults.toml", "config.toml.example", "pyproject.toml",
-        "README.md", "FEATURES.md", "AGENTS.md", "LICENSE", "CHANGELOG.md", "THIRD_PARTY.md",
-        "RELEASE.json", "CONTRIBUTING.md", "SECURITY.md", "install.ps1", "install.sh",
-    )
     success, detail = replace_install_payload(
-        UPDATE_SOURCE_ROOT, install_dir, config_source, file_names,
+        UPDATE_SOURCE_ROOT, install_dir, config_source, _update_transaction_module.PAYLOAD_FILES,
         before_commit=before_commit, after_swap=after_swap,
     )
     log(detail if success else f"ERROR: {detail}")
@@ -1952,6 +1946,15 @@ def main() -> int:
         log(f"Verified clean source commit: {verified_revision}")
 
     config_source, cfg, install_dir = select_config_source(args.config)
+    try:
+        with installation_update_lock(install_dir):
+            return run_installation(args, config_source, cfg, install_dir)
+    except (OSError, ValueError, RuntimeError) as exc:
+        log(f"Setup refused or failed: {exc}")
+        return 1
+
+
+def run_installation(args: argparse.Namespace, config_source: Path, cfg: dict[str, Any], install_dir: Path) -> int:
     setup_choices = configure_setup_choices(args, cfg, install_dir, argv=sys.argv[1:])
     include_companion = not args.skip_companion_skills and bool(cfg.get("setup", {}).get("install_companion_skills", True))
     if args.generate_only:

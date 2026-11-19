@@ -16,6 +16,7 @@ class RouteRule:
 
 
 POST_ROUTE_REGISTRY: tuple[RouteRule, ...] = (
+    RouteRule('post_updates_1', frozenset(('/api/updates',))),
     RouteRule('post_admin_mode_1', frozenset(('/api/admin/mode',))),
     RouteRule('post_bundle_import_1', frozenset(('/api/bundle/import',))),
     RouteRule('post_telemetry_tool_accounting_1', frozenset(('/api/telemetry/tool-accounting',))),

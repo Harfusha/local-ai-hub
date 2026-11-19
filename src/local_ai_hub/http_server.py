@@ -614,6 +614,7 @@ def _http_admin_action(method: str, path: str) -> str | None:
             "/api/models/manage": "model.manage",
             "/api/mode": "status.read",
             "/api/status": "status.read",
+            "/api/updates": "status.read",
             "/api/repair-priorities": "telemetry.read",
             "/api/telemetry/report": "telemetry.read",
             "/api/telemetry/timeline": "telemetry.read",
@@ -625,6 +626,7 @@ def _http_admin_action(method: str, path: str) -> str | None:
             return "maintenance"
         return {
             "/api/admin/mode": "mode.control",
+            "/api/updates": "maintenance",
             "/api/bundle/import": "bundle.import",
             "/api/config": "config.write",
             "/api/config/update": "config.write",
@@ -4504,6 +4506,9 @@ class Handler(BaseHTTPRequestHandler):
                 return
         elif path not in {"/", "/dashboard", "/dashboard/legacy", "/favicon.ico"} and not self._require_authorized():
             return
+        if path == "/api/updates":
+            self._handle_dashboard_updates()
+            return
         mode_error = _http_mode_gate_error("GET", path)
         if mode_error is not None:
             self._send(503, mode_error)
@@ -5993,6 +5998,39 @@ class Handler(BaseHTTPRequestHandler):
         http_status = status if type(status) is int and 400 <= status <= 599 else 200
         self._send(http_status, result)
 
+    def _handle_dashboard_updates(self, *, mutate: bool = False) -> None:
+        if self.headers.get("X-LocalAI-Client") != "dashboard" or not _is_loopback_peer(self):
+            self._send(403, {"success": False, "error": "Update controls require the local dashboard."})
+            return
+        controller = getattr(APP, "dashboard_updates", None)
+        if controller is None:
+            self._send(503, {"success": False, "error": "Update controls are unavailable."})
+            return
+        if not mutate:
+            self._send(200, controller.status())
+            return
+        try:
+            payload = self._read_json()
+        except RequestBodyError as exc:
+            self._send(exc.status, {"success": False, "error": str(exc)})
+            return
+        if payload == {"action": "check"}:
+            self._send(200, controller.status(refresh=True))
+            return
+        if set(payload) != {"action", "version", "revision", "confirm_restart"} or (
+            payload.get("action") != "install" or payload.get("confirm_restart") is not True
+        ):
+            self._send(400, {"success": False, "error": "Review the release and confirm a Hub restart."})
+            return
+        try:
+            result = controller.install(payload["version"], payload["revision"])
+        except ValueError as exc:
+            self._send(409, {"success": False, "error": str(exc)})
+        except (OSError, RuntimeError) as exc:
+            self._send(503, {"success": False, "error": str(exc)})
+        else:
+            self._send(202, result)
+
     def do_POST(self) -> None:
         path = urlparse(self.path).path
         post_route_ids = select_http_routes("POST", path)
@@ -6012,6 +6050,9 @@ class Handler(BaseHTTPRequestHandler):
             self._send(503, {"success": False, "error": "hub starting up; please retry", "status_code": 503, "retryable": True})
             return
         if not self._require_authorized():
+            return
+        if path == "/api/updates":
+            self._handle_dashboard_updates(mutate=True)
             return
         early_mode_rejection = None
         if path != "/api/context/pack":

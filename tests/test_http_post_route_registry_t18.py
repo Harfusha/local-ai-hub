@@ -69,6 +69,7 @@ _CURRENT_ROUTE_PATHS = {
  'post_ingest_diagram_1': ['/api/rag/ingest_diagram'],
 }
 _CURRENT_ADDED_ROUTES = {
+    'post_updates_1': {'paths': ['/api/updates'], 'before': 'post_admin_mode_1'},
     'post_diagnostics_export_1': {'paths': ['/api/diagnostics/export'], 'before': 'post_benchmark_1'},
     'post_task_browser_1': {'paths': ['/api/task/browser'], 'before': 'post_repo_split_changes_1'},
  'post_task_automation_1': {'paths': ['/api/task/automation'], 'before': 'post_repo_split_changes_1'},

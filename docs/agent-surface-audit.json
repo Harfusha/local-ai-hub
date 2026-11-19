@@ -885,6 +885,32 @@
         "action_literals": []
       }
     },
+    "GET /api/updates": {
+      "decision": "retain",
+      "role": "readiness_or_control",
+      "reason": "Local dashboard reads verified release availability and installation results.",
+      "response_policy": "Preserve release identity, status and errors for the local operator.",
+      "source_contract": {
+        "source": "src/local_ai_hub/http_server.py",
+        "handler": "do_GET",
+        "literal_response_fields": ["error", "success"],
+        "response_producers": ["controller.install", "controller.status", "local:result", "self._handle_dashboard_updates"],
+        "action_literals": []
+      }
+    },
+    "POST /api/updates": {
+      "decision": "retain",
+      "role": "readiness_or_control",
+      "reason": "The local dashboard can refresh release availability or confirm an exact update and restart.",
+      "response_policy": "Preserve the launch result and errors. Release and target are confined by the managed updater.",
+      "source_contract": {
+        "source": "src/local_ai_hub/http_route_registry.py",
+        "handler": "post_updates_1",
+        "literal_response_fields": ["error", "success"],
+        "response_producers": ["controller.install", "controller.status", "local:result", "self._handle_dashboard_updates"],
+        "action_literals": []
+      }
+    },
     "GET /api/mode": {
       "decision": "retain",
       "role": "readiness_or_control",

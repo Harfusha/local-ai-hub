@@ -47,7 +47,33 @@ Hub state has an explicit integer version. Ordinary startup never edits or delet
 
 This release has no registered data converters for older state layouts. An older, unknown, corrupt, or newer state version therefore stops safely; do not edit `state_version.json` by hand. Keep the state directory and use a compatible release or ask an AI to inspect the exact error and write a conversion plan. No migration is claimed until a format-specific converter and preservation check exist.
 
+Migration and verification callbacks must close their SQLite connections and other state handles before returning. Windows requires this before setup can rename the staged directory.
+
 On a migration failure, inspect `setup-report.json` for `status: requires_manual_migration`, the failed stage, exact error, and recovery-guide path. Keep the original state unchanged. For retired tenant-state conversion only, `python tools/convert_single_owner_state.py <source-file-or-database>` prints a dry plan; it does not modify the source. That tool supports only its documented formats and requires a separate output plus explicit collision/archive manifests to apply. It is not a general release-version migrator. Do not run `--apply` without reviewing the plan and preserving the original.
+
+## Automatic updates
+
+Install a release that ships `tools/auto_update.py` using the regular installer before enabling scheduled updates. The target must have a valid install ownership marker, regular `config.toml`, managed `.venv`, and versioned state. Keep the installation in a separate directory from your Git checkout. Use Git and system Python 3.11 or newer under the installation owner's account.
+
+The local dashboard's **Updates** button shows verified release availability. Choose **Review update**, confirm that Hub can restart, and choose **Install and restart**. The updater rechecks the displayed version and commit before applying it. It runs as a separate user task through Task Scheduler, user systemd, or launchd. The dashboard reads `auto-update-dashboard.json` after reconnecting.
+
+Run `python -I -B <install-dir>/tools/auto_update.py` to check for a newer stable GitHub release. Add `--apply` to install it. The updater verifies the official release's wheel, smoke receipt and source commit, stages core dependencies, then stops the Hub for the payload swap and offline migrations. It keeps the installed configuration and restores the prior environment and state if activation fails and the candidate can be stopped. A service that was disabled stays disabled. The update can temporarily need disk space for another copy of the runtime and state.
+
+To enable automatic updates, schedule the `--apply` command for your maintenance window. Use absolute paths to **system Python** and the installed script. Run under the same user who installed the Hub.
+
+| Platform | Schedule |
+| --- | --- |
+| Windows | In Task Scheduler, create a task for your account. Set the trigger to your maintenance window. Set **Program/script** to the absolute `python.exe` path and **Arguments** to `-I -B "C:\path\to\install\tools\auto_update.py" --apply`. Set **If the task is already running** to **Do not start a new instance**. |
+| Linux | In a user `systemd` service with `Type=oneshot`, set `ExecStart=/absolute/path/to/python3 -I -B /absolute/install/tools/auto_update.py --apply`. Create a timer of the same name with `OnCalendar` set to the maintenance window and enable it with `systemctl --user enable --now <name>.timer`. |
+| macOS | In a user LaunchAgent, set `ProgramArguments` to the absolute `python3` path, `-I`, `-B`, the installed script path, and `--apply`. Set `StartCalendarInterval` to the maintenance window and load the agent with `launchctl bootstrap gui/$(id -u) <absolute-plist-path>`. |
+
+Scheduled runs write `auto-update-report.json` in the install directory. On failure, inspect its message, state backup paths, and `recovery_directory`, if present. A retained `.<install-name>.auto-update-recovery` directory blocks another update. Its `update.json` records the install, state, and prior version. If rollback stops partway, preserve that directory, `.<install-name>.update-stage-*` beside the installation, and `*.backup-v*` beside the state. Restore matching code, environment and state while the service is confirmed stopped before clearing the recovery directory. A `.*.failed-update-*` directory contains candidate state preserved during rollback.
+
+## Publish a stable release
+
+On GitHub, run **Prepare stable release** on `master` and select `patch`, `minor`, or `major`. The workflow calculates the SemVer, updates the version metadata, README and changelog in a release commit, pushes its tag, and dispatches CI on that tag. The existing package build and smoke checks gate publication. If CI or publication needs retrying, run CI again for the same tag. The release commit is reachable from its tag. `master` remains the development branch.
+
+For isolated verification, select `draft_release` on the test branch. The workflow uses a `vX.Y.Z-qa.<run-id>` tag and the same CI gates. The release stays a draft prerelease, so the stable updater skips it. Keep `draft_release` selected if you dispatch CI again for a verification tag.
 
 ## Manual setup guide
 

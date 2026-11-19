@@ -24,6 +24,7 @@ from urllib.parse import urlsplit
 from . import __version__
 from .artifacts import ArtifactStore
 from .config import load_config
+from .dashboard_updates import DashboardUpdates
 from .embeddings import EmbeddingModel
 from .ollama import OllamaRuntime
 from .tiered_ollama import TieredOllamaRuntime
@@ -506,6 +507,7 @@ class LocalAIApp:
 
     def __init__(self, config_path: str | None = None):
         self.config = load_config(config_path)
+        self.dashboard_updates = DashboardUpdates(self.config.get("_config_path"))
         state_dir = Path(self.config["server"]["state_dir"])
         ensure_state_version(state_dir)
         require_canonical_agent_state_database(state_dir)

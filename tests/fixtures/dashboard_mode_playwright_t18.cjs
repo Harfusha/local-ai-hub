@@ -7,6 +7,8 @@ const requests = [];
 let html = '';
 let currentMode = 'active';
 let gamingModePolls = 0;
+let updateInstalled = false;
+const updateRevision = 'a'.repeat(40);
 
 function respond(res, status, payload, contentType = 'application/json; charset=utf-8') {
   const body = typeof payload === 'string' ? payload : JSON.stringify(payload);
@@ -24,6 +26,23 @@ function fixtureServer() {
 
     const request = { method: req.method, path: url.pathname, token: req.headers['x-localai-token'] || null, client: req.headers['x-localai-client'] || null };
     requests.push(request);
+
+    if (url.pathname === '/api/updates') {
+      if (req.method === 'POST') {
+        let raw = '';
+        for await (const chunk of req) raw += chunk;
+        request.body = JSON.parse(raw || '{}');
+        updateInstalled = true;
+        respond(res, 202, { success: true, status: 'queued' });
+      } else {
+        respond(res, 200, { success: true, eligible: true, busy: false,
+          check: updateInstalled ? { status: 'up_to_date', version_before: '6.1.2' } :
+            { status: 'update_available', version_before: '6.1.1', target_version: '6.1.2', revision: updateRevision },
+          report: updateInstalled ? { status: 'installed', target_version: '6.1.2' } : {},
+        });
+      }
+      return;
+    }
 
     if (req.method === 'GET' && url.pathname === '/api/mode') {
       if (currentMode === 'gaming') gamingModePolls += 1;
@@ -97,6 +116,23 @@ async function main() {
       else await route.abort();
     });
     await page.goto(baseUrl, { waitUntil: 'domcontentloaded' });
+    if (process.argv.includes('--updates-only')) {
+      await page.waitForFunction(() => document.querySelector('#updateWizardOpen')?.textContent === 'Update 6.1.2 available');
+      await page.locator('#updateWizardOpen').click();
+      await page.getByRole('button', { name: 'Review update' }).click();
+      assert(await page.getByRole('button', { name: 'Install and restart' }).isDisabled());
+      await page.locator('#updateRestartConfirmed').check();
+      await page.getByRole('button', { name: 'Install and restart' }).click();
+      await page.waitForFunction(() => document.querySelector('#updateWizardReport')?.textContent === 'Update to 6.1.2 completed.');
+      const applied = requests.find(item => item.method === 'POST' && item.path === '/api/updates');
+      assert.equal(applied.client, 'dashboard');
+      assert.deepEqual(applied.body, { action: 'install', version: '6.1.2', revision: updateRevision, confirm_restart: true });
+      await page.reload({ waitUntil: 'domcontentloaded' });
+      await page.locator('#updateWizardOpen').click();
+      await page.waitForFunction(() => document.querySelector('#updateWizardReport')?.textContent === 'Update to 6.1.2 completed.');
+      await context.close();
+      return;
+    }
     await page.waitForFunction(() => document.querySelector('#activityModeBadge')?.dataset.mode === 'active', null, { timeout: 8000 });
     try {
     await page.waitForFunction(() => document.querySelector('#overviewHealthLevel')?.textContent.trim() === 'Degraded', null, { timeout: 8000 });
