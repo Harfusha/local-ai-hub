@@ -1,6 +1,11 @@
 from __future__ import annotations
 
+import tomllib
+from pathlib import Path
+
 import pytest
+from packaging.requirements import Requirement
+from packaging.utils import canonicalize_name
 
 from tools.release_inventory import assess_response, lock_from_report
 
@@ -12,6 +17,19 @@ def test_release_constraints_cover_every_resolved_dependency():
     for constraints in ("", "example-package==1.3\n", "example-package>=1.0\n"):
         with pytest.raises(ValueError):
             validate_constraints(report, constraints)
+
+
+def test_release_baseline_pins_declared_wheel_dependencies():
+    root = Path(__file__).resolve().parents[1]
+    project = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
+    baseline = (root / "tools/release-runtime-constraints.txt").read_text(encoding="utf-8")
+    pinned = {
+        canonicalize_name(Requirement(line).name)
+        for line in baseline.splitlines()
+        if line and not line.startswith("#")
+    }
+    declared = {canonicalize_name(Requirement(dep).name) for dep in project["project"]["dependencies"]}
+    assert declared <= pinned, sorted(declared - pinned)
 
 
 def test_sbom_identifies_python_components_and_declares_incomplete_scope():
