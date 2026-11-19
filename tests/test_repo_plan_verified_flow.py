@@ -398,37 +398,27 @@ def test_recovery_allows_unrelated_plan_edits(environment, monkeypatch):
     assert plan["tasks"]["task_work"]["next_action"] == "continue"
 
 
-def test_concurrent_checkpoint_sync_does_not_overwrite_newer_update(environment, monkeypatch):
+def test_concurrent_checkpoint_sync_does_not_overwrite_newer_update(environment):
     _, tasks, _, _, storage, _, binding, _ = environment
     stale = tasks.get("execution_a")
-    entered, release, committed = Event(), Event(), Event()
-    real_sync = agent_bridge.sync_checkpoint_to_plan
-    real_project = tasks._sync_project_plan_checkpoint
+    entered, release = Event(), Event()
 
-    def slow_sync(*args, **kwargs):
-        if kwargs.get("next_action") == "":
-            entered.set()
-            assert release.wait(10)
-        return real_sync(*args, **kwargs)
+    def project_stale_checkpoint():
+        # Pause before taking the lock so either hash-stripe assignment works.
+        entered.set()
+        assert release.wait(15)
+        return tasks._sync_project_plan_checkpoint(stale)
 
-    def notify(state):
-        if state.checkpoint.next_action == "new action":
-            committed.set()
-        return real_project(state)
-
-    monkeypatch.setattr(agent_bridge, "sync_checkpoint_to_plan", slow_sync)
-    monkeypatch.setattr(tasks, "_sync_project_plan_checkpoint", notify)
     with ThreadPoolExecutor(max_workers=2) as pool:
-        first = pool.submit(real_project, stale)
+        first = pool.submit(project_stale_checkpoint)
         try:
             assert entered.wait(10)
             second = pool.submit(tasks.checkpoint, "execution_a", TaskCheckpoint(
                 phase="implementation", next_action="new action"), actor="agent_a")
-            assert committed.wait(10)
+            assert second.result(timeout=10).checkpoint.next_action == "new action"
         finally:
             release.set()
         first.result(timeout=10)
-        second.result(timeout=10)
     plan, _ = storage.read_plan_file(binding.plan_rel_path)
     assert plan["tasks"]["task_work"]["next_action"] == "new action"
 

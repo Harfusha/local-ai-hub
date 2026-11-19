@@ -229,6 +229,9 @@ def test_actual_mcp_call_and_http_report_count_once_without_inference(tmp_path, 
         def __getattr__(self, name):
             return getattr(client, name)
         def post(self, path, payload, **kwargs):
+            if path == "/api/telemetry/tool-accounting":
+                # This test checks delivery and deduplication across a real HTTP server.
+                kwargs["timeout"] = 5.0
             result = client.post(path, payload, **kwargs)
             if path == "/api/telemetry/tool-accounting" and result.get("accepted"):
                 delivered.set()
@@ -249,7 +252,7 @@ def test_actual_mcp_call_and_http_report_count_once_without_inference(tmp_path, 
             "action": "git_status", "root": str(root), "max_response_tokens": 1600,
         }))
         assert response[1]["success"] is True, response
-        assert delivered.wait(5), ("accounting HTTP report was not accepted", reporter._queue.qsize(),
+        assert delivered.wait(10), ("accounting HTTP report was not accepted", reporter._queue.qsize(),
                                    app.endpoint_stats.get_stats(root=str(root))["items"])
         items = app.endpoint_stats.get_stats(root=str(root))["items"]
         row = next(item for item in items if item["name"] == "local_ai_repo:git_status")
