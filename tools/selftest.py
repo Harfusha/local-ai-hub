@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import errno
 import json
 import os
 import socket
@@ -27,15 +28,16 @@ from local_ai_hub import __version__
 
 
 def _remove_tree_with_retry(path: Path, attempts: int = 6) -> None:
-    """Remove a completed self-test tree after transient Windows file locks."""
+    """Remove a completed self-test tree after transient filesystem contention."""
     for attempt in range(max(1, int(attempts))):
         try:
             shutil.rmtree(path)
             return
         except FileNotFoundError:
             return
-        except PermissionError:
-            if attempt + 1 >= max(1, int(attempts)):
+        except OSError as exc:
+            retryable = isinstance(exc, PermissionError) or exc.errno == errno.ENOTEMPTY
+            if not retryable or attempt + 1 >= max(1, int(attempts)):
                 raise
             time.sleep(min(0.1 * (2 ** attempt), 0.5))
 
