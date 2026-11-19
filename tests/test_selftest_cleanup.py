@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import errno
 import shutil
+
+import pytest
 
 from tools import selftest
 
 
-def test_selftest_temp_cleanup_retries_windows_sharing_violation(tmp_path, monkeypatch):
+@pytest.mark.parametrize("error_code", [errno.EACCES, errno.ENOTEMPTY])
+def test_selftest_temp_cleanup_retries_transient_filesystem_contention(tmp_path, monkeypatch, error_code):
     target = tmp_path / "selftest-state"
     target.mkdir()
     (target / "hub.log").write_text("finished", encoding="utf-8")
@@ -16,7 +20,7 @@ def test_selftest_temp_cleanup_retries_windows_sharing_violation(tmp_path, monke
     def flaky_rmtree(path, *args, **kwargs):
         calls.append(path)
         if len(calls) < 3:
-            raise PermissionError("simulated Windows sharing violation")
+            raise OSError(error_code, "simulated cleanup contention")
         return real_rmtree(path, *args, **kwargs)
 
     monkeypatch.setattr(selftest.shutil, "rmtree", flaky_rmtree)
