@@ -7,7 +7,7 @@ import time
 
 import pytest
 
-from local_ai_hub import agent_tasks, sqlite_support
+from local_ai_hub import agent_tasks
 from local_ai_hub.agent_events import AgentStateStore
 from local_ai_hub.agent_identity import ScopeContext
 from local_ai_hub.agent_tasks import GoalContract, TaskStore
@@ -106,7 +106,7 @@ def test_task_projection_write_timeout_rolls_back_slow_index_work(
 
 
 def test_receipt_projection_and_event_roll_back_when_transaction_budget_expires(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, expired_sqlite_transaction
 ):
     state_store = AgentStateStore(tmp_path / "state.sqlite3")
     store = TaskStore(state_store)
@@ -117,13 +117,7 @@ def test_receipt_projection_and_event_roll_back_when_transaction_budget_expires(
         task_id=task_id,
     )
 
-    def _expired_transaction(con, **kwargs):
-        kwargs.pop("max_duration_seconds", None)
-        return sqlite_support.write_transaction(
-            con, max_duration_seconds=1e-12, **kwargs
-        )
-
-    monkeypatch.setattr(agent_tasks, "write_transaction", _expired_transaction, raising=False)
+    monkeypatch.setattr(agent_tasks, "write_transaction", expired_sqlite_transaction, raising=False)
     with pytest.raises(TimeoutError, match="duration budget"):
         store.add_verification_receipt(task_id, "criterion", "receipt-1")
 
@@ -134,18 +128,12 @@ def test_receipt_projection_and_event_roll_back_when_transaction_budget_expires(
     assert not any(event.kind == "task.verified" for event in events)
 
 
-def test_task_creation_rolls_back_when_transaction_budget_expires(tmp_path, monkeypatch):
+def test_task_creation_rolls_back_when_transaction_budget_expires(tmp_path, monkeypatch, expired_sqlite_transaction):
     state_store = AgentStateStore(tmp_path / "state.sqlite3")
     store = TaskStore(state_store)
     task_id = "task-create-rollback"
 
-    def _expired_transaction(con, **kwargs):
-        kwargs.pop("max_duration_seconds", None)
-        return sqlite_support.write_transaction(
-            con, max_duration_seconds=1e-12, **kwargs
-        )
-
-    monkeypatch.setattr(agent_tasks, "write_transaction", _expired_transaction, raising=False)
+    monkeypatch.setattr(agent_tasks, "write_transaction", expired_sqlite_transaction, raising=False)
     with pytest.raises(TimeoutError, match="duration budget"):
         store.create(
             GoalContract(goal="Create safely", acceptance_criteria=("criterion",)),
@@ -173,7 +161,7 @@ def test_task_create_idempotent_replay_leaves_commit_to_transaction_owner(tmp_pa
     assert len(state_store.events("task:task-create-replay")) == 1
 
 
-def test_task_update_rolls_back_when_transaction_budget_expires(tmp_path, monkeypatch):
+def test_task_update_rolls_back_when_transaction_budget_expires(tmp_path, monkeypatch, expired_sqlite_transaction):
     state_store = AgentStateStore(tmp_path / "state.sqlite3")
     store = TaskStore(state_store)
     task_id = "task-update-rollback"
@@ -183,13 +171,7 @@ def test_task_update_rolls_back_when_transaction_budget_expires(tmp_path, monkey
         task_id=task_id,
     )
 
-    def _expired_transaction(con, **kwargs):
-        kwargs.pop("max_duration_seconds", None)
-        return sqlite_support.write_transaction(
-            con, max_duration_seconds=1e-12, **kwargs
-        )
-
-    monkeypatch.setattr(agent_tasks, "write_transaction", _expired_transaction, raising=False)
+    monkeypatch.setattr(agent_tasks, "write_transaction", expired_sqlite_transaction, raising=False)
     with pytest.raises(TimeoutError, match="duration budget"):
         store.transition(
             task_id,
@@ -206,7 +188,7 @@ def test_task_update_rolls_back_when_transaction_budget_expires(tmp_path, monkey
     assert not any(event.kind == "task.status_changed" for event in events)
 
 
-def test_projection_save_rolls_back_when_transaction_budget_expires(tmp_path, monkeypatch):
+def test_projection_save_rolls_back_when_transaction_budget_expires(tmp_path, monkeypatch, expired_sqlite_transaction):
     state_store = AgentStateStore(tmp_path / "state.sqlite3")
     store = TaskStore(state_store)
     task_id = "task-projection-rollback"
@@ -216,12 +198,7 @@ def test_projection_save_rolls_back_when_transaction_budget_expires(tmp_path, mo
         task_id=task_id,
     )
 
-    def _expired_transaction(con, **kwargs):
-        return sqlite_support.write_transaction(
-            con, max_duration_seconds=1e-12, **kwargs
-        )
-
-    monkeypatch.setattr(agent_tasks, "write_transaction", _expired_transaction, raising=False)
+    monkeypatch.setattr(agent_tasks, "write_transaction", expired_sqlite_transaction, raising=False)
     with pytest.raises(TimeoutError, match="duration budget"):
         store._save_projection(replace(current, status=agent_tasks.TaskStatus.ACTIVE))
 
@@ -230,7 +207,7 @@ def test_projection_save_rolls_back_when_transaction_budget_expires(tmp_path, mo
     assert persisted.status is agent_tasks.TaskStatus.PLANNED
 
 
-def test_same_transition_replay_aborts_when_transaction_budget_expires(tmp_path, monkeypatch):
+def test_same_transition_replay_aborts_when_transaction_budget_expires(tmp_path, monkeypatch, expired_sqlite_transaction):
     state_store = AgentStateStore(tmp_path / "state.sqlite3")
     store = TaskStore(state_store)
     task_id = "task-replay-timeout"
@@ -246,12 +223,7 @@ def test_same_transition_replay_aborts_when_transaction_budget_expires(tmp_path,
     }
     store.transition(task_id, agent_tasks.TaskStatus.ACTIVE, **transition)
 
-    def _expired_transaction(con, **kwargs):
-        return sqlite_support.write_transaction(
-            con, max_duration_seconds=1e-12, **kwargs
-        )
-
-    monkeypatch.setattr(agent_tasks, "write_transaction", _expired_transaction, raising=False)
+    monkeypatch.setattr(agent_tasks, "write_transaction", expired_sqlite_transaction, raising=False)
     with pytest.raises(TimeoutError, match="duration budget"):
         store.transition(task_id, agent_tasks.TaskStatus.ACTIVE, **transition)
 
