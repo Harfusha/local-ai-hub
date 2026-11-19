@@ -2552,7 +2552,7 @@ class LocalAIServices:
 
     def distill_command_error(
         self, failure: dict[str, Any], *, cancel_event: threading.Event | None = None,
-        timeout_seconds: float | None = None,
+        timeout_seconds: float | None = None, _raise_on_timeout: bool = False,
     ) -> str:
         """Use the local task route only when command parsing found no coordinates."""
         if cancel_event is None:
@@ -2570,6 +2570,7 @@ class LocalAIServices:
         timer = None
         effective_cancel = cancel_event
         diagnostic_deadline = None
+        deadline_event = None
         if timeout_seconds is not None:
             import math
             if type(timeout_seconds) not in (int, float) or not math.isfinite(timeout_seconds) or not 0 < timeout_seconds <= 30:
@@ -2585,8 +2586,13 @@ class LocalAIServices:
         finally:
             if timer is not None:
                 timer.cancel()
-        if ((effective_cancel is not None and effective_cancel.is_set())
-                or (diagnostic_deadline is not None and time.monotonic() >= diagnostic_deadline)):
+        if cancel_event is not None and cancel_event.is_set():
+            return ""
+        if deadline_event is not None and (
+            deadline_event.is_set() or (diagnostic_deadline is not None and time.monotonic() >= diagnostic_deadline)
+        ):
+            if _raise_on_timeout:
+                raise TimeoutError("local command diagnostic exceeded its deadline")
             return ""
         if not isinstance(result, dict) or result.get("success") is not True or not isinstance(result.get("text"), str):
             return ""

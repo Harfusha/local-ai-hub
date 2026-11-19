@@ -6,6 +6,7 @@ import os
 import queue
 import subprocess
 import sys
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -143,9 +144,8 @@ def test_hardware_benchmark_runner_suite(tmp_path: Path):
 
 def test_command_streaming_and_sse_events(tmp_path: Path):
     state_store = AgentStateStore(tmp_path / "agent_state.sqlite3", enabled=True)
+    state_store._ensure_schema()
     sub_q = state_store.subscribe(maxsize=100)
-
-    events_received: list[AgentEvent] = []
 
     def log_cb(stream: str, chunk: str) -> None:
         ev = AgentEvent.create(
@@ -179,11 +179,14 @@ def test_command_streaming_and_sse_events(tmp_path: Path):
     )
     assert res["success"] is True
 
-    while not sub_q.empty():
-        events_received.append(sub_q.get_nowait())
-
-    cmd_logs = [e for e in events_received if e.kind == "command.log"]
-    chunks = [e.payload.get("chunk", "") for e in cmd_logs]
-    combined = "".join(chunks)
+    combined = ""
+    deadline = time.monotonic() + 5.0
+    while "live stream line 1" not in combined or "live stream line 2" not in combined:
+        try:
+            event = sub_q.get(timeout=max(0.0, deadline - time.monotonic()))
+        except queue.Empty:
+            break
+        if event.kind == "command.log":
+            combined += event.payload.get("chunk", "")
     assert "live stream line 1" in combined
     assert "live stream line 2" in combined
