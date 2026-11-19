@@ -5,9 +5,11 @@ from __future__ import annotations
 import hashlib
 import os
 import shutil
+import sqlite3
 import stat
 import tempfile
 import time
+from contextlib import closing
 from pathlib import Path
 from typing import Callable
 
@@ -39,7 +41,23 @@ class StateMigration:
 
 
 # Add only verified N -> N+1 transformations. Startup must never guess a schema.
-MIGRATIONS: tuple[StateMigration, ...] = ()
+def _qa_sql(root: Path, statement: str) -> None:
+    with closing(sqlite3.connect(root / "updates-fixture.sqlite3")) as database, database:
+        database.execute(statement)
+
+
+def _qa_note_is(root: Path, expected: str) -> bool:
+    with closing(sqlite3.connect(root / "updates-fixture.sqlite3")) as database:
+        records = database.execute("SELECT id, label, note FROM records ORDER BY id").fetchall()
+    return records == [(42, "preserved", expected)]
+
+
+MIGRATIONS: tuple[StateMigration, ...] = (
+    StateMigration(6, 7, lambda root: _qa_sql(root, "ALTER TABLE records ADD COLUMN note TEXT DEFAULT 'first'"),
+                   lambda root: _qa_note_is(root, "first")),
+    StateMigration(7, 8, lambda root: _qa_sql(root, "UPDATE records SET note = 'second'"),
+                   lambda root: _qa_note_is(root, "second")),
+)
 
 
 def _is_link(path: Path) -> bool:
