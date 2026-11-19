@@ -637,6 +637,30 @@ def test_concurrent_plan_bindings_only_allow_one_active_execution(environment):
     assert sorted(results) == [False, True]
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows file-sharing semantics")
+def test_task_binding_retries_transient_windows_replacement_failure(environment, monkeypatch):
+    root, tasks, _, _, _, manager, binding, _ = environment
+    target = root / ".local-ai-hub/local/task_bindings.json"
+    replace = os.replace
+    attempts = []
+
+    def replace_with_contention(source, destination, **kwargs):
+        if Path(destination) == target:
+            attempts.append(destination)
+            if len(attempts) == 1:
+                raise PermissionError("task binding briefly held open by a reader")
+        return replace(source, destination, **kwargs)
+
+    monkeypatch.setattr(os, "replace", replace_with_contention)
+    manager.bind_task(
+        binding.task_id, binding.plan_id, binding.plan_task_id, binding.plan_rel_path,
+        contract_revision=2, task_store=tasks,
+    )
+
+    assert len(attempts) == 2
+    assert agent_bridge.TaskBindingManager(root).get_binding(binding.task_id).contract_revision == 2
+
+
 def test_separate_processes_cannot_bind_two_active_attempts(environment):
     root, tasks, _, _, _, _, _, _ = environment
     tasks.transition("execution_a", TaskStatus.CANCELLED, reason="superseded", actor="agent_a", idempotency_key="dispose-a")

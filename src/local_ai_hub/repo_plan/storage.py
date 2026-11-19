@@ -68,6 +68,20 @@ def _open_posix_plan_directory(root: Path, parent: Path, *, create: bool = True,
             os.close(descriptor)
 
 
+def _replace_with_windows_retry(source: Path, target: Path) -> None:
+    if os.name != "nt":
+        os.replace(source, target)
+        return
+    for attempt in range(8):
+        try:
+            os.replace(source, target)
+            return
+        except OSError as exc:
+            if attempt == 7:
+                raise OSError(f"Failed to atomically write {target}: {exc}") from exc
+            time.sleep(0.02 * (2**attempt))
+
+
 def _atomic_write_posix(
     root: Path, target: Path, data: bytes, *, parent_fd: int | None = None, root_fd: int | None = None,
     temp_name: str | None = None,
@@ -523,19 +537,7 @@ class RepoPlanStorage:
                 f.flush()
                 os.fsync(f.fileno())
 
-            # Windows-friendly retry loop for os.replace in case of AV / sharing locks
-            last_err: Exception | None = None
-            for attempt in range(8):
-                try:
-                    os.replace(temp_path, target_path)
-                    last_err = None
-                    break
-                except (PermissionError, OSError) as exc:
-                    last_err = exc
-                    time.sleep(0.02 * (2**attempt))
-
-            if last_err is not None:
-                raise OSError(f"Failed to atomically write {target_path}: {last_err}") from last_err
+            _replace_with_windows_retry(temp_path, target_path)
         finally:
             if temp_created and temp_path.exists():
                 try:
