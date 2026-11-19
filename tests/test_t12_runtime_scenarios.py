@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import threading
 import time
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
+from local_ai_hub import ollama as ollama_module
 from local_ai_hub.ollama import ModelPreparationCancelled, OllamaRuntime
 from local_ai_hub.model_policy import ModelExecutionPolicy
 from local_ai_hub.tiered_ollama import TieredOllamaRuntime
@@ -666,25 +668,31 @@ def test_t12_runtime_cancel_measures_transport_stop_and_cleanup() -> None:
     assert result["metrics"]["cancel_to_stop_ms"] >= 0
 
 
-def test_t12_cancel_timer_starts_after_scheduler_dispatch() -> None:
+def test_t12_cancel_timer_starts_after_scheduler_dispatch(monkeypatch) -> None:
     runtime = object.__new__(OllamaRuntime)
     runtime.config = {}
-    runtime_call_elapsed: list[float] = []
+    intervals: list[float] = []
+
+    def track_timer(interval, callback):
+        intervals.append(interval)
+        return threading.Timer(interval, callback)
+
+    threading_probe = SimpleNamespace(**vars(threading))
+    threading_probe.Timer = track_timer
+    monkeypatch.setattr(ollama_module, "threading", threading_probe)
 
     def request_interruptible(endpoint, payload, should_stop, *, timeout=None, deadline=None):
-        started = time.monotonic()
         while not should_stop():
             time.sleep(0.001)
-        runtime_call_elapsed.append(time.monotonic() - started)
         return {"success": False, "preempted": True, "_lah_provider": "ollama"}
 
-    class DelayedScheduler(_MeasuredScheduler):
+    class DispatchScheduler(_MeasuredScheduler):
         def submit(self, *args, **kwargs):
-            time.sleep(0.08)
+            assert intervals == []
             return super().submit(*args, **kwargs)
 
     runtime.request_interruptible = request_interruptible
-    scheduler = DelayedScheduler()
+    scheduler = DispatchScheduler()
     contract = {
         "scenario": "cancel",
         "required_fields": ["cancel_requested", "cancelled", "cleanup_complete", "cancel_to_stop_ms"],
@@ -702,7 +710,7 @@ def test_t12_cancel_timer_starts_after_scheduler_dispatch() -> None:
 
     assert result["success"] is True
     assert result["metrics"]["cancelled"] is True
-    assert runtime_call_elapsed[0] >= 0.02
+    assert intervals == [0.03]
 
 
 def test_t12_runtime_cancel_holds_admission_until_child_inference_exits() -> None:
