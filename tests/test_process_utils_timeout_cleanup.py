@@ -166,7 +166,8 @@ def test_run_hidden_unconfirmed_owned_child_preserves_live_streams(tmp_path, mon
         [
             sys.executable,
             "-c",
-            "import pathlib, sys, time; pathlib.Path(sys.argv[1]).write_text('ready'); "
+            "import pathlib, sys, time; ready = pathlib.Path(sys.argv[1]); "
+            "pending = ready.with_suffix('.tmp'); pending.write_text('ready'); pending.replace(ready); "
             "print('ready', flush=True); time.sleep(30)",
             str(ready),
         ],
@@ -178,13 +179,17 @@ def test_run_hidden_unconfirmed_owned_child_preserves_live_streams(tmp_path, mon
     )
 
     def stop_child() -> None:
-        if child.poll() is None:
-            child.kill()
         try:
-            child.wait(timeout=2)
-        except subprocess.TimeoutExpired:
-            child.kill()
-            child.wait(timeout=2)
+            if child.poll() is None:
+                child.kill()
+            try:
+                child.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                child.kill()
+                child.wait(timeout=2)
+        finally:
+            child.stdout.close()
+            child.stderr.close()
 
     try:
         ready_deadline = time.monotonic() + 3.0
