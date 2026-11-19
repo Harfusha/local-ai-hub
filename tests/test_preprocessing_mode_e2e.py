@@ -19,11 +19,11 @@ import pytest
 from local_ai_hub.process_utils import popen_managed, process_identity, terminate_tree
 
 
-def _request(base: str, path: str, payload=None):
+def _request(base: str, path: str, payload=None, *, method: str | None = None):
     body = None if payload is None else json.dumps(payload).encode("utf-8")
     request = urllib.request.Request(
         base + path, data=body, headers={"Content-Type": "application/json"},
-        method="GET" if body is None else "POST",
+        method=method or ("GET" if body is None else "POST"),
     )
     try:
         with urllib.request.urlopen(request, timeout=5) as response:
@@ -98,7 +98,8 @@ enabled=false
         assert status == 200 and result.get("preprocessing_start", {}).get("success") is True, result
         status, mode = _request(base, "/api/mode")
         assert status == 200 and mode.get("preprocessing_ready") is True, mode
-        status, blocked = _request(base, "/api/search", {"root": str(projects[0]), "query": "example"})
+        # The mode gate rejects the POST before accepting a request body.
+        status, blocked = _request(base, "/api/search", method="POST")
         assert status == 423 and blocked.get("mode") == "preprocessing", blocked
         # One bounded observation window; this is a real isolated server, with
         # model inference disabled, not evidence of model quality or throughput.
