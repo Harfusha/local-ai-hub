@@ -197,6 +197,7 @@ def test_performance_speedup_on_realistic_payloads():
 
     # Verify exact parity
     _assert_parity(payload)
+    pytest.importorskip("orjson", reason="fast JSON benchmark requires the optional native backend")
 
     # Warmup
     for _ in range(3):
