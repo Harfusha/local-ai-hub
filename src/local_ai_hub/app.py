@@ -17,6 +17,7 @@ import zipfile
 from contextlib import ExitStack
 from concurrent.futures import CancelledError
 from copy import deepcopy
+from functools import partial
 from pathlib import Path
 from typing import Any, Mapping
 from urllib.parse import urlsplit
@@ -669,7 +670,7 @@ class LocalAIApp:
         )
         self.commands.set_policy_engine(self.agent_policy)
         self.commands.set_task_store(self.agent_tasks)
-        self.commands.set_error_distiller(self.services.distill_command_error)
+        self.commands.set_error_distiller(partial(self.services.distill_command_error, _raise_on_timeout=True))
         self.services.set_commands(self.commands)
         self.services.set_task_store(self.agent_tasks)
         self.services.set_verification_store(self.agent_verification)

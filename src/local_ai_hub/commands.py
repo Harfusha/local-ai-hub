@@ -6398,6 +6398,8 @@ class CommandBroker:
             if timeout_seconds is not None:
                 options["timeout_seconds"] = timeout_seconds
             distilled = self.error_distiller(payload, **options)
+        except TimeoutError:
+            raise
         except Exception:
             return ""
         if cancel_event is not None and cancel_event.is_set():
@@ -6721,11 +6723,16 @@ class CommandBroker:
             evidence = self._local_diagnostic_context(compacted, cwd)
             if evidence is not None:
                 compacted["local_diagnostic_status"] = "unavailable"
-                diagnostic_started = time.monotonic()
-                diagnosis = self._distill_error_with_model(
-                    {"summary": evidence["summary"], "exit_code": compacted["exit_code"]},
-                    cancel_event=request_cancel_event, timeout_seconds=10.0,
-                )
+                diagnostic_deadline = time.monotonic() + 10.0
+                diagnostic_timed_out = False
+                try:
+                    diagnosis = self._distill_error_with_model(
+                        {"summary": evidence["summary"], "exit_code": compacted["exit_code"]},
+                        cancel_event=request_cancel_event, timeout_seconds=10.0,
+                    )
+                except TimeoutError:
+                    diagnosis = ""
+                    diagnostic_timed_out = True
                 if diagnosis and (request_cancel_event is None or not request_cancel_event.is_set()):
                     compacted["local_diagnostic_status"] = "completed"
                     compacted["local_diagnostic"] = {
@@ -6733,7 +6740,7 @@ class CommandBroker:
                     }
                 elif request_cancel_event is not None and request_cancel_event.is_set():
                     compacted["local_diagnostic_status"] = "cancelled"
-                elif time.monotonic() - diagnostic_started >= 10.0:
+                elif diagnostic_timed_out or time.monotonic() >= diagnostic_deadline:
                     compacted["local_diagnostic_status"] = "timed_out"
         if task_id:
             compacted["task_id"] = task_id
