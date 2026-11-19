@@ -1,5 +1,9 @@
 # Changelog
 
+## 6.1.1 — 2026-11-19
+
+- [Changes in v6.1.1](https://github.com/Harfusha/local-ai-hub/releases/tag/v6.1.1)
+
 ## 6.1.0 — 2026-11-15
 
 - Restore canonical content for the pinned Superpowers archive and align release metadata with the v6.1 source tag.
