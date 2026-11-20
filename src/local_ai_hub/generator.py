@@ -194,14 +194,13 @@ def _active_tool_action_lines(fs: FeatureSet) -> list[str]:
 def context_pack_guidance() -> str:
     """Compact contract for the guarded repository-context operation."""
     return (
-        " Reuse fresh sufficient repository evidence. For exact file or symbol lookups, use bounded indexed/source lookup directly. "
+        " Reuse fresh sufficient repository evidence. For exact facts, use bounded indexed/source lookup directly; do not preprocess or compile adaptive context first. "
         'When non-trivial planning, editing, review or testing lacks sufficient fresh evidence, call `local_ai_repo(action="context", mode="adaptive")` once before native broad discovery. '
+        "On first stable-root work, inspect repository config and derive only evidenced exclusions, uncommon extensions, pinned documentation, and entry points; preserve defaults, then preprocess once to register. "
         "Preprocess only when the root is unindexed or its evidence is stale; never wait, poll or force-refresh preprocessing. Its adaptive orchestrator fuses deterministic and "
         "indexed evidence with Serena, the built-in code index, bounded lexical search and RAG when available; "
-        "it deduplicates, rewards cross-backend agreement, preserves file diversity and degrades per backend. "
-        "Send the task/context, not a handmade list of grep terms. Reuse existing evidence and reuse candidates "
-        "first; require evidence IDs for every factual claim. Deterministic/indexed evidence is authoritative; "
-        "local models may rank, select, or compress structured evidence only and must not invent repository facts. "
+        "It deduplicates and preserves file diversity. "
+        "Send task/context, not grep terms. Reuse candidates first, then carry forward evidence IDs and artifact slices; cite every factual claim. Deterministic/indexed evidence is authoritative; models only rank, select or compress structured evidence. "
         "Guarded scope or drift overrides require an explicit `override_reason` and approval when requested. "
         "Omit raw model/debug fields unless explicitly requested through `extra_fields`; responses remain compact; "
         "aggregate response budget defaults to approximately 3200 tokens. The canonical adaptive context pack is the default."
@@ -235,7 +234,7 @@ def context_economy_contract(cfg: dict[str, Any] | None = None) -> str:
 - The Hub keeps a bounded metadata-only context ledger; inspect it only with an explicit cache/status request, never by replaying the whole session.
 - Broad native shell reads are guarded by the optional host hook; use bounded limits or Hub repository tools for discovery.
 - Commands return status, summary, changed paths, and failures; full stdout/stderr is retrievable only when `output_artifact_id` is returned.
-- Reuse fresh sufficient repository evidence; use bounded indexed/source lookup directly before native broad discovery.
+- Reuse fresh sufficient repository evidence; use bounded indexed/source lookup for exact facts. Do not preprocess or compile adaptive context first.
 - Do not bypass the budget with native broad reads unless Hub has one bounded terminal failure."""
 
 
@@ -324,7 +323,8 @@ def generate_skill_markdown(cfg: dict[str, Any]) -> str:
     # Keep exact lookups cheap and reuse current evidence. Preprocess only to
     # repair a missing or stale index; it is not a mandatory task ritual.
     repo_gate_lines: list[str] = [
-        "Reuse fresh sufficient evidence when available. For exact file or symbol lookups, use bounded indexed/source lookup directly; do not preprocess or compile adaptive context first."
+        "Reuse fresh sufficient evidence when available. For exact file or symbol lookups, use bounded indexed/source lookup directly; do not preprocess or compile adaptive context first.",
+        context_pack_guidance().strip(),
     ]
     step_num = 2
     if fs.repo and "solve" in fs.supported_repo_actions():
@@ -898,31 +898,31 @@ def generate_global_policy(cfg: dict[str, Any]) -> str:
     repo_task_first = ""
     if fs.repo:
         repo_actions = set(fs.supported_repo_actions())
-        cmd_gate = " Use bounded host-native validation commands after fresh repository evidence exists."
-        agent_os_gate = ' For code changes, bug fixes, or refactoring, initialize an Agent OS contract (`local_ai_coord: task_create`) and query project memory (`memory_find`).' if fs.agent_os else ""
+        cmd_gate = " Validate with bounded host-native commands."
+        agent_os_gate = ' For code changes, create an Agent OS task and query project memory.' if fs.agent_os else ""
         review_actions = {"review", "second_opinion"} & set(fs.supported_task_actions())
         review_action_text = "|".join(sorted(review_actions))
-        task_review_hint = f' Actively use `local_ai_task(action="{review_action_text}")` for validation before finalizing.' if review_actions else ""
+        task_review_hint = f' Use exposed `local_ai_task(action="{review_action_text}")` before finalizing.' if review_actions else ""
         repo_task_first = (
             "\nReuse fresh sufficient repository evidence. For exact file or symbol lookups, use bounded indexed/source lookup directly; do not preprocess or compile adaptive context first."
             + _repo_context_note(list(repo_actions))
-            + (' On first work in a stable root, inspect `.local-ai.toml` and `.local-ai.worktree.toml`; add only evidence-backed exclusions, uncommon extensions, pinned documentation, and entry points. Preserve values and defaults. Call `preprocess` once to register; never force-refresh or poll.' if fs.preprocessing else "")
+            + (' On first stable-root work, inspect `.local-ai.toml` and `.local-ai.worktree.toml`; derive only evidence-backed exclusions, uncommon extensions, pinned documentation, and entry points; preserve defaults, then call `preprocess` once to register. Never force-refresh or poll.' if fs.preprocessing else "")
             + "\n"
             f"\nAdoption gate:{cmd_gate}{agent_os_gate}"
-            + (' For implementation, diagnosis, refactoring or complex review, call `local_ai_repo(action="solve")` after evidence and before native edits.' if "solve" in fs.supported_repo_actions() else " Keep analysis within exposed deterministic/indexed actions.")
-            + f"{task_review_hint} After edits, use indexed impact/review/security/evidence before targeted validation.\n"
+            + (' Use `local_ai_repo(action="solve")` after evidence for implementation, diagnosis, refactoring or complex review.' if "solve" in fs.supported_repo_actions() else " Keep analysis within exposed deterministic/indexed actions.")
+            + f"{task_review_hint} After edits, run indexed impact/review/security/evidence before targeted validation.\n"
         )
 
     cmd_route_hint = "\nRun bounded validation commands with the agent host native command tool.\n"
 
     coord_memo_hint = ""
     if fs.coord:
-        memory_hint = ' Before an expensive `solve`/model call, reuse supplied task memory; when more is needed, use permitted scoped `local_ai_coord(action="memory_find")`.' if fs.agent_os else ""
+        memory_hint = ' Reuse supplied memory before `solve`/model calls; use scoped `local_ai_coord(action="memory_find")` when needed.' if fs.agent_os else ""
         findings_target = "permitted scoped Agent OS memory or the existing operator-approved coordination file." if fs.agent_os else "the existing operator-approved coordination file."
         coord_memo_hint = (
             f"{memory_hint}"
-            " Workspace `memo_*` actions are unavailable through restricted endpoints; on terminal 403 do not retry or bypass scope."
-            f" For overlapping edits use `local_ai_coord` leases; record concise findings in {findings_target}"
+            " Workspace `memo_*` is unavailable through restricted endpoints; never bypass a terminal 403."
+            f" Lease overlapping edits; record findings in {findings_target}"
         )
 
     prioritization_bullets = []
@@ -970,6 +970,10 @@ def generate_global_policy(cfg: dict[str, Any]) -> str:
             prioritization_bullets.append(
                 f"> - **{review_label}**: Call `local_ai_task(action=\"{review_action}\")` before finalizing non-trivial edits."
             )
+        elif "compress" in task_action_list:
+            prioritization_bullets.append(
+                "> - **Semantic Compression**: Use `local_ai_task(action=\"compress\")` to condense evidence after deterministic/indexed retrieval."
+            )
     prioritization_bullets.append(
         '> - **Antigravity wrapper**: Use `call_mcp_tool(ServerName="local-ai", ToolName="<tool>", Arguments={<same arguments>})` for the calls above.'
     )
@@ -1015,10 +1019,9 @@ def generate_global_policy(cfg: dict[str, Any]) -> str:
         "Adaptive retrieval: when evidence is insufficient for non-trivial repository work, call `local_ai_repo(action=\"context\", mode=\"adaptive\")`. It fuses bounded indexed, structural, lexical and RAG evidence; optional backends fail independently. Reuse evidence IDs, artifact slices and memos; stop when sufficient and avoid duplicate retrieval or unchanged root/query repeats.\n\n"
         "Result protocol: reuse `cache_hit`/`coalesced`; never duplicate `in_progress=true`; back off on `retryable`/429/503; verify only the affected slice for `degraded`/`stale`. Stop escalating when evidence is sufficient. Do not fan out overlapping retrieval. Never enlarge timeouts, force-refresh, or poll transient results.\n"
         f"{cmd_route_hint}{coord_memo_hint}\n"
-        " After edits, use indexed impact/review and targeted cached validation; skip broad rediscovery."
-        " `force`/`preprocess_refresh` are recovery controls, never retries."
-        " Accept deterministic/index fallback if an optional backend degrades."
-        " A health check cannot authorize fallback after an advertised action."
+        " After edits, run indexed impact/review/security/evidence, then targeted validation."
+        " `force`/`preprocess_refresh` are recovery controls, never retries; accept deterministic/index fallback if an optional backend degrades."
+        " A health check cannot authorize fallback after an advertised action; fallback requires explicit `terminal=true` and `retryable=false`."
         " Never loop on health, status, preprocessing, model startup, backends, or commands.\n\n"
         + ("Batch repository replacement: use `local_ai_repo(action=\"batch_replace\", edits=[...], dry_run=true)` for preview. "
            "`staged` is not batch dry-run and is never forwarded. Each edit must exact-match once. "

@@ -457,6 +457,7 @@ Reference global policy blocks deployed by 	ools/setup.py into global agent file
 > - **Retries and retrieval**: Reuse fresh evidence and stop when sufficient. For `in_progress`/`outcome_unknown`, do independent work; never poll, repeat, or duplicate retrieval. After an advertised Hub action, fallback requires `terminal=true` and `retryable=false`.
 > - **Repository & Code Search**: Call an action advertised by the current local_ai_repo MCP schema with the project root. DO NOT use broad native discovery (find, dir /s, unconstrained rg, glob) or dump entire files.
 > - **Agent OS Lifecycle & Project Memory**: Call `local_ai_coord(action="task_create"|"task_checkpoint"|"memory_record"|"memory_find"|"verify_completion", ...)`. Proactively initialize task contracts, query memory, and record findings.
+> - **Semantic Compression**: Use `local_ai_task(action="compress")` to condense evidence after deterministic/indexed retrieval.
 > - **Antigravity wrapper**: Use `call_mcp_tool(ServerName="local-ai", ToolName="<tool>", Arguments={<same arguments>})` for the calls above.
 > - **Native fallback**: If the live MCP schema has no action for the operation, use the authorized native tool directly. After calling an advertised Hub action, native fallback requires `terminal=true` and `retryable=false`; keep it bounded to the same root/scope.
 
@@ -523,17 +524,17 @@ READ-ONLY AUDIT CONTRACT:
 
 Background preprocessing may inspect and index project files, but project-derived `validation_commands` execute repository code. Keep `preprocessing.idle_diagnostics_enabled=false` by default; set it to `true` only with explicit operator approval for those commands. On Windows, `.cmd` and `.bat` validation executables are rejected; do not route them through a shell or interpreter.
 
-Reuse fresh sufficient repository evidence. For exact file or symbol lookups, use bounded indexed/source lookup directly; do not preprocess or compile adaptive context first. For substantial work without fresh evidence, use adaptive `context` once with a stable root. On first work in a stable root, inspect `.local-ai.toml` and `.local-ai.worktree.toml`; add only evidence-backed exclusions, uncommon extensions, pinned documentation, and entry points. Preserve values and defaults. Call `preprocess` once to register; never force-refresh or poll.
+Reuse fresh sufficient repository evidence. For exact file or symbol lookups, use bounded indexed/source lookup directly; do not preprocess or compile adaptive context first. For substantial work without fresh evidence, use adaptive `context` once with a stable root. On first stable-root work, inspect `.local-ai.toml` and `.local-ai.worktree.toml`; derive only evidence-backed exclusions, uncommon extensions, pinned documentation, and entry points; preserve defaults, then call `preprocess` once to register. Never force-refresh or poll.
 
-Adoption gate: Use bounded host-native validation commands after fresh repository evidence exists. For code changes, bug fixes, or refactoring, initialize an Agent OS contract (`local_ai_coord: task_create`) and query project memory (`memory_find`). Keep analysis within exposed deterministic/indexed actions. After edits, use indexed impact/review/security/evidence before targeted validation.
+Adoption gate: Validate with bounded host-native commands. For code changes, create an Agent OS task and query project memory. Keep analysis within exposed deterministic/indexed actions. After edits, run indexed impact/review/security/evidence before targeted validation.
 
 Adaptive retrieval: when evidence is insufficient for non-trivial repository work, call `local_ai_repo(action="context", mode="adaptive")`. It fuses bounded indexed, structural, lexical and RAG evidence; optional backends fail independently. Reuse evidence IDs, artifact slices and memos; stop when sufficient and avoid duplicate retrieval or unchanged root/query repeats.
 
 Result protocol: reuse `cache_hit`/`coalesced`; never duplicate `in_progress=true`; back off on `retryable`/429/503; verify only the affected slice for `degraded`/`stale`. Stop escalating when evidence is sufficient. Do not fan out overlapping retrieval. Never enlarge timeouts, force-refresh, or poll transient results.
 
 Run bounded validation commands with the agent host native command tool.
- Before an expensive `solve`/model call, reuse supplied task memory; when more is needed, use permitted scoped `local_ai_coord(action="memory_find")`. Workspace `memo_*` actions are unavailable through restricted endpoints; on terminal 403 do not retry or bypass scope. For overlapping edits use `local_ai_coord` leases; record concise findings in permitted scoped Agent OS memory or the existing operator-approved coordination file.
- After edits, use indexed impact/review and targeted cached validation; skip broad rediscovery. `force`/`preprocess_refresh` are recovery controls, never retries. Accept deterministic/index fallback if an optional backend degrades. A health check cannot authorize fallback after an advertised action. Never loop on health, status, preprocessing, model startup, backends, or commands.
+ Reuse supplied memory before `solve`/model calls; use scoped `local_ai_coord(action="memory_find")` when needed. Workspace `memo_*` is unavailable through restricted endpoints; never bypass a terminal 403. Lease overlapping edits; record findings in permitted scoped Agent OS memory or the existing operator-approved coordination file.
+ After edits, run indexed impact/review/security/evidence, then targeted validation. `force`/`preprocess_refresh` are recovery controls, never retries; accept deterministic/index fallback if an optional backend degrades. A health check cannot authorize fallback after an advertised action; fallback requires explicit `terminal=true` and `retryable=false`. Never loop on health, status, preprocessing, model startup, backends, or commands.
 
 Selection guide: `local_ai_repo` for bounded repository facts and checks (including `security_audit`), `local_ai_task` for exposed bounded local actions (see tier-available actions above), `local_ai_work` for existing work status and recovery only, `local_ai_rag` only after cheaper indexed evidence, `local_ai_artifact` for exact slices, `local_ai_coord` for leases/memos and Agent OS task, memory, context, and verification workflows.
 
@@ -555,7 +556,7 @@ Local model policy: Follow the active hardware profile and user overrides; see `
 - The Hub keeps a bounded metadata-only context ledger; inspect it only with an explicit cache/status request, never by replaying the whole session.
 - Broad native shell reads are guarded by the optional host hook; use bounded limits or Hub repository tools for discovery.
 - Commands return status, summary, changed paths, and failures; full stdout/stderr is retrievable only when `output_artifact_id` is returned.
-- Reuse fresh sufficient repository evidence; use bounded indexed/source lookup directly before native broad discovery.
+- Reuse fresh sufficient repository evidence; use bounded indexed/source lookup for exact facts. Do not preprocess or compile adaptive context first.
 - Do not bypass the budget with native broad reads unless Hub has one bounded terminal failure.
 <!-- END LOCAL AI HUB TOOL POLICY -->
 

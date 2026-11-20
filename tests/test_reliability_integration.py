@@ -642,8 +642,9 @@ def test_embedding_model_residency_uses_embed_api(tmp_path: Path, monkeypatch: p
     runtime.prepare_model("qwen3-embedding:0.6b")
 
     assert requests == [
-        ("/api/embed", {"model": "qwen3-embedding:0.6b", "input": [""], "keep_alive": "24h"})
+        ("/api/embed", {"model": "qwen3-embedding:0.6b", "input": [""], "keep_alive": "24h"}),
     ]
+    assert runtime.loaded_model_details()[0]["name"] == "qwen3-embedding:0.6b"
 
 
 def test_code_index_production_contract_methods_use_persistent_index(tmp_path: Path):
@@ -747,6 +748,22 @@ def test_agent_policy_is_consistent_and_has_stop_reuse_protocol(tmp_path: Path):
         assert "Do not fan out" in content
         assert "`terminal=true` and `retryable=false`" in content
         assert "retryable`/429/503" in content
+    for phrase in (
+        "Reuse fresh evidence and stop when sufficient",
+        "in_progress",
+        "Do not duplicate tasks or chats",
+        "A health check cannot authorize fallback after an advertised action",
+    ):
+        assert phrase in agents
+    for phrase in (
+        "Stop escalating",
+        "in_progress=true",
+        "Do not fan out",
+        "A health check cannot authorize fallback after an advertised action",
+    ):
+        assert phrase in policy
+    assert "Stop escalating" in skill
+    assert "retryable`/429/503" in skill
 
 
 def test_agent_policy_has_actionable_adoption_triggers_and_recipes():

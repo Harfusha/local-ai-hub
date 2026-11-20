@@ -9,7 +9,7 @@ import local_ai_hub.agent_events as agent_events
 from local_ai_hub.agent_events import AgentEvent, AgentStateStore
 
 
-def test_append_uses_half_second_sqlite_busy_timeout(monkeypatch, tmp_path):
+def test_append_uses_bounded_half_second_sqlite_busy_timeout(monkeypatch, tmp_path):
     db_path = tmp_path / "agent-events.sqlite3"
     store = AgentStateStore(db_path)
     store._ensure_schema()

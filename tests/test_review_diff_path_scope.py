@@ -59,7 +59,7 @@ def test_review_diff_refreshes_vram_before_sizing_model_prompt():
 
     service = SimpleNamespace(
         config={},
-        deterministic=object.__new__(DeterministicEngine),
+        deterministic=SimpleNamespace(diff_facts=lambda _diff: {"files": ["a.py"]}),
         incident_store=None,
         router=SimpleNamespace(classify=lambda *args: {'model': 'fast-model', 'complexity': 'fast'}),
         _resident_optimize=lambda route, *args: route,

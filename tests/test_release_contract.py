@@ -101,6 +101,7 @@ def test_release_has_compact_mcp_surface_and_tool_first_policy(tmp_path: Path):
     write_all_generated({"models": {"fast_code": "qwen2.5-coder:7b"}}, tmp_path)
     skill = (tmp_path / "skills" / "local-ai-orchestrator" / "SKILL.md").read_text(encoding="utf-8")
     assert "before native broad discovery" in skill
+    assert "pinned documentation" in skill
     assert "semantic" in skill and "native command tool" in skill
     assert "local_ai_command" not in skill
     assert "CodeGraphContext" in skill and "optional standalone CLI/MCP" in skill

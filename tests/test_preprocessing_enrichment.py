@@ -144,7 +144,11 @@ def test_file_card_cache_updates_use_single_writer(tmp_path, monkeypatch):
         monkeypatch.setattr(prep, "_valid_enriched_file_card", lambda _data: True)
         write_calls = []
         write_retry = prep._write_retry
-        monkeypatch.setattr(prep, "_write_retry", lambda callback: (write_calls.append(callback), write_retry(callback))[1])
+        monkeypatch.setattr(
+            prep,
+            "_write_retry",
+            lambda callback, **kwargs: (write_calls.append(callback), write_retry(callback, **kwargs))[1],
+        )
         with closing(prep._connect()) as con:
             cached_item = con.execute("SELECT * FROM file_refs WHERE root=? AND path=?", (str(root), item["path"])).fetchone()
         monkeypatch.setattr(prep, "_find_next_files", lambda _root, _limit: [cached_item])
@@ -178,7 +182,6 @@ def test_oversized_file_card_uses_single_writer(tmp_path, monkeypatch):
         monkeypatch.setattr(prep, "_find_next_files", lambda _root, _limit: [])
         write_calls = []
         write_retry = prep._write_retry
-
         def record_write(callback, **kwargs):
             write_calls.append(callback)
             return write_retry(callback, **kwargs)

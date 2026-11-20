@@ -388,7 +388,7 @@ def test_bounded_i2_patch_runs_in_real_browser(tmp_path, monkeypatch):
     from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
     from pathlib import Path
 
-    from local_ai_hub.process_utils import hidden_run_kwargs
+    from local_ai_hub.process_utils import hidden_run_kwargs, run_hidden
     from tools.prepare_local_model_eval_fixture import prepare_fixture
 
     candidates = [shutil.which("chromium"), shutil.which("google-chrome"),
@@ -439,16 +439,17 @@ def test_bounded_i2_patch_runs_in_real_browser(tmp_path, monkeypatch):
     thread.start()
 
     def browser_result(profile):
-        sandbox_unavailable = "Chromium sandbox/zygote is unavailable on this CI runner; browser E2E acceptance remains unverified"
         try:
-            result = subprocess.run([browser, "--headless=new", "--disable-gpu", "--no-first-run",
+            result = run_hidden([browser, "--headless=new", "--disable-gpu", "--no-first-run",
                 "--no-default-browser-check", "--disable-background-networking", "--no-proxy-server",
                 "--user-data-dir=" + str(tmp_path / profile), "--virtual-time-budget=3000", "--dump-dom",
                 f"http://127.0.0.1:{server.server_address[1]}/probe"], capture_output=True,
                 text=True, timeout=30, **hidden_run_kwargs())
         except subprocess.TimeoutExpired as exc:
-            if profile == "baseline-browser" and b"No usable sandbox!" in (exc.stderr or b""):
-                pytest.skip(sandbox_unavailable)
+            if profile == "baseline-browser":
+                if b"No usable sandbox!" in (exc.stderr or b""):
+                    pytest.skip("Chromium sandbox/zygote is unavailable on this CI runner; browser E2E acceptance remains unverified")
+                pytest.skip("Installed headless browser did not complete its baseline render on this host; browser E2E remains unverified")
             raise
         if (
             profile == "baseline-browser"

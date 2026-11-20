@@ -26,3 +26,20 @@ def test_managed_start_waits_for_cold_start_without_direct_spawn(monkeypatch):
 
     assert module["start"]() is True
     assert calls["ensure"] == 0
+
+
+def test_service_start_command_timeout_covers_cold_start_window(monkeypatch):
+    module = runpy.run_path(str(Path(__file__).parents[1] / "tools" / "hubctl.py"))
+    globals_ = module["_service"].__globals__
+    calls = []
+
+    def run(*args, **kwargs):
+        calls.append(kwargs["timeout"])
+        return type("Completed", (), {"returncode": 0})()
+
+    monkeypatch.setitem(globals_, "_startup_wait_seconds", lambda: 125.0)
+    monkeypatch.setitem(globals_["subprocess"].__dict__, "run", run)
+
+    assert module["_service"]("start") is True
+    assert module["_service"]("stop") is True
+    assert calls == [135.0, 35.0]

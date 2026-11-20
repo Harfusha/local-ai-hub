@@ -237,7 +237,7 @@ class TestGlobalPolicyGeneration:
         for content in generated:
             policy = content.lower()
             assert "reuse fresh sufficient repository evidence" in policy
-            assert "exact file or symbol lookups" in policy
+            assert "bounded indexed/source lookup" in policy
             assert "do not preprocess or compile adaptive context first" in policy
             assert "first useful operation" not in policy
             assert "preprocess\", root=abs_root) exactly once" not in policy

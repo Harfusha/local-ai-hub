@@ -52,7 +52,8 @@ def test_service_hubctl_timeout_alignment():
     assert sig.parameters["timeout"].default == 12.0
 
     hubctl_src = inspect.getsource(hubctl._service)
-    assert "timeout=35" in hubctl_src
+    assert "timeout = _startup_wait_seconds() + 10.0" in hubctl_src
+    assert "else 35.0" in hubctl_src
 
 
 def test_learning_store_thread_safe_and_status_validation(tmp_path: Path):

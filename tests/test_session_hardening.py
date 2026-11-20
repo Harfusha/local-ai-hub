@@ -39,7 +39,11 @@ def test_review_diff_custom_diff_truncated_key():
     services.config = {}
     services.model_policy = DummyPolicy()
     services.router = DummyRouter()
-    services.deterministic = object.__new__(DeterministicEngine)
+    class DummyDeterministic:
+        def diff_facts(self, _diff):
+            return {"files": ["a.txt"], "additions": 1, "deletions": 1, "hunks": 1}
+
+    services.deterministic = DummyDeterministic()
     services.incident_store = None
     services._resident_optimize = lambda route, *a, **kw: route
     services.delegate = lambda payload, **kwargs: {

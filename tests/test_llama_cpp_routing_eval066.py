@@ -18,12 +18,22 @@ def _runtime(tmp_path, mode, fallback):
     runtime.llama_cpp.ensure_model = lambda *args, **kwargs: False
     runtime.is_online = lambda: True
     runtime.model_policy = SimpleNamespace(profile=lambda model: SimpleNamespace(num_ctx=4096))
+    loaded_models = []
+    runtime.loaded_model_details = lambda **kwargs: list(loaded_models)
+    runtime._is_embedding_model = lambda model: False
+    runtime._invalidate_loaded_cache = lambda: None
+    runtime.timeout = 3
     calls = []
-    runtime.request = lambda path, payload, **kwargs: calls.append((path, payload)) or {"done": True}
-    runtime.loaded_model_details = lambda **kwargs: (
-        [{"name": "qwen2.5-coder:3b", "size_bytes": 1024, "vram_bytes": 1024, "cpu_bytes": 0}]
-        if calls else []
-    )
+
+    def request(path, payload, **kwargs):
+        calls.append((path, payload))
+        loaded_models[:] = [{
+            "name": payload["model"], "size_bytes": 1, "vram_bytes": 1,
+            "cpu_bytes": 0, "context_length": 4096,
+        }]
+        return {"done": True}
+
+    runtime.request = request
     return runtime, calls
 
 

@@ -155,7 +155,8 @@ def _service(action: str) -> bool:
     if not service.exists():
         return False
     try:
-        completed = subprocess.run([sys.executable, str(service), action], check=False, timeout=35, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **hidden_run_kwargs())
+        timeout = _startup_wait_seconds() + 10.0 if action in {"start", "restart"} else 35.0
+        completed = subprocess.run([sys.executable, str(service), action], check=False, timeout=timeout, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **hidden_run_kwargs())
         return completed.returncode == 0
     except Exception:
         return False

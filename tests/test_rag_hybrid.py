@@ -200,7 +200,7 @@ def test_memory_auto_links_persist_scope_provenance(tmp_path):
         value="local memory value",
         scope="repository",
         scope_id="repo-A",
-        provenance={"repository_id": "repo-A", "root": root},
+        provenance={"root": str(tmp_path), "repository_id": "repo-A"},
         confidence=1.0,
     )
 

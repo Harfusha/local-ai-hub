@@ -86,7 +86,7 @@ On Windows, the preferred persistent service identity is Task Scheduler task `Lo
 | `ast-index` | `tree-sitter-language-pack` |
 | `local-nlp` | `sentence-transformers` |
 | `intel-accelerators` | `sentence-transformers[openvino]`, `optimum-intel[openvino]`, `openvino` |
-| `laya-runtime` | `laya`, `vegaml` |
+| `laya-runtime` | `laya`, `vegaml` (isolated runtime environment at tool-envs/laya) |
 | `token-economy` | `tiktoken`, `files-to-prompt`, `grep-ast` |
 | `performance` | `orjson`, `msgspec`, `Cython` |
 | `native` | `Cython` build dependency; also included in the performance extra. The experimental native module is built separately. |

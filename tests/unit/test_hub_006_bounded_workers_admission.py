@@ -100,8 +100,10 @@ def test_queue_limit_backpressure(tmp_path: Path):
     }
 
     artifacts = _DummyArtifacts()
-    # Submit with dispatch_delay so jobs remain queued to test queue backpressure
     mgr = AsyncJobManager(cfg, _DummyScheduler(), artifacts, lambda a, p: {"success": True})
+    # Keep the test focused on admission. Wall-clock timers may expire while
+    # the rest of the suite is under load and make the queue drain mid-loop.
+    mgr._dispatch = lambda _job_id: None
     try:
         accepted = 0
         rejected = 0

@@ -97,7 +97,12 @@ def test_real_handler_times_out_trickled_head_then_accepts_loopback_request_with
 
             sender = threading.Thread(target=drip_incomplete_head, daemon=True)
             sender.start()
-            assert client.recv(1) == b"", "incomplete trickled request head was not closed"
+            try:
+                response = client.recv(1)
+            except ConnectionResetError:
+                # Windows may report a forced socket close as RST instead of EOF.
+                response = b""
+            assert response == b"", "incomplete trickled request head was not closed"
             elapsed = time.monotonic() - start
             sender_done.set()
             sender.join(timeout=2)
