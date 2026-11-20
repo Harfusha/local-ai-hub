@@ -1,0 +1,8 @@
+<!-- BEGIN TOKEN ECONOMIZER AUTOSETUP -->
+## Local AI Hub, plan-led work, and Token-economizer automatic setup
+
+- For every coding or repository task, load and follow `C:/Users/halfar/.codex/skills/local-ai-orchestrator/SKILL.md` to orchestrate Local AI Hub tools before repository discovery, even when the user does not name the skill.
+- Load and follow `C:/Users/halfar/.codex/skills/token-economizer/SKILL.md` before repository discovery for bounded output limits.
+- For substantial multi-step work, load and follow `C:/Users/halfar/.codex/skills/plan-led-work/SKILL.md`: use Superpowers for specifications; use Hub `plan_reconcile_steering` for changed requirements, `task_checkpoint`/`plan_bind_task` for synced progress and recovery, `session_briefing` for resumption, and authentic receipts for completion when exposed by the active MCP schema. If an action is absent, use the supported project-plan interface or report the precise blocker; never edit plan storage directly. Reuse valid evidence instead of repeating full audits. Report `Done / Next / Blocked` updates at milestones.
+- Use tools already available in the environment; missing optional setup helpers do not block repository discovery or validation.
+<!-- END TOKEN ECONOMIZER AUTOSETUP -->

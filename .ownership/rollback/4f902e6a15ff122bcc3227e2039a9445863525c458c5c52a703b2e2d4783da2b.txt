@@ -1,0 +1,4 @@
+<!-- BEGIN LOCAL AI HUB WINDSURF POLICY -->
+# Local AI Hub
+Use the Local AI Hub MCP and `local-ai-orchestrator` skill for repository work. Use only actions exposed by the active MCP schema; deterministic/indexed evidence is authoritative for repository facts. Use native commands for builds and tests. Read `C:/Users/halfar/.local-ai-hub/generated/agent-policy.md` for the full configured policy.
+<!-- END LOCAL AI HUB WINDSURF POLICY -->

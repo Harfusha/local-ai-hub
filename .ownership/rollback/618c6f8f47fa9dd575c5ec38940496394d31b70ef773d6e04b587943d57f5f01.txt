@@ -1,0 +1,18 @@
+# BEGIN LOCAL AI HUB MANAGED
+[mcp_servers.local-ai]
+command = "C:\\Users\\halfar\\.local-ai-hub\\.venv\\Scripts\\python.exe"
+args = ["-m", "local_ai_hub.mcp_server"]
+enabled = true
+required = false
+startup_timeout_sec = 45
+tool_timeout_sec = 900
+default_tools_approval_mode = "auto"
+cwd = "C:\\Users\\halfar\\.local-ai-hub"
+
+[mcp_servers.local-ai.env]
+LOCAL_AI_AGENT = "codex"
+LOCAL_AI_AGENT_PROFILE = "codex"
+LOCAL_AI_CONFIG = "C:\\Users\\halfar\\.local-ai-hub\\config.toml"
+PYTHONPATH = "C:\\Users\\halfar\\.local-ai-hub\\src"
+
+# END LOCAL AI HUB MANAGED
