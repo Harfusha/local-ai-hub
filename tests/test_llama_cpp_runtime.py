@@ -1163,6 +1163,18 @@ class LlamaCppRuntimeTests(unittest.TestCase):
             self.assertEqual(processes[0].wait_calls, 1)
             self.assertEqual(runtime.mode_path.read_text(encoding="utf-8"), "none")
 
+    def test_intel_sycl_attempt_uses_bounded_configured_startup_window(self):
+        with tempfile.TemporaryDirectory() as temp:
+            runtime = LlamaCppManagedRuntime({
+                "server": {"state_dir": temp},
+                "llama_cpp": {"startup_timeout_seconds": 240},
+            })
+            self.assertEqual(runtime._device_attempts(True), [("SYCL0", 180.0), ("none", 240.0)])
+            self.assertEqual(runtime._device_attempts(False), [("none", 240.0)])
+
+            runtime.llama_config["startup_timeout_seconds"] = 90
+            self.assertEqual(runtime._device_attempts(True), [("SYCL0", 90.0), ("none", 90.0)])
+
     def test_install_and_update_guidance_share_provider_selection_policy(self):
         for relative in ("docs/INSTALLATION.md", "docs/OPERATIONS.md", "docs/INSTALL_PROMPT.md", "docs/UPDATE_PROMPT.md", "docs/LLAMA_CPP_SYCL.md"):
             guidance = (ROOT / relative).read_text(encoding="utf-8").lower()

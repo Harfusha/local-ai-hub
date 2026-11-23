@@ -82,13 +82,13 @@ def test_startup_wait_uses_configured_cold_start_grace(monkeypatch):
     module.loader.exec_module(service)
 
     monkeypatch.setattr(service, "CFG", {"headless": {"startup_grace_seconds": 75}})
-    assert service._startup_wait_seconds() == 80.0
+    assert service._startup_wait_seconds() == 105.0
 
     monkeypatch.setattr(service, "CFG", {"headless": {"startup_grace_seconds": 999}})
-    assert service._startup_wait_seconds() == 180.0
+    assert service._startup_wait_seconds() == 330.0
 
     monkeypatch.setattr(service, "CFG", {"headless": {"startup_grace_seconds": "invalid"}})
-    assert service._startup_wait_seconds() == 125.0
+    assert service._startup_wait_seconds() == 150.0
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows service launcher only")

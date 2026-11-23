@@ -4,6 +4,18 @@ import runpy
 from pathlib import Path
 
 
+def test_hubctl_startup_wait_includes_supervisor_grace_and_cold_start_margin(monkeypatch):
+    module = runpy.run_path(str(Path(__file__).parents[1] / "tools" / "hubctl.py"))
+    globals_ = module["_startup_wait_seconds"].__globals__
+
+    monkeypatch.setitem(globals_, "_config_arg", lambda: None)
+    monkeypatch.setitem(globals_, "load_config", lambda _path: {"headless": {"startup_grace_seconds": 180}})
+    assert module["_startup_wait_seconds"]() == 210.0
+
+    monkeypatch.setitem(globals_, "load_config", lambda _path: {"headless": {"startup_grace_seconds": 999}})
+    assert module["_startup_wait_seconds"]() == 330.0
+
+
 def test_managed_start_waits_for_cold_start_without_direct_spawn(monkeypatch):
     module = runpy.run_path(str(Path(__file__).parents[1] / "tools" / "hubctl.py"))
     globals_ = module["start"].__globals__

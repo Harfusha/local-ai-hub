@@ -3,7 +3,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import re
 import shutil
 import subprocess
 import sys
@@ -20,6 +19,7 @@ from local_ai_hub.doctor_support import (
     installed_models_from_status,
     managed_serena_executable,
     mixed_model_available,
+    mcp_tool_count,
     probe_hub_status,
 )
 from local_ai_hub.http_server import validate_network_security
@@ -68,15 +68,6 @@ def command_version(name: str) -> str | None:
         except Exception:
             continue
     return "installed"
-
-def tool_count(path: Path) -> int:
-    if not path.exists():
-        return 0
-    try:
-        return len(re.findall(r"(?m)^@mcp\.tool\(\)\s*$", path.read_text(encoding="utf-8")))
-    except Exception:
-        return 0
-
 
 cfg = load_config(str(root / "config.toml"))
 client = HubClient(config_path=str(root / "config.toml"), auto_start=False)
@@ -421,7 +412,7 @@ report = {
         "user": cfg.get("_config_path"),
         "defaults": cfg.get("_defaults_path"),
         "mcp_surface": "compact",
-        "mcp_tool_count": tool_count(mcp_file),
+        "mcp_tool_count": mcp_tool_count(mcp_file),
         "network_security": network_security,
         "inference_backend": inference_backend,
     },

@@ -391,8 +391,19 @@ def native_start() -> None:
     spawn_detached()
 
 
-def wait_for_hub(timeout: float = 30.0) -> bool:
+def _startup_wait_seconds() -> float:
+    """Allow the supervisor's cold-start grace plus time for readiness checks."""
+    try:
+        grace = float(CFG.get("headless", {}).get("startup_grace_seconds", 120.0))
+    except (TypeError, ValueError, OverflowError):
+        grace = 120.0
+    return min(330.0, max(12.0, grace + 30.0))
+
+
+def wait_for_hub(timeout: float | None = None) -> bool:
     """Wait until the configured Hub endpoint reports ready."""
+    if timeout is None:
+        timeout = _startup_wait_seconds()
     client = HubClient(config_path=_ACTIVE_CONFIG_ARG, auto_start=False)
     deadline = time.monotonic() + max(0.0, timeout)
     while True:

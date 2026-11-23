@@ -2350,8 +2350,8 @@ def run_installation(args: argparse.Namespace, config_source: Path, cfg: dict[st
         return 1
 
     try:
-        # hubctl bounds each service action to 35s and permits a 180s cold start.
-        run([str(hub_python), str(install_dir / "tools" / "hubctl.py"), "restart"], check=True, timeout=270)
+        # Cold starts may include managed inference/backend initialization.
+        run([str(hub_python), str(install_dir / "tools" / "hubctl.py"), "restart"], check=True, timeout=420)
     except Exception as exc:
         log(f"Setup incomplete: Hub restart before agent configuration failed: {exc}")
         write_setup_failure_report(install_dir, state_dir, stage="hub_restart", error=exc)

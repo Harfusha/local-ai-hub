@@ -163,12 +163,12 @@ def _service(action: str) -> bool:
 
 
 def _startup_wait_seconds() -> float:
-    """Match the supervisor's cold-start contract, with a bounded probe margin."""
+    """Match supervisor startup grace and leave time for a cold Hub to become ready."""
     try:
         grace = float(load_config(_config_arg()).get("headless", {}).get("startup_grace_seconds", 120.0))
     except Exception:
         grace = 120.0
-    return min(180.0, max(12.0, grace + 5.0))
+    return min(330.0, max(12.0, grace + 30.0))
 
 
 def stop() -> bool:

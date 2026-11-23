@@ -20,6 +20,18 @@ from local_ai_hub.doctor_support import (
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def test_doctor_counts_decorated_and_dynamically_registered_mcp_tools(tmp_path):
+    sample = tmp_path / "mcp_server.py"
+    sample.write_text(
+        "@mcp.tool()\ndef local_ai_decorated(): pass\n"
+        "local_ai_dynamic = mcp.tool()(local_ai_dynamic)\n",
+        encoding="utf-8",
+    )
+
+    assert doctor_support.mcp_tool_count(sample) == 2
+    assert doctor_support.mcp_tool_count(ROOT / "src/local_ai_hub/mcp_server.py") == 7
+
+
 def test_mixed_inference_backend_reports_both_services_required():
     online = doctor_support.inference_backend_online
     selected = "ollama + llama.cpp (managed)"

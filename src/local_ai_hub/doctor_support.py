@@ -1,12 +1,48 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+import ast
 import logging
 from pathlib import Path
 import subprocess
 from typing import Any
 
 LOGGER = logging.getLogger(__name__)
+
+
+def mcp_tool_count(path: Path) -> int:
+    """Count MCP tools registered through decorators or FastMCP calls."""
+    if not path.is_file():
+        return 0
+    try:
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    except (OSError, UnicodeError, SyntaxError, ValueError):
+        return 0
+
+    names: set[str] = set()
+
+    def is_tool_factory(node: ast.AST) -> bool:
+        return (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "tool"
+            and isinstance(node.func.value, ast.Name)
+            and node.func.value.id == "mcp"
+        )
+
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            if any(is_tool_factory(decorator) for decorator in node.decorator_list):
+                names.add(node.name)
+        elif isinstance(node, (ast.Assign, ast.AnnAssign)):
+            value = node.value
+            if not isinstance(value, ast.Call) or not is_tool_factory(value.func):
+                continue
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            for target in targets:
+                if isinstance(target, ast.Name) and target.id.startswith("local_ai_"):
+                    names.add(target.id)
+    return len(names)
 
 
 def inference_backend_online(selected: str, status: dict[str, Any], llama_status: dict[str, Any]) -> bool:

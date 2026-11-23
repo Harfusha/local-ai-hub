@@ -536,7 +536,11 @@ class LlamaCppManagedRuntime:
             if self.llama_config.get("managed_with_ollama") is True:
                 return [("CUDA0", timeout)]
             return [("CUDA0", timeout), ("none", timeout)]
-        return [("SYCL0", min(timeout, 60.0)), ("none", timeout)] if intel_windows_gpu else [("none", timeout)]
+        # First SYCL loads can take over a minute while the backend initializes
+        # and uploads a shared-memory model. Keep the GPU attempt bounded, but
+        # allow the configured startup window (up to three minutes) before CPU
+        # fallback so a healthy Intel GPU is not abandoned prematurely.
+        return [("SYCL0", min(timeout, 180.0)), ("none", timeout)] if intel_windows_gpu else [("none", timeout)]
 
     def _managed_pid_alive(self) -> bool:
         try:
