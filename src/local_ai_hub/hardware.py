@@ -412,11 +412,11 @@ def detect_hardware(requested_profile: str = "auto", *, include_openvino: bool =
 PROFILE_OVERRIDES: dict[str, dict[str, Any]] = {
     "cpu": {
         "models": {
-            "background_code": "qwen2.5-coder:3b",
-            "fast_code": "qwen2.5-coder:3b",
-            "heavy_code": "qwen2.5-coder:7b",
-            "reasoning": "qwen3.5:9b",
-            "general": "qwen2.5-coder:7b",
+            "background_code": "qwen2.5-coder:1.5b",
+            "fast_code": "qwen2.5-coder:1.5b",
+            "heavy_code": "qwen2.5-coder:3b",
+            "reasoning": "qwen2.5-coder:7b",
+            "general": "qwen2.5-coder:3b",
             "vision": "qwen3-vl:4b",
         },
         "features": {"reranker": True, "search_summaries": False, "vision": True},
@@ -456,11 +456,11 @@ PROFILE_OVERRIDES: dict[str, dict[str, Any]] = {
     },
     "integrated": {
         "models": {
-            "background_code": "qwen2.5-coder:3b",
-            "fast_code": "qwen2.5-coder:3b",
-            "heavy_code": "qwen2.5-coder:7b",
-            "reasoning": "qwen3.5:9b",
-            "general": "qwen2.5-coder:7b",
+            "background_code": "qwen2.5-coder:1.5b",
+            "fast_code": "qwen2.5-coder:1.5b",
+            "heavy_code": "qwen2.5-coder:3b",
+            "reasoning": "qwen2.5-coder:7b",
+            "general": "qwen2.5-coder:3b",
             "vision": "qwen3-vl:4b",
         },
         "scheduler": {"max_parallel": 1, "max_loaded_models": 1, "max_queue": 32},
@@ -523,11 +523,11 @@ PROFILE_OVERRIDES: dict[str, dict[str, Any]] = {
         "features": {"reranker": True, "search_summaries": False, "vision": True},
         "preprocessing": {"model": "qwen2.5-coder:1.5b"},
         "models": {
-            "background_code": "qwen2.5-coder:3b",
-            "fast_code": "qwen2.5-coder:3b",
-            "heavy_code": "qwen2.5-coder:7b",
-            "reasoning": "qwen3.5:9b",
-            "general": "qwen2.5-coder:7b",
+            "background_code": "qwen2.5-coder:1.5b",
+            "fast_code": "qwen2.5-coder:1.5b",
+            "heavy_code": "qwen2.5-coder:3b",
+            "reasoning": "qwen2.5-coder:7b",
+            "general": "qwen2.5-coder:3b",
             "vision": "qwen3-vl:4b",
         },
         "scheduler": {"max_parallel": 1},
@@ -708,8 +708,8 @@ PROFILE_OVERRIDES: dict[str, dict[str, Any]] = {
         },
         "preprocessing": {"model": "qwen2.5-coder:7b"},
         "scheduler": {"max_parallel": 2},
-        "ollama": {"num_parallel": 2, "kv_cache_type": "q4_0"},
-        "llama_cpp": {"cache_type_k": "q4_0", "cache_type_v": "q4_0"},
+        "ollama": {"num_parallel": 2, "kv_cache_type": "q8_0"},
+        "llama_cpp": {"cache_type_k": "q8_0", "cache_type_v": "q8_0"},
         "background_gpu": {"parallel": 12, "file_batch_size": 12, "module_batch_size": 8},
         "cpu_retrieval": {"embedding_batch_size": 32, "reranker_batch_size": 8},
         "ollama_subagents": {
@@ -796,6 +796,8 @@ def profile_overrides(profile_name: str, detected: dict[str, Any] | None = None)
         curr_models = result.get("models", {})
         if curr_models.get("general") == "qwen3.5:9b":
             fp4_models["general"] = "qwen3.5:9b-nvfp4"
+        if curr_models.get("reasoning") == "qwen3.5:9b":
+            fp4_models["reasoning"] = "qwen3.5:9b-nvfp4"
         if fp4_models:
             result = _deep_merge_dict(result, {"models": fp4_models})
         sub_critic = result.get("ollama_subagents", {}).get("profiles", {}).get("qwen-critic", {})

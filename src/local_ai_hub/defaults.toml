@@ -18,14 +18,20 @@ max_request_body_bytes = 16777216 # 16 MiB for JSON/API requests; bundle upload 
 # HTTP access is loopback-only and requires no API credential.
 
 [telemetry]
-mode = "off" # Options: "off" (0 overhead) | "minimal" (in-memory request counts & fatal errors) | "full" (detailed traces & endpoint latencies)
+mode = "minimal" # Options: "off" (0 overhead) | "minimal" (in-memory request counts & fatal errors) | "full" (detailed traces & endpoint latencies)
+terminal_ttl_seconds = 259200
+max_bytes = 268435456
+max_sessions = 1000
+max_detail_response_bytes = 134217728
+cleanup_batch_size = 50
+max_list_limit = 200
 
 [training_capture]
 enabled = false # Default: false (zero overhead, no training data disk I/O)
 
 [laya]
 enabled = true # Set false to disable shadow inference and automatic Laya capture.
-mode = "shadow" # "shadow" for passive background logging, "advisory" for active routing and suggestions.
+mode = "advisory" # "shadow" for passive background logging, "advisory" for active routing and suggestions.
 # Laya loads on request and unloads 600 seconds after the latest completed request.
 idle_unload_seconds = 600
 
@@ -84,6 +90,7 @@ heavy_code = "qwen2.5-coder:7b"
 reasoning = "qwen3.5:9b"
 general = "qwen2.5-coder:7b"
 vision = "qwen3-vl:4b"
+context_relevance_model = "qwen2.5-coder:3b"
 embedding = "BAAI/bge-small-en-v1.5"
 embedding_backend = "auto"
 embedding_device = "auto"
@@ -106,7 +113,7 @@ mode = "auto" # off | auto (external only) | on (managed llama.cpp)
 # Bound foreground model preparation so a stalled provider cannot pin requests for minutes.
 model_load_timeout_seconds = 60
 managed_model_filename = "hub-qwen-15.gguf"
-fallback_to_ollama = false
+fallback_to_ollama = true
 
 [llama_cpp.models."qwen2.5-coder:1.5b"]
 url = "http://127.0.0.1:12438"
@@ -278,15 +285,15 @@ max_pending_work_orders = 32
 # Work workers are lazy and retire after this idle period; a new submit restarts them.
 worker_idle_seconds = 120
 max_steps = 32
-max_llm_steps = 24
+max_llm_steps = 16
 max_replans = 2
 max_seconds = 3600
 parallel_llm_steps = 1
 parallel_deterministic_steps = 2
-step_retry_limit = 3
+step_retry_limit = 2
 validation_commands = 5
-max_patch_files = 64
-max_patch_bytes = 2097152
+max_patch_files = 24
+max_patch_bytes = 524288
 allow_edits = true
 allow_create = true
 allow_delete = true
@@ -302,20 +309,12 @@ qualification_artifact_id = ""
 
 [transcription]
 # The optional Whisper CLI uses verified cached weights; downloads require operator opt-in.
-enabled = true
+enabled = false
 allow_model_downloads = false
 # GPU CLI transcription is not admitted without a separate resource admission implementation.
 device = "cpu"
 # Optional cache_dir override; otherwise XDG_CACHE_HOME/whisper or ~/.cache/whisper is used.
 
-[debug_traces]
-enabled = false
-terminal_ttl_seconds = 259200
-max_bytes = 268435456
-max_sessions = 1000
-max_detail_response_bytes = 134217728
-cleanup_batch_size = 50
-max_list_limit = 200
 
 [ollama]
 enabled = false # explicit opt-in only; setup/service never install, start, or pull Ollama by default
@@ -351,6 +350,11 @@ retry_cooldown_seconds = 120
 enabled = true
 default_profile = "qwen-explorer"
 language = "match_input"
+read_only = true
+never_write_files = true
+never_execute_commands = true
+never_create_worktrees = true
+never_bypass_sandbox = true
 
 [ollama_subagents.profiles.qwen-explorer]
 model = "qwen2.5-coder:1.5b"
@@ -517,7 +521,7 @@ delay_seconds = 1.5
 backend_wait_seconds = 30.0
 # Keep optional startup prewarm retries under four minutes.
 max_attempts = 24
-reranker = false
+reranker = true
 
 [search]
 special_filenames = ["Dockerfile", "Containerfile", "docker-compose.yml", "docker-compose.yaml", "compose.yml", "compose.yaml", "Makefile", "GNUmakefile", "justfile", "Gemfile", "Pipfile", ".env", ".env.example", ".env.sample", ".gitlab-ci.yml", ".gitlab-ci.yaml", "azure-pipelines.yml", "azure-pipelines.yaml"]
@@ -577,7 +581,7 @@ serena_context = "codex"
 startup_timeout_seconds = 60
 query_timeout_seconds = 60
 soft_timeout_seconds = 4.0
-index_timeout_seconds = 1200
+index_timeout_seconds = 120
 max_output_chars = 9000
 failure_threshold = 2
 cooldown_seconds = 60

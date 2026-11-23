@@ -9,9 +9,9 @@ def main():
 
     sources = [
         # Rust (cargo crates)
-        (r"C:\Users\Adam\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\aho-corasick-1.1.3", "rust", 25),
-        (r"C:\Users\Adam\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\aes-gcm-0.10.3", "rust", 25),
-        (r"C:\Users\Adam\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\ahash-0.8.11", "rust", 25),
+        (os.path.expanduser(r"~/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/aho-corasick-1.1.3"), "rust", 25),
+        (os.path.expanduser(r"~/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/aes-gcm-0.10.3"), "rust", 25),
+        (os.path.expanduser(r"~/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ahash-0.8.11"), "rust", 25),
         # TypeScript / React (wishflix jellyfin)
         (r"C:\Ostatní\wishflix\jellyfin-web-build\src", "typescript", 40),
         # Kotlin / Java (wishflix androidtv)
@@ -19,7 +19,7 @@ def main():
         # PHP / JS (klinika)
         (r"C:\Ostatní\Pavel\klinika", "php_js", 30),
         # Python (local-ai-hub)
-        (r"C:\Users\Adam\.local-ai-hub\src\local_ai_hub", "python", 30),
+        (os.path.expanduser(r"~/.local-ai-hub/src/local_ai_hub"), "python", 30),
     ]
 
     triplets_by_lang = {}

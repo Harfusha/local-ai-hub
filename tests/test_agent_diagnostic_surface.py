@@ -151,7 +151,7 @@ def test_detailed_wire_accounting_uses_the_final_sanitized_response(monkeypatch)
     from local_ai_hub import mcp_server
     from local_ai_hub.token_accounting import json_tokens, tool_request_tokens
 
-    monkeypatch.setattr(mcp_server, "CFG", {"debug_traces": {"enabled": True}})
+    monkeypatch.setattr(mcp_server, "CFG", {"telemetry": {"mode": "full", "agent_diagnostics": True}})
     arguments = {"action": "code_index", "max_response_tokens": 2400}
     contents, structured = mcp_server._mcp_budget_payload("local_ai_repo", arguments, {
         "success": True, "root": "C:/repo", "query": "thing",
@@ -167,6 +167,22 @@ def test_detailed_wire_accounting_uses_the_final_sanitized_response(monkeypatch)
     assert structured["token_efficiency"]["protocol_tokens_est"] == (
         tool_request_tokens("local_ai_repo", arguments) + returned
     )
+
+
+def test_background_debug_traces_do_not_leak_into_agent_mcp_wire(monkeypatch):
+    from local_ai_hub import mcp_server
+
+    monkeypatch.setattr(mcp_server, "CFG", {"debug_traces": {"enabled": True}})
+    arguments = {"action": "code_index", "max_response_tokens": 2400}
+    contents, structured = mcp_server._mcp_budget_payload("local_ai_repo", arguments, {
+        "success": True, "root": "C:/repo", "query": "thing",
+        "symbols": [{"name": "thing", "path": "a.py", "line": 3}],
+        "total_matches": 1, "returned_count": 1, "has_more": False,
+        "phase_timings_ms": {"retrieval": 10},
+        "token_efficiency": {"protocol_tokens_est": 1},
+    })
+    assert "phase_timings_ms" not in structured
+    assert "token_efficiency" not in structured
 
 
 @pytest.mark.parametrize("enabled", [False, True])

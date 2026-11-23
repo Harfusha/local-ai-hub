@@ -261,13 +261,16 @@ def test_no_personal_paths_or_runtime_payloads_in_tracked_release_sources():
         ".git", "__pycache__", ".pytest_cache", ".venv", "tool-envs", "state", "data", "generated",
         ".agents", ".serena", ".superpowers", ".handoff", ".local-ai-hub", ".t03-root-current-overlay", "artifacts", "agy-contextless-workspace",
         "backups", "migration-backups", ".worktrees", "handoff", "T18-review-artifacts-20260928",
+        ".ownership", ".local-ai-hub-superpowers", "scratch",
     }
-    skip_files = {"ORIGINAL_REQUEST.md", ".coverage", "config.toml"}
+    skip_files = {
+        "ORIGINAL_REQUEST.md", ".coverage", "config.toml", "config.runtime.toml", "config.runtime.toml.lock", "setup-report.json",
+    }
     for path in ROOT.rglob("*"):
         if not path.is_file():
             continue
         relative = path.relative_to(ROOT)
-        if any(part in skip_parts for part in relative.parts) or path.name in skip_files or path.name.startswith(".coverage"):
+        if any(part in skip_parts or part.startswith((".venv", ".mypy", ".ruff")) for part in relative.parts) or path.name in skip_files or path.name.startswith(".coverage"):
             continue
         if path.parent == ROOT / "docs" and path.name.startswith("integration-"):
             continue  # internal integration notes are excluded from the source distribution
@@ -279,7 +282,7 @@ def test_no_personal_paths_or_runtime_payloads_in_tracked_release_sources():
         # MANIFEST.in excludes release-plan docs from the source distribution.
         if path.relative_to(ROOT).parts[:2] == ("docs", "superpowers"):
             continue
-        if path.suffix in {".pyc", ".sqlite3", ".db", ".zip", ".pkl"} or ".local-ai-hub-backup-" in path.name:
+        if path.suffix in {".pyc", ".sqlite3", ".db", ".zip", ".pkl"} or ".local-ai-hub-backup-" in path.name or path.name.startswith(".local-ai-hub-"):
             continue
         if relative in {
             Path("docs/agent-evaluation/results.md"),

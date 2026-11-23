@@ -314,7 +314,7 @@ def _project_minimal_agent_response(result: dict[str, Any], tool: str, action: s
     for key in ("text", "content"):
         if key in result:
             minimal[key] = result[key]
-    for key in ("path", "line_start", "line_end", "total_lines", "virtualized"):
+    for key in ("path", "line_start", "line_end", "total_lines", "virtualized", "lease_id", "released_rows", "lease", "mutation_applied"):
         if key in result:
             minimal[key] = result[key]
     for key in ("advisory_only", "semantic_quality", "review_consistency", "quality_warning", "bypass_reason", "response_budget"):
@@ -325,13 +325,20 @@ def _project_minimal_agent_response(result: dict[str, Any], tool: str, action: s
 
 
 def _agent_output(value: Any, tool: str, arguments: dict[str, Any]) -> Any:
-    """The dashboard toggle is authoritative; request profiles cannot enable detail."""
+    """Keep internal observations out of ordinary agent responses.
+
+    Agent MCP responses are clean by default. Background debug traces (SQLite)
+    operate independently and do not pollute agent context windows.
+    """
     services_module = _get_services_module()
+    detail_checker = getattr(services_module, "agent_diagnostics_enabled", None)
+    detail_enabled = detail_checker(services_module.CFG, arguments) if detail_checker else False
     projector = (services_module.project_status_response if tool == "local_ai_status"
                  else services_module.project_pubsub_poll_response if tool == "local_ai_coord" and arguments.get("action") == "pubsub_poll"
                  else services_module.project_wait_event_response if tool == "local_ai_coord" and arguments.get("action") == "wait_for_event"
                  else services_module.project_agent_response)
-    result = projector(value, enabled=services_module.detailed_diagnostics_enabled(services_module.CFG))
+    extra = arguments.get("extra_fields") or ()
+    result = projector(value, enabled=detail_enabled, extra_fields=extra)
     operation = arguments.get("laya_operation")
     if (tool == "local_ai_coord" and arguments.get("action") == "curate_dataset"
             and isinstance(operation, dict) and operation.get("action") == "runtime_status"
@@ -343,7 +350,7 @@ def _agent_output(value: Any, tool: str, arguments: dict[str, Any]) -> Any:
         }
         result["runtime"] = {key: item for key, item in value["runtime"].items() if key in allowed}
 
-    if isinstance(result, dict) and not services_module.detailed_diagnostics_enabled(services_module.CFG):
+    if isinstance(result, dict) and not detail_enabled:
         task = result.get("task")
         if isinstance(task, dict):
             cp = task.get("checkpoint")

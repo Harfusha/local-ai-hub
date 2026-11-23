@@ -1,4 +1,4 @@
-FROM C:\Users\Adam\.local-ai-hub\state\models\qwen25-coder-3b-prep-q4_k_m.gguf
+FROM ./state/models/qwen25-coder-3b-prep-q4_k_m.gguf
 TEMPLATE """{{- if .Suffix }}<|fim_prefix|>{{ .Prompt }}<|fim_suffix|>{{ .Suffix }}<|fim_middle|>
 {{- else if .Messages }}
 {{- if or .System .Tools }}<|im_start|>system

@@ -559,6 +559,26 @@ button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-vis
   <header class="page-heading" data-section="02 / Requests"><h1 tabindex="-1" id="page-title-work">Requests</h1><p>See what’s running, what’s waiting, and how each request finished.</p></header>
   <section class="section"><h2>Live scheduler work <span class="tiny" id="queueSummary">Current queue only; not request history.</span></h2><div class="table-wrap"><table><thead><tr><th>State</th><th>Job</th><th>Agent</th><th>Source</th><th>Model</th><th>Priority</th><th>Wait</th><th>Processing</th><th>Reason</th></tr></thead><tbody id="jobs"></tbody></table></div></section>
   <section class="section"><h2>Active API requests <span class="tiny">monitoring endpoints excluded</span></h2><div class="table-wrap"><table><thead><tr><th>Request</th><th>Agent</th><th>Action</th><th>Age</th></tr></thead><tbody id="activeReq"></tbody></table></div></section>
+  <div class="split" style="margin-top:12px">
+    <section class="section">
+      <h2>Asynchronous jobs <span class="tiny" id="asyncJobsSummary">Background task &amp; tool executions</span></h2>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Engine</th><th>Status</th><th>Counts (Queued / Running)</th><th>Completed / Failed</th></tr></thead>
+          <tbody id="asyncJobsBody"></tbody>
+        </table>
+      </div>
+    </section>
+    <section class="section">
+      <h2>Work orchestrator <span class="tiny" id="workOrchestratorSummary">Managed work orders</span></h2>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Engine</th><th>Worker Status</th><th>Active Workers</th><th>State Counts</th></tr></thead>
+          <tbody id="workOrchestratorBody"></tbody>
+        </table>
+      </div>
+    </section>
+  </div>
   <section class="section"><h2>Request history <span class="tiny">Saved API requests. Queue jobs and task runs appear in their own views.</span></h2><div class="request-filter"><input id="requestHistorySearch" aria-label="Search request history" type="search" placeholder="Search request ID, route, project, agent, error…" autocomplete="off"><select id="requestHistoryAction" aria-label="Filter by endpoint"><option value="">All endpoints</option></select><select id="requestHistoryStatus" aria-label="Filter by status"><option value="">All results</option><option value="failed">Failed</option><option value="2xx">2xx</option><option value="4xx">4xx</option><option value="5xx">5xx</option></select><select id="requestHistoryPeriod" aria-label="Filter by time"><option value="">All loaded</option><option value="3600">Last hour</option><option value="86400">Last 24 hours</option><option value="604800">Last 7 days</option><option value="2592000">Last 30 days</option></select><button class="btn" id="requestHistoryReset">Reset</button><span class="tiny request-summary" id="requestHistorySummary">0 requests</span></div><div class="table-wrap"><table><thead><tr><th>Time</th><th>Request</th><th>Project</th><th>Agent</th><th>Action</th><th>Status</th><th>Trace availability</th><th>Duration</th></tr></thead><tbody id="recentReq"></tbody></table></div></section>
 </div>
 
@@ -934,6 +954,63 @@ button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-vis
       </div>
     </div>
   </section>
+
+  <section class="section" id="dedicatedModelsSection" style="margin-top:12px">
+    <h2>Dedicated embedding &amp; reranker runtimes <span class="tiny">Isolated background and search inference</span></h2>
+    <div style="padding:14px">
+      <div class="grid grid-3" style="margin-bottom:14px">
+        <div class="card">
+          <div class="label">Embeddings Runtime</div>
+          <div class="value primary-metric" id="embeddingsRuntimeVal">…</div>
+          <div class="sub" id="embeddingsRuntimeSub">Waiting for status</div>
+        </div>
+        <div class="card">
+          <div class="label">Reranker Runtime</div>
+          <div class="value primary-metric" id="rerankerRuntimeVal">…</div>
+          <div class="sub" id="rerankerRuntimeSub">Waiting for status</div>
+        </div>
+        <div class="card">
+          <div class="label">VRAM Balancer</div>
+          <div class="value primary-metric" id="vramBalancerVal">…</div>
+          <div class="sub" id="vramBalancerSub">Waiting for status</div>
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Runtime</th><th>Model</th><th>Backend</th><th>Device</th><th>Status</th><th>Batch</th><th>Cache / Computed</th></tr></thead>
+          <tbody id="dedicatedRuntimesBody"></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <section class="section" id="optimizationSection" style="margin-top:12px">
+    <h2>Adaptive optimization &amp; memory <span class="tiny">Autotune, semantic learning, evidence store &amp; lossless routing</span></h2>
+    <div style="padding:14px">
+      <div class="grid grid-4">
+        <div class="card">
+          <div class="label">Autotune Engine</div>
+          <div class="value primary-metric" id="autotuneVal">…</div>
+          <div class="sub" id="autotuneSub">Waiting for status</div>
+        </div>
+        <div class="card">
+          <div class="label">Adaptive Learning</div>
+          <div class="value primary-metric" id="learningVal">…</div>
+          <div class="sub" id="learningSub">Waiting for status</div>
+        </div>
+        <div class="card">
+          <div class="label">Evidence Store</div>
+          <div class="value primary-metric" id="evidenceStoreVal">…</div>
+          <div class="sub" id="evidenceStoreSub">Waiting for status</div>
+        </div>
+        <div class="card">
+          <div class="label">Lossless Token Router</div>
+          <div class="value primary-metric" id="losslessRouterVal">…</div>
+          <div class="sub" id="losslessRouterSub">Waiting for status</div>
+        </div>
+      </div>
+    </div>
+  </section>
 </div>
 
 <div id="reliability" class="page">
@@ -948,6 +1025,26 @@ button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-vis
   <div class="split">
     <section class="section"><h2>Recent error fingerprints</h2><div class="table-wrap"><table><thead><tr><th>Component</th><th>Operation</th><th>Diagnostic</th><th>Count</th><th>Recovered</th><th>Last seen</th></tr></thead><tbody id="errors"></tbody></table></div></section>
     <section class="section"><h2>Runtime / scheduler counters <span class="tiny">Since restart · independent of metrics period</span></h2><div id="runtimeCounters" class="kv"></div></section>
+  </div>
+  <div class="split">
+    <section class="section">
+      <h2>Circuit breakers <span class="tiny">Fault isolation &amp; cooldown timers</span></h2>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Target</th><th>Status</th><th>Failures</th><th>Cooldown</th><th>Probe</th></tr></thead>
+          <tbody id="circuitBreakersBody"></tbody>
+        </table>
+      </div>
+    </section>
+    <section class="section">
+      <h2>Crash recovery journal <span class="tiny" id="recoveryJournalSummary">Durable recovery state</span></h2>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Request ID</th><th>Action</th><th>State</th><th>Updated</th><th>Detail</th></tr></thead>
+          <tbody id="recoveryJournalBody"></tbody>
+        </table>
+      </div>
+    </section>
   </div>
   <section class="section">
     <h2>Process session &amp; restart history <span class="tiny">Up to 100 sessions started in the last 30 days · retained event accounting</span></h2>
@@ -5588,7 +5685,196 @@ function render(s){
     return clickableRow(x,`<td>${started}</td><td>${durSec(x.duration_seconds)}</td><td>${stBadge}</td><td>${n(x.events)}</td><td>${hitPct}% <span class="tiny muted">(${n(x.cache_hits)})</span></td><td>${n(x.tokens_saved)}</td><td><code>${esc(x.version||'—')}</code></td>`,'session');
   },7);
 
+  renderSubsystemsObservability(s);
+
   renderBundles(s);
+}
+
+function renderSubsystemsObservability(s){
+  const cbEntries=Object.entries(s.circuit_breakers||{}).map(([target,info])=>({
+    target,
+    open:Boolean(info?.open),
+    failures:Number(info?.failures||0),
+    cooldown:Number(info?.cooldown_remaining_seconds||0),
+    probe:Boolean(info?.half_open_probe)
+  }));
+  rows('circuitBreakersBody',cbEntries,x=>{
+    const stClass=x.open?'bad-t':(x.probe?'warn-t':'ok');
+    const stLabel=x.open?'OPEN':(x.probe?'HALF-OPEN':'CLOSED');
+    const cdText=x.cooldown>0?durSec(x.cooldown):'—';
+    const probeBadge=x.probe?'<span class="warn-t">In-flight</span>':'<span class="muted">Idle</span>';
+    return `<tr><td><strong>${esc(x.target)}</strong></td><td><span class="pill tiny ${stClass}">${stLabel}</span></td><td>${n(x.failures)}</td><td>${esc(cdText)}</td><td>${probeBadge}</td></tr>`;
+  },5,'All circuit breakers normal (closed)');
+
+  const rec=s.recovery||{},recCounts=rec.counts||{},recRecent=rec.recent||[];
+  if($('recoveryJournalSummary')){
+    $('recoveryJournalSummary').textContent=`${n(recCounts.running||0)} running · ${n(recCounts.done||0)} done · ${n(recCounts.failed||0)} failed`;
+  }
+  rows('recoveryJournalBody',recRecent,x=>{
+    const st=String(x.state||'unknown');
+    const stBadge=st==='running'?'<span class="pill tiny ok">running</span>':(st==='failed'?'<span class="pill tiny bad-t">failed</span>':`<span class="pill tiny muted">${esc(st)}</span>`);
+    const updated=x.updated_at?new Date(x.updated_at*1000).toLocaleTimeString():'—';
+    return `<tr><td><code>${esc(String(x.request_id||'—').slice(0,16))}</code></td><td><strong>${esc(x.action||'—')}</strong></td><td>${stBadge}</td><td>${updated}</td><td class="tiny">${esc(x.detail||'—')}</td></tr>`;
+  },5,'No crash recovery records in journal');
+
+  const emb=s.embeddings||{},rer=s.reranker||{},vb=s.vram_balancer||{};
+  if($('embeddingsRuntimeVal')&&$('embeddingsRuntimeSub')){
+    if(emb.enabled===false){
+      $('embeddingsRuntimeVal').innerHTML='<span class="muted">Disabled</span>';
+      $('embeddingsRuntimeSub').textContent='embeddings.enabled = false';
+    }else if(emb.loaded){
+      $('embeddingsRuntimeVal').innerHTML='<span class="ok">Loaded</span>';
+      $('embeddingsRuntimeSub').textContent=`${esc(emb.model||'model')} · ${esc(emb.active_backend||emb.backend||'cpu')} (${esc(emb.active_device||emb.device||'cpu')})`;
+    }else{
+      $('embeddingsRuntimeVal').innerHTML='<span class="warn-t">Unloaded / Idle</span>';
+      const errText=emb.load_error?` · Err: ${esc(emb.load_error)}`:'';
+      $('embeddingsRuntimeSub').textContent=`${esc(emb.model||'configured')}${errText}`;
+    }
+  }
+
+  if($('rerankerRuntimeVal')&&$('rerankerRuntimeSub')){
+    if(rer.enabled===false){
+      $('rerankerRuntimeVal').innerHTML='<span class="muted">Disabled</span>';
+      $('rerankerRuntimeSub').textContent='reranker.enabled = false';
+    }else if(rer.loaded){
+      $('rerankerRuntimeVal').innerHTML='<span class="ok">Loaded</span>';
+      $('rerankerRuntimeSub').textContent=`${esc(rer.model||'model')} · ${esc(rer.active_backend||rer.backend||'cpu')} (${esc(rer.active_device||rer.device||'cpu')})`;
+    }else{
+      $('rerankerRuntimeVal').innerHTML='<span class="warn-t">Unloaded / Idle</span>';
+      const errText=rer.load_error?` · Err: ${esc(rer.load_error)}`:'';
+      $('rerankerRuntimeSub').textContent=`${esc(rer.model||'configured')}${errText}`;
+    }
+  }
+
+  if($('vramBalancerVal')&&$('vramBalancerSub')){
+    if(vb.enabled===false){
+      $('vramBalancerVal').innerHTML='<span class="muted">Disabled</span>';
+      $('vramBalancerSub').textContent='vram_balancer.enabled = false';
+    }else{
+      const pLevel=String(vb.pressure_level||(vb.available?'Normal':'Idle'));
+      const pClass=pLevel==='critical'?'bad-t':(pLevel==='high'||pLevel==='medium'?'warn-t':'ok');
+      $('vramBalancerVal').innerHTML=`<span class="${pClass}">${esc(pLevel.toUpperCase())}</span>`;
+      const gpuName=vb.gpu_name?esc(vb.gpu_name):'GPU';
+      const usedMb=Math.round(Number(vb.vram_used_mb||0)),totalMb=Math.round(Number(vb.vram_total_mb||0));
+      const pct=Number(vb.vram_used_pct||0).toFixed(0);
+      $('vramBalancerSub').textContent=`${gpuName} · ${n(usedMb)} / ${n(totalMb)} MB (${pct}%)`;
+    }
+  }
+
+  const dedicatedRows=[];
+  if(emb.enabled!==false||emb.model){
+    dedicatedRows.push({
+      runtime:'Embeddings',
+      model:emb.model||'—',
+      backend:emb.active_backend||emb.backend||'—',
+      device:emb.active_device||emb.device||'—',
+      loaded:Boolean(emb.loaded),
+      error:emb.load_error,
+      batch:emb.batch_size||0,
+      hits:emb.cache_hits_runtime||0,
+      computed:emb.computed_runtime||0
+    });
+  }
+  if(rer.enabled!==false||rer.model){
+    dedicatedRows.push({
+      runtime:'Reranker',
+      model:rer.model||'—',
+      backend:rer.active_backend||rer.backend||'—',
+      device:rer.active_device||rer.device||'—',
+      loaded:Boolean(rer.loaded),
+      error:rer.load_error,
+      batch:rer.batch_size||0,
+      hits:rer.cache_hits_runtime||0,
+      computed:rer.computed_runtime||0
+    });
+  }
+  rows('dedicatedRuntimesBody',dedicatedRows,x=>{
+    const stBadge=x.loaded?'<span class="pill tiny ok">Loaded</span>':(x.error?`<span class="pill tiny bad-t" title="${esc(x.error)}">Error</span>`:'<span class="pill tiny muted">Idle</span>');
+    return `<tr><td><strong>${esc(x.runtime)}</strong></td><td><code>${esc(x.model)}</code></td><td>${esc(x.backend)}</td><td>${esc(x.device)}</td><td>${stBadge}</td><td>${n(x.batch)}</td><td>${n(x.hits)} / ${n(x.computed)}</td></tr>`;
+  },7,'No dedicated search runtimes active');
+
+  const at=s.autotune||{},ln=s.learning||{},ev=s.evidence_store||{},lrtr=s.lossless_router||{};
+  if($('autotuneVal')&&$('autotuneSub')){
+    if(at.enabled===false){
+      $('autotuneVal').innerHTML='<span class="muted">Disabled</span>';
+      $('autotuneSub').textContent='autotune.enabled = false';
+    }else{
+      const tunedCount=Object.keys(at.models||{}).length;
+      $('autotuneVal').innerHTML=`<span class="ok">${tunedCount?n(tunedCount)+' models':'Active'}</span>`;
+      const ratio=at.resident_latency_ratio!=null?`${Number(at.resident_latency_ratio).toFixed(2)}x`:'1.00x';
+      $('autotuneSub').textContent=`Latency ratio: ${ratio}`;
+    }
+  }
+
+  if($('learningVal')&&$('learningSub')){
+    if(ln.enabled===false){
+      $('learningVal').innerHTML='<span class="muted">Disabled</span>';
+      $('learningSub').textContent='learning.enabled = false';
+    }else{
+      $('learningVal').innerHTML=`<span class="ok">${n(ln.intents||0)} intents</span>`;
+      const healthStr=ln.healthy!==false?'healthy':'degraded';
+      $('learningSub').textContent=`${n(ln.projects||0)} projects · ${healthStr}`;
+    }
+  }
+
+  if($('evidenceStoreVal')&&$('evidenceStoreSub')){
+    const evEntries=Number(ev.entries||0);
+    $('evidenceStoreVal').innerHTML=`<span class="ok">${n(evEntries)} entries</span>`;
+    const evHealth=ev.healthy!==false?'healthy':'degraded';
+    $('evidenceStoreSub').textContent=`${n(ev.hits||0)} hits · ${evHealth}`;
+  }
+
+  if($('losslessRouterVal')&&$('losslessRouterSub')){
+    if(lrtr.enabled===false){
+      $('losslessRouterVal').innerHTML='<span class="muted">Disabled</span>';
+      $('losslessRouterSub').textContent='lossless_router.enabled = false';
+    }else{
+      const hits=Number(lrtr.hits||0),misses=Number(lrtr.misses||0),total=hits+misses;
+      const rate=total>0?((hits/total)*100).toFixed(1)+'%':'100%';
+      $('losslessRouterVal').innerHTML=`<span class="ok">${n(hits)} hits (${rate})</span>`;
+      $('losslessRouterSub').textContent=`${n(misses)} misses · ${n(lrtr.fallbacks||0)} fallbacks`;
+    }
+  }
+
+  const aj=s.async_jobs||{},wo=s.work_orchestrator||{};
+  if($('asyncJobsSummary')){
+    const ajCounts=aj.counts||{};
+    $('asyncJobsSummary').textContent=`${n(ajCounts.queued||0)} queued · ${n(ajCounts.running||0)} running · ${n(aj.submitted||0)} total`;
+  }
+  const ajRows=[];
+  if(aj.enabled!==false||aj.submitted){
+    ajRows.push({
+      engine:'Background Jobs Engine',
+      enabled:aj.enabled!==false,
+      queued:aj.counts?.queued||0,
+      running:aj.counts?.running||0,
+      completed:aj.completed||aj.counts?.completed||0,
+      failed:aj.failed||aj.counts?.failed||0
+    });
+  }
+  rows('asyncJobsBody',ajRows,x=>{
+    const stBadge=x.enabled?'<span class="pill tiny ok">Enabled</span>':'<span class="pill tiny muted">Disabled</span>';
+    return `<tr><td><strong>${esc(x.engine)}</strong></td><td>${stBadge}</td><td>${n(x.queued)} queued · ${n(x.running)} running</td><td>${n(x.completed)} / ${n(x.failed)}</td></tr>`;
+  },4,'Async jobs idle');
+
+  if($('workOrchestratorSummary')){
+    const woAlive=Boolean(wo.worker_alive);
+    $('workOrchestratorSummary').textContent=`${n(wo.active_workers||0)} active workers · worker alive: ${woAlive?'yes':'no'}`;
+  }
+  const woRows=[];
+  if(wo.enabled!==false||wo.active_workers!=null){
+    const statesText=Object.entries(wo.states||{}).map(([k,v])=>`${esc(k)}: ${n(v)}`).join(' · ')||'No active orders';
+    woRows.push({
+      engine:'Work Order Orchestrator',
+      alive:Boolean(wo.worker_alive),
+      workers:Number(wo.active_workers||0),
+      states:statesText
+    });
+  }
+  rows('workOrchestratorBody',woRows,x=>{
+    const stBadge=x.alive?'<span class="pill tiny ok">Worker Alive</span>':'<span class="pill tiny muted">Worker Idle</span>';
+    return `<tr><td><strong>${esc(x.engine)}</strong></td><td>${stBadge}</td><td>${n(x.workers)}</td><td class="tiny">${x.states}</td></tr>`;
+  },4,'Work orchestrator idle');
 }
 
 function renderReliabilitySummary(snapshot){

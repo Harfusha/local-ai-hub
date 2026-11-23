@@ -131,8 +131,15 @@ def detailed_diagnostics_enabled(config: dict[str, Any], *, store: Any = None) -
     if store is not None:
         return getattr(store, "enabled", False) is True
     paths = [config.get(key) for key in ("_defaults_path", "_config_path", "_runtime_override_path")]
-    section = config.get("debug_traces", {})
-    enabled = isinstance(section, dict) and section.get("enabled") is True
+    telemetry_cfg = config.get("telemetry", {}) if isinstance(config, dict) else {}
+    telemetry_mode = str(telemetry_cfg.get("mode") or "").strip().lower()
+    if telemetry_mode == "full":
+        enabled = True
+    elif telemetry_mode in ("off", "minimal"):
+        enabled = False
+    else:
+        section = config.get("debug_traces", {}) if isinstance(config, dict) else {}
+        enabled = isinstance(section, dict) and section.get("enabled") is True
     if not any(paths):
         return enabled
     # With a base config, reconstruct the boolean from the same overlay order
@@ -148,22 +155,49 @@ def detailed_diagnostics_enabled(config: dict[str, Any], *, store: Any = None) -
                     settings = tomllib.load(stream)
             except FileNotFoundError:
                 continue
-            section = settings.get("debug_traces", {})
-            if not isinstance(section, dict):
-                return False
-            if "enabled" in section:
-                enabled = section["enabled"] is True
+            telemetry = settings.get("telemetry", {})
+            if isinstance(telemetry, dict) and "mode" in telemetry:
+                mode = str(telemetry.get("mode") or "").strip().lower()
+                enabled = (mode == "full")
+            else:
+                section = settings.get("debug_traces", {})
+                if isinstance(section, dict) and "enabled" in section:
+                    enabled = section["enabled"] is True
     except (OSError, ValueError, TypeError):
         return False
     return enabled
 
 
-def project_agent_response(value: Any, *, enabled: bool, _aggregate: bool = False) -> Any:
+def agent_diagnostics_enabled(config: dict[str, Any], arguments: dict[str, Any] | None = None) -> bool:
+    """Determine whether an agent response should include internal observations.
+
+    By default, agent MCP responses are strictly sanitized to protect agent context.
+    Background debug tracing operates independently under full telemetry mode
+    and does not flood agent wire contexts.
+    Detail is only emitted if explicitly requested via response_profile='debug'
+    while full telemetry is active, or explicitly configured via
+    [agent_output] detailed_diagnostics = true.
+    """
+    is_debug_profile = isinstance(arguments, dict) and str(arguments.get("response_profile") or "").strip().lower() == "debug"
+    if isinstance(config, dict):
+        if is_debug_profile and detailed_diagnostics_enabled(config):
+            return True
+        telemetry_cfg = config.get("telemetry", {})
+        if isinstance(telemetry_cfg, dict) and telemetry_cfg.get("agent_diagnostics") is True:
+            return True
+        agent_cfg = config.get("agent_output", {})
+        if isinstance(agent_cfg, dict) and agent_cfg.get("detailed_diagnostics") is True:
+            return True
+    return False
+
+
+def project_agent_response(value: Any, *, enabled: bool, _aggregate: bool = False, extra_fields: Any = None) -> Any:
     """Remove internal observations without changing outcomes or caller documents."""
     if isinstance(value, list):
-        return [project_agent_response(item, enabled=enabled, _aggregate=_aggregate) for item in value]
+        return [project_agent_response(item, enabled=enabled, _aggregate=_aggregate, extra_fields=extra_fields) for item in value]
     if not isinstance(value, dict):
         return value
+    requested_extra = set(extra_fields) if isinstance(extra_fields, (set, list, tuple)) else set()
     projected = {}
     for key, item in value.items():
         # Canonical pagination counts replace equal legacy aliases. Distinct
@@ -329,9 +363,9 @@ def project_agent_response(value: Any, *, enabled: bool, _aggregate: bool = Fals
     return projected
 
 
-def project_wait_event_response(value: Any, *, enabled: bool) -> Any:
+def project_wait_event_response(value: Any, *, enabled: bool, **kwargs: Any) -> Any:
     """Preserve the caller's event payload independently of diagnostic keys."""
-    projected = project_agent_response(value, enabled=enabled)
+    projected = project_agent_response(value, enabled=enabled, **kwargs)
     if isinstance(value, dict) and isinstance(projected, dict) and value.get("success") is True:
         if "message" in value:
             projected["message"] = copy.deepcopy(value["message"])
@@ -343,9 +377,9 @@ def project_wait_event_response(value: Any, *, enabled: bool) -> Any:
     return projected
 
 
-def project_pubsub_poll_response(value: Any, *, enabled: bool) -> Any:
+def project_pubsub_poll_response(value: Any, *, enabled: bool, **kwargs: Any) -> Any:
     """Keep caller-authored message payloads while filtering envelope diagnostics."""
-    projected = project_agent_response(value, enabled=enabled)
+    projected = project_agent_response(value, enabled=enabled, **kwargs)
     if not isinstance(value, dict) or not isinstance(projected, dict) or value.get("success") is not True:
         return projected
     source, result = value.get("messages"), projected.get("messages")
@@ -357,7 +391,7 @@ def project_pubsub_poll_response(value: Any, *, enabled: bool) -> Any:
     return projected
 
 
-def project_aggregate_response(value: Any, *, enabled: bool) -> Any:
+def project_aggregate_response(value: Any, *, enabled: bool, **kwargs: Any) -> Any:
     """Aggregate counts stay available; report detail has no filter exemption."""
     if not enabled and isinstance(value, dict):
         value = {key: item for key, item in value.items() if key not in {
@@ -369,12 +403,12 @@ def project_aggregate_response(value: Any, *, enabled: bool) -> Any:
         for key in ("report", "metrics"):
             if isinstance(value.get(key), dict):
                 value[key] = project_aggregate_response(value[key], enabled=False)
-    return project_agent_response(value, enabled=enabled, _aggregate=True)
+    return project_agent_response(value, enabled=enabled, _aggregate=True, **kwargs)
 
 
-def project_status_response(value: Any, *, enabled: bool) -> Any:
+def project_status_response(value: Any, *, enabled: bool, **kwargs: Any) -> Any:
     """Keep operational/dashboard health; component internals are opt-in detail."""
-    projected = project_agent_response(value, enabled=enabled)
+    projected = project_agent_response(value, enabled=enabled, **kwargs)
     if enabled or not isinstance(projected, dict):
         return projected
     for field in _STATUS_DETAIL_FIELDS:

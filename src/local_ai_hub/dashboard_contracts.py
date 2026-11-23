@@ -13,6 +13,7 @@ _BOOLEAN_SETTINGS = frozenset({"debug_traces.enabled", "preprocessing.enabled",
     "code_intelligence.enabled", "code_intelligence.serena_enabled", "monitoring.dashboard_enabled",
     *(f"features.{name}" for name in _FEATURES)})
 _PROFILES = frozenset({"auto", "cpu", "integrated", "low", "balanced", "medium", "high", "max"})
+_TELEMETRY_MODES = frozenset({"off", "minimal", "full"})
 
 
 def dashboard_settings_patch(requested: Any) -> dict[str, Any]:
@@ -24,12 +25,17 @@ def dashboard_settings_patch(requested: Any) -> dict[str, Any]:
             raise ValueError("setting names must be strings")
         if dotted == "hardware.profile":
             valid = type(value) is str and value in _PROFILES
+        elif dotted == "telemetry.mode":
+            valid = type(value) is str and value in _TELEMETRY_MODES
         else:
             valid = dotted in _BOOLEAN_SETTINGS and type(value) is bool
         if not valid:
             raise ValueError(f"unsupported or invalid setting: {dotted[:120]}")
-        table, name = dotted.split(".", 1)
-        patch.setdefault(table, {})[name] = value
+        if dotted == "debug_traces.enabled":
+            patch.setdefault("telemetry", {})["mode"] = "full" if value else "minimal"
+        else:
+            table, name = dotted.split(".", 1)
+            patch.setdefault(table, {})[name] = value
     return patch
 
 

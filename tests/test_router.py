@@ -116,7 +116,7 @@ def test_reasoning_profiles_reject_override_below_reasoning_tier(profile):
 @pytest.mark.parametrize(
     ("profile", "gpus", "ram_gb", "expected_heavy", "expected_reasoning"),
     [
-        ("integrated", [{"integrated": True, "vendor": "intel"}], 16, "qwen2.5-coder:7b", "qwen3.5:9b"),
+        ("integrated", [{"integrated": True, "vendor": "intel"}], 16, "qwen2.5-coder:3b", "qwen2.5-coder:7b"),
         ("balanced", [{"integrated": False, "vram_mb": 8 * 1024}], 16, "qwen2.5-coder:7b", "qwen3.5:9b"),
         ("medium", [{"integrated": False, "vram_mb": 12 * 1024}], 16, "qwen2.5-coder:7b", "qwen3.5:9b"),
         ("high", [{"integrated": False, "vram_mb": 16 * 1024}], 16, "qwen2.5-coder:14b", "qwen3.5:9b"),
@@ -222,7 +222,7 @@ def test_fast_route_rejects_background_model_override(profile):
     from local_ai_hub.router import ModelRouter
 
     models = dict(PROFILE_OVERRIDES[profile]["models"])
-    models["background_code"] = "qwen2.5-coder:1.5b"
+    models["background_code"] = "qwen2.5-coder:0.5b" if models["fast_code"] == "qwen2.5-coder:1.5b" else "qwen2.5-coder:1.5b"
     router = ModelRouter({"models": models})
     route = router.classify("write a small helper", task_type="code", complexity="fast")
 

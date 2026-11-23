@@ -518,12 +518,15 @@ def _ollama_runner_present(config: dict[str, Any]) -> bool:
 
 
 def _apply_live_debug_trace_toggle(app: Any, settings: dict[str, Any]) -> bool:
-    if set(settings) != {"debug_traces.enabled"}:
+    if "debug_traces.enabled" in settings:
+        enabled = bool(settings["debug_traces.enabled"])
+    elif "telemetry.mode" in settings:
+        enabled = (str(settings["telemetry.mode"]).strip().lower() == "full")
+    else:
         return False
     store = getattr(app, "debug_traces", None)
     if store is None:
         return False
-    enabled = bool(settings["debug_traces.enabled"])
     store.enabled = enabled
 
     # Dashboard status is cached for a short interval. Keep its copy of the
@@ -547,6 +550,9 @@ def _apply_live_debug_trace_toggle(app: Any, settings: dict[str, Any]) -> bool:
                 trace_status = snapshot.get("debug_traces")
                 if isinstance(trace_status, dict):
                     snapshot["debug_traces"] = {**trace_status, "enabled": enabled}
+                telemetry_status = snapshot.get("telemetry")
+                if isinstance(telemetry_status, dict):
+                    snapshot["telemetry"] = {**telemetry_status, "mode": "full" if enabled else "minimal"}
         finally:
             if locked:
                 release()

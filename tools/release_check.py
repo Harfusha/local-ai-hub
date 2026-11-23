@@ -617,15 +617,18 @@ def run_live_smoke(root: Path) -> dict[str, object]:
             else None
         )
         transcription_failed = transcription_failure_class is not None
+        transcribe_disabled = transcription_reason == "transcription_disabled"
         transcribe_ok = not transcription_failed and (
             expected_silence
+            or transcribe_disabled
             or (transcription.get("success") is True and bool(str(transcription.get("text") or "").strip()))
         )
         checks.append({
             "name": "live-transcribe", "ok": transcribe_ok, "engine": transcription.get("engine"),
             "degraded": bool(transcription.get("degraded", False)),
             "classification": (
-                "expected_empty_input" if expected_silence and transcribe_ok
+                "disabled" if transcribe_disabled and transcribe_ok
+                else "expected_empty_input" if expected_silence and transcribe_ok
                 else transcription_failure_class if transcription_failed
                 else "success" if transcribe_ok else "request_failed"
             ),

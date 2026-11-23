@@ -808,7 +808,9 @@ def _mcp_budget_payload(name: str, arguments: dict[str, Any], value: Any) -> Any
     projector = (services_module.project_pubsub_poll_response if name == "local_ai_coord" and arguments.get("action") == "pubsub_poll"
                  else services_module.project_wait_event_response if name == "local_ai_coord" and arguments.get("action") == "wait_for_event"
                  else services_module.project_agent_response)
-    safe = projector(structured, enabled=services_module.detailed_diagnostics_enabled(services_module.CFG))
+    detail_checker = getattr(services_module, "agent_diagnostics_enabled", None)
+    detail_enabled = detail_checker(services_module.CFG, arguments) if detail_checker else False
+    safe = projector(structured, enabled=detail_enabled, extra_fields=arguments.get("extra_fields"))
     if safe == structured:
         return contents, structured
     try:

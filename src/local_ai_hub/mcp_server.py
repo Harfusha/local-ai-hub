@@ -32,7 +32,14 @@ from local_ai_hub.repository_scope import (
     reject_retired_tenancy_fields as reject_retired_tenancy_fields,
 )
 from local_ai_hub.compact import compact_result  # noqa: F401
-from local_ai_hub.agent_diagnostics import detailed_diagnostics_enabled, project_agent_response, project_pubsub_poll_response, project_wait_event_response, project_status_response  # noqa: F401
+from local_ai_hub.agent_diagnostics import (  # noqa: F401
+    agent_diagnostics_enabled,
+    detailed_diagnostics_enabled,
+    project_agent_response,
+    project_pubsub_poll_response,
+    project_wait_event_response,
+    project_status_response,
+)
 from local_ai_hub.agent_surface import diagnostic_mcp_operation, diagnostics_disabled_response  # noqa: F401
 from local_ai_hub.response_budget import (
     LIFECYCLE_PROTECTED_KEYS,
@@ -1279,6 +1286,7 @@ __all__ = [
     'describe_status',
     'describe_task',
     'describe_work',
+    'agent_diagnostics_enabled',
     'detailed_diagnostics_enabled',
     'diagnostic_mcp_operation',
     'diagnostics_disabled_response',

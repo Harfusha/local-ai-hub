@@ -108,11 +108,11 @@ def _config(tmp_path: Path, extra: str = "", server_bind: str | None = None):
 def test_cpu_profile_respects_supported_model_roles(tmp_path: Path):
     cfg = _config(tmp_path)
     assert cfg["_hardware"]["profile"] == "cpu"
-    assert cfg["models"]["background_code"] == "qwen2.5-coder:3b"
-    assert cfg["models"]["fast_code"] == "qwen2.5-coder:3b"
-    assert cfg["models"]["heavy_code"] == "qwen2.5-coder:7b"
-    assert cfg["models"]["reasoning"] == "qwen3.5:9b"
-    assert cfg["models"]["general"] == "qwen2.5-coder:7b"
+    assert cfg["models"]["background_code"] == "qwen2.5-coder:1.5b"
+    assert cfg["models"]["fast_code"] == "qwen2.5-coder:1.5b"
+    assert cfg["models"]["heavy_code"] == "qwen2.5-coder:3b"
+    assert cfg["models"]["reasoning"] == "qwen2.5-coder:7b"
+    assert cfg["models"]["general"] == "qwen2.5-coder:3b"
     assert cfg["background_gpu"]["enabled"] is False
     assert cfg["features"]["local_reranking"] is True
 
@@ -121,7 +121,7 @@ def test_cpu_profile_respects_supported_model_roles(tmp_path: Path):
 def test_hardware_profiles_do_not_use_preprocess_model_for_inference(profile: str) -> None:
     models = PROFILE_OVERRIDES[profile]["models"]
     inference_roles = ("background_code", "fast_code", "heavy_code", "reasoning", "general")
-    assert all(models[role] != "qwen2.5-coder:1.5b" for role in inference_roles)
+    assert all(models[role] != "qwen2.5-coder:0.5b" for role in inference_roles)
 
 
 @pytest.mark.parametrize("profile", ("cpu", "integrated", "low", "balanced", "medium", "high", "max"))

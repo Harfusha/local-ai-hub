@@ -174,6 +174,26 @@ class AppStatusMixin:
             external_tools = getattr(self, "external_tools", None)
             code_intelligence, _ = read("code_intelligence", external_tools.status if external_tools else lambda: {}, {})
             agent_state, _ = read("agent_state", self._agent_state_summary, {"enabled": False})
+            breakers_obj = getattr(getattr(self, "services", None), "breakers", None)
+            circuit_breakers, _ = read("circuit_breakers", breakers_obj.status if breakers_obj else lambda: {}, {})
+            recovery_obj = getattr(self, "recovery", None)
+            recovery, _ = read("recovery", (lambda: recovery_obj.status(limit=8)) if recovery_obj else lambda: {}, {})
+            embeddings_obj = getattr(self, "embeddings", None)
+            embeddings, _ = read("embeddings", embeddings_obj.status if embeddings_obj else lambda: {}, {})
+            reranker_obj = getattr(self, "reranker", None)
+            reranker, _ = read("reranker", reranker_obj.status if reranker_obj else lambda: {}, {})
+            async_jobs_obj = getattr(self, "async_jobs", None)
+            async_jobs, _ = read("async_jobs", async_jobs_obj.stats if async_jobs_obj else lambda: {}, {})
+            work_orch_obj = getattr(self, "work_orchestrator", None)
+            work_orchestrator, _ = read("work_orchestrator", work_orch_obj.stats if work_orch_obj else lambda: {}, {})
+            tuner_obj = getattr(self, "tuner", None)
+            autotune, _ = read("autotune", tuner_obj.stats if tuner_obj else lambda: {}, {})
+            learner_obj = getattr(self, "learner", None)
+            learning, _ = read("learning", learner_obj.stats if learner_obj else lambda: {}, {})
+            evidence_obj = getattr(self, "evidence", None)
+            evidence_store, _ = read("evidence_store", evidence_obj.stats if evidence_obj else lambda: {}, {})
+            router_obj = getattr(self, "token_router", None)
+            lossless_router, _ = read("lossless_router", router_obj.stats if router_obj else lambda: {}, {})
             runtime_stats = {}
             for key, callback in (
                 ("generation_cache", self.services.generation_cache.stats),
@@ -272,6 +292,16 @@ class AppStatusMixin:
                     "query_hit_rate": observability.get("preprocessed_query_hit_rate", 0.0),
                 },
                 "runtime_stats": runtime_stats,
+                "circuit_breakers": circuit_breakers,
+                "recovery": recovery,
+                "embeddings": embeddings,
+                "reranker": reranker,
+                "async_jobs": async_jobs,
+                "work_orchestrator": work_orchestrator,
+                "autotune": autotune,
+                "learning": learning,
+                "evidence_store": evidence_store,
+                "lossless_router": lossless_router,
             }
             result["agent_state"] = agent_state
             for key, healthy in (("headless", headless_healthy), ("runtime.online", runtime_healthy), ("ollama_profile", profile_healthy), ("scheduler", scheduler_healthy), ("preprocessing.stats", prep_stats_healthy), ("preprocessing.status", prep_status_healthy), ("telemetry.summary", telemetry_healthy), ("accelerators", accelerator_healthy), ("background_gpu", background_gpu_healthy), ("model_execution", model_execution_healthy), ("vram_balancer", vram_balancer_healthy), ("benchmark", benchmark_healthy), ("debug_traces", traces_healthy)):

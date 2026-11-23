@@ -90,3 +90,60 @@ def test_telemetry_realtime_summary_forwards_laya_reports(tmp_path):
     finally:
         store.close()
 
+
+def test_dashboard_contains_all_subsystems_observability_surfaces():
+    for element_id in (
+        'id="circuitBreakersBody"',
+        'id="recoveryJournalSummary"',
+        'id="recoveryJournalBody"',
+        'id="dedicatedModelsSection"',
+        'id="embeddingsRuntimeVal"',
+        'id="embeddingsRuntimeSub"',
+        'id="rerankerRuntimeVal"',
+        'id="rerankerRuntimeSub"',
+        'id="vramBalancerVal"',
+        'id="vramBalancerSub"',
+        'id="dedicatedRuntimesBody"',
+        'id="optimizationSection"',
+        'id="autotuneVal"',
+        'id="autotuneSub"',
+        'id="learningVal"',
+        'id="learningSub"',
+        'id="evidenceStoreVal"',
+        'id="evidenceStoreSub"',
+        'id="losslessRouterVal"',
+        'id="losslessRouterSub"',
+        'id="asyncJobsSummary"',
+        'id="asyncJobsBody"',
+        'id="workOrchestratorSummary"',
+        'id="workOrchestratorBody"',
+    ):
+        assert element_id in DASHBOARD_HTML, f"Expected {element_id} in DASHBOARD_HTML"
+
+    valid, errors = validate_dashboard_html(DASHBOARD_HTML)
+    assert valid, f"Dashboard validation failed: {errors}"
+
+
+def test_realtime_status_exposes_all_subsystems():
+    from tests.test_status_snapshot_quality import make_realtime_app
+
+    app = make_realtime_app()
+    status = app.realtime_status(light=True)
+
+    expected_keys = [
+        "circuit_breakers",
+        "recovery",
+        "embeddings",
+        "reranker",
+        "async_jobs",
+        "work_orchestrator",
+        "autotune",
+        "learning",
+        "evidence_store",
+        "lossless_router",
+        "vram_balancer",
+    ]
+    for key in expected_keys:
+        assert key in status, f"Expected key '{key}' in realtime_status snapshot"
+
+
